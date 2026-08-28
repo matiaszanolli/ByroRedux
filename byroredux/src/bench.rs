@@ -492,3 +492,145 @@ mod tests {
         assert_eq!(advanced.simulated_time_s, 1.0);
     }
 }
+
+/// #3407 — structural guard over the checked-in runtime telemetry
+/// baselines (`.claude/audit-baselines/runtime/*.tsv`).
+///
+/// The defect that motivated this was a hand-transcribed number: the `fo3`
+/// baseline's `bench_draws_batches` was written as FNV's spike batch count
+/// from an adjacent table, and its `bench_draws_gpu_calls` was left at the
+/// stale pre-refresh value. Neither is structurally detectable — only a
+/// re-measurement catches a wrong-but-well-formed number, and these files
+/// exist precisely because that measurement needs a GPU and game data.
+///
+/// What IS checkable here is the file contract the README states, which is
+/// what the regen path writes and what `/audit-runtime` Phase 3 diffs
+/// against: the `# regenerated:` header, one occurrence of every gating
+/// metric, and a parseable numeric value on each. A baseline that loses a
+/// row silently stops gating that metric — the same class of failure, and
+/// the one a test can actually see.
+#[cfg(test)]
+mod runtime_baseline_schema_tests {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    /// Every metric the README's schema block lists. `bench_fps_*` are
+    /// advisory (RT-2 / #1701) but still stored, so they must still be
+    /// present and parseable.
+    const REQUIRED_METRICS: &[&str] = &[
+        "entities_total",
+        "tex_missing_unique_paths",
+        "mesh_cache_failed_count",
+        "light_count_directional",
+        "skin_pool_live",
+        "skin_pool_max",
+        "skin_pool_overflow_attempts",
+        "bench_fps_p50",
+        "bench_fps_avg",
+        "bench_draws_cmds",
+        "bench_draws_batches",
+        "bench_draws_gpu_calls",
+    ];
+
+    fn baseline_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("byroredux/ has a workspace parent")
+            .join(".claude/audit-baselines/runtime")
+    }
+
+    fn parse(path: &Path) -> (bool, HashMap<String, String>) {
+        let text = std::fs::read_to_string(path).expect("read baseline");
+        let mut has_header = false;
+        let mut rows = HashMap::new();
+        for line in text.lines() {
+            if line.starts_with("# regenerated:") {
+                has_header = true;
+                continue;
+            }
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
+                panic!("{}: malformed row {line:?}", path.display());
+            };
+            assert!(
+                rows.insert(key.to_string(), value.to_string()).is_none(),
+                "{}: metric {key} appears twice — a duplicate row means the \
+                 diff reads whichever the parser reaches last",
+                path.display(),
+            );
+        }
+        (has_header, rows)
+    }
+
+    #[test]
+    fn every_baseline_carries_the_full_gating_metric_set() {
+        let dir = baseline_dir();
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("baseline dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "tsv") {
+                continue;
+            }
+            checked += 1;
+            let (has_header, rows) = parse(&path);
+            assert!(
+                has_header,
+                "{}: missing the `# regenerated: YYYY-MM-DD` header the \
+                 README requires",
+                path.display(),
+            );
+            for metric in REQUIRED_METRICS {
+                let value = rows.get(*metric).unwrap_or_else(|| {
+                    panic!(
+                        "{}: missing metric {metric} — /audit-runtime silently \
+                         stops gating a metric it cannot find",
+                        path.display(),
+                    )
+                });
+                value.parse::<f64>().unwrap_or_else(|_| {
+                    panic!(
+                        "{}: metric {metric} = {value:?} is not numeric",
+                        path.display()
+                    )
+                });
+            }
+        }
+        assert_eq!(
+            checked, 5,
+            "expected the five per-game runtime baselines (fnv, fo3, fo4, \
+             oblivion, skyrim_se), found {checked}"
+        );
+    }
+
+    /// A draw split must be internally coherent: the three-way
+    /// `cmds >= batches >= gpu_calls` ordering is what the split MEANS
+    /// (commands merge into batches, batches issue as GPU calls), so a
+    /// violation is a transcription error no matter what the engine
+    /// measured. The `fo3` row that motivated #3407 satisfied this even
+    /// while wrong — recorded so the next reader knows this guard's reach.
+    #[test]
+    fn draw_split_rows_are_internally_ordered() {
+        for entry in std::fs::read_dir(baseline_dir()).expect("baseline dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "tsv") {
+                continue;
+            }
+            let (_, rows) = parse(&path);
+            let get = |k: &str| rows[k].parse::<f64>().expect("numeric");
+            let (cmds, batches, calls) = (
+                get("bench_draws_cmds"),
+                get("bench_draws_batches"),
+                get("bench_draws_gpu_calls"),
+            );
+            assert!(
+                cmds >= batches && batches >= calls,
+                "{}: draw split {cmds}/{batches}b/{calls}c violates \
+                 cmds >= batches >= gpu_calls",
+                path.display(),
+            );
+        }
+    }
+}

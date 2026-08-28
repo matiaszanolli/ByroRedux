@@ -836,8 +836,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         ) {
             Ok(h) => h,
             Err(e) => {
+                // #3406 — `{:#}` prints anyhow's full source chain. With
+                // `{}` this reported only the outermost context ("Failed to
+                // allocate buffer_staging staging memory") and swallowed the
+                // `InvalidAllocationCreateDesc` underneath that names the real
+                // cause, which is why #3402 needed an instrumented build.
                 log::warn!(
-                    "Failed to upload NIF mesh '{}': {}",
+                    "Failed to upload NIF mesh '{}': {:#}",
                     mesh.name.as_deref().unwrap_or("?"),
                     e
                 );

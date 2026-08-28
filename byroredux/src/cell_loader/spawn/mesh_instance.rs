@@ -534,7 +534,9 @@ pub(super) fn prepare_mesh_uploads(
                             fresh_for_rt: fresh_mesh.for_rt,
                         };
                     }
-                    Err(error) => log::warn!("Failed to upload mesh: {error}"),
+                    // #3406 — `{error:#}` keeps anyhow's source chain; `{error}`
+                    // printed only the outermost context.
+                    Err(error) => log::warn!("Failed to upload mesh: {error:#}"),
                 }
             }
         }

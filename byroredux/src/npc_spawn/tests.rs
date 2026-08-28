@@ -978,6 +978,147 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
     assert_eq!(skin.hidden_biped_mask & HANDS_BIT, 0);
 }
 
+/// #3408 (SKY-2026-08-27b-D3-01) — a creature race whose default skin
+/// authors `BOD2 == 0` must keep its body mesh.
+///
+/// `EquipmentSlots::equip` iterates the SET bits of the mask, so a zero mask
+/// occupies nothing, so the #2094 occupancy retain could never be satisfied
+/// and the mesh was discarded unconditionally. On real `Skyrim.esm` this hit
+/// 351 of 5,118 NPC_ records — every Draugr, sabrecat, skeever, frostbite
+/// spider and slaughterfish — of which 170 ended with no mesh source at all.
+#[test]
+fn prebaked_equip_state_keeps_zero_mask_race_skin() {
+    const RACE: u32 = 0x0100_0060;
+    const SKIN: u32 = 0x0100_0061;
+    const SKIN_ARMA: u32 = 0x0100_0062;
+
+    let mut race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RACE,
+        editor_id: "DraugrRaceFixture".to_string(),
+        full_name: String::new(),
+        description: String::new(),
+        skill_bonuses: Vec::new(),
+        body_models: Vec::new(),
+        head_parts: Vec::new(),
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        race_flags: 0,
+        starting_health: None,
+        starting_magicka: None,
+        starting_stamina: None,
+        base_attributes: None,
+        default_hair: None,
+        voice_forms: None,
+        facegen_main_clamp: None,
+        facegen_face_clamp: None,
+        race_reactions: Vec::new(),
+        default_skin: None,
+    };
+    race.default_skin = Some(SKIN);
+
+    let mut npc = test_npc(0x0100_0063, "ZeroMaskSkinNpc");
+    npc.race_form_id = RACE;
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(RACE, race);
+    // `SkinDraugr` (0x00016EE3) ships exactly this shape: BOD2 == 0 with a
+    // real ARMA behind it.
+    index
+        .items
+        .insert(SKIN, skyrim_armor_item(SKIN, 0, vec![SKIN_ARMA]));
+    index.armor_addons.insert(
+        SKIN_ARMA,
+        arma(SKIN_ARMA, r"actors\draugr\character assets\draugr.nif"),
+    );
+
+    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    assert_eq!(
+        state.armor_to_spawn.len(),
+        1,
+        "a BOD2==0 race skin claims no biped bit, so the #2094 occupancy \
+         filter has no opinion about it — it must not be dropped (#3408)"
+    );
+    assert_eq!(state.armor_to_spawn[0].form_id, SKIN);
+    assert_eq!(
+        state.armor_to_spawn[0].hidden_biped_mask, 0,
+        "nothing can displace a mask that claims no region"
+    );
+}
+
+/// The #3408 exemption must not disable the #2094 filter for the ordinary
+/// case: a skin with a real mask, fully covered by gear, is still dropped.
+#[test]
+fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
+    const RACE: u32 = 0x0100_0070;
+    const SKIN: u32 = 0x0100_0071;
+    const SKIN_ARMA: u32 = 0x0100_0072;
+    const TORSO: u32 = 0x0100_0073;
+    const TORSO_ARMA: u32 = 0x0100_0074;
+    const TORSO_BIT: u32 = 0x0004;
+
+    let mut race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RACE,
+        editor_id: String::new(),
+        full_name: String::new(),
+        description: String::new(),
+        skill_bonuses: Vec::new(),
+        body_models: Vec::new(),
+        head_parts: Vec::new(),
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        race_flags: 0,
+        starting_health: None,
+        starting_magicka: None,
+        starting_stamina: None,
+        base_attributes: None,
+        default_hair: None,
+        voice_forms: None,
+        facegen_main_clamp: None,
+        facegen_face_clamp: None,
+        race_reactions: Vec::new(),
+        default_skin: None,
+    };
+    race.default_skin = Some(SKIN);
+
+    let mut npc = test_npc(0x0100_0075, "FullyDisplacedSkinNpc");
+    npc.race_form_id = RACE;
+    npc.inventory
+        .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: TORSO,
+            count: 1,
+        });
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(RACE, race);
+    index
+        .items
+        .insert(SKIN, skyrim_armor_item(SKIN, TORSO_BIT, vec![SKIN_ARMA]));
+    index
+        .armor_addons
+        .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
+    index
+        .items
+        .insert(TORSO, skyrim_armor_item(TORSO, TORSO_BIT, vec![TORSO_ARMA]));
+    index
+        .armor_addons
+        .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
+
+    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    assert!(
+        !state
+            .armor_to_spawn
+            .iter()
+            .any(|armor| armor.form_id == SKIN),
+        "a skin with a real mask, fully covered by gear, is still displaced"
+    );
+}
+
 /// #2094 (SKY-D3-NEW-02) — when the equipped gear fully overlaps the
 /// race skin's biped bit, the skin is displaced and must NOT spawn a
 /// second (z-fighting) mesh alongside the winner.
@@ -1405,8 +1546,8 @@ fn pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier() {
 #[test]
 fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
     use byroredux_core::character::Perks;
-    use byroredux_plugin::esm::records::parse_npc;
     use byroredux_plugin::esm::reader::{GameKind, SubRecord};
+    use byroredux_plugin::esm::records::parse_npc;
     use byroredux_scripting::condition::{evaluate_function, ConditionFunction};
 
     const PERK: u32 = 0x0005_820C;
@@ -1546,6 +1687,86 @@ fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// #3408 — the creature-race guard. #3361's Bannered Mare sweep walks six
+/// humans, all on `NordRace` (`SkinNaked`, `BOD2 != 0`), so it could not
+/// see the zero-mask defect at all: every Draugr, sabrecat, skeever,
+/// frostbite spider and slaughterfish in vanilla Skyrim spawned bodyless.
+///
+/// One NPC per affected race, FormIDs read from `Skyrim.esm`.
+const CREATURE_RACE_NPCS: &[(&str, u32)] = &[
+    ("EncDraugr02MissileHeadM01", 0x0002_2401),
+    ("EncDraugr03AmbushMelee2HHeadM07", 0x000E_A50E),
+    ("dunFellglow_WarlockPet", 0x0007_3989),
+];
+
+/// #3408 — an NPC on a race whose default skin authors `BOD2 == 0` must
+/// resolve at least one mesh. Pre-fix the #2094 occupancy retain dropped
+/// every one of them (measured: 351 skin meshes dropped, 0 kept).
+#[test]
+#[ignore]
+fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        eprintln!("[#3408] skipping: Skyrim SE data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    for &(name, form_id) in CREATURE_RACE_NPCS {
+        let npc = index
+            .npcs
+            .get(&form_id)
+            .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
+        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male);
+        assert!(
+            !state.armor_to_spawn.is_empty(),
+            "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
+             authors BOD2==0 and the #2094 occupancy filter dropped it (#3408)"
+        );
+    }
+
+    // Corpus-level floor: sweep every NPC_ whose race points WNAM at a
+    // zero-mask skin. Pre-fix this was 351 dropped / 0 kept.
+    let mut zero_mask_race_npcs = 0usize;
+    let mut with_mesh = 0usize;
+    for npc in index.npcs.values() {
+        let Some(race) = index.races.get(&npc.race_form_id) else {
+            continue;
+        };
+        let Some(skin_fid) = race.default_skin else {
+            continue;
+        };
+        let Some(skin) = index.items.get(&skin_fid) else {
+            continue;
+        };
+        let ItemKind::Armor { biped_flags: 0, .. } = skin.kind else {
+            continue;
+        };
+        zero_mask_race_npcs += 1;
+        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male);
+        if state
+            .armor_to_spawn
+            .iter()
+            .any(|armor| armor.form_id == skin_fid)
+        {
+            with_mesh += 1;
+        }
+    }
+    eprintln!("[#3408] zero-mask-skin race NPCs: {zero_mask_race_npcs}, with mesh: {with_mesh}");
+    assert!(
+        zero_mask_race_npcs >= 351,
+        "expected >= 351 NPC_ records on zero-mask-skin races in Skyrim.esm, \
+         got {zero_mask_race_npcs} — the census this guard rests on has moved"
+    );
+    assert_eq!(
+        with_mesh,
+        zero_mask_race_npcs,
+        "every NPC on a zero-mask-skin race must keep its skin mesh; \
+         {} of {zero_mask_race_npcs} lost it (#3408)",
+        zero_mask_race_npcs - with_mesh
+    );
 }
 
 /// #3356 — the OTFT `INAM` array. Every one of these five Bannered Mare

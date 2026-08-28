@@ -1931,16 +1931,18 @@ fn scol_grup_skipped_for_skyrim_too() {
     );
 }
 
-/// FO76 (HEDR 68.0) is FO4+ — should parse. Pins the upper end of the
+/// FO76 (HEDR 266.0) is FO4+ — should parse. Pins the upper end of the
 /// `is_fo4_plus` predicate against drift.
 #[test]
 fn scol_grup_parsed_for_fo76() {
-    let mut esm = tes4_with_hedr(68.0); // FO76
+    // #3405 — the real value off `SeventySix.esm` / `NW.esm`. This test
+    // used 68.0, which no shipped master carries.
+    let mut esm = tes4_with_hedr(266.0); // FO76
     esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
     let index = parse_esm(&esm).expect("parse_esm");
     assert!(
         matches!(index.game, GameKind::Fallout76),
-        "sanity: HEDR 68.0 routes to Fallout76",
+        "sanity: HEDR 266.0 routes to Fallout76",
     );
     assert_eq!(
         index.cells.scols.len(),

@@ -107,7 +107,8 @@ pub enum GameKind {
     Skyrim,
     /// Fallout 4 (HEDR 0.95). SCOL/PKIN/TXST and yet another item schema.
     Fallout4,
-    /// Fallout 76 (HEDR 68.0 — unusually large).
+    /// Fallout 76 (HEDR 266.0 — unusually large; see the sampled-values
+    /// table in [`GameKind::from_header`]).
     Fallout76,
     /// Starfield (HEDR 0.96).
     Starfield,
@@ -123,16 +124,23 @@ impl GameKind {
             EsmVariant::Oblivion => Self::Oblivion,
             EsmVariant::Tes5Plus => {
                 // HEDR versions sampled from real vanilla masters at
-                // 2026-04-19 (all six FO3 GOTY, FNV, FO4, Skyrim SE,
-                // Starfield):
+                // 2026-04-19, FO76 re-read from disk 2026-08-28 (#3405):
                 //   FO3 (GOTY) = 0.94    (bytes d7 a3 70 3f)
                 //   FO4        = 1.0     (bytes 00 00 80 3f)
                 //   Starfield  = 0.96    (bytes 8f c2 75 3f)
                 //   FNV        = 1.34    (bytes 1f 85 ab 3f)
                 //   Skyrim SE  = 1.71    (bytes 48 e1 da 3f)
-                //   FO76       = 68.0
+                //   FO76       = 266.0   (bytes 00 00 85 43)
                 // Exact float equality is unsafe — match on small bands
                 // that leave clear gaps between the known values.
+                //
+                // #3405 — this table read `FO76 = 68.0` until 2026-08-28.
+                // Both installed FO76 masters (`SeventySix.esm`, `NW.esm`)
+                // ship 266.0 / TES4 record version 209. The band below is
+                // unaffected — `>= 60.0` is a deliberately low floor, not a
+                // tight fit around the sampled value — but this table is the
+                // evidence every band gap is reasoned from, so a wrong entry
+                // here is what misplaces the *next* band.
                 //
                 // Pre-fix the FO3 band (0.94..=0.955) routed every FO3
                 // master to Fallout4 — and FO4's real 1.0 fell through
@@ -143,6 +151,9 @@ impl GameKind {
                 // typing) would have silently corrupted FO3 data.
                 // See #439 / audit FO3-3-01.
                 if hedr_version >= 60.0 {
+                    // Floor deliberately far below the real 266.0 (#3405):
+                    // nothing else in the lineage exceeds 1.71, so the whole
+                    // decade above 60 is free for FO76's outlier scheme.
                     Self::Fallout76
                 } else if (1.6..=1.8).contains(&hedr_version) {
                     Self::Skyrim
@@ -1170,11 +1181,20 @@ mod tests {
             GameKind::Starfield,
             "Starfield (HEDR=0.96) must classify as Starfield",
         );
-        // FO76 — HEDR=68.0 per UESP.
+        // FO76 — SeventySix.esm and NW.esm both ship HEDR bytes
+        // 00 00 85 43 (266.0) with TES4 record version 209, read off disk
+        // 2026-08-28. The old assertion used 68.0, a value no installed
+        // master carries; keep a second probe at that height so the band
+        // floor stays pinned well below the real value (#3405).
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 266.0, 209),
+            GameKind::Fallout76,
+            "FO76 (real HEDR=266.0, rec_ver=209) must classify as Fallout76",
+        );
         assert_eq!(
             GameKind::from_header(EsmVariant::Tes5Plus, 68.0, 155),
             GameKind::Fallout76,
-            "FO76 (HEDR=68.0) must classify as Fallout76",
+            "the >=60.0 FO76 floor must stay far below the real 266.0",
         );
         // Oblivion — variant-dispatched regardless of HEDR.
         assert_eq!(

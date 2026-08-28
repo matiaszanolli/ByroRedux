@@ -1,18 +1,41 @@
 # regenerated: 2026-08-27 (#3005 — partial: draw-split + entities only)
+# corrected:   2026-08-28 (#3407 — the draw-split rows below were wrong)
+#
+# READ THIS FIRST — the two draw-split rows were transcription errors.
+#
+# The 2026-08-27 refresh wrote `bench_draws_batches 164` and
+# `bench_draws_gpu_calls 9`. Neither value reproduces. Six runs across three
+# builds — including a rebuild of the exact commit the refresh says it
+# measured at, run with the exact invocation it documents — all read
+# 1581/100b/11c, with entities_total (3493), meshes (609) and cmds (1581)
+# identical in every one. Both wrong values have a traceable provenance in
+# adjacent text: 164 is FNV's 2026-08-12 spike batch count, printed two lines
+# from this cell in the bisect timeline the FNV baseline header carries
+# (`9e96a9f9 2026-08-12 2562/164b/35c`); 9 is this cell's OWN pre-existing
+# 2026-06-14 gpu_calls, i.e. the row that was supposedly refreshed is the row
+# that was never updated. See #3407 and docs/audits/AUDIT_RUNTIME_2026-08-27.md.
 #
 # WHY THIS MOVED, before the numbers (the #3005 CAUSE-NOT-BASELINE box).
 #
 # The 2026-08-16 sweep flagged this cell past the x1.1 contract on BOTH
 # bench_draws_batches and bench_draws_gpu_calls while bench_draws_cmds stayed
 # inside it. Re-measured at cc666a48 on 2026-08-27
-# (`--game fo3 --cell MegatonPlayerHouse --bench-frames 240`, xvfb):
+# (`--game fo3 --cell MegatonPlayerHouse --bench-frames 240`, xvfb), with the
+# true values #3407 established:
 #
 #   metric               2026-06-14 baseline   2026-08-27   x1.1 gate
 #   bench_draws_cmds     1839                  1581         PASS (fell)
-#   bench_draws_batches    96                   164         FAIL (+71%)
-#   bench_draws_gpu_calls   9                     9         PASS (recovered)
+#   bench_draws_batches    96                   100         PASS (x1.04)
+#   bench_draws_gpu_calls   9                    11         FAIL (x1.22)
 #
-# The gpu_calls half of the finding is GONE; only the batch split remains.
+# That is the MIRROR IMAGE of what the 2026-08-27 header claimed. The batch
+# split never left contract on this cell — 96 -> 100 is inside x1.1 and did
+# not need refreshing at all. It is the gpu_calls half that is still out, so
+# #3005's `fo3` arm was closed on a measurement that does not hold (its `fnv`
+# arm does: 26 -> 26, exact). Kept refreshed rather than reverted to 96/9
+# because 9 against a true 11 is permanently red and would drown any real
+# regression; the residual gpu_calls question belongs to #3005, not to this
+# file.
 #
 # The cause is not a batching bug and is already documented in code: see
 # `draw_sort_key`'s alpha-over branch in `byroredux/src/render/mod.rs`
@@ -27,10 +50,11 @@
 # records the direct experiment: forcing state-primary order drops FNV
 # `FreesideAtomicWrangler` from 25 to 8 GPU calls.
 #
-# Merge efficiency here fell 19.2 -> 9.6 cmds/batch. Refreshed rather than
-# left red because a gate against 96 is now permanently failing and would
-# mask any NEW batching regression — the same reasoning the FNV baseline
-# records under #3288.
+# Merge efficiency here fell 19.2 -> 15.8 cmds/batch (1839/96 -> 1581/100),
+# not 19.2 -> 9.6: that figure was computed from the wrong batch count. The
+# draw_sort_key explanation above still applies — it accounts for a 15.8
+# cmds/batch split as readily as it would for 9.6 — but the magnitude it is
+# accounting for is a 4% move, not a 71% one.
 #
 # entities_total 3311 -> 3493 (+5.5%) also exceeds its +/-2% tolerance and is
 # refreshed with the same measurement.
@@ -53,5 +77,5 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	62.7
 bench_fps_avg	62.7
 bench_draws_cmds	1581
-bench_draws_batches	164
-bench_draws_gpu_calls	9
+bench_draws_batches	100
+bench_draws_gpu_calls	11

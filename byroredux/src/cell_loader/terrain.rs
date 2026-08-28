@@ -568,8 +568,9 @@ pub(super) fn spawn_terrain_mesh(
     ) {
         Ok(h) => h,
         Err(e) => {
+            // #3406 — `{:#}` keeps anyhow's source chain.
             log::warn!(
-                "Failed to upload terrain mesh ({},{}): {}",
+                "Failed to upload terrain mesh ({},{}): {:#}",
                 grid_x,
                 grid_y,
                 e

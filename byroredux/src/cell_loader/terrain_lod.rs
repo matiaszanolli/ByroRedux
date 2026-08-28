@@ -844,8 +844,9 @@ fn spawn_lod_block(
     {
         Ok(h) => h,
         Err(e) => {
+            // #3406 — `{:#}` keeps anyhow's source chain.
             log::warn!(
-                "Failed to upload LOD terrain block at cell ({},{}): {}",
+                "Failed to upload LOD terrain block at cell ({},{}): {:#}",
                 bx0,
                 by0,
                 e

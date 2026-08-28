@@ -158,8 +158,7 @@ fn next_geometry_rebuild_chunk(
     index_chunk_elems: usize,
 ) -> GeometryRebuildStep {
     if vertices_copied < target_vertex_count {
-        let end =
-            (vertices_copied + vertex_chunk_elems.max(1)).min(target_vertex_count);
+        let end = (vertices_copied + vertex_chunk_elems.max(1)).min(target_vertex_count);
         GeometryRebuildStep::CopyVertices {
             start: vertices_copied,
             end,
@@ -410,6 +409,28 @@ impl Default for MeshRegistry {
     }
 }
 
+/// #3406 — reject degenerate geometry BEFORE it reaches `vkCreateBuffer`.
+///
+/// An empty slice yields `VkBufferCreateInfo.size == 0`, which is a spec
+/// violation (`VUID-VkBufferCreateInfo-size-00912`). It only escaped notice
+/// because the allocator refuses the zero-sized allocation a moment later —
+/// and reports it as `Failed to allocate buffer_staging staging memory`,
+/// sending every reader chasing a memory-pressure problem that isn't there
+/// (see #3402, which needed an instrumented build for exactly this reason).
+///
+/// Split out of [`MeshRegistry::upload`] so the guard is testable without a
+/// Vulkan device.
+fn validate_upload_geometry(vertex_count: usize, index_count: usize) -> Result<()> {
+    if vertex_count == 0 || index_count == 0 {
+        bail!(
+            "refusing to upload degenerate mesh: {vertex_count} vertices, \
+             {index_count} indices (a zero-sized VkBuffer is invalid — \
+             VUID-VkBufferCreateInfo-size-00912)",
+        );
+    }
+    Ok(())
+}
+
 impl MeshRegistry {
     pub fn new() -> Self {
         Self {
@@ -496,7 +517,16 @@ impl MeshRegistry {
         rt_enabled: bool,
         mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<u32> {
-        let vertex_buffer = GpuBuffer::create_vertex_buffer(
+        // #3406 — degenerate geometry must be rejected BEFORE it reaches
+        // `vkCreateBuffer`. An empty slice yields
+        // `VkBufferCreateInfo.size == 0`, which is a spec violation
+        // (VUID-VkBufferCreateInfo-size-00912) that only escaped notice
+        // because the allocator refuses the zero-sized allocation a moment
+        // later — and reports it as `Failed to allocate buffer_staging
+        // staging memory`, sending every reader chasing a memory-pressure
+        // problem that isn't there.
+        validate_upload_geometry(vertices.len(), indices.len())?;
+        let mut vertex_buffer = GpuBuffer::create_vertex_buffer(
             ctx.device,
             ctx.allocator,
             ctx.queue,
@@ -505,7 +535,13 @@ impl MeshRegistry {
             rt_enabled,
             staging_pool.as_deref_mut(),
         )?;
-        let index_buffer = GpuBuffer::create_index_buffer(
+        // #3406 — every failure arm from here on must `destroy()` the buffers
+        // already created. Letting them fall out of scope hands them to the
+        // #656 `Drop` safety net, which reclaims the memory in release but
+        // logs a warning and fires `debug_assert!(false, "GpuBuffer leaked
+        // into Drop")` — so a debug build aborts on the first degenerate mesh
+        // in a cell. `?` on the two calls below was doing exactly that.
+        let mut index_buffer = match GpuBuffer::create_index_buffer(
             ctx.device,
             ctx.allocator,
             ctx.queue,
@@ -513,10 +549,20 @@ impl MeshRegistry {
             indices,
             rt_enabled,
             staging_pool,
-        )?;
+        ) {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                vertex_buffer.destroy(ctx.device, ctx.allocator);
+                return Err(e);
+            }
+        };
         let index_count = indices.len() as u32;
 
         if self.meshes.len() >= MAX_MESH_SLOTS as usize {
+            // Both buffers are live at this point — the registry never takes
+            // ownership on this arm, so this function still owns them.
+            vertex_buffer.destroy(ctx.device, ctx.allocator);
+            index_buffer.destroy(ctx.device, ctx.allocator);
             bail!(
                 "MeshRegistry slot overflow: {} slots used (cap {}). \
                  Likely a cell-unload leak — meshes are uploaded without matching drop_mesh calls.",
@@ -1255,7 +1301,11 @@ impl MeshRegistry {
                 vk::BufferUsageFlags::empty()
             };
             match Self::try_allocate_empty_geometry_buffers(
-                device, allocator, vertex_size, index_size, rt_usage,
+                device,
+                allocator,
+                vertex_size,
+                index_size,
+                rt_usage,
             ) {
                 Ok((new_vertex_buffer, new_index_buffer)) => {
                     self.geometry_rebuild = Some(GeometryRebuildInProgress {
@@ -1285,7 +1335,13 @@ impl MeshRegistry {
         if let Some(plan) = compaction {
             self.apply_compaction_plan(&plan);
         }
-        self.rebuild_geometry_ssbo_atomic_fallback(device, allocator, queue, command_pool, rt_enabled)
+        self.rebuild_geometry_ssbo_atomic_fallback(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            rt_enabled,
+        )
     }
 
     /// Whether a chunked global geometry SSBO rebuild is currently copying
@@ -1392,7 +1448,9 @@ impl MeshRegistry {
                         },
                         dst_offset,
                         bytes,
-                        self.geometry_staging_pool.as_mut().expect("just initialised above"),
+                        self.geometry_staging_pool
+                            .as_mut()
+                            .expect("just initialised above"),
                     )?;
                     self.geometry_rebuild
                         .as_mut()
@@ -1420,7 +1478,9 @@ impl MeshRegistry {
                         },
                         dst_offset,
                         bytes,
-                        self.geometry_staging_pool.as_mut().expect("just initialised above"),
+                        self.geometry_staging_pool
+                            .as_mut()
+                            .expect("just initialised above"),
                     )?;
                     self.geometry_rebuild
                         .as_mut()
@@ -2815,7 +2875,10 @@ mod geometry_rebuild_step_tests {
     #[test]
     fn starts_on_vertices_when_both_phases_have_work() {
         let step = next_geometry_rebuild_chunk(0, 100, 0, 300, 40, 40);
-        assert_eq!(step, GeometryRebuildStep::CopyVertices { start: 0, end: 40 });
+        assert_eq!(
+            step,
+            GeometryRebuildStep::CopyVertices { start: 0, end: 40 }
+        );
     }
 
     /// A chunk that would overrun the target clamps to it exactly, rather
@@ -2825,7 +2888,10 @@ mod geometry_rebuild_step_tests {
         let step = next_geometry_rebuild_chunk(80, 100, 0, 300, 40, 40);
         assert_eq!(
             step,
-            GeometryRebuildStep::CopyVertices { start: 80, end: 100 },
+            GeometryRebuildStep::CopyVertices {
+                start: 80,
+                end: 100
+            },
             "80 + 40 overruns the 100-vertex target; must clamp to exactly 100"
         );
     }
@@ -2854,7 +2920,10 @@ mod geometry_rebuild_step_tests {
     #[test]
     fn chunk_exactly_covering_the_target_finishes_that_phase_in_one_step() {
         let step = next_geometry_rebuild_chunk(0, 40, 0, 300, 40, 90);
-        assert_eq!(step, GeometryRebuildStep::CopyVertices { start: 0, end: 40 });
+        assert_eq!(
+            step,
+            GeometryRebuildStep::CopyVertices { start: 0, end: 40 }
+        );
         // The following call (as if this chunk just landed) must now switch
         // phases rather than emit a zero-length vertex chunk.
         let next = next_geometry_rebuild_chunk(40, 40, 0, 300, 40, 90);
@@ -2892,5 +2961,38 @@ mod geometry_rebuild_step_tests {
     fn both_targets_empty_reports_finished() {
         let step = next_geometry_rebuild_chunk(0, 0, 0, 0, 40, 40);
         assert_eq!(step, GeometryRebuildStep::Finished);
+    }
+}
+
+#[cfg(test)]
+mod upload_geometry_guard_tests {
+    use super::validate_upload_geometry;
+
+    /// #3406 — a degenerate slice must be rejected by name, before any
+    /// Vulkan call. Pre-fix both cases reached `vkCreateBuffer` with
+    /// `size == 0` and surfaced as a staging-memory allocation failure.
+    #[test]
+    fn empty_vertices_or_indices_are_rejected() {
+        for (v, i) in [(0usize, 0usize), (0, 36), (24, 0)] {
+            let err = validate_upload_geometry(v, i)
+                .expect_err("degenerate geometry must not reach vkCreateBuffer");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("degenerate mesh"),
+                "the error must name the real cause, got: {msg}"
+            );
+            assert!(
+                msg.contains("VUID-VkBufferCreateInfo-size-00912"),
+                "the error must cite the spec rule it upholds, got: {msg}"
+            );
+        }
+    }
+
+    /// The ordinary case stays a pass-through — the guard must not reject
+    /// a one-triangle mesh.
+    #[test]
+    fn non_empty_geometry_passes() {
+        assert!(validate_upload_geometry(3, 3).is_ok());
+        assert!(validate_upload_geometry(1, 1).is_ok());
     }
 }

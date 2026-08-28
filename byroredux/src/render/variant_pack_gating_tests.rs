@@ -131,7 +131,7 @@ fn kind_5_skin_tint_packs_only_skin_fields() {
 /// authors the field; modded/future content need not.
 #[test]
 fn kind_6_hair_tint_missing_color_defaults_to_identity() {
-    let mut world = world_with_variant_material(6);
+    let world = world_with_variant_material(6);
     // Strip only the hair tint, keeping the kind-6 dispatch.
     {
         let mut q = world.query_mut::<Material>().unwrap();

@@ -706,6 +706,12 @@ struct ResolvedArmor<'a> {
     /// mod CNTO overlapping a default OTFT slot) and must not spawn
     /// a mesh alongside the winner.
     inv_idx: InventoryIndex,
+    /// The ARMO's own authored `BOD2`/`BODT` biped mask, as handed to
+    /// `EquipmentSlots::equip`. **Zero is meaningful**: such a record
+    /// claims no biped region at all, so it never enters `occupants` and
+    /// the #2094 occupancy filter has no opinion about it — see the
+    /// retain at the end of [`build_npc_equip_state`] and #3408.
+    authored_biped_mask: u32,
 }
 
 /// Equip pipeline state built purely from `&NpcRecord` + `&EsmIndex`
@@ -813,6 +819,7 @@ fn build_npc_equip_state<'a>(
                             model_path,
                             hidden_biped_mask: 0,
                             inv_idx,
+                            authored_biped_mask: biped_flags,
                         });
                     }
                 }
@@ -928,6 +935,7 @@ fn build_npc_equip_state<'a>(
                 model_path,
                 hidden_biped_mask: 0,
                 inv_idx,
+                authored_biped_mask: biped_flags,
             });
         }
     }
@@ -974,7 +982,23 @@ fn build_npc_equip_state<'a>(
     // OTFT slot) — this pass makes the mesh set agree with that
     // resolution instead of spawning every candidate regardless of
     // whether it was displaced.
-    armor_to_spawn.retain(|armor| equipment_slots.occupants.contains(&Some(armor.inv_idx)));
+    //
+    // #3408 / SKY-2026-08-27b-D3-01 — a record whose authored mask is ZERO is
+    // exempt. `equip()` iterates the set bits of the mask, so a zero mask
+    // sets none, so such an item can never appear in `occupants` and can
+    // never satisfy the retain — its mesh was discarded unconditionally. That
+    // is not a displacement; a skin that claims no biped region cannot be
+    // displaced out of one, so this filter has no opinion about it.
+    //
+    // Measured on real `Skyrim.esm`: 10 of 2,762 ARMOs author `BOD2 == 0` and
+    // every one of them names ARMAs — `SkinDraugr`, `SkinSabrecat`,
+    // `SkinSkeever`, `SkinFrostbiteSpider(Cold)`, `SkinSlaughterfish`, plus
+    // the Draugr hair/beard parts. 7 of 99 races point `WNAM` at one, and
+    // 351 of 5,118 NPC_ records sit on those races (314 of them Draugr).
+    // Every one lost its body mesh here; 170 ended with no mesh source at all.
+    armor_to_spawn.retain(|armor| {
+        armor.authored_biped_mask == 0 || equipment_slots.occupants.contains(&Some(armor.inv_idx))
+    });
 
     NpcEquipState {
         inventory,

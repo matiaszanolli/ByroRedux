@@ -368,7 +368,7 @@ mod quantize_fade_tests {
         };
         let authored =
             EFFECT_SOFT | EFFECT_LIT | EFFECT_PALETTE_COLOR | (200u32 << EFFECT_LI_SHIFT);
-        let mut world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
+        let world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
         {
             let mut q = world.query_mut::<ParticleEmitter>().unwrap();
             let (e, _) = q.iter_mut().next().map(|(e, _)| (e, ())).unwrap();
