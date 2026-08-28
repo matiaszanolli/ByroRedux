@@ -264,7 +264,32 @@ impl App {
                 // consume them and say which ones it cannot answer, which
                 // turns the bridge's `unknown_methods()` set from a test-only
                 // observation into a live one.
-                for call in ui.drain_host_calls() {
+                let host_calls = ui.drain_host_calls();
+                // #2969 — `drain_calls`' own contract: a batch must be read
+                // together with the eviction counter, because it may not be
+                // contiguous. The bridge warns once at the producer when it
+                // first evicts, but that says "a call was lost", not "the
+                // batch you are about to act on has a hole in it" — and the
+                // moment this loop routes calls into quest / inventory /
+                // player state, that hole is a lost state transition with no
+                // signal. Latched, so the warning tracks increases rather
+                // than repeating every frame for the life of the menu.
+                let dropped = ui.dropped_host_calls();
+                if let Some(lost) = crate::host_call_gap(self.ui_dropped_host_calls, dropped) {
+                    log::warn!(
+                        "Scaleform menu '{}' lost {lost} host call(s) to the \
+                         {}-entry bridge cap since the last drain ({dropped} \
+                         total for this menu) — the {} call(s) drained this \
+                         frame are not a contiguous record of what the menu \
+                         asked for",
+                        ui.menu_name,
+                        byroredux_ui::MAX_QUEUED_CALLS,
+                        host_calls.len(),
+                    );
+                }
+                self.ui_dropped_host_calls = dropped;
+
+                for call in host_calls {
                     log::debug!(
                         "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
                         call.sequence,

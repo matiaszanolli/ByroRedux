@@ -126,6 +126,49 @@ fn bench_gpu_inactive_token(active: [bool; 12]) -> String {
     }
 }
 
+/// Calls the Scaleform bridge evicted since the previous frame's drain, if
+/// any (#2969).
+///
+/// `latched` is the previous reading, `reported` the current one. `Some(n)`
+/// means the batch just drained is missing `n` calls the menu made — the
+/// non-contiguity `ScaleformHostBridge::drain_calls`' contract says must be
+/// read alongside the batch. `None` covers both "nothing new was lost" and a
+/// decrease, which is a menu swap handing over a fresh bridge whose counter
+/// restarts at zero rather than calls being un-dropped.
+///
+/// Split out as a pure predicate because the only live consumer sits inside
+/// `render_one_frame`'s Vulkan path, which no test can stand up.
+fn host_call_gap(latched: u64, reported: u64) -> Option<u64> {
+    reported.checked_sub(latched).filter(|lost| *lost > 0)
+}
+
+#[cfg(test)]
+mod host_call_gap_tests {
+    use super::host_call_gap;
+
+    /// #2969 — the warning must fire on each increase and stay silent
+    /// otherwise, so a bridge that has dropped calls once does not repeat the
+    /// message every frame for the life of the menu.
+    #[test]
+    fn a_gap_is_reported_once_per_increase() {
+        assert_eq!(host_call_gap(0, 0), None);
+        assert_eq!(host_call_gap(0, 7), Some(7));
+        // Latched at 7: the same reading next frame is not a new gap.
+        assert_eq!(host_call_gap(7, 7), None);
+        // A further eviction reports only what is new.
+        assert_eq!(host_call_gap(7, 9), Some(2));
+    }
+
+    /// A new menu brings a new `ScaleformHostBridge`, so the counter restarts.
+    /// That is a reset, not a negative gap — and `checked_sub` must not be
+    /// allowed to wrap it into an enormous one.
+    #[test]
+    fn a_menu_swap_resetting_the_counter_is_not_a_gap() {
+        assert_eq!(host_call_gap(9, 0), None);
+        assert_eq!(host_call_gap(u64::MAX, 3), None);
+    }
+}
+
 #[cfg(test)]
 mod bench_frame_distribution_tests {
     use super::{bench_frame_distribution, bench_gpu_inactive_token, BENCH_GPU_KEYS};
@@ -193,6 +236,14 @@ struct App {
     ui_reported_host_methods: std::collections::HashSet<(String, String)>,
     /// One-shot latch for the `ui_reported_host_methods` cap warning.
     ui_reported_host_methods_capped: bool,
+    /// Last `UiManager::dropped_host_calls()` reading the per-frame Scaleform
+    /// drain observed (#2969). `drain_calls`' contract is that a full batch
+    /// must be read together with the drop counter — the batch may not be
+    /// contiguous — and nothing outside `crates/ui` read it. Latched rather
+    /// than compared against zero so the warning fires on each *increase*,
+    /// not every frame after the first eviction; a decrease means a new menu
+    /// brought a fresh bridge, not that calls were un-dropped.
+    ui_dropped_host_calls: u64,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
     /// Reusable per-frame water draw command buffer. Built alongside
@@ -517,6 +568,7 @@ impl App {
             ui_texture_handle: None,
             ui_reported_host_methods: std::collections::HashSet::new(),
             ui_reported_host_methods_capped: false,
+            ui_dropped_host_calls: 0,
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),

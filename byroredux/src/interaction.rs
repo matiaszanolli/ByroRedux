@@ -590,7 +590,6 @@ impl ActionState {
         self.held = next_held;
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_held(&self, action: InputAction) -> bool {
         self.held & action.bit() != 0
     }

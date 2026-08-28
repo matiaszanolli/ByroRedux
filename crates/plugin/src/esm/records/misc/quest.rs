@@ -226,70 +226,53 @@ pub enum AliasFillType {
 pub struct AliasFlags(pub u32);
 
 // The full bit catalog stays parser-owned. The M47.3 runtime consumes the
-// reservation/reuse/dead subset and exposes remaining authored metadata for
-// later gameplay components. Every constant is exercised by an `AliasFlags::has`
-// assertion in the test module below (dead-code analysis just doesn't
-// credit test-only usage for the non-test build), so all are
-// `dead_code`-allowed here rather than left to warn.
+// reservation/reuse/dead subset; the rest is authored metadata later gameplay
+// components will want. Every constant is exercised by an `AliasFlags::has`
+// assertion in the test module below.
 //
-// #2983 — that "every constant" claim used to be unenforced: the test roster
-// was hand-copied and a 26th constant would simply never have been exercised.
-// `alias_flag_roster_covers_every_declared_constant` now counts these
-// declarations from source text, so adding a constant here without a roster
-// entry and value pin below fails the build.
+// #2982 — the whole catalog is re-exported by `records/misc.rs` (and on
+// through `records/mod.rs`), so every constant is reachable from outside this
+// private module and none can trip `dead_code`. Before that only five were
+// re-exported: the other twenty were nameable nowhere but this file's own test
+// module, and all twenty-five carried an `#[allow(dead_code)]` — inert on the
+// five reachable ones, and on the rest a standing claim that the catalog was
+// available to consumers when 80% of it was not. Re-exporting is the fix that
+// makes the block comment true; the attributes are gone with it, so a constant
+// that genuinely falls out of the re-export list will warn.
+//
+// #2983 — the "every constant is exercised" claim used to be unenforced: the
+// test roster was hand-copied and a 26th constant would simply never have been
+// exercised. `alias_flag_roster_covers_every_declared_constant` now counts
+// these declarations from source text, so adding a constant here without a
+// roster entry and value pin below fails the build.
 /// Reserves Location (`ALLS`) / Reserves Reference (`ALST`).
-#[allow(dead_code)]
 pub const ALIAS_FLAG_RESERVES: u32 = 0x0000_0001;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_OPTIONAL: u32 = 0x0000_0002;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_QUEST_OBJECT: u32 = 0x0000_0004;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_REUSE: u32 = 0x0000_0008;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_DEAD: u32 = 0x0000_0010;
 /// "Find Matching Reference" sub-option.
-#[allow(dead_code)]
 pub const ALIAS_FLAG_IN_LOADED_AREA: u32 = 0x0000_0020;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ESSENTIAL: u32 = 0x0000_0040;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_DISABLED: u32 = 0x0000_0080;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_STORES_TEXT: u32 = 0x0000_0100;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_RESERVED: u32 = 0x0000_0200;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_PROTECTED: u32 = 0x0000_0400;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_FORCED_BY_ALIASES: u32 = 0x0000_0800;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_DESTROYED: u32 = 0x0000_1000;
 /// "Find Matching Reference" sub-option; requires [`ALIAS_FLAG_IN_LOADED_AREA`].
-#[allow(dead_code)]
 pub const ALIAS_FLAG_CLOSEST: u32 = 0x0000_2000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_USES_STORED_TEXT: u32 = 0x0000_4000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_INITIALLY_DISABLED: u32 = 0x0000_8000;
 /// `ALLS` only.
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_CLEARED: u32 = 0x0001_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_CLEAR_NAMES_WHEN_REMOVED: u32 = 0x0002_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_ACTORS_ONLY: u32 = 0x0004_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_CREATE_TEMPORARY: u32 = 0x0008_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_EXTERNAL_LINKED: u32 = 0x0010_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_NO_PICKPOCKET: u32 = 0x0020_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS: u32 = 0x0040_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_COMPANION: u32 = 0x0080_0000;
-#[allow(dead_code)]
 pub const ALIAS_FLAG_OPTIONAL_ALL_SCENES: u32 = 0x0100_0000;
 
 impl AliasFlags {
@@ -1930,7 +1913,11 @@ mod tests {
         ("STORES_TEXT", ALIAS_FLAG_STORES_TEXT, 0x0000_0100),
         ("ALLOW_RESERVED", ALIAS_FLAG_ALLOW_RESERVED, 0x0000_0200),
         ("PROTECTED", ALIAS_FLAG_PROTECTED, 0x0000_0400),
-        ("FORCED_BY_ALIASES", ALIAS_FLAG_FORCED_BY_ALIASES, 0x0000_0800),
+        (
+            "FORCED_BY_ALIASES",
+            ALIAS_FLAG_FORCED_BY_ALIASES,
+            0x0000_0800,
+        ),
         ("ALLOW_DESTROYED", ALIAS_FLAG_ALLOW_DESTROYED, 0x0000_1000),
         ("CLOSEST", ALIAS_FLAG_CLOSEST, 0x0000_2000),
         ("USES_STORED_TEXT", ALIAS_FLAG_USES_STORED_TEXT, 0x0000_4000),

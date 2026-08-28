@@ -1019,6 +1019,8 @@ mod frustum_tests;
 #[cfg(test)]
 mod render_origin_shared_tests;
 #[cfg(test)]
+mod skin_offsets_hasher_tests;
+#[cfg(test)]
 mod sort_key_tests;
 #[cfg(test)]
 mod static_mesh_fx_skip_tests;

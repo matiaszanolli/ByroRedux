@@ -194,6 +194,28 @@ impl UiManager {
             .unwrap_or_default()
     }
 
+    /// Calls the active menu's bridge evicted under [`MAX_QUEUED_CALLS`] since
+    /// that menu was loaded.
+    ///
+    /// #2969 — `drain_calls`' contract says a full batch "should be read
+    /// together with `dropped_calls` — the batch may not be contiguous", and
+    /// nothing outside this crate read it. The bridge warns once at the
+    /// producer when it first evicts, but that says a call was lost, not that
+    /// *the batch the engine is holding* has a hole in it. Exposed beside
+    /// [`Self::drain_host_calls`] so the consumer can honour the contract
+    /// through the same handle rather than reaching for
+    /// [`Self::host_bridge`].
+    ///
+    /// Counts from the active menu's bridge, so loading a new menu resets it —
+    /// the caller latches, and must treat a decrease as a menu change rather
+    /// than as calls being un-dropped.
+    pub fn dropped_host_calls(&self) -> u64 {
+        self.player
+            .as_ref()
+            .map(|player| player.host_bridge().dropped_calls())
+            .unwrap_or(0)
+    }
+
     /// Invoke a callback registered by the active ActionScript movie.
     pub fn invoke_callback(
         &mut self,
@@ -286,6 +308,32 @@ mod tests {
         let manager = UiManager::new(1280, 720);
         assert!(manager.host_bridge().is_none());
         assert!(manager.drain_host_calls().is_empty());
+        // #2969 — the drop counter is read on the same frames, so it needs
+        // the same cheap no-player answer. Zero, not a panic: "no menu" and
+        // "no menu has lost anything" are the same statement.
+        assert_eq!(manager.dropped_host_calls(), 0);
+    }
+
+    /// #2969 — `drain_calls`' doc says a batch "should be read together with
+    /// `dropped_calls` — the batch may not be contiguous", and for a year the
+    /// one live consumer read only the batch: a workspace grep for
+    /// `dropped_calls` outside this crate returned nothing. Pinned the same
+    /// way the `UiFrame::Hidden` contract below is, because the failure is
+    /// silent — a hole in the record costs nothing observable until the drain
+    /// starts routing calls into quest / inventory / player state, at which
+    /// point it is a lost state transition with no signal.
+    #[test]
+    fn the_frame_driver_reads_the_drop_counter_beside_the_drain() {
+        const APP_FRAME: &str = include_str!("../../../byroredux/src/app_frame.rs");
+        assert!(
+            APP_FRAME.contains("ui.drain_host_calls()"),
+            "the engine's per-frame Scaleform drain moved or was removed"
+        );
+        assert!(
+            APP_FRAME.contains("ui.dropped_host_calls()"),
+            "the per-frame drain stopped reading the eviction counter, so a \
+             non-contiguous batch is silent again (#2969)"
+        );
     }
 
     /// #2972 — `render()` returned `Option<&[u8]>`, and since #2719 the frame

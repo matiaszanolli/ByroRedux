@@ -538,6 +538,47 @@ fn dropped_call_count_is_monotonic_across_drains() {
     assert_eq!(bridge.queued_call_count(), 1);
 }
 
+/// #2969 — the pairing `drain_calls`' doc requires, from the consumer's side.
+///
+/// The survivors of an overflow are internally contiguous, so the batch alone
+/// cannot show that anything is missing; only `dropped_calls` says the record
+/// has a hole. That is exactly why the engine's per-frame drain reads both
+/// (`byroredux/src/app_frame.rs`, via `UiManager::dropped_host_calls`) — it
+/// used to read only the batch, which meant a lost call was invisible to
+/// everything downstream of it.
+#[test]
+fn a_full_batch_hides_its_gap_unless_dropped_calls_is_read_with_it() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let recorded = crate::MAX_QUEUED_CALLS + 5;
+    for _ in 0..recorded {
+        bridge.record_call("BGSCodeObj.PlaySound", &[]);
+    }
+
+    let batch = bridge.drain_calls();
+    assert_eq!(batch.len(), crate::MAX_QUEUED_CALLS);
+    for pair in batch.windows(2) {
+        assert_eq!(
+            pair[1].sequence,
+            pair[0].sequence + 1,
+            "the survivors are contiguous among themselves — nothing inside \
+             the batch betrays the eviction"
+        );
+    }
+
+    let first = batch.first().expect("a full batch is not empty").sequence;
+    assert_eq!(
+        first, 5,
+        "the five evicted calls are the OLDEST, so the batch starts partway \
+         through the menu's call history"
+    );
+    assert_eq!(bridge.dropped_calls(), 5);
+    assert_eq!(
+        batch.len() as u64 + bridge.dropped_calls(),
+        recorded as u64,
+        "batch + dropped is the complete record; either half alone is not"
+    );
+}
+
 /// A draining consumer never reaches the bound — the case the engine's
 /// per-frame drain puts us in.
 #[test]
