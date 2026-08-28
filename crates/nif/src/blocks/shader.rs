@@ -1672,15 +1672,20 @@ pub struct BSEffectShaderProperty {
     pub env_mask_texture: String,
     /// Environment map scale (FO4+ only, BSVER >= 130).
     pub env_map_scale: f32,
-    /// FO76 reflectance texture (BSVER == 155).
+    /// FO76+ reflectance texture. nif.xml scopes this to BSVER == 155; the parser
+    /// reads it at BSVER >= 155 on corpus evidence (#3396).
     pub reflectance_texture: String,
-    /// FO76 lighting texture (BSVER == 155).
+    /// FO76+ lighting texture. nif.xml scopes this to BSVER == 155; the parser
+    /// reads it at BSVER >= 155 on corpus evidence (#3396).
     pub lighting_texture: String,
-    /// FO76 emittance color (BSVER == 155).
+    /// FO76+ emittance color. nif.xml scopes this to BSVER == 155; the parser
+    /// reads it at BSVER >= 155 on corpus evidence (#3396).
     pub emittance_color: [f32; 3],
-    /// FO76 emit gradient texture (BSVER == 155).
+    /// FO76+ emit gradient texture. nif.xml scopes this to BSVER == 155; the parser
+    /// reads it at BSVER >= 155 on corpus evidence (#3396).
     pub emit_gradient_texture: String,
-    /// FO76 luminance params (BSVER == 155).
+    /// FO76+ luminance params. nif.xml scopes this to BSVER == 155; the
+    /// parser reads it at BSVER >= 155 on corpus evidence (#3396).
     pub luminance: Option<LuminanceParams>,
     /// #1881 — opaque trailing Starfield bytes between the parser's stop
     /// point and `block_size`, captured via [`read_starfield_tail`] (the
@@ -1821,10 +1826,21 @@ impl BSEffectShaderProperty {
         let falloff_start_opacity = stream.read_f32_le()?;
         let falloff_stop_opacity = stream.read_f32_le()?;
 
-        // FO76+ refraction power. #746 / SF-D1-04 — nif.xml gates
-        // this on `BSVER #GTE# 155`. Pre-fix the parser used `==`
-        // and every Starfield (`bsver = 172`) BSEffect block under-
-        // read by 4 B, drifting the rest of the block. See #746.
+        // FO76+ refraction power. The gate is `>=` on **corpus evidence**,
+        // not on nif.xml: pre-#746 the parser used `==` and every Starfield
+        // (`bsver = 172`) BSEffect block under-read by 4 B, drifting the rest
+        // of the block.
+        //
+        // #3396 — #746's commit body justified this by claiming nif.xml gates
+        // the field on `BSVER #GTE# 155`. That citation is false. nif.xml gates
+        // it on `#BS_F76#`, which both copies in the tree define as an
+        // equality (`docs/legacy/nif.xml:29`, `/mnt/data/src/reference/nifxml/
+        // nif.xml:29`: `<verexpr token="#BS_F76#" string="(#BSVER# #EQ# 155)">`
+        // — "Fallout 76 stream 155 only"). Four of the seven sites #746
+        // widened on that premise have since been re-narrowed for Starfield on
+        // corpus evidence (#1510, #2622); this one and the trailing block below
+        // are the two that measurement still supports. Keep the `>=`, but cite
+        // the measurement — not nif.xml — as its authority.
         let refraction_power = if bsver >= crate::version::bsver::FO76 {
             stream.read_f32_le()?
         } else {
@@ -1864,11 +1880,18 @@ impl BSEffectShaderProperty {
                 (String::new(), String::new(), String::new(), 0.0)
             };
 
-        // FO76+ trailing fields. #746 / SF-D1-04 — same value-gate
-        // regression as `refraction_power` and the BLSP tail. nif.xml
-        // gates this block on `BSVER #GTE# 155`; pre-fix the parser
-        // used `==` and Starfield (`bsver = 172`) BSEffect blocks
-        // under-read by ≥40 B + 4 sized strings.
+        // FO76+ trailing fields. Same value-gate regression as
+        // `refraction_power` and the BLSP tail: pre-#746 the parser used `==`
+        // and Starfield (`bsver = 172`) BSEffect blocks under-read by ≥40 B +
+        // 4 sized strings, so the `>=` is corpus-driven.
+        //
+        // #3396 — nif.xml does NOT gate these on `#GTE# 155`, contrary to
+        // #746's stated premise; `#BS_F76#` is an equality token (see the
+        // note on `refraction_power` above). The six fields carrying
+        // `vercond="#BS_F76#"` under `<niobject name="BSEffectShaderProperty">`
+        // are exactly Refraction Power, Reflectance Texture, Lighting Texture,
+        // Emittance Color, Emit Gradient Texture and Luminance — the six read
+        // here. Measurement, not the spec, is why they are read past 155.
         let mut reflectance_texture = String::new();
         let mut lighting_texture = String::new();
         let mut emittance_color = [0.0f32; 3];

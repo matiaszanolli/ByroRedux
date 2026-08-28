@@ -70,7 +70,6 @@ pub(crate) fn reconcile_lod_rings(
 ) -> LodReconcileProgress {
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
-    let resident_full_cells: Vec<(i32, i32)> = state.loaded.keys().copied().collect();
     let lod_grid_origin = cell_loader::worldspace_lod_grid_origin(wctx.as_ref());
     let input = LodReconcileInput {
         tex_provider: tex_provider.as_ref(),
@@ -78,7 +77,6 @@ pub(crate) fn reconcile_lod_rings(
         player_grid,
         lod_grid_origin,
         max_full_cell_radius: state.radius_unload,
-        resident_full_cells: &resident_full_cells,
     };
     // Every provider draws on its own attempt allowance (so a large terrain
     // ring cannot starve the active object scheme) but shares ONE wall-clock

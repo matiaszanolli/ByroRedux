@@ -49,10 +49,6 @@ pub(crate) struct LodReconcileInput<'a> {
     pub(crate) lod_grid_origin: (i32, i32),
     /// The full-detail streaming hysteresis boundary (`radius_unload`).
     pub(crate) max_full_cell_radius: i32,
-    /// Actual resident full-detail cells, including the one-cell hysteresis
-    /// band that may survive after the player crosses a boundary. LOD hole
-    /// masks must honor this live set, not only the player's current radius.
-    pub(crate) resident_full_cells: &'a [(i32, i32)],
 }
 
 /// Whether `game` ships Bethesda's prebaked **combined** distant LOD — the
