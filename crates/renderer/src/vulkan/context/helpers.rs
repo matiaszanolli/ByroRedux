@@ -755,7 +755,7 @@ pub(super) unsafe fn destroy_render_pass_pipelines(
     device: &ash::Device,
     pipeline: &mut vk::Pipeline,
     pipeline_wireframe: &mut Option<vk::Pipeline>,
-    blend_pipeline_cache: &mut std::collections::HashMap<(u8, u8, bool, bool), vk::Pipeline>,
+    blend_pipeline_cache: &mut rustc_hash::FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
     pipeline_ui: &mut vk::Pipeline,
 ) {
     device.destroy_pipeline(*pipeline, None);

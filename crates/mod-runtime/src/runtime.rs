@@ -39,10 +39,38 @@ impl fmt::Display for LifecyclePhase {
     }
 }
 
+/// Why a component was quarantined.
+///
+/// #3050 — a log-budget overrun and a genuine guest fault both arrive at
+/// `enter` as a failed call, and both used to produce an indistinguishable
+/// `Quarantined`. They are not the same event: a fault means the guest
+/// misbehaved, while a budget overrun means the host never drained what the
+/// guest handed it (see [`ModInstance::take_logs`]). An operator triaging a
+/// quarantined mod has to be able to tell those apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FaultKind {
+    /// The guest trapped, ran out of fuel, or a host call rejected it.
+    Guest,
+    /// The instance's retained-log budget was exhausted. Not misbehaviour on
+    /// the guest's part on its own — the budget only fills because nothing
+    /// drained it.
+    LogBudgetExhausted,
+}
+
+impl fmt::Display for FaultKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Guest => "guest fault",
+            Self::LogBudgetExhausted => "log budget exhausted",
+        })
+    }
+}
+
 /// Attributed fault retained after a component is quarantined.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultInfo {
     pub phase: LifecyclePhase,
+    pub kind: FaultKind,
     pub message: String,
 }
 
@@ -148,6 +176,7 @@ impl SandboxRuntime {
             max_log_entries: self.config.max_log_entries,
             max_log_message_bytes: self.config.max_log_message_bytes,
             max_log_bytes: self.config.max_log_bytes,
+            log_budget_exhausted: false,
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.limits);
@@ -184,8 +213,30 @@ impl ModInstance {
         &self.store.data().grants
     }
 
+    /// Peek at the diagnostics the guest has produced and the host has not
+    /// yet consumed. Does **not** free budget — see [`Self::take_logs`].
     pub fn logs(&self) -> &[LogEntry] {
         &self.store.data().logs
+    }
+
+    /// Remove and return every retained diagnostic, returning its budget to
+    /// the guest.
+    ///
+    /// #3050 — `max_log_entries` / `max_log_bytes` used to be lifetime totals
+    /// with no drain, so a well-behaved mod that logged at any steady rate was
+    /// eventually quarantined for having run long enough rather than for
+    /// misbehaving. They are a bound on what the host is *holding*, not on
+    /// what the guest may ever say: draining hands the entries to the owner
+    /// and the budget back to the guest. Mirrors the `take_errors` /
+    /// `resource_errors` split in `crates/ui`, and is why [`Self::logs`] stays
+    /// a non-consuming peek.
+    ///
+    /// A consumer that never calls this still gets the old behaviour, which is
+    /// the correct backstop: undrained diagnostics cannot grow without bound.
+    pub fn take_logs(&mut self) -> Vec<LogEntry> {
+        let state = self.store.data_mut();
+        state.log_bytes = 0;
+        std::mem::take(&mut state.logs)
     }
 
     pub fn status(&self) -> &InstanceStatus {
@@ -232,17 +283,32 @@ impl ModInstance {
         call: impl FnOnce(&Extension, &mut Store<HostState>) -> wasmtime::Result<()>,
     ) -> Result<()> {
         if let Err(error) = self.store.set_fuel(self.fuel_per_entry) {
-            return self.quarantine(phase, error.to_string());
+            return self.quarantine(phase, FaultKind::Guest, error.to_string());
         }
         if let Err(error) = call(&self.bindings, &mut self.store) {
-            return self.quarantine(phase, format!("{error:#}"));
+            // #3050 — the host sets this flag at the point it refuses a log
+            // for budget, so the trap that propagates back here can be
+            // attributed to the budget rather than to the guest. Read (and
+            // cleared) here so a later, genuine fault is not mislabelled.
+            let kind = if std::mem::take(&mut self.store.data_mut().log_budget_exhausted) {
+                FaultKind::LogBudgetExhausted
+            } else {
+                FaultKind::Guest
+            };
+            return self.quarantine(phase, kind, format!("{error:#}"));
         }
         Ok(())
     }
 
-    fn quarantine<T>(&mut self, phase: LifecyclePhase, message: String) -> Result<T> {
+    fn quarantine<T>(
+        &mut self,
+        phase: LifecyclePhase,
+        kind: FaultKind,
+        message: String,
+    ) -> Result<T> {
         self.status = InstanceStatus::Quarantined(FaultInfo {
             phase,
+            kind,
             message: message.clone(),
         });
         Err(SandboxError::GuestFault { phase, message })
@@ -258,6 +324,10 @@ struct HostState {
     max_log_entries: usize,
     max_log_message_bytes: usize,
     max_log_bytes: usize,
+    /// Set when a log was refused for budget rather than for content (#3050),
+    /// so `ModInstance::enter` can attribute the resulting trap. Cleared by
+    /// the reader.
+    log_budget_exhausted: bool,
 }
 
 impl logging::Host for HostState {
@@ -275,15 +345,33 @@ impl logging::Host for HostState {
                 self.max_log_message_bytes
             );
         }
+        // #3050 — these two are budget, not misbehaviour: they bound what the
+        // host is holding undrained, and `ModInstance::take_logs` returns
+        // both. Flag the distinction for `enter` before bailing. The
+        // per-message size check above is deliberately NOT flagged: an
+        // oversized single message is the guest breaking a per-call contract,
+        // which no amount of draining changes.
         if self.logs.len() >= self.max_log_entries {
-            wasmtime::bail!("log entry limit of {} exceeded", self.max_log_entries);
+            self.log_budget_exhausted = true;
+            wasmtime::bail!(
+                "log entry limit of {} exceeded ({} undrained); \
+                 drain with ModInstance::take_logs",
+                self.max_log_entries,
+                self.logs.len()
+            );
         }
         let next_log_bytes = self
             .log_bytes
             .checked_add(message.len())
             .ok_or_else(|| wasmtime::Error::msg("log byte count overflow"))?;
         if next_log_bytes > self.max_log_bytes {
-            wasmtime::bail!("log byte limit of {} exceeded", self.max_log_bytes);
+            self.log_budget_exhausted = true;
+            wasmtime::bail!(
+                "log byte limit of {} exceeded ({} undrained); \
+                 drain with ModInstance::take_logs",
+                self.max_log_bytes,
+                self.log_bytes
+            );
         }
 
         self.log_bytes = next_log_bytes;

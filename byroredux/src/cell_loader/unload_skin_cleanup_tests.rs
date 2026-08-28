@@ -11,7 +11,9 @@
 //! is unavailable in `cargo test` (no Vulkan device).
 
 use byroredux_core::ecs::storage::EntityId;
-use std::collections::HashSet;
+// #3061 — `FxHashSet`, matching `VulkanContext::failed_skin_slots` and the
+// `queue_skin_unload_victims` parameter it is passed to.
+use rustc_hash::FxHashSet as HashSet;
 
 use super::unload::queue_skin_unload_victims;
 
@@ -21,7 +23,7 @@ fn victims_with_skin_slots_get_queued() {
     // Mock: entities 10 + 12 have live SkinSlots; 11 does not.
     let slot_present = |eid: EntityId| eid == 10 || eid == 12;
     let mut pending: Vec<EntityId> = Vec::new();
-    let mut failed: HashSet<EntityId> = HashSet::new();
+    let mut failed: HashSet<EntityId> = HashSet::default();
 
     queue_skin_unload_victims(&victims, slot_present, &mut pending, &mut failed);
 
@@ -39,7 +41,7 @@ fn victims_without_skin_slots_do_not_pollute_the_queue() {
     // cell — clutter, lights, terrain — no skinned NPCs).
     let slot_present = |_eid: EntityId| false;
     let mut pending: Vec<EntityId> = Vec::new();
-    let mut failed: HashSet<EntityId> = HashSet::new();
+    let mut failed: HashSet<EntityId> = HashSet::default();
 
     queue_skin_unload_victims(&victims, slot_present, &mut pending, &mut failed);
 
@@ -93,7 +95,7 @@ fn empty_failed_cache_short_circuits_without_building_victim_set() {
     let victims: Vec<EntityId> = vec![100, 101, 102];
     let slot_present = |eid: EntityId| eid == 100;
     let mut pending: Vec<EntityId> = Vec::new();
-    let mut failed: HashSet<EntityId> = HashSet::new();
+    let mut failed: HashSet<EntityId> = HashSet::default();
 
     queue_skin_unload_victims(&victims, slot_present, &mut pending, &mut failed);
 

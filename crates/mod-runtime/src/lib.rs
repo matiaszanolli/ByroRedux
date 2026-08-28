@@ -17,8 +17,8 @@ pub use error::{Result, SandboxError};
 pub use identity::{CapabilityId, CapabilitySet, Principal, PrincipalId, LOG_CAPABILITY};
 pub use limits::SandboxConfig;
 pub use runtime::{
-    CompiledMod, FaultInfo, InstanceStatus, LifecyclePhase, LogEntry, LogLevel, ModInstance,
-    SandboxRuntime,
+    CompiledMod, FaultInfo, FaultKind, InstanceStatus, LifecyclePhase, LogEntry, LogLevel,
+    ModInstance, SandboxRuntime,
 };
 
 #[cfg(test)]

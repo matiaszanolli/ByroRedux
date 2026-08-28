@@ -36,7 +36,6 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1473,10 +1472,12 @@ pub struct VulkanContext {
     /// sight in draw_frame; entries are torn down on Drop. M40 cell
     /// streaming will eventually reclaim slots whose entities are
     /// despawned mid-session.
-    pub skin_slots: std::collections::HashMap<
-        byroredux_core::ecs::storage::EntityId,
-        super::skin_compute::SkinSlot,
-    >,
+    ///
+    /// #3061 — `FxHashMap`. `draw_frame`'s skinned pass probes this once per
+    /// skinned draw command per frame; the key is an engine-generated
+    /// `EntityId`, never attacker-chosen, so SipHash-1-3 buys nothing here.
+    pub skin_slots:
+        FxHashMap<byroredux_core::ecs::storage::EntityId, super::skin_compute::SkinSlot>,
     /// #3231 — per-skinned-entity `MorphSlot` (delta + weight buffers
     /// for GPU morph-target blending). Deliberately separate from
     /// `skin_slots` — see `morph_compute`'s module doc for why.
@@ -1484,10 +1485,11 @@ pub struct VulkanContext {
     /// the morph-target delta data only exists in `ImportedMesh` at
     /// that point); entries are torn down on Drop or explicit
     /// cell-unload despawn.
-    pub morph_slots: std::collections::HashMap<
-        byroredux_core::ecs::storage::EntityId,
-        super::morph_compute::MorphSlot,
-    >,
+    ///
+    /// #3061 SIBLING — `FxHashMap` for the same reason as `skin_slots`:
+    /// `draw.rs` probes it per draw command per frame.
+    pub morph_slots:
+        FxHashMap<byroredux_core::ecs::storage::EntityId, super::morph_compute::MorphSlot>,
     /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
     /// (or otherwise errored) on a prior frame — gate the retry path
     /// in `draw_frame` against this set so a single failure logs one
@@ -1513,7 +1515,8 @@ pub struct VulkanContext {
     /// destructor at context teardown is sufficient, no explicit
     /// clear required. Adding entries that hold device-side
     /// resources here would invalidate this contract.
-    pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// #3061 — `FxHashSet`; gated once per skinned entity per frame.
+    pub failed_skin_slots: FxHashSet<byroredux_core::ecs::storage::EntityId>,
     /// Entities whose first-sight `build_skinned_blas_batched_on_cmd`
     /// returned an error on a prior frame — the BLAS sibling of
     /// [`Self::failed_skin_slots`] (#2802 / REN-D9-2026-08-12-03).
@@ -1533,7 +1536,8 @@ pub struct VulkanContext {
     ///
     /// Drop contract: same as `failed_skin_slots` — host-side ids only,
     /// no Vulkan handles.
-    pub failed_skin_blas: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// #3061 — `FxHashSet`, as `failed_skin_slots`.
+    pub failed_skin_blas: FxHashSet<byroredux_core::ecs::storage::EntityId>,
     /// Cell-unload victims pending skin-slot teardown. Populated by
     /// `unload_cell`, drained by the per-frame eviction pass at the
     /// top of `draw_frame` (after the fence wait that retires any
@@ -1757,14 +1761,20 @@ pub struct VulkanContext {
     /// whose HDR output blends normally while writes to opaque G-buffer
     /// attachments are masked off. Wireframe is only reachable when
     /// `caps.fill_mode_non_solid_supported` is true; callers must gate.
-    blend_pipeline_cache: HashMap<(u8, u8, bool, bool), vk::Pipeline>,
+    ///
+    /// #3061 — `FxHashMap`. `record_geometry_pass` does a `contains_key` per
+    /// batch per frame; the key is four engine-derived material bits with a
+    /// tiny bounded domain, so there is nothing for SipHash's HashDoS
+    /// resistance to protect.
+    blend_pipeline_cache: FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
     /// Per-frame scratch — the set of distinct blend cache keys seen in
     /// this frame's batch list. Used by the pre-pop walk
     /// in `draw_frame` to skip the full per-batch `contains_key` sweep
     /// when every seen key is already in `blend_pipeline_cache`. Cleared
     /// at the top of the walk; capacity persists across frames for
     /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
-    blend_seen_scratch: std::collections::HashSet<(u8, u8, bool, bool)>,
+    /// #3061 — `FxHashSet`, the per-frame half of `blend_pipeline_cache`.
+    blend_seen_scratch: FxHashSet<(u8, u8, bool, bool)>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -2789,11 +2799,25 @@ mod rigid_history_hasher_tests {
                  which is what makes SipHash-1-3 the wrong default here (#2174)",
             );
         }
+        // #3061 — this used to assert the WHOLE file contained exactly two
+        // `FxHashMap::default()` calls. That was a proxy for "neither
+        // rigid-history map reverted to `HashMap::new()`", and it stopped
+        // being one the moment an unrelated field was converted: the count
+        // broke while both maps it cares about were still correct. Name the
+        // two constructions instead — strictly stronger, and it says what it
+        // means.
+        for field in ["previous_rigid_models", "current_rigid_models_scratch"] {
+            assert!(
+                src.contains(&format!("{field}: FxHashMap::default(),")),
+                "`{field}` is no longer CONSTRUCTED as an `FxHashMap` — a \
+                 `HashMap::new()` crept back into it (#2174)",
+            );
+        }
         assert_eq!(
-            src.matches("FxHashMap::default()").count(),
-            2,
-            "expected exactly 2 FxHashMap constructions (the two rigid-history \
-             maps) — a `HashMap::new()` crept back into one of them (#2174)",
+            src.matches("std::collections::HashMap::new()").count(),
+            0,
+            "a std `HashMap::new()` reappeared in the context constructor \
+             (#2174 / #3061)",
         );
     }
 
@@ -2829,30 +2853,68 @@ mod rigid_history_hasher_tests {
             );
         }
 
-        // #3045 / REN-D9-01 — the two fields #2923 stopped one short of.
-        // Declared on `VulkanContext` rather than in a signature, so they
-        // carry the struct's fully-qualified `EntityId` spelling; asserted
-        // here rather than in the loop above for that reason alone.
+        // #3045 / REN-D9-01 then #3061 / PERF-D6-01 — the rest of the
+        // cluster #2923 stopped short of. Declared on `VulkanContext` rather
+        // than in a signature, so they carry the struct's own spelling;
+        // asserted here rather than in the loop above for that reason alone.
         //
-        // Scope note: `skin_slots`, `morph_slots`, `failed_skin_slots` and
-        // `failed_skin_blas` in the same struct are still std-hashed. They are
-        // `pub` fields threaded across the crate, so converting them is a
-        // wider change than this one, and they are deliberately NOT asserted
-        // here — a blanket "no std HashSet in this file" check would pass
-        // today only by accident of what has been converted so far.
+        // Each entry is (field, the declared type text). Spelled per field
+        // rather than checked with a blanket "no std collection in this file"
+        // sweep, which would pass today only by accident of what happens to
+        // have been converted and would say nothing about the next addition.
         let src = production_src();
-        for field in [
-            "skin_dispatch_seen_scratch",
-            "skin_built_this_frame_scratch",
+        for (field, ty) in [
+            (
+                "skin_dispatch_seen_scratch",
+                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
+            ),
+            (
+                "skin_built_this_frame_scratch",
+                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
+            ),
+            (
+                "failed_skin_slots",
+                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
+            ),
+            (
+                "failed_skin_blas",
+                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
+            ),
+            ("blend_seen_scratch", "FxHashSet<(u8, u8, bool, bool)>"),
+            (
+                "blend_pipeline_cache",
+                "FxHashMap<(u8, u8, bool, bool), vk::Pipeline>",
+            ),
         ] {
-            let decl = format!("{field}: FxHashSet<byroredux_core::ecs::storage::EntityId>,");
+            let decl = format!("{field}: {ty},");
             assert!(
                 src.contains(&decl),
-                "`{field}` is no longer declared `{decl}` — it is probed once \
-                 per skinned draw command per frame inside the skinning \
-                 dispatch path the hot-path hashing rule names, which is what \
-                 makes SipHash-1-3 the wrong default here (#3045, following \
-                 #1368 / #2174 / #2923)",
+                "`{field}` is no longer declared `{decl}` — every one of these \
+                 is probed once per skinned entity (or per blend batch) per \
+                 frame on the dispatch path the hot-path hashing rule names, \
+                 and none is keyed by anything an attacker chooses, so \
+                 SipHash-1-3 is the wrong default here (#3061, following \
+                 #1368 / #2174 / #2923 / #3045)",
+            );
+        }
+        // `skin_slots` and `morph_slots` wrap across two lines under rustfmt,
+        // so match their declarations rather than a single-line `field: ty,`.
+        for (field, decl) in [
+            (
+                "skin_slots",
+                "pub skin_slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
+                 super::skin_compute::SkinSlot>,",
+            ),
+            (
+                "morph_slots",
+                "pub morph_slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
+                 super::morph_compute::MorphSlot>,",
+            ),
+        ] {
+            assert!(
+                src.contains(decl),
+                "`{field}` is no longer an `FxHashMap` — `draw.rs` probes it \
+                 once per draw command per frame (#3061)",
             );
         }
     }

@@ -446,27 +446,7 @@ impl<'a> NifStream<'a> {
             )
         })?;
         self.check_alloc(byte_count)?;
-        let mut out: Vec<T> = vec![T::default(); count];
-        // SAFETY:
-        // - `out.as_mut_ptr()` is non-null and aligned to `align_of::<T>()`,
-        //   which is >= 1 (the target alignment for `u8`); casting to
-        //   `*mut u8` only weakens alignment requirements, which is sound.
-        // - The pointed-to region is exactly `count * size_of::<T>() == byte_count`
-        //   bytes (matches `Vec`'s contiguous-storage guarantee).
-        // - `read_exact` writes exactly `byte_count` bytes via the slice
-        //   and does not read existing contents (Read::read_exact is a
-        //   pure writer interface per the trait contract).
-        // - `T: AnyBitPattern` guarantees any-byte-pattern soundness, so
-        //   the post-read bytes are valid `T` values. `Vec`'s length is
-        //   already `count` from `vec![Default; count]`, so no `set_len`
-        //   call is needed.
-        // - The `target_endian = "big"` compile-error gate at the top of
-        //   the module ensures the on-disk LE bytes match the host's
-        //   in-memory layout.
-        let byte_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count) };
-        self.cursor.read_exact(byte_slice)?;
-        Ok(out)
+        read_pod_vec_from(&mut self.cursor, count, byte_count)
     }
 
     // `#[must_use]` on each wrapper below carries the same rationale
@@ -789,6 +769,57 @@ impl<'a> NifStream<'a> {
             scale,
         })
     }
+}
+
+/// Bulk-read `count` little-endian `T` values straight into a fresh `Vec<T>`.
+///
+/// The single `unsafe` site behind both [`NifStream::read_pod_vec`] and
+/// `header::read_pod_vec_from_cursor` — they differ only in how they bound
+/// the allocation, which each does before calling here. `byte_count` must
+/// equal `count * size_of::<T>()`; the callers compute it with `checked_mul`
+/// and pass it in rather than recomputing.
+///
+/// #3062 / PERF-D8-01 — this used to start from `vec![T::default(); count]`,
+/// whose entire cost the following `read_exact` discards. For the primitive
+/// and array instantiations std's internal `IsZero` specialisation turned
+/// that into a `calloc`, so the waste was invisible; `NiPoint3` is a plain
+/// `#[repr(C)]` struct that does not qualify, so its instantiation ran a real
+/// per-element default-construct pass over every vertex in every NIF. Reading
+/// into uninitialised capacity removes the pre-fill for *every* instantiation
+/// rather than special-casing the one that was measurably paying for it.
+pub(crate) fn read_pod_vec_from<T: AnyBitPattern>(
+    reader: &mut impl io::Read,
+    count: usize,
+    byte_count: usize,
+) -> io::Result<Vec<T>> {
+    debug_assert_eq!(byte_count, count * std::mem::size_of::<T>());
+    let mut out: Vec<T> = Vec::with_capacity(count);
+    // SAFETY:
+    // - `out.as_mut_ptr()` is non-null and aligned to `align_of::<T>()` even
+    //   at capacity 0 (`Vec` uses a dangling *aligned* pointer), and casting
+    //   to `*mut u8` only weakens the alignment requirement.
+    // - The region is exactly `count * size_of::<T>() == byte_count` bytes:
+    //   `with_capacity(count)` guarantees at least that much contiguous
+    //   storage, and the debug assert above pins the caller's arithmetic.
+    // - `read_exact` only WRITES through the slice — `Read::read_exact` is a
+    //   pure writer interface per its contract — so no uninitialised byte is
+    //   ever read. This is why the pre-fill was dead work rather than a
+    //   guard.
+    // - `T: AnyBitPattern` guarantees every `size_of::<T>()`-byte sequence is
+    //   a valid, padding-free `T`, so the post-read bytes are valid values.
+    // - The `target_endian = "big"` compile-error gate at the top of this
+    //   module ensures the on-disk LE bytes match the host layout.
+    let byte_slice: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), byte_count) };
+    reader.read_exact(byte_slice)?;
+    // SAFETY: `read_exact` returned `Ok`, which by contract means all
+    // `byte_count` bytes were written — so exactly `count` complete `T`
+    // values are initialised. The length is set ONLY here, after that
+    // success: on the `?` above `out` is dropped at length 0, so no partial
+    // read can expose uninitialised memory to a caller, and `T: Copy` means
+    // the untouched capacity has no drop glue to run over it either.
+    unsafe { out.set_len(count) };
+    Ok(out)
 }
 
 #[cfg(test)]

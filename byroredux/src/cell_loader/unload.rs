@@ -560,7 +560,10 @@ pub(super) fn queue_skin_unload_victims<F>(
     victims: &[EntityId],
     slot_present: F,
     pending: &mut Vec<EntityId>,
-    failed: &mut std::collections::HashSet<EntityId>,
+    // #3061 — `FxHashSet`, matching `VulkanContext::failed_skin_slots`. The
+    // set is probed once per skinned entity per frame on the renderer side;
+    // this unload path only mutates it, but the type is the renderer's.
+    failed: &mut rustc_hash::FxHashSet<EntityId>,
 ) where
     F: Fn(EntityId) -> bool,
 {
@@ -572,7 +575,7 @@ pub(super) fn queue_skin_unload_victims<F>(
     if failed.is_empty() {
         return;
     }
-    let victim_set: std::collections::HashSet<EntityId> = victims.iter().copied().collect();
+    let victim_set: rustc_hash::FxHashSet<EntityId> = victims.iter().copied().collect();
     failed.retain(|eid| !victim_set.contains(eid));
 }
 

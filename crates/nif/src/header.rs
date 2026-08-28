@@ -382,18 +382,11 @@ fn read_pod_vec_from_cursor<T: crate::stream::AnyBitPattern>(
     // itself, which is exactly the `total_bytes - position` the call sites
     // compute, and additionally applies the 256 MB hard cap.
     check_header_alloc(byte_count, cursor)?;
-    let mut out: Vec<T> = vec![T::default(); count];
-    // SAFETY: same invariants as `NifStream::read_pod_vec` —
-    // `out.as_mut_ptr()` is non-null, the region is exactly
-    // `byte_count` bytes (Vec contiguous-storage guarantee),
-    // `read_exact` writes exactly that many bytes, and `T`'s
-    // any-byte-pattern soundness contract makes the post-read bytes
-    // valid `T` values. LE-host gate is the module-level compile
-    // error in stream.rs.
-    let byte_slice: &mut [u8] =
-        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count) };
-    cursor.read_exact(byte_slice)?;
-    Ok(out)
+    // #3062 — the bulk read (and its single `unsafe` site) lives in
+    // `stream::read_pod_vec_from`; this function's job is the header-phase
+    // allocation bound above, which is what distinguishes it from
+    // `NifStream::read_pod_vec`.
+    crate::stream::read_pod_vec_from(cursor, count, byte_count)
 }
 
 /// Bounds a header-phase `len`-byte allocation before it happens, mirroring

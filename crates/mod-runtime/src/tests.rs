@@ -1,6 +1,6 @@
 use crate::{
-    CapabilitySet, InstanceStatus, LifecyclePhase, LogLevel, Principal, PrincipalId, SandboxConfig,
-    SandboxError, SandboxRuntime, LOG_CAPABILITY,
+    CapabilitySet, FaultKind, InstanceStatus, LifecyclePhase, LogLevel, Principal, PrincipalId,
+    SandboxConfig, SandboxError, SandboxRuntime, LOG_CAPABILITY,
 };
 
 const IMPORTS: &str = r#"
@@ -256,6 +256,194 @@ fn wasi_imports_are_absent_by_default() {
         Err(SandboxError::Instantiate(message))
             if message.contains("wasi:random/random@0.2.0")
     ));
+}
+
+/// #3050 — the log budget bounds what the host is *holding*, not what the
+/// guest may say over its life. A consumer that drains gives the budget back,
+/// so a well-behaved mod cannot be quarantined for running long enough.
+#[test]
+fn draining_logs_returns_budget_and_keeps_the_guest_healthy() {
+    // One retained entry, and only enough bytes for one message: both budgets
+    // are exhausted by `initialize` alone.
+    let config = SandboxConfig {
+        max_log_entries: 1,
+        max_log_bytes: 15,
+        max_log_message_bytes: 15,
+        ..SandboxConfig::default()
+    };
+    let runtime = runtime(config);
+    let compiled = compile_wat(&runtime, &logging_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(LOG_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+
+    instance.initialize().unwrap();
+    assert_eq!(instance.logs().len(), 1);
+
+    // Draining hands the entries over AND returns the budget.
+    let drained = instance.take_logs();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].message, "initialized");
+    assert!(instance.logs().is_empty());
+
+    // The second lifecycle call logs again and the guest stays healthy —
+    // pre-fix this was `GuestFault` / `Quarantined`, purely because the first
+    // message was still being retained.
+    instance.shutdown().unwrap();
+    assert_eq!(instance.status(), &InstanceStatus::Stopped);
+    let drained = instance.take_logs();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].message, "shutdown");
+}
+
+/// The backstop is intact: an owner that never drains still cannot let the
+/// retained set grow without bound, and the quarantine that results says so.
+#[test]
+fn an_undrained_log_budget_still_quarantines_but_names_itself() {
+    let config = SandboxConfig {
+        max_log_entries: 1,
+        ..SandboxConfig::default()
+    };
+    let runtime = runtime(config);
+    let compiled = compile_wat(&runtime, &logging_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(LOG_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+
+    instance.initialize().unwrap();
+    assert!(matches!(
+        instance.shutdown(),
+        Err(SandboxError::GuestFault { .. })
+    ));
+    // #3050 DISTINGUISHABLE — a budget overrun is not a guest fault, and the
+    // retained `FaultInfo` has to say which one an operator is looking at.
+    match instance.status() {
+        InstanceStatus::Quarantined(fault) => {
+            assert_eq!(fault.kind, FaultKind::LogBudgetExhausted);
+            assert_eq!(fault.phase, LifecyclePhase::Shutdown);
+            assert!(
+                fault.message.contains("take_logs"),
+                "the fault should point at the drain: {}",
+                fault.message
+            );
+        }
+        other => panic!("expected a quarantine, got {other}"),
+    }
+}
+
+/// A real guest fault must keep reporting as one — the flag set on the budget
+/// path must not leak into the next failure.
+#[test]
+fn a_genuine_fault_is_not_labelled_a_budget_overrun() {
+    let runtime = runtime(SandboxConfig::default());
+    let compiled = compile_wat(&runtime, &looping_component());
+    let mut instance = runtime
+        .instantiate(&compiled, principal(), CapabilitySet::new())
+        .unwrap();
+
+    assert!(matches!(
+        instance.initialize(),
+        Err(SandboxError::GuestFault { .. })
+    ));
+    match instance.status() {
+        InstanceStatus::Quarantined(fault) => assert_eq!(fault.kind, FaultKind::Guest),
+        other => panic!("expected a quarantine, got {other}"),
+    }
+}
+
+/// #3050 — an oversized single message is the guest breaking a per-call
+/// contract, not a budget it could get back by draining. It must stay a guest
+/// fault however much budget is free.
+#[test]
+fn an_oversized_message_is_a_guest_fault_not_a_budget_overrun() {
+    let config = SandboxConfig {
+        max_log_message_bytes: 4,
+        ..SandboxConfig::default()
+    };
+    let runtime = runtime(config);
+    let compiled = compile_wat(&runtime, &logging_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(LOG_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+
+    assert!(matches!(
+        instance.initialize(),
+        Err(SandboxError::GuestFault { .. })
+    ));
+    match instance.status() {
+        InstanceStatus::Quarantined(fault) => assert_eq!(fault.kind, FaultKind::Guest),
+        other => panic!("expected a quarantine, got {other}"),
+    }
+}
+
+/// #3051 — `compile` is the first thing untrusted bytes touch, and nothing
+/// asserted that hostile input produces a clean `Err` rather than a panic.
+/// Every case here is a rejection the caller can handle; a panic would cross
+/// the trust boundary and take the host down with the mod.
+#[test]
+fn compile_rejects_hostile_input_without_panicking() {
+    let runtime = runtime(SandboxConfig::default());
+
+    // A valid component, truncated at every prefix length. Each is a
+    // plausible-but-malformed input of exactly the shape a partial download or
+    // a deliberately-clipped file produces.
+    let valid = wat::parse_str(&logging_component()).unwrap();
+    assert!(runtime.compile(&valid).is_ok(), "the fixture must compile");
+    let mut rejected = 0usize;
+    for cut in 0..valid.len() {
+        // Calling at all is half the assertion: a panic here fails the test.
+        if runtime.compile(&valid[..cut]).is_err() {
+            rejected += 1;
+        }
+    }
+    // A bare 8-byte component header is a *valid empty component*, so a
+    // handful of short prefixes legitimately compile — it is `instantiate`
+    // that rejects them for exporting no lifecycle functions. Everything
+    // that cuts into real content must be refused.
+    assert!(
+        rejected > valid.len() - 32,
+        "only {rejected} of {} truncations were rejected",
+        valid.len()
+    );
+    assert!(runtime.compile(&valid[..8]).is_ok());
+
+    for (label, bytes) in [
+        ("empty", Vec::new()),
+        (
+            "ascii garbage",
+            b"this is not a wasm component at all".to_vec(),
+        ),
+        ("nul bytes", vec![0u8; 256]),
+        ("high bytes", vec![0xFFu8; 256]),
+        // Correct magic + version, nothing after it.
+        ("bare core header", b"\0asm\x01\0\0\0".to_vec()),
+        // A section id with a length that runs past the end.
+        (
+            "oversized section length",
+            b"\0asm\x0d\0\x01\0\x01\xff\xff\xff\x7f".to_vec(),
+        ),
+    ] {
+        assert!(
+            runtime.compile(&bytes).is_err(),
+            "{label} compiled instead of being rejected"
+        );
+    }
+}
+
+/// A *core* module is valid wasm and not a component. Rejecting it is the
+/// least-obvious of the negative cases — the bytes parse, the magic is right,
+/// and only the component-model layer check separates them (#3051).
+#[test]
+fn compile_rejects_a_valid_core_module_that_is_not_a_component() {
+    let runtime = runtime(SandboxConfig::default());
+    let core = wat::parse_str(r#"(module (func (export "initialize")))"#).unwrap();
+    assert!(core.starts_with(b"\0asm"), "fixture must be real wasm");
+
+    let error = runtime.compile(&core).unwrap_err();
+    assert!(
+        matches!(error, SandboxError::Compile(_)),
+        "expected a compile rejection, got {error:?}"
+    );
 }
 
 #[test]

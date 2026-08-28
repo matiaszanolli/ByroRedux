@@ -60,6 +60,22 @@ const MAX_FUEL_PER_ENTRY: u64 = 1_000_000_000_000;
 /// Effective ceilings applied independently to every component instance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxConfig {
+    /// Size of the component blob accepted by `SandboxRuntime::compile`.
+    ///
+    /// #3051 (SAFE-2026-08-16-04) — this is the **only pre-emptive bound on
+    /// compilation cost** the runtime has, and it is deliberately checked
+    /// before the bytes reach `Component::new` (pinned by
+    /// `component_byte_limit_is_checked_before_compilation`). Wasmtime 47.0.3
+    /// exposes no compile-time fuel, deadline, or cancellation — its
+    /// `PoolingAllocationConfig::max_*_per_component` knobs bound
+    /// *instantiation*, not compilation — so an in-size component structured
+    /// to make Cranelift work hard is bounded only by this size cap and by
+    /// Cranelift's own cost curve. Closing that properly needs a structural
+    /// pre-scan of the input (section counts, function-body sizes, nesting
+    /// depth) before handing it to wasmtime, which means a `wasmparser`
+    /// dependency this crate does not currently take. Recorded here rather
+    /// than left implicit: the gap is real and the size cap is what stands in
+    /// for it today.
     pub max_component_bytes: usize,
     pub max_memory_bytes: usize,
     pub max_table_elements: usize,
