@@ -1021,12 +1021,13 @@ impl BSLightingShaderProperty {
         };
         let net = NiObjectNETData::parse(stream)?;
 
-        let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
-            (stream.read_u32_le()?, stream.read_u32_le()?)
-        } else {
-            (0, 0)
-        };
-        let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
+        let (shader_flags_1, shader_flags_2) =
+            if crate::version::bsver::carries_typed_shader_flags(bsver) {
+                (stream.read_u32_le()?, stream.read_u32_le()?)
+            } else {
+                (0, 0)
+            };
+        let (sf1_crcs, sf2_crcs) = if crate::version::bsver::carries_crc_shader_flags(bsver) {
             let num_sf1 = stream.read_u32_le()? as usize;
             let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
                 stream.read_u32_le()? as usize
@@ -1786,15 +1787,16 @@ impl BSEffectShaderProperty {
         // `BSLightingShaderProperty::parse` for the full nif.xml
         // citation. `bsver == crate::version::bsver::FO4_SHADER_GAP` is an intentional gap: neither the
         // u32 pair nor the BSVER >= 132 CRC arrays are present. #409.
-        let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
-            (stream.read_u32_le()?, stream.read_u32_le()?)
-        } else {
-            (0, 0)
-        };
+        let (shader_flags_1, shader_flags_2) =
+            if crate::version::bsver::carries_typed_shader_flags(bsver) {
+                (stream.read_u32_le()?, stream.read_u32_le()?)
+            } else {
+                (0, 0)
+            };
 
         // #981 — bulk-read CRC arrays via `read_u32_array`; same
         // byte-budget guarantee as the BSEffectShaderData variant above.
-        let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
+        let (sf1_crcs, sf2_crcs) = if crate::version::bsver::carries_crc_shader_flags(bsver) {
             let num_sf1 = stream.read_u32_le()? as usize;
             let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
                 stream.read_u32_le()? as usize

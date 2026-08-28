@@ -1005,6 +1005,12 @@ fn spawn_particle_emitters(
             em.dst_blend,
             em.max_particles,
         );
+        // #2610 — see the sibling site in `scene/nif_loader.rs`: the authored
+        // BGEM effect payload is packed into the canonical
+        // `material_flag::EFFECT_*` word at this importer boundary, not
+        // re-derived in the renderer.
+        preset.effect_shader_flags =
+            crate::cell_loader::pack_effect_shader_flags(em.effect_shader.as_ref());
 
         // Alpha-over fog/smoke and additive flame/ember are both participating
         // media, not transparent geometry. Replace the billboard system at the

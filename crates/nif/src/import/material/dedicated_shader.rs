@@ -12,6 +12,30 @@
 
 use super::*;
 
+/// Era-correct `SLSF1` bit for the shared `BSLightingShaderProperty` body.
+///
+/// Skyrim and FO4 both bind `BSLightingShaderProperty`, but under *different*
+/// flag vocabularies (`skyrim_slsf1` vs `fo4_slsf1`). The two happen to agree
+/// numerically on the bits this file tests (`Model_Space_Normals` bit 12,
+/// `Refraction` bit 15, `Fire_Refraction` bit 16), so reading one against the
+/// other's property is inert today — but it is exactly the latent trap #414
+/// closed elsewhere: a future FO4-only renumbering would silently read the
+/// wrong bit with no compile-time signal. Select the vocabulary from the
+/// property's own era instead.
+///
+/// FO76+ (`Fallout76` / `Starfield`) carry no typed flag word at all — the
+/// parser leaves `shader_flags_1/2` at `0` and routes the same semantics
+/// through the CRC32 arrays — so the Skyrim arm is inert there by
+/// construction. See #2604.
+fn slsf1_bit(layout: TextureSlotLayout, skyrim_bit: u32, fo4_bit: u32) -> u32 {
+    match layout {
+        TextureSlotLayout::Fallout4 => fo4_bit,
+        TextureSlotLayout::Skyrim | TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield => {
+            skyrim_bit
+        }
+    }
+}
+
 /// Skyrim+: dedicated `alpha_property_ref`. Must run BEFORE
 /// [`apply_dedicated_shader_property`] so the BSEffectShader implicit-
 /// blend gate (#1202) can consult `alpha_property_consumed`.
@@ -132,10 +156,14 @@ fn apply_bs_lighting_shader(
             return;
         }
         use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
-        let model_space_normals =
-            shader.shader_flags_1 & crate::shader_flags::skyrim_slsf1::MODEL_SPACE_NORMALS != 0
-                || contains_any(&shader.sf1_crcs, &[MODELSPACENORMALS])
-                || contains_any(&shader.sf2_crcs, &[MODELSPACENORMALS]);
+        let msn_bit = slsf1_bit(
+            slot_layout,
+            crate::shader_flags::skyrim_slsf1::MODEL_SPACE_NORMALS,
+            crate::shader_flags::fo4_slsf1::MODEL_SPACE_NORMALS,
+        );
+        let model_space_normals = shader.shader_flags_1 & msn_bit != 0
+            || contains_any(&shader.sf1_crcs, &[MODELSPACENORMALS])
+            || contains_any(&shader.sf2_crcs, &[MODELSPACENORMALS]);
         if model_space_normals {
             info.model_space_normals = true;
         }
@@ -281,7 +309,28 @@ fn apply_bs_lighting_shader(
         // FO4 leaves them unset and sources the same attributes from the
         // `.bgsm` (authoritative); `asset_provider`'s BGSM merge
         // OR-upgrades, so vanilla content is unchanged. See FO4-D5-MEDIUM-01.
-        if scene.bsver >= crate::version::bsver::FALLOUT4 {
+        //
+        // #2603 — gate on `carries_typed_shader_flags` rather than a bare
+        // `bsver >= FALLOUT4`. The typed pair is parsed only at
+        // `bsver <= FALLOUT4`, so BSVER 131 (`FO4_SHADER_GAP`) and every
+        // CRC-era BSVER above it read `shader_flags_2 == 0` no matter what
+        // the source authored — the old gate said "flags are live" across
+        // the whole FO4+ range and there was no diagnostic distinguishing
+        // "flags present and zero" from "this band never carries flags".
+        // Behaviour is unchanged (the extra bands were already inert); the
+        // gate now states the reason.
+        if crate::version::bsver::is_shader_flag_gap(scene.bsver) {
+            log::trace!(
+                "BSLightingShaderProperty at bsver {} is in the FO4 shader-flag \
+                 gap band: no typed SLSF pair and no CRC arrays are present, so \
+                 every shader-flag test reads 0. FO4 material attributes come \
+                 from the BGSM merge on this band.",
+                scene.bsver,
+            );
+        }
+        if crate::version::bsver::carries_typed_shader_flags(scene.bsver)
+            && scene.bsver >= crate::version::bsver::FALLOUT4
+        {
             // Alpha-test cutout — F4SF2 bit 25 (FO4-only; nif.xml lists
             // no CRC identifier, and the typed field is zero on
             // BSVER >= 132, so this is a no-op for FO76+). The
@@ -371,8 +420,19 @@ fn apply_bs_lighting_shader(
         // renderer, so keep the literal here and pin it in the importer
         // regression below. The renderer-side named constant owns the
         // public value.
-        let fire_refraction_flags = crate::shader_flags::skyrim_slsf1::REFRACTION
-            | crate::shader_flags::skyrim_slsf1::FIRE_REFRACTION;
+        // #2604 — the mask is built from the property's own era vocabulary
+        // (`slsf1_bit`), not from `skyrim_slsf1` borrowed against an FO4
+        // `F4SF1` word. Numerically identical today; the selector is what
+        // keeps it that way under a future FO4 renumbering.
+        let fire_refraction_flags = slsf1_bit(
+            slot_layout,
+            crate::shader_flags::skyrim_slsf1::REFRACTION,
+            crate::shader_flags::fo4_slsf1::REFRACTION,
+        ) | slsf1_bit(
+            slot_layout,
+            crate::shader_flags::skyrim_slsf1::FIRE_REFRACTION,
+            crate::shader_flags::fo4_slsf1::FIRE_REFRACTION,
+        );
         if shader.shader_flags_1 & fire_refraction_flags == fire_refraction_flags {
             info.material_kind = 103;
             // Fire refraction is a screen-composition proxy. It must not
@@ -598,13 +658,23 @@ fn apply_bs_effect_shader(
             // instead of blooming them correctly (see: nuclear warhead
             // glows in Lonesome Road, power-armor auras).
             // `BSEffectShaderProperty` is Skyrim+ only (FO3/FNV has no
-            // such block), so `shader.shader_flags_1` is always SLSF1 —
-            // read the Skyrim constant directly. #2319: this used to read
-            // `fo3nv_f1::OWN_EMIT`, which shares OWN_EMIT's numeric value
-            // (0x0040_0000) purely by coincidence — FO3's BSShaderFlags
-            // bit 22 is actually `Tree_Billboard`, an unrelated flag with
-            // no `Own_Emit` counterpart at all on that enum.
-            if shader.shader_flags_1 & crate::shader_flags::skyrim_slsf1::OWN_EMIT != 0 {
+            // such block), so `shader.shader_flags_1` is an SLSF1-family
+            // word. #2319: this used to read `fo3nv_f1::OWN_EMIT`, which
+            // shares OWN_EMIT's numeric value (0x0040_0000) purely by
+            // coincidence — FO3's BSShaderFlags bit 22 is actually
+            // `Tree_Billboard`, an unrelated flag with no `Own_Emit`
+            // counterpart at all on that enum.
+            //
+            // #2604 — "Skyrim+" still spans two vocabularies: FO4 binds the
+            // same block under `F4SF1`. Select the era's own constant
+            // rather than borrowing Skyrim's, same as the
+            // `BSLightingShaderProperty` sites above.
+            let own_emit = slsf1_bit(
+                TextureSlotLayout::from_bsver(scene.bsver),
+                crate::shader_flags::skyrim_slsf1::OWN_EMIT,
+                crate::shader_flags::fo4_slsf1::OWN_EMIT,
+            );
+            if shader.shader_flags_1 & own_emit != 0 {
                 info.src_blend_mode = 0; // ONE
                 info.dst_blend_mode = 0; // ONE
             }
@@ -654,5 +724,44 @@ fn apply_bs_water_shader(scene: &NifScene, idx: usize, info: &mut MaterialInfo) 
             info.has_material_data = true;
         }
         info.water_shader_flags = shader.water_shader_flags;
+    }
+}
+
+#[cfg(test)]
+mod slsf1_vocabulary_tests {
+    use super::slsf1_bit;
+    use crate::import::material::TextureSlotLayout;
+    use crate::shader_flags::{fo4_slsf1, skyrim_slsf1};
+
+    /// #2604 — an FO4 (`F4SF1`) property must be tested against the
+    /// `fo4_slsf1` vocabulary, every other layout against `skyrim_slsf1`.
+    /// The two agree numerically today, so this pins the *selection*, not
+    /// the value: pass deliberately distinct sentinels so a regression that
+    /// re-borrows the wrong namespace fails here instead of silently
+    /// reading the wrong bit if FO4 ever renumbers.
+    #[test]
+    fn fo4_layout_selects_the_fo4_vocabulary() {
+        const SKY: u32 = 0x0000_0001;
+        const FO4: u32 = 0x8000_0000;
+        assert_eq!(slsf1_bit(TextureSlotLayout::Fallout4, SKY, FO4), FO4);
+        assert_eq!(slsf1_bit(TextureSlotLayout::Skyrim, SKY, FO4), SKY);
+        // FO76+ carry no typed flag word at all (CRC arrays instead), so
+        // whichever arm they take is inert — pin it anyway so the match
+        // stays exhaustive by intent rather than by a wildcard.
+        assert_eq!(slsf1_bit(TextureSlotLayout::Fallout76, SKY, FO4), SKY);
+        assert_eq!(slsf1_bit(TextureSlotLayout::Starfield, SKY, FO4), SKY);
+    }
+
+    /// The two vocabularies still agree on the bits this file tests. If
+    /// this ever fails, the selector above is what keeps each era reading
+    /// its own bit — but the divergence itself needs a deliberate look.
+    #[test]
+    fn the_two_vocabularies_still_agree_on_the_shared_bits() {
+        assert_eq!(
+            skyrim_slsf1::MODEL_SPACE_NORMALS,
+            fo4_slsf1::MODEL_SPACE_NORMALS
+        );
+        assert_eq!(skyrim_slsf1::REFRACTION, fo4_slsf1::REFRACTION);
+        assert_eq!(skyrim_slsf1::FIRE_REFRACTION, fo4_slsf1::FIRE_REFRACTION);
     }
 }

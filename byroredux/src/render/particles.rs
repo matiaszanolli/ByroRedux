@@ -267,9 +267,18 @@ pub(super) fn emit_particles(
                 // emissive_color / emissive_mult already; no per-vertex
                 // emissive payload (#695).
                 vertex_color_emissive: false,
-                // #890 Stage 2 — particles never carry
-                // BSEffectShaderProperty flag bits.
-                effect_shader_flags: 0,
+                // #2610 — forward the emitter's authored
+                // `BSEffectShaderProperty` bits (BGEM palette remap,
+                // `EFFECT_SOFT`, `EFFECT_LIT`, lighting-influence byte).
+                // Packed into the canonical `material_flag::EFFECT_*`
+                // layout at the importer boundary by
+                // `cell_loader::pack_effect_shader_flags`, so this is a
+                // verbatim forward — never a re-derive from the BGEM.
+                // Pre-#2610 this was a hardcoded `0`, dropping every
+                // BGEM-authored particle effect flag. The palette bits stay
+                // inert while `greyscale_lut_index == 0`: `triangle.frag`
+                // gates its palette LUT sample on a non-zero index.
+                effect_shader_flags: em.effect_shader_flags,
                 // #890 Stage 2c — particles never carry the greyscale
                 // palette LUT either; the bindless 0 slot signals
                 // "no LUT" in the shader.
@@ -344,6 +353,43 @@ mod quantize_fade_tests {
             &mut materials,
         );
         commands
+    }
+
+    /// #2610 (FO4-D7-05) — a BGEM-authored emitter's effect-shader flags
+    /// must reach the particle `DrawCommand`. The word is packed into the
+    /// canonical `material_flag::EFFECT_*` layout at the importer boundary
+    /// (`cell_loader::pack_effect_shader_flags`); the renderer forwards it
+    /// verbatim. Pre-fix this was a hardcoded `0`, so every BGEM particle
+    /// palette-remap / soft / lit bit was dropped.
+    #[test]
+    fn forwards_authored_effect_shader_flags() {
+        use byroredux_renderer::vulkan::material::material_flag::{
+            EFFECT_LIT, EFFECT_LI_SHIFT, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
+        };
+        let authored =
+            EFFECT_SOFT | EFFECT_LIT | EFFECT_PALETTE_COLOR | (200u32 << EFFECT_LI_SHIFT);
+        let mut world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
+        {
+            let mut q = world.query_mut::<ParticleEmitter>().unwrap();
+            let (e, _) = q.iter_mut().next().map(|(e, _)| (e, ())).unwrap();
+            q.get_mut(e).unwrap().effect_shader_flags = authored;
+        }
+        let commands = emit(&world);
+        assert_eq!(commands.len(), 1, "one live particle expected");
+        assert_eq!(
+            commands[0].effect_shader_flags, authored,
+            "authored BGEM effect flags must ride through to the DrawCommand"
+        );
+    }
+
+    /// The unauthored case stays at `0` — heuristic presets and NIFs with
+    /// no `BSEffectShaderProperty` must not fabricate effect bits.
+    #[test]
+    fn unauthored_effect_shader_flags_stay_zero() {
+        let world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
+        let commands = emit(&world);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].effect_shader_flags, 0);
     }
 
     #[test]

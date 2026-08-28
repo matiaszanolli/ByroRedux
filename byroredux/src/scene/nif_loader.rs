@@ -618,6 +618,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             emitter.dst_blend,
             emitter.max_particles,
         );
+        // #2610 — pack the emitter's authored BGEM effect payload into the
+        // canonical `material_flag::EFFECT_*` word HERE, at the importer
+        // boundary, using the same helper the mesh path uses. The renderer
+        // forwards `ParticleEmitter::effect_shader_flags` verbatim and never
+        // re-derives it from the source BGEM. Mirrored in
+        // `cell_loader::spawn::spawn_particle_emitters`.
+        preset.effect_shader_flags =
+            crate::cell_loader::pack_effect_shader_flags(emitter.effect_shader.as_ref());
 
         let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
         let texture_handle = if fog_volume.is_none() {

@@ -474,6 +474,73 @@ pub mod bsver {
     /// no-gap side: `form_id` present, 2-byte gap absent. The boundary is
     /// pinned exactly at 175, not merely "somewhere in (173, 175]".
     pub const SF_WEAK_REF_GAP: u32 = 175;
+
+    /// True when `bsver` carries the **typed** `u32` shader-flag pair
+    /// (`shader_flags_1` / `shader_flags_2`) on `BSLightingShaderProperty`
+    /// and `BSEffectShaderProperty`.
+    ///
+    /// Mirrors the parse gate in `blocks/shader.rs`
+    /// (`bsver <= FALLOUT4`). Consumers that test SLSF1/SLSF2 bits must
+    /// gate on this rather than on a bare `bsver >= FALLOUT4`: the latter
+    /// reads as "flags are live" across the whole FO4+ range even where
+    /// the fields are structurally absent. See #2603.
+    pub const fn carries_typed_shader_flags(bsver: u32) -> bool {
+        bsver <= FALLOUT4
+    }
+
+    /// True when `bsver` carries the **CRC32** shader-flag arrays
+    /// (`sf1_crcs` / `sf2_crcs`) instead of the typed pair. Mirrors the
+    /// parse gate `bsver >= FO4_CRC_FLAGS`. See #2603.
+    pub const fn carries_crc_shader_flags(bsver: u32) -> bool {
+        bsver >= FO4_CRC_FLAGS
+    }
+
+    /// True for the one BSVER that carries **neither** shader-flag
+    /// encoding — [`FO4_SHADER_GAP`] (131). Dev-stream 131 ships no
+    /// shader-flag fields at all, so every SLSF bit reads as 0 and every
+    /// CRC array is empty no matter what the source authored.
+    ///
+    /// This is the diagnostic seam #2603 asked for: a reader hitting an
+    /// unexpectedly flagless FO4-era mesh can call this instead of
+    /// rediscovering the gap band from the parser. Masked on vanilla FO4
+    /// because the BGSM merge supplies the same attributes downstream.
+    pub const fn is_shader_flag_gap(bsver: u32) -> bool {
+        !carries_typed_shader_flags(bsver) && !carries_crc_shader_flags(bsver)
+    }
+}
+
+#[cfg(test)]
+mod bsver_shader_flag_band_tests {
+    use super::bsver::*;
+
+    /// The three predicates must partition the BSVER line exactly the way
+    /// `blocks/shader.rs` parses it: typed pair at or below 130, CRC
+    /// arrays at or above 132, and nothing at all at 131.
+    #[test]
+    fn gap_band_is_exactly_131() {
+        for bsver in 0..=200u32 {
+            let typed = carries_typed_shader_flags(bsver);
+            let crc = carries_crc_shader_flags(bsver);
+            assert!(!(typed && crc), "bsver {bsver} claims both flag encodings");
+            assert_eq!(
+                is_shader_flag_gap(bsver),
+                bsver == FO4_SHADER_GAP,
+                "bsver {bsver} misclassified against the {FO4_SHADER_GAP} gap band"
+            );
+        }
+    }
+
+    /// Pin the band edges against the constants the parser gates on, so a
+    /// renumbering of either bound has to update this test deliberately.
+    #[test]
+    fn band_edges_match_parser_gates() {
+        assert!(carries_typed_shader_flags(FALLOUT4));
+        assert!(!carries_typed_shader_flags(FO4_SHADER_GAP));
+        assert!(!carries_crc_shader_flags(FO4_SHADER_GAP));
+        assert!(carries_crc_shader_flags(FO4_CRC_FLAGS));
+        assert!(carries_crc_shader_flags(FO76));
+        assert!(carries_crc_shader_flags(STARFIELD));
+    }
 }
 
 /// Which game generation produced this NIF.

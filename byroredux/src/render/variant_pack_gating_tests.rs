@@ -123,6 +123,44 @@ fn kind_5_skin_tint_packs_only_skin_fields() {
     assert_eq!(c.eye_left_center, [0.0; 3]);
 }
 
+/// #2602 (FO4-D5-02) — a `material_kind == 6` (HairTint) material that
+/// authored no `hair_tint_color` must fall back to the multiplicative
+/// identity, not black. `triangle.frag`'s HairTint branch is
+/// `albedo *= hairTint`, so a `[0,0,0]` fallback renders pitch-black hair
+/// instead of leaving the authored albedo alone. Vanilla content always
+/// authors the field; modded/future content need not.
+#[test]
+fn kind_6_hair_tint_missing_color_defaults_to_identity() {
+    let mut world = world_with_variant_material(6);
+    // Strip only the hair tint, keeping the kind-6 dispatch.
+    {
+        let mut q = world.query_mut::<Material>().unwrap();
+        let (e, _) = q.iter_mut().next().map(|(e, _)| (e, ())).unwrap();
+        let m = q.get_mut(e).unwrap();
+        if let Some(stf) = m.shader_type_fields.as_deref_mut() {
+            stf.hair_tint_color = None;
+        }
+    }
+    let cmds = run_build(&world);
+    assert_eq!(
+        cmds[0].hair_tint_rgb, [1.0; 3],
+        "unauthored hair_tint_color must pass albedo through, not zero it"
+    );
+}
+
+/// The authored value still wins — the #2602 fallback must not shadow it.
+#[test]
+fn kind_6_hair_tint_packs_authored_color() {
+    let world = world_with_variant_material(6);
+    let cmds = run_build(&world);
+    let c = &cmds[0];
+    assert_eq!(c.hair_tint_rgb, [0.1, 0.2, 0.3]);
+    // Other groups stay default-zero — gate worked.
+    assert_eq!(c.skin_tint_rgba, [0.0; 4]);
+    assert_eq!(c.sparkle_rgba, [0.0; 4]);
+    assert_eq!(c.eye_left_center, [0.0; 3]);
+}
+
 #[test]
 fn kind_11_multilayer_parallax_packs_only_multilayer_fields() {
     // Stub variant — shader doesn't consume yet, but the pack

@@ -538,9 +538,22 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     [0.0; 4]
                 };
+                // #2602 — the missing-colour fallback must be the identity
+                // for the operation the shader performs, not a bare zero.
+                // SkinTint's `mix(albedo, albedo * tint, skinTintA)` is
+                // already inert at the all-zero default (alpha 0 selects the
+                // untinted term), but HairTint's `albedo *= hairTint`
+                // multiplies, so `[0,0,0]` renders pitch-black hair. `[1,1,1]`
+                // is the multiplicative identity, so an unauthored
+                // `hair_tint_color` passes the albedo through untouched.
+                // Vanilla FO4/Skyrim hair always authors the field; this only
+                // guards modded / future content that omits it.
                 let hair_tint_rgb = if material_kind == 6 {
-                    stf.and_then(|f| f.hair_tint_color).unwrap_or([0.0; 3])
+                    stf.and_then(|f| f.hair_tint_color).unwrap_or([1.0; 3])
                 } else {
+                    // Non-HairTint kinds never reach the shader's
+                    // `materialKind == 6u` branch, so the slot stays zeroed
+                    // exactly as `GpuInstance::default` leaves it.
                     [0.0; 3]
                 };
                 let sparkle_rgba = if material_kind == 14 {
@@ -675,16 +688,10 @@ pub(super) fn collect_static_mesh_draws(
                     // glass both arrive with the canonical 1.45 behavior.
                     // Texture handles above remain source-authored overlays.
                     ior,
-                    glass_fresnel_color: mat
-                        .map(|m| m.glass_fresnel_color)
-                        .unwrap_or([1.0; 3]),
-                    glass_refraction_scale: mat
-                        .map(|m| m.glass_refraction_scale)
-                        .unwrap_or(0.05),
+                    glass_fresnel_color: mat.map(|m| m.glass_fresnel_color).unwrap_or([1.0; 3]),
+                    glass_refraction_scale: mat.map(|m| m.glass_refraction_scale).unwrap_or(0.05),
                     glass_blur_scale: mat.map(|m| m.glass_blur_scale).unwrap_or(0.4),
-                    glass_blur_scale_factor: mat
-                        .map(|m| m.glass_blur_scale_factor)
-                        .unwrap_or(1.0),
+                    glass_blur_scale_factor: mat.map(|m| m.glass_blur_scale_factor).unwrap_or(1.0),
                     lighting_effect_1: mat.map(|m| m.lighting_effect_1).unwrap_or(0.0),
                     lighting_effect_2: mat.map(|m| m.lighting_effect_2).unwrap_or(0.0),
                     subsurface_rolloff: mat.map(|m| m.subsurface_rolloff).unwrap_or(0.0),

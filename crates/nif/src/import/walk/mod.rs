@@ -27,16 +27,25 @@ use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
 use crate::blocks::node::BsRangeKind;
 use byroredux_core::string::StringPool;
 
-/// Extract the sprite texture and blend factors attached to a particle
-/// system. Particle systems carry the same shader/property references as
-/// geometry, so route them through the shared material walker instead of
-/// silently replacing the authored sprite with bindless slot zero.
+/// Extract the sprite texture, blend factors and `BSEffectShaderProperty`
+/// payload attached to a particle system. Particle systems carry the same
+/// shader/property references as geometry, so route them through the shared
+/// material walker instead of silently replacing the authored sprite with
+/// bindless slot zero.
+///
+/// #2610 — the walker already builds the full [`MaterialInfo`] here, so the
+/// authored BGEM effect payload (`effect_soft` / `effect_lit` / the two
+/// greyscale-palette bits / `lighting_influence`) comes for free. It used to
+/// be dropped on the floor, which is why every particle `DrawCommand`
+/// hardcoded `effect_shader_flags: 0`.
+///
+/// [`MaterialInfo`]: super::material::MaterialInfo
 fn extract_particle_material(
     scene: &NifScene,
     ps: &crate::blocks::particle::NiParticleSystem,
     inherited_props: &[BlockRef],
     pool: &mut StringPool,
-) -> (Option<String>, Option<u8>, Option<u8>) {
+) -> ParticleMaterial {
     let info = super::material::extract_material_info_from_refs(
         scene,
         ps.shader_property_ref,
@@ -49,11 +58,21 @@ fn extract_particle_material(
         .texture_path
         .and_then(|path| pool.resolve(path).map(str::to_owned));
     let authored_blend = info.alpha_blend || info.alpha_blend_authored;
-    (
+    ParticleMaterial {
         texture_path,
-        authored_blend.then_some(info.src_blend_mode),
-        authored_blend.then_some(info.dst_blend_mode),
-    )
+        src_blend: authored_blend.then_some(info.src_blend_mode),
+        dst_blend: authored_blend.then_some(info.dst_blend_mode),
+        effect_shader: info.effect_shader,
+    }
+}
+
+/// Return of [`extract_particle_material`] — the authored material state a
+/// particle system contributes to its spawned emitter.
+struct ParticleMaterial {
+    texture_path: Option<String>,
+    src_blend: Option<u8>,
+    dst_blend: Option<u8>,
+    effect_shader: Option<crate::import::BsEffectShaderData>,
 }
 
 /// SK-D4-04 / #564 — return `true` when any of `node`'s extra_data refs
@@ -582,8 +601,7 @@ pub(super) fn walk_node_hierarchical(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
-        let (texture_path, src_blend, dst_blend) =
-            extract_particle_material(scene, ps, ctx.inherited_props, ctx.pool);
+        let pmat = extract_particle_material(scene, ps, ctx.inherited_props, ctx.pool);
         // Retain the block's own local TRS (#1333). The host node's
         // world transform reaches us as the host entity's GlobalTransform
         // in the scene builder; these fields carry the offset *within*
@@ -594,9 +612,10 @@ pub(super) fn walk_node_hierarchical(
             .push(crate::import::ImportedParticleEmitter {
                 parent_node: parent_node_idx,
                 original_type: ps.original_type.clone(),
-                texture_path,
-                src_blend,
-                dst_blend,
+                texture_path: pmat.texture_path,
+                src_blend: pmat.src_blend,
+                dst_blend: pmat.dst_blend,
+                effect_shader: pmat.effect_shader,
                 local_translation: zup_point_to_yup(&ps.transform.translation),
                 local_rotation: zup_matrix_to_yup_quat(&ps.transform.rotation),
                 local_scale: ps.transform.scale,
@@ -1458,15 +1477,15 @@ pub(super) fn walk_node_particle_emitters_flat(
         // host world) was used, zeroing any authored emitter offset —
         // smoke spawned inside the fire instead of above it.
         let world_transform = compose_transforms(parent_transform, &ps.transform);
-        let (texture_path, src_blend, dst_blend) =
-            extract_particle_material(scene, ps, inherited_props, pool);
+        let pmat = extract_particle_material(scene, ps, inherited_props, pool);
         out.push(crate::import::ImportedParticleEmitterFlat {
             local_position: zup_point_to_yup(&world_transform.translation),
             host_name: parent_node_name,
             original_type: ps.original_type.clone(),
-            texture_path,
-            src_blend,
-            dst_blend,
+            texture_path: pmat.texture_path,
+            src_blend: pmat.src_blend,
+            dst_blend: pmat.dst_blend,
+            effect_shader: pmat.effect_shader,
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),

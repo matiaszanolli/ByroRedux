@@ -1537,6 +1537,15 @@ pub struct ImportedParticleEmitter {
     /// engine ceiling rather than honouring the authored figure outright;
     /// see `apply_emitter_overlays` (#3344).
     pub max_particles: Option<u32>,
+    /// Authored `BSEffectShaderProperty` payload from the particle
+    /// system's own shader/property chain, when it binds one. Mirrors
+    /// [`ImportedMaterial::effect_shader`]: the scene builder packs it into
+    /// `ParticleEmitter::effect_shader_flags` at the importer boundary
+    /// (`cell_loader::pack_effect_shader_flags`), which is what carries
+    /// BGEM palette-remap / `EFFECT_SOFT` / `EFFECT_LIT` through to the
+    /// particle draws. Pre-#2610 the walker built this data and dropped it,
+    /// so every particle `DrawCommand` shipped `effect_shader_flags: 0`.
+    pub effect_shader: Option<BsEffectShaderData>,
     /// The particle block's own local translation (Y-up), relative to
     /// the host node. Pre-#1333 the `NiParticleSystem`'s `NiAVObjectData`
     /// base was parsed then dropped, so an emitter authored with a
@@ -1690,6 +1699,9 @@ pub struct ImportedParticleEmitterFlat {
     /// Mirror of [`ImportedParticleEmitter::max_particles`] for the flat
     /// (cell-loader) path. Authored particle budget (`BS Max Vertices`).
     pub max_particles: Option<u32>,
+    /// Mirror of [`ImportedParticleEmitter::effect_shader`] for the flat
+    /// (cell-loader) path. See #2610.
+    pub effect_shader: Option<BsEffectShaderData>,
 }
 
 #[cfg(test)]

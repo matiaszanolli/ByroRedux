@@ -295,6 +295,18 @@ pub struct ParticleEmitter {
     /// to `gravity` alone in that case. See [`ParticleForceField`]
     /// and #984 / NIF-D5-ORPHAN-A2.
     pub force_fields: Vec<ParticleForceField>,
+    /// Authored `BSEffectShaderProperty` bits, already packed into the
+    /// `GpuMaterial::material_flags` layout
+    /// (`material_flag::EFFECT_{SOFT,LIT,PALETTE_COLOR,PALETTE_ALPHA}` plus
+    /// the lighting-influence byte) by the importer boundary. The renderer
+    /// forwards this word straight onto every particle `DrawCommand` — it
+    /// must never be re-derived from the source BGEM there.
+    ///
+    /// `0` for heuristic presets and for emitters whose NIF binds no
+    /// `BSEffectShaderProperty`. Pre-#2610 the particle path hardcoded `0`
+    /// unconditionally, so BGEM-authored palette-remap / soft / lit
+    /// particles never reached the shader. See #2610.
+    pub effect_shader_flags: u32,
     /// Live particle SoA. The emitter owns the dynamic state inline.
     pub particles: ParticleSoA,
 }
@@ -324,6 +336,7 @@ impl Default for ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -356,6 +369,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.6,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -389,6 +403,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -419,6 +434,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 2.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -455,6 +471,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -493,6 +510,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -521,6 +539,7 @@ impl ParticleEmitter {
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             start_size_variation: 0.0,
+            effect_shader_flags: 0,
             particles: ParticleSoA::default(),
         }
     }
