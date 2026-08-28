@@ -40,9 +40,7 @@ fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject>
                 modifier_refs: Vec::new(),
             })
         }
-        _ => Box::new(crate::blocks::particle::NiPSysBlock {
-            original_type: type_name.to_string(),
-        }),
+        _ => Box::new(crate::blocks::particle::NiPSysBlock::marker(type_name)),
     }
 }
 

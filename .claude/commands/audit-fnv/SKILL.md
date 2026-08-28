@@ -143,6 +143,9 @@ cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-
 **Entry points**: `crates/nif/examples/nif_stats.rs`, demo CLI invocations
 **Checklist**:
 - **CWD matters** (ROADMAP repro note): bare `--bsa` / `--textures-bsa` names resolve against CWD, not the `--esm` folder. Run with CWD = `Fallout New Vegas/Data/`, else archives silently fail and the scene loads near-empty (~36 entities / spurious FPS).
+- **Prefer `--game fnv` for anything that isn't the bench-of-record (#3346).** It expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml`, so it is CWD-independent and cannot mistype an archive name — neither failure mode above can occur:
+  `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`
+  The bench command below keeps the bare-name + `cd` shape only so its numbers stay comparable with the historical record.
 - Interior bench-of-record:
   `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa Meshes.bsa --textures-bsa Textures.bsa --textures-bsa Textures2.bsa --bench-frames 300 --bench-hold`
   then attach `byro-dbg` (port 9876) and capture `stats`. Compare entity / draw / FPS / fence against the **ROADMAP FNV row** (not numbers in this skill).

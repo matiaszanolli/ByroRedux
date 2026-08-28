@@ -52,6 +52,17 @@ impl AnimationLayer {
         }
     }
 
+    /// Seed this layer to start at the clip's authored `phase` offset.
+    /// Mirror of `AnimationPlayer::with_phase` — see that method for why the
+    /// offset is applied once at attach rather than per sample (#3345).
+    pub fn with_phase(mut self, phase: f32) -> Self {
+        if phase.is_finite() && phase != 0.0 {
+            self.local_time = phase;
+            self.prev_time = phase;
+        }
+        self
+    }
+
     /// Create a layer that blends in over `blend_time` seconds.
     pub fn with_blend_in(mut self, blend_time: f32) -> Self {
         self.blend_in_remaining = blend_time;

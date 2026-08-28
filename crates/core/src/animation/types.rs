@@ -201,6 +201,23 @@ pub struct AnimationClip {
     pub duration: f32,
     pub cycle_type: CycleType,
     pub frequency: f32,
+    /// Start-time offset in seconds from `NiControllerSequence.phase` (or the
+    /// embedded controller envelope). Gamebryo's `NiTimeController` maps clip
+    /// time as `frequency * t + phase`, so this staggers instances of the same
+    /// clip that should not animate in lockstep.
+    ///
+    /// Seeded into `AnimationPlayer::local_time` / `AnimationLayer` start time
+    /// at attach rather than added per-sample: the sampler's cycle handling
+    /// (clamp / loop / ping-pong) already normalises `local_time` into
+    /// `[0, duration)`, and an offset applied after that would fight it.
+    ///
+    /// **Zero on all vanilla FNV content** — measured across every FNV + DLC
+    /// mesh archive (20,677 NIFs, 4,989 KFs): not one clip, embedded or KF,
+    /// carries a non-zero phase (nor a frequency ≠ 1). #3097 wired the field
+    /// through the NIF-side clip; pre-#3345 the NIF→core conversion dropped it
+    /// again, so it would have silently no-op'd on the Skyrim/FO4 content where
+    /// phase does appear.
+    pub phase: f32,
     /// Default weight from `NiControllerSequence.weight` (0.0–1.0).
     /// Modulates the layer's `effective_weight()` inside
     /// `sample_blended_transform`: the sequence author can pre-attenuate

@@ -604,6 +604,7 @@ pub(super) fn walk_node_hierarchical(
                 force_fields: collect_force_fields(scene, &ps.modifier_refs),
                 emitter_params: extract_emitter_params(scene),
                 emitter_rate: extract_emitter_rate(scene),
+                max_particles: extract_emitter_max_particles(scene),
             });
     }
 }
@@ -862,6 +863,37 @@ pub(super) fn extract_emitter_params(
 /// [`extract_first_color_curve`] — secondary emitters in a multi-emitter NIF
 /// share the first emitter's rate; deferred until a regression surfaces (#1402).
 /// See `docs/engine/nifal.md` — particles spawn-rate follow-up.
+/// Authored particle budget from the scene's `NiPSysData` block — nif.xml
+/// `NiParticlesData.Num Vertices`, *"the maximum number of particles"*, which
+/// on Bethesda `#BS202#` streams is the `BS Max Vertices` upper bound (#3344).
+/// `None` when the scene has no particle-data block or it authored `0`.
+///
+/// Scene-level first-match, the same scope caveat carried by
+/// [`extract_emitter_params`] and [`extract_emitter_rate`]: exact for the
+/// dominant single-emitter-per-NIF case, and secondary emitters in a
+/// multi-emitter NIF share the first block's budget. Following the particle
+/// system's own `data_ref` would be exact, but that ref is only serialized on
+/// the pre-SSE branch — `BS_GTE_SSE` streams replace it with a bounding
+/// sphere + skin ref — so a per-system link would work on FO3/FNV/Oblivion
+/// and silently fall back to this same scan everywhere else.
+pub(super) fn extract_emitter_max_particles(scene: &NifScene) -> Option<u32> {
+    // Find the first block that actually *carries* a budget, not the first
+    // `NiPSysBlock`: 27 other `NiPSys*` types deserialise to that same marker
+    // struct with `max_particles: None`, so `find_map(downcast).and_then(..)`
+    // stops at whichever marker happens to come first in block order and
+    // reports no budget at all. Caught by the #3343 magnitude floors, which
+    // read 0/346 on FNV against a measured 1,262 budget-bearing blocks.
+    scene
+        .blocks
+        .iter()
+        .find_map(|b| {
+            b.as_any()
+                .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
+                .and_then(|d| d.max_particles)
+        })
+        .filter(|m| *m > 0)
+}
+
 pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     use crate::anim::resolve_blend_interpolator_target;
     use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
@@ -1439,6 +1471,7 @@ pub(super) fn walk_node_particle_emitters_flat(
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),
             emitter_rate: extract_emitter_rate(scene),
+            max_particles: extract_emitter_max_particles(scene),
         });
     }
 }

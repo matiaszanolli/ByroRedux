@@ -714,7 +714,13 @@ pub(super) fn spawn_placed_instances(
         }
 
         let player_entity = world.spawn();
-        let mut player = byroredux_core::animation::AnimationPlayer::new(handle);
+        // #3345 — start at the clip's authored phase offset.
+        let phase = world
+            .resource::<byroredux_core::animation::AnimationClipRegistry>()
+            .get(handle)
+            .map(|c| c.phase)
+            .unwrap_or(0.0);
+        let mut player = byroredux_core::animation::AnimationPlayer::new(handle).with_phase(phase);
         player.root_entity = Some(placement_root);
         world.insert(player_entity, player);
     }
@@ -997,6 +1003,7 @@ fn spawn_particle_emitters(
             &em.texture_path,
             em.src_blend,
             em.dst_blend,
+            em.max_particles,
         );
 
         // Alpha-over fog/smoke and additive flame/ember are both participating

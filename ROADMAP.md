@@ -158,6 +158,10 @@ Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
+**CWD-immune alternative (#3346):** `--game <profile>` (`fnv` / `fo3` / `skyrim` / …) expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml` via `expand_game_profile_args` (`byroredux/src/boot.rs`), so it works from any CWD and cannot mistype an archive name. Prefer it for ad-hoc runs and audits:
+`cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`.
+The bench-of-record table below deliberately keeps the bare-name + `cd` form for apples-to-apples continuity with the historical record — do not restate those numbers under a different invocation shape.
+
 ### Bench-of-record (LIVE) — stepped-camera refresh (2026-08-14, HEAD `34074b93`)
 
 **First bench reproducible on the current harness (#2835).** Full matrix,

@@ -39,6 +39,25 @@ impl AnimationPlayer {
         }
     }
 
+    /// Seed playback to start at the clip's authored `phase` offset (#3345).
+    ///
+    /// Gamebryo's `NiTimeController` maps clip time as `frequency * t + phase`.
+    /// The offset is applied once here, at attach, rather than added on every
+    /// sample: `advance_time` already normalises `local_time` into
+    /// `[0, duration)` per the clip's `CycleType`, and a per-sample addend
+    /// would fight that normalisation on loop wrap.
+    ///
+    /// `prev_time` is seeded to match so the first `collect_text_key_events()`
+    /// call doesn't report every key between 0 and `phase` as freshly crossed.
+    /// A non-finite phase is ignored — it would latch `local_time` to NaN.
+    pub fn with_phase(mut self, phase: f32) -> Self {
+        if phase.is_finite() && phase != 0.0 {
+            self.local_time = phase;
+            self.prev_time = phase;
+        }
+        self
+    }
+
     /// Create a player scoped to a specific entity subtree.
     pub fn with_root(mut self, root: EntityId) -> Self {
         self.root_entity = Some(root);
@@ -139,6 +158,41 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
             );
             player.local_time = local_time;
             player.reverse_direction = reverse_direction;
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    //! #3345 — attach-time phase seeding.
+    use super::AnimationPlayer;
+
+    /// `with_phase` seeds both `local_time` and `prev_time` so playback starts
+    /// at the clip's authored offset without the first text-key sweep
+    /// reporting every key in `[0, phase)` as freshly crossed.
+    #[test]
+    fn with_phase_seeds_local_and_prev_time() {
+        let player = AnimationPlayer::new(3).with_phase(0.75);
+        assert_eq!(player.local_time, 0.75);
+        assert_eq!(
+            player.prev_time, 0.75,
+            "prev_time must match so collect_text_key_events doesn't replay \
+             every key before the phase offset on the first tick"
+        );
+    }
+
+    /// A zero phase — every vanilla FNV clip, measured — must be a no-op, and
+    /// a non-finite phase must be rejected rather than latching `local_time`
+    /// to NaN on the first tick.
+    #[test]
+    fn with_phase_ignores_zero_and_non_finite() {
+        for phase in [0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let player = AnimationPlayer::new(1).with_phase(phase);
+            assert_eq!(
+                player.local_time, 0.0,
+                "phase {phase} must leave local_time at the default"
+            );
+            assert_eq!(player.prev_time, 0.0);
         }
     }
 }

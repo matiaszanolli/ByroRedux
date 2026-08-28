@@ -300,16 +300,33 @@ pub(crate) fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<Geo
 /// NiPSysData on BS_GTE_FO3 streams where nif.xml (line 3880) says:
 /// "Vertices, Normals, Tangents, Colors, and UV arrays do not have length
 /// for NiPSysData regardless of 'Num' or booleans." See #322.
+///
+/// Returns the base tuple alongside the **raw** `Num Vertices` field, which
+/// on this path is nif.xml's `BS Max Vertices` — the authored upper bound on
+/// runtime particle count, not an array length (#3344). The tuple's own
+/// `vertices` vec is empty here by construction, so the count would otherwise
+/// be unrecoverable downstream.
 pub(crate) fn parse_psys_geometry_data_base(
     stream: &mut NifStream,
-) -> io::Result<GeometryDataBase> {
-    parse_geometry_data_base_inner(stream, true)
+) -> io::Result<(GeometryDataBase, u16)> {
+    parse_geometry_data_base_inner_counted(stream, true)
 }
 
 fn parse_geometry_data_base_inner(
     stream: &mut NifStream,
     zero_arrays: bool,
 ) -> io::Result<GeometryDataBase> {
+    parse_geometry_data_base_inner_counted(stream, zero_arrays).map(|(base, _raw)| base)
+}
+
+/// [`parse_geometry_data_base_inner`] plus the raw on-disk `Num Vertices`
+/// field. Split out for #3344: on the `zero_arrays` (NiPSysData) path the
+/// vertex vec is deliberately empty, so the raw count — there meaning
+/// `BS Max Vertices` — has no other route out of this function.
+fn parse_geometry_data_base_inner_counted(
+    stream: &mut NifStream,
+    zero_arrays: bool,
+) -> io::Result<(GeometryDataBase, u16)> {
     // Group ID: nif.xml says `since="10.1.0.114"` (0x0A010072), not
     // 10.0.1.0. Files in the [10.0.1.0, 10.1.0.114) range (non-Bethesda
     // Gamebryo, pre-Civ IV era) read 4 phantom bytes, misaligning every
@@ -476,13 +493,16 @@ fn parse_geometry_data_base_inner(
     }
 
     Ok((
-        vertices,
-        data_flags,
-        normals,
-        center,
-        radius,
-        vertex_colors,
-        uv_sets,
+        (
+            vertices,
+            data_flags,
+            normals,
+            center,
+            radius,
+            vertex_colors,
+            uv_sets,
+        ),
+        num_vertices_raw as u16,
     ))
 }
 impl NiTriShapeData {

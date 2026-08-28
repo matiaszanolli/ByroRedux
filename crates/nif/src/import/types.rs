@@ -1481,6 +1481,18 @@ pub struct ImportedParticleEmitter {
     /// `NiParticleSystemController` content, or no controller). See
     /// `docs/engine/nifal.md` — particles spawn-rate follow-up.
     pub emitter_rate: Option<f32>,
+    /// Authored particle budget — nif.xml `NiParticlesData.Num Vertices`
+    /// ("the maximum number of particles"), surviving on Bethesda `#BS202#`
+    /// streams as `BS Max Vertices`. `None` when the source authored no
+    /// budget (or `0`).
+    ///
+    /// **Not a tight bound.** Measured over `Fallout - Meshes.bsa` (307
+    /// emitter NIFs, 1,262 `NiPSysData` blocks): min 2, median 125, p75
+    /// 1,604, p90 onward pinned at 10,000 — a saturating authoring default,
+    /// not a considered budget. 41% exceed 256. So the consumer clamps to an
+    /// engine ceiling rather than honouring the authored figure outright;
+    /// see `apply_emitter_overlays` (#3344).
+    pub max_particles: Option<u32>,
     /// The particle block's own local translation (Y-up), relative to
     /// the host node. Pre-#1333 the `NiParticleSystem`'s `NiAVObjectData`
     /// base was parsed then dropped, so an emitter authored with a
@@ -1631,4 +1643,7 @@ pub struct ImportedParticleEmitterFlat {
     /// Mirror of [`ImportedParticleEmitter::emitter_rate`] for the flat
     /// (cell-loader) path. Authored birth rate (particles/sec).
     pub emitter_rate: Option<f32>,
+    /// Mirror of [`ImportedParticleEmitter::max_particles`] for the flat
+    /// (cell-loader) path. Authored particle budget (`BS Max Vertices`).
+    pub max_particles: Option<u32>,
 }

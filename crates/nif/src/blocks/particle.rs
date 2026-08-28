@@ -164,6 +164,30 @@ fn skip_collider_base(stream: &mut NifStream) -> io::Result<()> {
 pub struct NiPSysBlock {
     /// Original NIF type name (for debug logging).
     pub original_type: String,
+    /// Authored particle budget — nif.xml `NiParticlesData.Num Vertices`
+    /// (line 3993): *"the maximum number of particles (matches the number of
+    /// vertices)"*. On Bethesda `#BS202#` streams the per-particle arrays are
+    /// dropped and this field survives alone as `BS Max Vertices`, an upper
+    /// bound on runtime particle count.
+    ///
+    /// `None` when the block authored `0` — a handful of vanilla emitters do,
+    /// and a zero budget would silently disable the emitter entirely if it
+    /// reached `ParticleEmitter.max_particles`. Pre-#3344 the value was read,
+    /// documented in a comment, then discarded.
+    pub max_particles: Option<u32>,
+}
+
+impl NiPSysBlock {
+    /// Marker-only construction for the `NiPSys*` block types that carry no
+    /// authored particle budget — everything except the `NiParticlesData` /
+    /// `NiPSysData` family, whose `Num Vertices` field #3344 plumbs through
+    /// as [`Self::max_particles`].
+    pub(crate) fn marker(original_type: impl Into<String>) -> Self {
+        Self {
+            original_type: original_type.into(),
+            max_particles: None,
+        }
+    }
 }
 
 /// Typed `NiPSys*Emitter` block — carries the decoded
@@ -217,9 +241,7 @@ pub struct NiPSysGrowFadeModifier {
 /// Parse a modifier with only the base fields (NiPSysPositionModifier, etc.).
 pub fn parse_modifier_only(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+    Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// NiPSysAgeDeathModifier: base + spawn_on_death(bool) + spawn_modifier_ref(ref)
@@ -227,9 +249,7 @@ pub fn parse_age_death_modifier(stream: &mut NifStream) -> io::Result<NiPSysBloc
     let _base = NiPSysModifierBase::parse(stream)?;
     let _spawn_on_death = stream.read_byte_bool()?;
     let _spawn_modifier_ref = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysAgeDeathModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysAgeDeathModifier".to_string()))
 }
 
 /// `NiPSysPartSpawnModifier` (#1444 / LC-D9-01) — a WorldShift-specific
@@ -249,9 +269,7 @@ pub fn parse_part_spawn_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlo
     let _particles_per_second = stream.read_f32_le()?;
     let _time = stream.read_f32_le()?;
     let _spawner_ref = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysPartSpawnModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysPartSpawnModifier".to_string()))
 }
 
 /// NiPSysBombModifier: base + bomber_ref + axis + decay + delta_v + decay_type + symmetry_type
@@ -263,27 +281,21 @@ pub fn parse_bomb_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _delta_v = stream.read_f32_le()?;
     let _decay_type = stream.read_u32_le()?;
     let _symmetry_type = stream.read_u32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysBombModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysBombModifier".to_string()))
 }
 
 /// NiPSysBoundUpdateModifier: base + update_skip(u16)
 pub fn parse_bound_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _update_skip = stream.read_u16_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysBoundUpdateModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysBoundUpdateModifier".to_string()))
 }
 
 /// NiPSysColliderManager: base + collider_ref(ref)
 pub fn parse_collider_manager(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _collider_ref = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysColliderManager".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysColliderManager".to_string()))
 }
 
 /// `NiPSysColorModifier` — Skyrim-era + earlier modern particle colour
@@ -325,9 +337,7 @@ impl NiPSysColorModifier {
 /// code should call [`NiPSysColorModifier::parse`] directly.
 pub fn parse_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _modifier = NiPSysColorModifier::parse(stream)?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysColorModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysColorModifier".to_string()))
 }
 
 /// NiPSysDragModifier: base + parent(ptr) + drag_axis(vec3) + percentage(f32) + range(f32) + range_falloff(f32)
@@ -335,9 +345,7 @@ pub fn parse_drag_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _parent = stream.read_block_ref()?;
     stream.skip(12 + 4 + 4 + 4)?; // vec3 + 3 floats
-    Ok(NiPSysBlock {
-        original_type: "NiPSysDragModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysDragModifier".to_string()))
 }
 
 /// NiPSysGravityModifier: base + gravity_object(ptr) + gravity_axis(vec3) +
@@ -362,9 +370,7 @@ pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
     if stream.bsver() > crate::version::bsver::NI_BS_LTE_16 {
         let _world_aligned = stream.read_byte_bool()?;
     }
-    Ok(NiPSysBlock {
-        original_type: "NiPSysGravityModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysGravityModifier".to_string()))
 }
 
 /// NiPSysGrowFadeModifier: base + grow_time(f32) + grow_generation(u16) +
@@ -429,9 +435,7 @@ pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock
     }
     let _random_axis = stream.read_byte_bool()?;
     stream.skip(12)?; // axis vec3
-    Ok(NiPSysBlock {
-        original_type: "NiPSysRotationModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysRotationModifier".to_string()))
 }
 
 /// NiPSysSpawnModifier: base + num_spawn_generations(u16) + percentage_spawned(f32) +
@@ -444,9 +448,7 @@ pub fn parse_spawn_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _min_num_to_spawn = stream.read_u16_le()?;
     let _max_num_to_spawn = stream.read_u16_le()?;
     stream.skip(4 * 4)?; // 4 floats
-    Ok(NiPSysBlock {
-        original_type: "NiPSysSpawnModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysSpawnModifier".to_string()))
 }
 
 /// NiPSysMeshUpdateModifier: base + num_meshes(u32) + mesh_refs[N]
@@ -459,9 +461,7 @@ pub fn parse_mesh_update_modifier(
     for _ in 0..num_meshes {
         let _mesh_ref = stream.read_block_ref()?;
     }
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+    Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// BSPSysHavokUpdateModifier: NiPSysMeshUpdateModifier + modifier_ref(ref)
@@ -472,18 +472,14 @@ pub fn parse_havok_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysB
         let _mesh_ref = stream.read_block_ref()?;
     }
     let _modifier_ref = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysHavokUpdateModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysHavokUpdateModifier".to_string()))
 }
 
 /// BSParentVelocityModifier / BSWindModifier: base + damping(f32)
 pub fn parse_float_modifier(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _value = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+    Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// BSPSysInheritVelocityModifier: base + inherit_object(ptr) + 3 floats
@@ -491,9 +487,7 @@ pub fn parse_inherit_velocity_modifier(stream: &mut NifStream) -> io::Result<NiP
     let _base = NiPSysModifierBase::parse(stream)?;
     let _inherit_object = stream.read_block_ref()?;
     stream.skip(4 * 3)?; // 3 floats
-    Ok(NiPSysBlock {
-        original_type: "BSPSysInheritVelocityModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysInheritVelocityModifier"))
 }
 
 /// BSPSysRecycleBoundModifier: base + 2×vec3 + target_ref
@@ -501,27 +495,21 @@ pub fn parse_recycle_bound_modifier(stream: &mut NifStream) -> io::Result<NiPSys
     let _base = NiPSysModifierBase::parse(stream)?;
     stream.skip(12 + 12)?; // 2 vec3s
     let _target = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysRecycleBoundModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysRecycleBoundModifier"))
 }
 
 /// BSPSysSubTexModifier: base + 7 floats
 pub fn parse_sub_tex_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     stream.skip(4 * 7)?; // 7 floats
-    Ok(NiPSysBlock {
-        original_type: "BSPSysSubTexModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysSubTexModifier".to_string()))
 }
 
 /// BSPSysLODModifier: base + 4 floats
 pub fn parse_lod_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     stream.skip(4 * 4)?; // 4 floats
-    Ok(NiPSysBlock {
-        original_type: "BSPSysLODModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysLODModifier".to_string()))
 }
 
 /// BSPSysScaleModifier: base + num_floats(u32) + floats[N]
@@ -529,9 +517,7 @@ pub fn parse_scale_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let count = stream.read_u32_le()? as u64;
     stream.skip(count * 4)?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysScaleModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysScaleModifier".to_string()))
 }
 
 /// `BSPSysSimpleColorModifier` (FO3+) — the dominant FO3/FNV-era particle
@@ -609,18 +595,14 @@ impl BSPSysSimpleColorModifier {
 /// the colours; new code should call [`BSPSysSimpleColorModifier::parse`].
 pub fn parse_simple_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _modifier = BSPSysSimpleColorModifier::parse(stream)?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysSimpleColorModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysSimpleColorModifier".to_string()))
 }
 
 /// BSPSysStripUpdateModifier (FO3+): base + update_delta_time(f32)
 pub fn parse_strip_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _update_delta = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysStripUpdateModifier".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysStripUpdateModifier".to_string()))
 }
 
 // ── Emitter parsers ─────────────────────────────────────────────────
@@ -698,18 +680,14 @@ pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
 pub fn parse_planar_collider(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     skip_collider_base(stream)?;
     stream.skip(4 * 2 + 12 * 2)?; // 2 floats + 2 vec3s
-    Ok(NiPSysBlock {
-        original_type: "NiPSysPlanarCollider".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysPlanarCollider".to_string()))
 }
 
 /// NiPSysSphericalCollider: collider_base + 1 float
 pub fn parse_spherical_collider(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     skip_collider_base(stream)?;
     let _radius = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysSphericalCollider".to_string(),
-    })
+    Ok(NiPSysBlock::marker("NiPSysSphericalCollider".to_string()))
 }
 
 // ── Field modifier parsers ──────────────────────────────────────────
@@ -927,9 +905,7 @@ impl NiPSysRadialFieldModifier {
 /// NiPSysUpdateCtlr / NiPSysResetOnLoopCtlr: just NiTimeController base.
 pub fn parse_time_controller(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     let _base = NiTimeControllerBase::parse(stream)?;
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+    Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// NiPSysModifierCtlr chain: NiSingleInterpController + modifier_name(string).
@@ -941,9 +917,7 @@ pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Resul
     let _base = parse_interp_controller_base(stream)?;
     let _interpolator_ref = stream.read_block_ref()?; // NiSingleInterpController
     let _modifier_name = stream.read_string()?; // NiPSysModifierCtlr
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+    Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
@@ -972,9 +946,7 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
     }
     let _max_emitters = stream.read_u16_le()?;
     let _master_ref = stream.read_block_ref()?;
-    Ok(NiPSysBlock {
-        original_type: "BSPSysMultiTargetEmitterCtlr".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSPSysMultiTargetEmitterCtlr"))
 }
 
 // ── Geometry node parsers (NiParticleSystem etc.) ────────────────────
@@ -1184,11 +1156,21 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     // 0 regardless of the bools — use the psys variant to suppress them.
     // See nif.xml line 3880 and #322.
     let use_psys_base = is_bs_202 && type_name != "NiParticlesData";
-    let (_verts, _flags, _normals, _center, _radius, _colors, _uvs) = if use_psys_base {
-        super::tri_shape::parse_psys_geometry_data_base(stream)?
-    } else {
-        super::tri_shape::parse_geometry_data_base(stream)?
-    };
+    // `max_vertices_raw` is nif.xml's `Num Vertices`, documented on
+    // `NiParticlesData` (line 3993) as "the maximum number of particles
+    // (matches the number of vertices)" — i.e. the authored particle budget,
+    // which on the psys path is the `BS Max Vertices` upper bound rather than
+    // a serialized array length. Retained for #3344: it used to be read and
+    // dropped, leaving `ParticleEmitter.max_particles` on a name-heuristic
+    // guess with no authored input at all.
+    let ((_verts, _flags, _normals, _center, _radius, _colors, _uvs), max_vertices_raw) =
+        if use_psys_base {
+            super::tri_shape::parse_psys_geometry_data_base(stream)?
+        } else {
+            let base = super::tri_shape::parse_geometry_data_base(stream)?;
+            let raw = base.0.len() as u16;
+            (base, raw)
+        };
     // For the particle-specific arrays after the base, `count` is the raw
     // vertex count (non-zero on non-BS202, zero on BS202 via the psys base).
     let count = _verts.len() as u64;
@@ -1334,6 +1316,10 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
 
     Ok(NiPSysBlock {
         original_type: type_name.to_string(),
+        // 0 means "no authored budget" here, not "no particles" — see the
+        // field doc. Keep it out of the overlay rather than let it disable
+        // the emitter (#3344).
+        max_particles: (max_vertices_raw > 0).then_some(max_vertices_raw as u32),
     })
 }
 
@@ -1394,9 +1380,7 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
     for _ in 0..num_ptrs {
         let _ptr = stream.read_block_ref()?;
     }
-    Ok(NiPSysBlock {
-        original_type: "BSMasterParticleSystem".to_string(),
-    })
+    Ok(NiPSysBlock::marker("BSMasterParticleSystem".to_string()))
 }
 
 impl_ni_object!(

@@ -1071,7 +1071,13 @@ pub(crate) fn setup_scene(
 
                             // Spawn an AnimationPlayer scoped to the NIF subtree.
                             let player_entity = world.spawn();
-                            let mut player = AnimationPlayer::new(first_handle);
+                            // #3345 — start at the clip's authored phase offset.
+                            let phase = world
+                                .resource::<AnimationClipRegistry>()
+                                .get(first_handle)
+                                .map(|c| c.phase)
+                                .unwrap_or(0.0);
+                            let mut player = AnimationPlayer::new(first_handle).with_phase(phase);
                             if let Some(root) = nif_root {
                                 player.root_entity = Some(root);
                             }

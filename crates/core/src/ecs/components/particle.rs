@@ -65,6 +65,23 @@ impl EmitterShape {
     }
 }
 
+/// Engine ceiling on [`ParticleEmitter::max_particles`], applied when an
+/// authored `BS Max Vertices` budget is folded onto a preset (#3344).
+///
+/// The authored NIF budget is not a usable pool size on its own: measured
+/// over FNV's `Fallout - Meshes.bsa` (1,262 `NiPSysData` blocks) it runs
+/// min 2 / median 125 / p75 1,604, with p90 onward pinned at exactly 10,000
+/// — a saturating authoring default rather than a considered figure. Honouring
+/// it outright would put five-figure pools behind every explosion splash.
+///
+/// `256` is the largest value already shipping in the heuristic preset table
+/// below, so this ceiling widens no existing perf envelope. The pools are
+/// `Vec`s that grow on demand ([`ParticleSoA`]) and spawn is governed by
+/// `rate`, so a raised ceiling costs nothing until particles are actually
+/// live — it only stops a high-rate emitter from being truncated at a preset
+/// guess that the source never agreed to.
+pub const MAX_PARTICLES_CEILING: u32 = 256;
+
 /// Live particle SoA. One entry per active particle; the spawn system
 /// pushes onto these vectors, the integrate system updates them, and
 /// the expire system swap-removes when `age >= life`.

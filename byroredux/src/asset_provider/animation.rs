@@ -285,6 +285,10 @@ fn convert_hkx_clip(
             CycleType::Clamp
         },
         frequency: 1.0,
+        // No phase in this source: these clips are built from behaviour-graph
+        // idle data, not a `NiControllerSequence`, so there is no authored
+        // start offset to carry (#3345).
+        phase: 0.0,
         weight: 1.0,
         accum_root_name,
         channels,

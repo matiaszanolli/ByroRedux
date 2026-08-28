@@ -59,8 +59,20 @@ pub fn apply_emitter_params(
 /// (#707); `emitter_params` delegates to [`apply_emitter_params`] for the
 /// kinematic+lifetime+size subset (`initial_color` stays unapplied — see
 /// that fn); `emitter_rate` overrides the preset density; `force_fields`
-/// are Z-up→Y-up converted (#984). A `None`/empty input leaves the preset
-/// default in place.
+/// are Z-up→Y-up converted (#984); `max_particles` clamps the pool to
+/// `min(authored, MAX_PARTICLES_CEILING)` (#3344). A `None`/empty input
+/// leaves the preset default in place.
+///
+/// **Why the budget is clamped rather than adopted.** nif.xml calls
+/// `BS Max Vertices` "the maximum number of particles", but FNV authors it
+/// loosely — median 125, p75 1,604, p90 onward pinned at exactly 10,000 over
+/// 1,262 `NiPSysData` blocks. Taking it verbatim would hand every explosion
+/// splash a five-figure pool. Taking the preset verbatim (pre-#3344) went the
+/// other way: a name-heuristic 96 truncated emitters the source explicitly
+/// budgeted higher, and #3286's authored-rate wiring made that truncation
+/// bite harder because the rate now actually reaches the preset. The clamp
+/// takes the source's number where it is smaller than the engine's, and logs
+/// when the engine's wins so the truncation is visible instead of silent.
 #[allow(clippy::too_many_arguments)] // Fields mirror the imported emitter record.
 pub fn apply_emitter_overlays(
     preset: &mut ParticleEmitter,
@@ -71,6 +83,7 @@ pub fn apply_emitter_overlays(
     texture_path: &Option<String>,
     src_blend: Option<u8>,
     dst_blend: Option<u8>,
+    max_particles: Option<u32>,
 ) {
     if let Some(curve) = color_curve {
         preset.start_color = curve.start;
@@ -96,6 +109,25 @@ pub fn apply_emitter_overlays(
     }
     if let Some(dst) = dst_blend {
         preset.dst_blend = dst;
+    }
+    // #3344 — the authored `BS Max Vertices` budget was read by the parser,
+    // documented, and dropped; the preset's name-heuristic guess was the only
+    // input. Clamp to the engine ceiling so a saturating 10,000 can't create a
+    // five-figure pool, and log the clamp so the truncation is visible.
+    if let Some(authored) = max_particles.filter(|m| *m > 0) {
+        let clamped = authored.min(byroredux_core::ecs::MAX_PARTICLES_CEILING);
+        if clamped < authored {
+            log::debug!(
+                "apply_emitter_overlays: authored particle budget {} exceeds the engine \
+                 ceiling {} — clamping (preset was {}). Emitter will render at most {} \
+                 simultaneous particles (#3344).",
+                authored,
+                byroredux_core::ecs::MAX_PARTICLES_CEILING,
+                preset.max_particles,
+                clamped,
+            );
+        }
+        preset.max_particles = clamped;
     }
 }
 
@@ -471,6 +503,81 @@ mod tests {
         (world, e)
     }
 
+    /// #3344 — an authored budget below the engine ceiling is adopted
+    /// verbatim; the preset's name-heuristic guess loses.
+    #[test]
+    fn authored_particle_budget_below_ceiling_is_adopted() {
+        let mut preset = ParticleEmitter::torch_flame();
+        let preset_max = preset.max_particles;
+        assert!(preset_max > 30, "fixture assumes the preset guesses higher");
+        apply_emitter_overlays(
+            &mut preset,
+            &None,
+            &None,
+            None,
+            &[],
+            &None,
+            None,
+            None,
+            Some(30),
+        );
+        assert_eq!(
+            preset.max_particles, 30,
+            "an authored budget under the ceiling is the source's own number \
+             and must win over the heuristic preset"
+        );
+    }
+
+    /// #3344 — FNV pins 41% of its budgets above 256, with p90 onward at a
+    /// saturating 10,000. Those must clamp to the engine ceiling rather than
+    /// create five-figure pools.
+    #[test]
+    fn authored_particle_budget_above_ceiling_clamps() {
+        let mut preset = ParticleEmitter::torch_flame();
+        apply_emitter_overlays(
+            &mut preset,
+            &None,
+            &None,
+            None,
+            &[],
+            &None,
+            None,
+            None,
+            Some(10_000),
+        );
+        assert_eq!(
+            preset.max_particles,
+            byroredux_core::ecs::MAX_PARTICLES_CEILING,
+            "a saturating authored budget must clamp to the engine ceiling"
+        );
+    }
+
+    /// #3344 — no authored budget leaves the heuristic preset untouched, and a
+    /// zero budget is treated as "unauthored" rather than disabling the
+    /// emitter outright.
+    #[test]
+    fn absent_or_zero_particle_budget_keeps_preset() {
+        for authored in [None, Some(0)] {
+            let mut preset = ParticleEmitter::torch_flame();
+            let preset_max = preset.max_particles;
+            apply_emitter_overlays(
+                &mut preset,
+                &None,
+                &None,
+                None,
+                &[],
+                &None,
+                None,
+                None,
+                authored,
+            );
+            assert_eq!(
+                preset.max_particles, preset_max,
+                "authored={authored:?} must leave the preset budget in place"
+            );
+        }
+    }
+
     #[test]
     fn apply_emitter_params_overrides_kinematics_and_size_not_color() {
         use byroredux_nif::import::ImportedEmitterParams;
@@ -546,6 +653,7 @@ mod tests {
             &Some("textures/fx/embers.dds".to_string()),
             Some(5),
             Some(6),
+            Some(64),
         );
 
         // Colour curve overrides start/end (and beats the white default).
@@ -559,6 +667,8 @@ mod tests {
         assert_eq!(preset.rate, 42.0);
         // Force fields converted Z-up→Y-up and carried through.
         assert_eq!(preset.force_fields.len(), 1);
+        // Authored particle budget overlaid, under the ceiling (#3344).
+        assert_eq!(preset.max_particles, 64);
         // #2300 — texture_path/src_blend/dst_blend overrides now fold in
         // through this same boundary instead of being duplicated at each
         // load site.
@@ -576,7 +686,17 @@ mod tests {
     fn apply_emitter_overlays_none_inputs_keep_preset_defaults() {
         let preset_ref = ParticleEmitter::torch_flame();
         let mut preset = ParticleEmitter::torch_flame();
-        apply_emitter_overlays(&mut preset, &None, &None, None, &[], &None, None, None);
+        apply_emitter_overlays(
+            &mut preset,
+            &None,
+            &None,
+            None,
+            &[],
+            &None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(preset.start_color, preset_ref.start_color);
         assert_eq!(preset.speed, preset_ref.speed);
         assert_eq!(preset.rate, preset_ref.rate);

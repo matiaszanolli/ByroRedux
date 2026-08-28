@@ -227,6 +227,7 @@ mod tests {
             duration: 0.0,
             cycle_type: CycleType::Loop,
             frequency: 1.0,
+            phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
             channels: HashMap::new(),

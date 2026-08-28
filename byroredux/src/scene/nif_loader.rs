@@ -616,6 +616,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             &emitter.texture_path,
             emitter.src_blend,
             emitter.dst_blend,
+            emitter.max_particles,
         );
 
         let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
@@ -1356,7 +1357,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
 
         let player_entity = world.spawn();
-        let mut player = AnimationPlayer::new(clip_handle);
+        // #3345 — start at the clip's authored phase offset.
+        let phase = world
+            .resource::<AnimationClipRegistry>()
+            .get(clip_handle)
+            .map(|c| c.phase)
+            .unwrap_or(0.0);
+        let mut player = AnimationPlayer::new(clip_handle).with_phase(phase);
         if let Some(root) = root {
             player.root_entity = Some(root);
         }

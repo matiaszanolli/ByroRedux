@@ -34,7 +34,7 @@ pub use components::{
     TextureFlipEntry, TextureHandle, Transform, WorldBound, LIGHT_FLAG_FLICKER,
     LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_HEMISPHERE,
     LIGHT_FLAG_SHADOW_MASK, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SHADOW_SPOTLIGHT,
-    LIGHT_FLAG_SPOT, MAX_BONES_PER_MESH,
+    LIGHT_FLAG_SPOT, MAX_BONES_PER_MESH, MAX_PARTICLES_CEILING,
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot, PendingUpscalerSwitch};
 pub use game_profiles::{GameProfileEntry, GameProfileRegistry};

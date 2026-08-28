@@ -399,6 +399,8 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
 
     let mut swept: Vec<(Game, usize, usize)> = Vec::new();
     let mut barren: Vec<Game> = Vec::new();
+    // (game, emitters, with_params, with_rate, with_budget) — see #3343.
+    let mut magnitudes: Vec<(Game, usize, usize, usize, usize)> = Vec::new();
     for game in games_to_try {
         let Some(archive) = open_mesh_archive(game) else {
             continue;
@@ -406,6 +408,15 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
         let all_files = archive.list_files();
         let mut total_emitters = 0usize;
         let mut paths_with_emitters: Vec<String> = Vec::new();
+        // #3343 — presence alone is not coverage. Pre-fix the loop asserted
+        // only `!emitters.is_empty()`, so a regression that zeroed every
+        // authored rate, radius, life or base_scale left this test green: it
+        // could detect the emitter *blocks* vanishing and nothing else, which
+        // is precisely what the typed-emitter decode (`5708b5b9` / `9db60714`)
+        // needed pinned. Accumulate decoded magnitudes alongside the count.
+        let mut with_params = 0usize;
+        let mut with_rate = 0usize;
+        let mut with_budget = 0usize;
         // Walk up to 200 candidate NIFs per game so the test stays
         // fast (a few seconds) but has enough samples to find at least
         // one emitter in any reasonable mesh archive.
@@ -430,6 +441,26 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
             let emitters = import_nif_particle_emitters(&scene);
             if !emitters.is_empty() {
                 total_emitters += emitters.len();
+                for em in &emitters {
+                    // A decoded param block must carry finite, positive spawn
+                    // magnitudes — a zeroed or NaN decode is the regression
+                    // this counts against, not a legitimately absent block.
+                    if let Some(p) = &em.emitter_params {
+                        if p.initial_radius.is_finite()
+                            && p.initial_radius > 0.0
+                            && p.life_span.is_finite()
+                            && p.life_span > 0.0
+                        {
+                            with_params += 1;
+                        }
+                    }
+                    if em.emitter_rate.is_some_and(|r| r.is_finite() && r > 0.0) {
+                        with_rate += 1;
+                    }
+                    if em.max_particles.is_some_and(|m| m > 0) {
+                        with_budget += 1;
+                    }
+                }
                 if paths_with_emitters.len() < 5 {
                     paths_with_emitters.push((*path).clone());
                 }
@@ -438,10 +469,14 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
 
         if total_emitters > 0 {
             eprintln!(
-                "[{}] {} emitters across {} meshes (sampled {} NIFs from candidate folders)",
+                "[{}] {} emitters across {} meshes (params={} rate={} budget={}) \
+                 (sampled {} NIFs from candidate folders)",
                 game.label(),
                 total_emitters,
                 paths_with_emitters.len(),
+                with_params,
+                with_rate,
+                with_budget,
                 candidates.len(),
             );
             for p in &paths_with_emitters {
@@ -456,6 +491,7 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
             barren.push(game);
         }
         swept.push((game, candidates.len(), total_emitters));
+        magnitudes.push((game, total_emitters, with_params, with_rate, with_budget));
     }
 
     if swept.is_empty() {
@@ -479,6 +515,78 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
         swept
             .iter()
             .map(|(g, _, e)| (g.label(), *e))
+            .collect::<Vec<_>>(),
+    );
+
+    // #3343 — magnitude floors. Presence-only assertions above prove the
+    // emitter blocks are still found; these prove the typed decode still
+    // produces usable numbers out of them.
+    //
+    // Floors are fractions, not the absolute counts the audit quoted. This
+    // test samples the first 200 candidate NIFs per game, and `list_files()`
+    // does not return a stable order — two consecutive runs over the same FNV
+    // archive sampled 346 and then 439 emitters. An absolute pin would be
+    // flaky by construction. A fraction is invariant to which 200 files the
+    // sample happens to draw.
+    //
+    // Measured at fix time, all four installed games decoded params and budget
+    // for **100%** of the emitters they sampled — the absolute sample size
+    // moved run to run (FNV drew 220, 346 and 439 across three runs) but the
+    // ratio did not budge. A 50% floor therefore leaves wide headroom for a
+    // content-scope change while a decode that zeroes or NaNs the authored
+    // magnitudes drops straight through it. Live counts print on every run.
+    //
+    // `params` and `budget` are near-universal on real content: essentially
+    // every authored emitter carries a `NiPSysEmitter` base block and a
+    // `NiPSysData` budget. `rate` is genuinely sparser — it needs a
+    // `NiPSysEmitterCtlr` chain, and legacy / constant-rate emitters have
+    // none — so it only has to be non-zero somewhere in the corpus.
+    const MIN_PARAMS_FRACTION: f64 = 0.50;
+    const MIN_BUDGET_FRACTION: f64 = 0.50;
+    let mut magnitude_failures: Vec<String> = Vec::new();
+    let mut total_rate = 0usize;
+    for (game, emitters, params, rate, budget) in &magnitudes {
+        total_rate += *rate;
+        let n = *emitters as f64;
+        if (*params as f64) < n * MIN_PARAMS_FRACTION {
+            magnitude_failures.push(format!(
+                "{}: only {}/{} emitters decoded finite positive                  initial_radius+life_span (floor {:.0}%)",
+                game.label(),
+                params,
+                emitters,
+                MIN_PARAMS_FRACTION * 100.0,
+            ));
+        }
+        if (*budget as f64) < n * MIN_BUDGET_FRACTION {
+            magnitude_failures.push(format!(
+                "{}: only {}/{} emitters decoded a non-zero BS Max Vertices                  budget (floor {:.0}%)",
+                game.label(),
+                budget,
+                emitters,
+                MIN_BUDGET_FRACTION * 100.0,
+            ));
+        }
+    }
+    assert!(
+        magnitude_failures.is_empty(),
+        "authored particle magnitudes regressed — the emitter blocks are still \
+         found but their decoded values are not usable: {:?}",
+        magnitude_failures,
+    );
+    assert!(
+        total_rate > 0,
+        "no emitter in any swept archive decoded a finite positive birth rate — \
+         the NiPSysEmitterCtlr -> interpolator chain regressed (#3343). Swept: {:?}",
+        magnitudes
+            .iter()
+            .map(|(g, e, p, r, b)| (g.label(), *e, *p, *r, *b))
+            .collect::<Vec<_>>(),
+    );
+    eprintln!(
+        "[emitters] magnitude floors OK: {:?}",
+        magnitudes
+            .iter()
+            .map(|(g, e, p, r, b)| (g.label(), *e, *p, *r, *b))
             .collect::<Vec<_>>(),
     );
 }

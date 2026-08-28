@@ -76,7 +76,9 @@ pub use local_bound::LocalBound;
 pub use material::Material;
 pub use mesh::MeshHandle;
 pub use name::Name;
-pub use particle::{EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA};
+pub use particle::{
+    EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA, MAX_PARTICLES_CEILING,
+};
 pub use patrol::{PatrolBehavior, PatrolState};
 pub use perk_list::PerkList;
 pub use physics_source::PhysicsSourceForm;

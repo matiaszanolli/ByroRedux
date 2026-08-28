@@ -517,6 +517,19 @@ pub(crate) fn convert_nif_clip(
         // backwards by authored frequency (that is `CycleType::Reverse`), so
         // a negative one would only walk `local_time` backwards forever.
         frequency: sanitized_clip_frequency(nif.frequency),
+        // #3345 — `NiControllerSequence.phase` reached the NIF-side clip under
+        // #3097 but stopped here: this literal copied every sibling field and
+        // not this one, and `byroredux_core`'s `AnimationClip` had nowhere to
+        // put it. Sanitized on the same grounds as `frequency` directly above
+        // — it is raw file data that seeds `AnimationPlayer::local_time`, so a
+        // NaN/inf would latch the player's time on the first tick. Negative is
+        // allowed (a clip legitimately starts before t=0 and the sampler's
+        // cycle handling normalises it); only non-finite is rejected.
+        phase: if nif.phase.is_finite() {
+            nif.phase
+        } else {
+            0.0
+        },
         weight: nif.weight,
         accum_root_name: nif.accum_root_name.as_deref().map(|s| pool.intern(s)),
         channels,
@@ -791,5 +804,59 @@ mod clip_frequency_tests {
                 "frequency {bad} must not reach the animation clock"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod clip_phase_tests {
+    //! #3345 — the NIF→core boundary must carry `phase` across.
+    use super::convert_nif_clip;
+    use byroredux_core::string::StringPool;
+    use byroredux_nif::anim as na;
+    use std::collections::HashMap;
+
+    fn nif_clip(phase: f32) -> na::AnimationClip {
+        na::AnimationClip {
+            name: "phased".to_string(),
+            duration: 2.0,
+            cycle_type: na::CycleType::Loop,
+            frequency: 1.0,
+            phase,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    /// #3097 carried `phase` onto the NIF-side clip; this literal then copied
+    /// every sibling field except that one, so it died at the boundary.
+    #[test]
+    fn phase_survives_the_nif_to_core_conversion() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&nif_clip(0.4), &mut pool);
+        assert_eq!(
+            clip.phase, 0.4,
+            "NiControllerSequence.phase must reach byroredux_core's AnimationClip"
+        );
+    }
+
+    /// `phase` seeds `AnimationPlayer::local_time`, so a non-finite value
+    /// would latch the animation clock to NaN on the first tick — the same
+    /// failure mode `sanitized_clip_frequency` guards (#3258). Negative is
+    /// allowed: the sampler's cycle handling normalises it.
+    #[test]
+    fn non_finite_phase_is_rejected_negative_is_kept() {
+        let mut pool = StringPool::new();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let clip = convert_nif_clip(&nif_clip(bad), &mut pool);
+            assert_eq!(clip.phase, 0.0, "phase {bad} must not reach the clock");
+        }
+        let clip = convert_nif_clip(&nif_clip(-0.25), &mut pool);
+        assert_eq!(clip.phase, -0.25);
     }
 }
