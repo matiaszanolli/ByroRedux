@@ -117,7 +117,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
      echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux | wc -l)"
-     echo "#[ignore] tests:        $(grep -RIn '^\s*#\[ignore\]' --include='*.rs' crates byroredux | wc -l)"
+     echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux | wc -l)"
      echo "files >2000 production LOC: $(for f in $(find crates byroredux -name '*.rs'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
@@ -381,7 +381,13 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
 ### Dimension 9: Test Hygiene
 **Discovery**:
 ```bash
-grep -RIn '^\s*#\[ignore\]' --include='*.rs' crates byroredux
+# Matches BOTH `#[ignore]` and Rust's documented reason form
+# `#[ignore = "..."]`. The bare-`]` pattern this recipe used until #3456
+# silently dropped every reason-form test — a 19% undercount at the time
+# (126 vs 155) — and the reason form is precisely what an author reaches
+# for when the reason is "blocked on #NNNN", i.e. the highest-value input
+# to the triage rule below. Do not re-tighten it.
+grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux
 ```
 Most `#[ignore]`s gate Vulkan/smoke tests that need a GPU or on-disk game data —
 those are **not** debt. Triage the rest:

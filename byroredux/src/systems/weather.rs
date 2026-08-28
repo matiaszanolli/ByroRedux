@@ -723,8 +723,15 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     }
 
     // #803 — cloud scroll lives on `CloudSimState`, which survives
-    // cell transitions (unlike `SkyParamsRes`, which `unload_cell`
-    // removes on every cell unload). Writing here keeps the
+    // cell transitions. `SkyParamsRes` is likewise World-lifetime since
+    // #1199 (`cell_loader/unload.rs` deliberately does NOT release the
+    // worldspace-scoped resources per cell); this accumulator is separate
+    // because it is simulation state advanced every frame, not authored
+    // weather data resolved once at streaming bootstrap. #3323's
+    // `exterior_sky_tint` argument depends on that shared survival —
+    // `weather_system` keeps advancing the exterior TOD colour while the
+    // player is inside, and `render/sky.rs`'s window-portal escape reads
+    // it. Writing here keeps the
     // accumulator alive across interior visits so the renderer's
     // next-frame sample lands at the same UV the player saw before
     // entering the interior, rather than snapping back to origin.

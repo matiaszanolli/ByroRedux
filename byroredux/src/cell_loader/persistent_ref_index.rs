@@ -14,10 +14,17 @@
 //! is a thin wrapper binding that shared logic to the persistent-CELL
 //! resource type.
 //!
-//! This is the foundational identity mechanism EX-14/15's cross-worldspace
-//! persistent-ref continuity and EX-16's actor/package migration both
-//! need before they can be built — see
+//! This is the foundational identity mechanism EX-16's actor/package
+//! migration needs before it can be built — see
 //! `docs/engine/exterior-readiness-plan.md`.
+//!
+//! #3455 — EX-14/15 (#2369) was the other named consumer and closed
+//! 2026-08-26 without wiring the index, so **EX-16 (#2372) is the only live
+//! gate**. Nothing in production calls `resolve_persistent_ref` or
+//! `invalidate` today; the only callers are this module's own tests. If
+//! EX-16 reaches persistent refs by another route, delete this module, the
+//! `PersistentRefIndex` resource and the `boot.rs` insertion together —
+//! `form_id_root_index::resolve` stays live via `CellRootRefIndex`.
 
 use super::form_id_root_index;
 use crate::components::PersistentRefIndex;
@@ -42,7 +49,7 @@ use byroredux_core::ecs::World;
 /// spawned as of the last rebuild — not the job's eventual full set.
 /// Callers are expected to query only once the worldspace's persistent
 /// CELL has settled; this is documented, not type-enforced.
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-14/15 (#2369) and EX-16 (#2372) are the pending callers
+#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-16 (#2372) is the one pending caller, EX-14/15 (#2369) closed without wiring it (#3455)
 pub(crate) fn resolve_persistent_ref(
     world: &World,
     index: &mut PersistentRefIndex,
@@ -63,7 +70,7 @@ pub(crate) fn resolve_persistent_ref(
 /// persistent CELL's contents changed underneath an unchanged root (e.g.
 /// a resumable `PersistentCellApplyJob` reaching `Complete` after the
 /// index was already built against its in-progress state).
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-14/15 (#2369) and EX-16 (#2372) are the pending callers
+#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-16 (#2372) is the one pending caller, EX-14/15 (#2369) closed without wiring it (#3455)
 pub(crate) fn invalidate(index: &mut PersistentRefIndex) {
     index.built_for = None;
 }

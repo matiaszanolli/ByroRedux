@@ -77,18 +77,6 @@ float pointSpotAtten(
     return phys * wcull;
 }
 
-// Direct Cook-Torrance contribution of cluster light `i` at this
-// fragment — exactly the `brdfResult * unshadowedRadiance` the WRS
-// streaming pass accumulates and the shadow pass subtracts on a hit.
-// Factored out of the pass-1 loop (#1369) so pass 2 recomputes this
-// from the light index instead of caching a vec3 per reservoir. That
-// retires the `resRadiance[NUM_RESERVOIRS]` array (192 B/thread of
-// local storage at 16 reservoirs), the dominant per-thread footprint
-// suppressing WRS occupancy. The body is copied verbatim from the
-// pass-1 attenuation + BRDF so both call sites evaluate the identical
-// expression and the unshadowed accumulation cancels bit-for-bit
-// against the shadowed subtraction. Assumes a point/spot/directional
-// light that already cleared the contribution gate.
 vec3 bethesdaDiffuseLightFactor(
     GpuMaterial mat, vec3 lightingMask, float rawNdotL)
 {
@@ -124,6 +112,18 @@ float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
     return max(-rawNdotL, 0.0) * clamp(strength, 0.0, 4.0);
 }
 
+// Direct Cook-Torrance contribution of cluster light `i` at this
+// fragment — exactly the `brdfResult * unshadowedRadiance` the WRS
+// streaming pass accumulates and the shadow pass subtracts on a hit.
+// Factored out of the pass-1 loop (#1369) so pass 2 recomputes this
+// from the light index instead of caching a vec3 per reservoir. That
+// retires the `resRadiance[NUM_RESERVOIRS]` array (192 B/thread of
+// local storage at 16 reservoirs), the dominant per-thread footprint
+// suppressing WRS occupancy. The body is copied verbatim from the
+// pass-1 attenuation + BRDF so both call sites evaluate the identical
+// expression and the unshadowed accumulation cancels bit-for-bit
+// against the shadowed subtraction. Assumes a point/spot/directional
+// light that already cleared the contribution gate.
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, vec3 lightingMask, vec3 backLightingMap,

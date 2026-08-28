@@ -1144,7 +1144,13 @@ impl SkyParamsRes {
     /// matching release will live in a future worldspace-transition
     /// hook (door-walking interior↔exterior). Update this list whenever
     /// a new bindless slot is added to the struct.
-    #[allow(dead_code)] // future worldspace-transition release hook (#1199)
+    ///
+    /// #3455 (sibling sweep) — #1199 is CLOSED; it is cited here for the
+    /// *change that created this posture*, not as a pending consumer. The
+    /// release hook itself has no tracking issue yet, so this allow names no
+    /// live gate. File one before treating this as land-ahead-of-consumer
+    /// rather than plain dead code.
+    #[allow(dead_code)] // release hook not yet built; #1199 is the change that made this worldspace-scoped, not an open gate
     pub(crate) fn texture_indices(&self) -> [u32; 5] {
         [
             self.cloud_texture_index,
@@ -1339,10 +1345,18 @@ impl NameIndex {
 ///
 /// Landed ahead of its consumer, same posture as `groundcover_translate`'s
 /// Phase 0 constants: fully exercised by `cell_loader::persistent_ref_index`'s
-/// test suite, a *pending* production consumer (EX-14/15, EX-16) rather than
-/// unused code — hence the field-level `#[allow(dead_code)]` below.
+/// test suite, a *pending* production consumer rather than unused code —
+/// hence the field-level `#[allow(dead_code)]` below.
+///
+/// #3455 — the one remaining gate is **EX-16 (#2372)**. EX-14/15 (#2369)
+/// closed 2026-08-26 without wiring the index, so it is no longer a pending
+/// consumer and must not be cited as one. If EX-16 lands and reaches
+/// persistent refs by some other route, delete this resource, the
+/// `cell_loader::persistent_ref_index` module and the `boot.rs` insertion
+/// together — the shared lookup underneath (`form_id_root_index::resolve`)
+/// stays live via `CellRootRefIndex` and is unaffected.
 pub(crate) struct PersistentRefIndex {
-    #[allow(dead_code)] // see the struct doc — EX-14/15/EX-16 is the pending consumer
+    #[allow(dead_code)] // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
     pub(crate) map: HashMap<u32, EntityId>,
     /// The persistent-cell root entity this index was last built against.
     /// `None` before the first build. A worldspace crossing always
@@ -1352,7 +1366,7 @@ pub(crate) struct PersistentRefIndex {
     /// `NameIndex`/`SubtreeCache`'s component-count heuristic, which is
     /// the right tool when nothing more specific is available but isn't
     /// needed here.
-    #[allow(dead_code)] // see the struct doc — EX-14/15/EX-16 is the pending consumer
+    #[allow(dead_code)] // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
     pub(crate) built_for: Option<EntityId>,
 }
 impl Resource for PersistentRefIndex {}
