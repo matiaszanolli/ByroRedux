@@ -24,13 +24,97 @@ pub(super) fn plugin_basename_lc(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Resolve a FormID's mod-index byte to the owning plugin's basename.
+/// Load-order plugin basenames paired with the global slot each was assigned.
+///
+/// The two are *not* interchangeable (#3366). `allocate_global_slot` draws from
+/// two independent counters: regular plugins take `0x00..=0xFD` from
+/// `next_regular`, light masters take a 12-bit sub-index in the `0xFE` space
+/// from `next_light`. So a plugin's load-order **position** equals its slot byte
+/// only while no ESL precedes a regular plugin. Both vectors are indexed by
+/// load-order position and stay parallel; `slots[pos]` is that plugin's slot.
+///
+/// Derefs to the name slice so the many pass-through call sites that only need
+/// `&[String]` are unaffected.
+pub(crate) struct LoadOrder {
+    names: Vec<String>,
+    slots: Vec<esm::reader::GlobalSlot>,
+}
+
+impl LoadOrder {
+    pub(crate) fn new(names: Vec<String>, slots: Vec<esm::reader::GlobalSlot>) -> Self {
+        debug_assert_eq!(
+            names.len(),
+            slots.len(),
+            "load-order names and slots must stay parallel"
+        );
+        Self { names, slots }
+    }
+
+    /// Build an order in which every plugin is a regular master taking a
+    /// sequential slot — the case where load-order position and slot byte
+    /// coincide. Test convenience; the real order comes from
+    /// [`parse_record_indexes_in_load_order`].
+    #[cfg(test)]
+    pub(crate) fn all_regular(names: Vec<String>) -> Self {
+        let slots = (0..names.len())
+            .map(|i| esm::reader::GlobalSlot::Regular(i as u8))
+            .collect();
+        Self::new(names, slots)
+    }
+}
+
+impl Default for LoadOrder {
+    /// Empty order — used by test fixtures and by the synthetic
+    /// `ExteriorWorldContext`s that never resolve a FormID to a plugin.
+    fn default() -> Self {
+        Self {
+            names: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+}
+
+impl std::ops::Deref for LoadOrder {
+    type Target = [String];
+    fn deref(&self) -> &Self::Target {
+        &self.names
+    }
+}
+
+/// Resolve a global FormID to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
 /// unresolved — the audit's #561 completeness item: "name the missing
 /// master" instead of silently rendering empty.
-pub(super) fn plugin_for_form_id(form_id: u32, load_order: &[String]) -> Option<&str> {
-    let mod_index = (form_id >> 24) as usize;
-    load_order.get(mod_index).map(|s| s.as_str())
+///
+/// #3366 — this used to index `load_order` by the FormID's top byte, treating
+/// it as a load-order *position*. Those coincide only when no ESL precedes a
+/// regular plugin: an ESL anywhere but last shifts every later regular plugin's
+/// position past its slot byte, so the diagnostic named the wrong plugin, and
+/// an ESL-owned form (top byte `0xFE` = 254) fell off the end of the list and
+/// reported `None` — rendered by callers as `"???"` / `"Engine.esm"`. Measured
+/// on a legal 5-plugin order with `_ResourcePack.esl` third, every
+/// Dragonborn-owned `DLC2*` static was attributed to the ESL.
+///
+/// Decode the FormID into a [`GlobalSlot`] first — the exact inverse of
+/// [`GlobalSlot::compose`] — then find the plugin holding that slot. The
+/// remap that actually places geometry was never affected: it looks masters up
+/// by position and reads `slots[pos]`, keeping the two in step.
+pub(super) fn plugin_for_form_id(form_id: u32, load_order: &LoadOrder) -> Option<&str> {
+    let slot = global_slot_of(form_id);
+    let position = load_order.slots.iter().position(|s| *s == slot)?;
+    load_order.names.get(position).map(|s| s.as_str())
+}
+
+/// Inverse of [`esm::reader::GlobalSlot::compose`]: which slot owns this global
+/// FormID. `0xFE` is the light-master space, where the owner is the 12 bits
+/// below the top byte; anything else is a full-byte regular slot.
+fn global_slot_of(form_id: u32) -> esm::reader::GlobalSlot {
+    const LIGHT_MASTER_BYTE: u32 = 0xFE;
+    if (form_id >> 24) == LIGHT_MASTER_BYTE {
+        esm::reader::GlobalSlot::Light(((form_id >> 12) & 0x0FFF) as u16)
+    } else {
+        esm::reader::GlobalSlot::Regular((form_id >> 24) as u8)
+    }
 }
 
 /// Build the [`FormIdRemap`] that turns this plugin's local FormIDs
@@ -205,7 +289,7 @@ impl ArchiveStringSource {
 /// resolve through `EsmIndex.lighting_templates`.
 pub(crate) fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
-) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)> {
+) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
     let mut archive_source = ArchiveStringSource::default();
     parse_record_indexes_in_load_order_with_archive(plugin_paths, |plugin_path, relative_path| {
         archive_source.read(plugin_path, relative_path)
@@ -215,7 +299,7 @@ pub(crate) fn parse_record_indexes_in_load_order(
 fn parse_record_indexes_in_load_order_with_archive<F>(
     plugin_paths: &[&str],
     mut read_archive: F,
-) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)>
+) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)>
 where
     F: FnMut(&Path, &str) -> Option<Vec<u8>>,
 {
@@ -289,7 +373,7 @@ where
             });
         merged.merge_from(plugin_records);
     }
-    Ok((merged, load_order))
+    Ok((merged, LoadOrder::new(load_order, slots)))
 }
 
 /// Allocate one global load-order slot without ever entering reserved or

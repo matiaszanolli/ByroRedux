@@ -21,7 +21,7 @@ use crate::components::VisibleWhenDistant;
 use crate::npc_spawn::{NpcSpawnJob, NpcSpawnProgress};
 
 use super::euler::euler_zup_to_quat_yup_refr;
-use super::load_order::{self, plugin_for_form_id};
+use super::load_order::{self, plugin_for_form_id, LoadOrder};
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
@@ -206,7 +206,7 @@ pub(super) fn load_references(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
     label: &str,
-    load_order: &[String],
+    load_order: &LoadOrder,
     // #1188 — FO4+ PreCombined absorbed REFR form IDs. Skip placement
     // for any REFR in this set: the CK's bake tool already folded
     // its geometry into a `meshes\precombined\<cell>_<hash>_oc.nif`
@@ -258,7 +258,7 @@ pub(super) fn load_references_budgeted(
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
     label: &str,
-    load_order: &[String],
+    load_order: &LoadOrder,
     absorbed_refs: &std::collections::HashSet<u32>,
     job: Option<Box<ReferenceLoadJob>>,
     budget: &mut FrameTimeBudget,
@@ -843,7 +843,7 @@ struct CellLoadCtx<'a> {
     record_index: &'a byroredux_plugin::esm::records::EsmIndex,
     game: byroredux_plugin::esm::reader::GameKind,
     tex_provider: &'a TextureProvider,
-    load_order: &'a [String],
+    load_order: &'a LoadOrder,
 }
 
 /// #2147 / #2392 — drop seat reservations whose furniture or claiming actor

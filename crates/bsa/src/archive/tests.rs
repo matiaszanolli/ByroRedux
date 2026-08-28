@@ -321,7 +321,7 @@ fn extract_rejects_size_smaller_than_embedded_name_prefix() {
             offset: 0,
             size: 3,
             compression_toggle: false,
-            embed_name_toggle: false,
+            unknown_size_flag: false,
         },
     );
     let err = archive
@@ -356,7 +356,7 @@ fn extract_rejects_compressed_payload_too_short() {
             offset: 0,
             size: 3, // < 4 bytes — too short to hold the size header
             compression_toggle: false,
-            embed_name_toggle: false,
+            unknown_size_flag: false,
         },
     );
     let err = archive
@@ -370,23 +370,26 @@ fn extract_rejects_compressed_payload_too_short() {
     );
 }
 
-/// Regression for #616 / SK-D2-03 — when archive `embed_file_names`
-/// is OFF, a per-file `embed_name_toggle` flips the policy ON for
-/// that one record. Pre-fix the bit was masked off as part of
-/// `size & 0x3FFFFFFF` and never re-tested, so a mixed-mode BSA's
-/// embed-name file extracted with the wrong path-prefix consumption
-/// (the bstring header was treated as part of the payload).
+/// #3367 — bit 31 of the size word is NOT acted on: the embedded-name skip
+/// follows the archive-level `embed_file_names` flag alone, regardless of the
+/// per-file bit.
 ///
-/// Test fixture: archive default OFF + per-file toggle ON should
-/// behave identically to archive default ON + per-file toggle OFF.
-/// We verify the embed-name file extracts as a 4-byte payload and
-/// the bstring prefix is correctly skipped.
+/// This replaces `per_file_embed_name_toggle_xors_archive_flag_for_mixed_mode_bsa`
+/// (#616 / SK-D2-03), which pinned the opposite. That XOR reading was
+/// unsourced: no spec or reference implementation assigns bit 31 that meaning,
+/// and openmw — the only full third-party BSA reader available — declares
+/// `FileSizeFlag_Compression = 0x40000000` as its *only* size flag and drives
+/// the name skip purely off `ArchiveFlag_EmbeddedNames`. The bit is set on zero
+/// files across every installed vanilla archive (Skyrim SE 172,918 files, FNV
+/// 182,177, FO3 159,155, Oblivion 147,629), so acting on it could only ever
+/// affect third-party archives — where a wrong guess consumes a bstring prefix
+/// that isn't there and returns a body shifted by that many bytes.
+///
+/// Archive flag OFF + bit 31 set: the payload must come back whole, prefix
+/// bytes included, because nothing is skipped.
 #[test]
-fn per_file_embed_name_toggle_xors_archive_flag_for_mixed_mode_bsa() {
-    // Payload layout for an embed-name file:
-    //   bstring: 1 byte length + 5 name bytes  ("hello")
-    //   data:    4 bytes payload
-    // Total record size = 1 + 5 + 4 = 10 bytes.
+fn unknown_size_flag_does_not_flip_embedded_name_policy_on() {
+    // Bytes that would read as a bstring ("hello") if the flag were honoured.
     let payload = [5u8, b'h', b'e', b'l', b'l', b'o', 0xDE, 0xAD, 0xBE, 0xEF];
     let archive = archive_with_payload(
         &payload,
@@ -398,28 +401,25 @@ fn per_file_embed_name_toggle_xors_archive_flag_for_mixed_mode_bsa() {
             offset: 0,
             size: 10,
             compression_toggle: false,
-            embed_name_toggle: true, // per-file flip — embed-name ON for this entry
+            unknown_size_flag: true,
         },
     );
     let data = archive
         .extract("mixed.dds")
-        .expect("embed-name toggle must flip the policy on");
+        .expect("extraction must succeed regardless of the unknown flag");
     assert_eq!(
         data,
-        vec![0xDE, 0xAD, 0xBE, 0xEF],
-        "extract must skip the bstring prefix when the per-file toggle is set"
+        payload.to_vec(),
+        "with the archive flag OFF nothing may be skipped — bit 31 must not \
+         turn the leading bytes into a consumed bstring prefix"
     );
 }
 
-/// Companion: archive `embed_file_names = ON` + per-file
-/// `embed_name_toggle = ON` flips the policy back to OFF for that
-/// entry. The XOR symmetry mirrors the long-standing
-/// `compression_toggle` behaviour.
+/// Companion: archive flag ON + bit 31 set must still skip the prefix. Pre-#3367
+/// the XOR flipped the policy OFF here and returned the bstring bytes as payload.
 #[test]
-fn per_file_embed_name_toggle_can_flip_off() {
-    // Payload is plain 4 bytes — no bstring prefix because the
-    // toggle disables embed-name for this entry.
-    let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+fn unknown_size_flag_does_not_flip_embedded_name_policy_off() {
+    let payload = [5u8, b'h', b'e', b'l', b'l', b'o', 0xDE, 0xAD, 0xBE, 0xEF];
     let archive = archive_with_payload(
         &payload,
         true, // archive-level embed_file_names = ON
@@ -428,19 +428,45 @@ fn per_file_embed_name_toggle_can_flip_off() {
         "flipped_off.dds",
         FileEntry {
             offset: 0,
-            size: 4,
+            size: 10,
             compression_toggle: false,
-            embed_name_toggle: true, // per-file flip — embed-name OFF for this entry
+            unknown_size_flag: true,
         },
     );
     let data = archive
         .extract("flipped_off.dds")
-        .expect("embed-name toggle must flip the policy off");
+        .expect("extraction must succeed regardless of the unknown flag");
     assert_eq!(
         data,
         vec![0xDE, 0xAD, 0xBE, 0xEF],
-        "extract must NOT skip a bstring prefix when the per-file toggle inverts the archive flag"
+        "with the archive flag ON the bstring prefix is always skipped — bit 31 \
+         must not invert that"
     );
+}
+
+/// The compression toggle (bit 30) keeps its XOR. Unlike bit 31 it is declared
+/// by openmw and exercised by real content — 5,221 Oblivion files set it — so
+/// #3367 must not disturb it.
+#[test]
+fn compression_toggle_still_xors_the_archive_default() {
+    let raw = [0xDEu8, 0xAD, 0xBE, 0xEF];
+    let archive = archive_with_payload(
+        &raw,
+        false, // no embedded names
+        true,  // archive-level compressed_by_default = ON
+        104,
+        "raw.dds",
+        FileEntry {
+            offset: 0,
+            size: 4,
+            compression_toggle: true, // flips this entry back to UNcompressed
+            unknown_size_flag: false,
+        },
+    );
+    let data = archive
+        .extract("raw.dds")
+        .expect("compression toggle must flip the archive default off");
+    assert_eq!(data, raw.to_vec());
 }
 
 /// Sibling check — a record whose `size` exactly equals
@@ -461,7 +487,7 @@ fn extract_zero_data_size_with_embedded_name_is_ok() {
             offset: 0,
             size: 6, // exactly 1 + 5
             compression_toggle: false,
-            embed_name_toggle: false,
+            unknown_size_flag: false,
         },
     );
     let data = archive

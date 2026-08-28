@@ -3022,3 +3022,159 @@ fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
          same as on Skyrim (#3217); got {out:?}"
     );
 }
+
+/// #3365 — the Skyrim counterpart of
+/// `fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master`.
+///
+/// #3217 narrowed `multi_pick` from `flags & (0x02 | 0x04)` to `flags & 0x04`,
+/// and its entire justification is Skyrim-sourced ("1,491 vanilla Skyrim NPCs
+/// over-equipped"). Yet all three of its own tests are synthetic fixtures, and
+/// the only real-data pin that existed was the FNV one above — added by #3285
+/// as a side-effect characterisation. FNV is not a proxy: it ships 2,700+ LVLI
+/// with a different flag mix, against Skyrim's 3,075.
+///
+/// Measured on the shipped `Skyrim.esm`:
+/// ```text
+/// LVLI total = 3075
+/// flags histogram {0:553, 1:62, 2:239, 3:1855, 4:280, 8:5, 9:1, 10:39, 11:41}
+/// #3217-affected (0x02 set, 0x04 clear, multi-level) = 935
+/// Use-All (0x04) = 280
+/// ```
+///
+/// Like the FNV pin this is a **characterisation** test: it asserts the
+/// population is still there and that the representative still single-picks, so
+/// a future change to the shared `expand_leveled_inner` announces its effect on
+/// Skyrim instead of landing unobserved.
+#[test]
+#[ignore]
+fn skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
+    let Some(data) = data_dir(
+        "BYROREDUX_SKYRIMSE_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+    ) else {
+        eprintln!("[Skyrim/LVLI] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    let affected: Vec<&byroredux_plugin::esm::records::LeveledList> = index
+        .leveled_items
+        .values()
+        .filter(|l| l.flags & 0x02 != 0 && l.flags & 0x04 == 0)
+        .filter(|l| {
+            let mut levels: Vec<u16> = l.entries.iter().map(|e| e.level).collect();
+            levels.sort_unstable();
+            levels.dedup();
+            levels.len() > 1
+        })
+        .collect();
+    let use_all = index
+        .leveled_items
+        .values()
+        .filter(|l| l.flags & 0x04 != 0)
+        .count();
+
+    eprintln!(
+        "[Skyrim/LVLI] {} total LVLI, {} in the #3217-affected set, {} Use-All",
+        index.leveled_items.len(),
+        affected.len(),
+        use_all,
+    );
+
+    assert!(
+        index.leveled_items.len() >= 3_000,
+        "Skyrim LVLI count collapsed to {} — the parser, not this fix, regressed",
+        index.leveled_items.len()
+    );
+    assert!(
+        affected.len() >= 900,
+        "the #3217-affected Skyrim set shrank to {} records (measured 935); if \
+         that is intended, re-derive the blast radius before re-pinning",
+        affected.len()
+    );
+    assert!(
+        use_all >= 250,
+        "the Use-All (0x04) set shrank to {use_all} (measured 280) — multi_pick \
+         would then be unreachable and this pin vacuous"
+    );
+
+    // The named representative from #3217's own fixture doc (`equip.rs`'s
+    // `expand_leveled_nested_tier_ladders_do_not_combinatorially_explode`):
+    // dunIronbindBeemJa, whose outfit holds two `flags = 0x03` enchant ladders.
+    let npc = index
+        .npcs
+        .values()
+        .find(|n| n.editor_id.eq_ignore_ascii_case("dunIronbindBeemJa"))
+        .expect("dunIronbindBeemJa NPC_ present in Skyrim.esm");
+    let outfit_id = npc
+        .default_outfit
+        .expect("dunIronbindBeemJa carries a DOFT default outfit");
+    let outfit = index
+        .outfits
+        .get(&outfit_id)
+        .expect("the DOFT FormID resolves to an OTFT");
+
+    // Two of the five slots are 0x03 tier ladders — the shape that multiplied
+    // out pre-#3217 (18 tiers x 5 variants). Assert they are still ladders, so
+    // the pin below cannot pass by the records having become trivial.
+    let ladders: Vec<&byroredux_plugin::esm::records::LeveledList> = outfit
+        .items
+        .iter()
+        .filter_map(|item| index.leveled_items.get(item))
+        .collect();
+    assert!(
+        ladders.len() >= 2,
+        "expected dunIronbindBeemJa's outfit to still contain leveled slots; got {}",
+        ladders.len()
+    );
+    for ladder in &ladders {
+        assert_eq!(
+            ladder.flags & 0x04,
+            0,
+            "{} must stay a bit-0x02-only record for this pin to mean anything",
+            ladder.editor_id
+        );
+        assert!(
+            ladder.entries.len() >= 5,
+            "{} collapsed to {} entries — a one-entry list single-picks trivially",
+            ladder.editor_id,
+            ladder.entries.len()
+        );
+    }
+
+    // Every leveled slot must yield exactly one item, at every level: the whole
+    // outfit expands to one item per OTFT slot, never a product of the ladders.
+    for level in [1i16, 10, 20, 50] {
+        for ladder in &ladders {
+            let mut one = Vec::new();
+            byroredux_plugin::equip::expand_leveled_form_id(
+                ladder.form_id,
+                level,
+                &index,
+                &mut one,
+            );
+            assert_eq!(
+                one.len(),
+                1,
+                "{} at level {level} must single-pick (#3217); got {one:08X?}",
+                ladder.editor_id
+            );
+        }
+
+        let mut out = Vec::new();
+        for item in &outfit.items {
+            byroredux_plugin::equip::expand_leveled_form_id(*item, level, &index, &mut out);
+        }
+        eprintln!(
+            "[Skyrim/LVLI] dunIronbindBeemJa outfit at level {level} -> {} items",
+            out.len()
+        );
+        assert_eq!(
+            out.len(),
+            outfit.items.len(),
+            "the outfit must expand to exactly one item per OTFT slot at level \
+             {level}; got {out:08X?}"
+        );
+    }
+}

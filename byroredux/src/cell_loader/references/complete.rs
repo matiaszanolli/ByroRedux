@@ -16,6 +16,7 @@
 //! verbatim.
 
 use super::*;
+use crate::cell_loader::load_order::LoadOrder;
 
 /// See the module doc. Consumes `job` because it destructures the
 /// accumulator out of it; only reachable once the REFR loop is drained.
@@ -25,7 +26,7 @@ pub(super) fn complete_reference_load(
     world: &mut World,
     ctx: &mut VulkanContext,
     label: &str,
-    load_order: &[String],
+    load_order: &LoadOrder,
 ) -> ReferenceLoadProgress {
     let ReferenceLoadJob {
         cache_hits_at_entry,

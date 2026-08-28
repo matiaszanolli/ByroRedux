@@ -577,7 +577,7 @@ pub(crate) fn populate_scene_runtime(
 pub(crate) fn materialize_scene_actor_alias_stubs(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
-    load_order: &[String],
+    load_order: &crate::cell_loader::load_order::LoadOrder,
     quest_form_id: u32,
     scene_form_id: u32,
 ) -> usize {

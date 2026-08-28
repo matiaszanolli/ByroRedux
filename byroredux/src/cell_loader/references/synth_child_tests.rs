@@ -268,7 +268,8 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
         lock: None,
         water_velocity: None,
     };
-    let load_order = ["Test.esm".to_string()];
+    let load_order =
+        crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);
 
     // Simulate a 3-child expansion: only child 0 is primary.
     for idx in 0..3u32 {

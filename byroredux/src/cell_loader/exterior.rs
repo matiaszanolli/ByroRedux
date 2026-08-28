@@ -24,7 +24,10 @@ use super::{terrain, water, FrameTimeBudget};
 
 pub struct ExteriorWorldContext {
     pub record_index: Arc<byroredux_plugin::esm::records::EsmIndex>,
-    pub load_order: Arc<Vec<String>>,
+    /// #3366 — carries each plugin's global slot alongside its name, so the
+    /// unresolved-REFR diagnostic can name ESL-owned forms and stays correct
+    /// when an ESL precedes a regular plugin.
+    pub load_order: Arc<crate::cell_loader::load_order::LoadOrder>,
     /// Path to the worldspace's plugin (the `esm_path` this context was
     /// built from), used to locate the companion `<Plugin> -
     /// Geometry.csg` for FO4 precombined geometry (M49). The cells'
@@ -713,7 +716,7 @@ mod persistent_root_survives_crossing_tests {
         index.cells = cells;
         ExteriorWorldContext {
             record_index: std::sync::Arc::new(index),
-            load_order: std::sync::Arc::new(Vec::new()),
+            load_order: std::sync::Arc::new(Default::default()),
             plugin_path: String::new(),
             plugin_paths: Vec::new(),
             worldspace_key: "childworld".into(),

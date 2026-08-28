@@ -63,7 +63,7 @@ mod exterior;
 mod form_id_root_index;
 mod index;
 mod load;
-mod load_order;
+pub(crate) mod load_order;
 mod lod_bands;
 mod lod_coverage;
 mod lod_support;

@@ -50,14 +50,18 @@ impl BsaArchive {
         file.seek(SeekFrom::Start(entry.offset))?;
 
         // Skip embedded file name prefix (bstring: 1 byte length + name).
-        // Present when archive flag 0x100 is set, modulo the per-file
-        // override at bit 31 of the size word — mirrors the
-        // compression-toggle XOR pattern used immediately below. See
-        // #616 / SK-D2-03. Vanilla Bethesda BSAs always carry a uniform
-        // per-archive embed-name policy (the toggle bit is always
-        // zero), so this XOR is a no-op on shipped content; modded
-        // mixed-mode archives now extract correctly.
-        let file_embeds_name = self.embed_file_names != entry.embed_name_toggle;
+        // Driven by the archive-level 0x100 flag alone, matching openmw
+        // (`compressedbsafile.cpp:271`).
+        //
+        // #3367 — this used to XOR in a per-file "override" from bit 31 of the
+        // size word, mirroring the compression toggle below. Unlike the
+        // compression bit (0x40000000, which openmw declares and which is set
+        // on 5,221 real Oblivion files), bit 31 has no source assigning it that
+        // meaning and is set on zero files across every installed vanilla
+        // archive. Guessing wrong here consumes a bstring prefix that isn't
+        // there and shifts the returned body — silent corruption. See
+        // [`super::FileEntry::unknown_size_flag`].
+        let file_embeds_name = self.embed_file_names;
         let name_prefix_len = if file_embeds_name {
             let mut len_buf = [0u8; 1];
             file.read_exact(&mut len_buf)?;

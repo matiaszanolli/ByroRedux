@@ -149,9 +149,9 @@ impl BsaArchive {
             size: u32,
             offset: u32,
             compression_toggle: bool,
-            /// Bit 31 of the on-disk size word — XOR'd against
-            /// `embed_file_names` at extract time. See #616 / SK-D2-03.
-            embed_name_toggle: bool,
+            /// Bit 31 of the on-disk size word. Meaning unknown — see
+            /// [`super::FileEntry::unknown_size_flag`] (#3367).
+            unknown_size_flag: bool,
             /// Stored file hash — only retained in debug builds for the
             /// later file-name-pass validation (#361). Release builds
             /// drop the field entirely.
@@ -247,7 +247,21 @@ impl BsaArchive {
                 // per file. Pre-fix it was masked off as part of
                 // `size & 0x3FFFFFFF` and never re-tested, so mixed-mode
                 // BSAs extracted with the wrong path-prefix consumption.
-                let embed_name_toggle = size_raw & 0x80000000 != 0;
+                // Bit 31: meaning unknown, deliberately not acted on (#3367).
+                // It was previously read as a per-file "embed name" override
+                // XOR'd against the archive flag, but no spec or reference
+                // implementation assigns it that meaning — openmw, the only
+                // full third-party BSA reader available, declares
+                // `FileSizeFlag_Compression = 0x40000000` as the *only* size
+                // flag and drives the name skip purely off the archive-level
+                // `ArchiveFlag_EmbeddedNames`. Counted here so a real-world
+                // instance surfaces in the log instead of being silently
+                // acted on.
+                let unknown_size_flag = size_raw & 0x80000000 != 0;
+                // Keep masking bit 31 out of the size: at 0x3FFFFFFF the cap is
+                // ~1.07 GB and the largest single file across every installed
+                // vanilla archive is 67,308,868 bytes, so the two readings
+                // cannot diverge on real content.
                 let size = size_raw & 0x3FFFFFFF;
 
                 raw_files.push(RawFileRecord {
@@ -255,7 +269,7 @@ impl BsaArchive {
                     size,
                     offset,
                     compression_toggle,
-                    embed_name_toggle,
+                    unknown_size_flag,
                     #[cfg(debug_assertions)]
                     hash,
                 });
@@ -312,8 +326,28 @@ impl BsaArchive {
                     offset: raw.offset as u64,
                     size: raw.size,
                     compression_toggle: raw.compression_toggle,
-                    embed_name_toggle: raw.embed_name_toggle,
+                    unknown_size_flag: raw.unknown_size_flag,
                 },
+            );
+        }
+
+        // #3367 — bit 31 of the size word has no sourced meaning and is never
+        // set on shipped content (zero files across every installed vanilla
+        // Skyrim SE / FNV / FO3 / Oblivion archive). Surface it once per
+        // archive rather than silently acting on a guess: an archive that trips
+        // this is the evidence needed to give the bit a real meaning.
+        let unknown_flag_count = files.values().filter(|f| f.unknown_size_flag).count();
+        if unknown_flag_count > 0 {
+            let example = files
+                .iter()
+                .find(|(_, f)| f.unknown_size_flag)
+                .map(|(p, _)| p.as_str())
+                .unwrap_or("<none>");
+            log::debug!(
+                "BSA: unknown size-word flag (bit 31 / 0x80000000) set on {} of {}                  file record(s), e.g. '{}'. Its meaning is unsourced, so it is                  ignored — the embedded-name skip follows the archive-level                  0x100 flag alone. See #3367.",
+                unknown_flag_count,
+                files.len(),
+                example,
             );
         }
 

@@ -9,6 +9,7 @@
 //! deeper.
 
 use super::*;
+use crate::cell_loader::load_order::LoadOrder;
 
 fn water_current_volume_from_ref(
     placed_ref: &esm::cell::PlacedRef,
@@ -53,7 +54,7 @@ pub(super) fn stamp_quest_reference(
     world: &mut World,
     entity: EntityId,
     placed_ref: &esm::cell::PlacedRef,
-    load_order: &[String],
+    load_order: &LoadOrder,
 ) {
     let plugin_name = plugin_for_form_id(placed_ref.form_id, load_order).unwrap_or("Engine.esm");
     let placement = world.resource_mut::<FormIdPool>().intern(FormIdPair {
@@ -95,7 +96,7 @@ pub(super) fn stamp_quest_reference(
 pub(crate) fn spawn_logical_quest_reference(
     world: &mut World,
     placed_ref: &esm::cell::PlacedRef,
-    load_order: &[String],
+    load_order: &LoadOrder,
     position: Vec3,
     rotation: Quat,
     scale: f32,

@@ -63,14 +63,35 @@ struct FileEntry {
     /// Whether compression is toggled relative to archive default. Bit 30
     /// (0x40000000) of the on-disk size word.
     compression_toggle: bool,
-    /// Whether the embed-name policy is toggled relative to archive default.
-    /// Bit 31 (0x80000000) of the on-disk size word. Mixed-mode BSAs (mods
-    /// that flip the flag per file rather than for the whole archive) need
-    /// this toggle XOR'd against the archive-level `embed_file_names`
-    /// before deciding whether to skip the bstring path prefix at extract
-    /// time. Vanilla Bethesda BSAs always carry a uniform per-archive
-    /// policy and never set this bit. See #616 / SK-D2-03.
-    embed_name_toggle: bool,
+    /// Bit 31 (0x80000000) of the on-disk size word. **Meaning unknown; not
+    /// acted on** (#3367).
+    ///
+    /// It was previously treated as a per-file "embed name" override, XOR'd
+    /// against the archive-level `embed_file_names` flag before deciding
+    /// whether to skip the bstring path prefix at extract time. That reading
+    /// was unsourced: no spec or reference implementation available here
+    /// assigns bit 31 that meaning. openmw — the only full third-party BSA
+    /// reader in `reference/` — declares exactly one size flag
+    /// (`FileSizeFlag_Compression = 0x40000000`,
+    /// `components/bsa/compressedbsafile.hpp:73-76`), leaves bit 31 inside the
+    /// size value, and drives the name skip purely off `ArchiveFlag_EmbeddedNames`
+    /// (`compressedbsafile.cpp:271`). Acting on a guessed meaning risks
+    /// consuming a 1+N-byte bstring prefix that isn't there and returning a body
+    /// shifted by that many bytes — silent corruption for a DDS or raw asset,
+    /// which unlike a NIF has no magic check to fail on.
+    ///
+    /// Never set on shipped content. Counted independently of this reader across
+    /// every installed vanilla archive: Skyrim SE (23 archives / 172,918 files),
+    /// FNV (21 / 182,177), FO3 (16 / 159,155), Oblivion (17 / 147,629) — zero
+    /// files in all four. Bit 30 by contrast is genuinely exercised (5,221
+    /// Oblivion files), so the compression XOR has real coverage and this does
+    /// not.
+    ///
+    /// Retained rather than dropped so [`BsaArchive::open`] can log once when a
+    /// real-world archive sets it, which is the evidence needed to give it a
+    /// sourced meaning. See #616 / SK-D2-03 for the original (internal-only)
+    /// claim.
+    unknown_size_flag: bool,
 }
 
 impl BsaArchive {

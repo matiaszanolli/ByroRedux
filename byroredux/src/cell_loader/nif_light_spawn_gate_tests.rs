@@ -266,11 +266,11 @@ fn plugin_basename_lc_strips_path_and_lowercases() {
 
 #[test]
 fn plugin_for_form_id_resolves_top_byte_to_load_order_basename() {
-    let load_order = vec![
+    let load_order = super::load_order::LoadOrder::all_regular(vec![
         "skyrim.esm".to_string(),
         "update.esm".to_string(),
         "dawnguard.esm".to_string(),
-    ];
+    ]);
     // Top byte 0 → first plugin in the order.
     assert_eq!(
         super::load_order::plugin_for_form_id(0x0001_2345, &load_order),
@@ -291,5 +291,116 @@ fn plugin_for_form_id_resolves_top_byte_to_load_order_basename() {
         super::load_order::plugin_for_form_id(0xFF00_0000, &load_order),
         None,
         "out-of-range mod-index byte must return None, not panic"
+    );
+}
+
+/// #3366 — with an ESL anywhere but last, load-order *position* and global
+/// *slot* diverge, and the diagnostic must follow the slot.
+///
+/// `allocate_global_slot` draws from two counters: regular plugins take
+/// `0x00..=0xFD`, light masters take a 12-bit sub-index in the `0xFE` space. In
+/// the order below `_resourcepack.esl` sits third, so `dragonborn.esm` is at
+/// position 4 but holds regular slot `0x03`. Pre-fix, indexing the name list by
+/// the top byte reported every Dragonborn-owned form as `_resourcepack.esl`,
+/// and every ESL-owned form (top byte `0xFE` = 254) fell off the end as `None`
+/// — which callers render as `"???"` / `"Engine.esm"`, sending the user to add
+/// a master they already have.
+///
+/// The order is legal: `_ResourcePack.esl` declares
+/// `["Skyrim.esm","Update.esm","HearthFires.esm"]` as its masters.
+#[test]
+fn plugin_for_form_id_follows_global_slots_not_positions_with_an_esl() {
+    use byroredux_plugin::esm::reader::GlobalSlot;
+
+    let load_order = super::load_order::LoadOrder::new(
+        vec![
+            "skyrim.esm".to_string(),
+            "update.esm".to_string(),
+            "hearthfires.esm".to_string(),
+            "_resourcepack.esl".to_string(),
+            "dragonborn.esm".to_string(),
+        ],
+        vec![
+            GlobalSlot::Regular(0x00),
+            GlobalSlot::Regular(0x01),
+            GlobalSlot::Regular(0x02),
+            GlobalSlot::Light(0x000),
+            // Position 4, but slot 0x03 — the ESL consumed no regular byte.
+            GlobalSlot::Regular(0x03),
+        ],
+    );
+
+    // The regression: top byte 0x03 is Dragonborn, NOT the ESL at position 3.
+    // These are real Dragonborn FormIDs / editor IDs from the audit.
+    for form_id in [0x0302_8434u32, 0x0303_84C1, 0x0301_85ED] {
+        assert_eq!(
+            super::load_order::plugin_for_form_id(form_id, &load_order),
+            Some("dragonborn.esm"),
+            "{form_id:08X} is Dragonborn content; pre-#3366 it was attributed \
+             to the ESL sitting at load-order position 3"
+        );
+    }
+
+    // ESL-owned forms are nameable now instead of reporting None.
+    for form_id in [0xFE00_00E4u32, 0xFE00_014D] {
+        assert_eq!(
+            super::load_order::plugin_for_form_id(form_id, &load_order),
+            Some("_resourcepack.esl"),
+            "{form_id:08X} lives in the 0xFE light-master space and must resolve \
+             to the ESL, not fall off the end of the name list"
+        );
+    }
+
+    // Plugins before the ESL are unaffected — position and slot still agree.
+    assert_eq!(
+        super::load_order::plugin_for_form_id(0x0001_2345, &load_order),
+        Some("skyrim.esm")
+    );
+    assert_eq!(
+        super::load_order::plugin_for_form_id(0x0200_0001, &load_order),
+        Some("hearthfires.esm")
+    );
+
+    // A slot nobody holds still returns None so the caller can print `???`.
+    assert_eq!(
+        super::load_order::plugin_for_form_id(0x7F00_0000, &load_order),
+        None,
+        "an unallocated regular slot must return None, not panic"
+    );
+    assert_eq!(
+        super::load_order::plugin_for_form_id(0xFE00_F001, &load_order),
+        None,
+        "an unallocated light sub-index must return None"
+    );
+}
+
+/// The 12-bit light sub-index is read from bits 12..24, mirroring
+/// `GlobalSlot::compose`, so two ESLs are told apart by their sub-index rather
+/// than by the shared `0xFE` byte.
+#[test]
+fn plugin_for_form_id_distinguishes_multiple_esls_by_sub_index() {
+    use byroredux_plugin::esm::reader::GlobalSlot;
+
+    let load_order = super::load_order::LoadOrder::new(
+        vec![
+            "skyrim.esm".to_string(),
+            "first.esl".to_string(),
+            "second.esl".to_string(),
+        ],
+        vec![
+            GlobalSlot::Regular(0x00),
+            GlobalSlot::Light(0x000),
+            GlobalSlot::Light(0x001),
+        ],
+    );
+
+    // compose(Light(0), raw) -> 0xFE000000 | (0 << 12) | raw
+    assert_eq!(
+        super::load_order::plugin_for_form_id(GlobalSlot::Light(0x000).compose(0x123), &load_order),
+        Some("first.esl")
+    );
+    assert_eq!(
+        super::load_order::plugin_for_form_id(GlobalSlot::Light(0x001).compose(0x123), &load_order),
+        Some("second.esl")
     );
 }

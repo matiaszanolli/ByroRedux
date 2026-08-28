@@ -306,7 +306,7 @@ mod tests {
     fn exterior_context(index: EsmIndex, worldspace_key: &str) -> ExteriorWorldContext {
         ExteriorWorldContext {
             record_index: Arc::new(index),
-            load_order: Arc::new(Vec::new()),
+            load_order: Arc::new(Default::default()),
             plugin_path: String::new(),
             plugin_paths: Vec::new(),
             worldspace_key: worldspace_key.to_string(),

@@ -132,13 +132,31 @@ pub struct TextureSlotContext {
 /// Translate a source shader-type integer into the canonical numbering used by
 /// `Material.material_kind` and the slot table.
 ///
-/// FO76's `BSShaderType155` is not the Skyrim/FO4 enum: 3/4/5/12 mean
+/// `BSShaderType155` is not the Skyrim/FO4 enum: 3/4/5/12 mean
 /// FaceTint/SkinTint/HairTint/EyeEnvmap rather than
-/// Parallax/FaceTint/SkinTint/TreeAnim. FO76 Terrain (17) has no canonical
-/// Skyrim material kind and no renderer branch, so it deliberately degrades to
+/// Parallax/FaceTint/SkinTint/TreeAnim. Terrain (17) has no canonical Skyrim
+/// material kind and no renderer branch, so it deliberately degrades to
 /// Default instead of masquerading as Skyrim Cloud.
+///
+/// **Applies to Starfield as well as FO76 (#3364).** Which enum an integer came
+/// from is decided by the *parser* boundary, not by the slot-table layout tag:
+/// `BSLightingShaderProperty::parse_with_size` sends everything at
+/// `bsver >= FO76 (155)` through `parse_fo76_plus`, and Starfield is
+/// `bsver >= 172`, so its `shader_type` is decoded by
+/// `parse_shader_type_data_fo76` and is a `BSShaderType155` value.
+/// `TextureSlotLayout::from_bsver` splits `Starfield` off from `Fallout76` for
+/// the *slot* table, and keying this translation on that narrower tag left
+/// Starfield's raw types falling through untranslated to be read as Skyrim
+/// numbers. `normalize_shader_type` masked 4 and 5 (their payload variants
+/// carry the tag), but 3 / 12 / 17 parse to `ShaderTypeData::None` and did not:
+/// a Starfield FaceTint (3) reached the slot table as Skyrim Parallax and bound
+/// the head's detail map as a POM height field — the exact failure #2694 fixed
+/// for Skyrim. Keep the guard on the same boundary the parser used.
 pub const fn canonical_shader_type(layout: TextureSlotLayout, raw: u32) -> u32 {
-    if matches!(layout, TextureSlotLayout::Fallout76) {
+    if matches!(
+        layout,
+        TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield
+    ) {
         match raw {
             3 => bs_lighting::FACE_TINT,
             4 => bs_lighting::SKIN_TINT,
@@ -757,6 +775,75 @@ mod tests {
             bs_lighting::EYE_ENVMAP
         );
         assert_eq!(canonical_shader_type(TextureSlotLayout::Fallout76, 17), 0);
+    }
+
+    /// #3364 — Starfield's `shader_type` is a `BSShaderType155` value, exactly
+    /// like FO76's, because the parser routes every `bsver >= FO76 (155)`
+    /// stream (Starfield is 172+) through `parse_fo76_plus` /
+    /// `parse_shader_type_data_fo76`. The translation must therefore key on the
+    /// same boundary the parser used, not on the narrower `Fallout76` slot-table
+    /// tag it used to check.
+    #[test]
+    fn starfield_shader_type_is_canonicalized_like_fo76() {
+        for (raw, want, label) in [
+            (3u32, bs_lighting::FACE_TINT, "FaceTint"),
+            (4, bs_lighting::SKIN_TINT, "SkinTint"),
+            (5, bs_lighting::HAIR_TINT, "HairTint"),
+            (12, bs_lighting::EYE_ENVMAP, "EyeEnvmap"),
+            (17, 0, "Terrain degrades to Default"),
+        ] {
+            assert_eq!(
+                canonical_shader_type(TextureSlotLayout::Starfield, raw),
+                want,
+                "Starfield 155-enum {raw} ({label}) must translate the same way \
+                 as FO76's; untranslated it is read as a Skyrim shader type"
+            );
+            assert_eq!(
+                canonical_shader_type(TextureSlotLayout::Starfield, raw),
+                canonical_shader_type(TextureSlotLayout::Fallout76, raw),
+                "Starfield and FO76 share one wire enum — their translations \
+                 must not diverge"
+            );
+        }
+    }
+
+    /// The concrete misroute #3364 describes: an untranslated Starfield
+    /// FaceTint (155 type 3) is read as Skyrim Parallax and binds slot 3 as a
+    /// POM height field instead of the tint detail map.
+    #[test]
+    fn starfield_face_tint_reaches_the_detail_role_not_height() {
+        let context = TextureSlotContext {
+            layout: TextureSlotLayout::Starfield,
+            shader_type: canonical_shader_type(TextureSlotLayout::Starfield, 3),
+            glow_map: false,
+            model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
+        };
+        assert_eq!(context.shader_type, bs_lighting::FACE_TINT);
+        assert_eq!(
+            slot_to_role(context, 3),
+            Some(TextureRole::Detail),
+            "a Starfield FaceTint head must bind slot 3 as the tint detail map; \
+             untranslated it lands on Height (the #2694 failure mode)"
+        );
+    }
+
+    /// Layouts below the 155 boundary must keep passing the raw value through —
+    /// widening the guard must not reach back into Skyrim / FO4, whose integers
+    /// really are `BSLightingShaderType`.
+    #[test]
+    fn pre_fo76_layouts_are_not_translated() {
+        for layout in [TextureSlotLayout::Skyrim, TextureSlotLayout::Fallout4] {
+            for raw in [0u32, 3, 4, 5, 12, 17] {
+                assert_eq!(
+                    canonical_shader_type(layout, raw),
+                    raw,
+                    "{layout:?} numbers are already canonical and must pass through"
+                );
+            }
+        }
     }
 
     /// Out-of-range slots resolve to `None` rather than panicking — the REFR
