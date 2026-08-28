@@ -251,7 +251,13 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        for p in &scratch.pending {
+        // #3269 — consume `pending` by value: `step_along_waypoints` takes
+        // ownership of the `VecDeque`, so iterating by reference forced a
+        // clone of the whole waypoint list per entity per tick purely to
+        // satisfy the borrow checker. Nothing reads `pending` after this
+        // pass, and `drain` keeps the allocation for next frame, so the
+        // scratch buffer's whole purpose is preserved.
+        for p in scratch.pending.drain(..) {
             // Step toward the next unconsumed waypoint (EX-16 item 3
             // Phase 3), falling back to the final destination directly
             // when no resident-tile path was found — unchanged straight-
@@ -259,7 +265,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let (new_pos, rotation, waypoints) = step_along_waypoints(
                 p.current,
                 p.rotation,
-                p.waypoints.clone(),
+                p.waypoints,
                 p.destination,
                 dt,
                 physics.as_deref(),

@@ -6,7 +6,7 @@ use crate::math::{Quat, Vec3};
 use crate::string::FixedString;
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
-use super::player::fold_reverse_time;
+use super::player::{finite_time_delta, fold_reverse_time};
 use super::registry::AnimationClipRegistry;
 use super::text_events::visit_text_key_events;
 use super::types::CycleType;
@@ -154,7 +154,9 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
         layer.prev_time = layer.local_time;
 
         // Advance animation time.
-        let delta = dt * layer.speed * clip.frequency;
+        // Same guard as `advance_time`'s — this arm has the identical
+        // `Loop` latch (#3258).
+        let delta = finite_time_delta(dt * layer.speed * clip.frequency);
         match clip.cycle_type {
             CycleType::Clamp => {
                 layer.local_time = (layer.local_time + delta).min(clip.duration);

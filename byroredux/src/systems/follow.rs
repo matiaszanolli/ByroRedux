@@ -250,7 +250,13 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 let (new_pos, new_rotation, waypoints) = step_along_waypoints(
                     current,
                     rotation,
-                    d.waypoints.clone(),
+                    // #3269 — `step_along_waypoints` consumes the deque and
+                    // `d.waypoints` is dead after this call (Pass 2 reads
+                    // only `movement` / `nav_path` / `state_to_insert`), so
+                    // hand the list over instead of cloning it every tick.
+                    // Unlike its three siblings this scratch cannot be
+                    // drained — Pass 2 still needs the decisions.
+                    std::mem::take(&mut d.waypoints),
                     target_xz,
                     dt,
                     physics.as_deref(),

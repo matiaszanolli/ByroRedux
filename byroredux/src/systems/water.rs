@@ -1,5 +1,6 @@
 //! Water submersion detection.
 
+use crate::components::WaterDisturbanceScratch;
 use byroredux_core::ecs::components::water::{
     SubmersionState, WaterContact, WaterPlane, WaterVolume, WATERLINE_HYSTERESIS,
 };
@@ -247,7 +248,17 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     // Drive the resident water-spray emitters from the camera footprint.
     // Water planes are spawned with a dormant emitter, so this remains a
     // component-only mutation and cannot invalidate the plane query above.
-    let mut disturbance_events = Vec::new();
+    // #3257 — reuse the buffer across frames instead of allocating one per
+    // tick. Taken from `WaterDisturbanceScratch` and handed back below; a
+    // local `Vec` is the fallback when the resource is absent, which is how
+    // the minimal worlds in this file's own tests run. There is no early
+    // return between the take and the restore.
+    let (mut disturbance_events, reuse_scratch) =
+        match world.try_resource_mut::<WaterDisturbanceScratch>() {
+            Some(mut scratch) => (std::mem::take(&mut scratch.events), true),
+            None => (Vec::new(), false),
+        };
+    disturbance_events.clear();
     if let Some((volume_q, mut emitter_q)) = world.query_2_mut::<WaterVolume, ParticleEmitter>() {
         for (entity, volume) in volume_q.iter() {
             if let Some(emitter) = emitter_q.get_mut(entity) {
@@ -295,6 +306,16 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
                     );
                 }
             }
+        }
+    }
+
+    if reuse_scratch {
+        match world.try_resource_mut::<WaterDisturbanceScratch>() {
+            Some(mut scratch) => {
+                disturbance_events.clear();
+                scratch.events = disturbance_events;
+            }
+            None => log::error!("WaterDisturbanceScratch disappeared during submersion_system"),
         }
     }
 
@@ -771,6 +792,65 @@ mod tests {
             .expect("splash storage")
             .get(water)
             .is_some());
+    }
+
+    /// #3257 — the disturbance staging buffer is taken from
+    /// `WaterDisturbanceScratch` and handed back, so its allocation survives
+    /// to the next frame instead of being rebuilt per tick. Pins both halves:
+    /// the markers are still published on the resource path (the fallback
+    /// path is what every other test in this file exercises), and the buffer
+    /// really does come back — empty, with its capacity intact.
+    #[test]
+    fn disturbance_staging_buffer_is_returned_to_its_scratch_resource() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(crate::components::WaterDisturbanceScratch::default());
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(
+            camera,
+            GlobalTransform::new(
+                Vec3::new(0.0, 0.0, 0.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(camera, SubmersionState::default());
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-50.0, -100.0, -50.0],
+                max: [50.0, 0.0, 50.0],
+            },
+        );
+        world.insert(water, GlobalTransform::IDENTITY);
+        world.insert(water, ParticleEmitter::water_splash());
+
+        submersion_system(&world, 0.016);
+
+        assert!(
+            world
+                .query::<RippleEvent>()
+                .expect("ripple storage")
+                .get(water)
+                .is_some(),
+            "the resource path must publish the same markers as the fallback"
+        );
+        let scratch = world.resource::<crate::components::WaterDisturbanceScratch>();
+        assert!(scratch.events.is_empty(), "handed back drained");
+        assert!(
+            scratch.events.capacity() > 0,
+            "handed back with its allocation — the whole point of the resource"
+        );
     }
 
     #[test]

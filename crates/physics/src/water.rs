@@ -118,6 +118,27 @@ pub struct WaterContactScratch {
     current_volumes: Vec<WaterCurrentVolume>,
     targets: Vec<BuoyancyTarget>,
     writes: Vec<(EntityId, WaterContact)>,
+    /// Bodies an authored current acted on during the previous per-body scan,
+    /// sorted by id (#3268).
+    ///
+    /// This is a latch, not staging: unlike the four buffers above it is
+    /// *not* cleared at the top of the scan, because it is the current-volume
+    /// branch's equivalent of the surface branch's `prior_wet` bit. The
+    /// surface branch wakes a body once on the dry→wet edge; the current
+    /// branch, which deliberately applies its per-frame force with
+    /// `wake_up = false`, needs the same one-shot edge or a body that streams
+    /// in asleep inside a marker with no overlapping `WaterPlane` is never
+    /// woken by anything and its `!is_sleeping()` gate stays false forever.
+    ///
+    /// Only the frames on which the per-body scan actually runs update it.
+    /// The quiesced-scene fast path deliberately leaves it alone: nothing
+    /// moved, so a body asleep in a current is still in that current and must
+    /// not be re-woken when the scan next runs. Every early return that means
+    /// "no body can be in a current" clears it instead.
+    in_current_prev: Vec<EntityId>,
+    /// Scratch half of the double buffer above — filled during the scan and
+    /// swapped into `in_current_prev` at the end of it.
+    in_current_now: Vec<EntityId>,
 }
 
 impl Resource for WaterContactScratch {}
@@ -534,33 +555,20 @@ fn waves_require_contact_rescan(world: &World, surfaces: &[WaterSurface]) -> boo
 /// - On the wet→dry transition the body's authored damping is restored
 ///   exactly once and the buoyancy force cleared.
 pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
-    let (mut surfaces, mut current_volumes, mut targets, mut writes, reuse_scratch) =
-        match world.try_resource_mut::<WaterContactScratch>() {
-            Some(mut scratch) => (
-                std::mem::take(&mut scratch.surfaces),
-                std::mem::take(&mut scratch.current_volumes),
-                std::mem::take(&mut scratch.targets),
-                std::mem::take(&mut scratch.writes),
-                true,
-            ),
-            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false),
-        };
+    // Taken whole rather than field-by-field (#3268): `in_current_prev` is a
+    // latch that must survive the round trip, so "move the struct out, hand
+    // it back" is the shape that cannot silently drop one of its fields.
+    let (mut scratch_buffers, reuse_scratch) = match world.try_resource_mut::<WaterContactScratch>()
+    {
+        Some(mut scratch) => (std::mem::take(&mut *scratch), true),
+        None => (WaterContactScratch::default(), false),
+    };
 
-    apply_buoyancy_with_scratch(
-        world,
-        had_newcomers,
-        &mut surfaces,
-        &mut current_volumes,
-        &mut targets,
-        &mut writes,
-    );
+    apply_buoyancy_with_scratch(world, had_newcomers, &mut scratch_buffers);
 
     if reuse_scratch {
         if let Some(mut scratch) = world.try_resource_mut::<WaterContactScratch>() {
-            scratch.surfaces = surfaces;
-            scratch.current_volumes = current_volumes;
-            scratch.targets = targets;
-            scratch.writes = writes;
+            *scratch = scratch_buffers;
         } else {
             log::error!("WaterContactScratch disappeared during physics_sync_system");
         }
@@ -570,16 +578,25 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
 fn apply_buoyancy_with_scratch(
     world: &World,
     had_newcomers: bool,
-    surfaces: &mut Vec<WaterSurface>,
-    current_volumes: &mut Vec<WaterCurrentVolume>,
-    targets: &mut Vec<BuoyancyTarget>,
-    writes: &mut Vec<(EntityId, WaterContact)>,
+    scratch: &mut WaterContactScratch,
 ) {
+    // Independent field bindings so the staging buffers and the `#3268` latch
+    // can be borrowed at once inside the per-body loop.
+    let WaterContactScratch {
+        surfaces,
+        current_volumes,
+        targets,
+        writes,
+        in_current_prev,
+        in_current_now,
+    } = scratch;
     surfaces.clear();
     current_volumes.clear();
     targets.clear();
     writes.clear();
+    in_current_now.clear();
     if world.try_resource::<PhysicsWorld>().is_none() {
+        in_current_prev.clear();
         return;
     }
     let consts = world
@@ -604,6 +621,10 @@ fn apply_buoyancy_with_scratch(
     if surfaces.is_empty() {
         clear_stale_water_contacts(world);
         if current_volumes.is_empty() {
+            // No markers at all — no body can be inside one, so the #3268
+            // latch is stale by definition. Dropping it here is what lets a
+            // re-streamed marker wake its bodies again.
+            in_current_prev.clear();
             return;
         }
     }
@@ -622,6 +643,11 @@ fn apply_buoyancy_with_scratch(
         let pw = world.resource::<PhysicsWorld>();
         if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_require_rescan
         {
+            // #3268 — `in_current_prev` is deliberately NOT touched here.
+            // Nothing moved, so a body asleep inside a current volume is
+            // still inside it; clearing the latch would make the next real
+            // scan read it as a fresh entry and re-wake a body that has
+            // legitimately settled.
             return;
         }
     }
@@ -679,6 +705,8 @@ fn apply_buoyancy_with_scratch(
     drop(contact_q);
 
     if targets.is_empty() {
+        // No dynamic bodies — same reasoning as the no-marker return above.
+        in_current_prev.clear();
         return;
     }
 
@@ -918,6 +946,25 @@ fn apply_buoyancy_with_scratch(
             // current. Safe to add without resetting here because the single
             // reset above already ran for this body this frame (#3114).
             if let Some(flow) = current_flow {
+                in_current_now.push(t.entity);
+                // #3268 — one-shot wake on entering a current volume from
+                // rest, mirroring the surface branch's `!prior_wet` edge.
+                // Without it a body whose marker overlaps no `WaterPlane`
+                // never passes through the surface branch at all, so nothing
+                // ever wakes it and the `!is_sleeping()` gate below is
+                // permanently false — the authored flow is silently inert.
+                // Gated on the latch rather than fired every frame so a body
+                // pinned against a bank is allowed to settle and stay
+                // settled, which is the reason the force itself is applied
+                // with `wake_up = false`.
+                if in_current_prev.binary_search(&t.entity).is_err() {
+                    if let Some(b) = pw.bodies.get_mut(t.handles.body) {
+                        if b.is_sleeping() {
+                            b.wake_up(true);
+                            woke_any = true;
+                        }
+                    }
+                }
                 let current = pw.bodies.get(t.handles.body).and_then(|b| {
                     (!b.is_sleeping()).then(|| {
                         let velocity = b.linvel();
@@ -949,6 +996,11 @@ fn apply_buoyancy_with_scratch(
         if woke_any {
             pw.wake();
         }
+        // #3268 — publish this scan's membership as the next one's prior.
+        // Sorted so the per-body lookup above stays a binary search; both
+        // halves keep their allocations across the swap.
+        in_current_now.sort_unstable();
+        std::mem::swap(in_current_prev, in_current_now);
     }
 
     if !writes.is_empty() {
@@ -1843,6 +1895,141 @@ mod tests {
     /// term is a constant `m·c·s`, giving `user_force ~ n·m·c·s` — unbounded
     /// linear growth until the body is launched ("havok explosion"), and a body
     /// under a growing force never sleeps, pinning the static-scene fast path.
+    #[test]
+    /// #3268 — sibling of the wind-up test below, with its manual
+    /// per-iteration `wake_up` removed. That workaround was the bug: the
+    /// current branch is gated on `!is_sleeping()` and only the SURFACE
+    /// branch ever woke anything, so a body resting inside a marker that
+    /// overlaps no `WaterPlane` was never woken by anything and the authored
+    /// flow was silently inert.
+    ///
+    /// Two worlds, identical but for the marker. The control proves the
+    /// trigger condition is real — a freshly streamed dynamic body spawns
+    /// asleep (EXTERIOR-FREEZE, `sync.rs`) and nothing else in this fixture
+    /// moves it along X — and doubles as a guard against "fix" it by waking
+    /// every body every frame.
+    #[test]
+    fn current_volume_without_a_water_plane_wakes_a_body_resting_in_it() {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::{EntityId, World};
+
+        fn fixture(with_current: bool) -> (World, EntityId) {
+            let mut world = World::new();
+            world.insert_resource(PhysicsWorld::new());
+            world.insert_resource(PhysicsWaterConstants::default());
+            // The production shape: with the resource present the in-current
+            // latch persists across ticks, so the wake is genuinely one-shot
+            // rather than re-fired every frame by a fresh default scratch.
+            world.insert_resource(WaterContactScratch::default());
+            world.register::<RapierHandles>();
+            world.register::<WaterContact>();
+
+            if with_current {
+                let marker = world.spawn();
+                world.insert(
+                    marker,
+                    WaterCurrentVolume {
+                        volume: WaterVolume {
+                            min: [-500.0, -500.0, -500.0],
+                            max: [500.0, 500.0, 500.0],
+                        },
+                        flow: WaterFlow::new([1.0, 0.0, 0.0], 8.0),
+                    },
+                );
+            }
+            assert!(
+                world.query::<WaterPlane>().is_none(),
+                "the whole point of this fixture is that no water surface exists"
+            );
+
+            let floor = world.spawn();
+            world.insert(
+                floor,
+                CollisionShape::Cuboid {
+                    half_extents: Vec3::new(400.0, 10.0, 400.0),
+                },
+            );
+            world.insert(
+                floor,
+                RigidBodyData {
+                    motion_type: MotionType::Static,
+                    mass: 0.0,
+                    friction: 1.0,
+                    restitution: 0.0,
+                    linear_damping: 0.0,
+                    angular_damping: 0.0,
+                    collidable: true,
+                },
+            );
+            world.insert(
+                floor,
+                GlobalTransform::new(Vec3::new(0.0, -30.0, 0.0), Quat::IDENTITY, 1.0),
+            );
+            world.insert(
+                floor,
+                Transform::from_translation(Vec3::new(0.0, -30.0, 0.0)),
+            );
+
+            let body = world.spawn();
+            world.insert(body, CollisionShape::Ball { radius: 10.0 });
+            world.insert(
+                body,
+                RigidBodyData {
+                    motion_type: MotionType::Dynamic,
+                    mass: 20.0,
+                    friction: 1.0,
+                    restitution: 0.0,
+                    linear_damping: 0.0,
+                    angular_damping: 0.0,
+                    collidable: true,
+                },
+            );
+            world.insert(
+                body,
+                GlobalTransform::new(Vec3::new(0.0, -9.0, 0.0), Quat::IDENTITY, 1.0),
+            );
+            world.insert(body, Transform::from_translation(Vec3::new(0.0, -9.0, 0.0)));
+            (world, body)
+        }
+
+        fn velocity_x(world: &World, body: EntityId) -> f32 {
+            let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+            let pw = world.resource::<PhysicsWorld>();
+            pw.bodies
+                .get(handles.body)
+                .map(|b| b.linvel().x)
+                .unwrap_or(0.0)
+        }
+
+        // No manual wake in either loop — that workaround is what this test
+        // exists to remove.
+        let (control, control_body) = fixture(false);
+        for _ in 0..60 {
+            physics_sync_system(&control, PHYSICS_DT);
+        }
+        assert_eq!(
+            velocity_x(&control, control_body),
+            0.0,
+            "control: without a current marker nothing may push the body along X"
+        );
+
+        let (world, body) = fixture(true);
+        for _ in 0..60 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+        assert!(
+            velocity_x(&world, body) > 1.0,
+            "body never accelerated under the authored 8.0 BU/s current \
+             (vx = {}) — nothing woke it, so the current branch never ran \
+             (#3268)",
+            velocity_x(&world, body)
+        );
+    }
+
     #[test]
     fn current_volume_without_a_water_plane_does_not_wind_up_user_force() {
         use crate::{physics_sync_system, RapierHandles};

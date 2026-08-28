@@ -528,6 +528,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // tick. Preallocated to capacity 32 to cover typical 5-10 NPC
     // walking case without re-growing.
     world.insert_resource(crate::components::FootstepScratch::default());
+    world.insert_resource(crate::components::WaterDisturbanceScratch::default());
     // M44 Phase 3.5 — opportunistic footstep BSA load. When the
     // user passed `--sounds-bsa <path>`, decode the canonical
     // dirt-walk WAV and stash the `Arc<StaticSoundData>` in

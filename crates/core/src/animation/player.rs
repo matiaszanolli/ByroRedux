@@ -83,6 +83,30 @@ pub(crate) fn fold_reverse_time(
     }
 }
 
+/// A time step the clock can integrate: non-finite deltas advance nothing.
+///
+/// #3258 — `clip.frequency` is raw `NiControllerSequence` data and
+/// `player.speed` is script-settable, so this product is the one place a NaN
+/// or ±inf can reach the animation clock. `CycleType::Clamp` happens to
+/// self-heal (`f32::min` returns the non-NaN operand) and `CycleType::Reverse`
+/// early-returns on its duration guard, but `CycleType::Loop` latches:
+/// `NaN % duration` is NaN and `NaN < 0.0` is false, so neither the wrap nor
+/// the negative repair below can ever recover it and the entity's pose is
+/// poisoned for the rest of its life — the NaN reaches `find_key_pair`, the
+/// sampled bone transform, `GlobalTransform`, and the GPU instance matrix.
+///
+/// `byroredux`'s translate boundary (`anim_convert::sanitized_clip_frequency`)
+/// resolves the file-data half of that product once, at import. This is the
+/// defense-in-depth half, for a clip built by any other producer — the same
+/// posture `apply_speedtree_wind` took for the wind field under #3194.
+pub(crate) fn finite_time_delta(delta: f32) -> f32 {
+    if delta.is_finite() {
+        delta
+    } else {
+        0.0
+    }
+}
+
 /// Advance the animation time according to the cycle type.
 /// Updates `prev_time` to the value of `local_time` before advancing.
 pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32) {
@@ -91,7 +115,7 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
     }
 
     player.prev_time = player.local_time;
-    let delta = dt * player.speed * clip.frequency;
+    let delta = finite_time_delta(dt * player.speed * clip.frequency);
 
     match clip.cycle_type {
         CycleType::Clamp => {

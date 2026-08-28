@@ -366,6 +366,43 @@ mod tests {
     use super::*;
     use byroredux_plugin::esm::records::NavmTriangle;
 
+    /// #3269 — every NAVM-pathed procedure used to clone its waypoint list a
+    /// second time on the way into `step_along_waypoints`, purely because the
+    /// per-tick scratch was iterated by reference while the callee takes the
+    /// `VecDeque` by value. Three of the four now drain their `pending`
+    /// buffer; `follow_system` cannot (Pass 2 still needs its decisions) and
+    /// takes the field instead. Both shapes are load-bearing and neither is
+    /// visible to a behavioural test, so pin them at the source: the clone
+    /// this issue removed must not come back, in any of the four.
+    #[test]
+    fn no_navmesh_procedure_clones_its_waypoints_into_the_stepper() {
+        for (label, src) in [
+            ("travel.rs", include_str!("travel.rs")),
+            ("guard.rs", include_str!("guard.rs")),
+            ("escort.rs", include_str!("escort.rs")),
+            ("follow.rs", include_str!("follow.rs")),
+        ] {
+            assert!(
+                !src.contains(".waypoints.clone()"),
+                "{label} re-introduced the per-tick waypoint clone (#3269)"
+            );
+        }
+        for (label, src) in [
+            ("travel.rs", include_str!("travel.rs")),
+            ("guard.rs", include_str!("guard.rs")),
+            ("escort.rs", include_str!("escort.rs")),
+        ] {
+            assert!(
+                src.contains("for p in scratch.pending.drain(..)"),
+                "{label} must consume its pending scratch by value"
+            );
+        }
+        assert!(
+            include_str!("follow.rs").contains("std::mem::take(&mut d.waypoints)"),
+            "follow.rs must hand its waypoints to the stepper, not clone them"
+        );
+    }
+
     /// A 2-triangle quad on the XZ plane spanning `[0,10] x [0,10]`
     /// (Y-up), split along the diagonal: `(0,0)-(10,0)-(10,10)` and
     /// `(0,0)-(10,10)-(0,10)`, sharing the `(0,0)-(10,10)` diagonal edge

@@ -290,6 +290,20 @@ fn insert_missing_sinks<T: byroredux_core::ecs::Component>(
 ///
 /// Channel names are interned into `pool` at conversion time so the animation
 /// hot path can use `FixedString` (integer comparison, zero allocation). #340.
+/// Clamp a raw `NiControllerSequence.frequency` to a playback rate the
+/// animation clock can integrate (#3258).
+///
+/// Non-finite or non-positive values fall back to `1.0`, Gamebryo's default
+/// rate. See the call site in [`convert_nif_clip`] for why this is resolved
+/// here rather than defended against downstream.
+fn sanitized_clip_frequency(frequency: f32) -> f32 {
+    if frequency.is_finite() && frequency > 0.0 {
+        frequency
+    } else {
+        1.0
+    }
+}
+
 pub(crate) fn convert_nif_clip(
     nif: &byroredux_nif::anim::AnimationClip,
     pool: &mut StringPool,
@@ -491,7 +505,18 @@ pub(crate) fn convert_nif_clip(
         name: nif.name.clone(),
         duration: nif.duration,
         cycle_type,
-        frequency: nif.frequency,
+        // #3258 — `NiControllerSequence.frequency` is raw file data and the
+        // only unvalidated factor in `advance_time`'s `dt * speed *
+        // frequency`. A NaN or ±inf here latches `local_time` to NaN on the
+        // first tick of any looping clip and the NaN then flows through
+        // `find_key_pair` into the bone transform, `GlobalTransform`, and the
+        // GPU instance matrices. Resolve it once here, at the translate
+        // boundary, the same way every other per-game quirk is; `1.0` is the
+        // Gamebryo default playback rate. A non-positive rate is also
+        // rejected: `advance_time` has no notion of a clip that plays
+        // backwards by authored frequency (that is `CycleType::Reverse`), so
+        // a negative one would only walk `local_time` backwards forever.
+        frequency: sanitized_clip_frequency(nif.frequency),
         weight: nif.weight,
         accum_root_name: nif.accum_root_name.as_deref().map(|s| pool.intern(s)),
         channels,
@@ -742,5 +767,29 @@ mod sink_attachment_tests {
         assert!(world
             .query::<AnimatedVisibility>()
             .is_none_or(|q| q.get(child).is_none()));
+    }
+}
+
+#[cfg(test)]
+mod clip_frequency_tests {
+    //! #3258 — the NIF-side half of the animation-clock NaN guard.
+    use super::sanitized_clip_frequency;
+
+    #[test]
+    fn authored_rates_pass_through() {
+        assert_eq!(sanitized_clip_frequency(1.0), 1.0);
+        assert_eq!(sanitized_clip_frequency(0.5), 0.5);
+        assert_eq!(sanitized_clip_frequency(2.5), 2.5);
+    }
+
+    #[test]
+    fn non_integrable_rates_fall_back_to_the_gamebryo_default() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0, -1.0] {
+            assert_eq!(
+                sanitized_clip_frequency(bad),
+                1.0,
+                "frequency {bad} must not reach the animation clock"
+            );
+        }
     }
 }

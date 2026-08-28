@@ -444,6 +444,75 @@ mod tests {
         assert!((player.local_time - 0.2).abs() < 1e-4);
     }
 
+    /// #3258 — `clip.frequency` is raw `NiControllerSequence` data. A NaN
+    /// one used to latch `local_time` permanently: the `Loop` arm's
+    /// `%= duration` wrap is a no-op on NaN and its `< 0.0` repair is false,
+    /// so the pose never recovered and the NaN reached the GPU matrices.
+    #[test]
+    fn advance_time_survives_a_non_finite_clip_frequency() {
+        for frequency in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for cycle_type in [CycleType::Loop, CycleType::Clamp, CycleType::Reverse] {
+                let clip = AnimationClip {
+                    name: "test".to_string(),
+                    duration: 1.0,
+                    cycle_type,
+                    frequency,
+                    weight: 1.0,
+                    accum_root_name: None,
+                    channels: HashMap::new(),
+                    float_channels: Vec::new(),
+                    color_channels: Vec::new(),
+                    bool_channels: Vec::new(),
+                    texture_flip_channels: Vec::new(),
+                    text_keys: Vec::new(),
+                };
+                let mut player = AnimationPlayer::new(0);
+                player.local_time = 0.25;
+                for _ in 0..3 {
+                    advance_time(&mut player, &clip, 0.1);
+                }
+                assert!(
+                    player.local_time.is_finite(),
+                    "{cycle_type:?} latched local_time to {} on frequency {frequency}",
+                    player.local_time
+                );
+                assert_eq!(
+                    player.local_time, 0.25,
+                    "a non-integrable rate must advance nothing, not drift"
+                );
+            }
+        }
+    }
+
+    /// Sibling of the above — `advance_stack` carries a byte-identical
+    /// `Loop` arm and the same unvalidated product (#3258).
+    #[test]
+    fn advance_stack_survives_a_non_finite_clip_frequency() {
+        let clip = AnimationClip {
+            name: "c".to_string(),
+            duration: 1.0,
+            cycle_type: CycleType::Loop,
+            frequency: f32::NAN,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(clip);
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(handle));
+
+        for _ in 0..3 {
+            advance_stack(&mut stack, &registry, 0.1);
+        }
+        assert!(stack.layers[0].local_time.is_finite());
+    }
+
     #[test]
     fn advance_time_clamp() {
         let clip = AnimationClip {

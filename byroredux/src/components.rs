@@ -1574,6 +1574,34 @@ impl Default for FootstepScratch {
     }
 }
 
+/// #3257 — reusable staging for `submersion_system`'s disturbance markers,
+/// the one per-frame `Vec::new()` the #3135 scratch-hoisting sweep left in
+/// `systems/water.rs`. Same take/restore shape as
+/// `InteractionCandidateScratch` (#3059): the system moves the buffer out for
+/// the duration of its own use and hands it back, so the allocated capacity
+/// survives to next frame.
+///
+/// Each entry is `(water entity, entering, intensity, position)` — the
+/// carrier that lets the emitter walk finish and drop its `ParticleEmitter`
+/// write lock before the `RippleEvent` / `SplashEvent` storages are acquired.
+///
+/// Sized at 8: the pushes are gated on `DISTURBANCE_RADIUS` around the
+/// camera, so this counts water planes the camera is standing in, not water
+/// planes in the cell.
+pub(crate) struct WaterDisturbanceScratch {
+    pub(crate) events: Vec<(EntityId, bool, f32, [f32; 3])>,
+}
+
+impl Resource for WaterDisturbanceScratch {}
+
+impl Default for WaterDisturbanceScratch {
+    fn default() -> Self {
+        Self {
+            events: Vec::with_capacity(8),
+        }
+    }
+}
+
 /// REND-#1451 — live tuning knobs for the point/spot light attenuation
 /// model, pushed into the renderer (`VulkanContext::light_atten_knee` /
 /// `light_atten_legacy`) each frame so the REND-#1451 controlled bench
