@@ -150,9 +150,76 @@ pub(super) fn combat_approach_offsets() -> impl Iterator<Item = Vec3> {
     })
 }
 
+/// Does a swing thrown from `camera_pos` at `aim_pos` actually reach `target`?
+///
+/// `combat.approach` aims the gameplay camera, but the swing itself is an
+/// ordinary camera ray: in a densely populated cell a bystander standing
+/// between the approach point and the approached reference is what the ray
+/// hits first. Ring candidates were previously accepted on walkable floor and
+/// range alone, so an obstructed one could win and the swing would land on
+/// whoever was in the way (#3423 — FNV `GSProspectorSaloonInterior`, where
+/// `gssettlercm` stood between the player and the fixture's `gstrudy`).
+///
+/// Resolving the hit body the same way `combat_swing` does — Rapier body →
+/// `RapierHandles` owner → [`ActorColliderOwner`] root — keeps this check
+/// honest: it accepts a candidate only when the ray the swing will cast
+/// resolves to the intended actor. A cell with no physics (command tests)
+/// has nothing to occlude with, so it trivially passes.
+pub(super) fn combat_approach_line_of_sight_reaches(
+    world: &World,
+    player: EntityId,
+    target: EntityId,
+    camera_pos: Vec3,
+    aim_pos: Vec3,
+) -> bool {
+    let Some(physics) = world.try_resource::<byroredux_physics::PhysicsWorld>() else {
+        return true;
+    };
+    let direction = aim_pos - camera_pos;
+    let distance = direction.length();
+    if distance <= 0.0 {
+        return true;
+    }
+
+    // Same lock discipline as the swing: resolve body ownership before
+    // touching PhysicsWorld-adjacent component storages.
+    let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
+        Some(handles) => {
+            let excluded = handles.get(player).map(|handles| handles.body);
+            let owners = handles
+                .iter()
+                .map(|(entity, handles)| (entity, handles.body))
+                .collect::<Vec<_>>();
+            (excluded, owners)
+        }
+        None => (None, Vec::new()),
+    };
+
+    let Some(hit_body) = physics
+        .cast_ray(camera_pos, direction, distance, excluded_body)
+        .and_then(|hit| hit.body)
+    else {
+        // Nothing between the eye and the actor's head — the swing's own ray
+        // will reach it.
+        return true;
+    };
+    let Some(collider_entity) = owners
+        .iter()
+        .find_map(|(entity, body)| (*body == hit_body).then_some(*entity))
+    else {
+        return false;
+    };
+    let hit_root = world
+        .get::<byroredux_physics::ActorColliderOwner>(collider_entity)
+        .map(|owner| owner.0)
+        .unwrap_or(collider_entity);
+    hit_root == target
+}
+
 fn find_walkable_combat_approach(
     world: &World,
     player: EntityId,
+    target: EntityId,
     target_pos: Vec3,
     controller: byroredux_physics::CharacterController,
 ) -> Option<(Vec3, f32)> {
@@ -177,7 +244,13 @@ fn find_walkable_combat_approach(
         );
         let camera_pos = body_pos + Vec3::Y * controller.eye_height;
         let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
-        (camera_pos.distance(aim_pos) <= COMBAT_APPROACH_MAX_RAY_BU)
+        if camera_pos.distance(aim_pos) > COMBAT_APPROACH_MAX_RAY_BU {
+            return None;
+        }
+        // Reject a ring position the swing's own ray cannot reach through
+        // (#3423). Without this the first walkable candidate wins even when
+        // a bystander occludes it.
+        combat_approach_line_of_sight_reaches(world, player, target, camera_pos, aim_pos)
             .then_some((body_pos, surface_y))
     })
 }
@@ -237,10 +310,10 @@ impl ConsoleCommand for CombatApproachCommand {
             .is_some()
         {
             let Some(approach) =
-                find_walkable_combat_approach(world, player, target_pos, controller)
+                find_walkable_combat_approach(world, player, target, target_pos, controller)
             else {
                 return CommandOutput::line(
-                    "combat.approach: no authored floor within grounded melee reach",
+                    "combat.approach: no unobstructed authored floor within grounded melee reach",
                 );
             };
             approach

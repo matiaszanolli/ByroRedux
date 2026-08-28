@@ -174,7 +174,8 @@ cannot diff its own baseline:
 | `entities_total` | `bench:` `entities=` (or `stats` `Entities:`) | within ±2 % (tolerance — see note) |
 | `tex_missing_unique_paths` | `tex.missing` summary line | ≤ baseline |
 | `mesh_cache_failed_count` | `mesh.cache failed` summary | ≤ baseline |
-| `light_count_directional` | `light.dump` `CellLightingRes` (always 1 sun) | exact match |
+| `light_count_point` | `light.dump` `LightSource emitters: N` | exact match |
+| `light_count_directional` | `light.dump` — count of `kind=Directional` rows in the emitter dump | exact match |
 | `skin_pool_live` | `.engine.log` last `skin=L/M+S` (`L`) | ≤ baseline |
 | `skin_pool_max` | `.engine.log` last `skin=L/M+S` (`M`) | exact match |
 | `skin_pool_overflow_attempts` | `.engine.log` last `skin=L/M+S` (`S`) | `== 0` (exact) |
@@ -203,10 +204,21 @@ Quirks of these scalars (don't fabricate around them):
 - `draws=N/Mb/Kc` is the #1258 three-way split: `N` input DrawCommands / `M`
   post-merge batches / `K` actual GPU calls. The pre-#1258 single draw count is
   gone.
-- `light.dump` (`byroredux/src/commands/scene.rs` `LightDumpCommand`) dumps `CellLightingRes` /
-  `SkyParamsRes` / `GameTimeRes` only — it surfaces the one directional sun, not
-  a per-point-light tally, so `light_count_directional` is effectively a
-  constant 1 and there is no `light_count_point`.
+- `light.dump` (`byroredux/src/commands/scene.rs` `LightDumpCommand`) dumps
+  `CellLightingRes` / `SkyParamsRes` / `GameTimeRes` **and**, since `5f970bae`
+  (2026-08-15), a `LightSource emitters: N` tally followed by a per-emitter dump
+  (kind, source, position, radiance, dimmer, range, attenuation, visibility,
+  flags). Parse `light_count_point` from that `N`, and derive
+  `light_count_directional` by counting `kind=Directional` rows — do **not**
+  infer either from the mere presence of a `CellLightingRes` block, which is
+  what made the old `light_count_directional` row a gate that could never fail
+  (#3424). The metric has real dynamic range: measured 2026-08-27 at `969d81c8`
+  — `fnv` 30, `fo3` 11, `oblivion` 8, `skyrim_se` 28, `fo4` 685. All five
+  baselined cells are interiors and every one dumps
+  `directional_color = [0.000, 0.000, 0.000]`.
+  **Baselines carry no `light_count_point` row yet** — the values above were
+  observed, not captured as gates. Add the row on the next `--regen` capture
+  rather than hand-writing it into a `.tsv`.
 
 > **`bench_fps_*` / `bench_frame_*_ms` is advisory, not gating (RT-2, #1701).**
 > `wall_fps` and the per-frame `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms`

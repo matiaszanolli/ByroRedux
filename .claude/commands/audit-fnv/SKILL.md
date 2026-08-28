@@ -55,7 +55,11 @@ cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-
 - `NifImportRegistry` Arc cache (`byroredux/src/cell_loader/nif_import_registry.rs::CachedNifImport`) prevents duplicate parsing across cells.
 - **Cell unload hygiene (regression guard)**: `byroredux/src/cell_loader/unload.rs` must drop BLAS per freed mesh handle and release physics bodies. **#1520 (`34c7a218`): Rapier bodies/colliders are released on unload** — verify the unload path frees them (covered by `byroredux/src/cell_loader/rapier_release_tests.rs`); a leak here compounds per cell-streaming cycle. Also check the `inventory_release_tests.rs` / `unload_skin_cleanup_tests.rs` siblings.
 - M38 water — `byroredux/src/cell_loader/water.rs` spawns `WaterPlane` per cell; `byroredux/src/systems/water.rs::submersion_system` writes camera submersion state on entry.
-- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the placement scheme + real LOD textures still resolve on FNV's WastelandNV exterior grid; entry points `cell_loader/object_lod.rs`, `cell_loader/placement_lod.rs`.
+- **Object LOD — `ObjectLodScheme::FalloutLegacyBlocks`** (#3321, `e23a9908`; the newest and least-reviewed FNV LOD code). Verify on the WastelandNV exterior grid:
+  - quad path shape `meshes\landscape\lod\<world>\blocks\<world>.level<L>.x<qx>.y<qy>.nif` (`cell_loader/object_lod.rs::object_lod_mesh_path`);
+  - the shared atlas `textures\landscape\lod\<world>\blocks\<world>.buildings.dds` resolving out of `Fallout - Textures2.bsa` (`object_lod_atlas_path`);
+  - the legacy-ladder arm of `LodBandLadder::for_object_game` (`cell_loader/lod_bands.rs`).
+  Census pin (2026-08-27, all 20 FNV BSAs / 182 177 entries): **0 `_far.nif`, 0 `distantlod\` entries** — FNV ships neither, and `placement_lod_supported` is Oblivion-only by construction (`cell_loader/placement_lod.rs:313-315`, pinned by `placement_lod_supported_is_oblivion_only`). Do not re-derive this; the `_far.nif` route can only ever confirm a no-op here.
 **Output**: `/tmp/audit/fnv/dim_1.md`
 
 ### Dimension 2: NIFAL Canonical Translation — FNV Slice

@@ -310,9 +310,13 @@ Oblivion-specific slice.
 - Any 100%-parse NIFs that would still render wrong (legacy particle emitters
   that parse but don't route to the renderer — cross-check Dim 4)?
 - `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
-  Oblivion/FO3/FNV placement scheme + real LOD textures still resolve on
-  Oblivion exteriors; entry points `cell_loader/object_lod.rs`,
-  `cell_loader/placement_lod.rs`.
+  placement scheme + real LOD textures still resolve on Oblivion exteriors;
+  entry points `cell_loader/object_lod.rs`, `cell_loader/placement_lod.rs`.
+  **Oblivion is the only game where this route is real**: `placement_lod_supported`
+  gates on `GameKind::Oblivion` alone (`cell_loader/placement_lod.rs:313-315`),
+  and FO3/FNV ship zero `_far.nif` / `distantlod\` entries (#2086, #3422).
+  FO3/FNV use `ObjectLodScheme::FalloutLegacyBlocks` instead — don't ask them
+  to reproduce this one.
 **Output**: `/tmp/audit/oblivion/dim_7.md`
 
 ## Phase 3: Merge

@@ -1056,3 +1056,87 @@ fn phys_census_rejects_malformed_arguments() {
         "got: {negative}"
     );
 }
+
+/// Regression for #3423. `combat.approach` aims the gameplay camera, but the
+/// swing is an ordinary camera ray, so a ring candidate with walkable floor
+/// and legal range can still be occluded by a bystander — on FNV
+/// `GSProspectorSaloonInterior` the P2 melee gate's swing landed on
+/// `gssettlercm` (entity 927) instead of the fixture's `gstrudy` (1088).
+/// Candidate selection now rejects a position whose ray does not resolve to
+/// the intended actor.
+#[test]
+fn combat_approach_line_of_sight_rejects_an_occluded_ring_candidate() {
+    use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+
+    let mut world = World::new();
+    world.register::<Transform>();
+    world.register::<GlobalTransform>();
+    world.register::<CollisionShape>();
+    world.register::<RigidBodyData>();
+    world.register::<byroredux_physics::RapierHandles>();
+    world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+    let mut actor = |pos: Vec3| {
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(pos));
+        world.insert(entity, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+        world.insert(
+            entity,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(16.0),
+            },
+        );
+        world.insert(entity, RigidBodyData::STATIC);
+        entity
+    };
+
+    let camera_pos = Vec3::ZERO;
+    let target = actor(Vec3::new(0.0, 0.0, -300.0));
+    let blocker = actor(Vec3::new(0.0, 0.0, -150.0));
+
+    let player = world.spawn();
+    world.insert(player, Transform::from_translation(camera_pos));
+
+    byroredux_physics::physics_sync_system(&world, 0.0);
+
+    let aim_pos = Vec3::new(0.0, 0.0, -300.0);
+    assert!(
+        !super::view::combat_approach_line_of_sight_reaches(
+            &world, player, target, camera_pos, aim_pos
+        ),
+        "a bystander between the eye and the target must disqualify the candidate — \
+         otherwise the swing lands on the bystander (#3423)"
+    );
+
+    // The same world, aiming at the nearer actor: nothing stands between the
+    // eye and `blocker`, so that candidate is accepted. Asserting both
+    // directions against one physics world keeps the gate honest — it rejects
+    // occlusion specifically, rather than rejecting every candidate.
+    assert!(
+        super::view::combat_approach_line_of_sight_reaches(
+            &world,
+            player,
+            blocker,
+            camera_pos,
+            Vec3::new(0.0, 0.0, -150.0),
+        ),
+        "an unobstructed ray to the intended actor must be accepted"
+    );
+}
+
+/// A cell with no `PhysicsWorld` has nothing to occlude with, so the check
+/// must not reject every candidate — this is the path the resource-light
+/// command tests take.
+#[test]
+fn combat_approach_line_of_sight_is_permissive_without_physics() {
+    let mut world = World::new();
+    let player = world.spawn();
+    let target = world.spawn();
+    assert!(super::view::combat_approach_line_of_sight_reaches(
+        &world,
+        player,
+        target,
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, -100.0),
+    ));
+}
