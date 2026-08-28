@@ -50,6 +50,18 @@ pub const GLASS_SURFACE_BEHAVIOR: SurfaceBehavior = SurfaceBehavior {
 ///
 /// SparseSetStorage: most static geometry shares a small set of unique
 /// materials; sparse access pattern during rendering.
+/// The authored-neutral BGEM v21+ glass pivots.
+///
+/// `triangle.frag` normalizes the authored scalars by these, so a surface that
+/// ships the format default renders exactly as it did before the glass tail
+/// existed. They are named constants — not bare literals in `Default` — because
+/// the shader divides by them and must import the same value: see
+/// `shader_constants.rs`, which emits both as GLSL macros, and #3459, which is
+/// what happened when the shader carried its own copies instead.
+pub const DEFAULT_GLASS_REFRACTION_SCALE: f32 = 0.05;
+/// See [`DEFAULT_GLASS_REFRACTION_SCALE`].
+pub const DEFAULT_GLASS_BLUR_SCALE: f32 = 0.4;
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Material {
@@ -289,12 +301,14 @@ pub struct Material {
     pub rimlight_power: f32,
     pub backlight_power: f32,
     pub fresnel_power: f32,
-    /// Source-authored feature gates for the legacy soft/rim/back-light
-    /// response. Kept separate from the scalar values because Bethesda files
-    /// may serialize a non-zero default while leaving the feature disabled.
-    pub soft_lighting: bool,
-    pub rim_lighting: bool,
-    pub back_lighting: bool,
+    // #3460 — the soft/rim/back-light gates deliberately do NOT live here as
+    // bools. `pack_imported_material_flags` derives
+    // `SOFT_LIGHTING`/`RIM_LIGHTING`/`BACK_LIGHTING` into
+    // `effect_shader_flags` from the raw `ImportedMaterial` tier, and the
+    // shader reads only that packed word (`include/lighting.glsl`). Carrying
+    // a second copy here gave one fact two canonical representations that
+    // round-tripped independently through save/restore with nothing
+    // reconciling them, and no reader at all. Query `effect_shader_flags`.
     /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
     /// 1D-as-2D colour palette LUT indexed by the source texture's
     /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
@@ -521,9 +535,6 @@ impl Default for Material {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             fresnel_power: 5.0,
-            soft_lighting: false,
-            rim_lighting: false,
-            back_lighting: false,
             greyscale_texture: None,
             // 1.0 = full-strength palette remap, the BGEM/nif.xml format
             // default and the pre-#2443 hardcoded shader behaviour.
@@ -534,8 +545,8 @@ impl Default for Material {
             roughness: 0.5,
             ior: DEFAULT_DIELECTRIC_IOR,
             glass_fresnel_color: [1.0; 3],
-            glass_refraction_scale: 0.05,
-            glass_blur_scale: 0.4,
+            glass_refraction_scale: DEFAULT_GLASS_REFRACTION_SCALE,
+            glass_blur_scale: DEFAULT_GLASS_BLUR_SCALE,
             glass_blur_scale_factor: 1.0,
             // #2514 — no source format authors these; zero = the
             // shader's Burley/isotropic-only fallback (Lambert-adjacent

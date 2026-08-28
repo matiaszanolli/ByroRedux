@@ -457,6 +457,14 @@ pub const WATER_WATERFALL: u32 =
 pub const WATER_LAVA: u32 = byroredux_core::ecs::components::water::WaterKind::Lava as u32;
 pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE;
+
+/// Re-exported so `shader_constants.rs` emits the same value the canonical
+/// `Material::default()` uses — #3459.
+pub const DEFAULT_GLASS_BLUR_SCALE: f32 =
+    byroredux_core::ecs::components::material::DEFAULT_GLASS_BLUR_SCALE;
+/// See [`DEFAULT_GLASS_BLUR_SCALE`].
+pub const DEFAULT_GLASS_REFRACTION_SCALE: f32 =
+    byroredux_core::ecs::components::material::DEFAULT_GLASS_REFRACTION_SCALE;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY;
 pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 =

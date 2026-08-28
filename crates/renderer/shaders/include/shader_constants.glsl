@@ -175,6 +175,11 @@
 #define DEFAULT_WATER_WAVE_FREQUENCY 0.6
 #define STARFIELD_WATER_CONCENTRATION_REFERENCE 20.0
 
+// BGEM v21+ glass neutral pivots — `triangle.frag` divides the
+// authored scalars by these (#3459).
+#define DEFAULT_GLASS_BLUR_SCALE 0.4
+#define DEFAULT_GLASS_REFRACTION_SCALE 0.05
+
 // Local fog-volume clustering (M55/Session 62).
 #define FOG_VOLUME_CLUSTER_DIM 16u
 #define MAX_FOG_VOLUMES_PER_CLUSTER 8u

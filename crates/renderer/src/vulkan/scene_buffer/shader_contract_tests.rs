@@ -2092,7 +2092,7 @@ fn bgem_glass_optics_drive_distinct_reflection_refraction_and_overlay_lanes() {
     for needle in [
         "mat.glassBlurScale * mat.glassBlurScaleFactor",
         "mat.glassRoughnessScratchMapIndex",
-        "mat.glassRefractionScale / 0.05",
+        "mat.glassRefractionScale / DEFAULT_GLASS_REFRACTION_SCALE",
         "reflColor * glassFresnelTint",
         "mat.glassDirtOverlayMapIndex",
         "resolvedAlpha * (1.0 - glassDirtAlpha)",
@@ -2106,6 +2106,22 @@ fn bgem_glass_optics_drive_distinct_reflection_refraction_and_overlay_lanes() {
         frag.contains("glassOpticalRoughness * 8.0")
             && frag.contains("0.4 + glassOpticalRoughness * 5.0"),
         "authored blur/scratch roughness must shape both reflection and refraction"
+    );
+
+    // #3459 — both neutral pivots must come from the emitted macros, never
+    // from a restated copy of `Material::default()`. Same shape as the water
+    // guard in `shader_constants.rs`.
+    assert!(
+        frag.contains("/ DEFAULT_GLASS_BLUR_SCALE"),
+        "blur pivot must divide by the emitted macro"
+    );
+    assert!(
+        !frag.contains("mat.glassBlurScaleFactor, 0.0) / 0.4"),
+        "the blur pivot literal must not come back"
+    );
+    assert!(
+        !frag.contains("mat.glassRefractionScale / 0.05"),
+        "the refraction pivot literal must not come back"
     );
 }
 

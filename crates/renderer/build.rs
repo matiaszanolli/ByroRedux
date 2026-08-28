@@ -649,6 +649,24 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(
+        out,
+        "// BGEM v21+ glass neutral pivots — `triangle.frag` divides the"
+    )
+    .unwrap();
+    writeln!(out, "// authored scalars by these (#3459).").unwrap();
+    writeln!(
+        out,
+        "#define DEFAULT_GLASS_BLUR_SCALE {DEFAULT_GLASS_BLUR_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define DEFAULT_GLASS_REFRACTION_SCALE {DEFAULT_GLASS_REFRACTION_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Local fog-volume clustering (M55/Session 62).").unwrap();
     writeln!(
         out,

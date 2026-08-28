@@ -212,12 +212,55 @@ pub(crate) fn record_unrouted_texture_slot(context: TextureSlotContext, slot: u3
 /// slot 7 regardless of that flag (#2998), while the shipped FO76 corpus puts
 /// specular in slot 6: 1,616 of 1,664 populated bindings use an `_s.dds`
 /// suffix, across all five FO76 shader types observed (#3085).
-pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRole> {
-    let shader_type = context.shader_type;
-    let tint_family = matches!(
+/// FaceTint (4) / SkinTint (5) / HairTint (6) — the three Skyrim shader types
+/// whose slot 2 carries an `*_sk.dds` skin/hair mask rather than a glow map.
+const fn is_tint_family(shader_type: u32) -> bool {
+    matches!(
         shader_type,
         bs_lighting::FACE_TINT | bs_lighting::SKIN_TINT | bs_lighting::HAIR_TINT
-    );
+    )
+}
+
+/// A *second* role the same slot legitimately fills, or `None` when the slot
+/// serves only the role [`slot_to_role`] returned.
+///
+/// `MaterialTextureSet` models one slot as at most one role, which is right
+/// everywhere except Skyrim's slot 2. nif.xml describes that slot as
+/// `Glow(SLSF2_Glow_Map)/Skin/Hair/Rim light(SLSF2_Rim_Lighting)` — it
+/// attributes the slot to the skin/hair mask **and** to rim light in the same
+/// breath — and SLSF2 bit 25 is literally named *"Use Soft Lighting Map"*
+/// (`nif.xml:6434`), so a set gate asserts a map exists. On the tint family
+/// both are true of one texture at once: #2694 measured `*_sk.dds` in slot 2
+/// on 3158/3158 vanilla FaceTint properties, and #3068 records that Skyrim
+/// multiplexes this slot between Glow_Map, Soft_Lighting and Rim_Lighting.
+///
+/// #3458 — before this, [`slot_to_role`] returned `Tint` and stopped, so the
+/// gate crossed the NIFAL boundary while its mask did not: on 4054 of the
+/// 8058 vanilla soft-lighting properties (50.3% — every FaceGen head and every
+/// skin-tinted body) `triangle.frag` fell back to an unauthored `vec3(1.0)`
+/// and `bethesdaDiffuseLightFactor` applied the wrapped lobe at full weight
+/// across the whole surface. Binding the second role here keeps the decision
+/// at the boundary, which is where NIFAL requires it — the shader's unit
+/// default now remains reachable only for the BGSM lane, which genuinely
+/// authors no companion texture.
+pub fn slot_to_colocated_role(
+    context: TextureSlotContext,
+    slot: u32,
+) -> Option<TextureRole> {
+    match (context.layout, slot) {
+        (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 2)
+            if is_tint_family(context.shader_type)
+                && (context.soft_lighting || context.rim_lighting) =>
+        {
+            Some(TextureRole::LightingMask)
+        }
+        _ => None,
+    }
+}
+
+pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRole> {
+    let shader_type = context.shader_type;
+    let tint_family = is_tint_family(shader_type);
 
     match (context.layout, slot) {
         (_, 0) => Some(TextureRole::BaseColor),
@@ -467,6 +510,81 @@ mod tests {
         assert_eq!(
             slot_to_role(context, 7),
             Some(TextureRole::BackLighting)
+        );
+    }
+
+    /// #3458 — the test above builds its context with `skyrim(0, ..)`, i.e.
+    /// shader type 0, which is exactly the arm that already routed correctly.
+    /// The tint family (4/5/6) carries 50.3% of the vanilla soft-lighting
+    /// content and takes the `Tint` branch first, so it needs the colocated
+    /// binding to reach `LightingMask` at all.
+    #[test]
+    fn tint_family_slot_two_fills_both_tint_and_lighting_mask_when_gated() {
+        for ty in [
+            bs_lighting::FACE_TINT,
+            bs_lighting::SKIN_TINT,
+            bs_lighting::HAIR_TINT,
+        ] {
+            // Gate clear: slot 2 is the tint mask and nothing else, so the
+            // shader's unit default is not silently standing in for a map
+            // that was never authored.
+            let context = skyrim(ty, false, false);
+            assert_eq!(slot_to_role(context, 2), Some(TextureRole::Tint));
+            assert_eq!(
+                slot_to_colocated_role(context, 2),
+                None,
+                "type {ty}: an ungated tint slot must not claim a lighting mask"
+            );
+
+            // Soft_Lighting set: the same texture is both. The primary role
+            // stays Tint so #2694's routing is untouched.
+            let mut soft = context;
+            soft.soft_lighting = true;
+            assert_eq!(slot_to_role(soft, 2), Some(TextureRole::Tint));
+            assert_eq!(
+                slot_to_colocated_role(soft, 2),
+                Some(TextureRole::LightingMask),
+                "type {ty}: SLSF2 bit 25 asserts a soft-lighting map exists"
+            );
+
+            // Rim_Lighting alone does the same — nif.xml names slot 2 for
+            // rim light explicitly.
+            let mut rim = context;
+            rim.rim_lighting = true;
+            assert_eq!(
+                slot_to_colocated_role(rim, 2),
+                Some(TextureRole::LightingMask),
+                "type {ty}: SLSF2 bit 26 routes slot 2 to the rim mask"
+            );
+        }
+    }
+
+    /// The colocation is Skyrim slot 2 only — it must not widen to other
+    /// slots, other layouts, or non-tint shader types (those already reach
+    /// `LightingMask` as their primary role and would double-bind).
+    #[test]
+    fn colocated_lighting_mask_is_confined_to_the_tint_family_slot_two() {
+        let mut non_tint = skyrim(0, false, false);
+        non_tint.soft_lighting = true;
+        assert_eq!(slot_to_role(non_tint, 2), Some(TextureRole::LightingMask));
+        assert_eq!(slot_to_colocated_role(non_tint, 2), None);
+
+        let mut tint = skyrim(bs_lighting::SKIN_TINT, false, false);
+        tint.soft_lighting = true;
+        for slot in [0u32, 1, 3, 4, 5, 6, 7] {
+            assert_eq!(
+                slot_to_colocated_role(tint, slot),
+                None,
+                "slot {slot} must not colocate"
+            );
+        }
+
+        let mut fo4 = tint;
+        fo4.layout = TextureSlotLayout::Fallout4;
+        assert_eq!(
+            slot_to_colocated_role(fo4, 2),
+            None,
+            "the BGSM lane authors no companion texture — its unit default is correct"
         );
     }
 

@@ -286,8 +286,19 @@ fn save_shape_fingerprint() -> u64 {
 fn saved_type_shape_changes_require_format_major_bump() {
     // #3112 — v8 moves the wielded weapon out of `EquipmentSlots`
     // occupancy bit 31 into its own required field.
+    //
+    // #3460 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, deliberately.
+    // `Material` dropped three write-only bools (`soft_lighting`,
+    // `rim_lighting`, `back_lighting`); the fact they carried still ships in
+    // `effect_shader_flags`, whose shape is unchanged. Removing a field is
+    // read-compatible here because no saved type sets
+    // `#[serde(deny_unknown_fields)]`, so a v8 save written with those keys
+    // still deserializes — the extra keys are ignored and the surviving packed
+    // word is authoritative. A bump would have invalidated existing saves to
+    // delete two unread booleans. Adding a *required* field, or changing the
+    // meaning of an existing one, still requires the bump.
     const BASELINE_MAJOR: u16 = 8;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa6ba_8f20_d6fe_4907;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb05_045b_3e14_934a;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

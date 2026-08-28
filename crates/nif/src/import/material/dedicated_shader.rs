@@ -217,6 +217,22 @@ fn apply_bs_lighting_shader(
                     if dest.is_none() {
                         *dest = intern_texture_path(pool, raw);
                     }
+
+                    // #3458 — Skyrim slot 2 is multiplexed, so one texture can
+                    // legitimately fill a second role. Bind it with the same
+                    // first-wins rule; see `slot_to_colocated_role`.
+                    if let Some(extra) = slot_role::slot_to_colocated_role(context, slot) {
+                        let extra_dest = match extra {
+                            TextureRole::LightingMask => &mut info.lighting_mask_map,
+                            // No other colocation exists today. A new one must
+                            // add its arm here deliberately rather than
+                            // silently falling through to a wrong field.
+                            _ => continue,
+                        };
+                        if extra_dest.is_none() {
+                            *extra_dest = intern_texture_path(pool, raw);
+                        }
+                    }
                 }
             }
         }

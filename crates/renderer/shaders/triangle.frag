@@ -1488,16 +1488,20 @@ void main() {
     bool isWindow = isGlass && isArchitecturalGlass
         && texColor.a < 0.5 && texColor.a > 0.02;
 
-    // BGEM v21+ glass controls. The format defaults (blur 0.4 * 1.0,
-    // refraction 0.05, white Fresnel) normalize to the established glass
-    // result, so older content remains unchanged. The scratch map is a
+    // BGEM v21+ glass controls. The format defaults (blur
+    // DEFAULT_GLASS_BLUR_SCALE * 1.0, refraction
+    // DEFAULT_GLASS_REFRACTION_SCALE, white Fresnel) normalize to the
+    // established glass result, so older content remains unchanged. Both
+    // pivots are emitted from `Material::default()` by `shader_constants.rs`
+    // rather than restated here (#3459). The scratch map is a
     // linear roughness mask: white scratches broaden the optical lobe while
     // black texels retain the scalar roughness.
     float glassOpticalRoughness = roughness;
     vec4 glassDirt = vec4(0.0);
     if (isGlass) {
         float blurFactor = max(
-            mat.glassBlurScale * mat.glassBlurScaleFactor, 0.0) / 0.4;
+            mat.glassBlurScale * mat.glassBlurScaleFactor, 0.0)
+            / DEFAULT_GLASS_BLUR_SCALE;
         glassOpticalRoughness = clamp(roughness * blurFactor, 0.02, 0.95);
         if (mat.glassRoughnessScratchMapIndex != 0u) {
             float scratch = texture(
@@ -1860,8 +1864,11 @@ void main() {
         if (!totalInternalReflection) {
             // `glassRefractionScale` is an artist deviation control, not an
             // IOR. Scale the delta from straight-through to the physical
-            // Snell direction; 0.05 is the authored neutral/default.
-            float deviationScale = clamp(mat.glassRefractionScale / 0.05, 0.0, 4.0);
+            // Snell direction; DEFAULT_GLASS_REFRACTION_SCALE is the authored
+            // neutral/default, emitted from `Material::default()` (#3459).
+            float deviationScale = clamp(
+                mat.glassRefractionScale / DEFAULT_GLASS_REFRACTION_SCALE,
+                0.0, 4.0);
             refractDir = normalize(-V + (snellDir + V) * deviationScale);
         }
         {

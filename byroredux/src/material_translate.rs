@@ -520,9 +520,6 @@ pub(crate) fn translate_material(
         rimlight_power: source.rimlight_power,
         backlight_power: source.backlight_power,
         fresnel_power: source.fresnel_power,
-        soft_lighting: source.soft_lighting,
-        rim_lighting: source.rim_lighting,
-        back_lighting: source.back_lighting,
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
         greyscale_texture: textures.greyscale_lut,
@@ -1942,9 +1939,15 @@ mod canonical_completeness_harness {
         assert_eq!(material.rimlight_power, 0.81);
         assert_eq!(material.backlight_power, 0.91);
         assert_eq!(material.fresnel_power, 4.5);
-        assert!(material.soft_lighting);
-        assert!(material.rim_lighting);
-        assert!(material.back_lighting);
+        // #3460 — assert the packed word, which is the single canonical
+        // representation and the only one the shader reads. Asserting the
+        // former duplicate bools proved nothing about what renders.
+        use byroredux_renderer::vulkan::material::material_flag::{
+            BACK_LIGHTING, RIM_LIGHTING, SOFT_LIGHTING,
+        };
+        assert_ne!(material.effect_shader_flags & SOFT_LIGHTING, 0);
+        assert_ne!(material.effect_shader_flags & RIM_LIGHTING, 0);
+        assert_ne!(material.effect_shader_flags & BACK_LIGHTING, 0);
         // #2571 (OBL-D5-01)
         assert_eq!(material.texture_clamp_mode, 1);
         assert_eq!(material.src_blend_mode, 2);
