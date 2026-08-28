@@ -75,6 +75,11 @@ pub struct EsmIndex {
     /// Kept separate from `items`: the OMOD is a modification definition,
     /// while the referenced MISC is the object carried in the Mods category.
     /// A zero value records an override that deliberately clears LNAM.
+    ///
+    /// Keyed by the OMOD's own FormID with one entry per parsed record, so it
+    /// is a record category like any other and is counted by
+    /// [`EsmIndex::categories`] under the label `OMOD` (#2990). Nothing else
+    /// counts OMOD — `dispatch_items.rs` inserts here and nowhere else.
     pub object_mod_loose_items: HashMap<u32, u32>,
     pub containers: HashMap<u32, ContainerRecord>,
     pub leveled_items: HashMap<u32, LeveledList>,
@@ -550,6 +555,16 @@ impl EsmIndex {
             map_category!("projectiles", projectiles),
             map_category!("effect_shaders", effect_shaders),
             map_category!("item_mods", item_mods),
+            // #2990 / ESM-2026-08-16-D4-01 — one entry per parsed OMOD
+            // record (the value is the optional `LNAM` loose MISC, the KEY is
+            // the OMOD's own FormID), so `.len()` is an OMOD record count like
+            // every other row here. It was merged by hand and left out of this
+            // table, which under-reported `total()` by 2,409 on Fallout4.esm
+            // and kept OMOD out of the end-of-parse census entirely — the same
+            // shape as #1773's `trees` and #2907's 41 unmerged maps. Counted
+            // here now, and merged by this table's own closure rather than by
+            // the hand-written line `merge_from` used to carry.
+            map_category!("OMOD", object_mod_loose_items),
             map_category!("armor_addons", armor_addons),
             map_category!("outfits", outfits),
             map_category!("body_parts", body_parts),
@@ -883,11 +898,6 @@ impl EsmIndex {
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(std::mem::take(&mut other.cells));
 
-        // This auxiliary map is deliberately absent from `categories()`:
-        // it supports inventory classification but is not a record category.
-        self.object_mod_loose_items
-            .extend(std::mem::take(&mut other.object_mod_loose_items));
-
         // Every top-level record category is merged by the same table that
         // drives `total()` and `category_breakdown()`. Adding a category can
         // no longer silently omit it from load-order folding (#2907).
@@ -1154,6 +1164,122 @@ mod tests {
             idx.category_breakdown().contains("trees"),
             "category_breakdown() must list the trees category",
         );
+    }
+
+    /// #2990 / ESM-2026-08-16-D4-01 — the OMOD map was merged by hand and
+    /// left out of `categories()`, so `total()` and the end-of-parse census
+    /// under-reported by one entry per OMOD record (2,409 on Fallout4.esm).
+    /// Same shape as #1773's `trees` above.
+    #[test]
+    fn object_mods_are_counted_in_total_and_breakdown() {
+        let mut idx = EsmIndex::default();
+        let before = idx.total();
+        idx.object_mod_loose_items.insert(0x0010_0001, 0x0010_0002);
+        assert_eq!(
+            idx.total(),
+            before + 1,
+            "an inserted OMOD must increment total()",
+        );
+        assert!(
+            idx.category_breakdown().contains("OMOD"),
+            "category_breakdown() must list the OMOD category",
+        );
+
+        // And it must fold across a load order through the same table, not a
+        // hand-written line that can drift from it (#2907's failure mode).
+        let mut base = EsmIndex::default();
+        base.merge_from(idx);
+        assert_eq!(base.object_mod_loose_items.len(), 1);
+        assert_eq!(base.total(), 1);
+    }
+
+    /// #2990 PARITY-GUARD — every countable `EsmIndex` map is either a
+    /// `categories()` row or an explicitly reasoned exclusion.
+    ///
+    /// The defect this pins is not the omission itself but the *ambiguity*: a
+    /// map absent from the table reads identically whether it was a decision
+    /// or an oversight, which is how #2907 (41 maps missing from `merge_from`)
+    /// and #1773 (`trees`) both survived. Adding a `HashMap` field to
+    /// `EsmIndex` now forces the author to either count it or say here why it
+    /// is not a record category.
+    ///
+    /// Source-text, because the struct's fields and the table's rows are only
+    /// relatable through the `map_category!` invocation that names both.
+    #[test]
+    fn every_index_map_is_a_category_or_a_recorded_exclusion() {
+        /// Maps that are deliberately NOT record counts, each with the reason
+        /// a reader would otherwise have to reconstruct. Empty today.
+        const EXCLUSIONS: &[(&str, &str)] = &[];
+
+        const INDEX_RS: &str = include_str!("index.rs");
+        let struct_start = INDEX_RS
+            .find("pub struct EsmIndex {")
+            .expect("index.rs lost its EsmIndex declaration");
+        let struct_end = struct_start
+            + INDEX_RS[struct_start..]
+                .find("\n}\n")
+                .expect("EsmIndex declaration is unterminated");
+        let declaration = &INDEX_RS[struct_start..struct_end];
+
+        let fields: Vec<&str> = declaration
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("pub "))
+            .filter_map(|rest| rest.split_once(": HashMap<"))
+            .map(|(field, _)| field)
+            .collect();
+        assert!(
+            fields.len() > 80,
+            "the field scan found only {} maps — the extraction broke, and a \
+             guard that matches nothing passes for the wrong reason",
+            fields.len()
+        );
+
+        // The fields `categories()` actually counts, read off its own
+        // `map_category!` rows — the only place a struct field and a table row
+        // are named together. `cell_category!` rows are skipped: they count
+        // through `cells`, which is not a `HashMap` field of `EsmIndex`.
+        let table_start = INDEX_RS
+            .find("pub fn categories() -> &'static [CategoryEntry] {")
+            .expect("index.rs lost categories()");
+        let table_end = table_start
+            + INDEX_RS[table_start..]
+                .find("\n    }\n")
+                .expect("categories() is unterminated");
+        let counted: Vec<&str> = INDEX_RS[table_start..table_end]
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("map_category!("))
+            .filter_map(|rest| rest.split_once(", "))
+            .map(|(_, field)| field.trim_end_matches("),").trim())
+            .collect();
+        assert!(
+            counted.len() >= 90,
+            "the table scan found only {} rows — the extraction broke",
+            counted.len()
+        );
+
+        for field in fields {
+            if let Some((_, reason)) = EXCLUSIONS.iter().find(|(name, _)| *name == field) {
+                assert!(
+                    !reason.is_empty(),
+                    "`{field}` is excluded from categories() with an empty reason"
+                );
+                assert!(
+                    !counted.contains(&field),
+                    "`{field}` is listed as a categories() exclusion but the \
+                     table counts it anyway — one of the two is stale"
+                );
+                continue;
+            }
+            assert!(
+                counted.contains(&field),
+                "`EsmIndex::{field}` is a map but has no `categories()` row and \
+                 no recorded exclusion — `total()` and the end-of-parse census \
+                 under-report by its size, and the next reader cannot tell that \
+                 from a deliberate choice (#2990, following #1773 / #2907)"
+            );
+        }
     }
 
     #[test]

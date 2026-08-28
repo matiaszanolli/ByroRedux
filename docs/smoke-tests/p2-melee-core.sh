@@ -42,11 +42,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# stderr of the engine session currently under test. Reassigned by
+# `launch_held_engine` so a failure after the gate-5 relaunch (#3009) tails
+# the RELOADED session's log rather than the terminated first one.
+current_stderr="$LOG_DIR/engine.stderr"
 fail() {
     keep_artifacts=1
     echo "smoke[p2-melee-core]: FAIL -- $*"
     echo "smoke[p2-melee-core]: artifacts retained at $LOG_DIR"
-    tail -60 "$LOG_DIR/engine.stderr" 2>/dev/null || true
+    tail -60 "$current_stderr" 2>/dev/null || true
     exit 1
 }
 
@@ -67,6 +71,14 @@ fixture_log="$LOG_DIR/fixture.preflight"
 inventory_status_log="$LOG_DIR/inventory.status"
 settings_status_log="$LOG_DIR/settings.status"
 player_status_log="$LOG_DIR/player.status"
+# Ring slot the gate-5 block below writes. The ring is 10 deep and redirected
+# into `$LOG_DIR` above, so this cannot collide with an operator's saves;
+# fixtures may still override it.
+P2_SAVE_SLOT="${P2_SAVE_SLOT:-9}"
+save_log="$LOG_DIR/save.slot"
+save_info_log="$LOG_DIR/save.info"
+reloaded_stderr="$LOG_DIR/engine.reloaded.stderr"
+inventory_reloaded_log="$LOG_DIR/inventory.status.reloaded"
 
 debug_commands() {
     local commands="$1"
@@ -115,25 +127,45 @@ for weapon in "${P2_PROBE_WEAPON_LINES[@]}"; do
 done
 echo "smoke[p2-melee-core]: PASS -- frozen CELL/reference/base/weapon family preflight"
 
-env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error}" \
-    "$ENGINE_BIN" \
-    "${SMOKE_ENGINE_ARGS[@]}" \
-    --cell "$P2_CELL" \
-    --player \
-    --radius 1 \
-    --bench-frames "$BENCH_FRAMES" \
-    --bench-hold \
-    >"$engine_stdout" 2>"$engine_stderr" &
-engine_pid=$!
+# #3009 — the engine runs from the repository root, whose default save root is
+# `<cwd>/saves`. Point the ring at the harness log dir so the gate-5 block
+# below can save without touching the operator's real quicksaves.
+save_dir="$LOG_DIR/saves"
+mkdir -p "$save_dir"
 
-deadline=$(( $(date +%s) + TIMEOUT ))
-while ! grep -Fq "bench-hold:" "$engine_stderr" 2>/dev/null; do
-    if (( $(date +%s) > deadline )); then
-        fail "timeout waiting for held engine"
-    fi
-    kill -0 "$engine_pid" 2>/dev/null || fail "engine exited before bench-hold"
-    sleep 0.25
-done
+# Launch the engine into its held interactive state and block until byro-dbg
+# can attach. Extracted (#3009) so the gate-5 block can relaunch the SAME
+# invocation with `--load`; the only difference between the two launches must
+# be the extra arguments, or the continuity comparison is not comparing the
+# same session.
+launch_held_engine() {
+    local stderr_log="$1"
+    shift
+    current_stderr="$stderr_log"
+    env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error}" \
+        BYROREDUX_SAVE_DIR="$save_dir" \
+        "$ENGINE_BIN" \
+        "${SMOKE_ENGINE_ARGS[@]}" \
+        --cell "$P2_CELL" \
+        --player \
+        --radius 1 \
+        --bench-frames "$BENCH_FRAMES" \
+        --bench-hold \
+        "$@" \
+        >"$engine_stdout" 2>"$stderr_log" &
+    engine_pid=$!
+
+    local deadline=$(( $(date +%s) + TIMEOUT ))
+    while ! grep -Fq "bench-hold:" "$stderr_log" 2>/dev/null; do
+        if (( $(date +%s) > deadline )); then
+            fail "timeout waiting for held engine"
+        fi
+        kill -0 "$engine_pid" 2>/dev/null || fail "engine exited before bench-hold"
+        sleep 0.25
+    done
+}
+
+launch_held_engine "$engine_stderr"
 echo "smoke[p2-melee-core]: PASS -- engine reached held interactive state"
 
 debug_commands "entities Inventory" "$inventory_log" \
@@ -273,4 +305,53 @@ else
 fi
 
 echo "smoke[p2-melee-core]: PASS -- $P2_TARGET_HEALTH Health -> $expected_hits bound attacks at $loadout_damage damage -> Dead -> ragdoll"
+
+# ── Gate 5 (#3009) — inventory/equipment survives save -> exit -> reload ────
+#
+# `playable-vertical-slice.md` gate 5 requires inventory/equipment state to
+# survive save -> PROCESS EXIT -> reload, so this does exactly that: save a
+# slot in the live session, terminate the engine, relaunch the identical
+# invocation with `--load`, and require the loadout to come back.
+#
+# The comparison is on the id-FREE half of `inventory.status` only. The reload
+# re-runs the cell load in a fresh process, and `EntityId`s are monotonic and
+# never recycled (#372), so `player=<id>` legitimately differs across the round
+# trip; pinning it would fail on a working engine.
+loadout_before="$(sed -nE 's/.*(stack_rows=[0-9]+ item_count=[0-9]+ occupied_slots=[0-9]+).*/\1/p' \
+    "$inventory_status_log" | tail -1)"
+weapon_before="$(grep -F '  equipped_weapon=' "$inventory_status_log" | tail -1)"
+[[ -n "$loadout_before" && -n "$weapon_before" ]] \
+    || fail "could not capture the pre-save loadout from inventory.status"
+
+debug_commands "save $P2_SAVE_SLOT" "$save_log" \
+    || fail "could not queue a save to slot $P2_SAVE_SLOT"
+grep -Fq "saved slot $P2_SAVE_SLOT" "$save_log" \
+    || fail "save $P2_SAVE_SLOT did not write a slot (validation gate rejected the world?)"
+debug_commands "save.info $P2_SAVE_SLOT" "$save_info_log" \
+    || fail "could not verify slot $P2_SAVE_SLOT"
+grep -Fq "slot $P2_SAVE_SLOT: VALID" "$save_info_log" \
+    || fail "slot $P2_SAVE_SLOT did not decode as a valid container"
+grep -Eq '^  Inventory: [0-9]+ rows' "$save_info_log" \
+    || fail "slot $P2_SAVE_SLOT carries no Inventory column — gate 5 is unassertable"
+echo "smoke[p2-melee-core]: PASS -- slot $P2_SAVE_SLOT written and verified with an Inventory column"
+
+# Process exit. `wait` before relaunching so the debug port is free and the
+# next `engine_pid` assignment cannot orphan this one past the cleanup trap.
+kill -TERM "$engine_pid" 2>/dev/null || true
+wait "$engine_pid" 2>/dev/null || true
+engine_pid=""
+
+launch_held_engine "$reloaded_stderr" --load "$P2_SAVE_SLOT"
+grep -Fq "startup --load" "$reloaded_stderr" \
+    || echo "smoke[p2-melee-core]: NOTE -- startup --load produced no log line at RUST_LOG=${BYROREDUX_SMOKE_LOG:-error}"
+echo "smoke[p2-melee-core]: PASS -- engine relaunched from slot $P2_SAVE_SLOT"
+
+# The startup load is queued and applied between frames, so poll rather than
+# sampling once.
+wait_for_pattern "inventory.status" "$loadout_before" "$inventory_reloaded_log" \
+    "inventory stacks/equipment survived save -> exit -> reload"
+grep -Fq "$weapon_before" "$inventory_reloaded_log" \
+    || fail "the equipped weapon did not survive save -> exit -> reload (was '$weapon_before')"
+echo "smoke[p2-melee-core]: PASS -- gate 5: $loadout_before + equipped weapon restored in a fresh process"
+
 echo "smoke[p2-melee-core]: PASS"

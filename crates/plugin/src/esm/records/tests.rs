@@ -1447,8 +1447,12 @@ fn categories_table_row_count_pinned() {
     //   audio_occlusion_primitives — the Starfield-era SECH/AOPF pair
     //   had zero dispatch and fell to the bare catch-all skip, so
     //   neither had a category row to regress against).
+    // Bumped 98 → 99 in #2990 (ESM-2026-08-16-D4-01: object_mod_loose_items —
+    //   one entry per parsed OMOD record, merged by hand and absent from
+    //   `categories()`, so `total()` and the census under-reported by 2,409
+    //   on Fallout4.esm and OMOD never appeared in the breakdown at all).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 98);
+    assert_eq!(EsmIndex::categories().len(), 99);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

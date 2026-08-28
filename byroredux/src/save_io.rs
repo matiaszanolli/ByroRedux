@@ -215,9 +215,59 @@ fn notify_player(world: &World, message: impl Into<String>) {
 
 impl Resource for PlayerPose {}
 
+/// Environment override for the save-slot root (#3009).
+///
+/// Mirrors `settings_io`'s `BYROREDUX_SETTINGS_PATH`. It exists so an
+/// automated gate can exercise save → reload continuity without writing into
+/// the operator's real quicksave ring: the default root is `<cwd>/saves`, and
+/// the smoke harness runs the engine from the repository root, so a gate that
+/// saved would otherwise litter the working tree and clobber whatever ring
+/// slot the cursor happened to land on.
+pub const SAVE_DIR_ENV: &str = "BYROREDUX_SAVE_DIR";
+
+/// Resolve the save-slot root: [`SAVE_DIR_ENV`] when set and non-empty,
+/// otherwise `<cwd>/saves`.
+pub fn discover_save_dir() -> PathBuf {
+    save_dir_from(std::env::var_os(SAVE_DIR_ENV))
+}
+
+/// [`discover_save_dir`] over an explicit override, so the empty-value and
+/// default branches are testable without mutating the process environment
+/// (which is shared by every test thread and cannot be done safely).
+fn save_dir_from(override_value: Option<std::ffi::OsString>) -> PathBuf {
+    match override_value.filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from("saves"),
+    }
+}
+
+#[cfg(test)]
+mod save_dir_tests {
+    use super::{save_dir_from, SAVE_DIR_ENV};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    /// #3009 — the override exists so an automated save → reload gate does
+    /// not write into the operator's real quicksave ring. An empty value must
+    /// fall back rather than resolve to the process's current directory,
+    /// which would put slots wherever the engine happened to be launched.
+    #[test]
+    fn the_save_dir_override_falls_back_on_absent_and_empty_values() {
+        assert_eq!(save_dir_from(None), PathBuf::from("saves"));
+        assert_eq!(save_dir_from(Some(OsString::new())), PathBuf::from("saves"));
+        assert_eq!(
+            save_dir_from(Some(OsString::from("/tmp/byro-smoke/saves"))),
+            PathBuf::from("/tmp/byro-smoke/saves")
+        );
+        // The smoke gate spells this name; a rename here must break there.
+        assert_eq!(SAVE_DIR_ENV, "BYROREDUX_SAVE_DIR");
+    }
+}
+
 /// Where save slots live, plus the round-robin ring cursor.
 ///
-/// Installed as a resource at startup. Default root is `<cwd>/saves`.
+/// Installed as a resource at startup. Default root is `<cwd>/saves`,
+/// overridable with [`SAVE_DIR_ENV`].
 pub struct SaveState {
     pub dir: PathBuf,
     pub ring: disk::SaveRing,

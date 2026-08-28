@@ -89,7 +89,12 @@ fn main() -> anyhow::Result<()> {
         };
         with_vmad += 1;
 
-        let (scripts, consumed) = ScriptInstanceData::parse_with_consumed(vmad);
+        let (scripts, clean_end) = ScriptInstanceData::parse_with_consumed(vmad);
+        // #2989 — `None` means the scripts section broke off mid-decode, so
+        // its tail is not a fragment section. This is a derivation tool, so
+        // it still dumps those bytes (that is the point of the tool) but says
+        // so, rather than presenting them as a fragment section.
+        let consumed = clean_end.unwrap_or(vmad.len());
         let frag = &vmad[consumed.min(vmad.len())..];
         // Aggregate over EVERY qust-with-vmad: fragment-header version byte
         // distribution (hardening the decoder — confirm version 2 universal).
@@ -111,6 +116,9 @@ fn main() -> anyhow::Result<()> {
             consumed,
             frag.len()
         );
+        if clean_end.is_none() {
+            println!("    (scripts section did NOT finish cleanly — no fragment section here)");
+        }
         for s in &scripts.scripts {
             println!("    script: {:?}  ({} props)", s.name, s.properties.len());
         }

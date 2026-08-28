@@ -187,10 +187,21 @@ impl ScriptInstanceData {
     /// `data.len()` for them; the QUST fragment decoder uses this to seek
     /// past the scripts to the stage→`Fragment_N` table.
     ///
-    /// On a truncated/unknown-type scripts section the offset marks how
-    /// far the graceful decode got; a fragment decoder should treat a
-    /// short read as "no fragments" rather than seeking into garbage.
-    pub fn parse_with_consumed(data: &[u8]) -> (Self, usize) {
+    /// `None` means the scripts section did **not** finish cleanly — it was
+    /// truncated, or it hit a property type whose width is unknowable — so
+    /// wherever the cursor stopped is not a section boundary and nothing may
+    /// be decoded from there. A fragment decoder must treat that as "no
+    /// fragments" rather than seeking into the tail.
+    ///
+    /// #2989 / ESM-2026-08-16-D2-01 — this used to return a bare `usize` with
+    /// no success channel while the doc promised exactly this distinction, so
+    /// both fragment decoders seeked unconditionally and the only thing
+    /// standing between a truncated scripts section's tail bytes and being
+    /// read as a fragment table was a one-byte `version == 2` test that
+    /// passes 1 time in 256 by chance. Bounded by the cursor's `slice::get`
+    /// discipline (a mis-parse, never an OOB read), but it is the
+    /// untrusted-mod path that makes it worth closing.
+    pub fn parse_with_consumed(data: &[u8]) -> (Self, Option<usize>) {
         let mut c = Cursor::new(data);
         let version = c.i16().unwrap_or(0);
         let object_format = c.i16().unwrap_or(0);
@@ -200,13 +211,25 @@ impl ScriptInstanceData {
             scripts: Vec::new(),
         };
         let Some(script_count) = c.u16() else {
-            return (out, c.pos);
+            // Not even a script count: the 4-byte header may itself have been
+            // short (`i16().unwrap_or(0)` above tolerates that), so `c.pos`
+            // is not a boundary.
+            return (out, None);
         };
+        // Cleared by every graceful break below. Only an untouched `true`
+        // means `c.pos` is a real section boundary a caller may seek to.
+        let mut clean = true;
         let has_status = version >= 4;
         for _ in 0..script_count {
-            let Some(name) = c.wstring() else { break };
+            let Some(name) = c.wstring() else {
+                clean = false;
+                break;
+            };
             let status = if has_status { c.u8().unwrap_or(0) } else { 0 };
-            let Some(prop_count) = c.u16() else { break };
+            let Some(prop_count) = c.u16() else {
+                clean = false;
+                break;
+            };
             let mut properties = Vec::with_capacity(prop_count as usize);
             let mut script_ok = true;
             for _ in 0..prop_count {
@@ -248,10 +271,11 @@ impl ScriptInstanceData {
                 properties,
             });
             if !script_ok {
+                clean = false;
                 break;
             }
         }
-        (out, c.pos)
+        (out, clean.then_some(c.pos))
     }
 }
 
@@ -328,7 +352,11 @@ pub struct QuestScriptFragment {
 /// rather than guessing — matching the scripts-section decoder's
 /// recover-don't-crash contract.
 pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
-    let (_, consumed) = ScriptInstanceData::parse_with_consumed(vmad);
+    // #2989 — `None` is a scripts section that broke off mid-decode, so its
+    // tail is not a fragment section and must not be read as one.
+    let (_, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
@@ -401,7 +429,11 @@ pub struct SceneScriptFragment {
 /// complete bindings decoded before the fault (or an empty vector when the
 /// header itself cannot be trusted).
 pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
-    let (_, consumed) = ScriptInstanceData::parse_with_consumed(vmad);
+    // #2989 — same contract as `parse_quest_fragments`: no clean finish, no
+    // fragment section.
+    let (_, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
@@ -882,6 +914,85 @@ mod tests {
         let frags = parse_quest_fragments(&vmad);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].fragment_name, "Fragment_0");
+    }
+
+    /// #2989 / ESM-2026-08-16-D2-01 — a scripts section that broke off
+    /// mid-decode has no section boundary, so neither fragment decoder may
+    /// seek into its tail.
+    ///
+    /// Pre-fix both seeked unconditionally: the sole protection against
+    /// reading a truncated scripts section's tail as a fragment table was the
+    /// `version == 2` byte test, which passes 1 time in 256 by chance. The
+    /// fixture below is built to pass exactly that test, so it fails against
+    /// the old code and passes against the new.
+    #[test]
+    fn a_truncated_scripts_section_yields_no_fragments_even_when_its_tail_looks_valid() {
+        // A scripts header claiming one script, then a name whose declared
+        // length runs past the end of the data: `wstring()` returns None and
+        // the decode breaks gracefully mid-script.
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes()); // version
+        vmad.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        vmad.extend_from_slice(&1u16.to_le_bytes()); // scriptCount = 1
+        vmad.extend_from_slice(&64u16.to_le_bytes()); // name length, unbacked
+        let broke_at = vmad.len();
+
+        // The garbage tail. Its first byte is 2 — the fragment version the
+        // decoders accept — followed by a plausible count and filename, i.e.
+        // the 1-in-256 coincidence the old code had no other defence against.
+        let mut tail = fragment_section("QF_Z_0", &[(3, "QF_Z_0", "Fragment_0")]);
+        assert_eq!(tail[0], 2, "the fixture must hit the version test");
+        vmad.append(&mut tail);
+
+        // The defect itself first: pre-fix, `c.pos` after the graceful break
+        // landed exactly on this tail, so both decoders read it as a section.
+        assert!(
+            parse_quest_fragments(&vmad).is_empty(),
+            "the QUST decoder seeked into a truncated scripts section's tail"
+        );
+        assert!(
+            parse_scene_fragments(&vmad).is_empty(),
+            "the SCEN decoder seeked into a truncated scripts section's tail"
+        );
+
+        let (scripts, clean_end) = ScriptInstanceData::parse_with_consumed(&vmad);
+        assert_eq!(
+            clean_end, None,
+            "a scripts section that breaks mid-script has no boundary to report"
+        );
+        // The graceful decode still returns what it read — the signal is
+        // separate from the data, which is the whole point of the fix.
+        assert_eq!(scripts.version, 5);
+        assert!(scripts.scripts.is_empty());
+
+        // Proof the fixture is live rather than vacuous: the very same tail,
+        // placed after a scripts section that DOES finish cleanly, decodes.
+        let mut valid = empty_scripts_prefix();
+        assert_eq!(valid.len(), broke_at - 2);
+        valid.extend_from_slice(&fragment_section("QF_Z_0", &[(3, "QF_Z_0", "Fragment_0")]));
+        let frags = parse_quest_fragments(&valid);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].stage, 3);
+    }
+
+    /// The clean-finish signal is not "consumed == data.len()": an object
+    /// VMAD ends exactly at the boundary, while a QUST VMAD finishes cleanly
+    /// with a whole fragment section still ahead of the cursor. Both are
+    /// `Some`, which is why the fix needed a separate channel rather than a
+    /// length comparison at the call sites.
+    #[test]
+    fn a_clean_finish_is_reported_whether_or_not_bytes_remain() {
+        let object_only = from_hex(WINTERHOLD_JAIL_VMAD_HEX);
+        let (_, clean_end) = ScriptInstanceData::parse_with_consumed(&object_only);
+        assert_eq!(clean_end, Some(object_only.len()));
+
+        let mut with_fragments = empty_scripts_prefix();
+        let prefix_len = with_fragments.len();
+        with_fragments
+            .extend_from_slice(&fragment_section("QF_W_0", &[(7, "QF_W_0", "Fragment_0")]));
+        let (_, clean_end) = ScriptInstanceData::parse_with_consumed(&with_fragments);
+        assert_eq!(clean_end, Some(prefix_len));
+        assert!(prefix_len < with_fragments.len());
     }
 
     // ---- SCEN fragment section ----------------------------------------

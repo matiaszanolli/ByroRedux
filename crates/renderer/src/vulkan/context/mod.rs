@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1322,7 +1322,13 @@ pub struct VulkanContext {
     /// ~9 reallocs × 34 NPCs × 60 fps ≈ 18 K reallocs/s. Same
     /// `mem::take` → `clear()` → `mem::replace` pattern as the
     /// instance / batch / indirect scratches above.
-    skin_dispatch_seen_scratch: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    ///
+    /// #3045 / REN-D9-01 — `FxHashSet`, not the std default. #2923 converted
+    /// the rest of the skinning path and stopped one field short of this one:
+    /// `insert` runs once per skinned draw command per frame, which is the
+    /// per-frame per-entity keyspace SipHash-1-3 is the wrong default for.
+    /// Pinned by `pose_dirty_crosses_the_crate_boundary_without_siphash`.
+    skin_dispatch_seen_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
     /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
     /// + buffer handles for the per-frame compute dispatch.
     skin_dispatches_scratch: Vec<(
@@ -1350,8 +1356,11 @@ pub struct VulkanContext {
     /// command buffer is pure wasted work, not a correctness
     /// requirement — `accel`'s BLAS entry is already complete after
     /// the BUILD.
-    skin_built_this_frame_scratch:
-        std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    ///
+    /// #3045 SIBLING — `FxHashSet` for the same reason as
+    /// `skin_dispatch_seen_scratch` above: the refit loop probes it once per
+    /// skinned entity per frame. Same cluster, same keyspace, same miss.
+    skin_built_this_frame_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -2817,6 +2826,33 @@ mod rigid_history_hasher_tests {
             assert!(
                 !src.contains("std::collections::HashSet<EntityId>"),
                 "{what} reverted to std's SipHash-1-3 (#2923)"
+            );
+        }
+
+        // #3045 / REN-D9-01 — the two fields #2923 stopped one short of.
+        // Declared on `VulkanContext` rather than in a signature, so they
+        // carry the struct's fully-qualified `EntityId` spelling; asserted
+        // here rather than in the loop above for that reason alone.
+        //
+        // Scope note: `skin_slots`, `morph_slots`, `failed_skin_slots` and
+        // `failed_skin_blas` in the same struct are still std-hashed. They are
+        // `pub` fields threaded across the crate, so converting them is a
+        // wider change than this one, and they are deliberately NOT asserted
+        // here — a blanket "no std HashSet in this file" check would pass
+        // today only by accident of what has been converted so far.
+        let src = production_src();
+        for field in [
+            "skin_dispatch_seen_scratch",
+            "skin_built_this_frame_scratch",
+        ] {
+            let decl = format!("{field}: FxHashSet<byroredux_core::ecs::storage::EntityId>,");
+            assert!(
+                src.contains(&decl),
+                "`{field}` is no longer declared `{decl}` — it is probed once \
+                 per skinned draw command per frame inside the skinning \
+                 dispatch path the hot-path hashing rule names, which is what \
+                 makes SipHash-1-3 the wrong default here (#3045, following \
+                 #1368 / #2174 / #2923)",
             );
         }
     }

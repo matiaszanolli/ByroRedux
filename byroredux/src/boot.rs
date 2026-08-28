@@ -1576,11 +1576,12 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     world.insert_resource(build_command_registry());
     // M45 — install the save registry + slot directory so the
     // `save` / `save.info` console commands can operate. Saves live
-    // under `<cwd>/saves`; the ring keeps the last 10 quicksaves so
-    // a fresh save never immediately clobbers the previous good one.
+    // under `<cwd>/saves` (or `BYROREDUX_SAVE_DIR`, #3009); the ring keeps
+    // the last 10 quicksaves so a fresh save never immediately clobbers the
+    // previous good one.
     world.insert_resource(crate::save_io::build_save_registry());
     world.insert_resource(crate::save_io::SaveState::new(
-        std::path::PathBuf::from("saves"),
+        crate::save_io::discover_save_dir(),
         10,
     ));
     // M45.1 — deferred live-load slot, drained by `step_save_loads`

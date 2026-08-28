@@ -107,8 +107,12 @@ isn't durable until the directory entry is synced too; Unix-only, this
 last step is skipped on Windows).
 
 `SaveRing` (`disk.rs:143`) is a fixed-size round-robin cursor — size
-`10`, directory `saves/` (both set at `boot.rs:1558-1561`), filename
-scheme `save_<n>.ess`. `SaveRing::resume` (`disk.rs:166`) scans on-disk
+`10`, directory `saves/` relative to the working directory (both set in
+`boot.rs`), filename scheme `save_<n>.ess`. `BYROREDUX_SAVE_DIR` overrides the
+directory (#3009), mirroring `BYROREDUX_SETTINGS_PATH`: the vertical-slice
+gate-5 smoke check saves and reloads for real, and the smoke harness runs the
+engine from the repository root, so without the override it would write into
+the operator's own ring. `SaveRing::resume` (`disk.rs:166`) scans on-disk
 mtimes at boot and starts one slot *past* the newest, so a post-restart
 quicksave can't clobber the most recent good save.
 
