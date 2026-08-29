@@ -93,6 +93,24 @@ use super::transform::Transform;
 ///   conversion, run it after, and the far decades' `distinct_codes` are the
 ///   before/after evidence — the thing that was otherwise unobservable and
 ///   that made shipping reversed-Z speculative.
+///
+///   **Measured baseline** (RTX 4070 Ti, `--game fnv --grid 0,0 --radius 3
+///   --upscaler taa`, camera on the Mojave satellite-dish rise looking down
+///   the valley at the LOD ring, 1280×720, three captures agreeing within
+///   2%):
+///
+///   | decade (BU) | samples | distinct codes | BU/step | reversed |
+///   |---|---:|---:|---:|---:|
+///   | 100–1 000 | 287 582 | 82 951 | 0.00 | 0.0000 |
+///   | 1 000–10 000 | 292 502 | 47 312 | 0.12 | 0.0002 |
+///   | 10 000–100 000 | 36 093 | 3 301 | 11.92 | 0.0029 |
+///   | 100 000–400 000 | 1 410 | **104** | 476.83 | 0.0073 |
+///
+///   The last row is the finding: the distant-LOD ring's 1 410 covered
+///   pixels share **104** depth values. Near field keeps ~3.5 samples per
+///   code, the ring collapses to ~13.6 — an order of magnitude worse
+///   discrimination exactly where terrain LOD and the object LOD standing on
+///   it have to be told apart.
 pub const DEFAULT_RENDER_DISTANCE: f32 = 400_000.0;
 
 /// Near-plane distance for BU-scale content — matches vanilla `fNearDistance`
