@@ -629,7 +629,7 @@ is self-contained (geometry, skinning) can translate inside `crates/nif`.
 
 ---
 
-## 4. Emissive scale — ground-truth measurement (2026-05-28)
+## 4. Emissive scale — ground-truth measurement (2026-05-28, re-censused 2026-08-29)
 
 `Material.emissive_mult` is fed by three NIF shader-property classes with possibly
 different scales (`EmissiveSource`): `Material` (`NiMaterialProperty.emissive_mult`,
@@ -638,32 +638,59 @@ legacy), `Lighting` (`BSLightingShaderProperty.emissive_multiple`, Skyrim+/FO4),
 diffuse-tint scale, not emissive). Per the no-guessing policy, no normalization is
 applied until the per-source scales are measured.
 
-Instrumentation: `crates/nif/examples/material_dump.rs` now prints an `emSrc` column
-(`mat` / `lit` / `fx` / `-`) beside `emisM`.
+Instrumentation: `crates/nif/examples/material_dump.rs` prints an `emSrc` column
+(`mat` / `lit` / `fx` / `-`) beside `emisM` for a single NIF;
+`crates/nif/examples/emissive_census.rs` (#3337) sweeps whole archives and
+histograms `emissive_mult` per source, filtered through
+`emissive_contribution_is_authored`.
 
-### Findings — **all three sources measured (2026-05-28), no normalization needed**
+### Findings — full census (2026-08-29)
 
-Sampled equivalent emissive meshes (neon/torches/lava/candles/glow cards/muzzle
-flashes) across Oblivion + FNV + Skyrim SE + FO4:
+The 2026-05-28 pass sampled ~4 values per source, which is not enough to
+characterise a distribution; #3337 replaced it with a full archive sweep.
+Every `.nif` in FNV `Fallout - Meshes.bsa`, Skyrim SE `Skyrim - Meshes{0,1}.bsa`
+and FO4 `Fallout4 - Meshes{,Extra}.ba2` — 196,794 files, 20,288
+authored-emissive meshes:
 
-| Source | Games measured | `emisM` observed | Exemplars |
-|---|---|---|---|
-| `Material` | Oblivion (BSVER 11), FNV (BSVER 34) | **0.5, 1.0, 1.3, 7.5** | neon signs, torches, lava |
-| `Lighting` | Skyrim SE, FO4 | **0.9, 1.0, 1.0, 1.0** | imperial candle, ice torch, FO4 lantern |
-| `Effect` | FO4 | **1.0, 1.2, 1.0** | fxglow card, minigun/flamejet muzzle flash |
+| Source | Game | Meshes | Mode | 2nd mode | `>= 10` |
+|---|---|---:|---:|---:|---:|
+| `Material` | FNV | 5,670 | **1.0** (1,912) | 2.0 (1,454) | 635 (**11.2 %**) |
+| `Lighting` | Skyrim SE | 2,388 | **1.0** (508) | 2.0 (300) | 31 (1.3 %) |
+| `Lighting` | FO4 | 1,939 | **0.05** (1,187) | 1.0 (255) | 23 (1.2 %) |
+| `Effect` | Skyrim SE | 4,695 | **1.0** (2,416) | 2.0 (588) | 3 (0.1 %) |
+| `Effect` | FO4 | 5,596 | **1.0** (3,556) | 2.0 (334) | 186 (3.3 %) |
 
-**Conclusion: the three sources already share one ~1.0 scale — no per-source
-normalization is required.** Every authoring source clusters its multiplier at 1.0;
-the legacy `Material` 7.5 is an authored bright-neon *outlier*, not a scale-convention
-difference (the same high values would appear in any source for deliberately bright
-content). Applying a normalization constant would be inventing a correction for a
-divergence that the ground truth shows does not exist (a `feedback_no_guessing`
-violation in the other direction). The one genuine non-scale distinction —
-`BSEffectShaderProperty.base_color_scale` is semantically a *diffuse-tint* multiplier,
-not emissive — is already captured by the `EmissiveSource::Effect` discriminator and
-is left for a future BSEffect-proper render path; it does **not** manifest as a scale
-mismatch (Effect emisM 1.0–1.2 matches the others). Open question Q2 in
-`material-abstraction.md` is hereby **resolved as no-op**.
+**Conclusion: still no per-source normalization — but two of the 2026-05-28
+statements do not survive the census and are withdrawn.**
+
+1. *Withdrawn: "the legacy `Material` 7.5 is an authored bright-neon outlier."*
+   FNV's `Material` distribution has a clear **secondary mode at exactly 10.0**
+   (477 meshes) and a tail through 100.0; 11.2 % of its authored-emissive meshes
+   sit at `>= 10`, roughly an order of magnitude more of them than either modern
+   source. That is an authoring-convention difference, not a scattered outlier tail.
+2. *Withdrawn: "all three sources cluster at ~1.0."* **FO4's `Lighting` mode is
+   0.05**, carried by 61 % of its meshes (1,187 / 1,939) — 20× below every other
+   population. Skyrim's `Lighting` mode is 1.0, so this is a per-**game** shift
+   inside one source, which a per-source constant could not express anyway.
+
+What *is* confirmed is the thing the canonical tier actually depends on: no source
+is systematically offset from the others by a fixed factor, so there is no
+normalization constant to apply, and inventing one would be a
+`feedback_no_guessing` violation in the other direction. Open question Q2 in
+`material-abstraction.md` stays **resolved as no-op** on that ground — not on the
+"shared ~1.0 scale" claim, which is now known to be false for FO4.
+
+Two live consequences are recorded rather than fixed here:
+
+- `triangle.frag:1420`'s `min(emissiveColor * emissiveMult * emissiveMask,
+  vec3(64.0))` ceiling bounds FNV's 100× materials. That ceiling is a
+  **render-time material decision** doing work the canonical tier declined to do —
+  a NIFAL boundary smell, tracked as such rather than moved, since moving it
+  would mean picking a number.
+- FO4's 0.05 `Lighting` mode means an FO4 emissive surface is, by default,
+  authored 20× dimmer than the Skyrim equivalent. Whether that is compensated
+  elsewhere in FO4's pipeline (light-template scaling, exposure) is unmeasured
+  and must be censused on that side before anyone rescales it.
 
 ---
 
@@ -680,15 +707,19 @@ mismatch (Effect emisM 1.0–1.2 matches the others). Open question Q2 in
    (`BhkMultiSphereShape`, `BhkConvexListShape`). The live coverage inventory is
    `import/collision/shape.rs::resolve_shape_inner`; remaining gaps (FO4+ NP blob,
    phantoms) are documented limitations.
-5. ~~Emissive unification~~ — resolved no-op (2026-05-28): all three `EmissiveSource`
-   variants measured across Oblivion/FNV/Skyrim/FO4 already share a ~1.0 scale (§4);
-   no normalization needed.
+5. ~~Emissive unification~~ — resolved no-op (2026-05-28; re-censused 2026-08-29,
+   #3337): no source is offset from the others by a fixed factor, so there is no
+   normalization constant to apply. The original "all three share a ~1.0 scale"
+   framing is withdrawn — FNV `Material` has a 10.0 secondary mode and FO4
+   `Lighting` a 0.05 primary one (§4).
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (the shader already consumes canonical flags).
 
 ## 6. Tooling
 
+- `crates/nif/examples/emissive_census.rs` — whole-archive `emissive_mult`
+  histogram per `EmissiveSource` (BSA or BA2; grounds §4).
 - `crates/nif/examples/material_dump.rs` — per-mesh canonical-material dump
   (`kind / metO / rghO / gloss / env / specS / specClum / emisM / emSrc / alpha /
   decal / path`).

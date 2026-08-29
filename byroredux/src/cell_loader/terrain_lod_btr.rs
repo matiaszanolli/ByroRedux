@@ -307,7 +307,11 @@ pub(crate) fn spawn_btr_block(
     // synth path uses (still reads as ground), never the magenta checker.
     let diffuse = btr_diffuse_path(worldspace_key, level, qx, qy);
     let tex_handle = resolve_texture(ctx, tex_provider, Some(diffuse.as_str()));
+    // The path the canonical `Material` classifies against (#3336) — whichever
+    // of the two actually resolved, mirroring `terrain_lod.rs`.
+    let mut base_texture_path = Some(diffuse.clone());
     let tex_handle = if tex_handle == ctx.texture_registry.fallback() {
+        base_texture_path = Some("textures\\landscape\\dirt02.dds".to_string());
         resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
     } else {
         tex_handle
@@ -389,6 +393,19 @@ pub(crate) fn spawn_btr_block(
     }
 
     world.insert(entity, bound);
+    // #3336 / #2444 (MAT-D3-02) — canonical `Material` from the translation
+    // boundary. This was the fifth exterior spawner, missed when #2444
+    // converted the other four: without a `Material` these draws take
+    // `render/static_meshes.rs`'s no-`Material` arm (hardcoded roughness 0.5 /
+    // metalness 0.0 / identity tints) — the second materialization site #2444
+    // exists to delete — and the authored `_n` map resolved just above cannot
+    // reach the shader with its normal-space flag. `.btr` is Skyrim/FO4-only
+    // (FNV distant terrain goes through `terrain_lod.rs`), so this is a
+    // NIFAL-invariant hole rather than an FNV-visible one.
+    world.insert(
+        entity,
+        crate::material_translate::translate_texture_only_material(base_texture_path),
+    );
     world.insert(entity, RenderLayer::Architecture);
     world.insert(entity, IsLodTerrain);
 

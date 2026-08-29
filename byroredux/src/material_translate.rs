@@ -1575,7 +1575,11 @@ mod tests {
         // use the texture-path-only helper. `placement_lod` (Oblivion
         // `_far.nif`) is the sibling the audit missed — same missing-`Material`
         // shape, but its sub-meshes DO carry an `ImportedMaterial`, so it goes
-        // through the full boundary instead.
+        // through the full boundary instead. `terrain_lod_btr` (Skyrim/FO4
+        // combined-LOD quadtree) is the fifth, added by #3336: enumerating
+        // only four files is exactly why it stayed invisible to this harness
+        // for as long as it did, so keep this table in step with
+        // `cell_loader`'s spawners.
         for (name, src, boundary_fn) in [
             (
                 "cell_loader/terrain.rs",
@@ -1596,6 +1600,11 @@ mod tests {
                 "cell_loader/placement_lod.rs",
                 include_str!("cell_loader/placement_lod.rs"),
                 "translate_material(",
+            ),
+            (
+                "cell_loader/terrain_lod_btr.rs",
+                include_str!("cell_loader/terrain_lod_btr.rs"),
+                "translate_texture_only_material(",
             ),
         ] {
             assert!(

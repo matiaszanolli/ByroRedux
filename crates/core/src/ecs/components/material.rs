@@ -788,6 +788,81 @@ fn path_indicates_ice(path: &str) -> bool {
     })
 }
 
+/// Whether `path` names an iron surface.
+///
+/// #3335 — `iron` used to ride the plain substring matcher, which also fires
+/// inside **`environment`**. A live census of the shipped texture archives
+/// (FNV `Fallout - Textures{,2}.bsa`, Skyrim SE `Skyrim - Textures0..8.bsa`,
+/// 2026-08-29) found `environment` to be the *only* English collision, and it
+/// is a consequential one: `textures\effects\windowenvironmentmap01.dds` and
+/// Skyrim's `eyeenvironmentmask_m` / `glacierenvironmentmask` all resolved to
+/// metalness 0.90, which clears `triangle.frag`'s `metalness > 0.3` gate and
+/// fires an RT environment-reflection ray those surfaces never earned.
+///
+/// The remedy is deliberately **not** [`contains_any_ci_word`] — the #2009
+/// treatment applied to `ice` / `gem` / `fur`. On this keyword the boundary is
+/// inverted the same way #3359 found it was for `ice`: Bethesda concatenates
+/// every genuine iron asset, so word-boundary matching rejects
+/// `wroughtironwork`, `tireiron`, `arironwork01`, `castironpotmedium01`,
+/// `hotiron01`, `ingotiron01` and `neongreenironsights` while *keeping* the
+/// one hit that does not matter (`perk_iron fist.dds`, a Pip-Boy icon). It
+/// would trade one false positive for six false negatives.
+///
+/// So: plain substring match, minus the single censused compound. `env` is
+/// checked as the preceding three bytes, which covers `environment`,
+/// `environmental` and `environs` alike.
+fn path_indicates_iron(path: &str) -> bool {
+    let hs = path.as_bytes();
+    hs.windows(4).enumerate().any(|(i, w)| {
+        if !w.eq_ignore_ascii_case(b"iron") {
+            return false;
+        }
+        // Reject `env` + `iron` — `environment` and friends.
+        !(i >= 3 && hs[i - 3..i].eq_ignore_ascii_case(b"env"))
+    })
+}
+
+/// Whether `path` names a wooden log surface.
+///
+/// #3335 — `log` used to ride the plain substring matcher, and it is a
+/// substring of a *lot* of shipped asset names. Censused across the vanilla
+/// texture archives (2026-08-29): FNV and FO3 contain **zero** genuine log
+/// textures and nothing but collisions (`nv_ncr_logo`, `eulogyjones\male_d`,
+/// `dlc05alienheadhologram`, `perk_logic_co_processor`, `nv_buffalogourd_d`);
+/// Oblivion adds its entire `textures\menus50\dialog\…` UI tree (`diaLOG`)
+/// plus `ms06logemmamay`.
+///
+/// [`contains_any_ci_word`] does not work here either. The genuine assets are
+/// concatenated compounds — Oblivion's `biglogend` / `biglogside` /
+/// `biglogupper` / `logend` / `loggrate01`, Skyrim's `riftenlogdetails01` /
+/// `riftenlogsiding01` / `whlogend` — so a letter-boundary rule rejects all
+/// nine while still accepting `dialog_scrollbar_down` (the byte after `log`
+/// is `_`).
+///
+/// What *does* separate the two populations is the continuation: real log
+/// assets are always `log` + a timber noun, and none of the collisions is.
+/// Bare `s` is deliberately absent from the noun list — it would re-admit
+/// Oblivion's `monofonto_…_dialogs2` font pages, and the one genuine `logs`
+/// name (`brumwoodlogs`) already matches this arm's `wood` keyword.
+fn path_indicates_log(path: &str) -> bool {
+    /// Timber nouns Bethesda concatenates directly after `log`.
+    const LOG_NOUNS: &[&str] = &[
+        "end", "side", "siding", "upper", "grate", "details", "pile", "wall", "stack", "beam",
+        "cabin", "roof",
+    ];
+    let hs = path.as_bytes();
+    hs.windows(3).enumerate().any(|(i, w)| {
+        if !w.eq_ignore_ascii_case(b"log") {
+            return false;
+        }
+        let rest = &hs[i + 3..];
+        LOG_NOUNS.iter().any(|noun| {
+            let nb = noun.as_bytes();
+            rest.len() >= nb.len() && rest[..nb.len()].eq_ignore_ascii_case(nb)
+        })
+    })
+}
+
 pub fn is_glass_keyword_path(path: &str) -> bool {
     contains_any_ci(
         path,
@@ -806,7 +881,8 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // aliases to the actual texture filename.
     let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
 
-    if contains_any_ci(path, &["metal", "iron", "steel", "chainmail"])
+    if contains_any_ci(path, &["metal", "steel", "chainmail"])
+        || path_indicates_iron(path)
         || contains_any_ci(filename, &["dwemer", "dwarven"])
     {
         // Weathered/industrial metal. Pre-2026-06-03 this was
@@ -858,7 +934,7 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.0,
         };
     }
-    if contains_any_ci(path, &["wood", "plank", "barrel", "crate", "log"]) {
+    if contains_any_ci(path, &["wood", "plank", "barrel", "crate"]) || path_indicates_log(path) {
         return PbrMaterial {
             roughness: 0.7,
             metalness: 0.0,
@@ -2080,9 +2156,131 @@ mod tests {
         }
     }
 
-    /// #2591 (SKY-D7-03) — either a black color or a zero multiplier
-    /// alone is sufficient to mark a contribution unauthored; both must
-    /// be non-zero for "authored".
+    /// #3335 — every path here is transcribed from a live listing of the
+    /// vanilla texture archives (FNV `Fallout - Textures{,2}.bsa`,
+    /// Skyrim SE `Skyrim - Textures0..8.bsa`, Oblivion, FO3), 2026-08-29.
+    /// `environment` is the sole English word in that corpus that contains
+    /// `iron`, and it used to drag windows, eye masks and glacier masks into
+    /// the metal arm at metalness 0.90 — over `triangle.frag`'s
+    /// `metalness > 0.3` gate, so they fired an unearned RT reflection ray.
+    #[test]
+    fn environment_textures_are_not_iron() {
+        let m = Material::default();
+        for path in [
+            r"textures\effects\windowenvironmentmap01.dds",
+            r"textures\effects\windowenvironmentmap01_e.dds",
+            r"textures\actors\character\eyeenvironmentmask_m.dds",
+            r"textures\actors\character\eyewolfenvironmentmask_m.dds",
+            r"textures\landscape\glacierenvironmentmask.dds",
+        ] {
+            assert!(
+                !path_indicates_iron(path),
+                "{path} is 'envIRONment', not iron (#3335)"
+            );
+            assert_ne!(
+                classify(&m, path).metalness,
+                0.9,
+                "{path} must not classify as metal (#3335)"
+            );
+        }
+    }
+
+    /// The other direction — the reason this is not `contains_any_ci_word`.
+    /// Every genuine iron asset in the same corpus is a concatenated
+    /// compound, so a letter-boundary rule would reject all of them.
+    #[test]
+    fn concatenated_iron_compounds_still_classify_as_metal() {
+        let m = Material::default();
+        for path in [
+            r"textures\dlc04\architecture\boardwalk\wroughtironwork.dds",
+            r"textures\weapons\1handmelee\tireiron.dds",
+            r"textures\weapons\2handmelee\9iron.dds",
+            r"textures\effects\neongreenironsights.dds",
+            r"textures\architecture\arironwork01.dds",
+            r"textures\clutter\castironpotmedium01.dds",
+            r"textures\clutter\ingotiron01.dds",
+            r"textures\dungeons\hotiron01.dds",
+            r"textures\weapons\iron\irondagger.dds",
+        ] {
+            assert!(
+                path_indicates_iron(path),
+                "{path} is a genuine iron surface (#3335)"
+            );
+            assert_eq!(
+                classify(&m, path).metalness,
+                0.9,
+                "{path} must reach the metal arm (#3335)"
+            );
+        }
+    }
+
+    /// #3335 — `log` is a substring of `logo`, `eulogy`, `hologram`, `logic`
+    /// and — worst of all — Oblivion's whole `menus50\dialog\` UI tree. None
+    /// of these is timber, and all of them used to take wood roughness 0.70.
+    #[test]
+    fn log_english_collisions_are_not_wood() {
+        let m = Material::default();
+        for path in [
+            r"textures\clutter\nv_ncr_logo.dds",
+            r"textures\clutter\casino\nvslotmachinetopslogo_d.dds",
+            r"textures\terminals\nv_blackjack\nv_blackjack-casino-logo03.dds",
+            r"textures\armor\eulogyjones\male_d.dds",
+            r"textures\architecture\paradisefalls\paradisefallseulogysbed01.dds",
+            r"textures\landscape\plants\nv_buffalogourd_d.dds",
+            r"textures\dlc05\effects\dlc05alienheadhologram.dds",
+            r"textures\interface\icons\pipboyimages\perks\perk_logic_co_processor.dds",
+            r"textures\interface\icons\pipboyimages\perks\perk_entomologist.dds",
+            r"textures\menus50\dialog\dialog_scrollbar_down.dds",
+            r"textures\menus50\dialog\dialog_button_barter.dds",
+            r"textures\fonts\monofonto_verylarge02_dialogs2_0_lod_a.dds",
+            r"textures\architecture\solitude\eastempirecologo.dds",
+            r"textures\clutter\books\ms06logemmamay.dds",
+        ] {
+            assert!(!path_indicates_log(path), "{path} is not timber (#3335)");
+            assert_ne!(
+                classify(&m, path).roughness,
+                0.7,
+                "{path} must not take wood roughness (#3335)"
+            );
+        }
+    }
+
+    /// The other direction — the reason this is not `contains_any_ci_word`
+    /// either. Every genuine log texture in the corpus concatenates `log`
+    /// with a timber noun, so a letter-boundary rule would reject all of
+    /// them while still admitting `dialog_…` (the byte after `log` is `_`).
+    #[test]
+    fn concatenated_log_compounds_still_classify_as_wood() {
+        let m = Material::default();
+        for path in [
+            r"textures\architecture\bruma\biglogend.dds",
+            r"textures\architecture\bruma\biglogside.dds",
+            r"textures\architecture\bruma\biglogupper.dds",
+            r"textures\architecture\farmhouse\logend.dds",
+            r"textures\clutter\loggrate01.dds",
+            r"textures\architecture\riften\riftenlogdetails01.dds",
+            r"textures\architecture\riften\riftenlogsiding01.dds",
+            r"textures\architecture\windhelm\whlogend.dds",
+        ] {
+            assert!(
+                path_indicates_log(path),
+                "{path} is a genuine timber surface (#3335)"
+            );
+            assert_eq!(
+                classify(&m, path).roughness,
+                0.7,
+                "{path} must reach the wood arm (#3335)"
+            );
+        }
+        // `brumwoodlogs` is the one genuine `log` + `s` name; the noun list
+        // deliberately omits bare `s` (it would re-admit `dialogs2`), and
+        // this path is covered by the same arm's `wood` keyword instead.
+        assert_eq!(
+            classify(&m, r"textures\architecture\bruma\brumwoodlogs.dds").roughness,
+            0.7
+        );
+    }
+
     /// #3359 — every path here is transcribed from a census of the vanilla
     /// Skyrim SE mesh archives. The classifier had these exactly backwards:
     /// 0 of the genuine ice surfaces reached the glass arm, and 269
@@ -2187,6 +2385,9 @@ mod tests {
         );
     }
 
+    /// #2591 (SKY-D7-03) — either a black color or a zero multiplier
+    /// alone is sufficient to mark a contribution unauthored; both must
+    /// be non-zero for "authored".
     #[test]
     fn emissive_contribution_is_authored_requires_both_nonzero_color_and_mult() {
         assert!(emissive_contribution_is_authored([0.5, 0.5, 0.5], 1.25));

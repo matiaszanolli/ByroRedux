@@ -299,6 +299,30 @@ pub(crate) fn normalize_texture_path(path: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// The one canonical form a texture path takes before it is used as either a
+/// bindless cache key or a BSA/BA2 lookup key.
+///
+/// Composition of the two independent canonicalisations that already existed:
+/// [`strip_build_prefix`] (drop an *embedded* `\data\` build-server root) and
+/// [`normalize_texture_path`] (drop a *leading* `data\`, then guarantee the
+/// `textures\` root). Neither subsumes the other — `strip_build_prefix`
+/// requires a separator before `data`, so a path that *starts* with `Data\`
+/// falls straight through it.
+///
+/// #3334 — `resolve_texture_view_with_clamp` used to key on
+/// `strip_build_prefix` alone while `TextureProvider::extract` looked up
+/// through `normalize_texture_path`. Extraction therefore always succeeded,
+/// but the key was wrong-shaped: every FNV `WATR.NNAM` authors
+/// `Data\Textures\Water\WastelandWaterPotomac.dds`, which the registry's own
+/// `normalize_path` then expanded to
+/// `textures/data/textures/water/wastelandwaterpotomac.dds` — a duplicate
+/// bindless slot and a duplicate GPU upload, and a cache entry the REFR walk
+/// could never populate. Routing both through one function makes the two keys
+/// agree by construction rather than by two call sites staying in step.
+pub(crate) fn canonical_texture_key(path: &str) -> String {
+    normalize_texture_path(&strip_build_prefix(path)).into_owned()
+}
+
 /// Parse grid coordinates from a "x,y" string.
 pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
     let parts: Vec<&str> = s.split(',').collect();

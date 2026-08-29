@@ -209,6 +209,57 @@ fn normalize_material_path_strips_leading_data_segment_forward_slash() {
     assert_eq!(out.as_ref(), "materials\\setdressing\\foo.bgsm");
 }
 
+/// #3334 — the FNV `WATR.NNAM` shape. `strip_build_prefix` returns a path
+/// that *starts* with `Data\` unchanged (it requires a separator BEFORE the
+/// `data` token), so keying the texture cache on it alone produced
+/// `textures/data/textures/water/…` once `TextureRegistry::normalize_path`
+/// prepended its own root — a second bindless slot and a second GPU upload
+/// for a DDS the REFR walk had already loaded under the canonical key.
+/// ~55 of FNV's ~60 WATR records share this one path.
+#[test]
+fn canonical_texture_key_strips_leading_data_root() {
+    assert_eq!(
+        canonical_texture_key("Data\\Textures\\Water\\WastelandWaterPotomac.dds"),
+        "Textures\\Water\\WastelandWaterPotomac.dds",
+    );
+}
+
+/// The key a resolve computes and the key `TextureProvider::extract` looks up
+/// with must agree by construction, not by two call sites staying in step —
+/// that drift IS #3334. Pins the composition over every authored shape in the
+/// corpus: build-server root, leading `data\`, missing `textures\` root,
+/// forward slashes, and the already-canonical case.
+#[test]
+fn canonical_texture_key_agrees_with_the_archive_lookup_key() {
+    for authored in [
+        "Data\\Textures\\Water\\WastelandWaterPotomac.dds",
+        "data/textures/water/wastelandwaterpotomac.dds",
+        "skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds",
+        "landscape\\dirt02.dds",
+        "textures\\landscape\\dirt02.dds",
+    ] {
+        let key = canonical_texture_key(authored);
+        assert_eq!(
+            normalize_texture_path(&key).as_ref(),
+            key,
+            "{authored}: the cache key must already be what `extract` normalizes to \
+             (idempotent), or the two sites drift again (#3334)"
+        );
+        let lowered = key.to_ascii_lowercase();
+        assert!(
+            lowered.starts_with("textures\\") || lowered.starts_with("textures/"),
+            "{authored}: canonical form is rooted at `textures` (#3334)"
+        );
+        assert!(
+            !lowered.contains("\\data\\")
+                && !lowered.contains("/data/")
+                && !lowered.starts_with("data\\")
+                && !lowered.starts_with("data/"),
+            "{authored}: no `data` root survives canonicalisation (#3334)"
+        );
+    }
+}
+
 /// `normalize_texture_path` — canonical form passes through borrowed.
 #[test]
 fn normalize_texture_path_passes_canonical_through_borrowed() {

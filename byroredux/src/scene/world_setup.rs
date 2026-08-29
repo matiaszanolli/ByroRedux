@@ -659,13 +659,20 @@ fn resolve_sun_sprite(
         .filter(|s| !s.is_empty())
         .and_then(|path| {
             let dds = tex_provider.extract(path)?;
+            // #3334 sibling — `extract` looks up through
+            // `normalize_texture_path` but `load_dds` keys the registry on
+            // whatever string it is handed, so an authored `Data\Textures\…`
+            // CLMT `FNAM` would cache under a doubled root that no
+            // `resolve_texture` caller could ever hit. Canonicalise once, the
+            // same way the texture resolve path does.
+            let path = crate::asset_provider::canonical_texture_key(path);
             let alloc = ctx.allocator.as_ref().unwrap();
             match ctx.texture_registry.load_dds(
                 &ctx.device,
                 alloc,
                 &ctx.graphics_queue,
                 ctx.transfer_pool,
-                path,
+                &path,
                 &dds,
             ) {
                 Ok(h) => {

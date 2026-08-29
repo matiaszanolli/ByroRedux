@@ -370,14 +370,27 @@ fn resolve_texture_view_with_clamp(
             ctx.texture_registry.neutral_fallback()
         };
     };
-    // Strip Bethesda build-server prefixes (e.g. `skyrimhd\build\pc\data\`)
-    // so cache + BSA lookups both use the canonical `textures\…` path.
-    // Without this step Skyrim AE's HD-bundle juniper / reach branches /
-    // driftwood / mountain clutter all render as magenta placeholders.
-    // Applied BEFORE the cache so two NIFs that reference the same
-    // physical texture via different prefix-paths share a single
-    // bindless entry. See `strip_build_prefix` doc for details.
-    let tex_path: &str = &strip_build_prefix(tex_path);
+    // Canonicalise the path BEFORE it is used as either a cache key or an
+    // archive key, so the two agree by construction.
+    //
+    // 1. `strip_build_prefix` drops an embedded build-server root
+    //    (`skyrimhd\build\pc\data\…`). Without it Skyrim AE's HD-bundle
+    //    juniper / reach branches / driftwood / mountain clutter all render
+    //    as magenta placeholders.
+    // 2. `normalize_texture_path` drops a *leading* `data\` (which
+    //    `strip_build_prefix` deliberately does not — it requires a
+    //    separator BEFORE `data`) and prepends the `textures\` root.
+    //
+    // Step 2 is the #3334 half. `TextureProvider::extract` below already
+    // normalises internally, so extraction always succeeded; only the key
+    // was wrong-shaped. Every FNV `WATR.NNAM` authors
+    // `Data\Textures\Water\…`, which the registry's own `normalize_path`
+    // then turned into `textures/data/textures/water/…` — a second bindless
+    // slot and a second GPU upload for a DDS the REFR walk had already
+    // loaded under its canonical key, and a cache the WATR resolve could
+    // never hit. Same key-drift shape as #3038 / #3412, one layer down.
+    let canonical = canonical_texture_key(tex_path);
+    let tex_path: &str = &canonical;
     // `acquire_by_path` (not `get_by_path`) — bumps the refcount on a
     // cache hit so each resolve pairs with one drop_texture on cell
     // unload. `load_dds` on the miss path bumps from 0→1 on fresh
