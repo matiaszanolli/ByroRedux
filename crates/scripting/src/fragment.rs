@@ -377,6 +377,26 @@ fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Op
     vmad?.scripts.iter().find_map(|s| s.object_form_id(name))
 }
 
+/// The global form ID of a live entity — the inverse of
+/// [`crate::condition::resolve_entity_by_global_form_id`], and keyed the same
+/// way (`FormIdPool::resolve(..).local.0`) so the two agree.
+///
+/// #3278 — needed by [`Effect::Disable`], whose sink
+/// ([`ReferenceEnableState`]) is deliberately FormID-keyed rather than
+/// entity-keyed so a disable survives its reference's cell being unloaded.
+/// Alias-bound receivers resolve to an *entity*, so they have to come back
+/// to a form ID to be recorded.
+fn entity_global_form_id(
+    world: &World,
+    entity: byroredux_core::ecs::storage::EntityId,
+) -> Option<u32> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    let component = world.get::<FormIdComponent>(entity)?;
+    let pool = world.try_resource::<FormIdPool>()?;
+    pool.resolve(component.0).map(|pair| pair.local.0)
+}
+
 /// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
 /// properties go through FormID → loaded entity; alias-bound properties go
 /// through the owning quest's [`crate::scene::SceneActorBindings`] snapshot
@@ -778,7 +798,26 @@ fn apply_effect(
             object,
             fade_out: _,
         } => {
-            let form_id = resolve_property_form_id(vmad, object.property_name())?;
+            // #3278 (SCR-D5-2026-08-24-01) — `prim_disable` classifies its
+            // receiver through the same `receiver_object` as
+            // `AddItem`/`MoveTo`/`EquipItem`, so it can bind to a
+            // quest-alias-filled `ObjectReference Property`. Dispatch used
+            // only the strict `resolve_property_form_id`, which sees direct
+            // VMAD FormID properties and nothing else — so
+            // `<AliasBoundMarker>.Disable()` silently declined in exactly the
+            // cases where the same alias-bound receiver resolves fine for
+            // every sibling effect.
+            //
+            // Direct-FormID first, alias-aware second: that keeps the cheap,
+            // world-free path unchanged for the case that already worked and
+            // makes the alias arm strictly additive. `ReferenceEnableState`
+            // is FormID-keyed (so the state outlives the reference's cell),
+            // hence the trip back through `entity_global_form_id`.
+            let form_id = resolve_property_form_id(vmad, object.property_name()).or_else(|| {
+                let entity =
+                    resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)?;
+                entity_global_form_id(world, entity)
+            })?;
             deferred.reference_enable_changes.push((form_id, false));
             None
         }
@@ -1472,13 +1511,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     else {
         return;
     };
-    if let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() {
-        if let Some(batch) = batches.get_mut(player_entity) {
-            batch.0.extend(emitted);
-        } else {
-            batches.insert(player_entity, QuestStageAdvancedBatch(emitted));
-        }
-    }
+    crate::quest_stages::push_quest_stage_advances(world, player_entity, emitted);
 }
 
 /// Maximum stage-fragment cascade depth in one dispatch pass — a fragment
@@ -1804,14 +1837,7 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
     let Some(player) = world.try_resource::<crate::papyrus_demo::PlayerEntity>() else {
         return;
     };
-    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
-        return;
-    };
-    if let Some(batch) = batches.get_mut(player.0) {
-        batch.0.extend(advances);
-    } else {
-        batches.insert(player.0, QuestStageAdvancedBatch(advances));
-    }
+    crate::quest_stages::push_quest_stage_advances(world, player.0, advances);
 }
 
 /// Consume [`QuestStageAdvanced`] markers and run the matching
@@ -1960,9 +1986,11 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         return;
     }
     let player_entity = world.resource::<crate::papyrus_demo::PlayerEntity>().0;
-    if let Some(mut q) = world.query_mut::<QuestStageAdvancedBatch>() {
-        q.insert(player_entity, QuestStageAdvancedBatch(chained));
-    }
+    // #3277 — was a bare `insert()`, the one non-defensive writer of the six.
+    // Harmless only while this system was the last same-frame producer in the
+    // schedule; `quest_alias_readiness_stage_system` and
+    // `scene_fragment_dispatch_system` now run immediately before it.
+    crate::quest_stages::push_quest_stage_advances(world, player_entity, chained);
 }
 
 #[cfg(test)]

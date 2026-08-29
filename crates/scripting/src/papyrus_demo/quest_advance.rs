@@ -465,14 +465,7 @@ pub fn quest_advance_system(world: &World) {
     // the storage write lock. Another same-frame producer may already have
     // populated the compatibility sink; replacing it would lose its events.
     // The sequenced journal in QuestStageState remains authoritative.
-    let Some(mut q) = world.query_mut::<QuestStageAdvancedBatch>() else {
-        return;
-    };
-    if let Some(batch) = q.get_mut(player_entity) {
-        batch.0.extend(advances_emitted);
-    } else {
-        q.insert(player_entity, QuestStageAdvancedBatch(advances_emitted));
-    }
+    crate::quest_stages::push_quest_stage_advances(world, player_entity, advances_emitted);
 }
 
 #[cfg(test)]

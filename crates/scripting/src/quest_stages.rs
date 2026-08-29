@@ -652,6 +652,44 @@ impl Component for QuestStageAdvancedBatch {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Append a producer's advances to the shared same-frame
+/// [`QuestStageAdvancedBatch`] sink, merging with whatever a same-frame
+/// producer already put there.
+///
+/// #3277 (SCR-D6-2026-08-24-01) — this is the invariant #1864's fix
+/// documented but left as a convention every writer had to re-implement:
+/// the sink is one `SparseSetStorage` slot on one shared entity, so a bare
+/// `insert()` *replaces* it and silently drops any earlier producer's events
+/// for that frame. Five of six writers open-coded the `get_mut`-then-`extend`
+/// dance correctly; `quest_fragment_dispatch_system`'s tail did not, which
+/// was harmless only while it happened to be the last writer in the schedule.
+/// Two producers were then scheduled ahead of it
+/// (`quest_alias_readiness_stage_system`, `scene_fragment_dispatch_system`)
+/// and the omission became live data loss waiting for a consumer.
+///
+/// Routing every writer through here makes the invariant structural rather
+/// than conventional — a new producer cannot get it wrong by not knowing
+/// about it.
+///
+/// Deliberately has **no emptiness guard**: every call site already returns
+/// early on an empty batch, and those early returns skip other work too
+/// (logging, resource lookups). A second check here would be dead code that
+/// reads as if it were load-bearing.
+pub fn push_quest_stage_advances(
+    world: &World,
+    player: EntityId,
+    advances: Vec<QuestStageAdvanced>,
+) {
+    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
+        return;
+    };
+    if let Some(batch) = batches.get_mut(player) {
+        batch.0.extend(advances);
+    } else {
+        batches.insert(player, QuestStageAdvancedBatch(advances));
+    }
+}
+
 /// Parsed `Start Game Enabled` quests waiting for world bootstrap.
 ///
 /// ESM records are installed before the player/event sink exists, so this
@@ -945,14 +983,7 @@ pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
     let Some(player) = world.try_resource::<PlayerEntity>().map(|player| player.0) else {
         return;
     };
-    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
-        return;
-    };
-    if let Some(batch) = batches.get_mut(player) {
-        batch.0.extend(emitted);
-    } else {
-        batches.insert(player, QuestStageAdvancedBatch(emitted));
-    }
+    push_quest_stage_advances(world, player, emitted);
 }
 
 /// Refresh the static startup list from the merged plugin index. Runtime quest
@@ -1127,14 +1158,7 @@ pub fn quest_startup_system(world: &World, _dt: f32) {
         advances.len()
     );
 
-    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
-        return;
-    };
-    if let Some(batch) = batches.get_mut(player) {
-        batch.0.extend(advances);
-    } else {
-        batches.insert(player, QuestStageAdvancedBatch(advances));
-    }
+    push_quest_stage_advances(world, player, advances);
 }
 
 /// Apply terminal QUST stage-log semantics after stage fragments have run.
@@ -1587,6 +1611,73 @@ mod tests {
         assert_eq!(read.events.len(), QUEST_EVENT_RETENTION);
         assert_eq!(read.missed_events, OVERFLOW as u64);
         assert_eq!(read.events[0].sequence, OVERFLOW as u64 + 1);
+    }
+
+    /// #3277 (SCR-D6-2026-08-24-01) regression — two same-frame producers
+    /// writing the shared [`QuestStageAdvancedBatch`] sink must BOTH survive.
+    ///
+    /// The sink is one `SparseSetStorage` slot on one shared entity, so a
+    /// bare `insert()` replaces it outright. `quest_fragment_dispatch_system`
+    /// did exactly that, which was invisible only because it happened to be
+    /// the last same-frame producer in the schedule — until
+    /// `quest_alias_readiness_stage_system` and `scene_fragment_dispatch_system`
+    /// were scheduled ahead of it.
+    ///
+    /// Asserts on [`push_quest_stage_advances`] itself, which every one of the
+    /// six writers now routes through, so the guarantee holds for a seventh
+    /// nobody has written yet.
+    #[test]
+    fn push_quest_stage_advances_merges_same_frame_producers() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(player));
+
+        let ev = |quest: u32, new_stage: u16| QuestStageAdvanced {
+            quest: QuestFormId(quest),
+            previous_stage: 0,
+            new_stage,
+        };
+
+        // Producer 1 — first writer of the frame, creates the component.
+        push_quest_stage_advances(&world, player, vec![ev(0x1000, 10)]);
+        assert_eq!(
+            world
+                .get::<QuestStageAdvancedBatch>(player)
+                .expect("first producer must create the sink")
+                .0
+                .len(),
+            1
+        );
+
+        // Producer 2 — must append, not replace.
+        push_quest_stage_advances(&world, player, vec![ev(0x2000, 20), ev(0x3000, 30)]);
+        // Producer 3 — the shape that used to clobber everything above.
+        push_quest_stage_advances(&world, player, vec![ev(0x4000, 40)]);
+
+        let batch = world
+            .get::<QuestStageAdvancedBatch>(player)
+            .expect("quest event batch");
+        assert_eq!(
+            batch.0.len(),
+            4,
+            "#3277: every same-frame producer's events must survive; a bare \
+             insert() would leave only the last producer's {} event(s)",
+            1
+        );
+        for quest in [0x1000, 0x2000, 0x3000, 0x4000] {
+            assert!(
+                batch.0.iter().any(|e| e.quest == QuestFormId(quest)),
+                "#3277: quest {quest:#x}'s advance was dropped by a later producer"
+            );
+        }
+        // Order matters: the sink is a journal, and the compatibility
+        // consumers demux by `quest` in arrival order.
+        assert_eq!(
+            batch.0.iter().map(|e| e.new_stage).collect::<Vec<_>>(),
+            vec![10, 20, 30, 40],
+            "#3277: appends must preserve producer order"
+        );
     }
 
     #[test]

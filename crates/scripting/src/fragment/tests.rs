@@ -1333,6 +1333,90 @@ fn dispatch_scene_start_via_registered_vmad() {
     assert!(world.has::<crate::SceneStartRequest>(scene_entity));
 }
 
+/// #3278 (SCR-D5-2026-08-24-01) regression — an alias-bound `Disable()`
+/// receiver must resolve and dispatch, matching its sibling object-targeting
+/// effects.
+///
+/// `prim_disable` lowers its receiver through the same `receiver_object` as
+/// `AddItem`/`MoveTo`/`EquipItem`, so it can legitimately bind to a
+/// quest-alias-filled `ObjectReference Property`. Dispatch, however, went
+/// through the strict `resolve_property_form_id`, which only sees direct
+/// VMAD FormID properties — so this exact shape silently declined while the
+/// same alias-bound receiver worked for every sibling effect.
+///
+/// Also pins the round-trip the fix depends on: alias → entity → form ID,
+/// keyed the way `ReferenceEnableState` stores it.
+#[test]
+fn dispatch_disable_resolves_an_alias_bound_receiver() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const MARKER_FORM: u32 = 0x0004_B1CE;
+    const MARKER_ALIAS: i16 = 3;
+
+    let mut world = fixture();
+    let mut pool = FormIdPool::new();
+    let marker_id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER_FORM),
+    });
+    world.insert_resource(pool);
+
+    // The alias-filled scene marker: a live entity carrying its form ID,
+    // reachable only through the quest's alias bindings.
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(marker_id));
+    world
+        .resource_mut::<crate::SceneActorBindings>()
+        .bind(Q, i32::from(MARKER_ALIAS), marker);
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_AliasDisable".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "Marker".into(),
+                        status: 1,
+                        // alias >= 0: filled by the quest, no direct FormID.
+                        // This is what `resolve_property_form_id` cannot see.
+                        value: PropertyValue::Object {
+                            form_id: Q.0,
+                            alias: MARKER_ALIAS,
+                        },
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            40,
+            vec![Effect::Disable {
+                object: ObjectRef::Property("Marker".into()),
+                fade_out: false,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 40);
+    emit_advance(&world, Q, 40);
+    quest_fragment_dispatch_system(&world);
+
+    assert!(
+        !world
+            .resource::<crate::ReferenceEnableState>()
+            .is_enabled(MARKER_FORM),
+        "#3278: an alias-bound Disable() must record the disable; pre-fix the \
+         strict resolver returned None and the effect silently declined"
+    );
+}
+
 #[test]
 fn dispatch_disable_then_stage_cascade_and_package_evaluation() {
     use byroredux_plugin::esm::records::script_instance::{
