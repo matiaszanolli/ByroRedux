@@ -346,6 +346,7 @@ fn kf_body_piece_masks_follow_each_games_hand_layout() {
 }
 
 #[test]
+#[ignore = "needs FNV game data on disk; parses the whole master (~850 MB resident)"]
 fn installed_fnv_sunny_smiles_selects_the_female_body() {
     let data = std::env::var_os("BYROREDUX_FNV_DATA")
         .map(std::path::PathBuf::from)
@@ -1473,6 +1474,7 @@ fn creature_path_derivation_is_idempotent_and_declines_without_a_modl() {
 /// Self-skips without the game installed, like the other corpus sweeps in
 /// this tree; set `BYROREDUX_OBLIVION_DATA` to override the path.
 #[test]
+#[ignore = "needs Oblivion game data on disk; parses the whole master (~1.4 GB resident)"]
 fn installed_oblivion_creature_assets_resolve_from_their_records() {
     let data = std::env::var("BYROREDUX_OBLIVION_DATA")
         .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());

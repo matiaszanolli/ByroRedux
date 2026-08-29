@@ -876,6 +876,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs FNV game data on disk; parses the whole master (~850 MB resident)"]
     fn installed_fnv_player_base_builds_a_nonempty_template() {
         let data = std::env::var_os("BYROREDUX_FNV_DATA")
             .map(std::path::PathBuf::from)

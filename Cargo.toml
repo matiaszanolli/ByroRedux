@@ -236,6 +236,23 @@ egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }
 
 [profile.dev]
 opt-level = 1
+# Keeps the local crate's DWARF in sibling `.o` files rather than copying it
+# into every artifact. Measured, and worth stating plainly because the first
+# reasoning about it was wrong: on Linux this only excludes the *local* crate's
+# debuginfo — dependency rlibs still contribute theirs at link time — so the
+# `byroredux` test binary went 780 MB -> 739 MB, i.e. 717 MB -> 710 MB of
+# `.debug_*`. Kept only for that ~40 MB/binary across ~84 test binaries
+# (~3 GB of `target/debug`), NOT as a memory measure.
+#
+# It does NOT reduce test-run RAM. Peak RSS is unchanged by debuginfo: DWARF
+# is not in a PT_LOAD segment and is never paged in at runtime — verified by
+# building with `debug = "line-tables-only"` (binary 780 -> 120 MB) and
+# measuring the same 2917 MB peak. Test RAM was entirely four real-data tests
+# parsing whole game masters without `#[ignore]`; gating them took the
+# `byroredux` binary from 2828 MB to 168 MB.
+#
+# The debug profile *is* the lever for link-time RAM and disk, not for tests.
+split-debuginfo = "unpacked"
 
 [profile.dev.package.rapier3d]
 opt-level = 3

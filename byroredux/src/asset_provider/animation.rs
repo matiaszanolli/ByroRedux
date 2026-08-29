@@ -390,7 +390,19 @@ mod tests {
         );
     }
 
+    /// Opt-in: parses the whole of `Skyrim.esm` and decodes real HKX out of
+    /// `Skyrim - Animations.bsa`, which costs ~1 GB resident — by far the
+    /// heaviest single test in the workspace, and enough to dominate the
+    /// peak of an entire `cargo test` run once libtest schedules a few of
+    /// them concurrently. `#[ignore]`-gated to match the convention every
+    /// other real-data test in the tree already follows
+    /// (`crates/plugin/tests/parse_real_esm.rs`,
+    /// `crates/scripting/tests/pex_recognize_e2e.rs`, the `#3361` /`#3408`
+    /// equip guards); this one predated it. Run with:
+    ///
+    ///   cargo test -p byroredux --bin byroredux skyrim_cart_idle -- --ignored
     #[test]
+    #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn skyrim_cart_idle_catalog_installs_real_assets_when_available() {
         let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
             .map(std::path::PathBuf::from)
