@@ -995,6 +995,227 @@ mod emitter_rate_tests {
 
         assert_eq!(extract_emitter_rate(&scene), Some(4.5));
     }
+
+    /// #3329 — the residual #2548 left behind. A manager-controlled blend has
+    /// an EMPTY `items` array, so tier (b) can't resolve a sub-interpolator,
+    /// and on real content its own `value` is non-positive too, so tier (c)
+    /// also fails. On vanilla FNV that is 168 of the 307 emitter-bearing
+    /// meshes — every affected file's blend has `items.len() == 0` — and the
+    /// rate then silently falls back to `fog.rs::particle_preset`'s
+    /// name-heuristic guess.
+    ///
+    /// The authored rate is still in the file, on the sibling
+    /// `NiControllerSequence`'s controlled block for the same emitter
+    /// controller. Measured on `Fallout - Meshes.bsa`: 100 -> 255 of 307
+    /// emitter meshes now surface an authored rate.
+    #[test]
+    fn manager_controlled_blend_recovers_rate_from_a_controller_sequence() {
+        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+        use std::sync::Arc;
+
+        fn emitter_sequence(name: &str, interp_block: u32) -> NiControllerSequence {
+            NiControllerSequence {
+                name: Some(Arc::from(name)),
+                controlled_blocks: vec![ControlledBlock {
+                    interpolator_ref: BlockRef(interp_block),
+                    controller_ref: BlockRef::NULL,
+                    priority: 0,
+                    node_name: None,
+                    property_type: None,
+                    controller_type: Some(Arc::from("NiPSysEmitterCtlr")),
+                    controller_id: None,
+                    interpolator_id: None,
+                    string_palette_ref: BlockRef::NULL,
+                    node_name_offset: 0,
+                    property_type_offset: 0,
+                    controller_type_offset: 0,
+                    controller_id_offset: 0,
+                    interpolator_id_offset: 0,
+                }],
+                array_grow_by: 0,
+                weight: 1.0,
+                text_keys_ref: BlockRef::NULL,
+                cycle_type: 0,
+                frequency: 1.0,
+                phase: 0.0,
+                start_time: 0.0,
+                stop_time: 1.0,
+                manager_ref: BlockRef::NULL,
+                accum_root_name: None,
+                anim_note_refs: Vec::new(),
+            }
+        }
+
+        let mut scene = NifScene::default();
+        // [0] the empty-items manager blend the controller points at, with a
+        //     non-positive `value` so tier (c) fails too — the real shape.
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1,
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+            value: 0.0,
+        }));
+        // [1] the controller.
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(0u32),
+        }));
+        // [2] a transient sequence's rate, and [3] the steady-state loop's.
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 300.0,
+            data_ref: BlockRef::NULL,
+        }));
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 25.0,
+            data_ref: BlockRef::NULL,
+        }));
+        // [4] transient first in block order, so a naive first-match would
+        //     take the ignition ramp instead of the idle density.
+        scene.blocks.push(Box::new(emitter_sequence("Forward", 2)));
+        // [5] the steady-state loop.
+        scene.blocks.push(Box::new(emitter_sequence("Idle", 3)));
+
+        assert_eq!(
+            extract_emitter_rate(&scene),
+            Some(25.0),
+            "the steady-state `Idle` sequence must win over the transient one (#3329)"
+        );
+    }
+
+    /// With no `Idle`-ish sequence present, a transient one is still far
+    /// better than the name-heuristic preset — the fallback must not require
+    /// a steady-state loop to exist.
+    #[test]
+    fn sequence_rate_recovery_accepts_a_transient_when_no_idle_exists() {
+        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+        use std::sync::Arc;
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1,
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+            value: 0.0,
+        })); // [0]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(0u32),
+        })); // [1]
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 510.0,
+            data_ref: BlockRef::NULL,
+        })); // [2]
+        scene.blocks.push(Box::new(NiControllerSequence {
+            name: Some(Arc::from("Forward")),
+            controlled_blocks: vec![ControlledBlock {
+                interpolator_ref: BlockRef(2u32),
+                controller_ref: BlockRef::NULL,
+                priority: 0,
+                node_name: None,
+                property_type: None,
+                controller_type: Some(Arc::from("NiPSysEmitterCtlr")),
+                controller_id: None,
+                interpolator_id: None,
+                string_palette_ref: BlockRef::NULL,
+                node_name_offset: 0,
+                property_type_offset: 0,
+                controller_type_offset: 0,
+                controller_id_offset: 0,
+                interpolator_id_offset: 0,
+            }],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        })); // [3]
+
+        // `dlc04fxcrashthroughfloor`'s real shape and its real rate.
+        assert_eq!(extract_emitter_rate(&scene), Some(510.0));
+    }
+
+    /// A sequence carrying no emitter controller must not be mined for a
+    /// rate — the fallback keys off `controller_type`, not "any float
+    /// interpolator in the file".
+    #[test]
+    fn sequence_rate_recovery_ignores_non_emitter_controllers() {
+        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+        use std::sync::Arc;
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1,
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+            value: 0.0,
+        })); // [0]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(0u32),
+        })); // [1]
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 77.0,
+            data_ref: BlockRef::NULL,
+        })); // [2]
+        scene.blocks.push(Box::new(NiControllerSequence {
+            name: Some(Arc::from("Idle")),
+            controlled_blocks: vec![ControlledBlock {
+                interpolator_ref: BlockRef(2u32),
+                controller_ref: BlockRef::NULL,
+                priority: 0,
+                node_name: None,
+                property_type: None,
+                // An alpha controller, not an emitter one.
+                controller_type: Some(Arc::from("NiAlphaController")),
+                controller_id: None,
+                interpolator_id: None,
+                string_palette_ref: BlockRef::NULL,
+                node_name_offset: 0,
+                property_type_offset: 0,
+                controller_type_offset: 0,
+                controller_id_offset: 0,
+                interpolator_id_offset: 0,
+            }],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        })); // [3]
+
+        assert_eq!(
+            extract_emitter_rate(&scene),
+            None,
+            "an alpha channel is not a birth rate (#3329)"
+        );
+    }
 }
 
 #[cfg(test)]

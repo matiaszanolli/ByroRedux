@@ -948,6 +948,66 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
         sane(interp.value)
     }
 
+    /// #3329 tier (d) — recover the authored rate from the scene's embedded
+    /// `NiControllerSequence` blocks when the emitter controller's own
+    /// interpolator is a manager-driven blend with no items.
+    ///
+    /// Walks every sequence's `controlled_blocks` for one whose resolved
+    /// `controller_type` names an emitter controller, and runs its
+    /// `interpolator_ref` through the same `float_interpolator_rate` the
+    /// direct tiers use — so the four chains cannot diverge.
+    ///
+    /// Steady-state sequences win over transient ones. A single NIF commonly
+    /// carries several (`Idle`, `Forward`, `OFF`, `Open`, …) and they author
+    /// *different* rates: an ignition ramp or a one-shot burst is not the
+    /// density the emitter runs at while the player is looking at it. Names
+    /// are ranked, and a tie falls back to block order.
+    fn sequence_emitter_rate(scene: &NifScene) -> Option<f32> {
+        use crate::anim::{resolve_cb_string, CbString};
+        use crate::blocks::controller::NiControllerSequence;
+
+        /// Lower is preferred. `Idle`/`SpecialIdle` are the steady-state
+        /// loops; everything else is a transition whose rate is only correct
+        /// for the moment it plays.
+        fn sequence_rank(name: Option<&str>) -> u8 {
+            match name.map(str::to_ascii_lowercase).as_deref() {
+                Some("idle") => 0,
+                Some(n) if n.ends_with("idle") => 1,
+                Some(_) => 2,
+                None => 3,
+            }
+        }
+
+        let mut best: Option<(u8, f32)> = None;
+        for seq in scene
+            .blocks
+            .iter()
+            .filter_map(|b| b.as_any().downcast_ref::<NiControllerSequence>())
+        {
+            let rank = sequence_rank(seq.name.as_deref());
+            // Nothing here can beat an already-found better-ranked hit.
+            if best.as_ref().is_some_and(|(r, _)| *r <= rank) {
+                continue;
+            }
+            for cb in &seq.controlled_blocks {
+                let Some(ctype) = resolve_cb_string(scene, cb, CbString::ControllerType) else {
+                    continue;
+                };
+                if !ctype.contains("EmitterCtlr") {
+                    continue;
+                }
+                let Some(idx) = cb.interpolator_ref.index() else {
+                    continue;
+                };
+                if let Some(r) = float_interpolator_rate(scene, idx) {
+                    best = Some((rank, r));
+                    break;
+                }
+            }
+        }
+        best.map(|(_, r)| r)
+    }
+
     // Modern: controller → interpolator → (keyed data | constant).
     if let Some(ctlr) = scene
         .blocks
@@ -977,6 +1037,32 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
             }
             if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
                 if let Some(r) = sane(blend.value) {
+                    return Some(r);
+                }
+            }
+            // #3329 — the manager-controlled residual #2548 left behind. When
+            // the controller's interpolator is a `NiBlendFloatInterpolator`
+            // with an EMPTY `items` array, tier (b) above cannot resolve a
+            // sub-interpolator (`resolve_blend_interpolator_target` returns
+            // `None` by design for that shape — those blends are driven
+            // externally by a `NiControllerManager`, not from their own array)
+            // and tier (c) reads a non-positive `value`. On vanilla FNV that
+            // is 168 of the 307 emitter-bearing meshes: every single affected
+            // file's blend has `items.len() == 0`.
+            //
+            // The authored rate is still in the file — it lives on the
+            // sibling `NiControllerSequence`'s controlled block for the same
+            // emitter controller. Scanning those recovers 155 of the 168
+            // (`fxambdust*` 25/s, snowglobes 6/s, Lucky 38 reactor, the Strip
+            // fountain, Helios steam, `dlc04fxcrashthroughfloor` 510/s).
+            // Without it `apply_emitter_overlays` leaves the density at
+            // `fog.rs::particle_preset`'s name-heuristic guess — off by ~6×
+            // for snowglobes and ~15× for the DLC04 crash FX.
+            if scene
+                .get_as::<NiBlendFloatInterpolator>(interp_idx)
+                .is_some()
+            {
+                if let Some(r) = sequence_emitter_rate(scene) {
                     return Some(r);
                 }
             }

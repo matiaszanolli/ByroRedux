@@ -190,21 +190,28 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         let kind = match &c.data {
             BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
             BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
-            // #1539 — `bhkHingeConstraint` / `bhkBallAndSocketConstraint` /
-            // `bhkPrismaticConstraint` / `bhkStiffSpringConstraint` all decode
-            // to `Other`. Dropping one that links two ragdoll bones silently
-            // disconnects the articulation: `orient_tree`
-            // (`crates/physics/src/ragdoll.rs`) then yields a forest and
-            // `build_ragdoll` builds the detached limb as an independent
-            // free-floating multibody that free-falls. Every other block-drop
-            // in this file logs (the FO4-NP / phantom arms `log::debug!`);
-            // this one warns — louder, because unlike those benign
-            // out-of-scope drops it can visibly break the ragdoll. (Long-term:
-            // map a limitless hinge to `LimitedHinge { min: -PI, max: PI }`.)
+            // #1539 — `bhkBallAndSocketConstraint` / `bhkPrismaticConstraint` /
+            // `bhkStiffSpringConstraint` still decode to `Other`. Dropping one
+            // that links two ragdoll bones silently disconnects the
+            // articulation: `orient_tree` (`crates/physics/src/ragdoll.rs`)
+            // then yields a forest and `build_ragdoll` builds the detached
+            // limb as an independent free-floating multibody that free-falls.
+            // Every other block-drop in this file logs (the FO4-NP / phantom
+            // arms `log::debug!`); this one warns — louder, because unlike
+            // those benign out-of-scope drops it can visibly break the
+            // ragdoll.
+            //
+            // #3330 removed `bhkHingeConstraint` from this list: the
+            // long-term note this comment used to carry ("map a limitless
+            // hinge to `LimitedHinge { min: -PI, max: PI }`") is now done in
+            // `LimitedHingeCInfo::parse_hinge_fo3`. What remains reaching here
+            // on vanilla FNV is `creatures\protectron\skeleton.nif`'s two
+            // `bhkPrismaticConstraint` edges, which need a canonical prismatic
+            // joint kind that does not exist yet.
             BhkConstraintData::Other => {
                 log::warn!(
                     "extract_ragdoll: dropping unsupported constraint linking bones \
-                     '{a}' <-> '{b}' — decoded as Other (bhkHinge / bhkBallAndSocket / \
+                     '{a}' <-> '{b}' — decoded as Other (bhkBallAndSocket / \
                      bhkPrismatic / bhkStiffSpring not yet mapped to a canonical joint). \
                      The ragdoll edge is lost; if it was the sole link to a limb, that \
                      limb will detach and free-fall (#1539).",
@@ -1029,11 +1036,11 @@ mod drop_site_diagnostics_tests {
                 "unresolved constraint endpoint (#2339)",
                 "do not both resolve to retained ragdoll bodies",
             ),
+            ("self-linked constraint", "both endpoints resolve to bone"),
             (
-                "self-linked constraint",
-                "both endpoints resolve to bone",
+                "breakable constraint (#1850)",
+                "dropping bhkBreakableConstraint",
             ),
-            ("breakable constraint (#1850)", "dropping bhkBreakableConstraint"),
             (
                 "unsupported constraint kind (#1539)",
                 "dropping unsupported constraint linking bones",

@@ -895,3 +895,150 @@ fn color_target_from_target_color_covers_every_discriminant() {
         "unrecognized target_color values fall back to Diffuse"
     );
 }
+
+/// #3328 — a `NiFloatInterpolator` with a null `data_ref` is *posed*, not
+/// empty: nif.xml gives `Value` the `#INV_FLOAT#` "pose value if lacking
+/// data" semantics. All 2,479 null-`data_ref` float interpolators in vanilla
+/// FNV carry a real authored value rather than the FLT_MAX sentinel.
+///
+/// Pre-fix `extract_float_channel_at` did `interp.data_ref.index()?` and bailed,
+/// so an alpha / UV / shader-float / morph-weight channel authored as a
+/// constant contributed nothing and its target held its spawn-time value.
+/// `extract_bool_channel_at` in the same file has always had this fallback,
+/// and `extract_emitter_rate` reads the very same field off the very same
+/// block type. Measured on `Fallout - Meshes.bsa`: 1,303 -> 1,911 float
+/// channels (+47%), 538 -> 563 colour channels.
+#[test]
+fn null_data_float_interpolator_emits_its_pose_value() {
+    use crate::types::BlockRef;
+
+    let scene = NifScene {
+        blocks: vec![Box::new(NiFloatInterpolator {
+            value: 0.25,
+            data_ref: BlockRef::NULL,
+        })],
+        ..NifScene::default()
+    };
+
+    let channel = extract_float_channel_at(&scene, 0, FloatTarget::Alpha)
+        .expect("a posed float interpolator must still yield a channel (#3328)");
+    assert_eq!(channel.target, FloatTarget::Alpha);
+    assert_eq!(channel.keys.len(), 1, "a pose is exactly one key");
+    assert_eq!(channel.keys[0].time, 0.0);
+    assert_eq!(channel.keys[0].value, 0.25);
+}
+
+/// The other direction — the FLT_MAX sentinel *is* the genuine "no pose
+/// authored here" encoding and must keep yielding no channel. Same
+/// `is_key_value_sane` gate the keyed path has used since #1443, so a
+/// non-finite pose can't reach the sampler either.
+#[test]
+fn sentinel_valued_float_interpolator_still_yields_no_channel() {
+    use crate::types::BlockRef;
+
+    for bad in [f32::MAX, 3.4e38, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let scene = NifScene {
+            blocks: vec![Box::new(NiFloatInterpolator {
+                value: bad,
+                data_ref: BlockRef::NULL,
+            })],
+            ..NifScene::default()
+        };
+        assert!(
+            extract_float_channel_at(&scene, 0, FloatTarget::Alpha).is_none(),
+            "{bad} is the 'no pose' encoding, not a constant (#3328)"
+        );
+    }
+}
+
+/// A `data_ref` that resolves but whose keys are *all* filtered out by the
+/// #1443 sanity guard must fall back to the pose too, rather than dropping
+/// the channel — "keyed but every key is garbage" is not better information
+/// than the authored constant beside it.
+#[test]
+fn float_interpolator_with_only_insane_keys_falls_back_to_its_pose() {
+    use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType};
+    use crate::types::BlockRef;
+
+    let data = NiFloatData {
+        keys: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![FloatKey {
+                time: 0.0,
+                value: f32::NAN,
+                tangent_forward: 0.0,
+                tangent_backward: 0.0,
+                tbc: None,
+            }],
+        },
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(data),
+            Box::new(NiFloatInterpolator {
+                value: 0.75,
+                data_ref: BlockRef(0),
+            }),
+        ],
+        ..NifScene::default()
+    };
+
+    let channel = extract_float_channel_at(&scene, 1, FloatTarget::Alpha).expect("pose fallback");
+    assert_eq!(channel.keys.len(), 1);
+    assert_eq!(channel.keys[0].value, 0.75);
+}
+
+/// #3328, colour half. `NiColorInterpolator::value`'s own field doc already
+/// called it the *"pose value used when `data_ref` doesn't resolve"* — it
+/// simply had no reader, and the arm did `return Vec::new()`. Alpha is
+/// dropped here exactly as it is on the keyed path.
+#[test]
+fn null_data_color_interpolator_emits_its_pose_value() {
+    use crate::blocks::interpolator::NiColorInterpolator;
+    use crate::types::BlockRef;
+
+    let scene = NifScene {
+        blocks: vec![Box::new(NiColorInterpolator {
+            value: [0.1, 0.2, 0.3, 1.0],
+            data_ref: BlockRef::NULL,
+        })],
+        ..NifScene::default()
+    };
+
+    let keys = resolve_color_keys_at(&scene, 0);
+    assert_eq!(
+        keys.len(),
+        1,
+        "a posed colour interpolator is one key (#3328)"
+    );
+    assert_eq!(keys[0].time, 0.0);
+    assert_eq!(keys[0].value, [0.1, 0.2, 0.3]);
+}
+
+/// #3328, legacy Point3-as-RGB half — nif.xml documents the pose semantics
+/// explicitly on this variant. All 32 null-`data_ref` Point3 interpolators in
+/// vanilla FNV carry a real authored value.
+#[test]
+fn null_data_point3_interpolator_emits_its_pose_value() {
+    use crate::blocks::interpolator::NiPoint3Interpolator;
+    use crate::types::BlockRef;
+
+    let scene = NifScene {
+        blocks: vec![Box::new(NiPoint3Interpolator {
+            value: [1.0, 0.5, 0.0],
+            data_ref: BlockRef::NULL,
+        })],
+        ..NifScene::default()
+    };
+    assert_eq!(resolve_color_keys_at(&scene, 0)[0].value, [1.0, 0.5, 0.0]);
+
+    // Sentinel components still mean "nothing here".
+    let scene = NifScene {
+        blocks: vec![Box::new(NiPoint3Interpolator {
+            value: [1.0, f32::MAX, 0.0],
+            data_ref: BlockRef::NULL,
+        })],
+        ..NifScene::default()
+    };
+    assert!(resolve_color_keys_at(&scene, 0).is_empty());
+}

@@ -198,14 +198,103 @@ fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
 
 /// Non-decoded FO3+ types stay name-only stubs (16-byte base read; the
 /// rest recovered via block_size) — unchanged from pre-M41.x behaviour.
+///
+/// The exemplar used to be `bhkHingeConstraint`; #3330 decodes that one, so
+/// this now uses `bhkStiffSpringConstraint` — still genuinely undecoded.
 #[test]
 fn fnv_other_constraint_type_stays_stub() {
     let bytes = base();
     let header = fnv_header();
     let mut stream = NifStream::new(&bytes, &header);
-    let c = BhkConstraint::parse(&mut stream, "bhkHingeConstraint").unwrap();
+    let c = BhkConstraint::parse(&mut stream, "bhkStiffSpringConstraint").unwrap();
     assert!(matches!(c.data, BhkConstraintData::Other));
     assert_eq!(stream.position() as usize, 16, "only the base is read");
+}
+
+/// #3330 — a bare FNV `bhkHingeConstraint` is a `bhkLimitedHingeConstraint`
+/// without the three trailing scalars: 8 × Vec4 = 128 B in the identical
+/// field order. It decodes into `LimitedHingeCInfo` with synthesized ±PI
+/// limits so it reaches the existing canonical `LimitedHinge` joint instead
+/// of being dropped as `Other`.
+///
+/// Pre-fix this severed `creatures\sentryturret\skeleton.nif` and
+/// `creatures\minisentryturret\skeleton.nif` into two disconnected
+/// components each (3 authored edges, 2 surfaced).
+#[test]
+fn fnv_bare_hinge_decodes_into_a_limitless_limited_hinge() {
+    let mut bytes = base();
+    // 8 × Vec4 in nif.xml order: axis_a, perp_a1, perp_a2, pivot_a,
+    // axis_b, perp_b1, perp_b2, pivot_b.
+    for i in 0..8 {
+        bytes.extend(vec4(i as f32, 0.0, 0.0, 1.0));
+    }
+    assert_eq!(bytes.len(), 16 + 128);
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkHingeConstraint").unwrap();
+
+    let BhkConstraintData::LimitedHinge(h) = c.data else {
+        panic!(
+            "bhkHingeConstraint must surface as LimitedHinge, got {:?}",
+            c.data
+        );
+    };
+    // Field order is the limited hinge's, verbatim.
+    assert_eq!(h.axis_a, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.perp_axis_in_a1, [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.perp_axis_in_a2, [2.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.pivot_a, [3.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.axis_b, [4.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.perp_axis_in_b1, [5.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.perp_axis_in_b2, [6.0, 0.0, 0.0, 1.0]);
+    assert_eq!(h.pivot_b, [7.0, 0.0, 0.0, 1.0]);
+    // "No angular limits" is encoded as a full turn either way — a hinge
+    // CInfo carries no limit fields to read.
+    assert_eq!(h.min_angle, -std::f32::consts::PI);
+    assert_eq!(h.max_angle, std::f32::consts::PI);
+    assert_eq!(h.max_friction, 0.0);
+    assert_eq!(
+        stream.position() as usize,
+        16 + 128,
+        "8 Vec4 consumed, no more"
+    );
+}
+
+/// The Oblivion (`#NI_BS_LTE_16#`) hinge layout is a different 5 × Vec4 =
+/// 80 B order with **no** `Axis A` field. nif.xml states `Perp Axis In A2`
+/// "is always the vector product of Axis A and Perp Axis In A1", so the axis
+/// is recovered exactly as `perp_a1 × perp_a2` rather than guessed. #3330.
+#[test]
+fn oblivion_bare_hinge_recovers_axis_a_from_the_perpendiculars() {
+    let mut bytes = base();
+    bytes.extend(vec4(1.0, 2.0, 3.0, 0.0)); // pivot_a
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // perp_a1 = +X
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // perp_a2 = +Y
+    bytes.extend(vec4(4.0, 5.0, 6.0, 0.0)); // pivot_b
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // axis_b
+    assert_eq!(bytes.len(), 16 + 80);
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkHingeConstraint").unwrap();
+
+    let BhkConstraintData::LimitedHinge(h) = c.data else {
+        panic!("Oblivion bhkHingeConstraint must surface as LimitedHinge");
+    };
+    // +X × +Y = +Z.
+    assert_eq!(h.axis_a, [0.0, 0.0, 1.0, 0.0]);
+    assert_eq!(h.pivot_a, [1.0, 2.0, 3.0, 0.0]);
+    assert_eq!(h.pivot_b, [4.0, 5.0, 6.0, 0.0]);
+    assert_eq!(h.axis_b, [0.0, 0.0, 1.0, 0.0]);
+    // No Oblivion counterpart — zeroed, exactly as the limited-hinge decode
+    // does; the solver synthesizes a perpendicular for a degenerate input.
+    assert_eq!(h.perp_axis_in_b1, [0.0; 4]);
+    assert_eq!(
+        stream.position() as usize,
+        16 + 80,
+        "5 Vec4 consumed, no more"
+    );
 }
 
 /// Oblivion ragdoll decodes its own (`#NI_BS_LTE_16#`) field order:
@@ -424,10 +513,15 @@ fn ball_socket_chain_consumes_block_and_reads_trailing_refs() {
     assert!(matches!(c.data, BhkConstraintData::Other));
 }
 
-/// #1609 — a malleable-wrapped non-Ragdoll/non-LimitedHinge inner (here a
-/// Hinge, type 1, FNV fixed body = 8×Vec4 = 128 B) must consume its fixed
-/// inner-CInfo body, not rely solely on the outer `block_size` seek. Total:
-/// outer base 16 + type 4 + inner base 16 + body 128 = 164.
+/// #1609 — a malleable-wrapped Hinge (type 1, FNV fixed body = 8×Vec4 =
+/// 128 B) must consume its fixed inner-CInfo body, not rely solely on the
+/// outer `block_size` seek. Total: outer base 16 + type 4 + inner base 16 +
+/// body 128 = 164.
+///
+/// #3330 — the byte accounting is unchanged, but the inner hinge is now
+/// *decoded* into `LimitedHinge` rather than size-skipped as `Other`, so a
+/// malleable-wrapped hinge surfaces identically to a bare one (the same
+/// property the Ragdoll / LimitedHinge arms already had).
 #[test]
 fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
     let mut bytes = base(); // outer bhkConstraintCInfo (16)
@@ -443,11 +537,15 @@ fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
 
-    assert!(matches!(c.data, BhkConstraintData::Other));
+    assert!(
+        matches!(c.data, BhkConstraintData::LimitedHinge(_)),
+        "a malleable-wrapped Hinge must surface as LimitedHinge (#3330), got {:?}",
+        c.data
+    );
     assert_eq!(
         stream.position() as usize,
         16 + 4 + 16 + 128,
-        "the undecoded Hinge inner body must be size-skipped, not left to block_size",
+        "the Hinge inner body must be fully consumed, not left to block_size",
     );
 }
 

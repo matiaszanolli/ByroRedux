@@ -188,6 +188,94 @@ impl LimitedHingeCInfo {
         })
     }
 
+    /// `bhkHingeConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout from
+    /// nif.xml line 2447 — 8 × Vec4 = 128 bytes, the size
+    /// [`BhkBreakableConstraint::wrapped_payload_size`] already lists for
+    /// `(1, false)`.
+    ///
+    /// #3330 — a plain hinge is *"a basic hinge with no angular limits or
+    /// motor"* (nif.xml's own description), i.e. a `bhkLimitedHingeConstraint`
+    /// minus `Min Angle` / `Max Angle` / `Max Friction`. Its first eight
+    /// Vector4 fields are byte-identical in name and order to the limited
+    /// hinge's, so it decodes into the same [`LimitedHingeCInfo`] and
+    /// surfaces through the existing `LimitedHinge` canonical joint — no new
+    /// joint kind, no solver-side change.
+    ///
+    /// The limits are synthesized as `±PI` rather than authored: "no angular
+    /// limit" has no representation in `LimitedHingeCInfo`, and a full turn
+    /// either way is the closest faithful encoding. `max_friction` is 0 (the
+    /// struct has no such field to read).
+    ///
+    /// Before this, `bhkHingeConstraint` reached `extract_ragdoll` as
+    /// `BhkConstraintData::Other` and was dropped, severing the FNV Sentry
+    /// Turret and Mini Sentry Turret skeletons into two disconnected
+    /// components each — the base separating from the yaw/pitch/brain
+    /// assembly.
+    fn parse_hinge_fo3(stream: &mut NifStream) -> io::Result<Self> {
+        let axis_a = super::read_vec4(stream)?;
+        let perp_axis_in_a1 = super::read_vec4(stream)?;
+        let perp_axis_in_a2 = super::read_vec4(stream)?;
+        let pivot_a = super::read_vec4(stream)?;
+        let axis_b = super::read_vec4(stream)?;
+        let perp_axis_in_b1 = super::read_vec4(stream)?;
+        let perp_axis_in_b2 = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        Ok(Self {
+            axis_a,
+            perp_axis_in_a1,
+            perp_axis_in_a2,
+            pivot_a,
+            axis_b,
+            perp_axis_in_b1,
+            perp_axis_in_b2,
+            pivot_b,
+            min_angle: -std::f32::consts::PI,
+            max_angle: std::f32::consts::PI,
+            max_friction: 0.0,
+        })
+    }
+
+    /// `bhkHingeConstraintCInfo`, Oblivion / Morrowind (`#NI_BS_LTE_16#`)
+    /// layout — 5 × Vec4 = 80 bytes, in the order `Pivot A`,
+    /// `Perp Axis In A1`, `Perp Axis In A2`, `Pivot B`, `Axis B`.
+    ///
+    /// `Axis A` is **not serialized** in this era. It is not guessed: nif.xml
+    /// states of `Perp Axis In A2` that it *"is always the vector product of
+    /// Axis A and Perp Axis In A1"*, so with two orthonormal perpendiculars
+    /// in hand the rotation axis is recovered exactly as
+    /// `Perp Axis In A1 × Perp Axis In A2`. A degenerate (parallel or zero)
+    /// pair yields a zero axis, which the PHYSAL translate boundary already
+    /// rejects as non-finite/degenerate input the same way it does for any
+    /// other joint. `Perp Axis In B1` has no Oblivion counterpart and is
+    /// zeroed, exactly as [`Self::parse_oblivion`] does for the limited hinge.
+    fn parse_hinge_oblivion(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let perp_axis_in_a1 = super::read_vec4(stream)?;
+        let perp_axis_in_a2 = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        let axis_b = super::read_vec4(stream)?;
+        // Axis A = Perp A1 × Perp A2 (nif.xml's own stated identity).
+        let axis_a = [
+            perp_axis_in_a1[1] * perp_axis_in_a2[2] - perp_axis_in_a1[2] * perp_axis_in_a2[1],
+            perp_axis_in_a1[2] * perp_axis_in_a2[0] - perp_axis_in_a1[0] * perp_axis_in_a2[2],
+            perp_axis_in_a1[0] * perp_axis_in_a2[1] - perp_axis_in_a1[1] * perp_axis_in_a2[0],
+            0.0,
+        ];
+        Ok(Self {
+            axis_a,
+            perp_axis_in_a1,
+            perp_axis_in_a2,
+            pivot_a,
+            axis_b,
+            perp_axis_in_b1: [0.0; 4],
+            perp_axis_in_b2: [0.0; 4],
+            pivot_b,
+            min_angle: -std::f32::consts::PI,
+            max_angle: std::f32::consts::PI,
+            max_friction: 0.0,
+        })
+    }
+
     /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout from nif.xml:
     /// 7 × Vec4 + 3 × f32 = 124 bytes. No Perp Axis In B1 (an FO3+
     /// addition) and a pivots-first order. The absent perp axis is zeroed;
@@ -301,6 +389,8 @@ impl BhkConstraint {
         Ok(match wrapped_type {
             7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
             2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
+            // 1 Hinge — #3330, decoded into the same canonical joint.
+            1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?),
             other => {
                 // #1609 — mirror the Oblivion size-skip on FO3+: consume the
                 // undecoded inner CInfo's FIXED body so stream consumption is
@@ -369,6 +459,19 @@ impl BhkConstraint {
                         )?),
                     });
                 }
+                // #3330 — sibling of the FO3+ arm; `Axis A` is recovered from
+                // the two perpendiculars (see `parse_hinge_oblivion`).
+                "bhkHingeConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::LimitedHinge(
+                            LimitedHingeCInfo::parse_hinge_oblivion(stream)?,
+                        ),
+                    });
+                }
                 _ => {}
             }
 
@@ -377,8 +480,8 @@ impl BhkConstraint {
             let payload_size: Option<u64> = match type_name {
                 // 2 × Vec4
                 "bhkBallAndSocketConstraint" => Some(32),
-                // 5 × Vec4
-                "bhkHingeConstraint" => Some(80),
+                // `bhkHingeConstraint` (5 × Vec4 = 80) is decoded above
+                // since #3330 and no longer skipped here.
                 // 8 × Vec4 + 3 × f32
                 "bhkPrismaticConstraint" => Some(140),
                 // 2 × Vec4 + f32
@@ -413,10 +516,13 @@ impl BhkConstraint {
                     2 => {
                         BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(stream)?)
                     }
+                    // 1 Hinge — #3330.
+                    1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_oblivion(
+                        stream,
+                    )?),
                     other => {
                         let inner_size: u64 = match other {
                             0 => 32,  // Ball and Socket
-                            1 => 80,  // Hinge
                             6 => 140, // Prismatic
                             8 => 36,  // Stiff Spring
                             unknown => {
@@ -460,6 +566,11 @@ impl BhkConstraint {
             "bhkRagdollConstraint" => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
             "bhkLimitedHingeConstraint" => {
                 BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?)
+            }
+            // #3330 — a limitless hinge is a limited hinge minus the three
+            // trailing scalars; same `LimitedHinge` canonical joint.
+            "bhkHingeConstraint" => {
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?)
             }
             "bhkMalleableConstraint" => Self::parse_fo3_malleable_inner(stream)?,
             _ => BhkConstraintData::Other,

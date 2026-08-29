@@ -53,26 +53,48 @@ pub fn extract_float_channel_at(
         interp_idx = resolved;
     }
     if let Some(interp) = scene.get_as::<NiFloatInterpolator>(interp_idx) {
-        let data_idx = interp.data_ref.index()?;
-        let data = scene.get_as::<NiFloatData>(data_idx)?;
-
-        let keys: Vec<AnimFloatKey> = data
-            .keys
-            .keys
-            .iter()
-            // #1443 — drop non-finite / FLT_MAX float-channel values
-            // (alpha / UV / shader-float) before they reach the sampler.
-            .filter(|k| is_key_value_sane(k.value))
-            .map(|k| AnimFloatKey {
-                time: k.time,
-                value: k.value,
+        let keys: Vec<AnimFloatKey> = interp
+            .data_ref
+            .index()
+            .and_then(|data_idx| scene.get_as::<NiFloatData>(data_idx))
+            .map(|data| {
+                data.keys
+                    .keys
+                    .iter()
+                    // #1443 — drop non-finite / FLT_MAX float-channel values
+                    // (alpha / UV / shader-float) before they reach the sampler.
+                    .filter(|k| is_key_value_sane(k.value))
+                    .map(|k| AnimFloatKey {
+                        time: k.time,
+                        value: k.value,
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
 
-        if keys.is_empty() {
-            return None;
+        if !keys.is_empty() {
+            return Some(FloatChannel { target, keys });
         }
-        return Some(FloatChannel { target, keys });
+        // #3328 — posed, not keyed. nif.xml gives `NiFloatInterpolator.Value`
+        // the `#INV_FLOAT#` "pose value if lacking data" semantics, and every
+        // one of the 2,479 null-`data_ref` float interpolators in vanilla FNV
+        // carries a real authored value rather than the FLT_MAX "nothing here"
+        // sentinel. Without this the alpha / UV / shader-float / morph-weight
+        // channel contributes nothing and the target property holds its
+        // spawn-time value instead of the authored constant.
+        //
+        // Mirrors what `extract_bool_channel_at` below has always done, and
+        // what `extract_emitter_rate` (`import/walk/mod.rs`) already reads off
+        // this very same block type as its documented constant-value branch.
+        // Gated on `is_key_value_sane` so a sentinel-valued interpolator still
+        // yields no channel — that is the genuine "no pose here" encoding.
+        return is_key_value_sane(interp.value).then(|| FloatChannel {
+            target,
+            keys: vec![AnimFloatKey {
+                time: 0.0,
+                value: interp.value,
+            }],
+        });
     }
 
     // #936 — compact B-spline scalar channel. Used by Skyrim+ / FO4 KFs
@@ -138,6 +160,19 @@ pub fn resolve_color_keys(scene: &NifScene, cb: &ControlledBlock) -> Vec<AnimCol
 
 /// ControlledBlock-free core of [`resolve_color_keys`]. Reused by the
 /// mesh-embedded controller path (#261).
+/// A single time-0 colour key from an interpolator's static pose value, or
+/// an empty Vec when any component is non-finite / FLT_MAX-sentinel — the
+/// genuine "no pose authored here" encoding. See #3328.
+fn static_color_pose(r: f32, g: f32, b: f32) -> Vec<AnimColorKey> {
+    if !(is_key_value_sane(r) && is_key_value_sane(g) && is_key_value_sane(b)) {
+        return Vec::new();
+    }
+    vec![AnimColorKey {
+        time: 0.0,
+        value: [r, g, b],
+    }]
+}
+
 pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<AnimColorKey> {
     // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
     if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
@@ -146,10 +181,12 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
 
     // Path 1: NiColorInterpolator → NiColorData (canonical).
     if let Some(interp) = scene.get_as::<NiColorInterpolator>(interp_idx) {
-        if let Some(data_idx) = interp.data_ref.index() {
-            if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
-                return data
-                    .keys
+        let keys: Vec<AnimColorKey> = interp
+            .data_ref
+            .index()
+            .and_then(|data_idx| scene.get_as::<NiColorData>(data_idx))
+            .map(|data| {
+                data.keys
                     .keys
                     .iter()
                     // #1443 — drop keys with a non-finite / FLT_MAX RGB
@@ -159,18 +196,27 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
                         time: k.time,
                         value: [k.value[0], k.value[1], k.value[2]],
                     })
-                    .collect();
-            }
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !keys.is_empty() {
+            return keys;
         }
-        return Vec::new();
+        // #3328 — posed, not keyed. Same `#INV_FLOAT#` pose semantics as the
+        // float path above; the struct's own field doc already calls `value`
+        // the *"pose value used when `data_ref` doesn't resolve"*, it just had
+        // no reader. Alpha is dropped here exactly as it is for keyed data.
+        return static_color_pose(interp.value[0], interp.value[1], interp.value[2]);
     }
 
     // Path 2: NiPoint3Interpolator → NiPosData (legacy fallback).
     if let Some(interp) = scene.get_as::<NiPoint3Interpolator>(interp_idx) {
-        if let Some(data_idx) = interp.data_ref.index() {
-            if let Some(data) = scene.get_as::<NiPosData>(data_idx) {
-                return data
-                    .keys
+        let keys: Vec<AnimColorKey> = interp
+            .data_ref
+            .index()
+            .and_then(|data_idx| scene.get_as::<NiPosData>(data_idx))
+            .map(|data| {
+                data.keys
                     .keys
                     .iter()
                     // #1443 — same finite / FLT_MAX guard on the legacy
@@ -180,9 +226,16 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
                         time: k.time,
                         value: k.value,
                     })
-                    .collect();
-            }
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !keys.is_empty() {
+            return keys;
         }
+        // #3328 — nif.xml documents the pose semantics explicitly on this
+        // variant (line 3256). All 32 null-`data_ref` Point3 interpolators in
+        // vanilla FNV carry a real authored value.
+        return static_color_pose(interp.value[0], interp.value[1], interp.value[2]);
     }
 
     // Path 3 — #936 / NIF-D5-NEW-01. NiBSplineCompPoint3Interpolator
