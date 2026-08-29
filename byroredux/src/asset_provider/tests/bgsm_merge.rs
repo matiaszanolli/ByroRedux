@@ -1793,3 +1793,50 @@ fn detect_kind_returns_bgem_for_bgem_magic_in_bgsm_named_file() {
         "extension (.bgsm) and magic (BGEM) must disagree — this is the mismatch case"
     );
 }
+
+/// #3371 (SKY-2026-08-27-D7-03) — the BGEM merge is the fourth writer of
+/// `EmissiveSource`, and #2591 gated only the three NIF-side ones. An
+/// unauthored BGEM (default `base_color` / `base_color_scale`) was still
+/// tagged `Effect`, degenerating the discriminator to "has an effect
+/// shader" rather than "authored a contribution" — the exact regression
+/// #2591 removed everywhere else.
+///
+/// Both directions matter: the gate must not also swallow a genuinely
+/// authored tint, or the fix trades one wrong tag for another.
+#[test]
+fn bgem_merge_gates_emissive_source_on_authored_contribution() {
+    use byroredux_core::ecs::components::material::EmissiveSource;
+
+    // Unauthored: `BgemFile::default()` ships base_color [0,0,0] with
+    // scale 0.0 — nothing to attribute, so the tag must stay `None`.
+    let mut pool = byroredux_core::string::StringPool::new();
+    let unauthored = "materials/tests/emissive_gate_off.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(unauthored, BgemFile::default());
+    let mut mesh = imported_mesh_with_material_path(&mut pool, unauthored);
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.emissive_source,
+        EmissiveSource::None,
+        "#3371: a BGEM authoring no tint must not claim EmissiveSource::Effect"
+    );
+
+    // Authored: non-zero colour AND non-zero scale — the tag must land.
+    let authored = "materials/tests/emissive_gate_on.bgem";
+    provider.insert_bgem_for_test(
+        authored,
+        BgemFile {
+            base_color: [0.2, 0.6, 1.0],
+            base_color_scale: 2.5,
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, authored);
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.emissive_source,
+        EmissiveSource::Effect,
+        "#3371: the gate must still tag a genuinely authored BGEM tint"
+    );
+    assert_eq!(mesh.material.emissive_mult, 2.5);
+}

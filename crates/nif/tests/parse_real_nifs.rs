@@ -18,8 +18,8 @@
 mod common;
 
 use common::{
-    open_all_mesh_archives, open_ba2_by_name, open_mesh_archive, parse_all_nifs_in_archive, Game,
-    ParseStats,
+    open_all_mesh_archives, open_ba2_by_name, open_mesh_archive, open_optional_mesh_archives,
+    parse_all_nifs_in_archive, Game, ParseStats,
 };
 
 /// Acceptance threshold per N23.10 + ROADMAP. Gates on the
@@ -58,10 +58,27 @@ const MIN_RECOVERABLE_RATE: f64 = 1.0;
 /// Per-archive attribution is the point of the loop rather than one merged
 /// walk: a failure has to name the archive that regressed, or the widening
 /// just makes the red build harder to diagnose than the narrow one was.
+///
+/// #3369 — Skyrim SE left the same blind spot open one tier down: a stock
+/// AE `Data/` also ships `_ResourcePack.bsa` and four Creation Club
+/// archives carrying 715 NIFs that no gate opened. Those can't join
+/// `mesh_archives()` (they vary per account, and the baseline harnesses
+/// that share that list compare absolute counts), so this gate also sweeps
+/// `Game::optional_mesh_archives()` — present-only, and safe here precisely
+/// because the assertion below is a rate, not a count.
 fn run_game(game: Game, limit: Option<usize>) {
-    let Some(archives) = open_all_mesh_archives(game) else {
+    let Some(mut archives) = open_all_mesh_archives(game) else {
         return; // Skip if game data not available — common::open_all_mesh_archives prints the reason.
     };
+    let required = archives.len();
+    archives.extend(open_optional_mesh_archives(game));
+    if archives.len() > required {
+        eprintln!(
+            "[{}] + {} optional archive(s) present on this install (#3369)",
+            game.label(),
+            archives.len() - required,
+        );
+    }
 
     let mut totals = ParseStats::default();
     let mut worst: Option<(&str, f64, usize)> = None;
@@ -662,4 +679,47 @@ fn vanilla_archives_have_zero_nisequencestreamhelper() {
         ssh_examples.len(),
         ssh_examples
     );
+}
+
+/// #3369 regression — the two archive tiers must stay disjoint and the
+/// optional one must actually name Skyrim's Creation Club / Anniversary
+/// corpus.
+///
+/// Needs no game data on purpose: the defect #3369 filed was a *list*
+/// omission, so the guard belongs on the list, where it also runs on the
+/// CI machine that has no `Data/` at all. The two halves it pins:
+///
+/// * Disjointness — an entry in both tiers would be walked twice by this
+///   gate, double-counting its NIFs into the rate.
+/// * Non-empty for Skyrim SE — the whole point of #3369. If someone
+///   "simplifies" the arm back to `_ => &[]`, the 715 NIFs silently fall
+///   out of the gate again with nothing turning red.
+#[test]
+fn archive_tiers_are_disjoint_and_skyrim_optional_is_populated() {
+    for game in Game::ALL {
+        let required = game.mesh_archives();
+        for opt in game.optional_mesh_archives() {
+            assert!(
+                !required.contains(opt),
+                "[{}] {opt:?} is in both mesh_archives() and optional_mesh_archives(); \
+                 run_game would walk it twice",
+                game.label(),
+            );
+        }
+    }
+
+    let skyrim = Game::SkyrimSE.optional_mesh_archives();
+    for expected in [
+        "_ResourcePack.bsa",
+        "ccBGSSSE001-Fish.bsa",
+        "ccBGSSSE025-AdvDSGS.bsa",
+        "ccBGSSSE037-Curios.bsa",
+        "ccQDRSSE001-SurvivalMode.bsa",
+    ] {
+        assert!(
+            skyrim.contains(&expected),
+            "#3369: {expected:?} dropped out of Skyrim SE's optional mesh archives — \
+             the 715 NIFs it guards are unreachable from the parse-rate gate again",
+        );
+    }
 }

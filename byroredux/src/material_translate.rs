@@ -47,12 +47,24 @@
 //! change a value — this is a staging constraint, not a mutable-state leak,
 //! and it is why the render path carries no heuristic of its own.
 //!
-//! This matters for Skyrim in particular: it has no dedicated gloss map and
-//! its spec mask lives in the normal-map alpha, so for most Skyrim
-//! architecture the *shipped* roughness comes from Phase 2, not from
-//! Phase 1's literal. Anyone adding per-game material logic needs to know
-//! both write sites exist — a Phase-1-only change will not stick for a
-//! field that Phase 2 also writes.
+//! Which phase actually *owns* `Material::roughness` for a given draw is
+//! worth stating precisely, because the two Skyrim populations split
+//! (#3370 — the paragraph that used to sit here had it backwards):
+//!
+//! * **Alpha-bearing normal map** — most Skyrim architecture, since Skyrim
+//!   has no dedicated gloss map and puts its spec mask in the normal
+//!   alpha. [`normal_alpha_spec_roughness`] returns `None` for exactly this
+//!   case (that alpha is a per-pixel specular-*intensity* mask, never a
+//!   smoothness signal), so **Phase 1's literal is what ships**. Phase 2's
+//!   contribution here is not a roughness write at all: it is the per-draw
+//!   gloss-slot rebind ([`normal_alpha_spec_binding_applies`], render-side).
+//! * **Alpha-less normal map with high `specular_strength`** — the matte,
+//!   non-env-mapped legacy fallback. This is the only population whose
+//!   roughness Phase 2 writes.
+//!
+//! Anyone adding per-game material logic still needs to know both write
+//! sites exist — but a Phase-1-only change *does* stick for the alpha-
+//! bearing majority, and a Phase-2 change to it is a no-op.
 //!
 //! Architecture: see `docs/engine/nifal.md`. The canonical tier is the
 //! ECS `Material` component itself (it already lives in `byroredux_core`,

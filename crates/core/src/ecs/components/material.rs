@@ -600,14 +600,17 @@ pub struct PbrMaterial {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum EmissiveSource {
-    /// No emissive authoring; `emissive_mult` defaulted to 0.0.
-    /// Materials without any of the three shader-property classes bound
-    /// land here. All three writers (`dedicated_shader.rs`,
-    /// `legacy_properties.rs`, `asset_provider/material.rs`) set their
-    /// variant unconditionally once their property class is bound — there
-    /// is no non-zero-emissive gate, so e.g. a `BSLightingShaderProperty`
-    /// with `emissive_multiple == 0.0` still reports `Lighting`, not
-    /// `None` (#2641).
+    /// No emissive authoring: either no shader-property class was bound
+    /// at all, or one was but authored nothing — a zero color or a zero
+    /// multiplier. Every writer gates its variant on
+    /// [`emissive_contribution_is_authored`], so a
+    /// `BSLightingShaderProperty` with `emissive_multiple == 0.0` reports
+    /// `None`, not `Lighting`.
+    ///
+    /// #3371 — this paragraph used to assert the opposite ("there is no
+    /// non-zero-emissive gate … still reports `Lighting`", citing #2641).
+    /// That was accurate until #2591 (`aedde151`) added the gate; it then
+    /// sat here contradicting the helper's own doc 20 lines below.
     #[default]
     None,
     /// `NiMaterialProperty.emissive_mult` (Oblivion / FO3 / FNV legacy
@@ -630,12 +633,17 @@ pub enum EmissiveSource {
 
 /// Whether a captured `(color, multiplier)` pair is a genuine emissive
 /// (or, for [`EmissiveSource::Effect`], diffuse-tint) authoring —
-/// versus the unauthored struct default the source NIF block ships
-/// when nothing was actually set. Shared by all three
-/// `EmissiveSource::{Material,Lighting,Effect}` set-sites (#2591 /
-/// SKY-D7-03) so `EmissiveSource::None`'s own doc — "materials without
-/// any of the three shader-property classes **or** where none of them
-/// authored a non-zero emissive" — is actually true. Pre-fix, every
+/// versus the unauthored struct default the source block ships when
+/// nothing was actually set.
+///
+/// Shared by **every** `EmissiveSource::{Material,Lighting,Effect}`
+/// set-site so [`EmissiveSource::None`]'s own doc is actually true.
+/// There are four, three NIF-side and one sidecar-side:
+/// `import/material/dedicated_shader.rs` (`Lighting`, `Effect`),
+/// `import/material/legacy_properties.rs` (`Material`), and
+/// `byroredux/src/asset_provider/material.rs`'s BGEM merge (`Effect`).
+/// #2591 gated the first three; #3371 gated the BGEM one, which the
+/// earlier "all three set-sites" wording had silently excluded. Pre-fix, every
 /// BSLightingShaderProperty (the overwhelming majority of vanilla
 /// Skyrim content, almost none of which authors emissive) was tagged
 /// `Lighting` regardless, degenerating the discriminator to "has a

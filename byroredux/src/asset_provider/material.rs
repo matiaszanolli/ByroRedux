@@ -1719,10 +1719,22 @@ pub(crate) fn merge_external_material(
         // effect-diffuse tint, not a genuine emissive scalar. #1358.
         // `emittance_color` (v≥11 additive glow) is deferred until a
         // second emissive slot exists on `ImportedMesh`.
+        // #3371 (SKY-2026-08-27-D7-03) — the fourth writer of
+        // `emissive_source`, and the one #2591 missed. Gate it on the
+        // same `emissive_contribution_is_authored` predicate as the three
+        // NIF-side sites: a BGEM with `base_color == [0,0,0]` or
+        // `base_color_scale == 0.0` authored no contribution, and tagging
+        // it `Effect` regardless degenerates the discriminator to "has an
+        // effect shader" — exactly what #2591 fixed elsewhere.
         material.emissive_color = bgem.base_color;
         material.emissive_mult = bgem.base_color_scale;
-        material.emissive_source =
-            byroredux_core::ecs::components::material::EmissiveSource::Effect;
+        if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
+            material.emissive_color,
+            material.emissive_mult,
+        ) {
+            material.emissive_source =
+                byroredux_core::ecs::components::material::EmissiveSource::Effect;
+        }
         material.mat_alpha = bgem.base.alpha;
         material.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
         material.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];

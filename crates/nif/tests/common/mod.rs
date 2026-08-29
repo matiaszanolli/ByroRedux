@@ -180,11 +180,49 @@ impl Game {
             // `.esm`), so this pair is the whole vanilla set on every
             // install, AE or not. `_ResourcePack.bsa` and the `ccBGSSSE*`
             // archives are Creation Club content that varies per account,
-            // and stay out for the reproducibility rule above.
+            // and stay out of *this* list for the reproducibility rule
+            // above — they are swept by [`optional_mesh_archives`] instead
+            // (#3369).
             Game::SkyrimSE => &["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"],
             Game::Fallout4 => &["Fallout4 - Meshes.ba2"],
             Game::Fallout76 => &["SeventySix - Meshes.ba2"],
             Game::Starfield => &["Starfield - Meshes01.ba2"],
+        }
+    }
+
+    /// Mesh-bearing archives that ship with the game but are **not** on
+    /// every install — Creation Club / Anniversary content whose presence
+    /// depends on the account and edition (#3369 / SKY-2026-08-27-D6-03).
+    ///
+    /// Why a second tier rather than more entries in [`mesh_archives`]:
+    /// the two lists are consumed by harnesses with opposite failure
+    /// modes.
+    ///
+    /// * The **baseline** harnesses (`per_block_baselines`,
+    ///   `block_coverage_baselines`) compare live *counts* against a
+    ///   checked-in capture. Account-varying archives make that capture
+    ///   unreproducible — on a host without them every absent block reads
+    ///   as `PARSED shrank`. Hence [`open_all_mesh_archives`]'s
+    ///   all-or-nothing rule, and hence these staying out of it.
+    /// * The **parse-rate** gate (`parse_real_nifs`) asserts a *rate*
+    ///   (`recoverable >= 100%`), which is scale-free: an absent archive
+    ///   contributes nothing and costs nothing, and a present one is
+    ///   guarded. That is the harness this tier is for.
+    ///
+    /// Skyrim SE's entries are the 715 NIFs #3369 measured as unguarded:
+    /// `_ResourcePack.bsa` (149, incl. 16 `BSTreeNode` SpeedTree roots
+    /// that exist nowhere in the gated set at that density) plus four
+    /// Creation Club archives (231 / 266 / 65 / 4).
+    pub fn optional_mesh_archives(self) -> &'static [&'static str] {
+        match self {
+            Game::SkyrimSE => &[
+                "_ResourcePack.bsa",
+                "ccBGSSSE001-Fish.bsa",
+                "ccBGSSSE025-AdvDSGS.bsa",
+                "ccBGSSSE037-Curios.bsa",
+                "ccQDRSSE001-SurvivalMode.bsa",
+            ],
+            _ => &[],
         }
     }
 
@@ -335,6 +373,43 @@ pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchi
         }
     }
     Some(opened)
+}
+
+/// Open every [`Game::optional_mesh_archives`] entry that is actually
+/// present, skipping the ones that aren't.
+///
+/// The deliberate inverse of [`open_all_mesh_archives`]'s all-or-nothing
+/// rule: this tier is account-varying by definition, so "absent" is the
+/// normal case and must not take the whole game down with it. Only safe
+/// for rate-based gates — never for the count-keyed baseline harnesses.
+/// See [`Game::optional_mesh_archives`] for why the split exists (#3369).
+pub fn open_optional_mesh_archives(game: Game) -> Vec<(&'static str, MeshArchive)> {
+    let Some(data) = game_data_dir(game) else {
+        return Vec::new();
+    };
+    let mut opened = Vec::new();
+    for name in game.optional_mesh_archives() {
+        let path = data.join(name);
+        if !path.is_file() {
+            continue; // Not on this install — expected, not a failure.
+        }
+        let result = match game.archive_kind() {
+            ArchiveKind::Bsa => BsaArchive::open(&path).map(MeshArchive::Bsa),
+            ArchiveKind::Ba2 => Ba2Archive::open(&path).map(MeshArchive::Ba2),
+        };
+        match result {
+            Ok(a) => opened.push((*name, a)),
+            // Present but unopenable is a real problem, unlike absent —
+            // report it loudly, but don't fail the whole sweep on it.
+            Err(e) => eprintln!(
+                "[{}] optional archive {:?} present but failed to open: {}",
+                game.label(),
+                path,
+                e
+            ),
+        }
+    }
+    opened
 }
 
 /// Open an arbitrary BA2 archive by explicit filename within a game's data dir.
