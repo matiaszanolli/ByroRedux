@@ -728,6 +728,16 @@ struct NpcEquipState<'a> {
     equipment_slots: EquipmentSlots,
     equipped_weapon: Option<EquippedWeapon>,
     armor_to_spawn: Vec<ResolvedArmor<'a>>,
+    /// Biped bits the pre-baked FaceGen head must suppress, in the same
+    /// `hide_skin_partitions` format as [`ResolvedArmor::hidden_biped_mask`].
+    ///
+    /// The FaceGeom NIF is a multi-region mesh source exactly like the race
+    /// skin — vanilla Skyrim heads carry dismember partitions 130 (head +
+    /// beard), 131 / 141 (hair), 143 (ears) and 132 (neck) — but it is never
+    /// enrolled in `EquipmentSlots`, so nothing was ever computing its
+    /// displacement. See #3409 and the fold that builds this at the end of
+    /// [`build_npc_equip_state`].
+    facegen_hidden_mask: u32,
 }
 
 impl NpcEquipState<'_> {
@@ -1000,11 +1010,54 @@ fn build_npc_equip_state<'a>(
         armor.authored_biped_mask == 0 || equipment_slots.occupants.contains(&Some(armor.inv_idx))
     });
 
+    // #3409 / SKY-2026-08-27b-D3-02 — the pre-baked FaceGen head's own
+    // displacement mask. The head is a multi-region mesh source (partitions
+    // 130 head+beard, 131/141 hair, 143 ears, 132 neck) but is never enrolled
+    // in `EquipmentSlots`, so every bit an *equipped item* holds is a bit
+    // something else covers — the same question the `displaced_mask` fold
+    // above answers for the race skin, with the whole biped range in scope
+    // instead of the skin's authored mask.
+    //
+    // Excluding the race skin's own index is load-bearing, not tidiness:
+    // `SkinNaked` authors bit 0 (Head), and 47 of Skyrim's 99 races point
+    // `WNAM` at a skin that does. Folding those in would hide partition 130
+    // on every one of them — i.e. delete the face of most humanoid NPCs.
+    // With the exclusion, bit 0 stays with the skin until an armour actually
+    // displaces it, which is exactly what a closed helm does:
+    //
+    //   Dwarven / Daedric / Nord Plate / Guard "FullReach"  bits 0,1,12,13
+    //     → hides 130 (face + beard), 131 (hair), 143 (ears); the helm ships
+    //       its own partition-30 geometry (Dwarven: 1514 triangles) to
+    //       replace it. 175 of Skyrim's 2,762 ARMOs are authored this way.
+    //   Iron / Hide / Studded / Steel light helms          bits 1,12
+    //     → hides 131 only; the face survives, which is the visible
+    //       difference between an open and a closed helm.
+    //   Circlets                                            bit 12
+    //     → hides nothing on the head; a circlet displaces other circlets.
+    //
+    // Known residual: partition 141 (long hair) maps to bit 11 (slot 41),
+    // which exactly ONE of Skyrim's 2,762 ARMOs claims, so long hair is never
+    // displaced by this rule. Coupling 141 to bit 1 would be inventing a
+    // mapping the data doesn't author — and it would be wrong for the
+    // deliberate `HairLine*` sub-meshes, which Bethesda authors to show
+    // *because* a helmet is worn. Left for a HDPT-type-aware follow-up.
+    let skin_inv_idx = race_skin_slots.map(|(idx, _)| idx);
+    let facegen_hidden_mask =
+        equipment_slots
+            .occupants
+            .iter()
+            .enumerate()
+            .fold(0u32, |mask, (bit, occupant)| match occupant {
+                Some(idx) if Some(*idx) != skin_inv_idx => mask | (1u32 << bit),
+                _ => mask,
+            });
+
     NpcEquipState {
         inventory,
         equipment_slots,
         equipped_weapon,
         armor_to_spawn,
+        facegen_hidden_mask,
     }
 }
 

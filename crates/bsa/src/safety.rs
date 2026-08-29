@@ -16,6 +16,7 @@
 //! #388 (`NifStream::allocate_vec` + `check_alloc`).
 
 use std::io;
+use std::io::Read;
 
 /// Upper bound on the number of file / folder entries any archive may
 /// declare. Vanilla Bethesda archives top out around 600 000 entries
@@ -86,6 +87,50 @@ pub fn checked_chunk_size_usize(size: usize, label: &str) -> io::Result<usize> {
         ));
     }
     Ok(size)
+}
+
+/// Inflate a compressed stream with a hard output ceiling.
+///
+/// Every decompressor in this crate reads a declared uncompressed size out of
+/// the archive, validates it through [`checked_chunk_size`], and then needs to
+/// actually *hold the decoder to it*. `Read::read_to_end` has no output limit:
+/// it grows the buffer until the decoder reaches end-of-stream, so the
+/// validated ceiling was only ever a `Vec::with_capacity` hint. A crafted or
+/// corrupt archive — the ordinary distribution format for mods, i.e. this
+/// crate's real untrusted-input surface — could therefore inflate far past the
+/// declared size and terminate the process on allocation failure, which is not
+/// an `Err` any caller can handle and which no `catch_unwind` can intercept.
+/// LZ4 blocks top out near 255:1 and DEFLATE near 1000:1 against a payload the
+/// 30-bit BSA size field already bounds at 1 GB.
+///
+/// This reads at most `declared + 1` bytes. Landing on that extra byte proves
+/// the stream had more to give, which is rejected as `InvalidData` rather than
+/// silently truncated. A *short* decode is deliberately still `Ok` — several
+/// shipped archives carry known padding deltas where the payload reads a
+/// handful of bytes under its declared size (#622 / #812), and callers log
+/// that themselves.
+///
+/// See #3410 (SKY-2026-08-27b-D5-01).
+pub fn inflate_bounded<R: io::Read>(
+    reader: R,
+    declared: usize,
+    label: &str,
+) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(declared);
+    // `declared + 1`: reading the extra byte is how an over-run is detected.
+    // `as u64 + 1` cannot overflow — `declared` is `usize`-bounded well below
+    // `u64::MAX` by the `checked_chunk_size` call every caller makes first.
+    reader.take(declared as u64 + 1).read_to_end(&mut buf)?;
+    if buf.len() > declared {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{label} inflated past its declared uncompressed size \
+                 {declared} — archive is corrupt or hostile (decompression bomb)"
+            ),
+        ));
+    }
+    Ok(buf)
 }
 
 /// Upper bound on the summed byte total across every chunk of a single
@@ -244,5 +289,71 @@ mod tests {
         // Two near-usize::MAX additions must saturate, not panic/wrap.
         let err = checked_chunk_total(usize::MAX - 10, 100, "unpacked_size").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+}
+
+#[cfg(test)]
+mod inflate_bounded_tests {
+    use super::inflate_bounded;
+    use flate2::read::ZlibDecoder;
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).expect("encode");
+        e.finish().expect("finish")
+    }
+
+    /// #3410 — the decompression bomb. A payload that inflates far past the
+    /// size the archive declared must be rejected AT the ceiling, not
+    /// inflated first and noticed afterwards. 4 MiB of zeros compresses to a
+    /// few KiB, so a 1 GB-bounded compressed field can carry orders of
+    /// magnitude more than this.
+    #[test]
+    fn over_ratio_payload_is_rejected_at_the_ceiling() {
+        let bomb = zlib(&vec![0u8; 4 * 1024 * 1024]);
+        let err = inflate_bounded(ZlibDecoder::new(&bomb[..]), 128, "test")
+            .expect_err("a stream that inflates past the declared size must Err");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("inflated past its declared uncompressed size"),
+            "the error must name the real cause, got: {msg}"
+        );
+    }
+
+    /// A lying size prefix in the other direction — the archive declares MORE
+    /// than the stream holds — stays `Ok`. Several shipped archives carry
+    /// known padding deltas (#622 / #812) and callers warn on the mismatch
+    /// themselves; turning that into an error would break parse-rate on
+    /// borderline vanilla content.
+    #[test]
+    fn short_decode_stays_ok_for_the_shipped_padding_deltas() {
+        let data = b"twenty-eight bytes of body!!";
+        let out = inflate_bounded(ZlibDecoder::new(&zlib(data)[..]), 4096, "test")
+            .expect("short decode is Ok");
+        assert_eq!(out, data, "the short payload must come back byte-exact");
+    }
+
+    /// The exact-fit case must not be mistaken for an over-run: the helper
+    /// reads `declared + 1` bytes to detect the over-run, so an
+    /// exactly-`declared` stream lands one byte under the read limit.
+    #[test]
+    fn exact_size_round_trips() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(5000).collect();
+        let out = inflate_bounded(ZlibDecoder::new(&zlib(&data)[..]), data.len(), "test")
+            .expect("exact fit is Ok");
+        assert_eq!(out, data);
+    }
+
+    /// One byte over is still over. Pins the boundary rather than only the
+    /// dramatic case above.
+    #[test]
+    fn one_byte_over_is_rejected() {
+        let data = vec![7u8; 1024];
+        assert!(inflate_bounded(ZlibDecoder::new(&zlib(&data)[..]), 1023, "test").is_err());
+        assert!(inflate_bounded(ZlibDecoder::new(&zlib(&data)[..]), 1024, "test").is_ok());
     }
 }

@@ -723,9 +723,13 @@ fn decompress_chunk(
     let unpacked_size = checked_chunk_size_usize(unpacked_size, "BA2 decompress unpacked_size")?;
     match compression {
         Ba2Compression::Zlib => {
-            let mut decoder = ZlibDecoder::new(packed);
-            let mut buf = Vec::with_capacity(unpacked_size);
-            decoder.read_to_end(&mut buf)?;
+            // #3410 — bounded inflate. `unpacked_size` was validated above and
+            // then used only as a capacity hint; `read_to_end` would grow past
+            // it without limit. Under-runs keep the lenient `Ok` + warn below
+            // (#812 / #2618); over-runs are rejected. Sibling of the BSA-side
+            // fix in `archive/extract.rs`.
+            let decoder = ZlibDecoder::new(packed);
+            let buf = crate::safety::inflate_bounded(decoder, unpacked_size, "BA2 zlib chunk")?;
             if buf.len() != unpacked_size {
                 // #812 / FO4-D2-NEW-02 — `read_to_end` honours deflate's
                 // self-terminating end-of-stream marker mid-buffer so a

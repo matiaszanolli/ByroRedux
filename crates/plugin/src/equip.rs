@@ -192,18 +192,52 @@ pub fn resolve_armor_meshes<'a>(
     // Pass 1: EVERY ARMA whose race set contains the actor's race — the
     // ARMO's biped mask is their union, so taking only the first leaves the
     // other regions bare (#3357). Authored armature order is preserved.
+    //
+    // #3411 — but "every race-matching ARMA" over-collects wherever addons
+    // are *alternatives* rather than complements. Vanilla FO4 authors armour
+    // tiers that way: `Armor_Synth_ArmLeft` has a single-bit mask (0x1000)
+    // and three ARMAs — SynthLite/Med/HvyArmL — each declaring that SAME bit.
+    // They are OMOD-selected variants of one region, so spawning all three
+    // stacks three meshes on one arm. `InstM03LvlSynth` reached 20
+    // simultaneous armour meshes that way (measured on `Fallout4.esm`).
+    //
+    // The addon's own `biped_flags` is the discriminator, and it partitions
+    // the corpus cleanly: an ARMA that introduces no region the accepted set
+    // doesn't already cover is an alternative, so skip it. Measured ARMA
+    // `biped_flags` population, whole-master sweeps:
+    //
+    //   Skyrim.esm      0 / 766  author bits   → rule is a total no-op
+    //   Starfield.esm   0 / 1106 author bits   → rule is a total no-op
+    //     (both by construction, not by accident: the Skyrim-era ARMA record
+    //      has no per-addon biped-slot field — the mask lives on the owning
+    //      ARMO's `BOD2` — and FO4's ARMA is where one was added.)
+    //   Fallout4.esm  739 / 739  author bits   → 48 ARMOs, 118 redundant
+    //   SeventySix.esm 3011/3026 author bits   → 391 ARMOs, 1480 redundant
+    //
+    // So this cannot regress #3357 on Skyrim (where every ARMA declares 0 and
+    // the gate never fires — `SkinNaked`'s torso/hands/feet addons all still
+    // resolve), and it is exactly the FO4/FO76 arms that were over-equipping.
+    // An ARMA declaring `0` carries no region claim at all, so there is
+    // nothing to reason about: it is always accepted, as before.
     let mut out: Vec<&'a str> = Vec::new();
+    let mut covered: u32 = 0;
     for &arma_fid in armatures {
         let Some(arma) = index.armor_addons.get(&arma_fid) else {
             continue;
         };
         let race_match =
             arma.race_form_id == race_form_id || arma.additional_races.contains(&race_form_id);
-        if race_match {
-            if let Some(path) = pick_path(arma) {
-                if !out.contains(&path) {
-                    out.push(path);
-                }
+        if !race_match {
+            continue;
+        }
+        // `!= 0` guard: an unauthored mask means "no claim", not "no regions".
+        if arma.biped_flags != 0 && arma.biped_flags & !covered == 0 {
+            continue;
+        }
+        if let Some(path) = pick_path(arma) {
+            if !out.contains(&path) {
+                out.push(path);
+                covered |= arma.biped_flags;
             }
         }
     }
@@ -654,7 +688,16 @@ mod tests {
         ArmaRecord {
             form_id,
             editor_id: String::new(),
-            biped_flags: 0x0004,
+            // #3411 — `0`, matching real Skyrim data. Skyrim's ARMA record
+            // has no biped-slot field at all (the mask lives on the owning
+            // ARMO's `BOD2`), and a whole-master sweep confirms it: 0 of
+            // `Skyrim.esm`'s 766 ARMAs carry a non-zero mask, same for all
+            // 1,106 of Starfield's. FO4 is the opposite — its ARMA gained a
+            // per-addon slot field, and 739 of 739 populate it, which is what
+            // makes the duplicate-region gate decidable there and a no-op
+            // here. This fixture used to hardcode `0x0004` on every addon,
+            // which no shipped Skyrim ARMA does.
+            biped_flags: 0,
             general_flags: 0,
             dt: 0,
             dr: 0,
@@ -1466,6 +1509,167 @@ mod tests {
         assert_eq!(
             stats.class_form_id, 0x0000_C1A5,
             "Use Stats not set on this NPC → own class, unaffected by Use Traits"
+        );
+    }
+}
+
+#[cfg(test)]
+mod arma_alternative_gate_tests {
+    use super::*;
+    use crate::esm::records::{ArmaRecord, ItemRecord};
+
+    fn arma(form_id: u32, race: u32, bits: u32, mesh: &str) -> ArmaRecord {
+        ArmaRecord {
+            form_id,
+            editor_id: String::new(),
+            biped_flags: bits,
+            general_flags: 0,
+            dt: 0,
+            dr: 0,
+            race_form_id: race,
+            male_biped_model: mesh.to_string(),
+            female_biped_model: mesh.to_string(),
+            additional_races: Vec::new(),
+        }
+    }
+
+    fn armor(form_id: u32, bits: u32, armatures: Vec<u32>) -> ItemRecord {
+        ItemRecord {
+            form_id,
+            common: crate::esm::records::common::CommonItemFields::default(),
+            kind: ItemKind::Armor {
+                biped_flags: bits,
+                dt: 0.0,
+                dr: 0,
+                health: 0,
+                slot_mask: 0,
+                armor_rating_x100: 0,
+                armor_type: Some(1),
+                armatures,
+            },
+        }
+    }
+
+    const RACE: u32 = 0x0001_3746;
+
+    /// #3411 — vanilla FO4 `Armor_Synth_ArmLeft` exactly: a single-bit ARMO
+    /// (0x1000) with three ARMAs that each declare that SAME bit. They are
+    /// OMOD-selected tiers (Lite / Med / Hvy) of one region, not three
+    /// regions, so only the first may spawn. Pre-fix all three did, and
+    /// `InstM03LvlSynth` ended up wearing 20 simultaneous armour meshes.
+    #[test]
+    fn same_region_arma_alternatives_collapse_to_one() {
+        let mut index = EsmIndex {
+            game: GameKind::Fallout4,
+            ..Default::default()
+        };
+        for (i, tier) in ["Lite", "Med", "Hvy"].iter().enumerate() {
+            let fid = 0x0010_0000 + i as u32;
+            index.armor_addons.insert(
+                fid,
+                arma(
+                    fid,
+                    RACE,
+                    0x0000_1000,
+                    &format!("Armor\\Synth\\Synth{tier}ArmL.nif"),
+                ),
+            );
+        }
+        let item = armor(
+            0x0010_0100,
+            0x0000_1000,
+            vec![0x0010_0000, 0x0010_0001, 0x0010_0002],
+        );
+        let out = resolve_armor_meshes(&item, Gender::Male, RACE, &index, GameKind::Fallout4);
+        assert_eq!(
+            out,
+            vec!["Armor\\Synth\\SynthLiteArmL.nif"],
+            "three ARMAs declaring the same single region are alternatives"
+        );
+    }
+
+    /// The complementary case #3357 exists for: `SkinSynthGen2`'s two ARMAs
+    /// declare DISJOINT regions (body 0x00c00008, hands 0x00000030), so both
+    /// must still resolve. The gate must not undo #3357.
+    #[test]
+    fn disjoint_region_armas_all_resolve() {
+        let mut index = EsmIndex {
+            game: GameKind::Fallout4,
+            ..Default::default()
+        };
+        index.armor_addons.insert(
+            0x0010_0200,
+            arma(
+                0x0010_0200,
+                RACE,
+                0x00c0_0008,
+                "Actors\\Synths\\SynthGen2Body.nif",
+            ),
+        );
+        index.armor_addons.insert(
+            0x0010_0201,
+            arma(
+                0x0010_0201,
+                RACE,
+                0x0000_0030,
+                "Actors\\Synths\\SynthGen2Hands.nif",
+            ),
+        );
+        let item = armor(0x0010_0202, 0x00c0_0038, vec![0x0010_0200, 0x0010_0201]);
+        let out = resolve_armor_meshes(&item, Gender::Male, RACE, &index, GameKind::Fallout4);
+        assert_eq!(
+            out.len(),
+            2,
+            "disjoint regions are complements, not alternatives"
+        );
+    }
+
+    /// A partially-overlapping ARMA still contributes: it covers a region the
+    /// accepted set does not. Only a strict subset is an alternative.
+    #[test]
+    fn partially_overlapping_arma_still_contributes() {
+        let mut index = EsmIndex {
+            game: GameKind::Fallout4,
+            ..Default::default()
+        };
+        index
+            .armor_addons
+            .insert(0x0010_0300, arma(0x0010_0300, RACE, 0b0011, "a.nif"));
+        index
+            .armor_addons
+            .insert(0x0010_0301, arma(0x0010_0301, RACE, 0b0110, "b.nif"));
+        let item = armor(0x0010_0302, 0b0111, vec![0x0010_0300, 0x0010_0301]);
+        let out = resolve_armor_meshes(&item, Gender::Male, RACE, &index, GameKind::Fallout4);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Skyrim and Starfield author `biped_flags == 0` on every one of their
+    /// ARMAs (0/766 and 0/1106 respectively, whole-master sweeps), so the
+    /// gate must be a total no-op there — an unauthored mask is "no claim",
+    /// not "no regions". This is what keeps #3357's `SkinNaked`
+    /// torso/hands/feet resolution intact.
+    #[test]
+    fn zero_mask_armas_are_never_gated() {
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        for (i, part) in ["Body", "Hands", "Feet"].iter().enumerate() {
+            let fid = 0x0010_0400 + i as u32;
+            index
+                .armor_addons
+                .insert(fid, arma(fid, RACE, 0, &format!("skin{part}.nif")));
+        }
+        let item = armor(
+            0x0010_0410,
+            0x008d,
+            vec![0x0010_0400, 0x0010_0401, 0x0010_0402],
+        );
+        let out = resolve_armor_meshes(&item, Gender::Male, RACE, &index, GameKind::Skyrim);
+        assert_eq!(
+            out.len(),
+            3,
+            "#3357 must survive: 0-mask ARMAs are all kept"
         );
     }
 }

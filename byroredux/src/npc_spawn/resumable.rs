@@ -107,6 +107,9 @@ struct PrebakedNpcState {
     facegen_path: Option<String>,
     tint_path: Option<String>,
     armor: Vec<PrebakedArmor>,
+    /// #3409 — biped bits an equipped item took from the FaceGen head, in
+    /// `hide_skin_partitions` format. See `NpcEquipState::facegen_hidden_mask`.
+    facegen_hidden_mask: u32,
     equipped_armor_count: u32,
     phase: PrebakedPhase,
 }
@@ -985,6 +988,7 @@ fn prepare_prebaked_state(
     let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
     let equip = build_npc_equip_state(npc, index, game, gender);
+    let facegen_hidden_mask = equip.facegen_hidden_mask;
     let armor = equip
         .armor_to_spawn
         .into_iter()
@@ -1012,6 +1016,7 @@ fn prepare_prebaked_state(
         facegen_path: prebaked_facegen_nif_path(plugin_name, npc.form_id),
         tint_path: prebaked_facegen_tint_path(plugin_name, npc.form_id),
         armor,
+        facegen_hidden_mask,
         equipped_armor_count: 0,
         phase: PrebakedPhase::Skeleton,
     }
@@ -1084,6 +1089,18 @@ fn advance_prebaked_unit(
                 .tint_path
                 .as_deref()
                 .filter(|path| tex_provider.extract(path).is_some());
+            // #3409 — the head is a multi-region mesh source exactly like the
+            // race skin (partitions 130 head+beard / 131 hair / 143 ears /
+            // 132 neck), so it needs the SAME pre-spawn hook the armour phase
+            // below uses. Passing `None` here is why hair rendered through
+            // every helmet: the mask, the biped→partition mapping and the
+            // hook all existed and all worked; nothing wired them together.
+            let hidden_biped_mask = state.facegen_hidden_mask;
+            let mut hide_displaced_head = |scene: &mut byroredux_nif::import::ImportedScene| {
+                hide_skin_partitions(scene, hidden_biped_mask);
+            };
+            let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+                (hidden_biped_mask != 0).then_some(&mut hide_displaced_head);
             let (_, root, _) = load_nif_bytes_with_skeleton(
                 world,
                 ctx,
@@ -1093,7 +1110,7 @@ fn advance_prebaked_unit(
                 mat_provider,
                 Some(&state.skel_map),
                 tint_path,
-                None,
+                pre_spawn,
             );
             if let Some(root) = root {
                 parent_part(world, state.placement_root, root);
@@ -1288,6 +1305,7 @@ mod tests {
             facegen_path: None,
             tint_path: None,
             armor: Vec::new(),
+            facegen_hidden_mask: 0,
             equipped_armor_count: 0,
             phase: PrebakedPhase::Facegen,
         };

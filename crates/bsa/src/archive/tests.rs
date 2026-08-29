@@ -909,6 +909,65 @@ fn synthetic_v105_block_codec_payload_is_rejected_by_frame_reader() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// #3410 (SKY-2026-08-27b-D5-01) — a v105 file whose 4-byte declared
+/// `original_size` lies LOW must be rejected, not inflated to whatever the
+/// LZ4 frame actually holds. Pre-fix `read_to_end` ignored the declared size
+/// entirely (it was only a `Vec::with_capacity` hint) and the mismatch was
+/// noticed afterwards as a `warn!`, so a crafted archive could inflate
+/// hundreds of GB from a payload the 30-bit size field bounds at 1 GB.
+///
+/// End-to-end through `BsaArchive::extract`, not just the helper: the point
+/// of the finding is that the bound was missing at THIS call site.
+#[test]
+fn synthetic_v105_lying_original_size_is_rejected() {
+    let payload: &[u8] = b"Gamebryo File Format - a body long enough that a \
+                           deliberately-small declared original_size is an \
+                           unambiguous over-run rather than a padding delta.";
+    let folder = "meshes\\synthetic";
+    let file = "lyingsize.nif";
+    // embed_name = false → body is exactly [4-byte orig-size][frame stream].
+    let mut bytes = build_v105_archive(folder, file, payload, true, false);
+
+    let folder_lc_len = folder.to_ascii_lowercase().len();
+    let file_lc_len = file.to_ascii_lowercase().len();
+    let file_record_pos = 36 + 24 + (1 + folder_lc_len + 1);
+    let file_data_offset = file_record_pos + 16 + (file_lc_len + 1);
+
+    // Declare 16 bytes for a payload that inflates to well over 100.
+    bytes[file_data_offset..file_data_offset + 4].copy_from_slice(&16u32.to_le_bytes());
+
+    let path = write_temp_v105("lying_original_size", &bytes);
+    let archive = BsaArchive::open(&path).expect("archive header must still open");
+    let err = archive
+        .extract("meshes\\synthetic\\lyingsize.nif")
+        .expect_err("a body that inflates past its declared original_size must Err");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("inflated past its declared uncompressed size"),
+        "the error must name the over-run, got: {msg}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The honest-size sibling of the test above: the same archive shape with the
+/// declared size left correct must still round-trip. Pins that the #3410
+/// bound did not turn the ordinary path into a rejection.
+#[test]
+fn synthetic_v105_honest_original_size_still_round_trips() {
+    let payload: &[u8] = b"Gamebryo File Format - honest declared size, must \
+                           still decode byte-exact after the #3410 bound.";
+    let bytes = build_v105_archive("meshes\\synthetic", "honestsize.nif", payload, true, false);
+    let path = write_temp_v105("honest_original_size", &bytes);
+    let archive = BsaArchive::open(&path).expect("archive must open");
+    let extracted = archive
+        .extract("meshes\\synthetic\\honestsize.nif")
+        .expect("honest size must extract");
+    assert_eq!(extracted, payload);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Uncompressed file with embed-name OFF — exercises the no-LZ4
 /// extract path on a v105 archive (less common but valid;
 /// archive-level `compressed_by_default = 0` and per-file

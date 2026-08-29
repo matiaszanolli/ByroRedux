@@ -646,6 +646,103 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
     );
 }
 
+/// #3411 (RT-2026-08-27-04) — vanilla FO4 authors armour tiers as ARMAs that
+/// all declare the SAME single biped region (`Armor_Synth_ArmLeft`: mask
+/// 0x1000, three ARMAs each declaring 0x1000, for the Lite / Med / Hvy tiers
+/// an OMOD selects between). Returning all of them stacked three meshes on
+/// one arm and pushed `InstM03LvlSynth` to 20 simultaneous armour meshes.
+///
+/// This pins the corpus-level claim the fix rests on: every ARMO whose ARMAs
+/// declare duplicate non-zero masks must now resolve strictly fewer meshes
+/// than it has race-matching addons.
+#[test]
+#[ignore]
+fn fo4_duplicate_region_armas_collapse_on_real_data() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FO4_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+    ) else {
+        eprintln!("[#3411] skipping: FO4 data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+
+    // FO4 populates ARMA `biped_flags` on every addon (739/739, whole-master
+    // sweep), which is what makes the gate decidable there. Skyrim and
+    // Starfield author 0 on every one, so the gate is a no-op for them.
+    let armas_with_bits = index
+        .armor_addons
+        .values()
+        .filter(|a| a.biped_flags != 0)
+        .count();
+    assert_eq!(
+        armas_with_bits,
+        index.armor_addons.len(),
+        "FO4 must author biped_flags on every ARMA — the #3411 gate is \
+         undecidable without them"
+    );
+
+    let mut collapsed = 0usize;
+    for item in index.items.values() {
+        let byroredux_plugin::esm::records::ItemKind::Armor { ref armatures, .. } = item.kind
+        else {
+            continue;
+        };
+        if armatures.len() < 2 {
+            continue;
+        }
+        // Race-match every addon against the same race so the count below
+        // isolates the duplicate-region gate, not the race filter.
+        let Some(race) = armatures
+            .iter()
+            .filter_map(|a| index.armor_addons.get(a))
+            .map(|a| a.race_form_id)
+            .next()
+        else {
+            continue;
+        };
+        let matching: Vec<_> = armatures
+            .iter()
+            .filter_map(|a| index.armor_addons.get(a))
+            .filter(|a| a.race_form_id == race && !a.male_biped_model.is_empty())
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        let has_dupes = matching
+            .iter()
+            .any(|a| a.biped_flags != 0 && !seen.insert(a.biped_flags));
+        if !has_dupes {
+            continue;
+        }
+        let out = byroredux_plugin::equip::resolve_armor_meshes(
+            item,
+            byroredux_plugin::equip::Gender::Male,
+            race,
+            &index,
+            GameKind::Fallout4,
+        );
+        assert!(
+            out.len() < matching.len(),
+            "ARMO {:08X} has ARMAs declaring duplicate regions but still \
+             resolved {} of {} meshes (#3411)",
+            item.form_id,
+            out.len(),
+            matching.len(),
+        );
+        collapsed += 1;
+    }
+    eprintln!("[#3411] FO4 ARMOs with collapsed duplicate-region ARMAs: {collapsed}");
+    // 31 under this strict `race_form_id ==` filter. A whole-master sweep
+    // that also credits `additional_races` finds 48 such ARMOs / 118
+    // redundant addons; this test deliberately uses the narrower filter so
+    // the count isolates the duplicate-region gate from the race filter.
+    assert!(
+        collapsed >= 30,
+        "expected >= 30 FO4 ARMOs with duplicate-region ARMAs, got \
+         {collapsed} — the census this guard rests on has moved"
+    );
+}
+
 #[test]
 #[ignore]
 fn fo4_ruleset_uses_only_authored_avif_outputs() {

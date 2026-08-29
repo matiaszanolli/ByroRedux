@@ -132,15 +132,28 @@ impl BsaArchive {
             drop(file);
 
             // v103/v104 uses zlib, v105 uses LZ4 frame format.
+            //
+            // #3410 — `inflate_bounded`, not `read_to_end`. `original_size` was
+            // validated above and then spent only as a capacity hint, so the
+            // archive's own declared ceiling never actually stopped the
+            // allocation it was checked for. Short decodes stay `Ok` (the
+            // padding deltas the warn below exists for); an over-run is now a
+            // hard `InvalidData`.
             let (decompressed, codec) = if self.version >= BSA_V_SKYRIM_SE {
-                let mut decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
-                let mut buf = Vec::with_capacity(original_size);
-                decoder.read_to_end(&mut buf)?;
+                let decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
+                let buf = crate::safety::inflate_bounded(
+                    decoder,
+                    original_size,
+                    &format!("BSA LZ4 frame '{path}'"),
+                )?;
                 (buf, "LZ4 frame")
             } else {
-                let mut decoder = ZlibDecoder::new(&compressed[..]);
-                let mut buf = Vec::with_capacity(original_size);
-                decoder.read_to_end(&mut buf)?;
+                let decoder = ZlibDecoder::new(&compressed[..]);
+                let buf = crate::safety::inflate_bounded(
+                    decoder,
+                    original_size,
+                    &format!("BSA zlib '{path}'"),
+                )?;
                 (buf, "zlib")
             };
 

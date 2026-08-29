@@ -277,8 +277,17 @@ impl CsgArchive {
         inner.file.seek(SeekFrom::Start(entry.file_offset as u64))?;
         inner.file.read_exact(&mut comp)?;
 
-        let mut raw = Vec::with_capacity(CSG_CHUNK_SIZE);
-        ZlibDecoder::new(&comp[..]).read_to_end(&mut raw)?;
+        // #3410 — the over-size check below used to run AFTER an unbounded
+        // `read_to_end`, so a bomb chunk was fully inflated (and could abort
+        // the process on allocation failure) before being rejected. Bound the
+        // decoder itself; `inflate_bounded` raises the same `InvalidData` at
+        // the ceiling instead of past it. The explicit check is kept as
+        // defense-in-depth and to keep this arm's message.
+        let raw = crate::safety::inflate_bounded(
+            ZlibDecoder::new(&comp[..]),
+            CSG_CHUNK_SIZE,
+            &format!("CSG chunk {idx}"),
+        )?;
         if raw.len() > CSG_CHUNK_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

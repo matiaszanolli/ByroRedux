@@ -246,7 +246,18 @@ pub(crate) fn stream_object_lod_blocks(
 /// by the caller. Each imported sub-mesh becomes an [`IsLodTerrain`] entity
 /// (no BLAS, lean static draw) positioned by its world-absolute import
 /// transform (verified: `.bto` geometry is authored in engine-aligned world
-/// coords — EXAL step 6). All sub-meshes share the worldspace object atlas.
+/// coords — EXAL step 6).
+///
+/// Each sub-mesh binds the texture its OWN `BSShaderTextureSet` names, falling
+/// back to the per-worldspace object atlas only when it names nothing (#3412).
+/// The old "all sub-meshes share the worldspace object atlas" premise is
+/// contradicted by shipped data: across all 1,078 `.bto` in
+/// `Skyrim - Meshes1.bsa`, 809 of 2,357 slot-0 bindings (34.3%) name
+/// `textures\landscape\mountains\mountainslab02.dds` rather than the atlas,
+/// and every one of the 12 worldspaces with baked object LOD has some. In
+/// Tamriel that is the mountain silhouette — the most prominent distant
+/// feature in the game — sampling the object atlas with UVs authored for a
+/// tiling slab.
 fn spawn_object_lod_quad(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -297,6 +308,13 @@ fn spawn_object_lod_quad(
     } else {
         atlas
     };
+    // #3412 — one resolve per DISTINCT authored path per quad, not one per
+    // sub-mesh: a quad's sub-meshes overwhelmingly share a handful of
+    // textures, so this stays the same order of work the single-atlas resolve
+    // was. Seeded with the atlas so a sub-mesh naming it explicitly reuses the
+    // handle above rather than re-entering the registry.
+    let mut resolved: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
+    resolved.insert(atlas_path.clone(), atlas);
 
     let mut entities = Vec::new();
     let mut mesh_handles = Vec::new();
@@ -335,12 +353,52 @@ fn spawn_object_lod_quad(
         let (lc, lr) = super::lod_support::local_aabb_center_radius(&mesh.positions);
         let bound = WorldBound::new(pos + rot * (lc * scale), lr * scale);
 
+        // #3412 — the sub-mesh's own authored diffuse wins. `.bto` slot 0
+        // carries a `data\textures\…` build-root prefix that
+        // `strip_build_prefix` deliberately does NOT catch (it requires a
+        // separator BEFORE `data`), so normalize here — otherwise the same
+        // physical DDS would occupy two bindless slots under two cache keys,
+        // one per spelling.
+        let authored = object_lod_submesh_texture(
+            mesh.material
+                .textures
+                .base_color
+                .and_then(|sym| pool.resolve(sym)),
+        );
+        let (tex_path, texture) = match authored {
+            Some(p) => {
+                let handle = match resolved.get(&p) {
+                    Some(&h) => h,
+                    None => {
+                        let h = resolve_texture(ctx, tex_provider, Some(p.as_str()));
+                        // A miss falls back to the worldspace atlas rather
+                        // than to the magenta placeholder: an imposter with
+                        // the wrong atlas still reads as distant scenery,
+                        // where a checker does not.
+                        let h = if h == ctx.texture_registry.fallback() {
+                            atlas
+                        } else {
+                            h
+                        };
+                        resolved.insert(p.clone(), h);
+                        h
+                    }
+                };
+                if handle == atlas {
+                    (atlas_path.clone(), atlas)
+                } else {
+                    (p, handle)
+                }
+            }
+            None => (atlas_path.clone(), atlas),
+        };
+
         let entity = world.spawn();
         world.insert(entity, Transform::new(pos, rot, scale));
         world.insert(entity, GlobalTransform::new(pos, rot, scale));
         world.insert(entity, MeshHandle(handle));
-        if atlas != 0 {
-            world.insert(entity, TextureHandle(atlas));
+        if texture != 0 {
+            world.insert(entity, TextureHandle(texture));
         }
         world.insert(entity, bound);
         // #2444 (MAT-D3-02) — imposters are drawn surfaces and need a
@@ -353,8 +411,10 @@ fn spawn_object_lod_quad(
         // geometric LOD pop.
         world.insert(
             entity,
-            crate::material_translate::translate_texture_only_material(if atlas != 0 {
-                Some(atlas_path.clone())
+            crate::material_translate::translate_texture_only_material(if texture != 0 {
+                // #3412 — classify against the texture this draw actually
+                // samples, which is now the sub-mesh's own when it named one.
+                Some(tex_path.clone())
             } else {
                 None
             }),
@@ -494,6 +554,26 @@ pub(crate) fn object_lod_archive_path(
     }
 }
 
+/// The texture a `.bto` / legacy-block sub-mesh should sample from its own
+/// `BSShaderTextureSet` slot 0, normalized into the archive's canonical
+/// `textures\…` form. `None` means the sub-mesh named nothing and the caller
+/// falls back to the per-worldspace atlas.
+///
+/// The normalization is load-bearing, not cosmetic. Shipped `.bto` slot-0
+/// paths carry a build-root prefix (`data\textures\landscape\mountains\
+/// mountainslab02.dds`) and `strip_build_prefix` deliberately does NOT catch
+/// it — that helper requires a separator BEFORE `data`, which a leading
+/// `data\` has not. Without this step the same physical DDS would occupy two
+/// bindless slots, one per spelling, and only one of them would match the
+/// atlas handle the fallback uses. See #3412.
+fn object_lod_submesh_texture(authored: Option<&str>) -> Option<String> {
+    let path = authored?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(crate::asset_provider::normalize_texture_path(path).into_owned())
+}
+
 /// Archive-relative path of the shared worldspace object atlas every quad of
 /// a scheme samples. Resolved once per quad and reused across its sub-meshes.
 pub(crate) fn object_lod_atlas_path(scheme: ObjectLodScheme, worldspace_key: &str) -> String {
@@ -510,6 +590,50 @@ pub(crate) fn object_lod_atlas_path(scheme: ObjectLodScheme, worldspace_key: &st
         ObjectLodScheme::FalloutLegacyBlocks => {
             format!("textures\\landscape\\lod\\{w}\\blocks\\{w}.buildings.dds")
         }
+    }
+}
+
+#[cfg(test)]
+mod submesh_texture_tests {
+    use super::object_lod_submesh_texture;
+
+    /// #3412 — the shipped `.bto` form. `Skyrim - Meshes1.bsa` binds
+    /// `data\textures\landscape\mountains\mountainslab02.dds` on 809 of
+    /// 2,357 slot-0 bindings; the archive stores it without the `data\`
+    /// root, so the leading prefix has to come off or the lookup keys on a
+    /// spelling the atlas fallback never uses.
+    #[test]
+    fn strips_the_bto_build_root_prefix() {
+        assert_eq!(
+            object_lod_submesh_texture(Some(
+                r"data\textures\landscape\mountains\mountainslab02.dds"
+            ))
+            .as_deref(),
+            Some(r"textures\landscape\mountains\mountainslab02.dds"),
+        );
+    }
+
+    /// An already-canonical path is passed through unchanged, so a sub-mesh
+    /// that names the atlas itself collapses onto the handle already resolved
+    /// for the quad rather than claiming a second bindless slot.
+    #[test]
+    fn canonical_path_passes_through() {
+        let atlas = r"textures\terrain\tamriel\objects\tamriel.objects.dds";
+        assert_eq!(
+            object_lod_submesh_texture(Some(atlas)).as_deref(),
+            Some(atlas)
+        );
+    }
+
+    /// Nothing authored → `None`, which is what routes the caller to the
+    /// per-worldspace atlas. Empty and whitespace-only slots count as
+    /// nothing: a `BSShaderTextureSet` that reserves the slot without filling
+    /// it must not resolve to `textures\`.
+    #[test]
+    fn unauthored_slot_falls_back_to_the_atlas() {
+        assert_eq!(object_lod_submesh_texture(None), None);
+        assert_eq!(object_lod_submesh_texture(Some("")), None);
+        assert_eq!(object_lod_submesh_texture(Some("   ")), None);
     }
 }
 

@@ -1119,6 +1119,124 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
     );
 }
 
+/// #3409 (SKY-2026-08-27b-D3-02) — the pre-baked FaceGen head's own
+/// displacement mask. Vanilla `Skyrim.esm` masks, measured:
+///   closed helm (Dwarven / Daedric / Nord Plate / Guard FullReach) = bits
+///   0,1,12,13; open helm (Iron / Hide / Studded / Steel light) = bits 1,12;
+///   circlet = bit 12; `SkinNaked` = bits 0,2,3,7.
+fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
+    const RACE: u32 = 0x0100_0080;
+    const SKIN: u32 = 0x0100_0081;
+    const SKIN_ARMA: u32 = 0x0100_0082;
+    const HELM: u32 = 0x0100_0083;
+    const HELM_ARMA: u32 = 0x0100_0084;
+
+    let mut race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RACE,
+        editor_id: String::new(),
+        full_name: String::new(),
+        description: String::new(),
+        skill_bonuses: Vec::new(),
+        body_models: Vec::new(),
+        head_parts: Vec::new(),
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        race_flags: 0,
+        starting_health: None,
+        starting_magicka: None,
+        starting_stamina: None,
+        base_attributes: None,
+        default_hair: None,
+        voice_forms: None,
+        facegen_main_clamp: None,
+        facegen_face_clamp: None,
+        race_reactions: Vec::new(),
+        default_skin: None,
+    };
+    race.default_skin = Some(SKIN);
+
+    let mut npc = test_npc(0x0100_0085, "FacegenMaskNpc");
+    npc.race_form_id = RACE;
+    if helmet_bits != 0 {
+        npc.inventory
+            .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+                item_form_id: HELM,
+                count: 1,
+            });
+    }
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(RACE, race);
+    index
+        .items
+        .insert(SKIN, skyrim_armor_item(SKIN, skin_bits, vec![SKIN_ARMA]));
+    index
+        .armor_addons
+        .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
+    index
+        .items
+        .insert(HELM, skyrim_armor_item(HELM, helmet_bits, vec![HELM_ARMA]));
+    index
+        .armor_addons
+        .insert(HELM_ARMA, arma(HELM_ARMA, r"armor\iron\helmet.nif"));
+
+    build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask
+}
+
+/// The race skin's OWN bits must never reach the head's mask. `SkinNaked`
+/// authors bit 0 (Head) and 47 of Skyrim's 99 races point `WNAM` at a skin
+/// that does — folding those in would hide partition 130 and delete the face
+/// of most humanoid NPCs.
+#[test]
+fn facegen_mask_excludes_the_race_skin_own_bits() {
+    const SKIN_NAKED: u32 = 0b1000_1101; // bits 0, 2, 3, 7
+    assert_eq!(
+        facegen_mask_fixture(0, SKIN_NAKED),
+        0,
+        "an unarmoured NPC must hide nothing on their own head"
+    );
+}
+
+/// An OPEN helm (bits 1 + 12) hides the hair partition and leaves the face:
+/// bit 0 stays with the skin because the helmet never claimed it.
+#[test]
+fn facegen_mask_open_helm_hides_hair_but_not_the_face() {
+    const OPEN_HELM: u32 = 0b0001_0000_0000_0010; // bits 1, 12
+    const SKIN_NAKED: u32 = 0b1000_1101;
+    let mask = facegen_mask_fixture(OPEN_HELM, SKIN_NAKED);
+    assert_eq!(
+        mask & (1 << 1),
+        1 << 1,
+        "hair (partition 131) must be hidden"
+    );
+    assert_eq!(
+        mask & 1,
+        0,
+        "the face (partition 130) must survive an open helm — bit 0 is still \
+         the skin's, so nothing displaced it"
+    );
+}
+
+/// A CLOSED helm (bits 0,1,12,13) displaces bit 0 from the skin, so the head
+/// and beard partitions go too — which is correct: those helms ship their own
+/// partition-30 geometry (Dwarven: 1514 triangles) to replace them.
+#[test]
+fn facegen_mask_closed_helm_displaces_the_head_bit() {
+    const CLOSED_HELM: u32 = 0b0011_0000_0000_0011; // bits 0, 1, 12, 13
+    const SKIN_NAKED: u32 = 0b1000_1101;
+    let mask = facegen_mask_fixture(CLOSED_HELM, SKIN_NAKED);
+    assert_eq!(
+        mask & 1,
+        1,
+        "a closed helm claims bit 0 and replaces the head"
+    );
+    assert_eq!(mask & (1 << 1), 1 << 1, "hair too");
+    assert_eq!(mask & (1 << 13), 1 << 13, "ears too");
+}
+
 /// #2094 (SKY-D3-NEW-02) — when the equipped gear fully overlaps the
 /// race skin's biped bit, the skin is displaced and must NOT spawn a
 /// second (z-fighting) mesh alongside the winner.
@@ -1766,6 +1884,81 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
         "every NPC on a zero-mask-skin race must keep its skin mesh; \
          {} of {zero_mask_race_npcs} lost it (#3408)",
         zero_mask_race_npcs - with_mesh
+    );
+}
+
+/// #3409 — the real-data guard. Sweeps every NPC_ in `Skyrim.esm` and pins
+/// the population the fix produces, rather than restating the fold that
+/// produces it: how many actors end up hiding head partitions at all, and
+/// that BOTH helm classes are represented — closed helms displacing bit 0
+/// (face + beard replaced by the helm's own partition-30 geometry) and open
+/// helms leaving it with the race skin (face visible under the helm).
+///
+/// Pre-fix every one of these was 0: the FaceGen phase passed `None` for its
+/// pre-spawn hook, so no head partition was ever hidden.
+#[test]
+#[ignore]
+fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        eprintln!("[#3409] skipping: Skyrim SE data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    // Head-family bits: 0 Head, 1 Hair, 12 Circlet, 13 Ears. Bit 11
+    // (LongHair) is claimed by exactly 1 of Skyrim's 2,762 ARMOs, which is
+    // why partition 141 is a documented residual, not covered here.
+    const HEAD_FAMILY: u32 = (1 << 0) | (1 << 1) | (1 << 12) | (1 << 13);
+
+    let mut with_mask = 0usize;
+    let mut closed_helm = 0usize;
+    let mut open_helm = 0usize;
+    for npc in index.npcs.values() {
+        let mask =
+            build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask;
+        if mask & HEAD_FAMILY == 0 {
+            continue;
+        }
+        with_mask += 1;
+        if mask & 1 != 0 {
+            closed_helm += 1;
+        } else {
+            open_helm += 1;
+        }
+    }
+    eprintln!(
+        "[#3409] NPCs hiding head partitions: {with_mask} \
+         (closed-helm/face-replaced {closed_helm}, open-helm/face-kept {open_helm})"
+    );
+    assert!(
+        with_mask >= 1_500,
+        "expected >= 1500 Skyrim NPCs to hide head partitions, got {with_mask} \
+         — pre-#3409 this was 0 because the FaceGen phase passed no pre-spawn hook"
+    );
+    assert!(
+        open_helm > 0,
+        "open helms (bits 1+12, no bit 0) must leave the face: a run where \
+         EVERY masked NPC also loses partition 130 means the race skin's own \
+         bit 0 leaked into the mask — `SkinNaked` claims it on 47 of 99 races"
+    );
+    // Vanilla authors 587 hair-slot (bit 1) ARMOs against 175 head-slot
+    // (bit 0) ones, so open helms must dominate by a wide margin. This is the
+    // assertion that catches the specific way this fix can be broken: drop
+    // the race-skin exclusion from the fold and the split inverts to
+    // 3826 closed / 165 open — i.e. 3826 NPCs rendering faceless, because
+    // `SkinNaked`'s own bit 0 leaked in.
+    assert!(
+        open_helm > closed_helm,
+        "open helms must outnumber closed ones ({open_helm} vs {closed_helm}); \
+         an inverted split means the race skin's bit 0 is being treated as a \
+         displacement of the head it actually supplies"
+    );
+    assert!(
+        closed_helm > 0,
+        "closed helms (bits 0,1,12,13) must displace the head bit — 175 of \
+         Skyrim's 2,762 ARMOs are authored that way and ship their own \
+         partition-30 geometry to replace it"
     );
 }
 
