@@ -337,17 +337,38 @@ Per-game impls (the runtime source per the Q3 finding):
     radius from the streaming ring (reintroducing the #1866 overlap risk) and
     needs real-game visual validation before it is enabled.
     **Correction (2026-08-26, #3307)**: radius decoupling isn't the only
-    obstacle. `object_lod.rs` spawns a `.bto` quad as one merged, per-quad
-    draw with no per-source-object identifiers — there is no hook to
-    suppress *one specific object's* contribution within an already-baked
-    quad at the granularity this marker was designed for. The only
-    technically available lever is coarser than per-object (hide the whole
-    quad once any full REFR inside it is resident), which pops out every
-    other, unrelated object in that quad — trading one visual regression for
-    another rather than fixing anything. A real per-object cull needs the
-    LOD bake (or its generation-time source data) to carry per-object
-    boundaries, a separate and larger investigation. Deliberately not built;
-    see #3307. What **is** live (#2371 VWD follow-up): `lod.coverage` audits
+    obstacle — a cull also needs something to suppress. The bake carries no
+    per-source-object identity: a quad's sub-meshes are material/type groups
+    (`Obj`, `obj-LargeRef`, `objsnowHD-LargeRef`, …), never object names, and
+    nothing carries a FormID (`BSDistantObjectLargeRefExtraData`, despite the
+    name, is a single `bool` per nif.xml). A *per-object* cull is therefore
+    not expressible.
+    **Correction (2026-08-29, #3307)**: the 2026-08-26 note's two supporting
+    claims were measured wrong, and its conclusion does not follow. Evidence:
+    `crates/nif/examples/bto_segment_census.rs` over `Skyrim - Meshes1.bsa`
+    (1078 quads / 1856 level-4 sub-meshes).
+      1. A quad is **not** one merged draw — `spawn_object_lod_block` spawns
+         one entity per `imported.meshes` entry (1–5 per level-4 quad).
+      2. The finest lever is **not** the whole quad. `BSSubIndexTriShape`
+         carries a segment table that nif.xml describes, for LOD, as
+         "segmented in a **grid**". Measured: at level 4 (`4x4 = 16` cells per
+         quad) `num_segments` caps at exactly **16**, and the non-zero
+         segments exactly partition the sub-mesh's triangles — **one segment
+         per cell**. That is exactly the granularity this engine's streaming
+         already works at, since full REFRs spawn per cell. The cull Redux
+         needs was never per-object; it is per-cell, and the bake exposes it.
+    The real limitation is narrower: the per-cell grid is **level-4 only**.
+    Levels 8 and 16 ship exactly one segment on every sub-mesh (384/384 and
+    152/152 measured), so there the lever really is per-quad, with the pop-out
+    cost the earlier note describes. A design that decouples the VWD radius
+    must therefore keep full REFRs under **level-4** quads, where per-cell
+    suppression exists, and never under a level-8/16 quad.
+    Still not built, but for the remaining reason rather than an
+    impossibility: consuming per-cell segments means drawing a LOD sub-mesh as
+    index sub-ranges, and together with the radius decoupling that is a
+    render-visible change whose failure modes (pop, seam, z-fight at the
+    transition) are invisible to `cargo test`. It needs the live validation
+    this section already asks for. See #3307. What **is** live (#2371 VWD follow-up): `lod.coverage` audits
     every resident marker instance against the resident object-LOD quads on
     every reconcile
     (`LodCoverageStats::vwd_full_model_overlaps`, wired into `m-exteriors.sh`'s

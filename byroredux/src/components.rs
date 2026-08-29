@@ -193,20 +193,43 @@ impl Component for IsLodTerrain {
 /// work does not have to re-derive the parse→spawn plumbing. See #1889.
 ///
 /// **Correction (2026-08-26, #3307)**: radius decoupling turns out not to be
-/// the only obstacle. A per-record cull needs to suppress *this specific
-/// object's* contribution once its LOD proxy is active — but
-/// `object_lod.rs` spawns a `.bto` quad as one merged, per-quad draw with no
-/// BLAS and no per-source-object identifiers (`object_lod.rs:320-345`); the
-/// bake has no hook to attach a per-object suppression to at the granularity
-/// this marker was designed for. The only technically available lever is
-/// coarser than per-object — hide the entire quad once any full REFR inside
-/// it is resident — which pops out every *other*, unrelated object in that
-/// quad too: a new visual regression traded for the one this marker exists
-/// to prevent. Investigated and deliberately not built; see #3307 for the
-/// full writeup. A real per-object cull would need the LOD bake itself (or
-/// its generation-time source data) to carry per-object boundaries, which
-/// is its own separate, larger investigation, not a consequence of this
-/// component's design.
+/// the only obstacle — a cull also needs something to suppress. Still true:
+/// the bake carries **no per-source-object identity**. A quad's sub-meshes
+/// are material/type groups (`Obj`, `obj-LargeRef`, `objsnowHD-LargeRef`, …),
+/// never object names, and nothing in the chain carries a FormID —
+/// `BSDistantObjectLargeRefExtraData`, which sounds like it would, is a
+/// single `bool` per nif.xml. So a *per-object* cull is not expressible.
+///
+/// **Correction (2026-08-29, #3307)**: two claims in the paragraph above as
+/// originally written were measured wrong, and the conclusion they supported
+/// does not follow. Evidence:
+/// `crates/nif/examples/bto_segment_census.rs` over Skyrim SE
+/// `Skyrim - Meshes1.bsa` (1078 quads, 1856 level-4 sub-meshes).
+///
+/// 1. A quad is **not** "one merged, per-quad draw". `spawn_object_lod_block`
+///    calls `world.spawn()` once per `imported.meshes` entry, so a level-4
+///    quad spawns 1–5 entities, one per material/type group.
+/// 2. The finest available lever is **not** "hide the whole quad". A
+///    `BSSubIndexTriShape` carries a segment table which, for LOD, nif.xml
+///    describes as "segmented in a **grid**". Measured: at level 4
+///    (`4x4 = 16` cells per quad) `num_segments` caps at exactly **16** and
+///    the non-zero segments exactly partition the sub-mesh's triangles — one
+///    segment **per cell**. That is precisely the granularity Redux's
+///    streaming already works at, since full REFRs spawn per cell. A
+///    per-object cull was never what this engine needs; a **per-cell** one is,
+///    and the bake does expose it.
+///
+/// The real limitation is narrower than "no hook exists": the per-cell grid
+/// is **level-4 only**. Levels 8 and 16 ship exactly one segment on every
+/// sub-mesh (384/384 and 152/152 measured), so for those the lever genuinely
+/// is per-quad, with the pop-out cost the earlier note describes.
+///
+/// Still deliberately not built, but for the remaining reason rather than an
+/// impossibility: consuming per-cell segments means drawing a LOD sub-mesh as
+/// index sub-ranges, and combined with the radius decoupling it is a
+/// render-visible change whose failure modes (pop, seam, z-fight at the
+/// transition) are invisible to `cargo test`. It needs the live validation
+/// EXAL §5.2 asks for before it can be enabled. See #3307.
 ///
 /// It does have a **telemetry** consumer, which is not the same thing: EX-10/11
 /// (#2371)'s `lod.coverage` audit queries every resident instance of this marker
@@ -1366,7 +1389,8 @@ pub(crate) struct PersistentRefIndex {
     /// `NameIndex`/`SubtreeCache`'s component-count heuristic, which is
     /// the right tool when nothing more specific is available but isn't
     /// needed here.
-    #[allow(dead_code)] // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
+    #[allow(dead_code)]
+    // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
     pub(crate) built_for: Option<EntityId>,
 }
 impl Resource for PersistentRefIndex {}
