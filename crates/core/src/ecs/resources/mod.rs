@@ -50,6 +50,56 @@ pub struct ScreenshotBridge {
     pub generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Renderer-side depth-capture request/result channel (#3308).
+///
+/// Sibling of [`ScreenshotBridge`], deliberately thinner: the depth capture
+/// has exactly one consumer (the `depth.stats` console command), so there is
+/// no second claimant for a straggler result to be served to and neither an
+/// owner tag nor a capture generation is needed. A stale result is simply an
+/// older frame's depth, which for a diagnostic is a meaningful answer rather
+/// than a correctness hazard — the opposite of the golden-frame comparison
+/// `ScreenshotBridge` feeds, where #1006 and #1603 both mattered.
+///
+/// `samples` are raw `D32_SFLOAT` values; hand them to
+/// [`crate::ecs::components::Camera::analyze_depth_field`] rather than
+/// interpreting them at the call site.
+pub struct DepthCaptureBridge {
+    pub requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The most recent completed capture, or `None` if none has landed since
+    /// the last [`take_result`](Self::take_result).
+    pub result: std::sync::Arc<std::sync::Mutex<Option<DepthCapture>>>,
+}
+
+/// One captured depth attachment, as raw `D32_SFLOAT` samples.
+///
+/// Lives here rather than in the renderer so the renderer's result slot and
+/// this resource can be the *same* `Arc` — a translation step between two
+/// shapes would be one more place for the extent and the sample buffer to
+/// disagree, which is exactly the class of bug the capture exists to detect.
+#[derive(Debug, Clone)]
+pub struct DepthCapture {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major, `width * height` encoded depth values in `[0, 1]`.
+    pub samples: Vec<f32>,
+}
+
+impl Resource for DepthCaptureBridge {}
+
+impl DepthCaptureBridge {
+    /// Ask the renderer to copy the next frame's depth attachment. The
+    /// result lands one frame later, once the fence proves the GPU is done.
+    pub fn request(&self) {
+        self.requested
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Take the most recent capture, leaving the slot empty.
+    pub fn take_result(&self) -> Option<DepthCapture> {
+        self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
 /// `ScreenshotBridge` is idle — neither CLI nor debug-server holds it.
 pub const SCREENSHOT_OWNER_NONE: u8 = 0;
 /// CLI `--screenshot` deadline loop owns the in-flight request.

@@ -34,7 +34,8 @@ pub use mesh::{
 pub use texture_registry::{TextureColorSpace, TextureRegistry};
 pub use vertex::Vertex;
 pub use vulkan::context::{
-    DofView, DrawCommand, FrameTimings, ScreenshotHandle, SkyDalcCube, SkyParams, VulkanContext,
+    DepthCaptureHandle, DofView, DrawCommand, FrameTimings, ScreenshotHandle, SkyDalcCube,
+    SkyParams, VulkanContext,
 };
 pub use vulkan::material::{GpuMaterial, MaterialTable};
 pub use vulkan::morph_compute::MorphSlot;

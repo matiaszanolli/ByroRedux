@@ -115,6 +115,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SystemList", "scheduler introspection snapshot rebuilt from the installed scheduler at boot"),
         ("SchedulerAccessReport", "scheduler access diagnostics rebuilt from system declarations at boot"),
         ("ScreenshotBridge", "one-shot renderer/debug-server screenshot handoff"),
+        ("DepthCaptureBridge", "one-shot renderer/console depth-capture handoff (#3308); holds Arcs into renderer-owned staging state that does not survive a device teardown, and a captured depth field describes one frame's camera pose rather than any world state"),
         ("DeltaTime", "per-frame scheduler input overwritten from the current frame clock"),
         ("TotalTime", "process-session elapsed time used for animation/effects, restarted rather than persisted"),
         ("EngineConfig", "boot/CLI engine configuration, not mutable gameplay state"),

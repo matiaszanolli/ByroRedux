@@ -996,6 +996,16 @@ pub struct FrameTimings {
 }
 
 /// Handle for requesting and retrieving screenshots from outside the render loop.
+/// Outside-the-render-loop handle for depth capture (#3308). Deliberately
+/// thinner than [`ScreenshotHandle`]: one consumer, so no owner tag and no
+/// capture generation — see `depth_capture.rs`'s module doc for why those
+/// are unnecessary here rather than merely omitted.
+#[derive(Clone)]
+pub struct DepthCaptureHandle {
+    pub requested: Arc<AtomicBool>,
+    pub result: Arc<Mutex<Option<byroredux_core::ecs::DepthCapture>>>,
+}
+
 pub struct ScreenshotHandle {
     /// Set to `true` to request a screenshot on the next frame.
     pub requested: Arc<AtomicBool>,
@@ -1377,6 +1387,21 @@ pub struct VulkanContext {
     /// cannot corrupt the readback dimensions (#1448); the generation gates
     /// publication against an intervening `cancel()` (#1603).
     screenshot_pending_readback: Option<(vk::Extent2D, u64)>,
+
+    // ── Depth capture (#3308) ───────────────────────────────────────
+    /// Set by `DepthCaptureBridge::request`; consumed by the next frame's
+    /// `depth_capture_record_copy`. Single-consumer, so unlike the
+    /// screenshot bridge it carries no owner tag or generation — see
+    /// `depth_capture.rs`'s module doc.
+    depth_capture_requested: Arc<AtomicBool>,
+    depth_capture_result: Arc<Mutex<Option<byroredux_core::ecs::DepthCapture>>>,
+    /// Staging buffer for depth readback (allocated on first capture).
+    depth_capture_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
+    /// Render extent recorded at copy time; `Some` while the staging buffer
+    /// holds data waiting for the fence. Stored here rather than re-derived
+    /// so a same-frame resize cannot decode the new dimensions against the
+    /// old copy — the same REG-02 / #1448 invariant the screenshot path has.
+    depth_capture_pending_readback: Option<vk::Extent2D>,
 
     frame_sync: FrameSync,
     /// Per-frame image-health counter buffers (EX-05 / #2736).
@@ -1976,6 +2001,15 @@ impl VulkanContext {
         }
     }
 
+    /// Get a handle for requesting depth captures from outside the render
+    /// loop (#3308). Feeds `byroredux_core::ecs::DepthCaptureBridge`.
+    pub fn depth_capture_handle(&self) -> DepthCaptureHandle {
+        DepthCaptureHandle {
+            requested: Arc::clone(&self.depth_capture_requested),
+            result: Arc::clone(&self.depth_capture_result),
+        }
+    }
+
     /// Signal a temporal discontinuity (cell load, weather flip, fast
     /// camera turn) so the SVGF temporal pass uses an elevated α for
     /// `frames` upcoming frames. The current frame and `frames - 1`
@@ -2438,6 +2472,7 @@ mod egui_pending_output_tests {
 // Method implementations split across submodules:
 mod draw;
 pub use draw::FrameInputs;
+mod depth_capture;
 mod geometry_pass;
 mod helpers;
 mod init;

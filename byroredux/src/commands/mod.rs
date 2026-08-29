@@ -13,6 +13,7 @@
 //!   resources (`env.health`)
 //! - [`gameplay`] — inventory/equipment and persistent-settings diagnostics
 //!   (`inventory.status`, `settings.status`)
+//! - [`depth`] — depth-buffer precision diagnostics (`depth.stats`)
 //! - [`assets`] — texture / mesh / skin diagnostics
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
@@ -33,6 +34,7 @@
 mod actor_value;
 mod assets;
 mod condition;
+mod depth;
 mod env_health;
 mod gameplay;
 mod physics;
@@ -47,6 +49,7 @@ mod world_info;
 use actor_value::*;
 use assets::*;
 use condition::*;
+use depth::*;
 use env_health::*;
 use gameplay::*;
 use physics::*;
@@ -62,6 +65,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
     registry.register(CondCommand);
+    registry.register(DepthStatsCommand);
     registry.register(SetAvCommand);
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);

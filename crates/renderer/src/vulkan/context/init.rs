@@ -1578,6 +1578,10 @@ impl VulkanContext {
             screenshot_generation: Arc::new(AtomicU64::new(0)),
             screenshot_staging: None,
             screenshot_pending_readback: None,
+            depth_capture_requested: Arc::new(AtomicBool::new(false)),
+            depth_capture_result: Arc::new(Mutex::new(None)),
+            depth_capture_staging: None,
+            depth_capture_pending_readback: None,
         };
 
         // #2480 / REN-D23-2026-08-07-01 — `UpscalerMode::Taa` documents

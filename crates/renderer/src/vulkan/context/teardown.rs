@@ -241,6 +241,7 @@ impl Drop for VulkanContext {
             }
 
             self.destroy_screenshot_staging();
+            self.destroy_depth_capture_staging();
 
             self.frame_sync.destroy(&self.device);
             // Destroy persistent transfer fence (#302). device_wait_idle

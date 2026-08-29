@@ -85,6 +85,14 @@ use super::transform::Transform;
 ///   this project has no RenderDoc GUI integration to validate a change
 ///   this pervasive live. Left for a dedicated multi-session effort; #3308
 ///   tracks it with the measured scope above.
+///
+///   The **comparison gate** that work needs does now exist, in both halves:
+///   [`Camera::analyze_depth_field`] on the CPU side, and the `depth.stats`
+///   console command (`byroredux/src/commands/depth.rs`) driving a real
+///   depth-attachment readback over `byro-dbg`. Run it before the
+///   conversion, run it after, and the far decades' `distinct_codes` are the
+///   before/after evidence — the thing that was otherwise unobservable and
+///   that made shipping reversed-Z speculative.
 pub const DEFAULT_RENDER_DISTANCE: f32 = 400_000.0;
 
 /// Near-plane distance for BU-scale content — matches vanilla `fNearDistance`
@@ -241,6 +249,135 @@ impl Camera {
         ulp * (f - n) * distance * distance / (f * n)
     }
 
+    /// Recover the world-space eye distance a conventional-mapping depth
+    /// sample encodes. Inverse of the `z_ndc(d)` in
+    /// [`Self::depth_resolution_at`]'s derivation.
+    ///
+    /// A cleared sample (`z == 1.0`, nothing drawn) decodes to exactly
+    /// `far`. Returns `0.0` for a sample outside `[0, 1]` or for a
+    /// degenerate camera — same contract as the resolution functions.
+    pub fn linear_distance_from_depth(&self, z: f32) -> f32 {
+        let (n, f) = (self.near, self.far);
+        if !(z.is_finite() && n.is_finite() && f.is_finite()) {
+            return 0.0;
+        }
+        if n <= 0.0 || f <= n || !(0.0..=1.0).contains(&z) {
+            return 0.0;
+        }
+        let denom = 1.0 - z * (f - n) / f;
+        if denom <= 0.0 {
+            return f;
+        }
+        (n / denom).min(f)
+    }
+
+    /// Bucket a captured depth field into distance decades and report, per
+    /// decade, how many *distinct encoded values* it actually contains
+    /// alongside what [`Self::depth_resolution_at`] predicts.
+    ///
+    /// This is the CPU half of #3308's step-2 comparison gate. The analytic
+    /// functions say what the depth buffer's resolution *should* be; this
+    /// says what a real captured frame's depth buffer *does* contain. Two
+    /// things fall out of running it:
+    ///
+    /// * **Validation** — `distinct_codes` in a decade can never exceed the
+    ///   sample count, and the decade's span divided by `distinct_codes`
+    ///   should land in the same order of magnitude as
+    ///   `analytic_resolution`. A capture that disagrees means the readback
+    ///   is wrong (stale, wrong aspect, wrong format), not that the analysis
+    ///   is.
+    /// * **Comparison** — re-run after a reversed-Z conversion and the far
+    ///   decades should gain orders of magnitude of `distinct_codes` while
+    ///   the near decades barely move. That difference is the thing #3308
+    ///   exists to buy, and it is not otherwise observable.
+    ///
+    /// Bands are decades of eye distance from `near` up to `far`, so this
+    /// works unchanged for both the unit-scale demo camera and the BU-scale
+    /// worldspace one. Samples that decode to `far` are counted as
+    /// [`DepthFieldStats::cleared`] and excluded from the bands — they are
+    /// background, not geometry, and would otherwise swamp the last decade.
+    pub fn analyze_depth_field(&self, encoded: &[f32]) -> DepthFieldStats {
+        use std::collections::HashSet;
+
+        let mut stats = DepthFieldStats {
+            total: encoded.len() as u32,
+            ..Default::default()
+        };
+        if self.near <= 0.0 || self.far <= self.near {
+            return stats;
+        }
+
+        // Decade edges from `near` to `far`, e.g. 5 → 10 → 100 → … → 400000.
+        let mut edges: Vec<f32> = vec![self.near];
+        let mut e = 10f32.powf(self.near.log10().floor() + 1.0);
+        while e < self.far {
+            edges.push(e);
+            e *= 10.0;
+        }
+        edges.push(self.far);
+
+        let mut codes: Vec<HashSet<u32>> = vec![HashSet::new(); edges.len() - 1];
+        let mut counts = vec![0u32; edges.len() - 1];
+        let (mut nearest, mut farthest) = (f32::INFINITY, 0.0f32);
+
+        for &z in encoded {
+            // Classify background on the ENCODED side. The depth clear value
+            // is exactly 1.0 and any drawn fragment passed a LESS test
+            // against it, so `z >= 1.0` is precisely "nothing drawn here" —
+            // no decode needed, and therefore no decode error. Round-tripping
+            // instead is not safe: at the far plane one depth step spans tens
+            // of thousands of world units, so f32 error in the decode can put
+            // a cleared sample just *under* `far` and drop the frame's entire
+            // background into the last decade, swamping the one band the
+            // gate most needs to read.
+            if z >= 1.0 {
+                stats.cleared += 1;
+                continue;
+            }
+            let d = self.linear_distance_from_depth(z);
+            if d <= 0.0 {
+                stats.invalid += 1;
+                continue;
+            }
+            // Belt-and-braces: a `z` just under 1.0 can still decode to at or
+            // past the far plane. Same bucket — it is background either way.
+            if d >= self.far {
+                stats.cleared += 1;
+                continue;
+            }
+            nearest = nearest.min(d);
+            farthest = farthest.max(d);
+            // Last edge is `far`, so `d < far` always lands in a band.
+            let band = edges
+                .windows(2)
+                .position(|w| d >= w[0] && d < w[1])
+                .unwrap_or(0);
+            counts[band] += 1;
+            codes[band].insert(z.to_bits());
+        }
+
+        stats.nearest = if nearest.is_finite() { nearest } else { 0.0 };
+        stats.farthest = farthest;
+        stats.bands = edges
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| {
+                // Geometric midpoint — the representative distance for a
+                // decade, since the band is log-spaced.
+                let mid = (w[0] * w[1]).sqrt();
+                DepthBand {
+                    near_edge: w[0],
+                    far_edge: w[1],
+                    samples: counts[i],
+                    distinct_codes: codes[i].len() as u32,
+                    analytic_resolution: self.depth_resolution_at(mid),
+                    analytic_resolution_reversed: self.depth_resolution_at_reversed(mid),
+                }
+            })
+            .collect();
+        stats
+    }
+
     /// Build a view matrix from the camera entity's transform.
     ///
     /// The transform's translation is the camera position.
@@ -277,6 +414,44 @@ impl Default for Camera {
     }
 }
 
+/// One decade of eye distance within a captured depth field.
+/// See [`Camera::analyze_depth_field`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthBand {
+    pub near_edge: f32,
+    pub far_edge: f32,
+    /// Depth samples that decoded into this decade.
+    pub samples: u32,
+    /// How many *distinct* encoded depth values those samples used — the
+    /// empirical depth discrimination available in this decade. When this is
+    /// far below `samples`, surfaces in the band are collapsing onto shared
+    /// depth values, which is z-fighting waiting to happen.
+    pub distinct_codes: u32,
+    /// What [`Camera::depth_resolution_at`] predicts at the decade's
+    /// geometric midpoint, in world units per depth step.
+    pub analytic_resolution: f32,
+    /// The same prediction under reversed-Z
+    /// ([`Camera::depth_resolution_at_reversed`]) — the payoff a conversion
+    /// would buy in this decade.
+    pub analytic_resolution_reversed: f32,
+}
+
+/// Summary of one captured depth buffer. See [`Camera::analyze_depth_field`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DepthFieldStats {
+    /// Every sample handed in.
+    pub total: u32,
+    /// Samples at or past the far plane — background, nothing drawn.
+    pub cleared: u32,
+    /// Samples that decoded to nothing usable (outside `[0, 1]`, or a
+    /// degenerate camera). Non-zero here means the capture is suspect.
+    pub invalid: u32,
+    /// Closest / furthest geometry distance seen, world units.
+    pub nearest: f32,
+    pub farthest: f32,
+    pub bands: Vec<DepthBand>,
+}
+
 impl Component for Camera {
     type Storage = SparseSetStorage<Self>;
 }
@@ -288,6 +463,132 @@ impl Resource for ActiveCamera {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Encode a world distance the way the conventional projection does —
+    /// the inverse of `linear_distance_from_depth`, used to build synthetic
+    /// depth fields with known content.
+    fn encode(cam: &Camera, d: f32) -> f32 {
+        let (n, f) = (cam.near, cam.far);
+        (f / (f - n)) * (1.0 - n / d)
+    }
+
+    /// #3308 step 2 — the decode must round-trip the projection, or every
+    /// number the capture gate reports is measuring the decoder rather than
+    /// the depth buffer.
+    #[test]
+    fn depth_decode_round_trips_the_projection() {
+        for cam in [Camera::default(), Camera::for_content_scale(true)] {
+            for d in [
+                cam.near * 2.0,
+                100.0,
+                1_000.0,
+                50_000.0,
+                196_608.0,
+                250_000.0,
+            ] {
+                if d <= cam.near || d >= cam.far {
+                    continue;
+                }
+                let back = cam.linear_distance_from_depth(encode(&cam, d));
+                // The right tolerance is the depth buffer's OWN resolution at
+                // that distance, not a flat percentage: a single f32 depth
+                // code spans `depth_resolution_at(d)` world units, so no
+                // decoder can recover `d` better than that — at `near = 0.1`
+                // and `d = 196 608` one step is ~23 000 BU, a 5.9% band. Tying
+                // the tolerance to the analytic function cross-validates the
+                // decoder against the measurement the whole gate rests on,
+                // instead of hiding the coarseness behind a hand-picked
+                // epsilon.
+                let budget = cam.depth_resolution_at(d);
+                assert!(
+                    (back - d).abs() <= budget,
+                    "near={} d={d} decoded {back} — off by {} with a one-step \
+                     budget of {budget}",
+                    cam.near,
+                    (back - d).abs()
+                );
+            }
+        }
+        // A cleared sample is background, at exactly the far plane.
+        let cam = Camera::default();
+        assert_eq!(cam.linear_distance_from_depth(1.0), cam.far);
+        // Out-of-range / degenerate inputs report nothing rather than guess.
+        assert_eq!(cam.linear_distance_from_depth(-0.1), 0.0);
+        assert_eq!(cam.linear_distance_from_depth(1.5), 0.0);
+        assert_eq!(cam.linear_distance_from_depth(f32::NAN), 0.0);
+    }
+
+    /// A synthetic field with known content must be bucketed into the right
+    /// decades, with cleared background separated from geometry.
+    #[test]
+    fn depth_field_analysis_buckets_known_distances() {
+        let cam = Camera::for_content_scale(true);
+        let mut field = vec![1.0f32; 100]; // 100 cleared background samples
+        for d in [50.0f32, 500.0, 5_000.0, 50_000.0] {
+            field.push(encode(&cam, d));
+        }
+        field.push(f32::NAN); // one corrupt sample
+
+        let stats = cam.analyze_depth_field(&field);
+        assert_eq!(stats.total, 105);
+        assert_eq!(stats.cleared, 100, "background must not enter the bands");
+        assert_eq!(stats.invalid, 1, "a NaN sample must be counted, not hidden");
+        assert_eq!(stats.bands.iter().map(|b| b.samples).sum::<u32>(), 4);
+        assert!(stats.nearest > 40.0 && stats.nearest < 60.0);
+        assert!(stats.farthest > 45_000.0 && stats.farthest < 55_000.0);
+        // Each of the four landed in a different decade.
+        assert_eq!(stats.bands.iter().filter(|b| b.samples > 0).count(), 4);
+        for band in stats.bands.iter().filter(|b| b.samples > 0) {
+            assert_eq!(band.distinct_codes, 1, "one sample, one code");
+        }
+    }
+
+    /// The property the gate actually reads: in a far decade the
+    /// conventional mapping collapses many distinct distances onto a handful
+    /// of depth codes, while reversed-Z would keep them apart. Built from
+    /// distances spaced *finer* than the conventional resolution at that
+    /// range, so the collapse is the measurement rather than an artifact of
+    /// the sampling.
+    #[test]
+    fn distinct_codes_expose_far_field_depth_collapse() {
+        let cam = Camera::for_content_scale(true);
+        // 200 surfaces spread over 2000 BU around the LOD ring — 10 BU
+        // apart, well under the ~745 BU/step the conventional mapping
+        // resolves there, and well over the ~0.006 reversed-Z would.
+        let base = 249_000.0f32;
+        let field: Vec<f32> = (0..200)
+            .map(|i| encode(&cam, base + i as f32 * 10.0))
+            .collect();
+        let stats = cam.analyze_depth_field(&field);
+
+        let far = stats
+            .bands
+            .iter()
+            .find(|b| b.samples > 0)
+            .expect("the ring distances must land in a band");
+        assert_eq!(far.samples, 200);
+        assert!(
+            far.distinct_codes < 20,
+            "200 surfaces 10 BU apart at the LOD ring must collapse onto a \
+             handful of depth codes under the conventional mapping — got {} \
+             distinct codes",
+            far.distinct_codes
+        );
+        // And the analytic pair explains why, in the same row the operator
+        // reads: conventional coarse, reversed fine.
+        assert!(far.analytic_resolution > 100.0);
+        assert!(far.analytic_resolution_reversed < 1.0);
+    }
+
+    /// A degenerate camera must report nothing rather than divide by zero or
+    /// emit bands it cannot justify.
+    #[test]
+    fn depth_field_analysis_rejects_a_degenerate_camera() {
+        let inverted = Camera::new(FRAC_PI_4, 1.0, 10.0, 1.0);
+        let stats = inverted.analyze_depth_field(&[0.5, 0.5]);
+        assert_eq!(stats.total, 2);
+        assert!(stats.bands.is_empty());
+    }
+
     /// #3308 — the reversed-Z payoff, measured rather than asserted. These
     /// are the numbers the issue's "is it still worth the blast radius?"
     /// question turns on, and the analytic target a future GPU depth capture

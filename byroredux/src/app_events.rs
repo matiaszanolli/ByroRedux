@@ -104,6 +104,20 @@ impl ApplicationHandler for App {
             self.renderer_config,
         ) {
             Ok(ctx) => {
+                // #3308 — depth-capture bridge for the `depth.stats`
+                // console command. The renderer copies the depth attachment
+                // into a staging buffer on request; `Camera::analyze_depth_
+                // field` turns the samples into the resolution report.
+                let depth_handle = ctx.depth_capture_handle();
+                self.world
+                    .insert_resource(byroredux_core::ecs::DepthCaptureBridge {
+                        requested: depth_handle.requested,
+                        // The SAME `Arc` the renderer publishes into — the
+                        // capture type lives in `byroredux_core` precisely so
+                        // no translation step sits between the two.
+                        result: depth_handle.result,
+                    });
+
                 // Create screenshot bridge for debug server access.
                 let ss_handle = ctx.screenshot_handle();
                 self.world

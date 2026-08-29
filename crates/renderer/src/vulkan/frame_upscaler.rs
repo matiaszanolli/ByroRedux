@@ -1325,6 +1325,7 @@ mod tests {
     fn frame_upscaler_and_sibling_unsafe_fns_carry_safety_doc_sections() {
         const GBUFFER_RS: &str = include_str!("gbuffer.rs");
         const SCREENSHOT_RS: &str = include_str!("context/screenshot.rs");
+        const DEPTH_CAPTURE_RS: &str = include_str!("context/depth_capture.rs");
         const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
 
         // (source, needle identifying the fn, human label)
@@ -1358,6 +1359,14 @@ mod tests {
                 SCREENSHOT_RS,
                 "unsafe fn screenshot_record_copy(",
                 "screenshot_record_copy",
+            ),
+            // #3308 — same class as its screenshot sibling: an `unsafe fn`
+            // whose contract is a layout precondition the caller must uphold
+            // and this fn must restore, which nothing but the doc records.
+            (
+                DEPTH_CAPTURE_RS,
+                "unsafe fn depth_capture_record_copy(",
+                "depth_capture_record_copy",
             ),
         ];
 

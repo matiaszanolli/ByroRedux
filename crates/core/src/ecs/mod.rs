@@ -43,11 +43,11 @@ pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
-    format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, EngineConfig, FindingKind,
-    ImageHealth, LodCoverageStats, OwnerClass, OwnershipFinding, OwnershipSnapshot,
-    OwnershipTelemetry, OwnershipTracker, ReclaimPolicy, RtIntegrityStats, SchedulerAccessReport,
-    ScratchRow, ScratchTelemetry, ScreenshotBridge, SelectedRef, SkinCoverageStats, SystemList,
-    TerrainSeamStats, TotalTime, UpscalerTelemetry,
+    format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, DepthCapture,
+    DepthCaptureBridge, EngineConfig, FindingKind, ImageHealth, LodCoverageStats, OwnerClass,
+    OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry, OwnershipTracker, ReclaimPolicy,
+    RtIntegrityStats, SchedulerAccessReport, ScratchRow, ScratchTelemetry, ScreenshotBridge,
+    SelectedRef, SkinCoverageStats, SystemList, TerrainSeamStats, TotalTime, UpscalerTelemetry,
 };
 pub use scheduler::{
     AccessReport, Scheduler, SchedulerSystemTimings, Stage, StageConflictRow, StageReport,

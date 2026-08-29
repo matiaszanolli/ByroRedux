@@ -1704,6 +1704,8 @@ impl VulkanContext {
 
         // If a screenshot was captured last frame, the GPU is done — read it back.
         self.screenshot_finish_readback();
+        // #3308 — same fence-proven timing as the screenshot readback above.
+        self.depth_capture_finish_readback();
 
         // Acquire next swapchain image. Bracketed (Phase 9) so a
         // FIFO-present-mode block waiting for the next image is
@@ -3671,6 +3673,14 @@ impl VulkanContext {
             // unchanged. See `crates/renderer/shaders/triangle.frag`
             // (MATERIAL_KIND_EFFECT_SHADER soft-fade block).
             self.copy_depth_to_history(cmd);
+            // #3308 — immediately after the history copy, which leaves the
+            // depth image back in DEPTH_STENCIL_READ_ONLY_OPTIMAL: exactly
+            // the layout `depth_capture_record_copy` requires and restores.
+            // SAFETY: `cmd` is recording outside any render pass here (same
+            // contract `copy_depth_to_history` on the line above relies on),
+            // and the depth image is in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+            // Already inside this function's enclosing `unsafe` block.
+            self.depth_capture_record_copy(cmd);
 
             // #1255 / Phase C of #1210 — sequence water.frag's
             // imageAtomicAdd writes (FRAGMENT_SHADER WRITE during the
@@ -4361,7 +4371,7 @@ mod is_caustic_source_tests {
             alpha_test_func: 0,
             roughness: 0.5,
             metalness: 0.0,
-            ior: 1.5,        // #1248
+            ior: 1.5, // #1248
             glass_fresnel_color: [1.0; 3],
             glass_refraction_scale: 0.05,
             glass_blur_scale: 0.4,
