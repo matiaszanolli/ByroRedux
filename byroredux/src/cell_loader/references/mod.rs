@@ -96,6 +96,35 @@ pub(super) enum ReferenceLoadProgress {
 }
 
 impl ReferenceLoadJob {
+    /// Test-only continuation carrying nothing but the staged clip
+    /// handles [`Self::cancel`] is responsible for. Every other field is
+    /// at its start-of-cell value, so the job is inert apart from the
+    /// release path under test (#3377).
+    #[cfg(test)]
+    pub(super) fn with_pending_clip_handles(
+        pending_clip_handles: HashMap<String, u32>,
+    ) -> Box<Self> {
+        let mut accum = RefLoadAccum::new();
+        accum.pending_clip_handles = pending_clip_handles;
+        Box::new(ReferenceLoadJob {
+            next_ref: 0,
+            next_synth: 0,
+            current_ref_synth: None,
+            active_npc: None,
+            cache_hits_at_entry: 0,
+            cache_misses_at_entry: 0,
+            cache_size_at_entry: 0,
+            door_pos: None,
+            enable_skipped: 0,
+            absorbed_skipped: 0,
+            absorbed_interactive_retained: 0,
+            npc_pending: 0,
+            npc_pending_sample: Vec::new(),
+            idle_pool: Vec::new(),
+            accum,
+        })
+    }
+
     /// Release clip handles registered by cache-miss REFRs that never reached
     /// the end-of-cell cache commit because streaming cancelled the cell.
     pub(super) fn cancel(self, world: &World) {

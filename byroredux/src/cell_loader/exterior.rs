@@ -205,7 +205,24 @@ pub(crate) struct PersistentCellApplyJob {
     cell_root: EntityId,
     cell_form_id: u32,
     authored_ref_count: usize,
-    first_entity: EntityId,
+    /// Start of the entity range the *next* [`Self::stamp_slice`] covers.
+    ///
+    /// A moving cursor, not a fixed origin (#3379). This job yields once
+    /// per cooperative slice and stamps on every yield *and* on
+    /// completion; when the field was pinned to its constructor value
+    /// every stamp re-covered the whole prefix, so an entity created in
+    /// slice `k` of an `N`-slice apply was pushed into
+    /// `CellRootIndex[cell_root]` `N - k + 1` times. That index is taken
+    /// verbatim as `unload_cell`'s victim list, where a duplicate costs
+    /// one *extra* mesh/texture refcount decrement per repeat — the
+    /// handle reaches zero while a live holder still draws it, and its
+    /// BLAS is retained against a buffer already queued for destruction.
+    /// The sibling [`ExteriorCellApplyJob`] never had the bug: it takes a
+    /// fresh `world.next_entity_id()` at the top of each work unit.
+    ///
+    /// Seeded at construction rather than at first `advance` so entities
+    /// spawned between the two are still covered by the first stamp.
+    stamp_cursor: EntityId,
     local_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
     remote_actor_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
     references: Option<Box<ReferenceLoadJob>>,
@@ -224,6 +241,38 @@ pub(crate) enum PersistentCellApplyProgress {
 impl PersistentCellApplyJob {
     pub(crate) fn cell_root(&self) -> EntityId {
         self.cell_root
+    }
+
+    /// Stamp every entity created since the previous stamp onto this
+    /// job's cell root, then advance the cursor past them (#3379).
+    ///
+    /// Called on both cooperative-yield paths and on completion. Each
+    /// call covers a half-open range disjoint from every other, so
+    /// `CellRootIndex[cell_root]` ends up holding each entity exactly
+    /// once no matter how many slices the apply takes.
+    fn stamp_slice(&mut self, world: &mut World) {
+        let last = world.next_entity_id();
+        stamp_cell_root_range(world, self.cell_root, self.stamp_cursor, last);
+        self.stamp_cursor = last;
+    }
+
+    /// Release the ECS-side state an unfinished persistent apply is
+    /// holding, ahead of the drain's `unload_cell(persistent_root)`
+    /// (#3377).
+    ///
+    /// `ReferenceLoadJob` stages clip handles for cache-miss REFRs in
+    /// `accum.pending_clip_handles` and commits them to
+    /// `NifImportRegistry` only at end-of-cell, so a cancelled cell
+    /// never reaches the commit and must release them by hand — the
+    /// `#863` discipline [`ExteriorCellApplyJob::cancel`] already
+    /// honours. Unlike that sibling this does *not* call `unload_cell`:
+    /// `drain_streaming_state` already unloads `persistent_root`
+    /// itself, and the partially-spawned entities are reachable from it
+    /// because [`Self::stamp_slice`] runs on every yield.
+    pub(crate) fn cancel(mut self, world: &World) {
+        if let Some(references) = self.references.take() {
+            references.cancel(world);
+        }
     }
 
     pub(crate) fn advance(
@@ -255,12 +304,7 @@ impl PersistentCellApplyJob {
             match result {
                 ReferenceLoadProgress::Pending(references) => {
                     self.references = Some(references);
-                    stamp_cell_root_range(
-                        world,
-                        self.cell_root,
-                        self.first_entity,
-                        world.next_entity_id(),
-                    );
+                    self.stamp_slice(world);
                     flush_pending_cell_textures_on_yield(ctx);
                     return PersistentCellApplyProgress::Pending(self);
                 }
@@ -273,12 +317,7 @@ impl PersistentCellApplyJob {
 
         while self.next_logical_stub < self.logical_stub_refs.len() {
             if budget.should_yield() {
-                stamp_cell_root_range(
-                    world,
-                    self.cell_root,
-                    self.first_entity,
-                    world.next_entity_id(),
-                );
+                self.stamp_slice(world);
                 flush_pending_cell_textures_on_yield(ctx);
                 return PersistentCellApplyProgress::Pending(self);
             }
@@ -308,12 +347,7 @@ impl PersistentCellApplyJob {
         if !self.logical_stub_refs.is_empty() {
             byroredux_scripting::mark_scene_actor_bindings_dirty(world);
         }
-        stamp_cell_root_range(
-            world,
-            self.cell_root,
-            self.first_entity,
-            world.next_entity_id(),
-        );
+        self.stamp_slice(world);
         flush_pending_cell_textures(ctx);
         log::info!(target: "engine::scene_persistent",
             "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} authored refs total)",
@@ -477,8 +511,9 @@ pub(crate) fn persistent_root_survives_crossing(
     // *finished*. A `PersistentCellApplyJob` is the resumable continuation
     // that spawns the CELL's `local_refs` / `logical_stub_refs`, and it lives
     // on the streaming state that the imminent `drain_streaming_state` throws
-    // away (it cancels `active_apply` only; `persistent_apply` is dropped with
-    // the moved-out state). Preserving the root would then make
+    // away (it cancels both applies — `persistent_apply` since #3377 — and
+    // neither continuation survives the moved-out state). Preserving the
+    // root would then make
     // `stream_initial_radius`'s `persistent_root.is_none() &&
     // persistent_apply.is_none()` guard false, so no replacement job is ever
     // created and the unspawned tail of that CELL — doors, quest refs, unique
@@ -651,8 +686,9 @@ mod persistent_root_survives_crossing_tests {
     //! spawn must also be finished.
     //!
     //! The job that finishes it (`WorldStreamingState::persistent_apply`)
-    //! does not survive the imminent `drain_streaming_state`, which cancels
-    //! `active_apply` only. Preserving an unfinished root then makes
+    //! does not survive the imminent `drain_streaming_state`, which
+    //! cancels it rather than resuming it (#3377). Preserving an
+    //! unfinished root then makes
     //! `stream_initial_radius`'s `persistent_root.is_none() &&
     //! persistent_apply.is_none()` guard false, so no replacement job is
     //! created and the CELL's unspawned tail — doors, quest refs, unique
@@ -778,6 +814,156 @@ mod persistent_root_survives_crossing_tests {
 }
 
 #[cfg(test)]
+mod persistent_cell_stamp_tests {
+    use super::*;
+    use crate::components::CellRootIndex;
+
+    /// A job in the shape `begin_worldspace_persistent_cell` produces,
+    /// minus the ESM data the stamp path never reads.
+    fn job(world: &mut World, cell_root: EntityId) -> PersistentCellApplyJob {
+        register_cell_root(world, cell_root);
+        PersistentCellApplyJob {
+            cell_root,
+            cell_form_id: 0x0000_003C,
+            authored_ref_count: 0,
+            stamp_cursor: world.next_entity_id(),
+            local_refs: Vec::new(),
+            remote_actor_refs: Vec::new(),
+            references: None,
+            reference_entity_count: None,
+            logical_stub_refs: Vec::new(),
+            next_logical_stub: 0,
+            local_actor_3d: 0,
+            local_actor_count: 0,
+        }
+    }
+
+    /// #3379 — a multi-slice persistent apply must contribute each
+    /// entity to `CellRootIndex[cell_root]` exactly once.
+    ///
+    /// Pre-fix the job stamped `constructor_first_entity..now` on every
+    /// yield *and* on completion, so slice 1's entities were pushed once
+    /// per remaining slice. `unload_cell` takes that vector as its
+    /// victim list and `drop_meshes` / `drop_textures` decrement once
+    /// per occurrence, over-dropping a mesh a resident cell may still
+    /// hold.
+    #[test]
+    fn every_slice_stamps_a_disjoint_range() {
+        let mut world = World::new();
+        world.insert_resource(CellRootIndex::new());
+        let cell_root = world.spawn();
+        let mut job = job(&mut world, cell_root);
+
+        // Three cooperative slices, two entities each.
+        let mut spawned = Vec::new();
+        for _ in 0..3 {
+            spawned.push(world.spawn());
+            spawned.push(world.spawn());
+            job.stamp_slice(&mut world);
+        }
+
+        let idx = world.resource::<CellRootIndex>();
+        let entry = idx.map.get(&cell_root).expect("root registered");
+        let mut distinct = entry.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            entry.len(),
+            distinct.len(),
+            "a three-slice apply duplicated its prefix: {entry:?}",
+        );
+        // The root itself is in the list (register_cell_root pushes it)
+        // plus the six entities the slices created.
+        assert_eq!(entry.len(), spawned.len() + 1);
+        for eid in &spawned {
+            assert!(entry.contains(eid), "entity {eid} was never stamped");
+        }
+    }
+
+    /// The cursor starts at construction, not at the first
+    /// `stamp_slice`, so entities spawned between the two are still
+    /// covered — the gap the "fresh local at the top of each work unit"
+    /// shape would have opened for this job.
+    #[test]
+    fn entities_spawned_before_the_first_slice_are_still_covered() {
+        let mut world = World::new();
+        world.insert_resource(CellRootIndex::new());
+        let cell_root = world.spawn();
+        let mut job = job(&mut world, cell_root);
+
+        let early = world.spawn();
+        job.stamp_slice(&mut world);
+
+        let idx = world.resource::<CellRootIndex>();
+        assert!(idx.map[&cell_root].contains(&early));
+    }
+
+    /// #3377 — cancelling an unfinished persistent apply must release
+    /// the clip handles its `ReferenceLoadJob` staged for cache-miss
+    /// REFRs.
+    ///
+    /// Those handles are committed to `NifImportRegistry` only at
+    /// end-of-cell, so a cancelled cell never reaches the commit and
+    /// owes the registry an explicit release (the `#863` contract).
+    /// Pre-fix `PersistentCellApplyJob` had no `cancel` at all and
+    /// `drain_streaming_state` simply dropped it with the struct, so
+    /// every drain with an in-flight persistent apply pinned one
+    /// `AnimationClip` per staged handle for the process lifetime.
+    #[test]
+    fn cancel_releases_the_reference_jobs_staged_clip_handles() {
+        use byroredux_core::animation::{AnimationClip, AnimationClipRegistry, CycleType};
+
+        let mut world = World::new();
+        world.insert_resource(CellRootIndex::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        let handle = {
+            let mut reg = world.resource_mut::<AnimationClipRegistry>();
+            reg.add(AnimationClip {
+                name: "staged".into(),
+                duration: 1.0,
+                cycle_type: CycleType::Clamp,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: None,
+                channels: HashMap::new(),
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            })
+        };
+        assert!(
+            world
+                .resource::<AnimationClipRegistry>()
+                .get(handle)
+                .is_some_and(|clip| clip.duration > 0.0),
+            "fixture clip must start populated",
+        );
+
+        let cell_root = world.spawn();
+        let mut job = job(&mut world, cell_root);
+        job.references = Some(ReferenceLoadJob::with_pending_clip_handles(
+            [("meshes\\synthetic.nif".to_string(), handle)]
+                .into_iter()
+                .collect(),
+        ));
+
+        job.cancel(&world);
+
+        assert!(
+            world
+                .resource::<AnimationClipRegistry>()
+                .get(handle)
+                .is_some_and(|clip| clip.duration == 0.0 && clip.channels.is_empty()),
+            "the staged clip handle must be released back to an empty stub",
+        );
+    }
+}
+
+#[cfg(test)]
 mod persistent_cell_identity_unchanged_tests {
     use super::persistent_cell_identity_unchanged;
     use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, WorldspaceRecord};
@@ -889,9 +1075,7 @@ mod persistent_cell_identity_unchanged_tests {
             .worldspace_persistent_cells
             .insert("worldb".into(), empty_cell(0x888));
 
-        assert!(!persistent_cell_identity_unchanged(
-            &index, "worldb", 0x999,
-        ));
+        assert!(!persistent_cell_identity_unchanged(&index, "worldb", 0x999,));
     }
 
     /// No persistent CELL resolves at all for the destination — must not
@@ -912,9 +1096,7 @@ mod persistent_cell_identity_unchanged_tests {
             .insert("worlda".into(), empty_cell(0x999));
         // WorldB authors no persistent CELL and has no parent to inherit from.
 
-        assert!(!persistent_cell_identity_unchanged(
-            &index, "worldb", 0x999,
-        ));
+        assert!(!persistent_cell_identity_unchanged(&index, "worldb", 0x999,));
     }
 }
 
@@ -967,7 +1149,7 @@ pub(crate) fn begin_worldspace_persistent_cell(
         cell_root,
         cell_form_id: cell.form_id,
         authored_ref_count: cell.references.len(),
-        first_entity,
+        stamp_cursor: first_entity,
         local_refs,
         remote_actor_refs,
         references: None,

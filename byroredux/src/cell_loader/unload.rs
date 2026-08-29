@@ -123,6 +123,42 @@ pub fn unload_cells(
     timings
 }
 
+/// Take `cell_root`'s entity list out of the [`CellRootIndex`] as a
+/// duplicate-free victim set.
+///
+/// The index half of `stamp_cell_root_range` is a plain
+/// `entry.extend(first..last)` — no dedup, no `contains` check — so the
+/// list is only as distinct as its producers are disciplined about
+/// stamping disjoint ranges. #3379 was one producer that wasn't, and the
+/// consequences landed here: `unload_cell_inner` hands this vector
+/// verbatim to five consumers, two of which count occurrences rather
+/// than membership. `mesh_registry.drop_meshes` and
+/// `texture_registry.drop_textures` decrement once per pushed handle, so
+/// a repeated victim over-drops its meshes and textures — the handle
+/// reaches zero while a still-resident cell is drawing it, and the
+/// `rc == c` test that decides which BLAS to drop fails, retaining an
+/// acceleration structure over a buffer already queued for destruction.
+///
+/// Deduping once, here, makes that a property of the reclaim path rather
+/// than of every producer: any future stamp-site bug costs wasted work
+/// instead of GPU-lifetime corruption. Sorting is incidental (it is how
+/// the dedup is done) but harmless — every consumer is order-independent
+/// and `despawn_batch` sorts again anyway.
+///
+/// Returns empty when the resource isn't registered (test fixtures that
+/// drive reduced setups) or the cell isn't tracked — `unload_cell` is
+/// idempotent, and that was the pre-#791 behaviour for a cell whose
+/// query found no rows.
+pub(super) fn drain_cell_victims(world: &mut World, cell_root: EntityId) -> Vec<EntityId> {
+    let mut victims: Vec<EntityId> = world
+        .try_resource_mut::<CellRootIndex>()
+        .and_then(|mut idx| idx.map.remove(&cell_root))
+        .unwrap_or_default();
+    victims.sort_unstable();
+    victims.dedup();
+    victims
+}
+
 fn unload_cell_inner(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -136,10 +172,7 @@ fn unload_cell_inner(
     // lookup O(victims). If the resource is absent (test fixtures that
     // don't register it) or the cell isn't tracked, fall through with
     // an empty victim set — `unload_cell` is idempotent.
-    let mut victims: Vec<EntityId> = world
-        .try_resource_mut::<CellRootIndex>()
-        .and_then(|mut idx| idx.map.remove(&cell_root))
-        .unwrap_or_default();
+    let mut victims: Vec<EntityId> = drain_cell_victims(world, cell_root);
     let retained = cinematic_retained_entities(world);
     victims.retain(|entity| !retained.contains(entity));
     if !retained.is_empty() {
@@ -507,6 +540,19 @@ pub(crate) fn release_victim_item_instances(world: &mut World, victims: &[Entity
 /// `Ragdoll` row, or when the `PhysicsWorld` resource isn't registered (the
 /// loose-NIF demo path opts out of physics — see `byroredux_physics` crate
 /// docs).
+///
+/// **`victims` may repeat; removal is idempotent** (#3380). A repeated
+/// entity collects its handle twice and issues a second `remove_body` on
+/// an already-freed slot, which rapier absorbs via its generational
+/// handles — the arena stays correct, only the work is wasted. Stated
+/// here because the property was previously inherited from a dependency
+/// with nothing in our code or tests holding it: the sibling
+/// `release_victim_item_instances` path is explicitly hardened against
+/// duplicates while `collect_victim_gpu_handles` is deliberately *not*
+/// (it counts occurrences, one refcount decrement per placement), so a
+/// caller cannot infer the convention from its neighbours.
+/// [`drain_cell_victims`] is the production producer and dedups, so this
+/// tolerance is a safety net rather than a licence.
 pub(crate) fn release_victim_rapier_bodies(world: &mut World, victims: &[EntityId]) {
     use byroredux_physics::{PhysicsWorld, Ragdoll, RapierHandles};
 
@@ -620,5 +666,57 @@ mod cinematic_retention_tests {
         assert!(retained.contains(&cart));
         assert!(retained.contains(&rider));
         assert!(!retained.contains(&unrelated));
+    }
+}
+
+#[cfg(test)]
+mod victim_drain_tests {
+    use super::*;
+    use crate::components::CellRootIndex;
+    use byroredux_core::ecs::World;
+
+    /// #3379 belt-and-braces — the reclaim path must not depend on every
+    /// stamp producer keeping its ranges disjoint.
+    ///
+    /// `stamp_cell_root_range`'s index half is a bare
+    /// `entry.extend(first..last)`, so a producer that re-stamps a range
+    /// it already covered pushes the same entity twice. Two of the five
+    /// victim consumers count occurrences instead of membership
+    /// (`drop_meshes` / `drop_textures`, one refcount decrement per
+    /// pushed handle), so a duplicate there is a GPU-lifetime bug, not
+    /// wasted work. Deduping in the drain contains the whole class.
+    #[test]
+    fn drain_returns_each_victim_once() {
+        let mut world = World::new();
+        world.insert_resource(CellRootIndex::new());
+        let root = world.spawn();
+        let a = world.spawn();
+        let b = world.spawn();
+        {
+            let mut idx = world.resource_mut::<CellRootIndex>();
+            // The shape a three-slice re-stamping producer leaves behind.
+            idx.map.insert(root, vec![a, b, a, b, a]);
+        }
+
+        let victims = drain_cell_victims(&mut world, root);
+
+        assert_eq!(victims, vec![a, b], "victims must be a set, not a bag");
+        assert!(
+            world.resource::<CellRootIndex>().map.get(&root).is_none(),
+            "the drain must take the entry, not copy it",
+        );
+    }
+
+    /// An unregistered resource or an untracked cell yields an empty set
+    /// — `unload_cell` stays idempotent, which is what test fixtures
+    /// with reduced setups depend on.
+    #[test]
+    fn drain_is_empty_for_an_untracked_cell() {
+        let mut world = World::new();
+        let root = world.spawn();
+        assert!(drain_cell_victims(&mut world, root).is_empty());
+
+        world.insert_resource(CellRootIndex::new());
+        assert!(drain_cell_victims(&mut world, root).is_empty());
     }
 }

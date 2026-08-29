@@ -243,6 +243,15 @@ impl PhysicsWorld {
     /// this the body + colliders leak into `RigidBodySet` / `ColliderSet`
     /// and stay in the broad-phase / query-pipeline BVH forever — an
     /// unbounded per-cell-crossing leak. See #1520.
+    ///
+    /// **Idempotent** (#3380): calling it again with a handle that has
+    /// already been removed is a no-op returning `false`, because
+    /// `RigidBodySet::remove` matches on the handle's generation and a
+    /// freed slot no longer matches. Callers sweeping a victim list are
+    /// therefore allowed to hand over the same handle twice — the
+    /// wasted work is theirs to avoid, the arena stays correct either
+    /// way. Pinned by
+    /// `byroredux::cell_loader::rapier_release_tests::release_is_idempotent_over_a_duplicated_victim_list`.
     pub fn remove_body(&mut self, handle: RigidBodyHandle) -> bool {
         let removed = self
             .bodies

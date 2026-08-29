@@ -281,3 +281,63 @@ fn release_sweeps_both_ragdoll_and_rapier_handles() {
         "the ragdoll's joints are gone too",
     );
 }
+
+/// #3380 — the release contract must tolerate a victim list that names
+/// the same entity more than once.
+///
+/// Nothing in this function guards against it; the property is inherited
+/// from rapier's generational handles, where `RigidBodySet::remove` on a
+/// freed slot returns `None` instead of touching a reused body. Before
+/// this test that dependency behaviour was load-bearing but unpinned: a
+/// rapier upgrade, or a switch to a non-generational handle scheme,
+/// would have broken the reclaim path silently. #3379 was a live
+/// producer of exactly such a list.
+#[test]
+fn release_is_idempotent_over_a_duplicated_victim_list() {
+    let mut world = world_with_physics();
+
+    let e = spawn_static_collider(&mut world);
+    physics_sync_system(&world, 0.0);
+    assert_eq!(world.resource::<PhysicsWorld>().body_count(), 1);
+
+    release_victim_rapier_bodies(&mut world, &[e, e, e]);
+
+    assert_eq!(
+        world.resource::<PhysicsWorld>().body_count(),
+        0,
+        "a repeated victim must remove its body once and absorb the rest",
+    );
+    assert_eq!(
+        world.resource::<PhysicsWorld>().colliders.len(),
+        0,
+        "the cascaded collider must not survive the repeat either",
+    );
+}
+
+/// The ragdoll half of the same contract: `remove_ragdoll` cascades
+/// through `remove_body`, so a repeated ragdoll victim issues repeated
+/// removals of every body in the articulation, not just one.
+#[test]
+fn release_is_idempotent_over_a_duplicated_ragdoll_victim() {
+    let mut world = world_with_ragdoll_physics();
+
+    let (actor, ragdoll) = spawn_ragdoll_actor(&mut world);
+    physics_sync_system(&world, 0.0);
+    assert_eq!(world.resource::<PhysicsWorld>().body_count(), 2);
+
+    release_victim_rapier_bodies(&mut world, &[actor, actor]);
+
+    let pw = world.resource::<PhysicsWorld>();
+    assert_eq!(
+        pw.body_count(),
+        0,
+        "every ragdoll body cleared exactly once"
+    );
+    assert!(
+        ragdoll
+            .joints
+            .iter()
+            .all(|&h| pw.multibody_joints.get(h).is_none()),
+        "the ragdoll's joints are gone",
+    );
+}

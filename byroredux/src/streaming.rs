@@ -1028,14 +1028,25 @@ pub fn join_with_timeout(
 }
 
 /// Build the dedicated rayon pool the cell-stream worker uses for its
-/// Phase 2 parallel parse (#3089). Sized to leave headroom for the
-/// frame's own parallel work rather than doubling the total thread
-/// count: half the logical cores, floored at 1 so single-core CI
-/// runners still get a working (if serial-equivalent) pool. The ECS
-/// scheduler's `Stage::Update` batch uses rayon's global pool, sized by
-/// rayon to `available_parallelism` by default — reserving half here
-/// means a large fresh-parse burst can never claim more workers than
-/// the frame's parallel stages have left to run on.
+/// Phase 2 parallel parse (#3089). Half the logical cores, floored at 1
+/// so single-core CI runners still get a working (if serial-equivalent)
+/// pool.
+///
+/// What this buys is **isolation**, not a core partition (#3378). The
+/// ECS scheduler's `Stage::Update` batch dispatches into rayon's global
+/// pool; building a second `ThreadPool` creates an independent registry
+/// and takes nothing away from it. Nothing in the workspace calls
+/// `ThreadPoolBuilder::build_global`, so the global pool keeps all `N`
+/// of its `available_parallelism` threads and a fresh-parse burst puts
+/// `N + N/2` rayon workers (plus the cell-stream, main, listener and
+/// audio threads) on `N` hardware threads, arbitrated by the OS. What
+/// the private pool guarantees is that the burst can never *occupy* a
+/// global-pool worker, so `par_iter_mut` in the frame's parallel stages
+/// is never starved of workers by streaming — the contention #3089
+/// closed. The `N/2` size is a deliberate cap on that oversubscription,
+/// not a reservation: a real partition would need
+/// `ThreadPoolBuilder::new().num_threads(N/2).build_global()` at boot,
+/// at the cost of halving the scheduler's own parallelism.
 fn build_stream_parse_pool() -> rayon::ThreadPool {
     let total = std::thread::available_parallelism()
         .map(|n| n.get())

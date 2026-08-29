@@ -391,6 +391,20 @@ pub fn drain_streaming_state(
         return;
     };
     cancel_active_streaming_apply(world, ctx, &mut state);
+    // #3377 — the persistent CELL's own in-flight apply drives the same
+    // `ReferenceLoadJob` through the same `load_references_budgeted` as
+    // the streamed tiles, so it stages clip handles in
+    // `accum.pending_clip_handles` that are only committed to
+    // `NifImportRegistry` at end-of-cell. Dropping the job with the
+    // struct — which is all this function used to do — skipped the
+    // `#863` release, pinning one `AnimationClip` per cache-miss REFR
+    // with an embedded clip for the process lifetime, once per drain.
+    // The entity half needs nothing extra here: `unload_cell` on
+    // `persistent_root` below reclaims them, because the job stamps its
+    // range on every yield.
+    if let Some(job) = state.persistent_apply.take() {
+        job.cancel(world);
+    }
     let cells: Vec<_> = state.loaded.drain().collect();
     let persistent_root = state.persistent_root.take();
     // #1536 — LOD blocks (terrain + object) carry no `CellRoot`, so

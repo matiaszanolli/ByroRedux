@@ -576,6 +576,11 @@ fn join_with_timeout_passes_through_a_panicking_thread_as_ok() {
 // headroom (doesn't claim every logical core), and tasks run on it
 // actually execute on its dedicated, distinctly-named threads rather
 // than silently falling back to the global pool.
+//
+// #3378 — "headroom" here means a cap on oversubscription, not a core
+// partition. Nothing resizes rayon's global pool, so it keeps all `N`
+// threads regardless of what this pool is sized to; see
+// `build_stream_parse_pool`'s docs.
 
 #[test]
 fn stream_parse_pool_leaves_headroom_for_the_frame_pool() {
@@ -588,7 +593,8 @@ fn stream_parse_pool_leaves_headroom_for_the_frame_pool() {
         pool.current_num_threads(),
         expected,
         "dedicated stream-parse pool must be sized to half the logical cores (floored at 1), \
-         not the full machine — the ECS scheduler's global pool needs the other half"
+         not the full machine — the cap bounds oversubscription against the global pool, \
+         which keeps all its threads (#3378)"
     );
     if total > 1 {
         assert!(
