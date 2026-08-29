@@ -78,9 +78,15 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // through to the catch-all skip and every `IsInList`
         // returned "not in list", silently disabling ~50 vanilla
         // FNV PERKs and the entire Caravan mini-game.
-        b"FLST" => extract_records(reader, end, b"FLST", &mut |fid, subs| {
-            index.form_lists.insert(fid, parse_flst(fid, subs));
-        })?,
+        b"FLST" => {
+            // #3401 — a FLST's `LNAM` members are FormIDs; resolve the
+            // remap before the walk so every entry lands in the same
+            // global space the maps they name are keyed by.
+            let remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"FLST", &mut |fid, subs| {
+                index.form_lists.insert(fid, parse_flst(fid, subs, &remap));
+            })?
+        }
         // #808 / FNV-D2-NEW-01 — five gameplay-critical record
         // types that previously fell through to the catch-all
         // skip. Stub-form parsing (EDID + a handful of key

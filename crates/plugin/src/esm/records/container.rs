@@ -4,21 +4,10 @@
 //! (`CNTO` for containers, `LVLO` for leveled lists). Each entry references
 //! a base item form by ID and gives a count or a level/chance.
 
-use super::common::{read_zstring, CommonNamedFields};
+use super::common::{read_zstring, remap_fid, CommonNamedFields};
 use super::script_instance::ScriptInstanceData;
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
-
-/// Remap a raw plugin-local FormID to global space, leaving 0 (no
-/// FormID / null ref) untouched. Same convention as `actor.rs` / `misc/
-/// ai.rs`'s `remap_fid` — kept local rather than shared since neither
-/// module depends on the other's record types.
-fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
-    if raw == 0 {
-        return 0;
-    }
-    remap.as_ref().map_or(raw, |r| r.remap(raw))
-}
 
 /// One entry in a container's inventory list.
 #[derive(Debug, Clone, Copy)]

@@ -18,6 +18,42 @@ use std::io::Read;
 /// Record flag: data is zlib-compressed.
 const FLAG_COMPRESSED: u32 = 0x00040000;
 
+/// Largest inflation multiple a compressed record may claim over its own
+/// compressed byte count (#3399).
+///
+/// Census over every compressed record in four shipped masters — 33 179
+/// in `FalloutNV.esm`, 44 153 in `Skyrim.esm`, 56 399 in `Fallout4.esm`,
+/// 0 in `Oblivion.esm`, which compresses nothing — puts the worst real
+/// ratio at **102.1:1** (an FNV `LAND` inflating 75 bytes to 7 658). 512
+/// is 5× that, so no vanilla or vanilla-shaped mod record is anywhere
+/// near it, while DEFLATE's practical ~1000:1 bomb ratio is cut off.
+const MAX_RECORD_INFLATION_RATIO: usize = 512;
+
+/// Floor under [`MAX_RECORD_INFLATION_RATIO`], so a tiny compressed
+/// payload is not held to a tiny ceiling (#3399). The worst observed
+/// ratios all come from ~60–85 byte `LAND` records, where a pure
+/// multiple would be the binding constraint; 64 KiB clears the largest
+/// of those (7 658 bytes) by 8×.
+const MIN_RECORD_INFLATED_CEILING: usize = 64 * 1024;
+
+/// Absolute ceiling on one record's inflated size, whatever its
+/// compressed length (#3399). The ratio bound alone scales with the
+/// attacker's input — a 100 MB compressed record could still claim
+/// 51 GB under it — so the two are combined. The largest real inflated
+/// record across the same four masters is 225 433 bytes (`Fallout4.esm`),
+/// which this clears by ~290×. Sibling of `byroredux_bsa::safety`'s
+/// `MAX_CHUNK_BYTES`, set lower because one ESM *record* has far tighter
+/// realistic bounds than one archive chunk.
+const MAX_RECORD_INFLATED_BYTES: usize = 64 * 1024 * 1024;
+
+/// The inflated-size ceiling for a record whose compressed payload is
+/// `compressed_len` bytes. See the three constants above.
+fn record_inflation_ceiling(compressed_len: usize) -> usize {
+    MAX_RECORD_INFLATED_BYTES.min(
+        MIN_RECORD_INFLATED_CEILING.max(compressed_len.saturating_mul(MAX_RECORD_INFLATION_RATIO)),
+    )
+}
+
 /// Record flag: "Visible When Distant" / "Has Distant LOD" (#1731 /
 /// LC-D7-02). Not to be confused with the deleted-REFR tombstone flag
 /// `0x20` (SKY-D4-01 / #1660) — a different bit on the same `flags` field.
@@ -650,11 +686,44 @@ impl<'a> EsmReader<'a> {
             let compressed = &self.data[self.pos..self.pos + compressed_len];
             self.pos += compressed_len;
 
-            let mut decoder = ZlibDecoder::new(compressed);
+            // #3399 — `decompressed_size` is the record's own 4-byte
+            // prefix: attacker-controlled over the full u32 range, and
+            // previously fed straight to `Vec::with_capacity` (a lone
+            // `0xFFFFFFFF` bought a 4 GiB reservation) while
+            // `read_to_end` inflated with no output limit at all (a
+            // 100 MB record at DEFLATE's ~1000:1 reaches ~100 GB and
+            // takes the process down on allocation failure — not an
+            // `Err` any caller can handle). Bound both against the one
+            // quantity the file cannot inflate for free: its own
+            // compressed length.
+            let ceiling = record_inflation_ceiling(compressed_len);
+            ensure!(
+                decompressed_size <= ceiling,
+                "Compressed record {:08X} declares {} uncompressed bytes from {}                  compressed — over the {} ceiling; plugin is corrupt or hostile",
+                header.form_id,
+                decompressed_size,
+                compressed_len,
+                ceiling,
+            );
             let mut decompressed = Vec::with_capacity(decompressed_size);
-            decoder
+            // Hold the decoder to the (now validated) declared size.
+            // `+ 1`: landing on the extra byte proves the stream had
+            // more to give, so a prefix that lies *downward* is
+            // rejected rather than silently truncating the record.
+            // Cannot overflow — `decompressed_size <= ceiling`, which is
+            // `MAX_RECORD_INFLATED_BYTES` at most. A *short* decode
+            // stays `Ok`, matching `byroredux_bsa::safety::inflate_bounded`
+            // (#3410), whose contract this mirrors.
+            ZlibDecoder::new(compressed)
+                .take(decompressed_size as u64 + 1)
                 .read_to_end(&mut decompressed)
                 .context("Failed to decompress ESM record")?;
+            ensure!(
+                decompressed.len() <= decompressed_size,
+                "Compressed record {:08X} inflated past its declared {} bytes                  — plugin is corrupt or hostile (decompression bomb)",
+                header.form_id,
+                decompressed_size,
+            );
             decompressed
         } else {
             let size = header.data_size as usize;
@@ -1669,6 +1738,103 @@ mod tests {
             subs[0].data.len() + 6,
             expected_len, // +6 for sub-type + length prefix
             "decompressed payload length must match the 4-byte prefix"
+        );
+    }
+
+    /// Build a compressed record whose 4-byte prefix is a lie: `declared`
+    /// replaces the true payload length, everything else stays well-formed.
+    fn build_compressed_record_with_prefix(
+        typ: &[u8; 4],
+        form_id: u32,
+        declared: u32,
+        sub_records: &[(&[u8; 4], &[u8])],
+    ) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let payload = build_sub_record_payload(sub_records);
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&payload).expect("zlib encode");
+        let compressed = encoder.finish().expect("zlib finish");
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(typ);
+        buf.extend_from_slice(&((4 + compressed.len()) as u32).to_le_bytes());
+        buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&declared.to_le_bytes());
+        buf.extend_from_slice(&compressed);
+        buf
+    }
+
+    /// #3399 (a) — a prefix that lies *upward* must be rejected before it
+    /// reaches `Vec::with_capacity`.
+    ///
+    /// The prefix is entirely file-controlled over the full `u32` range and
+    /// used to go straight into the reservation, so a lone `0xFFFFFFFF`
+    /// bought a 4 GiB allocation off a 24-byte header. The ceiling is
+    /// derived from the compressed length, the one quantity the file
+    /// cannot inflate for free.
+    #[test]
+    fn compressed_record_with_oversized_prefix_is_rejected() {
+        let data =
+            build_compressed_record_with_prefix(b"STAT", 0x300, u32::MAX, &[(b"EDID", b"Bomb\0")]);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let err = reader
+            .read_sub_records(&header)
+            .expect_err("a u32::MAX prefix must not reach Vec::with_capacity");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("ceiling"),
+            "error must name the ceiling it tripped: {msg}",
+        );
+    }
+
+    /// #3399 (b) — `read_to_end` had no output limit *independent* of the
+    /// prefix, so a prefix that lies *downward* let the decoder run past
+    /// it. A record declaring a handful of bytes while its payload
+    /// inflates to megabytes is the decompression-bomb shape; it must be
+    /// rejected, not silently truncated.
+    #[test]
+    fn compressed_record_inflating_past_its_prefix_is_rejected() {
+        // ~4 MiB of zeros compresses to a few KiB — well inside the
+        // ratio ceiling, so this exercises the *output* bound, not the
+        // prefix bound.
+        let big = vec![0u8; 4 * 1024 * 1024];
+        let data = build_compressed_record_with_prefix(b"STAT", 0x301, 16, &[(b"EDID", &big)]);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let err = reader
+            .read_sub_records(&header)
+            .expect_err("inflating past the declared size must be an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("decompression bomb"),
+            "error must name the bomb it caught: {msg}",
+        );
+    }
+
+    /// The ceiling is a function of the compressed length, and must clear
+    /// every shape vanilla actually ships. Census over the four masters
+    /// that compress anything: 133 731 records, worst real ratio 102.1:1
+    /// (an FNV `LAND`, 75 compressed bytes to 7 658), largest real
+    /// inflated record 225 433 bytes (FO4). None is rejected.
+    #[test]
+    fn inflation_ceiling_clears_every_observed_vanilla_shape() {
+        // The worst observed ratio, at the compressed length it occurred at.
+        assert!(record_inflation_ceiling(75) >= 7_658);
+        // The largest observed inflated record — even if it had been the
+        // worst-ratio record too, which it is not.
+        assert!(record_inflation_ceiling(225_433 / 102) >= 225_433);
+        // And the bound still bites on the two attack shapes.
+        assert!(record_inflation_ceiling(4) < u32::MAX as usize);
+        assert_eq!(
+            record_inflation_ceiling(usize::MAX),
+            MAX_RECORD_INFLATED_BYTES,
+            "the absolute cap must survive a saturating multiply",
         );
     }
 

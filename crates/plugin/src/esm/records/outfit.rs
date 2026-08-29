@@ -25,7 +25,7 @@
 //! Skyrim SE / FO4 / FO76 / Starfield.
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
-use crate::esm::records::common::CommonNamedFields;
+use crate::esm::records::common::{remap_fid, CommonNamedFields};
 
 /// Parsed OTFT record — flat array of item FormIDs (ARMO or LVLI).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -36,17 +36,6 @@ pub struct OtftRecord {
     /// (direct armor instance) or LVLI (leveled item — rolls at
     /// equip time against the actor's level).
     pub items: Vec<u32>,
-}
-
-/// Remap a raw plugin-local FormID to global space, leaving 0 (no
-/// FormID / null ref) untouched. Same convention as `actor.rs` / `misc/
-/// ai.rs`'s `remap_fid` — kept local rather than shared since neither
-/// module depends on the other's record types.
-fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
-    if raw == 0 {
-        return 0;
-    }
-    remap.as_ref().map_or(raw, |r| r.remap(raw))
 }
 
 /// Parse an OTFT record from its sub-record list. Unknown sub-records

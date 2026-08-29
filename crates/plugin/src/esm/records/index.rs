@@ -1154,7 +1154,8 @@ mod tests {
         use crate::esm::records::parse_tree;
         let mut idx = EsmIndex::default();
         let before = idx.total();
-        idx.trees.insert(0x000C_0001, parse_tree(0x000C_0001, &[]));
+        idx.trees
+            .insert(0x000C_0001, parse_tree(0x000C_0001, &[], &None));
         assert_eq!(
             idx.total(),
             before + 1,

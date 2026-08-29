@@ -40,8 +40,8 @@
 //!
 //! See audit FO4-DIM4-03 / #589.
 
-use crate::esm::reader::SubRecord;
-use crate::esm::records::common::CommonNamedFields;
+use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::records::common::{remap_fid, CommonNamedFields};
 
 /// Parsed PKIN record.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,10 +73,10 @@ pub struct PkinRecord {
 /// Parse a PKIN record from its sub-record list. Unknown sub-records
 /// are ignored. Empty input yields a `PkinRecord` with empty fields —
 /// the caller keys the map by `form_id` either way.
-pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
+pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> PkinRecord {
     // EDID + FULL via shared helper (FULL is lstring on Skyrim-localized
     // plugins per #348; helper handles both forms). TD3-203 / #1113.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut contents: Vec<u32> = Vec::new();
     let mut vnam_form_id = 0u32;
     let mut flags = 0u32;
@@ -91,14 +91,18 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
 
     for sub in subs {
         match sub.sub_type.as_slice() {
+            // #3400 — `contents` is looked up in `index.packins` /
+            // `index.statics`, both keyed by the REMAPPED id. Left raw,
+            // `expand_packin_placements_with_depth` returned `None` for
+            // the whole package-in on every plugin past the first.
             b"CNAM" => {
                 if let Some(form) = read_u32(&sub.data) {
-                    contents.push(form);
+                    contents.push(remap_fid(form, remap));
                 }
             }
             b"VNAM" => {
                 if let Some(form) = read_u32(&sub.data) {
-                    vnam_form_id = form;
+                    vnam_form_id = remap_fid(form, remap);
                 }
             }
             b"FNAM" => {
@@ -115,12 +119,15 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
                 for i in 0..id_count {
                     let off = i * 4;
                     if off + 4 <= sub.data.len() {
-                        filter.push(u32::from_le_bytes([
-                            sub.data[off],
-                            sub.data[off + 1],
-                            sub.data[off + 2],
-                            sub.data[off + 3],
-                        ]));
+                        filter.push(remap_fid(
+                            u32::from_le_bytes([
+                                sub.data[off],
+                                sub.data[off + 1],
+                                sub.data[off + 2],
+                                sub.data[off + 3],
+                            ]),
+                            remap,
+                        ));
                     }
                 }
             }
@@ -171,7 +178,7 @@ mod tests {
             mk_sub(b"VNAM", 0x0002_5678u32.to_le_bytes().to_vec()),
             mk_sub(b"FNAM", 0x0000_0002u32.to_le_bytes().to_vec()),
         ];
-        let rec = parse_pkin(0x0055_0001, &subs);
+        let rec = parse_pkin(0x0055_0001, &subs, &None);
         assert_eq!(rec.form_id, 0x0055_0001);
         assert_eq!(rec.editor_id, "PackIn_WorkbenchLoot");
         assert_eq!(rec.contents, vec![0x0010_1234]);
@@ -194,7 +201,7 @@ mod tests {
             cnam(0x0010_0002),
             cnam(0x0010_0003),
         ];
-        let rec = parse_pkin(0x0055_0002, &subs);
+        let rec = parse_pkin(0x0055_0002, &subs, &None);
         assert_eq!(rec.contents, vec![0x0010_0001, 0x0010_0002, 0x0010_0003]);
     }
 
@@ -208,7 +215,7 @@ mod tests {
             edid("PackIn_EmptyDecl"),
             mk_sub(b"FULL", b"Shell\0".to_vec()),
         ];
-        let rec = parse_pkin(0x0055_0003, &subs);
+        let rec = parse_pkin(0x0055_0003, &subs, &None);
         assert_eq!(rec.editor_id, "PackIn_EmptyDecl");
         assert_eq!(rec.full_name, "Shell");
         assert!(rec.contents.is_empty());
@@ -232,7 +239,7 @@ mod tests {
             cnam(0x0010_1234),
             mk_sub(b"FLTR", fltr_data),
         ];
-        let rec = parse_pkin(0x0055_0010, &subs);
+        let rec = parse_pkin(0x0055_0010, &subs, &None);
         assert_eq!(rec.contents, vec![0x0010_1234]);
         assert_eq!(
             rec.filter,
@@ -251,7 +258,7 @@ mod tests {
         let mut fltr_data = Vec::new();
         fltr_data.extend_from_slice(&0x0001_2345u32.to_le_bytes());
         let subs = vec![edid("PackIn_FltrOnly"), mk_sub(b"FLTR", fltr_data)];
-        let rec = parse_pkin(0x0055_0011, &subs);
+        let rec = parse_pkin(0x0055_0011, &subs, &None);
         assert!(rec.contents.is_empty());
         assert_eq!(rec.filter, vec![0x0001_2345]);
     }
@@ -268,7 +275,7 @@ mod tests {
         fltr_data.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
         fltr_data.extend_from_slice(&[0x11, 0x22, 0x33]); // truncated tail
         let subs = vec![edid("PackIn_TruncFltr"), mk_sub(b"FLTR", fltr_data)];
-        let rec = parse_pkin(0x0055_0012, &subs);
+        let rec = parse_pkin(0x0055_0012, &subs, &None);
         assert_eq!(rec.filter, vec![0xAABB_CCDD]);
     }
 
@@ -282,8 +289,60 @@ mod tests {
             mk_sub(b"CNAM", vec![0x11, 0x22]), // 2 bytes, too short
             cnam(0x0010_1234),
         ];
-        let rec = parse_pkin(0x0055_0004, &subs);
+        let rec = parse_pkin(0x0055_0004, &subs, &None);
         // Only the well-formed CNAM survives.
         assert_eq!(rec.contents, vec![0x0010_1234]);
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+    use crate::esm::reader::GlobalSlot;
+
+    /// #3400 — `PKIN.CNAM` names the package-in's content base record, and
+    /// `expand_packin_placements_with_depth` looks it up in
+    /// `index.packins` / `index.statics`. Left raw it returned `None` for
+    /// the *whole* package-in on the second and later plugin of a load
+    /// order. Remap shape: the third plugin of a FO4 DLC order, whose own
+    /// forms are authored `0x01…` but keyed `0x02…`.
+    #[test]
+    fn pkin_content_forms_are_remapped_into_global_space() {
+        let remap = Some(FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(0x02),
+            master_slots: vec![GlobalSlot::Regular(0x00)],
+        });
+        let mk = |typ: &[u8; 4], v: u32| SubRecord {
+            sub_type: *typ,
+            data: v.to_le_bytes().to_vec(),
+        };
+        let subs = vec![
+            mk(b"CNAM", 0x0100_1111),
+            mk(b"CNAM", 0x0000_2222), // master-owned
+            mk(b"VNAM", 0x0100_3333),
+            mk(b"FLTR", 0x0100_4444),
+        ];
+
+        let pkin = parse_pkin(0x0200_0001, &subs, &remap);
+
+        assert_eq!(pkin.contents, vec![0x0200_1111, 0x0000_2222]);
+        assert_eq!(pkin.vnam_form_id, 0x0200_3333);
+        assert_eq!(pkin.filter, vec![0x0200_4444]);
+    }
+
+    /// Null stays null, and no remap leaves the parse unchanged.
+    #[test]
+    fn pkin_null_and_unremapped_paths_are_unchanged() {
+        let mk = |typ: &[u8; 4], v: u32| SubRecord {
+            sub_type: *typ,
+            data: v.to_le_bytes().to_vec(),
+        };
+        let pkin = parse_pkin(
+            0x0100_0002,
+            &[mk(b"CNAM", 0x0100_1111), mk(b"VNAM", 0)],
+            &None,
+        );
+        assert_eq!(pkin.contents, vec![0x0100_1111]);
+        assert_eq!(pkin.vnam_form_id, 0);
     }
 }

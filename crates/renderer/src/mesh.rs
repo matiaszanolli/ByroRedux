@@ -714,6 +714,14 @@ impl MeshRegistry {
         rt_enabled: bool,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<u32> {
+        // #3402 — validate before `accumulate_global_geometry`, not just
+        // inside `upload`. #3406 stopped a degenerate mesh reaching
+        // `vkCreateBuffer`, but on this path the global-geometry pool is
+        // fed first, so a zero-index mesh still pushed its vertices into
+        // the RT geometry SSBO and grew `ssbo_vertex_count` before the
+        // per-mesh upload rejected it — space no draw would ever
+        // reference. Rejecting here keeps the two halves consistent.
+        validate_upload_geometry(vertices.len(), indices.len())?;
         // Clamp any vertex-block overshoot ONCE (#1532), then feed the same
         // sanitized indices to both the global pool and the per-mesh / BLAS
         // upload so neither consumes an out-of-range index.
@@ -2994,5 +3002,34 @@ mod upload_geometry_guard_tests {
     fn non_empty_geometry_passes() {
         assert!(validate_upload_geometry(3, 3).is_ok());
         assert!(validate_upload_geometry(1, 1).is_ok());
+    }
+
+    /// #3402 — `upload_scene_mesh` must run the guard *before*
+    /// `accumulate_global_geometry`, not only inside `upload`.
+    ///
+    /// #3406 stopped a degenerate mesh reaching `vkCreateBuffer`, but on
+    /// this path the RT global-geometry pool is fed first, so a zero-index
+    /// mesh still pushed its vertices into the SSBO and grew
+    /// `ssbo_vertex_count` before the per-mesh upload rejected it —
+    /// reserving geometry space no draw would ever reference. A source
+    /// check because the real call needs a `GpuUploadCtx` (device, queue,
+    /// allocator), which no unit test can build.
+    #[test]
+    fn upload_scene_mesh_validates_before_touching_the_global_pool() {
+        let source = include_str!("mesh.rs");
+        let at = source
+            .find("pub fn upload_scene_mesh(")
+            .expect("upload_scene_mesh must still exist");
+        let body = &source[at..];
+        let guard = body
+            .find("validate_upload_geometry(")
+            .expect("upload_scene_mesh must validate its geometry");
+        let accumulate = body
+            .find("self.accumulate_global_geometry(")
+            .expect("upload_scene_mesh must still feed the global pool");
+        assert!(
+            guard < accumulate,
+            "the degenerate-geometry guard must precede the global-pool              accumulate, or a zero-index mesh reserves SSBO space it will              never draw from (#3402)",
+        );
     }
 }

@@ -37,8 +37,8 @@
 //! CM*.NIF-present path keeps working unchanged.
 //! See `byroredux::cell_loader::expand_scol_placements` (#585).
 
-use crate::esm::reader::SubRecord;
-use crate::esm::records::common::CommonNamedFields;
+use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::records::common::{remap_fid, CommonNamedFields};
 
 /// One per-child placement inside an SCOL — position / rotation
 /// (Euler XYZ, radians) / uniform scale.
@@ -133,10 +133,10 @@ pub struct ScolRecord {
 /// module doc); Oblivion/Skyrim don't emit SCOL. FalloutNV.esm ships 98 SCOL
 /// bases referenced by 1084 REFRs — the #1538 dispatch gate
 /// (`is_fo4_plus || Fallout3NV`) must keep parsing them.
-pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
+pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ScolRecord {
     // EDID + FULL + MODL via shared helper. FULL is lstring-aware per
     // #816. TD3-203 / #1113.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
 
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
@@ -150,12 +150,15 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
             b"VMAD" => has_script = true,
             b"ONAM" => {
                 if sub.data.len() >= 4 {
-                    current_base = Some(u32::from_le_bytes([
-                        sub.data[0],
-                        sub.data[1],
-                        sub.data[2],
-                        sub.data[3],
-                    ]));
+                    // #3400 — the child base form is looked up in
+                    // `index.scols` / `index.statics`, both keyed by the
+                    // REMAPPED id (`read_record_header` remaps every
+                    // record's own FormID). Left raw, every child of the
+                    // second and later plugin in a load order missed.
+                    current_base = Some(remap_fid(
+                        u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                        remap,
+                    ));
                     // Each ONAM starts a new ScolPart — push one even
                     // with zero placements so `parts.len() == number
                     // of ONAMs in the record`. The paired DATA fills
@@ -194,12 +197,15 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
                 for i in 0..id_count {
                     let off = i * 4;
                     if off + 4 <= sub.data.len() {
-                        filter.push(u32::from_le_bytes([
-                            sub.data[off],
-                            sub.data[off + 1],
-                            sub.data[off + 2],
-                            sub.data[off + 3],
-                        ]));
+                        filter.push(remap_fid(
+                            u32::from_le_bytes([
+                                sub.data[off],
+                                sub.data[off + 1],
+                                sub.data[off + 2],
+                                sub.data[off + 3],
+                            ]),
+                            remap,
+                        ));
                     }
                 }
             }
@@ -301,7 +307,7 @@ mod tests {
             data(&[p2a]),
         ];
 
-        let rec = parse_scol(0x0024_9DF2, &subs);
+        let rec = parse_scol(0x0024_9DF2, &subs, &None);
         assert_eq!(rec.editor_id, "TestScol");
         assert_eq!(rec.model_path, r"SCOL\Fallout4.esm\CM00249DF2.NIF");
         assert_eq!(rec.parts.len(), 2);
@@ -323,7 +329,7 @@ mod tests {
                 scale: 1.0,
             }]),
         ];
-        let rec = parse_scol(0xC0FFEE00, &subs);
+        let rec = parse_scol(0xC0FFEE00, &subs, &None);
         assert!(rec.parts.is_empty());
     }
 
@@ -334,7 +340,7 @@ mod tests {
     #[test]
     fn parse_scol_onam_without_following_data_keeps_empty_part() {
         let subs = vec![edid("OnamOnly"), onam(0x0000_ABCD)];
-        let rec = parse_scol(0xDEAD_BEEF, &subs);
+        let rec = parse_scol(0xDEAD_BEEF, &subs, &None);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].base_form_id, 0x0000_ABCD);
         assert!(rec.parts[0].placements.is_empty());
@@ -348,7 +354,7 @@ mod tests {
         fltr_data.extend_from_slice(&0x0000_1111u32.to_le_bytes());
         fltr_data.extend_from_slice(&0x0000_2222u32.to_le_bytes());
         let subs = vec![edid("Filtered"), mk_sub(b"FLTR", fltr_data)];
-        let rec = parse_scol(0xABCD_0000, &subs);
+        let rec = parse_scol(0xABCD_0000, &subs, &None);
         assert_eq!(rec.filter, vec![0x0000_1111, 0x0000_2222]);
     }
 
@@ -378,7 +384,7 @@ mod tests {
             onam(0x0000_0001),
             mk_sub(b"DATA", data_bytes),
         ];
-        let rec = parse_scol(0x1111_2222, &subs);
+        let rec = parse_scol(0x1111_2222, &subs, &None);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].placements, vec![p]);
     }
@@ -397,7 +403,7 @@ mod tests {
             modl("SCOL\\Fallout4.esm\\CM00012345.NIF"),
             mk_sub(b"FULL", full_bytes),
         ];
-        let rec = parse_scol(0x0001_2345, &subs);
+        let rec = parse_scol(0x0001_2345, &subs, &None);
         assert_eq!(rec.full_name, "Cambridge Deco Storefront 01");
         assert_eq!(rec.editor_id, "CambridgeDecoStorefront01");
     }
@@ -416,7 +422,7 @@ mod tests {
             edid("LocalisedScol"),
             mk_sub(b"FULL", lstring_index.to_le_bytes().to_vec()),
         ];
-        let rec = parse_scol(0xDEAD_BEEF, &subs);
+        let rec = parse_scol(0xDEAD_BEEF, &subs, &None);
         set_localized_plugin(false);
         assert_eq!(rec.full_name, "<lstring 0x00012345>");
     }
@@ -429,7 +435,7 @@ mod tests {
             edid("NoFullScol"),
             modl("SCOL\\Fallout4.esm\\CM00099999.NIF"),
         ];
-        let rec = parse_scol(0x9999_AAAA, &subs);
+        let rec = parse_scol(0x9999_AAAA, &subs, &None);
         assert_eq!(rec.full_name, "");
     }
 
@@ -450,7 +456,7 @@ mod tests {
             // path consumes that separately.
             mk_sub(b"VMAD", vec![0xAA, 0xBB, 0xCC, 0xDD]),
         ];
-        let rec = parse_scol(0x9999_BEEF, &subs);
+        let rec = parse_scol(0x9999_BEEF, &subs, &None);
         assert!(rec.has_script);
     }
 
@@ -462,7 +468,85 @@ mod tests {
             edid("PlainScol"),
             modl("SCOL\\Fallout4.esm\\CM00000001.NIF"),
         ];
-        let rec = parse_scol(0x9999_CAFE, &subs);
+        let rec = parse_scol(0x9999_CAFE, &subs, &None);
         assert!(!rec.has_script);
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+    use crate::esm::reader::GlobalSlot;
+
+    /// The remap a DLC gets in `[Fallout4.esm, DLCRobot.esm, DLCCoast.esm]`:
+    /// every FO4 DLC has exactly one master, so its own forms are authored
+    /// under mod-index `0x01`, while `allocate_global_slot` puts the third
+    /// plugin at slot `0x02`. That one-position shift is what
+    /// `read_record_header` applies to every record key.
+    fn third_plugin_remap() -> Option<FormIdRemap> {
+        Some(FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(0x02),
+            master_slots: vec![GlobalSlot::Regular(0x00)],
+        })
+    }
+
+    fn sub(typ: &[u8; 4], data: Vec<u8>) -> SubRecord {
+        SubRecord {
+            sub_type: *typ,
+            data,
+        }
+    }
+
+    /// #3400 — `ONAM` child base forms are looked up in `index.scols` /
+    /// `index.statics`, which `read_record_header` keys in *global* space.
+    /// Left raw they missed on every plugin past the first, so DLC- and
+    /// mod-added static collections rendered as empty space — silently,
+    /// because the miss is indistinguishable from an unshipped `CM*.NIF`.
+    #[test]
+    fn scol_child_forms_are_remapped_into_global_space() {
+        let remap = third_plugin_remap();
+        let subs = vec![
+            sub(b"EDID", b"DLCScol\0".to_vec()),
+            // Self-authored child (mod-index 0x01) → slot 0x02.
+            sub(b"ONAM", 0x0100_1234u32.to_le_bytes().to_vec()),
+            sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
+            // Master-owned child (mod-index 0x00) → slot 0x00, unchanged.
+            sub(b"ONAM", 0x0000_5678u32.to_le_bytes().to_vec()),
+            sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
+            sub(b"FLTR", 0x0100_9ABCu32.to_le_bytes().to_vec()),
+        ];
+
+        let scol = parse_scol(0x0200_0001, &subs, &remap);
+
+        assert_eq!(scol.parts[0].base_form_id, 0x0200_1234);
+        assert_eq!(
+            scol.parts[1].base_form_id, 0x0000_5678,
+            "a master-owned child keeps its slot",
+        );
+        assert_eq!(scol.filter, vec![0x0200_9ABC]);
+    }
+
+    /// `remap_fid`'s null rule: `0` is "no reference", not object 0 of the
+    /// authoring plugin, and must survive untouched.
+    #[test]
+    fn scol_null_child_form_is_not_remapped() {
+        let subs = vec![
+            sub(b"ONAM", 0u32.to_le_bytes().to_vec()),
+            sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
+        ];
+        let scol = parse_scol(0x0200_0002, &subs, &third_plugin_remap());
+        assert_eq!(scol.parts[0].base_form_id, 0);
+    }
+
+    /// No load order (single-plugin load, and every test fixture) → the
+    /// parse is byte-identical to the pre-#3400 behaviour.
+    #[test]
+    fn scol_without_a_remap_is_unchanged() {
+        let subs = vec![
+            sub(b"ONAM", 0x0100_1234u32.to_le_bytes().to_vec()),
+            sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
+        ];
+        let scol = parse_scol(0x0100_0003, &subs, &None);
+        assert_eq!(scol.parts[0].base_form_id, 0x0100_1234);
     }
 }

@@ -1762,3 +1762,92 @@ mod role_enumeration_tests {
         assert_eq!(by_name("base_color"), 0);
     }
 }
+
+#[cfg(test)]
+mod fully_hidden_skin_tests {
+    use super::*;
+
+    /// A skin mesh with three triangles, each tagged with a Skyrim
+    /// dismember body part.
+    fn skin_mesh(body_parts: Vec<u16>) -> ImportedMesh {
+        let triangle_count = body_parts.len();
+        ImportedMesh {
+            positions: vec![[0.0, 0.0, 0.0]; triangle_count * 3],
+            colors: Vec::new(),
+            normals: Vec::new(),
+            tangents: Vec::new(),
+            uvs: Vec::new(),
+            indices: (0..(triangle_count * 3) as u32).collect(),
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            material: ImportedMaterial::default(),
+            name: Some("BODY".into()),
+            parent_node: None,
+            skin: Some(ImportedSkin {
+                triangle_body_parts: body_parts,
+                ..ImportedSkin::default()
+            }),
+            local_bound_center: [0.0; 3],
+            local_bound_radius: 0.0,
+            flags: 0,
+            bs_lod_cutoffs: None,
+            bs_sub_index: None,
+            bs_geometry_lod_slot: None,
+            billboard_mode: None,
+            morph_targets: None,
+        }
+    }
+
+    /// #3402 — a skin mesh whose every partition is covered by equipped
+    /// gear legitimately ends up with **no triangles**.
+    ///
+    /// This is the real producer of the 23 zero-index meshes the runtime
+    /// audit attributed to a broken SSE skinned decode. It is not a decode
+    /// failure: re-parsing the exact shapes the audit named shows all of
+    /// them leaving the importer *with* triangles (`MaleUnderwear_1`
+    /// 417v/1548i, `FootMale_Big` 218v/948i, `HandFemale3rd` 872v/4344i,
+    /// `FemaleUnderwear` 676v/2064i, `HandMaleBig3rd` 850v/4212i — one for
+    /// one with its own vertex histogram). They are emptied here,
+    /// afterwards, and correctly so. Consumers must therefore treat an
+    /// empty `indices` as "nothing to draw", not as an error — which is
+    /// what `nif_loader` now does instead of handing a zero-sized buffer
+    /// to the allocator.
+    #[test]
+    fn a_fully_covered_skin_mesh_ends_up_with_no_triangles() {
+        // Body (32) / Hands (33) / Feet (34) — biped bits 2, 3, 4.
+        let mut mesh = skin_mesh(vec![32, 33, 34]);
+        let full_cover = (1 << 2) | (1 << 3) | (1 << 4);
+
+        let removed = mesh.hide_skin_partitions(full_cover);
+
+        assert_eq!(removed, 3, "every triangle is covered");
+        assert!(
+            mesh.indices.is_empty(),
+            "a fully-covered skin mesh has nothing left to draw",
+        );
+        assert_eq!(
+            mesh.positions.len(),
+            9,
+            "vertices are deliberately left intact — only the draw list changes",
+        );
+    }
+
+    /// The partial case must keep drawing, or the fix would be a
+    /// regression: covering the torso still leaves hands and feet.
+    #[test]
+    fn a_partly_covered_skin_mesh_keeps_its_uncovered_triangles() {
+        let mut mesh = skin_mesh(vec![32, 33, 34]);
+        let torso_only = 1 << 2;
+
+        let removed = mesh.hide_skin_partitions(torso_only);
+
+        assert_eq!(removed, 1);
+        assert_eq!(mesh.indices.len(), 6, "two triangles survive");
+        assert_eq!(
+            mesh.skin.as_ref().unwrap().triangle_body_parts,
+            vec![33, 34],
+            "the body-part map must stay aligned with the surviving triangles",
+        );
+    }
+}

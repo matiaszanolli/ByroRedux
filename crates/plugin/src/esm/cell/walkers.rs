@@ -1024,7 +1024,10 @@ pub(crate) fn parse_refr_group(
             // dispatch in `parse_esm` is vestigial because no vanilla
             // master ships top-level NAVMs.
             let subs = reader.read_sub_records(&header)?;
-            navmeshes.push(parse_navm(header.form_id, &subs));
+            // #3401 — the NAVM's cell / cross-tile-mesh / door references
+            // are FormIDs into global space.
+            let remap = reader.get_form_id_remap();
+            navmeshes.push(parse_navm(header.form_id, &subs, &remap));
         } else {
             // Skip other record types (PGRE, PMIS, etc.)
             reader.skip_record(&header);

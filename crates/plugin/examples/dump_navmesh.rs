@@ -142,7 +142,7 @@ fn collect(
             continue;
         }
         let subs = reader.read_sub_records(&header)?;
-        out.push(parse_navm(header.form_id, &subs));
+        out.push(parse_navm(header.form_id, &subs, &None));
     }
     Ok(())
 }

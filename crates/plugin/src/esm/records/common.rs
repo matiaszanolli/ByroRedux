@@ -5,7 +5,7 @@
 //! that show up in every record: null-terminated strings, full-name lookups,
 //! model paths, primitive reads at known offsets.
 
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::strings_table::StringTableSet;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -202,6 +202,27 @@ pub fn read_lstring_or_zstring(data: &[u8]) -> String {
 }
 
 /// Find a sub-record by 4-char type code and return its data slice.
+/// Remap a raw plugin-local FormID into global space, leaving `0` (no
+/// FormID / null ref) untouched.
+///
+/// **Every embedded FormID a record parser reads must go through this.**
+/// `EsmReader::read_record_header` remaps each record's own FormID, so
+/// `EsmIndex`'s maps are keyed in global space; a sub-record reference
+/// left raw therefore misses every lookup the moment the remap is
+/// non-identity — which it is for the second and later plugin of any
+/// multi-master load order, and for every ESL by construction. #3314 made
+/// this structural for the `cell/` tier by making the remap a required
+/// parameter of its `read_form_id`; #3400 / #3401 finished the sweep on
+/// the `records/` tier, where five separate copies of this function had
+/// grown up (`actor/mod.rs`, `container.rs`, `misc/pack.rs`,
+/// `misc/water.rs`, `outfit.rs`) and a dozen sites read FormIDs raw.
+pub fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
 pub fn find_sub<'a>(subs: &'a [SubRecord], code: &[u8; 4]) -> Option<&'a [u8]> {
     subs.iter()
         .find(|s| &s.sub_type == code)

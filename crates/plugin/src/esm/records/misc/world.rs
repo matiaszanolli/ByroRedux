@@ -1,7 +1,7 @@
 //! World-definition records — navigation, regions, encounter zones,
 //! lighting templates, image-space adapters, activators, terminals.
 
-use super::super::common::{read_zstring, CommonNamedFields};
+use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use std::collections::HashMap;
@@ -301,7 +301,7 @@ pub struct NavmExternalConnection {
 /// (header flag `0x20`) carrying no sub-records at all, so there is nothing
 /// to decode. Fallout 4 keeps every blob but still locates every tile,
 /// because its divergence begins after the shared header.
-pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
+pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> NavmRecord {
     let mut out = NavmRecord {
         form_id,
         ..Default::default()
@@ -310,7 +310,7 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         let data = &sub.data;
@@ -356,6 +356,23 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
             b"NVNM" => decode_nvnm(data, &mut out),
             _ => {}
         }
+    }
+    // #3401 — every cross-record reference this walk collected is a
+    // FormID into the same global space `EsmIndex`'s maps are keyed by.
+    // Applied here rather than inside each row decoder because the typed
+    // sub-records (`DATA` / `NVEX` / `NVDP`) and the packed `NVNM` blob
+    // reach the same fields through two independent paths; one post-pass
+    // cannot miss a branch the way four threading points could. Latent
+    // until #2372 / EX-16 consumes the cross-tile joins and door
+    // associations, which is exactly when a wrong key would start to
+    // cost something.
+    out.worldspace_form = out.worldspace_form.map(|f| remap_fid(f, remap));
+    out.cell_form = out.cell_form.map(|f| remap_fid(f, remap));
+    for conn in &mut out.external_connections {
+        conn.mesh_form = remap_fid(conn.mesh_form, remap);
+    }
+    for door in &mut out.door_triangles {
+        door.door_form_id = remap_fid(door.door_form_id, remap);
     }
     out
 }
@@ -832,7 +849,7 @@ fn rows(data: &[u8], stride: usize) -> impl Iterator<Item = &[u8]> {
 /// `chance`, `global`). Both are handled by measuring the payload rather than
 /// branching on a game enum — a payload divisible by 12 but not 8 can only be
 /// the long form, and the short form is assumed otherwise.
-pub fn parse_regn(form_id: u32, subs: &[SubRecord]) -> RegnRecord {
+pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> RegnRecord {
     let mut out = RegnRecord {
         form_id,
         ..Default::default()
@@ -899,6 +916,42 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord]) -> RegnRecord {
     }
     if let Some(previous) = area.take() {
         out.areas.push(previous);
+    }
+    // #3401 — one post-pass over every FormID-bearing field, for the same
+    // reason `parse_navm` uses one: the `RDAT` payloads are built across
+    // several sub-records by `apply_region_payload`, so remapping at the
+    // decode sites would mean touching every arm of a growing match.
+    out.weather_form = out.weather_form.map(|f| remap_fid(f, remap));
+    for entry in &mut out.entries {
+        match &mut entry.payload {
+            RegionDataPayload::Objects(forms) | RegionDataPayload::Imposters(forms) => {
+                for f in forms {
+                    *f = remap_fid(*f, remap);
+                }
+            }
+            RegionDataPayload::Weather(rows) => {
+                for row in rows {
+                    row.weather_form = remap_fid(row.weather_form, remap);
+                    row.global_form = row.global_form.map(|f| remap_fid(f, remap));
+                }
+            }
+            RegionDataPayload::Sound {
+                music,
+                incidental,
+                sounds,
+            } => {
+                *music = music.map(|f| remap_fid(f, remap));
+                *incidental = incidental.map(|f| remap_fid(f, remap));
+                for snd in sounds {
+                    snd.sound_form = remap_fid(snd.sound_form, remap);
+                }
+            }
+            RegionDataPayload::Map(_)
+            | RegionDataPayload::MapStringId(_)
+            | RegionDataPayload::Landscape(_)
+            | RegionDataPayload::Grass(_)
+            | RegionDataPayload::Empty => {}
+        }
     }
     out
 }
@@ -1285,9 +1338,14 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     };
     for sub in subs {
         match &sub.sub_type {
-            b"SNAM" => out.sound_form_id = SubReader::new(&sub.data).u32_or_default(),
+            // #3401 — `parse_acti` already receives the remap and applies
+            // it to the shared named fields; these two read FormIDs a
+            // dozen lines later and used to skip it.
+            b"SNAM" => {
+                out.sound_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
             b"RNAM" | b"RADR" => {
-                out.radio_form_id = SubReader::new(&sub.data).u32_or_default();
+                out.radio_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
@@ -1400,7 +1458,7 @@ mod tests {
     #[test]
     fn parse_navm_extracts_version() {
         let subs = vec![sub(b"NVER", &11u32.to_le_bytes())];
-        let n = parse_navm(0xAABB, &subs);
+        let n = parse_navm(0xAABB, &subs, &None);
         assert_eq!(n.form_id, 0xAABB);
         assert_eq!(n.version, 11);
     }
@@ -1412,7 +1470,7 @@ mod tests {
             sub(b"WNAM", &0x0001_B000u32.to_le_bytes()),
             sub(b"RCLR", &[128, 96, 64, 0]),
         ];
-        let r = parse_regn(0xBEEF, &subs);
+        let r = parse_regn(0xBEEF, &subs, &None);
         assert_eq!(r.editor_id, "WastelandRegion");
         assert_eq!(r.weather_form, Some(0x0001_B000));
         assert_eq!(r.color, Some([128, 96, 64]));
@@ -1696,7 +1754,7 @@ mod regn_tests {
 
     #[test]
     fn rdat_header_fields_are_decoded() {
-        let r = parse_regn(1, &[rdat(3, 1, 75)]);
+        let r = parse_regn(1, &[rdat(3, 1, 75)], &None);
         assert_eq!(r.entries.len(), 1);
         assert_eq!(r.entries[0].kind, RegionDataKind::Weather);
         assert_eq!(r.entries[0].flags, 1);
@@ -1737,6 +1795,7 @@ mod regn_tests {
                 rdat(4, 0, 50),
                 sub(b"RDMP", b"Mojave Wasteland\0"),
             ],
+            &None,
         );
         assert_eq!(record.entries.len(), 2);
         assert!(matches!(
@@ -1756,7 +1815,7 @@ mod regn_tests {
         // format-abstraction doctrine.
         let mut short = 0xAAu32.to_le_bytes().to_vec();
         short.extend_from_slice(&40u32.to_le_bytes());
-        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &short)]);
+        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &short)], &None);
         match &r.entries[0].payload {
             RegionDataPayload::Weather(w) => {
                 assert_eq!(w.len(), 1);
@@ -1769,7 +1828,7 @@ mod regn_tests {
         let mut long = 0xBBu32.to_le_bytes().to_vec();
         long.extend_from_slice(&100u32.to_le_bytes());
         long.extend_from_slice(&0x1234u32.to_le_bytes());
-        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &long)]);
+        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &long)], &None);
         match &r.entries[0].payload {
             RegionDataPayload::Weather(w) => {
                 assert_eq!(w.len(), 1);
@@ -1794,6 +1853,7 @@ mod regn_tests {
                 sub(b"RDSD", &sounds),
                 sub(b"RDSI", &0x77u32.to_le_bytes()),
             ],
+            &None,
         );
         match &r.entries[0].payload {
             RegionDataPayload::Sound {
@@ -1814,7 +1874,11 @@ mod regn_tests {
 
     #[test]
     fn skyrim_music_signature_merges_the_same_way() {
-        let r = parse_regn(1, &[rdat(7, 0, 50), sub(b"RDMO", &0x4242u32.to_le_bytes())]);
+        let r = parse_regn(
+            1,
+            &[rdat(7, 0, 50), sub(b"RDMO", &0x4242u32.to_le_bytes())],
+            &None,
+        );
         assert!(matches!(
             r.entries[0].payload,
             RegionDataPayload::Sound {
@@ -1839,6 +1903,7 @@ mod regn_tests {
                 sub(b"RPLI", &64u32.to_le_bytes()),
                 sub(b"RPLD", &points[..16]),
             ],
+            &None,
         );
         assert_eq!(r.areas.len(), 2);
         assert_eq!(r.areas[0].edge_fall_off, 128);
@@ -1854,7 +1919,7 @@ mod regn_tests {
         // the region, which is worse than a zero falloff.
         let mut points = 1.0f32.to_le_bytes().to_vec();
         points.extend_from_slice(&2.0f32.to_le_bytes());
-        let r = parse_regn(1, &[sub(b"RPLD", &points)]);
+        let r = parse_regn(1, &[sub(b"RPLD", &points)], &None);
         assert_eq!(r.areas.len(), 1);
         assert_eq!(r.areas[0].points, vec![(1.0, 2.0)]);
         assert_eq!(r.areas[0].edge_fall_off, 0);
@@ -1872,6 +1937,7 @@ mod regn_tests {
                 rdat(7, 0, 75),
                 rdat(3, 0, 99),
             ],
+            &None,
         );
         let sounds = r.entries_by_priority(RegionDataKind::Sound);
         assert_eq!(
@@ -1887,7 +1953,7 @@ mod regn_tests {
     fn equal_priorities_keep_authored_order() {
         // Nothing in the record distinguishes two entries at equal priority,
         // so a stable sort is the only defensible tie-break.
-        let r = parse_regn(1, &[rdat(2, 0, 50), rdat(2, 1, 50), rdat(2, 0, 50)]);
+        let r = parse_regn(1, &[rdat(2, 0, 50), rdat(2, 1, 50), rdat(2, 0, 50)], &None);
         let objects = r.entries_by_priority(RegionDataKind::Objects);
         assert_eq!(
             objects.iter().map(|e| e.flags).collect::<Vec<_>>(),
@@ -1901,7 +1967,7 @@ mod regn_tests {
         let mut ragged = 0xAAu32.to_le_bytes().to_vec();
         ragged.extend_from_slice(&40u32.to_le_bytes());
         ragged.extend_from_slice(&[0xFF]); // 9 bytes: one 8-byte row + junk
-        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &ragged)]);
+        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &ragged)], &None);
         match &r.entries[0].payload {
             RegionDataPayload::Weather(w) => assert_eq!(w.len(), 1),
             other => panic!("{other:?}"),
@@ -1912,7 +1978,7 @@ mod regn_tests {
     fn an_rdat_with_no_payload_stays_empty_rather_than_absent() {
         // Skyrim authors 69 empty RDOT sections; they must still appear so a
         // consumer sees the declared-but-empty distinction.
-        let r = parse_regn(1, &[rdat(2, 0, 50), sub(b"RDOT", &[])]);
+        let r = parse_regn(1, &[rdat(2, 0, 50), sub(b"RDOT", &[])], &None);
         assert_eq!(r.entries.len(), 1);
         assert_eq!(r.entries[0].kind, RegionDataKind::Objects);
         assert!(matches!(
@@ -1923,7 +1989,7 @@ mod regn_tests {
 
     #[test]
     fn payloads_before_any_rdat_are_ignored_not_misattributed() {
-        let r = parse_regn(1, &[sub(b"RDMP", b"orphan\0"), rdat(4, 0, 50)]);
+        let r = parse_regn(1, &[sub(b"RDMP", b"orphan\0"), rdat(4, 0, 50)], &None);
         assert_eq!(r.entries.len(), 1);
         assert_eq!(r.entries[0].payload, RegionDataPayload::Empty);
     }
@@ -1939,7 +2005,7 @@ mod regn_tests {
             oblivion.extend_from_slice(&chance.to_le_bytes());
         }
         assert_eq!(oblivion.len(), 24);
-        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &oblivion)]);
+        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &oblivion)], &None);
         match &r.entries[0].payload {
             RegionDataPayload::Weather(w) => {
                 assert_eq!(w.len(), 3, "24B of 8-byte rows must split into 3");
@@ -1959,7 +2025,7 @@ mod regn_tests {
             long.extend_from_slice(&global.to_le_bytes());
         }
         assert_eq!(long.len(), 24);
-        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &long)]);
+        let r = parse_regn(1, &[rdat(3, 0, 50), sub(b"RDWT", &long)], &None);
         match &r.entries[0].payload {
             RegionDataPayload::Weather(w) => {
                 assert_eq!(w.len(), 2);
@@ -1978,6 +2044,7 @@ mod regn_tests {
         let r = parse_regn(
             1,
             &[rdat(4, 0, 50), sub(b"RDMP", &0x0001_1086u32.to_le_bytes())],
+            &None,
         );
         assert_eq!(
             r.entries[0].payload,
@@ -1985,7 +2052,7 @@ mod regn_tests {
         );
 
         // …while the inline form still parses as text.
-        let r = parse_regn(1, &[rdat(4, 0, 50), sub(b"RDMP", b"Arefu\0")]);
+        let r = parse_regn(1, &[rdat(4, 0, 50), sub(b"RDMP", b"Arefu\0")], &None);
         assert_eq!(
             r.entries[0].payload,
             RegionDataPayload::Map("Arefu".to_string())
@@ -2001,6 +2068,7 @@ mod regn_tests {
                 sub(b"WNAM", &0x1234u32.to_le_bytes()),
                 sub(b"RCLR", &[10, 20, 30, 255]),
             ],
+            &None,
         );
         assert_eq!(r.form_id, 7);
         assert_eq!(r.editor_id, "MojaveRegion");
@@ -2041,7 +2109,7 @@ mod navm_tests {
 
     #[test]
     fn vertices_decode_as_f32_triples() {
-        let r = parse_navm(1, &[verts(3)]);
+        let r = parse_navm(1, &[verts(3)], &None);
         assert_eq!(r.vertices.len(), 3);
         assert_eq!(r.vertices[0], [0.0, 1.0, 2.0]);
         assert_eq!(r.vertices[2], [6.0, 7.0, 8.0]);
@@ -2050,7 +2118,7 @@ mod navm_tests {
     #[test]
     fn triangles_decode_indices_links_and_flags() {
         let data = tri([236, 683, 534], [506, u16::MAX, 1], 0x0000_0C00);
-        let r = parse_navm(1, &[sub(b"NVTR", &data)]);
+        let r = parse_navm(1, &[sub(b"NVTR", &data)], &None);
         assert_eq!(r.triangles.len(), 1);
         let t = r.triangles[0];
         assert_eq!(t.vertices, [236, 683, 534]);
@@ -2066,7 +2134,7 @@ mod navm_tests {
     fn door_triangles_decode_from_the_typed_form() {
         // form=0x00003A73, triangle=26, trailing u16=0.
         let row = [0x73u8, 0x3a, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00];
-        let r = parse_navm(1, &[sub(b"NVDP", &row)]);
+        let r = parse_navm(1, &[sub(b"NVDP", &row)], &None);
         assert_eq!(r.door_triangles.len(), 1);
         let d = &r.door_triangles[0];
         assert_eq!(d.door_form_id, 0x0000_3A73);
@@ -2080,7 +2148,7 @@ mod navm_tests {
     #[test]
     fn cover_triangles_decode_as_bare_indices() {
         let data = [7u8, 0, 0, 1, 255, 255];
-        let r = parse_navm(1, &[sub(b"NVCA", &data)]);
+        let r = parse_navm(1, &[sub(b"NVCA", &data)], &None);
         assert_eq!(r.cover_triangles, vec![7, 256, 65535]);
     }
 
@@ -2103,7 +2171,7 @@ mod navm_tests {
                 d.extend_from_slice(&t.to_le_bytes());
             }
         }
-        let r = parse_navm(1, &[sub(b"NVGD", &d)]);
+        let r = parse_navm(1, &[sub(b"NVGD", &d)], &None);
         let g = r.grid_accel.expect("lattice must decode");
         assert_eq!(g.divisor, 2);
         assert_eq!(g.bounds, [32.0, 42.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -2126,20 +2194,24 @@ mod navm_tests {
         d.extend_from_slice(&1u16.to_le_bytes()); // count = 1
         d.extend_from_slice(&5u16.to_le_bytes()); // the index
         d.push(0xAA); // one trailing byte too many
-        assert!(parse_navm(1, &[sub(b"NVGD", &d)]).grid_accel.is_none());
+        assert!(parse_navm(1, &[sub(b"NVGD", &d)], &None)
+            .grid_accel
+            .is_none());
 
         // A divisor past the bound must not drive a divisor^2 walk.
         let mut big = Vec::new();
         big.extend_from_slice(&(NVNM_MAX_DIVISOR + 1).to_le_bytes());
         big.extend_from_slice(&[0u8; 32]);
-        assert!(parse_navm(1, &[sub(b"NVGD", &big)]).grid_accel.is_none());
+        assert!(parse_navm(1, &[sub(b"NVGD", &big)], &None)
+            .grid_accel
+            .is_none());
     }
 
     #[test]
     fn external_connections_expose_the_neighbouring_mesh() {
         // The bytes of a real FNV NVEX row.
         let row = [2u8, 0, 0, 0, 252, 70, 22, 0, 252, 0];
-        let r = parse_navm(1, &[sub(b"NVEX", &row)]);
+        let r = parse_navm(1, &[sub(b"NVEX", &row)], &None);
         assert_eq!(r.external_connections.len(), 1);
         let c = r.external_connections[0];
         assert_eq!(c.unknown, 2);
@@ -2157,7 +2229,7 @@ mod navm_tests {
             d.extend_from_slice(&form.to_le_bytes());
             d.extend_from_slice(&tri.to_le_bytes());
         }
-        let r = parse_navm(1, &[sub(b"NVEX", &d)]);
+        let r = parse_navm(1, &[sub(b"NVEX", &d)], &None);
         assert_eq!(r.linked_meshes(), vec![0x22, 0xAA]);
     }
 
@@ -2168,7 +2240,7 @@ mod navm_tests {
         d.extend_from_slice(&746u32.to_le_bytes());
         d.extend_from_slice(&[0u8; 12]);
         assert_eq!(d.len(), 24);
-        let r = parse_navm(1, &[sub(b"DATA", &d)]);
+        let r = parse_navm(1, &[sub(b"DATA", &d)], &None);
         assert_eq!(r.cell_form, Some(0x0012_06D8));
     }
 
@@ -2176,9 +2248,17 @@ mod navm_tests {
     fn index_range_check_catches_a_dangling_vertex() {
         // Holds for all 11,969 FO3+FNV meshes, so a violation means a corrupt
         // plugin or a decode regression — worth being able to assert.
-        let ok = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))]);
+        let ok = parse_navm(
+            1,
+            &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))],
+            &None,
+        );
         assert!(ok.indices_are_in_range());
-        let bad = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 99], [0, 0, 0], 0))]);
+        let bad = parse_navm(
+            1,
+            &[verts(3), sub(b"NVTR", &tri([0, 1, 99], [0, 0, 0], 0))],
+            &None,
+        );
         assert!(!bad.indices_are_in_range());
     }
 
@@ -2250,7 +2330,7 @@ mod navm_tests {
             }],
             2,
         );
-        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)], &None);
 
         assert_eq!(r.worldspace_form, Some(0x0000_003C));
         assert_eq!(
@@ -2283,7 +2363,7 @@ mod navm_tests {
     #[test]
     fn packed_interior_mesh_carries_its_cell_instead_of_a_grid() {
         let blob = nvnm(0, Ok(0x0001_A2B3), &[[0.0, 0.0, 0.0]], &[], &[], 1);
-        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)], &None);
         assert_eq!(r.worldspace_form, Some(0));
         assert_eq!(r.cell_form, Some(0x0001_A2B3));
         assert_eq!(r.grid, None);
@@ -2298,7 +2378,7 @@ mod navm_tests {
         let mut blob = nvnm(0x0000_003C, Err((4, 9)), &[[0.0, 0.0, 0.0]], &[], &[], 1);
         // Truncate the trailing segment list: header intact, body short.
         blob.truncate(blob.len() - 2);
-        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)], &None);
 
         assert_eq!(r.worldspace_form, Some(0x0000_003C));
         assert_eq!(r.grid, Some((4, 9)), "the header still locates the tile");
@@ -2312,7 +2392,7 @@ mod navm_tests {
     fn a_body_with_trailing_bytes_is_not_accepted() {
         let mut blob = nvnm(0, Ok(0x10), &[[0.0, 0.0, 0.0]], &[], &[], 1);
         blob.push(0xFF);
-        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)], &None);
         assert!(!r.has_decoded_geometry());
         assert!(r.packed_geometry.is_some());
     }
@@ -2324,14 +2404,14 @@ mod navm_tests {
         // Overwrite the divisor word (last 4 + 32 + 4 bytes back) with 0xFFFF.
         let divisor_at = blob.len() - 4 - 32 - 4;
         blob[divisor_at..divisor_at + 4].copy_from_slice(&0xFFFFu32.to_le_bytes());
-        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)], &None);
         assert!(r.packed_geometry.is_some(), "bounded, and no geometry");
         assert!(!r.has_decoded_geometry());
     }
 
     #[test]
     fn a_truncated_header_retains_the_blob_and_reports_nothing() {
-        let r = parse_navm(1, &[sub(b"NVNM", &[1, 2, 3, 4])]);
+        let r = parse_navm(1, &[sub(b"NVNM", &[1, 2, 3, 4])], &None);
         assert_eq!(r.packed_geometry.as_deref(), Some(&[1u8, 2, 3, 4][..]));
         assert!(!r.has_decoded_geometry());
         assert!(r.vertices.is_empty());
@@ -2340,7 +2420,11 @@ mod navm_tests {
 
     #[test]
     fn a_gamebryo_mesh_reports_decoded_geometry() {
-        let r = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))]);
+        let r = parse_navm(
+            1,
+            &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))],
+            &None,
+        );
         assert!(r.has_decoded_geometry());
         assert!(r.packed_geometry.is_none());
     }
@@ -2349,7 +2433,7 @@ mod navm_tests {
     fn oblivion_style_absence_is_not_an_error() {
         // Oblivion authors zero NAVM records; the model must tolerate a mesh
         // that carries nothing rather than assuming geometry exists.
-        let r = parse_navm(1, &[sub(b"NVER", &12u32.to_le_bytes())]);
+        let r = parse_navm(1, &[sub(b"NVER", &12u32.to_le_bytes())], &None);
         assert_eq!(r.version, 12);
         assert!(!r.has_decoded_geometry());
         assert!(r.linked_meshes().is_empty());
@@ -2360,7 +2444,7 @@ mod navm_tests {
     fn ragged_payloads_drop_the_short_row_not_the_mesh() {
         let mut d = tri([0, 1, 2], [0, 0, 0], 0);
         d.push(0xFF); // 17 bytes
-        let r = parse_navm(1, &[verts(3), sub(b"NVTR", &d)]);
+        let r = parse_navm(1, &[verts(3), sub(b"NVTR", &d)], &None);
         assert_eq!(r.triangles.len(), 1);
     }
 

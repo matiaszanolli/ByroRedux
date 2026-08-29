@@ -43,8 +43,8 @@
 //! conflates MOVS with the (separate) per-REFR `XHLP` / `XAPD`
 //! placement overrides which DO live on the placement, not the base.
 
-use crate::esm::reader::SubRecord;
-use crate::esm::records::common::read_string_sub;
+use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::records::common::{read_string_sub, remap_fid};
 
 /// Parsed MOVS record.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -82,7 +82,11 @@ pub struct MovableStaticRecord {
 /// authors MOVS for breakable furniture, deployable workshop objects,
 /// and physics-puzzle props. Empty input yields an all-default record;
 /// the caller keys the map by `form_id` either way.
-pub fn parse_movs(form_id: u32, subs: &[SubRecord]) -> MovableStaticRecord {
+pub fn parse_movs(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> MovableStaticRecord {
     let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
     let model_path = read_string_sub(subs, b"MODL").unwrap_or_default();
     let mut loop_sound_form_id: Option<u32> = None;
@@ -99,14 +103,18 @@ pub fn parse_movs(form_id: u32, subs: &[SubRecord]) -> MovableStaticRecord {
 
     for sub in subs {
         match sub.sub_type.as_slice() {
+            // #3401 — SOUN references, keyed in global space like every
+            // other index map. Latent (no consumer reads these yet), but
+            // fixed with the rest of the sweep so the first one does not
+            // inherit a silently-wrong key.
             b"LNAM" => {
                 if let Some(form) = read_u32(&sub.data) {
-                    loop_sound_form_id = Some(form);
+                    loop_sound_form_id = Some(remap_fid(form, remap));
                 }
             }
             b"ZNAM" => {
                 if let Some(form) = read_u32(&sub.data) {
-                    activate_sound_form_id = Some(form);
+                    activate_sound_form_id = Some(remap_fid(form, remap));
                 }
             }
             b"DEST" => {
@@ -165,7 +173,7 @@ mod tests {
             mk_sub(b"LNAM", 0x0001_2345u32.to_le_bytes().to_vec()),
             mk_sub(b"ZNAM", 0x0001_2346u32.to_le_bytes().to_vec()),
         ];
-        let rec = parse_movs(0x0010_BEEF, &subs);
+        let rec = parse_movs(0x0010_BEEF, &subs, &None);
         assert_eq!(rec.form_id, 0x0010_BEEF);
         assert_eq!(rec.editor_id, "MovableGenerator01");
         assert_eq!(rec.model_path, r"Furniture\Generator\GeneratorMov01.nif");
@@ -182,7 +190,7 @@ mod tests {
     #[test]
     fn parse_movs_edid_modl_only_keeps_optional_fields_unset() {
         let subs = vec![edid("PlainMovable"), modl(r"Clutter\Plain01.nif")];
-        let rec = parse_movs(0xABCD_0000, &subs);
+        let rec = parse_movs(0xABCD_0000, &subs, &None);
         assert_eq!(rec.editor_id, "PlainMovable");
         assert_eq!(rec.model_path, r"Clutter\Plain01.nif");
         assert!(rec.loop_sound_form_id.is_none());
@@ -202,7 +210,7 @@ mod tests {
             modl(r"Clutter\BreakCrate01.nif"),
             mk_sub(b"DEST", vec![0u8; 8]), // payload contents irrelevant to flag
         ];
-        let rec = parse_movs(0x0044_0001, &subs);
+        let rec = parse_movs(0x0044_0001, &subs, &None);
         assert!(rec.has_destruction);
     }
 
@@ -217,7 +225,7 @@ mod tests {
             modl(r"Clutter\ScriptedMov01.nif"),
             mk_sub(b"VMAD", vec![0u8; 16]),
         ];
-        let rec = parse_movs(0x0044_0002, &subs);
+        let rec = parse_movs(0x0044_0002, &subs, &None);
         assert!(rec.has_script);
     }
 
@@ -237,7 +245,7 @@ mod tests {
             mk_sub(b"KSIZ", 1u32.to_le_bytes().to_vec()),
             mk_sub(b"KWDA", 0xCAFE_BABEu32.to_le_bytes().to_vec()),
         ];
-        let rec = parse_movs(0x0044_0003, &subs);
+        let rec = parse_movs(0x0044_0003, &subs, &None);
         assert_eq!(rec.editor_id, "NoisyMovable");
         assert_eq!(rec.model_path, r"Clutter\Noisy01.nif");
         assert_eq!(rec.loop_sound_form_id, Some(0xDEAD_BEEF));
@@ -254,7 +262,7 @@ mod tests {
             modl(r"Clutter\Truncated01.nif"),
             mk_sub(b"LNAM", vec![0u8; 2]),
         ];
-        let rec = parse_movs(0x0044_0004, &subs);
+        let rec = parse_movs(0x0044_0004, &subs, &None);
         assert!(rec.loop_sound_form_id.is_none());
     }
 }

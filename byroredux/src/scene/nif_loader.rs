@@ -727,6 +727,36 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             continue;
         }
 
+        // #3402 — a mesh with no triangles has nothing to draw, and
+        // `create_index_buffer` computes `size = size_of_val(data)` = 0,
+        // which `gpu_allocator` rejects outright
+        // (`InvalidAllocationCreateDesc`). The `?` propagated out of
+        // `MeshRegistry::upload` *after* the vertex buffer had already been
+        // created, so each one cost a `warn!`, an allocated-then-dropped
+        // `GpuBuffer`, and a mesh slot — 23 of them per
+        // `WhiterunDragonsreach` load.
+        //
+        // The audit that found this read the zero as a decode failure in
+        // the SSE skinned path. It is not: re-parsing the exact shapes it
+        // names shows every one arriving from the importer *with*
+        // triangles — `MaleUnderwear_1` 417v/1548i, `FootMale_Big`
+        // 218v/948i, `HandFemale3rd` 872v/4344i, `FemaleUnderwear`
+        // 676v/2064i, `HandMaleBig3rd` 850v/4212i — matching its own
+        // vertex histogram one for one. The indices are emptied
+        // downstream by `ImportedMesh::hide_skin_partitions`, the
+        // armor-displacement hook, when the actor's outfit covers *every*
+        // partition of a skin mesh. That is the correct outcome (#3357
+        // made more naked-skin ARMAs resolve, which is why the count went
+        // 9 -> 23); it just has no business reaching the allocator.
+        if mesh.indices.is_empty() {
+            log::debug!(
+                "NIF mesh '{}' has {} vertices and no triangles — every partition is                  covered by equipped gear, or the shape is index-less. Nothing to draw;                  skipping upload (#3402).",
+                mesh_name,
+                mesh.positions.len(),
+            );
+            continue;
+        }
+
         let num_verts = mesh.positions.len();
         // Skinned vertices use the per-vertex bone indices + weights that
         // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid

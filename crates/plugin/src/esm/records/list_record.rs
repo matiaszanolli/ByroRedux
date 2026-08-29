@@ -36,8 +36,8 @@
 //! `WeapType*List`, `ArmorType*List`, and `Faction*List` families;
 //! Skyrim ships ~1500. See audit `FNV-D2-02` / #630.
 
-use crate::esm::reader::SubRecord;
-use crate::esm::records::common::CommonNamedFields;
+use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::records::common::{remap_fid, CommonNamedFields};
 use crate::esm::sub_reader::SubReader;
 
 /// Parsed FLST record — flat array of FormID references in authoring order.
@@ -56,19 +56,21 @@ pub struct FlstRecord {
 /// are ignored. A short `LNAM` (< 4 bytes) is silently dropped rather
 /// than panicking — mirrors the SCOL / ENCH defensive posture against
 /// malformed mod content.
-pub fn parse_flst(form_id: u32, subs: &[SubRecord]) -> FlstRecord {
+pub fn parse_flst(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> FlstRecord {
     let mut out = FlstRecord {
         form_id,
         ..Default::default()
     };
     // #2414 / TD2-117 SIBLING — same swap as the `misc/` family; these two
     // sites sit outside it and were not named in the issue.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         if &sub.sub_type == b"LNAM" {
+            // #3401 — a FLST's members are FormIDs into the same global
+            // space as every index map.
             if let Ok(id) = SubReader::new(&sub.data).u32() {
-                out.entries.push(id);
+                out.entries.push(remap_fid(id, remap));
             }
         }
     }
@@ -107,7 +109,7 @@ mod tests {
             lnam(0x001E_4E94),
             lnam(0x0010_0DD9),
         ];
-        let rec = parse_flst(0x000F_43DD, &subs);
+        let rec = parse_flst(0x000F_43DD, &subs, &None);
         assert_eq!(rec.form_id, 0x000F_43DD);
         assert_eq!(rec.editor_id, "WeapTypeAssaultCarbineList");
         assert_eq!(
@@ -123,7 +125,7 @@ mod tests {
     #[test]
     fn parse_flst_edid_only_produces_empty_entries() {
         let subs = vec![edid("EmptyList")];
-        let rec = parse_flst(0xABCD_0000, &subs);
+        let rec = parse_flst(0xABCD_0000, &subs, &None);
         assert_eq!(rec.editor_id, "EmptyList");
         assert!(rec.entries.is_empty());
     }
@@ -139,7 +141,7 @@ mod tests {
             lnam(0xFFFF_FFFF), // null-form sentinel — author left blank
             lnam(0x0001_2347),
         ];
-        let rec = parse_flst(0x0001_2300, &subs);
+        let rec = parse_flst(0x0001_2300, &subs, &None);
         assert_eq!(rec.entries.len(), 3);
         assert_eq!(rec.entries[0], 0x0001_2345);
         assert_eq!(rec.entries[1], 0xFFFF_FFFF, "null sentinel must survive");
@@ -157,7 +159,7 @@ mod tests {
             mk_sub(b"LNAM", vec![0u8; 2]), // truncated → dropped
             lnam(0x0001_2347),             // valid
         ];
-        let rec = parse_flst(0x0001_2400, &subs);
+        let rec = parse_flst(0x0001_2400, &subs, &None);
         assert_eq!(rec.entries, vec![0x0001_2345, 0x0001_2347]);
     }
 
@@ -173,7 +175,7 @@ mod tests {
             mk_sub(b"NONE", vec![0u8; 4]),
             lnam(0x0001_2346),
         ];
-        let rec = parse_flst(0x0001_2500, &subs);
+        let rec = parse_flst(0x0001_2500, &subs, &None);
         assert_eq!(rec.entries, vec![0x0001_2345, 0x0001_2346]);
     }
 }

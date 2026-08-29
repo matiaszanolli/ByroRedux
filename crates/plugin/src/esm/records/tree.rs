@@ -39,8 +39,8 @@
 //! That's a problem for the FNV / FO3 / Oblivion compatibility path because
 //! `.spt` files need ICON for the leaf texture and BNAM for fallback sizing.
 
-use super::common::{find_sub, read_f32_sub, read_u32_sub, CommonNamedFields};
-use crate::esm::reader::SubRecord;
+use super::common::{find_sub, read_f32_sub, read_u32_sub, remap_fid, CommonNamedFields};
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Object bounds from an OBND sub-record (6 × i16, [−x, −y, −z, +x, +y, +z]).
@@ -121,11 +121,12 @@ impl TreeRecord {
 /// probabilities) are ignored; any subrecord we don't recognise just
 /// passes through silently rather than panicking — same convention as
 /// every other parser in this module.
-pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
+pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> TreeRecord {
     // EDID / FULL / MODL / ICON via shared helper — TD3-203 / #1113.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let bound_radius = read_f32_sub(subs, b"MODB").unwrap_or(0.0);
-    let harvest_form = read_u32_sub(subs, b"PFIG");
+    // #3401 — `PFIG` names the INGR/ALCH this tree yields.
+    let harvest_form = read_u32_sub(subs, b"PFIG").map(|f| remap_fid(f, remap));
 
     let bounds = find_sub(subs, b"OBND").and_then(|data| {
         if data.len() < 12 {
@@ -251,7 +252,7 @@ mod tests {
             sub(b"PFIG", &0x000A1234u32.to_le_bytes()),
             sub(b"FULL", b"Joshua Tree\0"),
         ];
-        let tree = parse_tree(0x000DEAD0, &subs);
+        let tree = parse_tree(0x000DEAD0, &subs, &None);
 
         assert_eq!(tree.form_id, 0x000DEAD0);
         assert_eq!(tree.editor_id, "TreeJoshua01");
@@ -285,7 +286,7 @@ mod tests {
             sub(b"ICON", b"trees\\pine_leaf.tga\0"),
             sub(b"CNAM", &cnam_bytes(&[0.4, 0.9, 0.6, 1.8, 1.0])),
         ];
-        let tree = parse_tree(0x00000042, &subs);
+        let tree = parse_tree(0x00000042, &subs, &None);
         assert_eq!(tree.editor_id, "TreePine01");
         assert!(tree.has_speedtree_binary());
         assert_eq!(tree.canopy_params.len(), 5, "Oblivion CNAM is 5 × f32");
@@ -307,7 +308,7 @@ mod tests {
             sub(b"MODL", b"meshes\\landscape\\trees\\treeaspen01.nif\0"),
             sub(b"ICON", b"textures\\landscape\\trees\\treeaspen.dds\0"),
         ];
-        let tree = parse_tree(0x000ABCDE, &subs);
+        let tree = parse_tree(0x000ABCDE, &subs, &None);
         assert!(!tree.has_speedtree_binary());
         assert_eq!(tree.editor_id, "TreeAspen01");
         // Skyrim TREE drops SNAM/CNAM/BNAM.
@@ -323,7 +324,7 @@ mod tests {
     #[test]
     fn parse_minimal_record_yields_defaults() {
         let subs = vec![sub(b"EDID", b"TreeStub\0")];
-        let tree = parse_tree(0x00000001, &subs);
+        let tree = parse_tree(0x00000001, &subs, &None);
         assert_eq!(tree.editor_id, "TreeStub");
         assert!(tree.model_path.is_empty());
         assert!(tree.leaf_texture.is_empty());
@@ -349,7 +350,7 @@ mod tests {
             sub(b"MODL", b"trees\\broken.spt\0"),
             sub(b"SNAM", &snam),
         ];
-        let tree = parse_tree(0xDEADBEEF, &subs);
+        let tree = parse_tree(0xDEADBEEF, &subs, &None);
         assert_eq!(
             tree.leaf_indices,
             vec![0xCAFEBABE],
@@ -363,13 +364,13 @@ mod tests {
     #[test]
     fn has_speedtree_binary_is_case_insensitive() {
         let mut subs = vec![sub(b"MODL", b"trees\\foo.SPT\0")];
-        let tree = parse_tree(0, &subs);
+        let tree = parse_tree(0, &subs, &None);
         assert!(tree.has_speedtree_binary());
 
         // Sanity: a non-spt extension stays on the NIF route regardless
         // of case.
         subs[0] = sub(b"MODL", b"trees\\foo.NIF\0");
-        let nif = parse_tree(0, &subs);
+        let nif = parse_tree(0, &subs, &None);
         assert!(!nif.has_speedtree_binary());
     }
 }

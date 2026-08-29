@@ -2138,3 +2138,83 @@ fn sech_and_aopf_groups_dispatch_into_typed_audio_maps() {
         "OcclusionCydoniaDoor"
     );
 }
+
+// ── FormID remap sweep on the `records/` tier (#3400 / #3401) ─────────
+
+/// Source guard for the #3314 rule, extended to the record tier.
+///
+/// `read_record_header` remaps every record's own FormID, so `EsmIndex`'s
+/// maps are keyed in global space. A parser that reads an *embedded*
+/// FormID without applying the same remap therefore stores a key that
+/// misses every lookup the moment the remap is non-identity — which it is
+/// for the second and later plugin of any multi-master load order, and for
+/// every ESL by construction. #3314 made this structural for `cell/` by
+/// making the remap a required parameter of its `read_form_id`; this pins
+/// the same property for the `records/` parsers the #3400 / #3401 sweep
+/// covered.
+///
+/// Coarse by design, like `cell_loader::load`'s water-ordering guard: it
+/// reads the sources rather than the behaviour, because the alternative
+/// for a latent field with no consumer is no check at all.
+#[test]
+fn record_parsers_with_embedded_form_ids_take_a_remap() {
+    // (file, parser) pairs where the parser reads at least one FormID out
+    // of a sub-record body.
+    let sources: &[(&str, &str, &str)] = &[
+        ("scol.rs", include_str!("scol.rs"), "parse_scol"),
+        ("pkin.rs", include_str!("pkin.rs"), "parse_pkin"),
+        ("movs.rs", include_str!("movs.rs"), "parse_movs"),
+        (
+            "list_record.rs",
+            include_str!("list_record.rs"),
+            "parse_flst",
+        ),
+        ("tree.rs", include_str!("tree.rs"), "parse_tree"),
+        ("misc/world.rs", include_str!("misc/world.rs"), "parse_acti"),
+        ("misc/world.rs", include_str!("misc/world.rs"), "parse_navm"),
+        ("misc/world.rs", include_str!("misc/world.rs"), "parse_regn"),
+    ];
+    for (file, source, parser) in sources {
+        let at = source
+            .find(&format!("pub fn {parser}("))
+            .unwrap_or_else(|| panic!("{file} no longer defines {parser}"));
+        // The signature ends at the first `)` that closes the parameter
+        // list; `&Option<FormIdRemap>` must appear inside it.
+        let close = source[at..]
+            .find(") ->")
+            .unwrap_or_else(|| panic!("{parser} signature is unparseable"));
+        let signature = &source[at..at + close];
+        assert!(
+            signature.contains("remap: &Option<FormIdRemap>"),
+            "{file}::{parser} reads embedded FormIDs and must take the \
+             load-order remap (#3400 / #3401):\n{signature}",
+        );
+    }
+}
+
+/// The five hand-rolled copies of `remap_fid` that had grown up across
+/// `records/` are gone; `common::remap_fid` is the one definition. A
+/// sixth copy is how the rule drifts out of a parser again.
+#[test]
+fn remap_fid_has_exactly_one_definition() {
+    let sources = [
+        ("actor/mod.rs", include_str!("actor/mod.rs")),
+        ("container.rs", include_str!("container.rs")),
+        ("misc/pack.rs", include_str!("misc/pack.rs")),
+        ("misc/water.rs", include_str!("misc/water.rs")),
+        ("outfit.rs", include_str!("outfit.rs")),
+        ("scol.rs", include_str!("scol.rs")),
+        ("pkin.rs", include_str!("pkin.rs")),
+        ("misc/world.rs", include_str!("misc/world.rs")),
+    ];
+    for (file, source) in sources {
+        assert!(
+            !source.contains("fn remap_fid("),
+            "{file} re-defines remap_fid — import common::remap_fid instead",
+        );
+    }
+    assert!(
+        include_str!("common.rs").contains("pub fn remap_fid("),
+        "common.rs must own the single definition",
+    );
+}

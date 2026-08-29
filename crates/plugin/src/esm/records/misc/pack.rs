@@ -1,7 +1,7 @@
 //! `PACK` AI package records — 30-procedure scheduling system (guard
 //! patrols, merchant behavior, dialogue triggers, ambient idles).
 
-use super::super::common::{read_zstring, CommonNamedFields};
+use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
@@ -392,16 +392,6 @@ pub fn active_package<'a>(
     packages
         .into_iter()
         .find(|pk| pk.scheduled_active_at(hour) && condition_met(pk))
-}
-
-/// Remap a raw plugin-local FormID to global space, leaving 0 (no
-/// FormID / null ref) untouched. Mirrors the null-guard in
-/// `remap_condition_form_ids` for the single-field PLDT case.
-fn remap_fid(raw: u32, remap: &Option<crate::esm::reader::FormIdRemap>) -> u32 {
-    if raw == 0 {
-        return 0;
-    }
-    remap.as_ref().map_or(raw, |r| r.remap(raw))
 }
 
 fn parse_location(

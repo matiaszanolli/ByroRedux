@@ -1,22 +1,11 @@
 //! Water record (`WATR`) and decoded water parameters.
 
-use super::super::common::{read_zstring, CommonNamedFields};
+use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use byroredux_core::ecs::components::water::{
     DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
 };
-
-/// Remap a raw plugin-local FormID to global space, leaving 0 (no
-/// FormID / null ref) untouched. Same convention as `outfit.rs` / `actor.rs`'s
-/// `remap_fid` — kept local rather than shared since neither module depends
-/// on the other's record types.
-fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
-    if raw == 0 {
-        return 0;
-    }
-    remap.as_ref().map_or(raw, |r| r.remap(raw))
-}
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
 /// cell). Pre-fix every XCWT reference dangled at cell load.

@@ -57,12 +57,21 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         b"NAVI" => extract_records(reader, end, b"NAVI", &mut |fid, subs| {
             index.navi_info.insert(fid, parse_navi(fid, subs));
         })?,
-        b"NAVM" => extract_records(reader, end, b"NAVM", &mut |fid, subs| {
-            index.navmeshes.insert(fid, parse_navm(fid, subs));
-        })?,
-        b"REGN" => extract_records(reader, end, b"REGN", &mut |fid, subs| {
-            index.regions.insert(fid, parse_regn(fid, subs));
-        })?,
+        // #3401 — both carry embedded FormIDs (NAVM: parent cell,
+        // cross-tile mesh, door REFR; REGN: weather / sound / object /
+        // imposter forms).
+        b"NAVM" => {
+            let remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"NAVM", &mut |fid, subs| {
+                index.navmeshes.insert(fid, parse_navm(fid, subs, &remap));
+            })?
+        }
+        b"REGN" => {
+            let remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"REGN", &mut |fid, subs| {
+                index.regions.insert(fid, parse_regn(fid, subs, &remap));
+            })?
+        }
         b"ECZN" => extract_records(reader, end, b"ECZN", &mut |fid, subs| {
             index.encounter_zones.insert(fid, parse_eczn(fid, subs));
         })?,

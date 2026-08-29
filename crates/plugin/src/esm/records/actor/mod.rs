@@ -8,7 +8,7 @@
 //! `parse_qust` / `parse_perk` / `parse_avif` / `parse_dial` / `parse_info`
 //! use — see #1996.
 
-use super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
+use super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -816,17 +816,6 @@ pub struct FactionRecord {
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────
-
-/// Remap a raw plugin-local FormID to global space, leaving 0 (no
-/// FormID / null ref) untouched. Same convention as `misc/ai.rs`'s
-/// `remap_fid` — kept local rather than shared since neither module
-/// depends on the other's record types.
-fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
-    if raw == 0 {
-        return 0;
-    }
-    remap.as_ref().map_or(raw, |r| r.remap(raw))
-}
 
 pub fn parse_npc(
     form_id: u32,

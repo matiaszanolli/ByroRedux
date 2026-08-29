@@ -30,9 +30,13 @@ pub(super) fn dispatch_world_placement_group(
         // `cells.statics` for the existing REFR placement path.
         // Same fused-walk pattern as WEAP / ARMO etc. so we don't
         // pay for the sub-record decode twice.
-        b"TREE" => extract_records_with_modl(reader, end, b"TREE", statics, &mut |fid, subs| {
-            index.trees.insert(fid, parse_tree(fid, subs));
-        })?,
+        b"TREE" => {
+            // #3401 — `PFIG` names the harvested INGR/ALCH.
+            let remap = reader.get_form_id_remap();
+            extract_records_with_modl(reader, end, b"TREE", statics, &mut |fid, subs| {
+                index.trees.insert(fid, parse_tree(fid, subs, &remap));
+            })?
+        }
         _ => unreachable!("dispatch_world_placement_group: unexpected label {label:?}"),
     }
     Ok(())

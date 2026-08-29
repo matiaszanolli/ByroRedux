@@ -276,12 +276,7 @@ pub(crate) fn build_static_object_from_subs(
                 // reads it yet (settlement power circuits), but it is stored
                 // for one, so it is remapped at decode time rather than
                 // leaving a raw value for a future consumer to trip over.
-                let raw = u32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]);
+                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 xpwr_form_id = Some(remap.as_ref().map_or(raw, |r| r.remap(raw)));
             }
             b"DATA" if is_addn && sub.data.len() >= 4 => {
@@ -569,7 +564,13 @@ pub(crate) fn parse_scol_group(
         let header = reader.read_record_header()?;
         if &header.record_type == b"SCOL" {
             let subs = reader.read_sub_records(&header)?;
-            let record = crate::esm::records::parse_scol(header.form_id, &subs);
+            // #3400 — same `reader.get_form_id_remap()` its sibling
+            // `parse_modl_group` already resolves; SCOL's ONAM/FLTR
+            // children are keyed in global space like every other index
+            // map. Read per record so a nested GRUP recursion can't
+            // outlive the reader's current plugin.
+            let remap = reader.get_form_id_remap();
+            let record = crate::esm::records::parse_scol(header.form_id, &subs, &remap);
             // Preserve the MODL-backed StaticObject entry so REFR
             // resolution against the SCOL form ID keeps finding the
             // cached combined mesh. Mirror `parse_modl_group`'s
@@ -638,7 +639,9 @@ pub(crate) fn parse_pkin_group(
         let header = reader.read_record_header()?;
         if &header.record_type == b"PKIN" {
             let subs = reader.read_sub_records(&header)?;
-            let record = crate::esm::records::parse_pkin(header.form_id, &subs);
+            // #3400 — see `parse_scol_group`.
+            let remap = reader.get_form_id_remap();
+            let record = crate::esm::records::parse_pkin(header.form_id, &subs, &remap);
             // Register a nominal StaticObject so REFR base-form lookup
             // succeeds. Empty `model_path` + `contents.len() > 0` is
             // the cell loader's expansion trigger (see
@@ -703,7 +706,9 @@ pub(crate) fn parse_movs_group(
         let header = reader.read_record_header()?;
         if &header.record_type == b"MOVS" {
             let subs = reader.read_sub_records(&header)?;
-            let record = crate::esm::records::parse_movs(header.form_id, &subs);
+            // #3401 — see `parse_scol_group`.
+            let remap = reader.get_form_id_remap();
+            let record = crate::esm::records::parse_movs(header.form_id, &subs, &remap);
             // Preserve the MODL-backed StaticObject entry so REFR
             // resolution against the MOVS form ID keeps finding the
             // visual mesh. Mirror `parse_modl_group`'s defaults
