@@ -65,7 +65,15 @@ use super::transform::Transform;
 ///   physical scale directly and are excluded rather than guessed at).
 /// * **Reversed-Z** (far→0 plus `GREATER_OR_EQUAL` depth compare) is the
 ///   actual, complete fix, and pairs with `D32_SFLOAT` to give near-uniform
-///   world-space resolution at any near-plane value. It is deliberately
+///   world-space resolution at any near-plane value. Both halves of that
+///   claim are now measured rather than asserted, by
+///   [`Camera::depth_resolution_at_reversed`] — at the same 250 000 BU ring
+///   it resolves **0.0057 world units** (against the raised near plane's
+///   745), and moving `near` 50× shifts it by under 2× where the
+///   conventional mapping moves ~50×. So the shipped near-plane fix reduced
+///   the motivation for reversed-Z by 50× but left ~130 000× on the table:
+///   745 BU is still ~10 m of depth quantisation at the ring, which distant
+///   LOD objects standing on LOD terrain sit well inside. It is deliberately
 ///   *not* done: investigating it (#3308) found it touches the projection,
 ///   the depth clear, both static AND dynamic pipeline compare state (the
 ///   latter driven live, per draw batch, from authored Gamebryo Z-test
@@ -190,6 +198,49 @@ impl Camera {
         ulp * (f - n) * distance * distance / (f * n)
     }
 
+    /// The same measurement as [`Self::depth_resolution_at`], but for the
+    /// **reversed-Z** mapping this engine does *not* currently use
+    /// (near→1, far→0, `GREATER_OR_EQUAL` compare).
+    ///
+    /// Exists to make the reversed-Z payoff a measured number instead of an
+    /// assertion, and to give whoever eventually does that work an analytic
+    /// target to validate a GPU depth capture against — the comparison gate
+    /// #3308's step 2 asks for, in the half that *is* `cargo test`-visible.
+    /// Nothing in the render path reads this; it is a policy-measurement
+    /// sibling, exactly like the function above.
+    ///
+    /// Derivation — reversed-Z encodes `z_ndc(d) = (n/d - n/f) / (1 - n/f)`,
+    /// which is `1` at the near plane and `0` at the far plane. Its slope is
+    /// `n·f / ((f - n)·d²)` in magnitude — the same factor as the
+    /// conventional mapping, since the two differ only by the affine flip
+    /// `z ↦ 1 - z`. **All** the difference is in where the f32 exponent
+    /// lands: conventional crowds distant samples against 1.0, where f32
+    /// steps are coarsest, while reversed puts them near 0.0, where they are
+    /// finest. Taking the ulp at the actual encoded value (as the sibling
+    /// does) is therefore what makes the comparison honest rather than an
+    /// assumed worst case.
+    ///
+    /// Same degenerate-input contract as [`Self::depth_resolution_at`].
+    pub fn depth_resolution_at_reversed(&self, distance: f32) -> f32 {
+        let (n, f) = (self.near, self.far);
+        if !(distance.is_finite() && n.is_finite() && f.is_finite()) {
+            return 0.0;
+        }
+        if n <= 0.0 || f <= n || distance <= n {
+            return 0.0;
+        }
+        let ndc = (n / distance - n / f) / (1.0 - n / f);
+        // One f32 step at the encoded depth value. Guard the exact-zero case
+        // (`distance == f`), where `to_bits() + 1` would step off the
+        // subnormal floor and report a meaningless resolution.
+        let ulp = if ndc > 0.0 {
+            f32::from_bits(ndc.to_bits() + 1) - ndc
+        } else {
+            return 0.0;
+        };
+        ulp * (f - n) * distance * distance / (f * n)
+    }
+
     /// Build a view matrix from the camera entity's transform.
     ///
     /// The transform's translation is the camera position.
@@ -237,6 +288,87 @@ impl Resource for ActiveCamera {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// #3308 — the reversed-Z payoff, measured rather than asserted. These
+    /// are the numbers the issue's "is it still worth the blast radius?"
+    /// question turns on, and the analytic target a future GPU depth capture
+    /// validates against.
+    ///
+    /// At the 250 000 BU LOD ring:
+    ///
+    /// | mapping | `near = 0.1` | `near = 5.0` |
+    /// |---|---:|---:|
+    /// | conventional | 37 252.89 | 745.05 |
+    /// | reversed | 0.0089 | 0.0057 |
+    ///
+    /// The near-plane fix already shipped (`for_content_scale`) bought 50×;
+    /// reversed-Z is worth a further ~130 000× on top of it, so raising
+    /// `near` reduced the motivation for reversed-Z but nowhere near
+    /// removed it — 745 BU is still ~10 m of depth quantisation, which
+    /// distant LOD objects standing on LOD terrain are well inside.
+    #[test]
+    fn reversed_z_resolution_is_orders_better_at_the_lod_ring() {
+        const RING: f32 = 250_000.0;
+        for cam in [Camera::default(), Camera::for_content_scale(true)] {
+            let conventional = cam.depth_resolution_at(RING);
+            let reversed = cam.depth_resolution_at_reversed(RING);
+            assert!(
+                reversed > 0.0 && reversed < 1.0,
+                "reversed-Z must resolve to sub-world-unit at the ring, got {reversed}"
+            );
+            assert!(
+                conventional / reversed > 10_000.0,
+                "reversed-Z must be orders of magnitude finer at the ring \
+                 (conventional {conventional}, reversed {reversed})"
+            );
+        }
+    }
+
+    /// The property that makes reversed-Z *the* fix rather than another
+    /// tuning knob: its resolution is near-uniform with distance and barely
+    /// depends on the near plane, whereas the conventional mapping degrades
+    /// quadratically and is dominated by `near`.
+    #[test]
+    fn reversed_z_is_near_plane_insensitive_unlike_the_conventional_mapping() {
+        const RING: f32 = 250_000.0;
+        let unit = Camera::default();
+        let bu = Camera::for_content_scale(true);
+
+        // Conventional: raising `near` 50× changes the answer by ~50×.
+        let conventional_ratio = unit.depth_resolution_at(RING) / bu.depth_resolution_at(RING);
+        assert!(
+            conventional_ratio > 40.0,
+            "the conventional mapping must be strongly near-plane dependent, got {conventional_ratio}"
+        );
+
+        // Reversed: the same 50× near-plane change moves it by under 2×.
+        let a = unit.depth_resolution_at_reversed(RING);
+        let b = bu.depth_resolution_at_reversed(RING);
+        let reversed_ratio = if a > b { a / b } else { b / a };
+        assert!(
+            reversed_ratio < 2.0,
+            "reversed-Z must be near-plane insensitive, got {reversed_ratio} ({a} vs {b})"
+        );
+    }
+
+    /// Same degenerate-input contract as the conventional sibling, plus the
+    /// `distance == far` case, where the encoded value is exactly 0.0 and
+    /// stepping its bits would report a meaningless subnormal resolution.
+    #[test]
+    fn reversed_z_rejects_degenerate_inputs() {
+        let cam = Camera::default();
+        assert_eq!(cam.depth_resolution_at_reversed(cam.near), 0.0);
+        assert_eq!(cam.depth_resolution_at_reversed(0.0), 0.0);
+        assert_eq!(cam.depth_resolution_at_reversed(f32::NAN), 0.0);
+        assert_eq!(cam.depth_resolution_at_reversed(f32::INFINITY), 0.0);
+        // At and beyond the far plane the encoded depth is <= 0.
+        assert_eq!(cam.depth_resolution_at_reversed(cam.far), 0.0);
+
+        let inverted = Camera::new(FRAC_PI_4, 1.0, 10.0, 1.0);
+        assert_eq!(inverted.depth_resolution_at_reversed(5.0), 0.0);
+        let zero_near = Camera::new(FRAC_PI_4, 1.0, 0.0, 100.0);
+        assert_eq!(zero_near.depth_resolution_at_reversed(50.0), 0.0);
+    }
+
     use crate::math::{Quat, Vec3, Vec4};
     use std::f32::consts::FRAC_PI_4;
 
