@@ -1481,3 +1481,204 @@ fn fact_without_wmi1_has_no_reputation_binding() {
         "a null WMI1 payload is 'no binding', not a binding to FormID 0"
     );
 }
+
+// ── RACE head-part section gating (#3419) + per-game index table (#3420) ──
+
+/// #3419 (FNV-2026-08-27-D4-03). FO3 / FNV RACE records re-use `INDX`
+/// — with its own 0..3 numbering and its own `MNAM` / `FNAM` markers —
+/// for the *body* section opened by `NAM1`. Pre-fix the accumulator
+/// pushed every `INDX`+`MODL` pair into `head_parts`, so
+/// `UpperBody.nif` landed under the Head role, `RightHand.nif` under
+/// FNV's Mouth, and an `.egt` texture path under Teeth (lower).
+/// Layout mirrors `CaucasianOldAged` (`000987DF`).
+#[test]
+fn race_head_parts_stop_at_the_body_section_marker() {
+    let subs = vec![
+        sub(b"EDID", b"CaucasianOldAged\0"),
+        sub(b"NAM0", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\HeadOld.NIF\0"),
+        sub(b"INDX", &6u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\EyeLeftHuman.NIF\0"),
+        sub(b"FNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\HeadOldFemale.NIF\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"characters\\_Male\\UpperBody.nif\0"),
+        sub(b"INDX", &2u32.to_le_bytes()),
+        sub(b"MODL", b"characters\\_Male\\RightHand.nif\0"),
+        sub(b"INDX", &3u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\_Male\\UpperBodyHumanMale.egt\0"),
+    ];
+    let race = parse_race(0x000987DF, &subs, GameKind::Fallout3NV);
+
+    assert_eq!(
+        race.head_parts,
+        vec![
+            (0, "Characters\\Head\\HeadOld.NIF".to_string(), Some(0)),
+            (6, "Characters\\Head\\EyeLeftHuman.NIF".to_string(), Some(0)),
+            (
+                0,
+                "Characters\\Head\\HeadOldFemale.NIF".to_string(),
+                Some(1)
+            ),
+        ],
+        "only the NAM0 head section may reach head_parts (#3419)",
+    );
+    assert_eq!(
+        race.body_models.len(),
+        6,
+        "body_models stays the flat every-MODL list it has always been",
+    );
+}
+
+/// Oblivion authors one ungendered head run (`NAM0` with no MNAM /
+/// FNAM at all) and a body section whose `INDX` entries carry only
+/// `ICON`. The section gate must leave that arm's entries untagged —
+/// the spawner's `section.is_none_or(...)` rule depends on it.
+#[test]
+fn race_oblivion_head_section_stays_untagged() {
+    let subs = vec![
+        sub(b"EDID", b"Imperial\0"),
+        sub(b"NAM0", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Imperial\\HeadHuman.nif\0"),
+        sub(b"INDX", &7u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Imperial\\EyeLeftHuman.nif\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Imperial\\UpperBody.dds\0"),
+    ];
+    let race = parse_race(0x00000907, &subs, GameKind::Oblivion);
+
+    assert_eq!(
+        race.head_parts,
+        vec![
+            (0, "Characters\\Imperial\\HeadHuman.nif".to_string(), None),
+            (
+                7,
+                "Characters\\Imperial\\EyeLeftHuman.nif".to_string(),
+                None
+            ),
+        ],
+    );
+}
+
+/// #3420. The raw `INDX` number is not portable: Oblivion carries a
+/// second ear slot that FO3 / FNV drop, shifting every role below it.
+/// Hard-coding the Fallout eye pair (6 / 7) selected the *tongue* and
+/// the *left* eye on Oblivion.
+#[test]
+fn head_part_index_table_differs_per_game() {
+    use head_part::{index_of, Role};
+
+    assert_eq!(index_of(GameKind::Oblivion, Role::Head), Some(0));
+    assert_eq!(index_of(GameKind::Oblivion, Role::Mouth), Some(3));
+    assert_eq!(index_of(GameKind::Oblivion, Role::LeftEye), Some(7));
+    assert_eq!(index_of(GameKind::Oblivion, Role::RightEye), Some(8));
+
+    assert_eq!(index_of(GameKind::Fallout3NV, Role::Head), Some(0));
+    assert_eq!(index_of(GameKind::Fallout3NV, Role::Mouth), Some(2));
+    assert_eq!(index_of(GameKind::Fallout3NV, Role::LeftEye), Some(6));
+    assert_eq!(index_of(GameKind::Fallout3NV, Role::RightEye), Some(7));
+    assert_eq!(
+        index_of(GameKind::Fallout3NV, Role::EarMale),
+        index_of(GameKind::Fallout3NV, Role::EarFemale),
+        "FNV splits ears by MNAM/FNAM section, not by index",
+    );
+
+    // Skyrim+ moved head parts out to standalone HDPT records.
+    assert_eq!(index_of(GameKind::Skyrim, Role::Head), None);
+    assert_eq!(index_of(GameKind::Starfield, Role::LeftEye), None);
+}
+
+/// Real-data pin for #3418 + #3419 over every `FalloutNV.esm` RACE:
+/// no head-part entry may be a body mesh or an `.egt` texture, and the
+/// `Head` role must resolve to a *different* mesh per gender (all 22
+/// vanilla races author a distinct female head, which pre-#3418 no
+/// female NPC ever received).
+#[test]
+#[ignore]
+fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = crate::esm::records::parse_esm(&data).expect("parse_esm");
+    assert!(!index.races.is_empty(), "FNV must ship RACE records");
+
+    let head_idx = head_part::index_of(GameKind::Fallout3NV, head_part::Role::Head).unwrap();
+    let mut gendered_heads = 0usize;
+    for race in index.races.values() {
+        for (idx, path, section) in &race.head_parts {
+            let lower = path.to_ascii_lowercase();
+            assert!(
+                !lower.ends_with(".egt"),
+                "RACE {:08X} head part {idx} is an .egt texture: {path} (#3419)",
+                race.form_id,
+            );
+            assert!(
+                !lower.starts_with("characters\\_male\\"),
+                "RACE {:08X} head part {idx} is a body mesh: {path} (#3419)",
+                race.form_id,
+            );
+            let _ = section;
+        }
+        let head_for = |tag: u8| {
+            race.head_parts
+                .iter()
+                .find(|(idx, path, section)| {
+                    *idx == head_idx && !path.is_empty() && section.is_none_or(|s| s == tag)
+                })
+                .map(|(_, path, _)| path.to_ascii_lowercase())
+        };
+        if let (Some(male), Some(female)) = (head_for(0), head_for(1)) {
+            if male != female {
+                gendered_heads += 1;
+            }
+        }
+    }
+    assert!(
+        gendered_heads >= 20,
+        "FNV authors a distinct female head on ~all races; found {gendered_heads} (#3418)",
+    );
+}
+
+/// Real-data pin for #3420's Oblivion arm: `Imperial` (`00000907`)
+/// authors the nine-slot head table, so the eyes sit at 7 / 8 and the
+/// tongue — not an eye — sits at 6.
+#[test]
+#[ignore]
+fn parse_real_oblivion_race_head_part_indices() {
+    let path = crate::esm::test_paths::oblivion_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = crate::esm::records::parse_esm(&data).expect("parse_esm");
+    let race = index
+        .races
+        .get(&0x0000_0907)
+        .expect("Oblivion.esm must ship Imperial 00000907");
+
+    let path_at = |role| {
+        let want = head_part::index_of(GameKind::Oblivion, role).unwrap();
+        race.head_parts
+            .iter()
+            .find(|(idx, _, _)| *idx == want)
+            .map(|(_, path, _)| path.to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    assert!(path_at(head_part::Role::Head).ends_with("headhuman.nif"));
+    assert!(path_at(head_part::Role::Mouth).ends_with("mouthhuman.nif"));
+    assert!(path_at(head_part::Role::Tongue).ends_with("tonguehuman.nif"));
+    assert!(path_at(head_part::Role::LeftEye).ends_with("eyelefthuman.nif"));
+    assert!(path_at(head_part::Role::RightEye).ends_with("eyerighthuman.nif"));
+}

@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::cell_loader::FrameTimeBudget;
+use byroredux_plugin::esm::records::actor::head_part;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,6 +73,10 @@ struct RuntimeNpcState {
     hair_path: Option<String>,
     brow_path: Option<String>,
     eye_paths: Vec<String>,
+    /// Mouth / teeth / tongue (and, on Oblivion, ears) — the head
+    /// sub-meshes that are *not* eyes, so they take no eye texture
+    /// override. #3420.
+    head_sub_paths: Vec<String>,
     eye_texture_override: Option<String>,
     inventory: Option<Inventory>,
     equipment_slots: Option<EquipmentSlots>,
@@ -89,6 +94,7 @@ enum RuntimePhase {
     Hair,
     Brow,
     Eye(usize),
+    HeadSubPart(usize),
     Armor(usize),
     Finalize,
 }
@@ -303,6 +309,7 @@ impl NpcSpawnState {
                 RuntimePhase::Hair => "hair",
                 RuntimePhase::Brow => "brow",
                 RuntimePhase::Eye(_) => "eye",
+                RuntimePhase::HeadSubPart(_) => "head sub-part",
                 RuntimePhase::Armor(_) => "armor",
                 RuntimePhase::Finalize => "finalization",
             },
@@ -315,6 +322,47 @@ impl NpcSpawnState {
             Self::Done => "completed actor",
         }
     }
+}
+
+/// Every RACE head-part mesh matching one of `roles`, in role order,
+/// filtered to the section this actor's gender may wear.
+///
+/// The `section.is_none_or(...)` rule is the one the eye selector has
+/// used since #3037: an untagged entry is shared (that is how Oblivion
+/// authors its whole head section), a tagged one only applies to its
+/// own gender. Roles a game does not author simply contribute nothing.
+fn head_part_paths(
+    race: &RaceRecord,
+    game: GameKind,
+    roles: &[head_part::Role],
+    want_gender_tag: u8,
+) -> Vec<String> {
+    roles
+        .iter()
+        .filter_map(|role| head_part::index_of(game, *role))
+        .flat_map(|want_idx| {
+            race.head_parts
+                .iter()
+                .filter(move |(part_idx, path, section)| {
+                    *part_idx == want_idx
+                        && !path.is_empty()
+                        && section.is_none_or(|tag| tag == want_gender_tag)
+                })
+                .map(|(_, path, _)| path.clone())
+        })
+        .collect()
+}
+
+/// The single RACE head-part mesh for `role`, for this actor's gender.
+fn head_part_path(
+    race: &RaceRecord,
+    game: GameKind,
+    role: head_part::Role,
+    want_gender_tag: u8,
+) -> Option<String> {
+    head_part_paths(race, game, &[role], want_gender_tag)
+        .into_iter()
+        .next()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -380,9 +428,26 @@ fn prepare_runtime_state(
         .map(|path| (*path).to_owned())
         .collect();
 
+    let want_gender_tag = match gender {
+        Gender::Male => 0,
+        Gender::Female => 1,
+    };
+    // #3418 — the head is the `head_part::Role::Head` entry of the RACE
+    // head section, picked for this actor's gender. It used to be
+    // `body_models.first()`, an append-ordered list of *every* `MODL`
+    // in the record: on FNV that is always the male head, because the
+    // record opens `NAM0` → `MNAM` → `INDX 0` → `MODL`. All 22 vanilla
+    // FNV races author a distinct female head in the `FNAM` half, so
+    // every one of the 987 female NPCs got the male base mesh — and
+    // then had its female-authored FGGS/FGGA morph deltas applied to
+    // it. `body_models.first()` stays as the fallback for records with
+    // no head-part table (Skyrim+, or a malformed head section).
     let head_path = race
-        .and_then(|race| race.body_models.first())
-        .map(|path| normalize_mesh_path(path).into_owned());
+        .and_then(|race| {
+            head_part_path(race, game, head_part::Role::Head, want_gender_tag)
+                .or_else(|| race.body_models.first().cloned())
+        })
+        .map(|path| normalize_mesh_path(&path).into_owned());
     if head_path.is_none() {
         log::debug!(
             "NPC {:08X} ({}): race {:08X} has no head MODL — skipping head mesh",
@@ -408,21 +473,40 @@ fn prepare_runtime_state(
         .and_then(|form_id| index.eyes.get(&form_id))
         .map(|eyes| eyes.icon_path.clone())
         .filter(|path| !path.is_empty());
-    let want_gender_tag = match gender {
-        Gender::Male => 0,
-        Gender::Female => 1,
-    };
+    // The eye indices are per-game: 6/7 on FO3 / FNV but 7/8 on
+    // Oblivion, where hard-coding the Fallout pair selected the tongue
+    // and the left eye — and then painted the eye texture over both
+    // (#3420).
     let eye_paths = if recipe.is_some() {
-        race.into_iter()
-            .flat_map(|race| race.head_parts.iter())
-            .filter(|(part_idx, path, section)| {
-                (*part_idx == byroredux_plugin::esm::records::actor::head_part::LEFT_EYE
-                    || *part_idx == byroredux_plugin::esm::records::actor::head_part::RIGHT_EYE)
-                    && !path.is_empty()
-                    && section.is_none_or(|tag| tag == want_gender_tag)
-            })
-            .map(|(_, path, _)| path.clone())
-            .collect()
+        race.map(|race| {
+            head_part_paths(
+                race,
+                game,
+                &[head_part::Role::LeftEye, head_part::Role::RightEye],
+                want_gender_tag,
+            )
+        })
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // #3420 — mouth, both teeth rows and the tongue are separate NIFs
+    // in every Oblivion / FO3 / FNV race; the head mesh models the lips
+    // but not the oral cavity, so without these the jaw opens onto a
+    // hole. Ears are a mesh on Oblivion and an `ICON`-only slot on
+    // FNV, and their gender split is by index rather than by section,
+    // so they are resolved separately.
+    let head_sub_paths = if recipe.is_some() {
+        race.map(|race| {
+            let ear_role = match gender {
+                Gender::Male => head_part::Role::EarMale,
+                Gender::Female => head_part::Role::EarFemale,
+            };
+            let mut roles = head_part::ORAL_ROLES.to_vec();
+            roles.push(ear_role);
+            head_part_paths(race, game, &roles, want_gender_tag)
+        })
+        .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -449,6 +533,7 @@ fn prepare_runtime_state(
         hair_path,
         brow_path,
         eye_paths,
+        head_sub_paths,
         eye_texture_override,
         inventory: Some(equip.inventory),
         equipment_slots: Some(equip.equipment_slots),
@@ -521,6 +606,7 @@ fn prepare_creature_state(
         hair_path: None,
         brow_path: None,
         eye_paths: Vec::new(),
+        head_sub_paths: Vec::new(),
         eye_texture_override: None,
         inventory: Some(equip.inventory),
         equipment_slots: Some(equip.equipment_slots),
@@ -682,7 +768,7 @@ fn advance_runtime_unit(
         }
         RuntimePhase::Eye(index) => {
             let Some(path) = state.eye_paths.get(index).cloned() else {
-                state.phase = RuntimePhase::Armor(0);
+                state.phase = RuntimePhase::HeadSubPart(0);
                 return UnitOutcome::Continue;
             };
             if state.skel_root.is_some() {
@@ -719,6 +805,37 @@ fn advance_runtime_unit(
             let next = index + 1;
             state.phase = if next < state.eye_paths.len() {
                 RuntimePhase::Eye(next)
+            } else {
+                RuntimePhase::HeadSubPart(0)
+            };
+            UnitOutcome::Continue
+        }
+        // Mouth / teeth / tongue / ears. Same mount as the eyes — one
+        // shared-skeleton part each — but deliberately outside the eye
+        // loop: the `ENAM` eye-texture override belongs to the eyes
+        // alone, and painting it over the tongue is exactly the
+        // Oblivion misfire #3420 fixed on the selector side.
+        RuntimePhase::HeadSubPart(index) => {
+            let Some(path) = state.head_sub_paths.get(index).cloned() else {
+                state.phase = RuntimePhase::Armor(0);
+                return UnitOutcome::Continue;
+            };
+            if state.skel_root.is_some() {
+                spawn_shared_skeleton_part(
+                    state,
+                    world,
+                    ctx,
+                    npc,
+                    &path,
+                    "head sub-part",
+                    tex_provider,
+                    mat_provider,
+                    None,
+                );
+            }
+            let next = index + 1;
+            state.phase = if next < state.head_sub_paths.len() {
+                RuntimePhase::HeadSubPart(next)
             } else {
                 RuntimePhase::Armor(0)
             };
@@ -1254,6 +1371,143 @@ fn parent_part(world: &mut World, placement_root: EntityId, part_root: EntityId)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `CaucasianOldAged` (`000987DF`) head section, as parsed from
+    /// `FalloutNV.esm`: every role authored twice, once per gender.
+    fn fnv_race() -> RaceRecord {
+        RaceRecord {
+            form_id: 0x000987DF,
+            editor_id: "CaucasianOldAged".to_string(),
+            head_parts: vec![
+                (0, r"Characters\Head\HeadOld.NIF".into(), Some(0)),
+                (2, r"Characters\Head\MouthHuman.NIF".into(), Some(0)),
+                (3, r"Characters\Head\TeethLowerHuman.NIF".into(), Some(0)),
+                (4, r"Characters\Head\TeethUpperHuman.NIF".into(), Some(0)),
+                (5, r"Characters\Head\TongueHuman.NIF".into(), Some(0)),
+                (6, r"Characters\Head\EyeLeftHuman.NIF".into(), Some(0)),
+                (7, r"Characters\Head\EyeRightHuman.NIF".into(), Some(0)),
+                (0, r"Characters\Head\HeadOldFemale.NIF".into(), Some(1)),
+                (2, r"Characters\Head\MouthHuman.NIF".into(), Some(1)),
+                (6, r"Characters\Head\EyeLeftHumanFemale.NIF".into(), Some(1)),
+                (
+                    7,
+                    r"Characters\Head\EyeRightHumanFemale.NIF".into(),
+                    Some(1),
+                ),
+            ],
+            // The flat list the head used to be read from: male head first.
+            body_models: vec![
+                r"Characters\Head\HeadOld.NIF".into(),
+                r"Characters\Head\HeadOldFemale.NIF".into(),
+            ],
+            ..RaceRecord::default()
+        }
+    }
+
+    /// #3418 (FNV-2026-08-27-D4-02) — the head used to be
+    /// `body_models.first()`, which is the male head on all 22 vanilla
+    /// FNV races. Every female NPC then had its female-authored FGGS /
+    /// FGGA morph deltas applied to the male base mesh.
+    #[test]
+    fn fnv_head_is_selected_per_gender() {
+        let race = fnv_race();
+        assert_eq!(
+            head_part_path(&race, GameKind::Fallout3NV, head_part::Role::Head, 0).as_deref(),
+            Some(r"Characters\Head\HeadOld.NIF"),
+        );
+        assert_eq!(
+            head_part_path(&race, GameKind::Fallout3NV, head_part::Role::Head, 1).as_deref(),
+            Some(r"Characters\Head\HeadOldFemale.NIF"),
+            "the female head is authored and tagged — pre-#3418 it was never read",
+        );
+    }
+
+    /// A race with no head-part table at all (Skyrim+, or a malformed
+    /// head section) must keep falling back to `body_models.first()`.
+    #[test]
+    fn head_falls_back_to_body_models_without_a_head_part_table() {
+        let race = RaceRecord {
+            body_models: vec!["fallback.nif".into()],
+            ..RaceRecord::default()
+        };
+        assert_eq!(
+            head_part_path(&race, GameKind::Skyrim, head_part::Role::Head, 1),
+            None,
+            "Skyrim authors no RACE head-part table",
+        );
+        assert_eq!(
+            race.body_models.first().map(String::as_str),
+            Some("fallback.nif")
+        );
+    }
+
+    /// #3420 — the head sub-parts the spawner mounts beside the eyes.
+    /// Pre-fix mouth / teeth / tongue were parsed, indexed and dropped,
+    /// leaving every FNV NPC with a hole behind the lips.
+    #[test]
+    fn fnv_head_sub_parts_cover_the_oral_cavity() {
+        let race = fnv_race();
+        let male = head_part_paths(&race, GameKind::Fallout3NV, &head_part::ORAL_ROLES, 0);
+        assert_eq!(
+            male,
+            vec![
+                r"Characters\Head\MouthHuman.NIF".to_string(),
+                r"Characters\Head\TeethLowerHuman.NIF".to_string(),
+                r"Characters\Head\TeethUpperHuman.NIF".to_string(),
+                r"Characters\Head\TongueHuman.NIF".to_string(),
+            ],
+        );
+        // The female section of this fixture authors only the mouth —
+        // an actor never picks up the other gender's meshes.
+        assert_eq!(
+            head_part_paths(&race, GameKind::Fallout3NV, &head_part::ORAL_ROLES, 1),
+            vec![r"Characters\Head\MouthHuman.NIF".to_string()],
+        );
+    }
+
+    /// #3420's Oblivion arm. Its nine-slot table puts the eyes at 7 / 8,
+    /// so the hard-coded Fallout pair (6 / 7) selected the *tongue* and
+    /// the left eye — and the spawner then painted the actor's eye
+    /// texture over both. Oblivion's head section is ungendered, so
+    /// every entry is `None`-tagged and applies to either gender.
+    #[test]
+    fn oblivion_eye_roles_skip_the_tongue() {
+        let race = RaceRecord {
+            head_parts: vec![
+                (0, r"Characters\Imperial\HeadHuman.nif".into(), None),
+                (1, r"Characters\Imperial\EarsHuman.nif".into(), None),
+                (2, r"Characters\Imperial\EarsHuman.nif".into(), None),
+                (3, r"Characters\Imperial\MouthHuman.nif".into(), None),
+                (4, r"Characters\Imperial\TeethLowerHuman.nif".into(), None),
+                (5, r"Characters\Imperial\TeethUpperHuman.nif".into(), None),
+                (6, r"Characters\Imperial\TongueHuman.nif".into(), None),
+                (7, r"Characters\Imperial\EyeLeftHuman.nif".into(), None),
+                (8, r"Characters\Imperial\EyeRightHuman.nif".into(), None),
+            ],
+            ..RaceRecord::default()
+        };
+        let eyes = head_part_paths(
+            &race,
+            GameKind::Oblivion,
+            &[head_part::Role::LeftEye, head_part::Role::RightEye],
+            1,
+        );
+        assert_eq!(
+            eyes,
+            vec![
+                r"Characters\Imperial\EyeLeftHuman.nif".to_string(),
+                r"Characters\Imperial\EyeRightHuman.nif".to_string(),
+            ],
+        );
+        assert!(
+            !eyes.iter().any(|path| path.contains("Tongue")),
+            "the tongue is index 6 on Oblivion, not an eye",
+        );
+        assert_eq!(
+            head_part_path(&race, GameKind::Oblivion, head_part::Role::EarFemale, 1).as_deref(),
+            Some(r"Characters\Imperial\EarsHuman.nif"),
+        );
+    }
 
     #[test]
     fn constructors_do_not_mutate_world_before_budget_admits_first_unit() {

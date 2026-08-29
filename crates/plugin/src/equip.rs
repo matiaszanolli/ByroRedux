@@ -1779,4 +1779,39 @@ mod arma_alternative_gate_tests {
             "#3357 must survive: 0-mask ARMAs are all kept"
         );
     }
+
+    /// #3417 — `p2-melee-core.sh`'s Skyrim arm pins the weapon leaf its
+    /// frozen draugr (`000383F7` / base `000E9895`) is expected to
+    /// carry. The fixture used to also pin `DraugrBattleAxe`
+    /// (`0001CB64`), which the level-1 half of `LItemDraugr02Weapon2H`
+    /// (`00024300`) does author — but this expander is deliberately
+    /// single-pick and RNG-free (#3217), so the tie resolves to exactly
+    /// one leaf and the gate was RED from the day it was written. This
+    /// test pins that leaf so a future change to the tie-break shows up
+    /// here rather than as a mysterious smoke-gate failure.
+    #[test]
+    #[ignore]
+    fn real_skyrim_bleak_falls_draugr_expands_to_one_weapon_leaf() {
+        let path = crate::esm::test_paths::skyrim_se_esm();
+        if !path.exists() {
+            eprintln!("Skipping: Skyrim.esm not found at {}", path.display());
+            return;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let index = crate::esm::records::parse_esm(&data).expect("parse_esm");
+        let npc = index
+            .npcs
+            .get(&0x000E_9895)
+            .expect("Skyrim.esm must ship EncDraugr01AmbushMelee2HHeadM06");
+
+        let mut leaves = Vec::new();
+        for entry in &npc.inventory {
+            expand_leveled_form_id(entry.item_form_id, npc.level, &index, &mut leaves);
+        }
+        assert_eq!(
+            leaves,
+            vec![0x0002_36A5],
+            "the fixture's draugr resolves to DraugrGreatsword alone (#3417)",
+        );
+    }
 }

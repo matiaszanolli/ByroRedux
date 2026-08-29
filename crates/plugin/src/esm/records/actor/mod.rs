@@ -432,29 +432,38 @@ pub struct RaceRecord {
     pub skill_bonuses: Vec<(u8, i8)>,
     /// Body part model paths (head, body, hand, foot).
     pub body_models: Vec<String>,
-    /// FNV / FO3 `INDX` + `MODL` head-part pairs. Each entry is
-    /// `(head_part_index, mesh_path, gender_section)` where
-    /// `head_part_index` (per UESP RACE_HeadPart):
-    ///
-    ///   * 0 — Head
-    ///   * 1 — Ear (male) — 2 — Ear (female)
-    ///   * 3 — Mouth — 4 — Teeth (lower) — 5 — Teeth (upper) — 6 — Tongue
-    ///   * 7 — Left Eye — 8 — Right Eye
+    /// `INDX` + `MODL` head-part pairs from the RACE **head** section
+    /// (the run opened by `NAM0` and closed by `NAM1`). Each entry is
+    /// `(head_part_index, mesh_path, gender_section)`; the index is
+    /// the game's own numbering, so resolve it through
+    /// [`head_part::index_of`] rather than by literal value — Oblivion
+    /// and FO3 / FNV disagree from `Mouth` down.
     ///
     /// `gender_section` tracks which RACE-record section the part
     /// was authored in:
     ///
     ///   * `None`  — shared across both genders (entries before any
-    ///     MNAM/FNAM marker — every "Head" entry lands here).
+    ///     MNAM/FNAM marker). Every Oblivion entry lands here: its
+    ///     head section is one ungendered run, and the male/female
+    ///     split lives in the *ear* index instead.
     ///   * `Some(0)` — male-only (after an `MNAM` section marker).
-    ///   * `Some(1)` — female-only (after `FNAM`).
+    ///   * `Some(1)` — female-only (after `FNAM`). FO3 / FNV author
+    ///     the entire head section twice, once per gender — including
+    ///     the head itself, so the female head is `Some(1)` at index
+    ///     `Head`, not a `None` entry (#3418).
     ///
     /// Without this typed pairing the spawner can't tell which
     /// `body_models` entry is which body part — or which gender it
-    /// applies to. Pre-fix every NPC rendered with just the head
-    /// NIF — no eyes, mouth, teeth, tongue, ears. Empty on
-    /// Oblivion / Skyrim+ (different RACE layouts; this list only
-    /// populates on FO3 / FNV).
+    /// applies to. Pre-fix every NPC rendered with just the head NIF —
+    /// no eyes, mouth, teeth, tongue. Populated on Oblivion and
+    /// FO3 / FNV; empty on Skyrim+, which moved head parts out to
+    /// standalone `HDPT` records.
+    ///
+    /// The body section past `NAM1` restarts `INDX` at 0 for a
+    /// different vocabulary and is deliberately **not** collected here
+    /// (#3419) — it is still appended to [`Self::body_models`], which
+    /// stays a flat append-ordered list of every `MODL` in the record
+    /// and therefore also carries `.egt` texture paths.
     pub head_parts: Vec<(u32, String, Option<u8>)>,
     /// Default body height per gender, from DATA — `(male, female)`.
     /// Vanilla values run ~0.8..1.2 (Skyrim `NordRace` is 1.03; FO4
@@ -523,21 +532,102 @@ pub struct RaceRecord {
     pub default_skin: Option<u32>,
 }
 
-/// FNV / FO3 `INDX` head-part identifiers. Values verified by dumping
-/// vanilla FNV.esm RACE records (e.g. HispanicOldAged: Head 0, Mouth 2,
-/// Teeth Lower 3, Teeth Upper 4, Tongue 5, Left Eye 6, Right Eye 7).
-/// UESP's `RACE_HeadPart` table claims 7/8 for eyes — vanilla data
-/// disagrees. Used by the NPC spawner to pick the eye mesh paths
-/// out of [`RaceRecord::head_parts`] by semantic role instead of
-/// list-position guessing.
+/// RACE `INDX` head-part identifiers, resolved by semantic role.
+///
+/// The raw `INDX` number is **not** portable across games: Oblivion
+/// numbers a nine-entry table that carries a separate male and female
+/// ear slot, while FO3 / FNV drop the second ear (their head section is
+/// already split by `MNAM` / `FNAM`) and every role from Mouth down
+/// shifts one lower. Both tables were dumped from vanilla content:
+///
+/// | role         | Oblivion | FO3 / FNV |
+/// |--------------|----------|-----------|
+/// | Head         | 0        | 0         |
+/// | Ear (male)   | 1        | 1         |
+/// | Ear (female) | 2        | 1         |
+/// | Mouth        | 3        | 2         |
+/// | Teeth lower  | 4        | 3         |
+/// | Teeth upper  | 5        | 4         |
+/// | Tongue       | 6        | 5         |
+/// | Left eye     | 7        | 6         |
+/// | Right eye    | 8        | 7         |
+///
+/// (`Oblivion.esm` `Imperial` `00000907` — `HeadHuman` 0, `EarsHuman`
+/// 1 + 2, `MouthHuman` 3, `TeethLowerHuman` 4, `TeethUpperHuman` 5,
+/// `TongueHuman` 6, `EyeLeftHuman` 7, `EyeRightHuman` 8;
+/// `FalloutNV.esm` `CaucasianOldAged` `000987DF` — `HeadOld` 0, ear
+/// ICON-only 1, `MouthHuman` 2, `TeethLowerHuman` 3,
+/// `TeethUpperHuman` 4, `TongueHuman` 5, `EyeLeftHuman` 6,
+/// `EyeRightHuman` 7.) UESP's `RACE_HeadPart` table documents the
+/// Oblivion numbering only; the FO3 / FNV shift is why the spawner
+/// must ask by [`Role`] rather than by literal index. Pre-#3420 the
+/// spawner hard-coded 6 / 7 for the eyes, which on the Oblivion arm
+/// selected the *tongue* and the *left eye* — and then painted the
+/// NPC's eye texture over both.
 pub mod head_part {
-    pub const HEAD: u32 = 0;
-    pub const MOUTH: u32 = 2;
-    pub const TEETH_LOWER: u32 = 3;
-    pub const TEETH_UPPER: u32 = 4;
-    pub const TONGUE: u32 = 5;
-    pub const LEFT_EYE: u32 = 6;
-    pub const RIGHT_EYE: u32 = 7;
+    use crate::esm::reader::GameKind;
+
+    /// A head sub-mesh slot, independent of the per-game `INDX`
+    /// numbering. [`index_of`] maps one to the number a given game's
+    /// RACE record actually authors.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Role {
+        Head,
+        EarMale,
+        EarFemale,
+        Mouth,
+        TeethLower,
+        TeethUpper,
+        Tongue,
+        LeftEye,
+        RightEye,
+    }
+
+    /// The head sub-parts the NPC spawner mounts on the skeleton
+    /// beside the base head NIF. Ears are game-dependent (FNV models
+    /// them into the head mesh and authors only an `ICON` at index 1;
+    /// Oblivion ships a real `EarsHuman.nif`), so they are resolved
+    /// per gender by the caller rather than listed here.
+    pub const ORAL_ROLES: [Role; 4] = [
+        Role::Mouth,
+        Role::TeethLower,
+        Role::TeethUpper,
+        Role::Tongue,
+    ];
+
+    /// The `INDX` value a game authors for `role`, or `None` when the
+    /// game's RACE record has no head-part table at all (Skyrim+ moved
+    /// head parts out to standalone `HDPT` records).
+    pub fn index_of(game: GameKind, role: Role) -> Option<u32> {
+        match game {
+            GameKind::Oblivion => Some(match role {
+                Role::Head => 0,
+                Role::EarMale => 1,
+                Role::EarFemale => 2,
+                Role::Mouth => 3,
+                Role::TeethLower => 4,
+                Role::TeethUpper => 5,
+                Role::Tongue => 6,
+                Role::LeftEye => 7,
+                Role::RightEye => 8,
+            }),
+            GameKind::Fallout3NV => Some(match role {
+                Role::Head => 0,
+                // One ear slot for both genders — the gender split is
+                // the MNAM / FNAM section, not the index.
+                Role::EarMale | Role::EarFemale => 1,
+                Role::Mouth => 2,
+                Role::TeethLower => 3,
+                Role::TeethUpper => 4,
+                Role::Tongue => 5,
+                Role::LeftEye => 6,
+                Role::RightEye => 7,
+            }),
+            GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => {
+                None
+            }
+        }
+    }
 }
 
 /// Per-gender attribute block for `RaceRecord.base_attributes`
@@ -1241,8 +1331,21 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
     // after the shared INDX/MODL block. Track which section we're in
     // so the spawner can pick gender-appropriate models without
     // double-rendering male+female eyes on the same NPC.
+    //
+    // #3419: `INDX` is re-used — with its own 0..3 numbering and its
+    // own `MNAM` / `FNAM` markers — by the *body* section that opens
+    // at `NAM1`. Without a section gate the head-part map absorbs
+    // `characters\_Male\UpperBody.nif` under `HEAD = 0`,
+    // `RightHand.nif` under FNV's `MOUTH = 2` and an `.egt` texture
+    // path under `TEETH_LOWER = 3` (dumped from `CaucasianOldAged`,
+    // `000987DF`). `NAM0` opens the head section, `NAM1` closes it;
+    // both markers also reset the gender + pending-INDX state, since
+    // each section restarts its own MNAM/FNAM/INDX run. Records that
+    // author neither marker (none in vanilla, but a mod could) keep
+    // the pre-#3419 behaviour of treating everything as head data.
     let mut pending_indx: Option<u32> = None;
     let mut gender_section: Option<u8> = None;
+    let mut in_head_section = true;
 
     for sub in subs {
         match &sub.sub_type {
@@ -1409,10 +1512,30 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             b"FNAM" => {
                 gender_section = Some(1); // Female
             }
+            // Head-data marker: opens the INDX/MODL run whose indices
+            // are head-part roles. Oblivion authors it with no gender
+            // markers at all (one shared run of 0..8); FO3 / FNV split
+            // it MNAM / FNAM. #3419.
+            b"NAM0" => {
+                in_head_section = true;
+                gender_section = None;
+                pending_indx = None;
+            }
+            // Body-data marker: closes the head section. Its INDX run
+            // restarts at 0 for a different vocabulary (upper body /
+            // hands / `.egt`), so nothing past here belongs in
+            // `head_parts`. #3419.
+            b"NAM1" => {
+                in_head_section = false;
+                gender_section = None;
+                pending_indx = None;
+            }
             b"MODL" => {
                 let path = read_zstring(&sub.data);
                 if let Some(idx) = pending_indx.take() {
-                    record.head_parts.push((idx, path.clone(), gender_section));
+                    if in_head_section {
+                        record.head_parts.push((idx, path.clone(), gender_section));
+                    }
                 }
                 record.body_models.push(path);
             }
