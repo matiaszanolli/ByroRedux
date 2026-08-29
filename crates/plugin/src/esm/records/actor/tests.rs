@@ -303,7 +303,65 @@ fn fact_extracts_relations_and_ranks() {
     assert_eq!(f.relations[0].other_faction, 0x123);
     assert_eq!(f.relations[0].modifier, -50);
     assert_eq!(f.relations[0].combat_reaction, 1);
-    assert_eq!(f.ranks, vec!["Recruit", "Trooper", "Veteran"]);
+    // No RNAM in this fixture — titles alone still ladder 0/1/2 (#3338).
+    assert_eq!(
+        f.ranks
+            .iter()
+            .map(|r| (r.index, r.male.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "Recruit"), (1, "Trooper"), (2, "Veteran")]
+    );
+}
+
+/// #3338 — `OmertaFaction` (0x10c6f8), transcribed from `FalloutNV.esm`:
+/// `RNAM(0), RNAM(1), MNAM, FNAM, RNAM(2), MNAM, FNAM`. Rank 0 is authored
+/// with no title at all, so the pre-fix parser — which pushed one entry per
+/// `MNAM` and ignored `RNAM` entirely — returned rank 1's label for index 0.
+/// 17 of FNV's 682 factions have `RNAM count != MNAM count`.
+#[test]
+fn fact_rank_ladder_keys_off_rnam_not_mnam_arrival_order() {
+    let subs = vec![
+        sub(b"EDID", b"OmertaFaction\0"),
+        sub(b"RNAM", &0u32.to_le_bytes()),
+        sub(b"RNAM", &1u32.to_le_bytes()),
+        sub(b"MNAM", b"Thug\0"),
+        sub(b"FNAM", b"Thugette\0"),
+        sub(b"RNAM", &2u32.to_le_bytes()),
+        sub(b"MNAM", b"Boss\0"),
+        sub(b"FNAM", b"Madam\0"),
+    ];
+    let f = parse_fact(0x10c6f8, &subs, &None);
+    assert_eq!(f.ranks.len(), 3, "one rung per authored RNAM");
+    // The untitled rank 0 keeps its slot instead of being collapsed away.
+    assert_eq!(f.ranks[0].index, 0);
+    assert!(f.ranks[0].male.is_empty() && f.ranks[0].female.is_empty());
+    assert_eq!(f.ranks[0].title(false), None);
+    assert_eq!((f.ranks[1].index, f.ranks[1].male.as_str()), (1, "Thug"));
+    assert_eq!(f.ranks[1].female, "Thugette");
+    assert_eq!((f.ranks[2].index, f.ranks[2].male.as_str()), (2, "Boss"));
+    // `FNAM` used to be discarded outright.
+    assert_eq!(f.ranks[2].title(true), Some("Madam"));
+    assert_eq!(f.ranks[2].title(false), Some("Boss"));
+}
+
+/// The complementary shapes from the same census: a rank ladder that is one
+/// bare `RNAM` with nothing after it (`NCRCFPowderGangerFaction`, RNAM=1
+/// MNAM=0), and a rank whose only title is the male one (FNV authors 94
+/// `MNAM` against 53 `FNAM`, so this is the common case).
+#[test]
+fn fact_rank_handles_titleless_and_male_only_rungs() {
+    let subs = vec![sub(b"RNAM", &0u32.to_le_bytes())];
+    let f = parse_fact(0x8d395, &subs, &None);
+    assert_eq!(f.ranks.len(), 1);
+    assert_eq!(f.ranks[0].title(true), None);
+
+    let subs = vec![sub(b"RNAM", &4u32.to_le_bytes()), sub(b"MNAM", b"Ranger\0")];
+    let f = parse_fact(0x1, &subs, &None);
+    // Non-dense ladders are why `index` is stored rather than implied by
+    // position: this rank is 4, at ladder position 0.
+    assert_eq!(f.ranks[0].index, 4);
+    // The male title is the fallback when no FNAM is authored.
+    assert_eq!(f.ranks[0].title(true), Some("Ranger"));
 }
 
 /// Regression for #482: the reaction field is a 4-byte u32 per

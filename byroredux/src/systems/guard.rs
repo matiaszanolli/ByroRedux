@@ -56,8 +56,8 @@
 //!   flagged for whoever builds that system to revisit, same "dormant
 //!   until reachable" posture the leash check itself already has.
 //! - **No animation.** `AnimationPlayer` is untouched.
-//! - **No per-frame package re-evaluation.** Same limitation as
-//!   Sandbox/Wander/Travel/Follow/Escort.
+//! - **Package re-evaluation is per in-game minute, not per frame.** Same
+//!   cadence as every other procedure here — see `systems::travel`.
 //! - **Anchor is frozen once resolved/picked**, exactly like
 //!   `TravelState::destination` — a `NearReference` anchor that moves
 //!   after resolution isn't re-tracked (unlike Follow's live target).

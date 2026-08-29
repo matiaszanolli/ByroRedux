@@ -54,9 +54,11 @@
 //!   resolved destination changes, not every tick.
 //! - **No animation.** `AnimationPlayer` is untouched — Transform moves,
 //!   pose doesn't (no verified walk `.kf` path exists in this codebase).
-//! - **No per-frame package re-evaluation.** `TravelBehavior` is attached
-//!   once at spawn; the same limitation `SandboxBehavior`/`WanderBehavior`
-//!   have today.
+//! - **Package re-evaluation is per in-game minute, not per frame.**
+//!   `ambient_ai_package_system` (M42.9 / #2652) re-runs selection once per
+//!   in-game minute per actor, and on an explicit `EvaluatePackageRequest`,
+//!   swapping the behavior component when the winning PACK FormID changes —
+//!   same cadence for every procedure in this directory.
 //! - **Destination is frozen once resolved/picked.** If the resolved
 //!   target entity moves after that first tick, Travel does not follow —
 //!   that would be Follow's job (a different, unimplemented procedure).

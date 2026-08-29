@@ -519,18 +519,57 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         .map(|time| time.hour)
         .unwrap_or(10.0);
     let minute = game_minute(game_hour);
-    let runtimes: Vec<(EntityId, AmbientPackageRuntime)> = world
+    // #3353 — the minute gate below is the whole point of this system's cost
+    // model ("one evaluation per in-game minute per actor"), so nothing
+    // per-actor may be paid before it. Pass 1 reads only `Copy` fields under
+    // the query — no `package_candidates` clone, and no per-entity
+    // `Dead` / `EvaluatePackageRequest` lock. At the default `time_scale`
+    // an in-game minute is 2 real seconds, so ~119 of every 120 frames must
+    // fall straight through this pass.
+    let last_evaluated: Vec<(EntityId, Option<u16>)> = world
         .query::<AmbientPackageRuntime>()
         .map(|query| {
             query
                 .iter()
-                .map(|(actor, runtime)| (actor, runtime.clone()))
+                .map(|(actor, runtime)| (actor, runtime.last_evaluated_game_minute))
                 .collect()
         })
         .unwrap_or_default();
-    if runtimes.is_empty() {
+    if last_evaluated.is_empty() {
         return;
     }
+
+    // One query pass for the explicit-request marker instead of one
+    // `world.has` per actor per frame. The marker is transient and rare, so
+    // the collected set is nearly always empty.
+    let requested: Vec<EntityId> = world
+        .query::<EvaluatePackageRequest>()
+        .map(|query| query.iter().map(|(actor, _)| actor).collect())
+        .unwrap_or_default();
+
+    // Pass 2 — the gate. Only the survivors (usually none) go on to pay for a
+    // `package_candidates` clone and a `Dead` lookup.
+    let due: Vec<EntityId> = last_evaluated
+        .into_iter()
+        .filter(|(actor, last)| requested.contains(actor) || *last != Some(minute))
+        .map(|(actor, _)| actor)
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+
+    // Pass 3 — clone the candidate stacks, for the due subset only. Done in
+    // one query pass rather than a `world.get` per actor, and outside the
+    // `Dead` / overlay lookups below so no two component locks are ever held
+    // at once (the TypeId-sorted-acquisition invariant).
+    let runtimes: Vec<(EntityId, AmbientPackageRuntime)> = world
+        .query::<AmbientPackageRuntime>()
+        .map(|query| {
+            due.iter()
+                .filter_map(|&actor| query.get(actor).map(|r| (actor, r.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let Some(registry) = world.try_resource::<PackageRegistry>() else {
         return;
@@ -538,10 +577,6 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     let mut updates = Vec::new();
     for (actor, runtime) in runtimes {
         if world.get::<Dead>(actor).is_some() {
-            continue;
-        }
-        let explicitly_requested = world.has::<EvaluatePackageRequest>(actor);
-        if !explicitly_requested && runtime.last_evaluated_game_minute == Some(minute) {
             continue;
         }
 
@@ -857,6 +892,60 @@ mod tests {
             world.has::<EvaluatePackageRequest>(actor),
             "ambient evaluation must leave the request for the SCEN consumer"
         );
+    }
+
+    /// #3353 — the minute gate must be reached before any per-actor work.
+    /// `setup_actor` already ran one evaluation, stamping
+    /// `last_evaluated_game_minute`; a second call at the same game hour must
+    /// therefore short-circuit even when a re-evaluation *would* pick a new
+    /// winner. Pre-fix every actor's candidate `Vec` was heap-cloned, and its
+    /// `Dead` / `EvaluatePackageRequest` locks taken, before this point — on
+    /// ~119 of every 120 frames at the default `time_scale`.
+    #[test]
+    fn second_evaluation_in_the_same_game_minute_is_gated_out() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)]);
+        assert!(world.has::<WanderBehavior>(actor));
+        let stamped = world
+            .get::<AmbientPackageRuntime>(actor)
+            .unwrap()
+            .last_evaluated_game_minute;
+        assert!(stamped.is_some(), "setup must have stamped the minute");
+
+        // Overlay a package that would win outright on a fresh evaluation.
+        install_package_records(&mut world, [pack(0x200, PROCEDURE_TRAVEL, None)]);
+        let mut injected = AliasInjectedData::default();
+        injected.packages.push(0x200);
+        world.insert(
+            actor,
+            QuestAliasInjectedOverlays([((QuestFormId(0x900), 1), injected)].into_iter().collect()),
+        );
+
+        ambient_ai_package_system(&world, 0.0);
+
+        assert!(
+            world.has::<WanderBehavior>(actor),
+            "the minute gate must suppress re-selection (#3353)"
+        );
+        assert!(!world.has::<TravelBehavior>(actor));
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            Some(0x100)
+        );
+
+        // …and an explicit request still gets through the same gate.
+        world
+            .query_mut::<EvaluatePackageRequest>()
+            .unwrap()
+            .insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(
+            world.has::<TravelBehavior>(actor),
+            "EvaluatePackageRequest must bypass the minute gate (#3353)"
+        );
+        assert!(!world.has::<WanderBehavior>(actor));
     }
 
     #[test]

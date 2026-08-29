@@ -46,8 +46,8 @@
 //!   naturally invalidates it (the destination is a different goal than
 //!   the collect target's last position), no special-casing needed.
 //! - **No animation.** `AnimationPlayer` is untouched.
-//! - **No per-frame package re-evaluation.** Same limitation as
-//!   Sandbox/Wander/Travel/Follow.
+//! - **Package re-evaluation is per in-game minute, not per frame.** Same
+//!   cadence as every other procedure here — see `systems::travel`.
 //! - **Target-entity resolution happens once**, on this system's first
 //!   tick for the actor — mirrors `FollowState`'s discipline. If
 //!   resolution fails, Escort does not retry; it just treats this tick

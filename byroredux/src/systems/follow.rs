@@ -44,8 +44,8 @@
 //!   engine default to land empirically, not derived from content — same
 //!   posture as `LOCOMOTION_WALK_SPEED`.
 //! - **No animation.** `AnimationPlayer` is untouched.
-//! - **No per-frame package re-evaluation.** Same limitation as
-//!   Sandbox/Wander/Travel.
+//! - **Package re-evaluation is per in-game minute, not per frame.** Same
+//!   cadence as every other procedure here — see `systems::travel`.
 //! - **Target-entity resolution happens once.** If the target isn't
 //!   spawned yet on this actor's first tick, or later despawns, Follow
 //!   does not re-resolve — the actor stands still from that point on.

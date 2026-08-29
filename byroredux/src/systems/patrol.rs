@@ -30,8 +30,9 @@
 //! consumes its own `crate::components::NavPath` cache exactly the way
 //! `wander_system` does, passing the result into the same
 //! `waypoint_override` parameter of the shared `step_oscillating_wander`
-//! core; no target-reference resolution, no animation-clip swap, no
-//! per-frame package re-evaluation.
+//! core; no target-reference resolution and no animation-clip swap. Package
+//! selection is re-run once per in-game minute by
+//! `ambient_ai_package_system`, not per frame — see `systems::travel`.
 
 use super::locomotion::pop_reached_waypoint;
 use super::navmesh_path::resolve_cached_waypoints;

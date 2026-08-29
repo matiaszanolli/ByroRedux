@@ -790,6 +790,46 @@ pub struct FactionRelation {
     pub combat_reaction: u32,
 }
 
+/// One rung of a faction's rank ladder (`RNAM` + its optional `MNAM` / `FNAM`).
+///
+/// The on-disk layout is a flat run of sub-records in which `RNAM` opens a rank
+/// block and the title sub-records that follow belong to it, so a rank may
+/// carry no title at all — vanilla FNV authors 111 `RNAM` against only 94
+/// `MNAM` and 53 `FNAM`. Rank numbers are also not dense: they are whatever the
+/// author typed, which is why [`Self::index`] is stored rather than implied by
+/// position. See #3338.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FactionRank {
+    /// The authored rank number from `RNAM`. `XRNK` (REFR ownership rank) and
+    /// FACT membership ranks are expressed in these numbers, not in ladder
+    /// position, so this is the field a lookup keys off.
+    pub index: u32,
+    /// Male rank title from `MNAM`. Empty when the rank authors none — 17 FNV
+    /// ranks (`OmertaFaction` rank 0, `NCRCFPowderGangerFaction` rank 0, …)
+    /// are title-less, which is legal and must not shift its neighbours.
+    pub male: String,
+    /// Female rank title from `FNAM`. Empty when absent; fewer than half of
+    /// FNV's titled ranks author one, and the male title is the fallback.
+    pub female: String,
+}
+
+impl FactionRank {
+    /// The title to show for an actor of the given gender, falling back to the
+    /// other gender's title when only one is authored (the vanilla shape — 53
+    /// `FNAM` against 94 `MNAM`), and to `None` when the rank is untitled.
+    pub fn title(&self, female: bool) -> Option<&str> {
+        let (first, second) = if female {
+            (&self.female, &self.male)
+        } else {
+            (&self.male, &self.female)
+        };
+        [first, second]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FactionRecord {
     pub form_id: u32,
@@ -798,8 +838,16 @@ pub struct FactionRecord {
     /// Hidden flag etc. (from DATA).
     pub flags: u32,
     pub relations: Vec<FactionRelation>,
-    /// Rank index → label.
-    pub ranks: Vec<String>,
+    /// The faction's rank ladder, one entry per authored `RNAM`.
+    ///
+    /// **Not** positionally indexable — see [`FactionRank::index`]. #3338:
+    /// this used to be a flat `Vec<String>` pushed from `MNAM` arrival order
+    /// with `RNAM` ignored entirely, which is only correct for a faction whose
+    /// ranks are numbered `0..n` *and* all titled. 17 of FNV's 682 factions
+    /// break that: `OmertaFaction` authors rank 0 untitled then ranks 1 and 2
+    /// titled, so `ranks[0]` returned rank 1's label — an off-by-one on every
+    /// member of that set. `FNAM` (the female title) was discarded outright.
+    pub ranks: Vec<FactionRank>,
     /// `REPU` FormID this faction's standing moves, from `WMI1` (#3325).
     ///
     /// FNV replaces FO3's single global karma with per-faction reputation,
@@ -1858,8 +1906,47 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 let raw = SubReader::new(&sub.data).u32_or_default();
                 record.reputation = (raw != 0).then(|| remap_fid(raw, remap));
             }
-            // MNAM: male rank label (string)
-            b"MNAM" => record.ranks.push(read_zstring(&sub.data)),
+            // RNAM opens a rank block; the MNAM / FNAM that follow belong to
+            // it. #3338 — before this arm existed the parser pushed one entry
+            // per MNAM and dropped RNAM, so a faction with an untitled rank
+            // (or a non-dense ladder) had every later rank shifted down. The
+            // width is a 4-byte rank number per UESP `Mod_File_Format/FACT`.
+            b"RNAM" if sub.data.len() >= 4 => {
+                record.ranks.push(FactionRank {
+                    index: SubReader::new(&sub.data).u32_or_default(),
+                    ..Default::default()
+                });
+            }
+            // MNAM / FNAM: male / female rank label for the rank the preceding
+            // RNAM opened. A title with no preceding RNAM opens an implicit
+            // rank numbered by ladder position — Oblivion-era FACT records
+            // (and the synthetic fixtures that predate #3338) author titles
+            // without rank numbers, and dropping them would be a regression on
+            // the very shape this parser has always handled.
+            b"MNAM" | b"FNAM" => {
+                let male = sub.sub_type == *b"MNAM";
+                // A repeated title of the same gender means the author opened a
+                // new rung without an RNAM, so start one rather than
+                // overwriting — no authored title is ever dropped.
+                let needs_new_rank = match record.ranks.last() {
+                    None => true,
+                    Some(rank) => !(if male { &rank.male } else { &rank.female }).is_empty(),
+                };
+                if needs_new_rank {
+                    let index = record.ranks.len() as u32;
+                    record.ranks.push(FactionRank {
+                        index,
+                        ..Default::default()
+                    });
+                }
+                let rank = record.ranks.last_mut().expect("non-empty by construction");
+                let label = read_zstring(&sub.data);
+                if male {
+                    rank.male = label;
+                } else {
+                    rank.female = label;
+                }
+            }
             _ => {}
         }
     }

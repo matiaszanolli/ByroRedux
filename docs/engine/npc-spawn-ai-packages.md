@@ -102,7 +102,7 @@ Travel-, Follow-, Escort-, Guard-, or Patrol-type entry,
 `crates/plugin/src/esm/records/mod.rs:587` dispatches `b"PACK"` groups
 to `parse_pack` (`crates/plugin/src/esm/records/misc/pack.rs:178`),
 populating `EsmIndex.packages: HashMap<u32, PackRecord>`. `PackRecord`
-(`ai.rs:20`) decodes four sub-records: `PKDT` (flags +
+(`pack.rs`) decodes four sub-records: `PKDT` (flags +
 `procedure_type`, a **single byte** — a pre-#446 bug had read this as a
 polluted `u32`), `PSDT` (`PackSchedule { start_hour, duration_hours }`),
 `PLDT` (`PackLocation { location_type, target, radius }` — only 3
@@ -118,7 +118,7 @@ sub-records) holds the NPC's package list in priority order.
 
 ## 4. Package selection: narrower than "priority stack" suggests
 
-`active_package` (`ai.rs`, private) picks the **first** package in
+`active_package` (`pack.rs`, private) picks the **first** package in
 priority order whose `PSDT` schedule covers a given hour (no `PSDT` =
 always eligible) **and whose `CTDA` conditions pass** — that's the
 selection logic as of M42.2. Package conditions *are* now evaluated
@@ -144,11 +144,11 @@ to be at that instant. There is no per-frame or per-hour
 re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
-(`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3),
-`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4), `PROCEDURE_FOLLOW = 1`
-(`ai.rs`, M42.5), `PROCEDURE_ESCORT = 2` (`ai.rs`, M42.6),
-`PROCEDURE_GUARD = 14` (`ai.rs`, M42.7), and `PROCEDURE_PATROL = 13`
-(`ai.rs`, M42.8) have a name and a consumer; the other ~10
+(`pack.rs`), `PROCEDURE_WANDER = 5` (`pack.rs`, M42.3),
+`PROCEDURE_TRAVEL = 6` (`pack.rs`, M42.4), `PROCEDURE_FOLLOW = 1`
+(`pack.rs`, M42.5), `PROCEDURE_ESCORT = 2` (`pack.rs`, M42.6),
+`PROCEDURE_GUARD = 14` (`pack.rs`, M42.7), and `PROCEDURE_PATROL = 13`
+(`pack.rs`, M42.8) have a name and a consumer; the other ~10
 (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
 FleeNotCombat/CastMagic/Dialogue/UseWeapon) are captured as a raw
 integer and dispatched nowhere. `active_package_is_sandbox`/
@@ -164,9 +164,15 @@ winning `PackRecord` (`active_package`'s `find`), the seven checks are
 naturally mutually exclusive per actor with no extra guard logic
 needed.
 
+> **Stale as of #2031.** The spawn path no longer calls any of those
+> fourteen selectors: it makes one `active_package()` resolve and hands
+> the winner to `AmbientBehavior::from_package`. They remain in
+> `pack.rs` with their tests, unused — tracked as #3042. This paragraph
+> describes the shape of the API, not the live wiring.
+
 ## 5. Sandbox seating
 
-`active_package_is_sandbox`/`active_sandbox_location` (`ai.rs:147,159`)
+`active_package_is_sandbox`/`active_sandbox_location` (`pack.rs`)
 feed `npc_spawn.rs`, which inserts `SandboxBehavior { search_radius }`
 (`crates/core/src/ecs/components/sandbox.rs`) using the active
 package's authored `PLDT.radius` when present. At runtime,
@@ -208,20 +214,21 @@ a near-term follow-up.
 The first non-Sandbox procedure runtime, and the first NPC locomotion
 of any kind in the engine — Sandbox never needed one because it
 teleports an actor onto a seat rather than walking there. Wired at
-`npc_spawn.rs` exactly like Sandbox: `active_package_is_wander` +
-`active_wander_location` gate a `WanderBehavior` insert
-(`crates/core/src/ecs/components/wander.rs`), reusing the same
-`game_hour`/`condition_met` closure Sandbox's block builds (both
-package checks now run *before* either component insert, since
-interleaving a read through `condition_met` — which closes over
-`world` — after a `world.insert` is a genuine borrow-checker conflict,
-not just a style preference).
+`npc_spawn/ai_package.rs` exactly like Sandbox: one `active_package()`
+resolve picks the winning PACK, and `AmbientBehavior::from_package`
+turns it into the `WanderBehavior` insert
+(`crates/core/src/ecs/components/wander.rs`). The per-procedure
+`active_package_is_wander` / `active_wander_location` selectors this
+section used to describe were replaced by that single resolve in #2031
+and are dead code tracked as #3042; `npc_spawn.rs` itself was split
+into `npc_spawn/`.
 
 `wander_system` (`byroredux/src/systems/wander.rs`, opt-in via
 `BYRO_WANDER=1`, same gating convention as `BYRO_SANDBOX_SIT`) drives a
 `WanderState` (home / target / phase / pick_count) per actor: walk
-straight-line toward `target` via `Vec3::move_towards` (no pathing —
-open ground only), ground-snap Y each tick via
+toward `target` via `Vec3::move_towards`, NAVM-routed within the actor's
+own resident tile (`navmesh_path`, Phase 3, landed 2026-08-23) and
+straight-line for any remainder beyond it, ground-snap Y each tick via
 `PhysicsWorld::cast_ray_down` (the same downward-raycast mechanism
 `scene.rs` uses for camera placement), turn to face the direction of
 travel via `Quat::slerp`, and on arrival pause for a few seconds before
@@ -369,7 +376,7 @@ straight to the lead phase when there's nothing to collect** — no
 `target_form_id`, a resolution miss, or a despawned target all fall
 through to "just go to the destination" rather than Follow's "stand
 still forever." This is a considered departure, not an oversight:
-Escort's whole point is reaching a destination, and per `ai.rs`'s own
+Escort's whole point is reaching a destination, and per `pack.rs`'s own
 PLDT doc, most FO3/FNV packages carry one regardless of PTDT — treating
 "nobody to escort" as "silently give up on the destination too" would
 throw away the more useful half of the package.
@@ -442,16 +449,16 @@ separate so Patrol and Wander actors stay independently
 selectable/inspectable — every other M42 procedure has its own
 component pair too). `PatrolState` reuses `WanderPhase` directly rather
 than defining an identical second enum. Wired at `npc_spawn.rs`:
-`active_package_is_patrol` + `active_patrol_location` gate the insert,
-mirroring Wander's own wiring exactly.
+The winning package resolves through the same single `active_package()`
+call every other procedure uses, mirroring Wander's own wiring exactly.
 
 If real patrol-route data is ever decoded, `patrol_system` is the seam
 to swap — it would gain its own state machine without touching
 `wander_system`.
 
-v0 scope: identical to Wander's documented approximations (no pathing,
-no target-reference resolution, no animation-clip swap, no per-frame
-package re-evaluation).
+v0 scope: identical to Wander's documented approximations
+(single-tile-only pathing, no target-reference resolution, no
+animation-clip swap).
 
 ## What's not covered / honest state
 
@@ -463,17 +470,44 @@ package re-evaluation).
   the engine — each needs a subsystem (item/furniture use beyond
   Sandbox's seat-snap, combat, magic, or dialogue) that doesn't exist in
   this codebase yet, not just a missing procedure dispatch.
-- **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
-  `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`,
-  `travel_system`, `follow_system`, `escort_system`, `guard_system`, and
-  `patrol_system` are the only AI-adjacent per-frame systems, and none
-  is part of the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
-  `BYRO_WANDER=1` / `BYRO_TRAVEL=1` / `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` /
-  `BYRO_GUARD=1` / `BYRO_PATROL=1` respectively.
-- **Selection is spawn-time-only.** No package re-evaluation as game
-  time advances — `CTDA` conditions *are* now evaluated (M42.2), but
-  only once, against the game hour and world state at spawn. `PTD2`
-  (a second target) still isn't parsed.
+- **No general AI tick, but package selection does tick.**
+  `byroredux/src/systems/` still has no `ai.rs` / `behavior.rs` /
+  `npc.rs`. The seven *locomotion* systems — `sandbox_seat_system`,
+  `wander_system`, `travel_system`, `follow_system`, `escort_system`,
+  `guard_system`, `patrol_system` — are still all opt-in, requiring
+  `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` / `BYRO_TRAVEL=1` /
+  `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` / `BYRO_GUARD=1` / `BYRO_PATROL=1`
+  respectively. `ambient_ai_package_system` is the exception and runs in
+  the default configuration (`boot.rs`, `Stage::Update`, exclusive), so
+  packages are selected and behavior components maintained even when no
+  locomotion system is enabled to act on them.
+- **Selection re-runs once per in-game minute, not per frame.**
+  Superseded 2026 by M42.9 / #2652: `ambient_ai_package_system`
+  (`npc_spawn/ai_package.rs`, registered *unconditionally* at
+  `boot.rs` — unlike the seven locomotion systems, this one is not
+  behind an env gate) re-selects the winning package once per in-game
+  minute per actor, and immediately on an `EvaluatePackageRequest`. The
+  behavior component is swapped only when the winning PACK **FormID**
+  changes, so a re-selection that lands on the same package leaves the
+  procedure's own state (target point, phase, resolved destination)
+  intact. `CTDA` conditions are re-evaluated on each of those passes
+  against the current game hour and world state, not just at spawn.
+  `PTD2` (a second target) still isn't parsed.
+- **Pathing is single-tile.** Superseded 2026-08-23: the six locomotion
+  procedures route through `navmesh_path::path_from_resident_tiles` (A\*
+  over one NAVM tile's triangle adjacency, waypoints from shared-edge
+  midpoints) via `locomotion::step_along_waypoints`, so obstacles
+  *within* a resident tile are walked around. A destination that doesn't
+  localize onto the same resident tile as the actor falls back to a
+  straight line for the remainder — Phase 2 (cross-tile search) is
+  **blocked**, not unscheduled: `NavmExternalConnection` has no confirmed
+  source-triangle field. See `docs/engine/navmesh-pathfinding.md` §9.
+- **A zero-length PACK schedule window is unsatisfiable.** A `PSDT` with
+  a real start hour and `duration == 0` yields an empty window, so
+  `active_package` can never select it — 12 vanilla FNV packages, 5 of
+  them Travel. The original engine's semantic for a zero duration could
+  not be sourced (xEdit types the field as a bare `itU32`), so no
+  replacement was invented. See `PackSchedule::active_at` (#3352).
 - **Sit-enter clip coverage is FNV/FO3-only** — `None` for Oblivion
   (deferred), and for Skyrim+/FO4+/FO76/Starfield, whose actors animate
   through Havok `.hkx`, not `.kf`, so this whole mechanism doesn't apply

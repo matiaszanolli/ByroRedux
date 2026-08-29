@@ -3,10 +3,13 @@
 //! when `BYRO_WANDER` is set** (see `boot.rs`), mirroring the
 //! `BYRO_SANDBOX_SIT` opt-in gate for `sandbox_seat_system`.
 //!
-//! For each [`WanderBehavior`] actor, walk in a straight line (no
-//! pathing/NAVM) toward a randomly picked point within `wander_radius` of
-//! the actor's own spawn position, pause for a few seconds on arrival,
-//! then pick a new point and repeat indefinitely. [`WanderState`] is the
+//! For each [`WanderBehavior`] actor, walk toward a randomly picked point
+//! within `wander_radius` of the actor's own spawn position, pause for a few
+//! seconds on arrival, then pick a new point and repeat indefinitely. The
+//! walk is NAVM-routed within the actor's own resident tile (`navmesh_path`,
+//! via `locomotion::step_along_waypoints`) and degrades to a straight line
+//! for any remainder that leaves it — Phase 2 cross-tile search is blocked,
+//! not merely unscheduled (see `docs/engine/navmesh-pathfinding.md` §9). [`WanderState`] is the
 //! per-actor runtime state — lazily inserted the first tick an actor is
 //! seen, since (unlike Sandbox's seat assignment) Wander never reaches a
 //! terminal state.
@@ -46,11 +49,16 @@
 //!   codebase; verifying one is deferred to a later on-device polish pass
 //!   (the same class of visual debt Sandbox v0 accepted for legacy marker
 //!   over-match).
-//! - **No per-frame package re-evaluation.** `WanderBehavior` is attached
-//!   once at spawn (`npc_spawn.rs`); an actor picked for Wander at spawn
-//!   keeps wandering even if its package's schedule would no longer be
-//!   active at the current game hour — the same limitation
-//!   `SandboxBehavior` has today.
+//! - **Package re-evaluation is per in-game minute, not per frame.**
+//!   `WanderBehavior` is installed at spawn (`npc_spawn/ai_package.rs`) and
+//!   thereafter maintained by `ambient_ai_package_system` (M42.9 / #2652),
+//!   which re-runs selection once per in-game minute per actor — and on an
+//!   explicit `EvaluatePackageRequest` — replacing the behavior component
+//!   when the winning PACK FormID changes. An actor whose Wander package
+//!   falls out of schedule therefore does stop wandering, within a minute.
+//!   What is *not* re-evaluated mid-package is this system's own state
+//!   (target point, phase), which persists while the same package keeps
+//!   winning.
 //! - **Ground-snapped, not physically simulated.** Y is corrected each
 //!   tick via a downward raycast against static colliders
 //!   (`PhysicsWorld::cast_ray_down`, the same mechanism `scene.rs` uses for

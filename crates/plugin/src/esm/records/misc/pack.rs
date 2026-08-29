@@ -225,8 +225,9 @@ pub const PROCEDURE_SANDBOX: u32 = 12;
 /// FO3/FNV package procedure-type index for `Wander` — walk to random
 /// points within a radius, pause, repeat, with no target reference and no
 /// scheduling beyond PSDT/CTDA. First non-Sandbox procedure to get a
-/// runtime (M42.3), backed by `wander_system`'s straight-line
-/// walk-to-point locomotion (no pathing/NAVM). See M42.
+/// runtime (M42.3), backed by `wander_system`'s walk-to-point locomotion —
+/// NAVM-routed within the actor's resident tile since the 2026-08-23 Phase 3
+/// landing, straight-line for anything beyond it. See M42.
 pub const PROCEDURE_WANDER: u32 = 5;
 
 /// FO3/FNV package procedure-type index for `Patrol` — authored real
@@ -288,8 +289,51 @@ pub struct PackSchedule {
 }
 
 impl PackSchedule {
+    /// True when the decoded window is one no hour can satisfy — a real
+    /// `start_hour` paired with a zero duration (#3352).
+    ///
+    /// [`Self::active_at`] returns `false` for every hour of every day on such
+    /// a schedule, so the package is invisible to `active_package`. That is
+    /// what the arithmetic says; whether it is what the original engine did is
+    /// **unknown**, and this predicate exists to make the case nameable and
+    /// loggable instead of silently swallowed. See `active_at`'s notes for the
+    /// census and the evidence gap.
+    pub fn is_unsatisfiable(&self) -> bool {
+        self.start_hour.is_some() && self.duration_hours == 0
+    }
+
     /// True when `hour` (0..24) falls in `[start, start + duration)` mod 24.
     /// Any-time (`start_hour == None`) is always active.
+    ///
+    /// # The zero-duration hole (#3352) — known, deliberately not "fixed"
+    ///
+    /// `start_hour = Some(h), duration_hours = 0` makes the window
+    /// `[h, h)` — empty, so this returns `false` at every hour and the
+    /// package can never be selected. A census of `FalloutNV.esm` finds **12**
+    /// packages in that state, 5 of them `Travel` (an implemented procedure):
+    /// `HVPaladinPatrolGoToLocker` (7×0), `RCSecurityUnlockHangar6x0Alt`
+    /// (6×0), `VChupacabraNightkinMoveToPen` (0×0) and the two
+    /// `Evergreen…GladiatorEntrance` packages (12×0). Their actors will simply
+    /// never travel.
+    ///
+    /// No replacement semantic is adopted here, because none could be
+    /// sourced. xEdit's `wbDefinitionsFNV.pas` types the field as a bare
+    /// `wbInteger('Duration (Hours)', itU32)` — no sentinel, no enum, no
+    /// default — and the GECK documentation reachable from this workspace
+    /// never states what a zero-length schedule window does. Picking a value
+    /// (always-active? one hour? complete-on-arrival?) would be inventing
+    /// engine behaviour, which is the one thing this parser must not do.
+    /// What would settle it: the GECK's own `Package` Schedule-tab
+    /// documentation, or an observed vanilla actor running one of the five
+    /// Travel packages above.
+    ///
+    /// The complementary cases were censused at the same time and are all
+    /// handled correctly — they are pinned by tests so they stay that way:
+    /// 2,813 packages use `time = -1` (`start_hour = None`, always active);
+    /// 20 records carry `duration > 24`, which degenerates to always-active
+    /// through the wrap branch; and **zero** FNV packages carry a negative
+    /// duration, so the `duration.max(0)` clamp in `parse_pack` never fires
+    /// on this corpus.
     pub fn active_at(&self, hour: f32) -> bool {
         let Some(start) = self.start_hour else {
             return true;
@@ -684,10 +728,31 @@ pub fn parse_pack(
                 } else {
                     0
                 };
-                out.schedule = Some(PackSchedule {
+                let schedule = PackSchedule {
                     start_hour: if time < 0 { None } else { Some(time as u8) },
                     duration_hours: duration.max(0) as u32,
-                });
+                };
+                // #3352 — a `time >= 0, duration == 0` PSDT decodes to a
+                // zero-length window that `active_at` can never satisfy, so
+                // the package is unreachable by `active_package` at every
+                // hour. Twelve vanilla FNV packages author exactly that
+                // (5 of them Travel, an implemented procedure). What the
+                // original engine does with a zero-length window is not
+                // stated by any source reachable from here — xEdit's FNV
+                // definitions type the field as a bare `itU32` with no
+                // sentinel value and no enum, so there is no replacement
+                // semantic to adopt without guessing at one. Surfaced rather
+                // than silently swallowed: see `PackSchedule::active_at`.
+                if schedule.is_unsatisfiable() {
+                    log::debug!(
+                        "PACK {:08X} PSDT authors an unsatisfiable schedule \
+                         (start_hour {:?}, duration 0) — the package can never \
+                         be selected at any hour (#3352)",
+                        form_id,
+                        schedule.start_hour,
+                    );
+                }
+                out.schedule = Some(schedule);
             }
             // FO3/FNV PLDT: Location Type u32, Location union u32
             // (FormID or raw value depending on type), Radius i32. Per
@@ -956,6 +1021,78 @@ mod tests {
             start_hour,
             duration_hours,
         })
+    }
+
+    /// #3352 — pins the zero-duration hole as *known*, not as correct.
+    /// `HVPaladinPatrolGoToLocker` (0x0e327d) authors `time = 7,
+    /// duration = 0`; the resulting window is `[7, 7)`, empty at every hour,
+    /// so `active_package` can never select it. Twelve vanilla FNV packages
+    /// are in this state. If a future change adopts a real semantic for zero
+    /// duration — sourced, not guessed — this test is the one to update, and
+    /// `is_unsatisfiable` is the predicate that names the case.
+    #[test]
+    fn zero_duration_window_is_unsatisfiable_at_every_hour() {
+        let schedule = PackSchedule {
+            start_hour: Some(7),
+            duration_hours: 0,
+        };
+        assert!(schedule.is_unsatisfiable());
+        for hour in 0..24 {
+            assert!(
+                !schedule.active_at(hour as f32),
+                "hour {hour} must not satisfy an empty [7, 7) window (#3352)"
+            );
+        }
+        // `VChupacabraNightkinMoveToPen` — start_hour 0 takes the same arm.
+        assert!(!PackSchedule {
+            start_hour: Some(0),
+            duration_hours: 0,
+        }
+        .active_at(0.0));
+    }
+
+    /// The complementary shapes from the same #3352 census, all of which are
+    /// handled correctly today. Pinned so the eventual zero-duration fix
+    /// cannot quietly break them: 2,813 FNV packages are `time = -1`, and 20
+    /// carry `duration > 24`.
+    #[test]
+    fn always_active_schedule_shapes_stay_always_active() {
+        // `time = -1` → start_hour None → always active regardless of duration.
+        for duration in [0, 1, 24, 128] {
+            let any = PackSchedule {
+                start_hour: None,
+                duration_hours: duration,
+            };
+            assert!(!any.is_unsatisfiable());
+            for hour in 0..24 {
+                assert!(any.active_at(hour as f32), "any-time must cover {hour}");
+            }
+        }
+        // `duration > 24` degenerates to always-active through the wrap
+        // branch (Patrol 128, Travel 73 / 71 / 128, … — 20 records).
+        for (start, duration) in [(6u8, 128u32), (0, 73), (18, 71), (23, 25)] {
+            let wrapping = PackSchedule {
+                start_hour: Some(start),
+                duration_hours: duration,
+            };
+            for hour in 0..24 {
+                assert!(
+                    wrapping.active_at(hour as f32),
+                    "{start}x{duration} must cover hour {hour}"
+                );
+            }
+        }
+        // Exactly 24 hours is the boundary between the two branches and must
+        // also be always-active from either side.
+        for start in [0u8, 7, 23] {
+            let full_day = PackSchedule {
+                start_hour: Some(start),
+                duration_hours: 24,
+            };
+            for hour in 0..24 {
+                assert!(full_day.active_at(hour as f32), "{start}x24 misses {hour}");
+            }
+        }
     }
 
     #[test]

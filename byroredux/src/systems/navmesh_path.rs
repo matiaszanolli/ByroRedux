@@ -7,8 +7,10 @@
 //! polyline. The core algorithm ([`find_path_within_tile`] and below) is
 //! pure geometry over parsed NAVM data — no ECS/`World` dependency, fully
 //! exercised by synthetic fixtures below; [`path_from_resident_tiles`] is
-//! the thin ECS bridge Phase 3 needed to reach real streamed data,
-//! currently consumed by `travel_system`.
+//! the thin ECS bridge Phase 3 needed to reach real streamed data. Phase 3
+//! shipped 2026-08-23 and it is now consumed by all six locomotion
+//! procedures — travel / wander / patrol / follow / escort / guard — through
+//! `locomotion::step_along_waypoints`, not by `travel_system` alone.
 //!
 //! Deliberately **single-tile only**: `external_connections` (cross-tile
 //! links) aren't walked here. Phase 2 (cross-tile search) turned out to
