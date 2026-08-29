@@ -415,12 +415,15 @@ pub(crate) fn apply_action(
     else {
         return MutationResult::Unavailable;
     };
-    let Some(equip_target) = world.try_resource::<InventoryCatalog>().and_then(|catalog| {
-        catalog
-            .entries
-            .get(&form_id)
-            .and_then(|item| item.equip_target)
-    }) else {
+    let Some(equip_target) = world
+        .try_resource::<InventoryCatalog>()
+        .and_then(|catalog| {
+            catalog
+                .entries
+                .get(&form_id)
+                .and_then(|item| item.equip_target)
+        })
+    else {
         return MutationResult::Unavailable;
     };
     let Some(mut equipment_query) = world.query_mut::<EquipmentSlots>() else {
@@ -736,6 +739,7 @@ mod tests {
     fn no_armor_describe_kind_output_can_target_the_weapon_slot() {
         for biped_flags in [1u32 << 31, u32::MAX, 0x8000_1000, 1, 0] {
             let (_, _, target) = describe_kind(&ItemKind::Armor {
+                female_model_path: String::new(),
                 biped_flags,
                 dt: 0.0,
                 dr: 0,
@@ -813,6 +817,7 @@ mod tests {
                 form_id: armor_form,
                 common: CommonItemFields::default(),
                 kind: ItemKind::Armor {
+                    female_model_path: String::new(),
                     biped_flags: 1 << 12,
                     dt: 0.0,
                     dr: 0,

@@ -274,6 +274,7 @@ pub fn queue_door_transition(
         .ok_or(QueueDoorTransitionError::MissingCellIndex)?;
     let owned_cell = index
         .0
+        .cells
         .cell_for_refr_form_id(door.destination_form_id)
         .map(|cell| cell.to_owned())
         .ok_or(QueueDoorTransitionError::DestinationNotFound(
@@ -669,6 +670,20 @@ mod tests {
         assert_eq!(
             queue_door_transition(&world, entity),
             Err(QueueDoorTransitionError::MissingCellIndex)
+        );
+
+        // #3415 — the positive counterpart. Once the index is present the
+        // door gets PAST the prerequisite gate and fails on the destination
+        // lookup instead, which is what an exterior door did not manage to
+        // do before the exterior boot arm learned to install the resource.
+        world.insert_resource(super::super::LoadedCellIndex(std::sync::Arc::new(
+            byroredux_plugin::esm::records::EsmIndex::default(),
+        )));
+        assert_eq!(
+            queue_door_transition(&world, entity),
+            Err(QueueDoorTransitionError::DestinationNotFound(0x1234)),
+            "with the cell index installed the prerequisite gate must be \
+             satisfied — the empty index then legitimately has no such REFR"
         );
     }
 

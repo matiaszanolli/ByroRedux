@@ -646,6 +646,89 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
     );
 }
 
+/// #3416 (FNV-2026-08-27-D4-01) — FO3/FNV ARMO `MOD3` (the female biped
+/// mesh) was never parsed, so `resolve_armor_meshes`' legacy arm put the
+/// male mesh on every female wearer. Independent GRUP walk of the shipped
+/// master: 389 ARMO, 245 author a `MOD3`, 213 of those differ from `MODL`.
+#[test]
+#[ignore]
+fn fnv_armo_female_meshes_are_parsed_and_selected() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[#3416] skipping: FNV data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let empty = byroredux_plugin::esm::records::EsmIndex::default();
+
+    let mut armos = 0usize;
+    let mut with_mod3 = 0usize;
+    let mut differing = 0usize;
+    for item in index.items.values() {
+        let byroredux_plugin::esm::records::ItemKind::Armor {
+            ref female_model_path,
+            ..
+        } = item.kind
+        else {
+            continue;
+        };
+        armos += 1;
+        if female_model_path.is_empty() {
+            // No MOD3 → both genders fall back to MODL.
+            continue;
+        }
+        with_mod3 += 1;
+        if !female_model_path.eq_ignore_ascii_case(&item.common.model_path) {
+            differing += 1;
+        }
+        // The selection itself, through the real record.
+        assert_eq!(
+            byroredux_plugin::equip::resolve_armor_mesh(
+                item,
+                byroredux_plugin::equip::Gender::Female,
+                0,
+                &empty,
+                GameKind::Fallout3NV,
+            ),
+            Some(female_model_path.as_str()),
+            "ARMO {:08X} ({}) must resolve its MOD3 for a female wearer",
+            item.form_id,
+            item.common.editor_id,
+        );
+    }
+    eprintln!("[#3416] FNV ARMO: {armos} total, {with_mod3} with MOD3, {differing} differing");
+    assert!(
+        armos >= 389,
+        "expected >= 389 FNV ARMO records, got {armos} — the census has moved"
+    );
+    assert!(
+        differing >= 213,
+        "expected >= 213 FNV ARMOs whose MOD3 differs from MODL, got \
+         {differing} — pre-#3416 this was 0 because MOD3 was never parsed"
+    );
+
+    // The headline sample from the finding, by name.
+    let tuxedo = index
+        .items
+        .values()
+        .find(|i| i.common.editor_id == "ArmorWhiteGloveSociety")
+        .expect("ArmorWhiteGloveSociety must be present in FalloutNV.esm");
+    assert_eq!(
+        byroredux_plugin::equip::resolve_armor_mesh(
+            tuxedo,
+            byroredux_plugin::equip::Gender::Female,
+            0,
+            &empty,
+            GameKind::Fallout3NV,
+        )
+        .map(str::to_ascii_lowercase),
+        Some(r"armor\tuxedo\tuxedo_f.nif".to_string()),
+    );
+}
+
 /// #3411 (RT-2026-08-27-04) — vanilla FO4 authors armour tiers as ARMAs that
 /// all declare the SAME single biped region (`Armor_Synth_ArmLeft`: mask
 /// 0x1000, three ARMAs each declaring 0x1000, for the Lite / Med / Hvy tiers

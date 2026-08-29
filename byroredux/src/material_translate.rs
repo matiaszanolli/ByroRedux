@@ -74,7 +74,13 @@ use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 /// materials it remains the canonical dielectric index of refraction. A
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
-/// without adding another field to the hot 348-byte GPU material record.
+/// without adding another field to the hot GPU material record. That
+/// record's size is pinned by `gpu_material_size_is_432_bytes`
+/// (`crates/renderer/src/vulkan/material.rs`) — cited rather than restated
+/// here because the literal has already drifted once: this doc said
+/// "348-byte" through the 348 → 364 → 396 → 432 B growth chain, and #3240's
+/// sweep of that same stale figure out of `bindings.glsl` missed this site
+/// (#3414).
 ///
 /// **SKY-D7-02 / #2327 — the non-`FIRE_REFRACTION` discard below is
 /// deliberate, not an oversight.** `refraction_strength` (`BSLightingShaderProperty`'s

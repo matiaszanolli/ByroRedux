@@ -157,7 +157,12 @@ pub fn resolve_armor_meshes<'a>(
     index: &'a EsmIndex,
     game: GameKind,
 ) -> Vec<&'a str> {
-    let ItemKind::Armor { ref armatures, .. } = armor.kind else {
+    let ItemKind::Armor {
+        ref armatures,
+        ref female_model_path,
+        ..
+    } = armor.kind
+    else {
         return Vec::new();
     };
 
@@ -167,9 +172,25 @@ pub fn resolve_armor_meshes<'a>(
     );
 
     if !is_skyrim_or_later {
-        // Oblivion / FO3 / FNV: ARMO MODL is the worn mesh. One record,
-        // one mesh — no ARMA dispatch, so never more than one path.
-        let path = armor.common.model_path.as_str();
+        // Oblivion / FO3 / FNV: the ARMO itself carries the worn mesh — no
+        // ARMA dispatch, so never more than one path. But it carries TWO of
+        // them: `MODL` (male) and `MOD3` (female).
+        //
+        // #3416 — this arm ignored its own `gender` parameter and always
+        // returned `MODL`, so every female wearer of a two-mesh armour got
+        // the male body. Reach on the reference title: `FalloutNV.esm`
+        // authors a differing `MOD3` on 213 of its 389 ARMOs, and 987 of
+        // 3,816 `NPC_` records set the ACBS female bit. Oblivion (996 ARMO /
+        // 549 differing) and FO3 (237 / 138) travel this same branch.
+        //
+        // 144 of FNV's 389 ARMOs author no `MOD3` at all, so an empty
+        // female slot falls back to `MODL` rather than resolving nothing —
+        // one mesh for both genders is a legitimate authoring choice, not a
+        // missing asset.
+        let path = match gender {
+            Gender::Female if !female_model_path.is_empty() => female_model_path.as_str(),
+            _ => armor.common.model_path.as_str(),
+        };
         return if path.is_empty() {
             Vec::new()
         } else {
@@ -642,6 +663,13 @@ mod tests {
     };
 
     fn fnv_armor(model_path: &str) -> ItemRecord {
+        fnv_armor_gendered(model_path, "")
+    }
+
+    /// FO3/FNV/Oblivion ARMO with both worn meshes: `MODL` (male) and
+    /// `MOD3` (female). Pass `""` for the female slot to model the 144 of
+    /// FalloutNV.esm's 389 ARMOs that author only one mesh.
+    fn fnv_armor_gendered(model_path: &str, female_model_path: &str) -> ItemRecord {
         ItemRecord {
             form_id: 0x0001_FFFF,
             common: CommonItemFields {
@@ -649,6 +677,7 @@ mod tests {
                 ..Default::default()
             },
             kind: ItemKind::Armor {
+                female_model_path: female_model_path.to_string(),
                 biped_flags: 0x0004,
                 dt: 0.0,
                 dr: 0,
@@ -661,11 +690,88 @@ mod tests {
         }
     }
 
+    /// #3416 (FNV-2026-08-27-D4-01) — the legacy arm ignored its own
+    /// `gender` parameter and always returned `MODL`, so every female
+    /// wearer of a two-mesh FO3/FNV/Oblivion armour got the male body.
+    /// `ArmorWhiteGloveSociety`'s real pair, from `FalloutNV.esm`.
+    #[test]
+    fn legacy_armo_selects_the_female_mesh_for_a_female_wearer() {
+        let idx = empty_index();
+        let armor = fnv_armor_gendered(r"armor\tuxedo\tuxedo_M.NIF", r"armor\tuxedo\tuxedo_F.NIF");
+        for game in [GameKind::Fallout3NV, GameKind::Oblivion] {
+            assert_eq!(
+                resolve_armor_meshes(&armor, Gender::Female, 0, &idx, game),
+                vec![r"armor\tuxedo\tuxedo_F.NIF"],
+                "{game:?}: a female wearer must get MOD3"
+            );
+            assert_eq!(
+                resolve_armor_meshes(&armor, Gender::Male, 0, &idx, game),
+                vec![r"armor\tuxedo\tuxedo_M.NIF"],
+                "{game:?}: a male wearer must still get MODL"
+            );
+        }
+    }
+
+    /// 144 of `FalloutNV.esm`'s 389 ARMOs author no `MOD3` at all — one
+    /// mesh for both genders is a legitimate authoring choice, so an empty
+    /// female slot falls back to `MODL` rather than resolving nothing.
+    #[test]
+    fn legacy_armo_without_mod3_falls_back_to_the_male_mesh() {
+        let idx = empty_index();
+        let armor = fnv_armor(r"armor\papakhan\papakhan.NIF");
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Female, 0, &idx, GameKind::Fallout3NV),
+            vec![r"armor\papakhan\papakhan.NIF"],
+        );
+    }
+
+    /// The single-path wrapper the spawn pipeline calls must inherit the
+    /// selection — it is the entry point `npc_spawn` actually uses.
+    #[test]
+    fn resolve_armor_mesh_wrapper_is_gender_aware_too() {
+        let idx = empty_index();
+        let armor = fnv_armor_gendered(
+            r"armor\combatarmor\m\mark2combat.NIF",
+            r"armor\combatarmor\f\mark2combatf.NIF",
+        );
+        assert_eq!(
+            resolve_armor_mesh(&armor, Gender::Female, 0, &idx, GameKind::Fallout3NV),
+            Some(r"armor\combatarmor\f\mark2combatf.NIF"),
+        );
+    }
+
+    /// Skyrim+ must be untouched: `MOD3` is never authored on those ARMOs
+    /// (the per-gender split moved to `ArmaRecord::{male,female}_biped_model`)
+    /// and the parser leaves the field empty there by construction.
+    #[test]
+    fn skyrim_path_ignores_the_legacy_female_slot() {
+        let nord_race = 0x0001_3746;
+        let mut armor = skyrim_armor(vec![0x0000_0D67]);
+        if let ItemKind::Armor {
+            ref mut female_model_path,
+            ..
+        } = armor.kind
+        {
+            // Even if something authored one, the Skyrim arm must not read it.
+            *female_model_path = r"should\never\be\used.nif".to_string();
+        }
+        let mut idx = empty_index();
+        idx.armor_addons.insert(
+            0x0000_0D67,
+            arma_for_race(0x0000_0D67, nord_race, vec![], "male.nif", "female.nif"),
+        );
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Female, nord_race, &idx, GameKind::Skyrim),
+            vec!["female.nif"],
+        );
+    }
+
     fn skyrim_armor(armatures: Vec<u32>) -> ItemRecord {
         ItemRecord {
             form_id: 0x0001_AAAA,
             common: CommonItemFields::default(),
             kind: ItemKind::Armor {
+                female_model_path: String::new(),
                 biped_flags: 0x0004,
                 dt: 0.0,
                 dr: 0,
@@ -1538,6 +1644,7 @@ mod arma_alternative_gate_tests {
             form_id,
             common: crate::esm::records::common::CommonItemFields::default(),
             kind: ItemKind::Armor {
+                female_model_path: String::new(),
                 biped_flags: bits,
                 dt: 0.0,
                 dr: 0,

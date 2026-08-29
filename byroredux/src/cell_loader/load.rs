@@ -560,12 +560,15 @@ pub fn load_cell_with_masters(
     // before the `index.cells` move below — `globals` is a sibling field.
     ensure_globals_resource(world, &index.globals);
 
-    // M40 Phase 2 Stage 1 — surface the parsed cell index as a World
-    // resource so `&World` readers (door.teleport console command,
-    // future F-key activate system) can resolve XTEL destination
-    // FormIDs back to their parent cells without re-parsing the ESM.
-    // Replaces any prior load's index wholesale.
-    world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index.cells)));
+    // M40 Phase 2 Stage 1 — surface the parsed index as a World resource so
+    // `&World` readers (door.teleport console command, the F-key activate
+    // system) can resolve XTEL destination FormIDs back to their parent
+    // cells without re-parsing the ESM. Replaces any prior load's index
+    // wholesale. #3415 widened the payload from `index.cells` to the whole
+    // `index` so the exterior arm can share its existing `Arc` instead of
+    // deep-cloning the cell maps — see `LoadedCellIndex`'s own doc. This is
+    // a move, not a clone, so the interior cost is unchanged.
+    world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
 
     // M40 Phase 2 Stage 3 — record the just-spawned cell root so the
     // transition orchestrator can unload it on the next swap. Cleared

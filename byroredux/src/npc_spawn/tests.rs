@@ -709,6 +709,7 @@ fn skyrim_armor_item(
         form_id,
         common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
         kind: ItemKind::Armor {
+            female_model_path: String::new(),
             biped_flags,
             dt: 0.0,
             dr: 0,
@@ -748,6 +749,7 @@ fn legacy_armor_item(
             ..Default::default()
         },
         kind: ItemKind::Armor {
+            female_model_path: String::new(),
             biped_flags,
             dt: 0.0,
             dr: 0,

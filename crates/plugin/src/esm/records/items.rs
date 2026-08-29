@@ -134,6 +134,25 @@ pub enum ItemKind {
         /// Skyrim+: armor type from BOD2 second u32 (0=light, 1=clothing,
         /// 2=heavy). `None` on pre-Skyrim games.
         armor_type: Option<u32>,
+        /// Oblivion / FO3 / FNV female biped mesh (`MOD3`). The male mesh
+        /// is `common.model_path` (`MODL`); this is the female counterpart
+        /// the same record authors beside it. Empty when the record ships
+        /// only one mesh for both genders, in which case consumers fall
+        /// back to `common.model_path`.
+        ///
+        /// Always empty on Skyrim+, where the per-gender meshes live on the
+        /// ARMA records `armatures` points at
+        /// (`ArmaRecord::{male,female}_biped_model`) and `MODL` is a FormID
+        /// payload rather than a path.
+        ///
+        /// Census (independent GRUP walk of the shipped masters, #3414):
+        /// `FalloutNV.esm` 389 ARMO / 245 author `MOD3` / 213 of those
+        /// differ from `MODL`; `Fallout3.esm` 237 / 147 / 138;
+        /// `Oblivion.esm` 996 / 582 / 549. Dropping it put the male mesh on
+        /// every female wearer — the wrong silhouette, and in the
+        /// `m\` / `f\` cases a mesh whose dismember partitions and UVs
+        /// were authored against the male body.
+        female_model_path: String,
         /// Skyrim+ Armature RArray — FormID references to ARMA records
         /// that supply the actual worn mesh paths (per-race, per-gender).
         /// Empty on Oblivion / FO3 / FNV (those use `common.model_path`
@@ -444,6 +463,7 @@ pub fn parse_armo(
     let mut armor_rating_x100 = 0u32;
     let mut armor_type: Option<u32> = None;
     let mut armatures: Vec<u32> = Vec::new();
+    let mut female_model_path = String::new();
     let is_skyrim_or_later = matches!(
         game,
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
@@ -520,6 +540,17 @@ pub fn parse_armo(
                     armatures.push(id);
                 }
             }
+            // #3416 — the female biped mesh on Oblivion / FO3 / FNV. Only
+            // `parse_arma` read `MOD3` before, and that is a Skyrim+ record
+            // FNV NPC inventories never reference (a census of all 5,394
+            // `NPC_`/`CREA` `CNTO` targets in `FalloutNV.esm` found zero
+            // ARMA), so the legacy equip path had no gender-aware mesh
+            // source at all. Guarded on the era because Skyrim+ authors no
+            // `MOD3` on ARMO — the per-gender split moved to the ARMA
+            // records.
+            b"MOD3" if !is_skyrim_or_later => {
+                female_model_path = crate::esm::records::common::read_zstring(&sub.data);
+            }
             // DNAM exists on FO3/FNV (DT/DR, 8 bytes) and Skyrim+
             // (armor_rating × 100, 4 bytes). FO4 uses FNAM instead;
             // Oblivion has no DNAM —
@@ -557,6 +588,7 @@ pub fn parse_armo(
         form_id,
         common,
         kind: ItemKind::Armor {
+            female_model_path,
             biped_flags,
             dt,
             dr,

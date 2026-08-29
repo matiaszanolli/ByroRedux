@@ -916,6 +916,28 @@ pub(crate) fn assemble_exterior_streaming(
     bootstrap_mode: ExteriorBootstrapMode,
     preserved_persistent_root: Option<EntityId>,
 ) -> (WorldStreamingState, Vec3) {
+    // #3415 / FNV-2026-08-27-D1-01 — the exterior half of `LoadedCellIndex`.
+    // `queue_door_transition` (player activation AND the `door.teleport`
+    // console command) resolves a door's XTEL destination REFR to its parent
+    // cell through this resource, and it was inserted at exactly one site in
+    // the tree: inside `load_cell_with_masters`, the INTERIOR entry point.
+    // On a `--grid` boot it was therefore absent for the whole session, and
+    // every exterior door on FNV's reference open-world route failed with
+    // "no LoadedCellIndex resource" — swallowed as a `log::warn!` at
+    // `interaction.rs`, so the door simply did nothing.
+    //
+    // This is the funnel every exterior entry point goes through (boot
+    // `--grid`, `begin_exterior_streaming` for the transition orchestrator's
+    // Exterior arm / `dbgload` / the save-reload path), so one insert here
+    // covers all of them. `LoadedPluginSet`, the other prerequisite the same
+    // function needs, was already installed on both arms.
+    //
+    // An `Arc` refcount bump, not a re-parse: the context already owns the
+    // parsed index. Inserted BEFORE `wctx` is moved into
+    // `WorldStreamingState` below.
+    world.insert_resource(cell_loader::LoadedCellIndex(std::sync::Arc::clone(
+        &wctx.record_index,
+    )));
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
