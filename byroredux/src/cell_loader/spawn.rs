@@ -429,6 +429,36 @@ pub(crate) fn count_spawnable_nif_lights(
 /// net, not a typical value — a malformed LIGH record that ships
 /// `radius=0` becomes visible rather than silently invisible.
 #[inline]
+/// Has a Papyrus `Disable()` been recorded against this placement?
+///
+/// #3278 — extracted from [`spawn_placed_instances`] so the decision is
+/// unit-testable: that function needs a live `VulkanContext`, so the gate
+/// itself would otherwise be reachable only on a machine with a GPU and real
+/// game data. Same posture as [`count_spawnable_nif_lights`] above.
+///
+/// Answers `false` for every placement with no form id (the precombined and
+/// loose-NIF spawn paths pass `None` — bake artifacts have no placement-level
+/// identity to disable), and for a world with no `ReferenceEnableState` or no
+/// `FormIdPool` registered. `ReferenceEnableState` is keyed by *local* form
+/// id, matching `byroredux_scripting`'s own writers.
+pub(crate) fn placement_is_disabled(
+    world: &World,
+    placement_fid: Option<byroredux_core::form_id::FormId>,
+) -> bool {
+    let Some(fid) = placement_fid else {
+        return false;
+    };
+    let Some(local) = world
+        .try_resource::<FormIdPool>()
+        .and_then(|pool| pool.resolve(fid).map(|pair| pair.local.0))
+    else {
+        return false;
+    };
+    world
+        .try_resource::<byroredux_scripting::ReferenceEnableState>()
+        .is_some_and(|state| !state.is_enabled(local))
+}
+
 pub(crate) fn light_radius_or_default(radius: f32) -> f32 {
     if radius > 0.0 {
         radius
@@ -572,6 +602,40 @@ pub(super) fn spawn_placed_instances(
         teleport,
         lock,
     );
+
+    // #3278 (SCR-D5-2026-08-24-01) — the runtime consumer for a Papyrus
+    // `Disable()`. Before this, `ReferenceEnableState` recorded intent that
+    // nothing ever read: a disabled reference stayed fully visible,
+    // collidable and interactive.
+    //
+    // Gating here — after the placement root, before any mesh, collider or
+    // light — is what makes one check cover all three at once. An unspawned
+    // mesh cannot render, an unspawned collider cannot block, an unspawned
+    // light cannot contribute. Hooking a render-side visibility flag instead
+    // would have covered only the first: `AnimatedVisibility` is honoured in
+    // `render/static_meshes.rs` but *not* in `render/skinned.rs`, and nothing
+    // on the physics side reads it at all.
+    //
+    // The placement root itself still spawns, and deliberately so: it carries
+    // the REFR's `FormIdComponent`, teleport and lock payloads, so a disabled
+    // door is still addressable by `prid <fid>` / `World::find_by_form_id`
+    // and still rides the normal `CellRootIndex` teardown. What it has is no
+    // renderable or collidable content.
+    //
+    // KNOWN LIMITATION: this is consulted at spawn, so a `Disable()` on an
+    // already-resident reference takes effect on that cell's next load rather
+    // than immediately. Applying it live means despawning mid-frame, which
+    // has to go through `unload_cell`'s GPU-handle release path or it leaks
+    // mesh/texture refcounts — a separate piece of work, not a widening of
+    // this one.
+    if placement_is_disabled(world, placement_fid) {
+        log::debug!(
+            "REFR {:?} is disabled (ReferenceEnableState) — placement root spawned \
+             without renderable or collidable content (#3278)",
+            placement_form_id_pair,
+        );
+        return (placement_root, 0, PlacementSpawnTimings::default());
+    }
 
     // Pre-compute how many NIF lights will actually spawn. The
     // ESM-fallback gate at the bottom of this function uses this

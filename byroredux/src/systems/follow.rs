@@ -144,6 +144,13 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
     // `GlobalTransform` are read here; `PhysicsWorld` is NOT acquired in
     // this scope (#2134). ──
     scratch.decisions.clear();
+    // #3256 — stamped onto every NavPath this system writes and compared on
+    // every cache hit, so a NAVM tile streaming in (or out) invalidates cached
+    // paths that goal distance alone would keep forever. Read once at function
+    // scope: the resolve pass and the apply pass below are separate blocks and
+    // must agree, and nothing can bump the counter between them (cell load /
+    // unload runs in a different scheduler stage).
+    let residency_generation = crate::components::navmesh_residency_generation(world);
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -219,6 +226,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     current,
                     target_xz,
                     FOLLOW_REPATH_THRESHOLD,
+                    residency_generation,
                 )
             } else {
                 (Vec3::ZERO, VecDeque::new())
@@ -268,6 +276,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 // defeat the repath threshold.
                 d.nav_path = Some(NavPath {
                     goal: d.effective_goal,
+                    residency_generation,
                     waypoints,
                 });
             }

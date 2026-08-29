@@ -348,9 +348,19 @@ pub(crate) fn resolve_cached_waypoints(
     current: Vec3,
     goal: Vec3,
     repath_threshold: f32,
+    residency_generation: u64,
 ) -> (Vec3, std::collections::VecDeque<Vec3>) {
     match cached {
-        Some(path) if path.goal.distance(goal) <= repath_threshold => {
+        // #3256 — the generation check is what makes the *negative* cache
+        // (a deliberately-stored empty path) recoverable. Goal distance
+        // alone cannot express "the set of resident tiles changed", so with
+        // a frozen goal and a `0.0` threshold the empty result matched
+        // bit-identically forever and `path_from_resident_tiles` was never
+        // retried, even once the relevant tile streamed in.
+        Some(path)
+            if path.residency_generation == residency_generation
+                && path.goal.distance(goal) <= repath_threshold =>
+        {
             (path.goal, path.waypoints.clone())
         }
         _ => {
@@ -620,6 +630,7 @@ mod tests {
         let original_goal = Vec3::new(100.0, 0.0, 100.0);
         let cached = NavPath {
             goal: original_goal,
+            residency_generation: 0,
             waypoints: VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0), original_goal]),
         };
         // New goal is close (within threshold) but NOT identical — this is
@@ -627,7 +638,7 @@ mod tests {
         let new_goal = Vec3::new(105.0, 0.0, 100.0);
 
         let (effective_goal, waypoints) =
-            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0);
+            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0, 0);
 
         assert_eq!(
             effective_goal, original_goal,
@@ -642,6 +653,7 @@ mod tests {
     fn resolve_cached_waypoints_recomputes_beyond_threshold_and_advances_the_goal() {
         let cached = NavPath {
             goal: Vec3::new(100.0, 0.0, 100.0),
+            residency_generation: 0,
             waypoints: VecDeque::from(vec![Vec3::new(100.0, 0.0, 100.0)]),
         };
         let new_goal = Vec3::new(500.0, 0.0, 500.0); // far beyond any reasonable threshold
@@ -650,16 +662,113 @@ mod tests {
         // the "cache the negative result" contract: effective_goal still
         // advances to the new goal even though waypoints comes back empty.
         let (effective_goal, waypoints) =
-            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0);
+            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0, 0);
 
         assert_eq!(effective_goal, new_goal);
         assert!(waypoints.is_empty());
     }
 
+    /// #3256 (ECS-2026-08-24-08) regression — the negative cache must be
+    /// recoverable when navmesh residency changes.
+    ///
+    /// The failure this pins: a frozen-goal actor (travel/guard use a `0.0`
+    /// repath threshold) resolves its destination on a tick where no tile
+    /// localizes it. The deliberately-cached empty result then matches the
+    /// frozen goal *bit-identically* forever, so `path_from_resident_tiles`
+    /// is never retried for the rest of that leash — even after the relevant
+    /// tile streams in. Goal distance alone cannot express "the resident set
+    /// changed"; the residency generation can.
+    #[test]
+    fn resolve_cached_waypoints_retries_a_negative_result_after_residency_changes() {
+        // The cached negative result below is "already tried this goal, no
+        // resident-tile path found", stamped with the generation it was
+        // computed under.
+        //
+        // The tile that "streams in": a quad the goal actually lies on, so a
+        // retry produces a real path and the two arms are distinguishable.
+        // Without a resident tile both arms return empty and the test could
+        // not fail, which is the trap the first draft of this test fell into.
+        let mut world = byroredux_core::ecs::World::new();
+        world.register::<crate::components::NavmeshTile>();
+        let tile_entity = world.spawn();
+        world.insert(
+            tile_entity,
+            crate::components::NavmeshTile(two_triangle_quad()),
+        );
+        let tiles = world
+            .query::<crate::components::NavmeshTile>()
+            .expect("NavmeshTile registered");
+        let inside_goal = Vec3::new(9.0, 0.0, 9.0);
+        let start = Vec3::new(1.0, 0.0, 1.0);
+        let cached = NavPath {
+            goal: inside_goal,
+            residency_generation: 7,
+            waypoints: VecDeque::new(),
+        };
+
+        // Same generation, frozen goal (`0.0` threshold): still a hit, so the
+        // negative cache keeps doing its job and an off-navmesh actor does not
+        // re-run the search every tick — even though a tile is now resident
+        // and a search WOULD succeed.
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(Some(&cached), Some(&tiles), start, inside_goal, 0.0, 7);
+        assert_eq!(effective_goal, inside_goal);
+        assert!(
+            waypoints.is_empty(),
+            "unchanged residency must still hit the negative cache — that is \
+             the whole point of caching it (travel_system Pass 1a)"
+        );
+
+        // The tile streamed in: same goal, bit-identical, but the generation
+        // moved, so the cache must MISS and the search must actually re-run.
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(Some(&cached), Some(&tiles), start, inside_goal, 0.0, 8);
+        assert_eq!(
+            effective_goal, inside_goal,
+            "a miss still advances the effective goal to the requested one"
+        );
+        assert!(
+            !waypoints.is_empty(),
+            "#3256: the whole defect — a frozen goal plus a cached empty path \
+             matched bit-identically forever, so path_from_resident_tiles was \
+             never retried once the tile became resident"
+        );
+        assert_eq!(
+            waypoints.back().copied(),
+            Some(inside_goal),
+            "a recomputed path must end at the requested goal"
+        );
+    }
+
+    /// #3256 sibling — a *positive* cached path is invalidated by a residency
+    /// change too, not just the empty one. A path computed across tiles that
+    /// have since been torn down is worse than no path: it walks the actor
+    /// along waypoints derived from geometry that is no longer resident.
+    #[test]
+    fn resolve_cached_waypoints_invalidates_a_positive_path_after_residency_changes() {
+        let goal = Vec3::new(100.0, 0.0, 100.0);
+        let cached = NavPath {
+            goal,
+            residency_generation: 3,
+            waypoints: VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0), goal]),
+        };
+
+        let (_, reused) = resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, goal, 10.0, 3);
+        assert_eq!(reused, cached.waypoints, "same generation → reuse");
+
+        let (_, recomputed) =
+            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, goal, 10.0, 4);
+        assert!(
+            recomputed.is_empty(),
+            "#3256: a residency change must discard the stale waypoints rather \
+             than walk the actor along tiles that may no longer be resident"
+        );
+    }
+
     #[test]
     fn resolve_cached_waypoints_with_no_cache_at_all_recomputes() {
         let (effective_goal, waypoints) =
-            resolve_cached_waypoints(None, None, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0), 10.0);
+            resolve_cached_waypoints(None, None, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0), 10.0, 0);
         assert_eq!(effective_goal, Vec3::new(1.0, 0.0, 1.0));
         assert!(waypoints.is_empty());
     }

@@ -88,6 +88,13 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
     // acquired in this scope, so it never overlaps the five storage read
     // guards (#3262, mirroring the #2134 sibling shape). ──
     scratch.decisions.clear();
+    // #3256 — stamped onto every NavPath this system writes and compared on
+    // every cache hit, so a NAVM tile streaming in (or out) invalidates cached
+    // paths that goal distance alone would keep forever. Read once at function
+    // scope: the resolve pass and the apply pass below are separate blocks and
+    // must agree, and nothing can bump the counter between them (cell load /
+    // unload runs in a different scheduler stage).
+    let residency_generation = crate::components::navmesh_residency_generation(world);
     {
         let Some(behavior_q) = world.query::<PatrolBehavior>() else {
             return;
@@ -134,6 +141,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                         transform.translation,
                         state.target,
                         0.0,
+                        residency_generation,
                     );
                     (waypoints.front().copied(), effective_goal, waypoints)
                 } else {
@@ -193,6 +201,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
             };
             d.nav_path = matches!(new_state.phase, WanderPhase::Walking).then(|| NavPath {
                 goal: d.effective_goal,
+                residency_generation,
                 waypoints: std::mem::take(&mut d.waypoints),
             });
         }

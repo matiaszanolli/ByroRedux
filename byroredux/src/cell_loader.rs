@@ -559,6 +559,8 @@ mod precombined_clip_handle_tests;
 #[cfg(test)]
 mod rapier_release_tests;
 #[cfg(test)]
+mod reference_enable_gate_tests;
+#[cfg(test)]
 mod refr_texture_overlay_tests;
 #[cfg(test)]
 mod root_index_tests;

@@ -1793,6 +1793,68 @@ pub(crate) fn spawn_navmesh_tiles(
         let entity = world.spawn();
         world.insert(entity, NavmeshTile(navm.clone()));
     }
+    if !navmeshes.is_empty() {
+        bump_navmesh_residency(world);
+    }
+}
+
+/// Monotonic counter of NAVM tile-residency changes (#3256).
+///
+/// [`NavPath`] caches a path — **including a deliberately-cached empty
+/// "no resident-tile path found" result** — keyed only on goal distance. With
+/// a frozen goal and a `0.0` repath threshold, that comparison matches
+/// bit-identically forever, so the first tick an actor resolves a frozen
+/// destination is the only tick that ever consults tile residency for it. If
+/// no tile localized the actor at that instant, `path_from_resident_tiles` is
+/// never retried for the rest of that travel/guard leash — even after the
+/// relevant tile streams in.
+///
+/// Stamping the generation onto each cached path and requiring it to match
+/// makes residency changes invalidate the cache, which goal distance alone
+/// cannot express.
+///
+/// Deliberately **not** save-registered, matching [`NavPath`] and
+/// [`NavmeshTile`]: after a load the counter restarts at 0 and every cached
+/// path is stale-by-default, which is the safe direction (one repath).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NavmeshResidency {
+    pub(crate) generation: u64,
+}
+
+impl Resource for NavmeshResidency {}
+
+/// Bump the residency generation, invalidating every cached [`NavPath`].
+///
+/// Called on NAVM tile spawn ([`spawn_navmesh_tiles`]) and on cell unload.
+/// Over-bumping is cheap and safe — it costs at most one recompute per
+/// pathing actor — whereas under-bumping is the bug this exists to prevent,
+/// so the unload side fires for any cell teardown rather than trying to prove
+/// a `NavmeshTile` was among the victims.
+pub(crate) fn bump_navmesh_residency(world: &mut byroredux_core::ecs::World) {
+    // Scoped so the resource borrow ends before the `insert_resource`
+    // fallback below can take `&mut World`.
+    let bumped = {
+        if let Some(mut residency) = world.try_resource_mut::<NavmeshResidency>() {
+            residency.generation = residency.generation.wrapping_add(1);
+            true
+        } else {
+            false
+        }
+    };
+    if !bumped {
+        world.insert_resource(NavmeshResidency { generation: 1 });
+    }
+}
+
+/// Read the current NAVM residency generation, or `0` when the resource
+/// isn't registered (test fixtures, pre-streaming boot). A missing resource
+/// reads as a single stable generation, so behaviour matches the pre-#3256
+/// goal-only cache rather than thrashing.
+pub(crate) fn navmesh_residency_generation(world: &byroredux_core::ecs::World) -> u64 {
+    world
+        .try_resource::<NavmeshResidency>()
+        .map(|residency| residency.generation)
+        .unwrap_or(0)
 }
 
 /// Cached single-tile NAVM path toward `goal`, computed by
@@ -1819,6 +1881,11 @@ pub(crate) fn spawn_navmesh_tiles(
 pub(crate) struct NavPath {
     /// The destination this path was computed for.
     pub(crate) goal: Vec3,
+    /// The [`NavmeshResidency`] generation this path was computed under
+    /// (#3256). A cache hit requires it to match the live generation: goal
+    /// distance alone cannot express "the set of resident tiles changed",
+    /// which is exactly what a cached *empty* path needs to notice.
+    pub(crate) residency_generation: u64,
     /// Remaining stepping points, nearest first, always ending with
     /// [`goal`](Self::goal) itself while non-empty. Empty means "no
     /// resident-tile path was found for this goal" — callers fall back

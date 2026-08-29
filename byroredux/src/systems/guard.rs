@@ -149,6 +149,13 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     // read `GlobalTransform`, so `PhysicsWorld` is NOT acquired in this
     // scope — #2134). ──
     scratch.pending.clear();
+    // #3256 — stamped onto every NavPath this system writes and compared on
+    // every cache hit, so a NAVM tile streaming in (or out) invalidates cached
+    // paths that goal distance alone would keep forever. Read once at function
+    // scope: the resolve pass and the apply pass below are separate blocks and
+    // must agree, and nothing can bump the counter between them (cell load /
+    // unload runs in a different scheduler stage).
+    let residency_generation = crate::components::navmesh_residency_generation(world);
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -185,8 +192,14 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             let waypoints = match walk_back_to {
                 Some(goal) => {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    let (_, waypoints) =
-                        resolve_cached_waypoints(cached, tile_q.as_ref(), current, goal, 0.0);
+                    let (_, waypoints) = resolve_cached_waypoints(
+                        cached,
+                        tile_q.as_ref(),
+                        current,
+                        goal,
+                        0.0,
+                        residency_generation,
+                    );
                     waypoints
                 }
                 None => VecDeque::new(),
@@ -236,6 +249,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                         rotation,
                         Some(NavPath {
                             goal: anchor,
+                            residency_generation,
                             waypoints,
                         }),
                     )
@@ -638,6 +652,7 @@ mod tests {
             entity,
             NavPath {
                 goal: Vec3::new(50.0, 0.0, 50.0),
+                residency_generation: 0,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0)]),
             },
         );

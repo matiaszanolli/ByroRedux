@@ -337,6 +337,13 @@ fn unload_cell_inner(
         // cell. Rebuild lazily on the next scene tick so stale EntityIds
         // cannot survive an interior transition or exterior stream-out.
         byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+        // #3256 — NAVM tiles ride this same victim sweep, so any cell
+        // teardown may have changed navmesh residency. Bump unconditionally
+        // rather than proving a `NavmeshTile` was among the victims: the
+        // rows are already gone by here, and over-bumping costs at most one
+        // repath per pathing actor while under-bumping is the stale-cache
+        // bug itself.
+        crate::components::bump_navmesh_residency(world);
     }
     timings.despawn = phase_started.elapsed();
 

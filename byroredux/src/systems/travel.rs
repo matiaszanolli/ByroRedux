@@ -189,6 +189,13 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // may itself read `GlobalTransform`, so `PhysicsWorld` is NOT acquired
     // in this scope — #2134). ──
     scratch.pending.clear();
+    // #3256 — stamped onto every NavPath this system writes and compared on
+    // every cache hit, so a NAVM tile streaming in (or out) invalidates cached
+    // paths that goal distance alone would keep forever. Read once at function
+    // scope: the resolve pass and the apply pass below are separate blocks and
+    // must agree, and nothing can bump the counter between them (cell load /
+    // unload runs in a different scheduler stage).
+    let residency_generation = crate::components::navmesh_residency_generation(world);
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -229,8 +236,14 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // always bit-identical to `destination`, whether reused or
             // freshly computed — see `resolve_cached_waypoints`'s own doc.
             let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-            let (_, waypoints) =
-                resolve_cached_waypoints(cached, tile_q.as_ref(), current, destination, 0.0);
+            let (_, waypoints) = resolve_cached_waypoints(
+                cached,
+                tile_q.as_ref(),
+                current,
+                destination,
+                0.0,
+                residency_generation,
+            );
 
             scratch.pending.push(TravelPending {
                 entity,
@@ -303,6 +316,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 } else {
                     Some(NavPath {
                         goal: p.destination,
+                        residency_generation,
                         waypoints,
                     })
                 },
