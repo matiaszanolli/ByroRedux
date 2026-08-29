@@ -1094,3 +1094,95 @@ fn synthetic_v105_folder_record_layout_yields_one_file() {
     assert_eq!(listed, vec!["shorty\\x.bin"]);
     let _ = std::fs::remove_file(&path);
 }
+
+/// #3368 — take a well-formed archive and push its folder table down by
+/// `pad` bytes of header padding, updating every offset that moves: the
+/// header's `folders_offset` word (bytes 8..12), the folder record's own
+/// stored offset (v105: u64 at 16..24 of the record), and the file record's
+/// absolute data offset. The result is a *valid* archive whose folder table
+/// simply does not begin at 36 — the shape the parser used to be unable to
+/// express, since it read the folder table from wherever the header read
+/// happened to leave the cursor.
+fn pad_v105_header(bytes: &[u8], pad: u32) -> Vec<u8> {
+    const HEADER: usize = 36;
+    const FOLDER_REC: usize = 24;
+    let mut out = Vec::with_capacity(bytes.len() + pad as usize);
+    out.extend_from_slice(&bytes[..HEADER]);
+    out.extend(std::iter::repeat_n(0u8, pad as usize));
+    out.extend_from_slice(&bytes[HEADER..]);
+
+    // Header: folders_offset moves from 36 to 36 + pad.
+    out[8..12].copy_from_slice(&(HEADER as u32 + pad).to_le_bytes());
+
+    // Folder record (v105): u64 offset at record bytes 16..24.
+    let rec = HEADER + pad as usize;
+    let stored = u64::from_le_bytes(out[rec + 16..rec + 24].try_into().unwrap());
+    out[rec + 16..rec + 24].copy_from_slice(&(stored + pad as u64).to_le_bytes());
+
+    // File record: u32 absolute data offset at bytes 12..16 of the record,
+    // which sits right after the folder-name block.
+    let folder_block = rec + FOLDER_REC;
+    let name_len = out[folder_block] as usize;
+    let file_rec = folder_block + 1 + name_len;
+    let data_off = u32::from_le_bytes(out[file_rec + 12..file_rec + 16].try_into().unwrap());
+    out[file_rec + 12..file_rec + 16].copy_from_slice(&(data_off + pad).to_le_bytes());
+    out
+}
+
+/// #3368 — the header's folder-records offset (bytes 8..12) must be read and
+/// honoured. Pre-fix `BsaArchive::open` read a fixed 36-byte header and then
+/// pulled folder records straight out of the `BufReader` at whatever position
+/// that left, so an archive with a padded or extended header read the
+/// folder-name length byte out of the padding and failed with a garbage
+/// `read_exact` / `checked_entry_count` error naming neither the field nor the
+/// cause. openmw seeks to this field before touching the folder table.
+///
+/// Every shipped Bethesda archive stores exactly 36 here (verified across all
+/// 23 Skyrim SE archives), so this is a robustness gap, not a corruption
+/// vector — which is exactly why it needs a synthetic fixture to pin.
+#[test]
+fn padded_header_folder_offset_is_honoured() {
+    let payload = b"padded";
+    let base = build_v105_archive("meshes", "pad.bin", payload, false, false);
+    // Sanity: the unpadded archive is the control.
+    let control = write_temp_v105("offset_control", &base);
+    assert_eq!(BsaArchive::open(&control).unwrap().file_count(), 1);
+    let _ = std::fs::remove_file(&control);
+
+    for pad in [4u32, 16, 64] {
+        let bytes = pad_v105_header(&base, pad);
+        let path = write_temp_v105(&format!("offset_pad{pad}"), &bytes);
+        let archive = BsaArchive::open(&path)
+            .unwrap_or_else(|e| panic!("pad {pad}: open must honour folders_offset, got {e}"));
+        assert_eq!(archive.list_files(), vec!["meshes\\pad.bin"], "pad {pad}");
+        assert_eq!(
+            archive.extract("meshes\\pad.bin").unwrap(),
+            payload,
+            "pad {pad}: data offset must survive the shift"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// The complementary direction: a `folders_offset` that overlaps the header
+/// or runs past EOF must fail with a message naming the field, rather than
+/// seeking wild and surfacing a downstream `UnexpectedEof`.
+#[test]
+fn out_of_range_folder_offset_is_rejected_by_name() {
+    let base = build_v105_archive("meshes", "pad.bin", b"x", false, false);
+
+    for (label, offset) in [("overlapping", 12u32), ("past-eof", 1_000_000)] {
+        let mut bytes = base.clone();
+        bytes[8..12].copy_from_slice(&offset.to_le_bytes());
+        let path = write_temp_v105(&format!("offset_bad_{label}"), &bytes);
+        let Err(err) = BsaArchive::open(&path) else {
+            panic!("{label} folders_offset must be rejected");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{label}");
+        assert!(
+            err.to_string().contains("folders_offset"),
+            "{label}: error must name the field, got: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}

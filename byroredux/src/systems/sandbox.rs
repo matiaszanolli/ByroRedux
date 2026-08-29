@@ -47,7 +47,7 @@ use std::collections::HashMap;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
     Furniture, FurnitureMarker, FurnitureMarkerKind, GlobalTransform, SandboxBehavior, Seated,
-    Transform,
+    SeatedAnimationRestore, Transform,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -131,15 +131,21 @@ fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
 }
 
 /// Reusable per-frame scratch for [`sandbox_seat_system_inner`] — captured
-/// by [`make_sandbox_seat_system`] so `assignments`/`seats`/`seat_meta`'s
-/// backing allocations survive across frames instead of being re-declared
-/// fresh every tick (#2033 / PERF-D1-2026-07-16-01), mirroring
+/// by [`make_sandbox_seat_system`] so `assignments`/`seats`' backing
+/// allocations survive across frames instead of being re-declared fresh
+/// every tick (#2033 / PERF-D1-2026-07-16-01), mirroring
 /// `animation_system`'s `AnimScratch` (#1372).
+///
+/// #3354 removed a third field, `seat_meta: HashMap<_, _>`. It existed only
+/// to feed the one-shot diagnostic log emitted per *assignment*, yet it was
+/// re-cleared and re-hashed in full — one insert per sit marker in the cell —
+/// on every frame, forever. The two values it carried are now read straight
+/// off the furniture in the assignment branch, so they cost nothing on the
+/// overwhelmingly common frame where nobody is being seated.
 #[derive(Default)]
 struct SandboxScratch {
     assignments: Vec<(EntityId, EntityId, GlobalTransform)>,
     seats: Vec<((EntityId, u32), GlobalTransform)>,
-    seat_meta: HashMap<(EntityId, u32), ([f32; 3], Vec3)>,
 }
 
 /// Seat sandboxing actors in nearby furniture. Registered
@@ -173,15 +179,26 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
         };
         let seated_q = world.query::<Seated>();
 
+        // #3354 — the real steady-state early-out. None of the guards above
+        // ("no sit clip", "no furniture", "no seats") is "everyone who wants a
+        // seat already has one", and `SandboxBehavior` is never removed on
+        // seating (only `Seated` is added), so `sandbox_q` stays non-empty and
+        // the seat build below used to run every frame for the life of the
+        // cell — long after the last actor sat down. This scan is
+        // O(sandboxing actors) with no allocation, against the
+        // O(furniture x markers) `GlobalTransform::compose` sweep it guards.
+        let any_unseated = sandbox_q
+            .iter()
+            .any(|(npc, _)| !seated_q.as_ref().is_some_and(|s| s.contains(npc)));
+        if !any_unseated {
+            return;
+        }
+
         // World-space seat transform for *every* sit marker on each
         // furniture, keyed `(furniture entity, marker index)` so a multi-seat
         // piece (counter / bench / multi-chair table) offers one seat per
-        // marker instead of just its first (M42.2 seat-polish). `seat_meta`
-        // mirrors `seats` for the one-shot diagnostic log emitted per
-        // assignment below (M42.0b co-debug: readable numbers instead of dark
-        // screenshots).
+        // marker instead of just its first (M42.2 seat-polish).
         scratch.seats.clear();
-        scratch.seat_meta.clear();
         for (furn_e, furn) in furn_q.iter() {
             let Some(furn_g) = gq.get(furn_e) else {
                 continue;
@@ -190,13 +207,9 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                 if !is_sit_marker(marker) {
                     continue;
                 }
-                let seat_id = (furn_e, idx as u32);
                 scratch
                     .seats
-                    .push((seat_id, seat_world_transform(furn_g, marker)));
-                scratch
-                    .seat_meta
-                    .insert(seat_id, (marker.local_offset, furn_g.translation));
+                    .push(((furn_e, idx as u32), seat_world_transform(furn_g, marker)));
             }
         }
         if scratch.seats.is_empty() {
@@ -223,11 +236,15 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                 let (furn_e, marker_idx) = seat_id;
                 // One-shot per NPC (Seated is tagged in pass 2, skipping it
                 // next frame) — safe to log at info without spamming.
-                let (offset, furn_world) = scratch
-                    .seat_meta
-                    .get(&seat_id)
-                    .copied()
-                    .unwrap_or(([0.0; 3], Vec3::ZERO));
+                // #3354 — read the two diagnostic values straight off the
+                // furniture instead of from a map rebuilt every frame. This
+                // runs once per actual seat assignment, which is once per NPC
+                // for the life of the cell.
+                let offset = furn_q
+                    .get(furn_e)
+                    .and_then(|f| f.markers.get(marker_idx as usize))
+                    .map_or([0.0; 3], |m| m.local_offset);
+                let furn_world = gq.get(furn_e).map_or(Vec3::ZERO, |g| g.translation);
                 log::info!(
                     "[sandbox] seat npc={} npc_pos=({:.1},{:.1},{:.1}) -> furn={} marker={} \
                      furn_world=({:.1},{:.1},{:.1}) marker_offset=({:.1},{:.1},{:.1}) \
@@ -275,21 +292,51 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
     // back to standing. This is what lowers the body onto the seat (the enter
     // clip's `Bip01`/`NonAccum` channels, absent from the sit loops). See the
     // M42.1 diagnosis in this module's docs.
+    //
+    // #3333 — capture what each field held *before* the park, so un-seating
+    // can put it back. Without this the actor keeps `playing = false` on the
+    // sit-enter clip's last frame forever: `clear_ambient_behavior` removes
+    // `Seated` but has no way to reconstruct an idle player (it has neither
+    // the archive nor the actor's idle handle), so the actor walks its next
+    // package in a frozen chair pose. Collected here rather than read back in
+    // the teardown because by then the park has already overwritten it.
+    let mut restores: Vec<SeatedAnimationRestore> = Vec::with_capacity(scratch.assignments.len());
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
         for (npc, _, _) in &scratch.assignments {
             if let Some(p) = pq.get_mut(*npc) {
+                restores.push(SeatedAnimationRestore {
+                    clip_handle: p.clip_handle,
+                    local_time: p.local_time,
+                    prev_time: p.prev_time,
+                    playing: p.playing,
+                    speed: p.speed,
+                });
                 p.clip_handle = sit_handle;
                 p.local_time = hold_time;
                 p.prev_time = hold_time;
                 p.playing = false;
                 p.speed = 1.0;
+            } else {
+                // No AnimationPlayer to park — record a neutral restore so the
+                // index stays aligned with `assignments`. The teardown only
+                // applies a restore to an actor that has a player, so this
+                // entry can never be written anywhere.
+                restores.push(SeatedAnimationRestore::default());
             }
         }
+    } else {
+        restores.resize(scratch.assignments.len(), SeatedAnimationRestore::default());
     }
     // Tag Seated (storage pre-registered at boot so insert lands).
     if let Some(mut sq) = world.query_mut::<Seated>() {
-        for (npc, furn, _) in &scratch.assignments {
-            sq.insert(*npc, Seated { furniture: *furn });
+        for ((npc, furn, _), animation_restore) in scratch.assignments.iter().zip(restores) {
+            sq.insert(
+                *npc,
+                Seated {
+                    furniture: *furn,
+                    animation_restore,
+                },
+            );
         }
     }
 }
@@ -324,7 +371,7 @@ mod tests {
     /// can't be exercised end-to-end in a unit test (see
     /// `light_overflow_tests` in the renderer crate).
     #[test]
-    fn sandbox_scratch_clears_all_three_fields_every_frame() {
+    fn sandbox_scratch_clears_every_field_every_frame() {
         let src = include_str!("sandbox.rs");
         let fn_start = src
             .find("fn sandbox_seat_system_inner(")
@@ -335,7 +382,10 @@ mod tests {
             .expect("make_sandbox_seat_system doc must follow the fn body");
         let body = &src[fn_start..fn_end];
 
-        for field in ["assignments", "seats", "seat_meta"] {
+        // `seat_meta` was removed by #3354 — it was rebuilt every frame to
+        // feed a per-assignment log line. Keep this list in step with
+        // `SandboxScratch`'s fields.
+        for field in ["assignments", "seats"] {
             let needle = format!("scratch.{field}.clear()");
             assert!(
                 body.contains(&needle),
@@ -344,6 +394,79 @@ mod tests {
                  SandboxScratch driven by make_sandbox_seat_system()"
             );
         }
+    }
+
+    /// #3354 — once every sandboxing actor is seated, the whole Pass-1 seat
+    /// build must stop running. None of the pre-existing guards ("no sit
+    /// clip", "no furniture", "no seats") covers that case, and
+    /// `SandboxBehavior` is never removed on seating (only `Seated` is
+    /// added), so the O(furniture x markers) `GlobalTransform::compose` sweep
+    /// plus one `HashMap` insert per sit marker used to run every frame for
+    /// the life of the cell.
+    ///
+    /// Pinned behaviourally through the scratch: the early-out returns before
+    /// `scratch.seats` is repopulated, so a fully-seated world leaves it as
+    /// the previous frame left it — here, empty.
+    #[test]
+    fn fully_seated_world_skips_the_seat_table_rebuild() {
+        use crate::components::{SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{Furniture, GlobalTransform, Seated};
+
+        fn world_with_one_actor(seated: bool) -> (World, SandboxScratch) {
+            let mut world = World::new();
+            world.register::<SandboxBehavior>();
+            world.register::<Seated>();
+            world.register::<Furniture>();
+            world.register::<GlobalTransform>();
+            world.register::<AnimationPlayer>();
+            world.insert_resource(SandboxSitClip(Some((1, 2.0))));
+            world.insert_resource(SeatReservations::default());
+
+            let furn = world.spawn();
+            world.insert(furn, GlobalTransform::default());
+            world.insert(
+                furn,
+                Furniture {
+                    markers: vec![marker([0.0, 0.0, 0.0], None, 0)],
+                },
+            );
+
+            let actor = world.spawn();
+            world.insert(actor, GlobalTransform::default());
+            world.insert(
+                actor,
+                SandboxBehavior {
+                    search_radius: Some(1000.0),
+                },
+            );
+            if seated {
+                world.insert(
+                    actor,
+                    Seated {
+                        furniture: furn,
+                        animation_restore: Default::default(),
+                    },
+                );
+            }
+            (world, SandboxScratch::default())
+        }
+
+        // Control: an unseated actor still builds the table and seats.
+        let (world, mut scratch) = world_with_one_actor(false);
+        sandbox_seat_system_inner(&world, 0.0, &mut scratch);
+        assert_eq!(
+            scratch.seats.len(),
+            1,
+            "an unseated actor must still reach the seat build"
+        );
+
+        // The fix: everyone already seated → bail before the rebuild.
+        let (world, mut scratch) = world_with_one_actor(true);
+        sandbox_seat_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            scratch.seats.is_empty(),
+            "a fully-seated world must not rebuild the seat table (#3354)"
+        );
     }
 
     /// Mirrors `furniture_component`'s `animation_type` → `kind` resolution

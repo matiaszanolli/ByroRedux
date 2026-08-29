@@ -25,7 +25,13 @@ fn world_with_furniture(count: usize) -> (World, Vec<EntityId>) {
 
 fn seat_actor(world: &mut World, furniture: EntityId) -> EntityId {
     let actor = world.spawn();
-    world.insert(actor, Seated { furniture });
+    world.insert(
+        actor,
+        Seated {
+            furniture,
+            animation_restore: Default::default(),
+        },
+    );
     actor
 }
 

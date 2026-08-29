@@ -46,6 +46,19 @@ pub struct PackRecord {
     /// like Escort-someone-to-someone) is not decoded — no implemented
     /// procedure needs it yet.
     pub target: Option<PackTarget>,
+    /// FO3/FNV `PKE2` — the authored **Escort Distance** (world units), the
+    /// range at which an escorting actor considers its target collected and
+    /// switches from the collect phase to the lead phase.
+    ///
+    /// Byte-proven and spec-confirmed rather than inferred: xEdit's
+    /// `Core/wbDefinitionsFNV.pas` declares it
+    /// `wbInteger(PKE2, 'Escort Distance', itU32)`. The FNV corpus agrees —
+    /// the sub-record appears on all 12 Escort (`procedure_type == 2`)
+    /// packages and on **zero** non-Escort packages across all 4,163 PACK
+    /// records in `FalloutNV.esm`, always non-zero, values {200 ×6, 300 ×2,
+    /// 500 ×1, 600 ×3}. `None` on every other procedure and every other
+    /// game. See #3332.
+    pub escort_distance: Option<u32>,
     /// Skyrim+ `PKCU` package-template reference. Concrete type-18
     /// packages normally inherit their procedure tree from a type-19 PACK;
     /// templates themselves carry a null reference.
@@ -788,6 +801,18 @@ pub fn parse_pack(
                     count_or_distance,
                 });
             }
+            // PKE2 (FO3/FNV) — Escort Distance, u32 world units. #3332.
+            // Escort-exclusive in vanilla FNV; the parser doesn't gate on
+            // procedure type because a mod is free to author it anywhere and
+            // the consumer (`AmbientBehavior::Escort`) only reads it on an
+            // Escort package anyway. Zero is dropped: it means "unset" here
+            // the same way a zero PLDT radius and a zero PTDT
+            // `count_or_distance` do, and a zero collect range would make the
+            // collect phase unsatisfiable.
+            b"PKE2" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                out.escort_distance = (raw != 0).then_some(raw);
+            }
             // Package eligibility conditions (M42.2). A PACK carries a flat
             // CTDA list (no per-block nesting like QUST stages), combined
             // with the standard OR-precedence rule. FormID params are
@@ -1232,6 +1257,42 @@ mod tests {
         data.extend_from_slice(&count_or_distance.to_le_bytes());
         data.extend_from_slice(&0.0f32.to_le_bytes()); // trailing Unknown f32, not read
         data
+    }
+
+    /// #3332 — `PKE2` is the authored Escort Distance. Confirmed against
+    /// xEdit's `Core/wbDefinitionsFNV.pas`, which declares it
+    /// `wbInteger(PKE2, 'Escort Distance', itU32)` — a spec read, not a
+    /// corpus inference. All 12 vanilla FNV Escort packages carry one
+    /// (values {200 x6, 300 x2, 500 x1, 600 x3}), and no non-Escort package
+    /// anywhere in the 4,163-record `FalloutNV.esm` does.
+    #[test]
+    fn parse_pack_reads_pke2_escort_distance() {
+        let p = parse_pack(
+            0x0e_327d,
+            &[sub(b"PKE2", &600u32.to_le_bytes())],
+            &None,
+            GameKind::default(),
+        );
+        assert_eq!(p.escort_distance, Some(600));
+
+        // Absent on every other procedure — must stay None, not 0.
+        let p = parse_pack(0x1, &[], &None, GameKind::default());
+        assert_eq!(p.escort_distance, None);
+
+        // Zero means "unset" here, the same way a zero PLDT radius and a zero
+        // PTDT count_or_distance do — a zero collect range would make the
+        // collect phase unsatisfiable.
+        let p = parse_pack(
+            0x2,
+            &[sub(b"PKE2", &0u32.to_le_bytes())],
+            &None,
+            GameKind::default(),
+        );
+        assert_eq!(p.escort_distance, None);
+
+        // A short payload is ignored rather than half-read.
+        let p = parse_pack(0x3, &[sub(b"PKE2", &[1u8, 2])], &None, GameKind::default());
+        assert_eq!(p.escort_distance, None);
     }
 
     #[test]

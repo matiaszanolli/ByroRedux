@@ -261,7 +261,13 @@ fn ai_procedure_state_and_terminal_markers_survive_save_load_round_trip() {
 
     let furniture = src.spawn();
     let sitter = src.spawn();
-    src.insert(sitter, Seated { furniture });
+    src.insert(
+        sitter,
+        Seated {
+            furniture,
+            animation_restore: Default::default(),
+        },
+    );
 
     let snap = save_world(&src, &reg).unwrap();
     let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();

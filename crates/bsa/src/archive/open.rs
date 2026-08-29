@@ -9,12 +9,7 @@ use super::{BsaArchive, FileEntry, BSA_V_FO3_SKYRIM, BSA_V_OBLIVION, BSA_V_SKYRI
 use crate::safety::checked_entry_count;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read};
-// `Seek` is only used via `reader.stream_position()` inside
-// `#[cfg(debug_assertions)]` blocks below — gate the import to match,
-// or release builds emit an "unused import" warning.
-#[cfg(debug_assertions)]
-use std::io::Seek;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -97,6 +92,49 @@ impl BsaArchive {
         // name + file records start, **with the `_total_file_name_length`
         // header quantity added to it** on disk — subtract that at
         // validation time. See `expected_offset` below. (#362)
+        // -- Folder-records offset (bytes 8..12) -------------------------------
+        // #3368 — this header word says where the folder table starts, and it
+        // used to be the only one never read at all: the walk simply used
+        // whatever position the 36-byte header read left behind. Every shipped
+        // Bethesda archive stores exactly 36 here (verified across all 23
+        // Skyrim SE archives), so honouring it changes nothing on vanilla
+        // content — but an archive with a padded or extended header previously
+        // read the folder-name length byte out of the padding and failed with
+        // a garbage `read_exact` / `checked_entry_count` error that named
+        // neither the field nor the cause. openmw seeks to this field before
+        // touching the folder table (`compressedbsafile.cpp`); so do we.
+        //
+        // Distinct from the `#[cfg(debug_assertions)]` per-folder offset check
+        // further down, which validates each folder's own file-block offset —
+        // a different field that cannot catch this one.
+        const HEADER_LEN: u64 = 36;
+        let folders_offset = u32::from_le_bytes(header[8..12].try_into().unwrap()) as u64;
+        if folders_offset < HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "BSA folders_offset {folders_offset} overlaps the {HEADER_LEN}-byte header"
+                ),
+            ));
+        }
+        if folders_offset != HEADER_LEN {
+            // Name the field before the seek so an out-of-range value is a
+            // clear diagnostic rather than a downstream UnexpectedEof.
+            let len = reader.get_ref().metadata()?.len();
+            if folders_offset > len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "BSA folders_offset {folders_offset} is past end of file ({len} bytes)"
+                    ),
+                ));
+            }
+            log::debug!(
+                "BSA folder table starts at {folders_offset}, not the usual {HEADER_LEN} —                  seeking (extended/padded header)"
+            );
+            reader.seek(SeekFrom::Start(folders_offset))?;
+        }
+
         let folder_record_size: usize = if version == BSA_V_SKYRIM_SE { 24 } else { 16 };
         struct FolderRecord {
             /// Stored folder-name hash. Only retained in debug builds

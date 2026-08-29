@@ -8,6 +8,7 @@
 
 use super::{EsmIndex, NpcRecord};
 use crate::components::{AmbientPackageRuntime, GameTimeRes, SeatReservations};
+use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
     Dead, EscortBehavior, EscortState, Escorted, FollowBehavior, FollowState, GuardBehavior,
     GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated, TravelBehavior, TravelState,
@@ -71,6 +72,9 @@ enum AmbientBehavior {
         target_form_id: Option<u32>,
         destination_form_id: Option<u32>,
         destination_radius: Option<f32>,
+        /// #3332 — authored collect range, `PKE2` first then
+        /// `PTDT.count_or_distance`.
+        collect_distance: Option<f32>,
         actor_form_id: u32,
     },
     Guard {
@@ -141,6 +145,16 @@ impl AmbientBehavior {
                 target_form_id: target_reference,
                 destination_form_id: location_reference,
                 destination_radius: location_radius,
+                // #3332 — `PKE2` is the field xEdit names "Escort Distance",
+                // and it is authored on all 12 vanilla FNV Escort packages.
+                // `PTDT.count_or_distance` is the fallback: it is the same
+                // scalar Follow already consumes as a stand-off distance and
+                // is non-zero on 5 of those 12, so it still beats the engine
+                // constant when a mod omits PKE2. Both were being discarded.
+                collect_distance: package
+                    .escort_distance
+                    .map(|d| d as f32)
+                    .or(target_distance),
                 actor_form_id,
             })
         } else if package.is_guard() {
@@ -276,6 +290,7 @@ impl AmbientBehavior {
                 target_form_id,
                 destination_form_id,
                 destination_radius,
+                collect_distance,
                 actor_form_id,
             } => {
                 world.insert(
@@ -284,6 +299,7 @@ impl AmbientBehavior {
                         target_form_id,
                         destination_form_id,
                         destination_radius,
+                        collect_distance,
                         form_id: actor_form_id,
                     },
                 );
@@ -361,6 +377,7 @@ impl AmbientBehavior {
                 target_form_id,
                 destination_form_id,
                 destination_radius,
+                collect_distance,
                 actor_form_id,
             } => insert_component(
                 world,
@@ -369,6 +386,7 @@ impl AmbientBehavior {
                     target_form_id,
                     destination_form_id,
                     destination_radius,
+                    collect_distance,
                     form_id: actor_form_id,
                 },
             ),
@@ -416,6 +434,35 @@ fn remove_component<T: Component>(world: &World, actor: EntityId) {
 pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     if let Some(mut reservations) = world.try_resource_mut::<SeatReservations>() {
         reservations.0.retain(|_, claimant| *claimant != actor);
+    }
+
+    // #3333 — un-seating must undo the animation park, not just drop the
+    // marker. `sandbox_seat_system` pins the actor on the sit-enter clip's
+    // final frame with `playing = false` (the enter clip's Reverse cycle would
+    // otherwise ping-pong it back to standing), and nothing else in the engine
+    // ever writes `AnimationPlayer` for an NPC after spawn. Before M42.9 that
+    // was unreachable — `SandboxBehavior` was attached once and never removed
+    // — but `ambient_ai_package_system` now swaps behaviors on a schedule
+    // handover, so a saloon patron whose daytime Sandbox package gives way to
+    // an evening Travel package used to walk off in a frozen chair pose and
+    // never animate again for the rest of the session.
+    //
+    // The snapshot rides on `Seated` itself, so this is a component read with
+    // no archive access and no idle-clip re-resolution. Restored BEFORE the
+    // marker is removed, for the same reason `SeatReservations` is retained
+    // above it: this function is the only place that knows the actor was
+    // seated at all.
+    if let Some(seated) = world.get::<Seated>(actor).map(|s| *s) {
+        if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
+            if let Some(player) = players.get_mut(actor) {
+                let restore = seated.animation_restore;
+                player.clip_handle = restore.clip_handle;
+                player.local_time = restore.local_time;
+                player.prev_time = restore.prev_time;
+                player.playing = restore.playing;
+                player.speed = restore.speed;
+            }
+        }
     }
 
     remove_component::<SandboxBehavior>(world, actor);
@@ -835,10 +882,13 @@ mod tests {
         assert!(world.has::<SandboxBehavior>(actor));
 
         let furniture = 700;
-        world
-            .query_mut::<Seated>()
-            .unwrap()
-            .insert(actor, Seated { furniture });
+        world.query_mut::<Seated>().unwrap().insert(
+            actor,
+            Seated {
+                furniture,
+                animation_restore: Default::default(),
+            },
+        );
         world
             .resource_mut::<SeatReservations>()
             .0
@@ -946,6 +996,115 @@ mod tests {
             "EvaluatePackageRequest must bypass the minute gate (#3353)"
         );
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    /// #3333 — un-seating must undo the animation park, not just drop the
+    /// marker. `sandbox_seat_system` pins a seated actor on the sit-enter
+    /// clip's final frame with `playing = false` (its Reverse cycle would
+    /// otherwise ping-pong back to standing) and nothing else writes an NPC's
+    /// `AnimationPlayer` after spawn. Before M42.9 that was unreachable —
+    /// `SandboxBehavior` was attached once and never removed — but
+    /// `ambient_ai_package_system` now swaps behaviors on a schedule
+    /// handover, so the actor walked its next package in a frozen chair pose
+    /// and never animated again for the rest of the session.
+    #[test]
+    fn unseating_restores_the_pre_seat_animation_player() {
+        use byroredux_core::animation::AnimationPlayer;
+        use byroredux_core::ecs::components::SeatedAnimationRestore;
+
+        let mut world = World::new();
+        world.register::<AnimationPlayer>();
+        world.register::<Seated>();
+        world.register::<SandboxBehavior>();
+        let actor = world.spawn();
+
+        // The actor's real idle, as spawn left it.
+        let idle = AnimationPlayer {
+            clip_handle: 7,
+            local_time: 0.4,
+            prev_time: 0.3,
+            playing: true,
+            speed: 1.05,
+            reverse_direction: false,
+            root_entity: None,
+        };
+        let (idle_clip, idle_local, idle_prev, idle_speed) = (
+            idle.clip_handle,
+            idle.local_time,
+            idle.prev_time,
+            idle.speed,
+        );
+        world.insert(actor, idle);
+        let furniture = world.spawn();
+        world.insert(
+            actor,
+            Seated {
+                furniture,
+                animation_restore: SeatedAnimationRestore {
+                    clip_handle: idle_clip,
+                    local_time: idle_local,
+                    prev_time: idle_prev,
+                    playing: true,
+                    speed: idle_speed,
+                },
+            },
+        );
+        // …then the seat park, verbatim as `sandbox_seat_system` writes it.
+        {
+            let mut pq = world.query_mut::<AnimationPlayer>().unwrap();
+            let p = pq.get_mut(actor).unwrap();
+            p.clip_handle = 42;
+            p.local_time = 2.5;
+            p.prev_time = 2.5;
+            p.playing = false;
+            p.speed = 1.0;
+        }
+
+        clear_ambient_behavior(&world, actor);
+
+        let restored = world.get::<AnimationPlayer>(actor).unwrap();
+        assert_eq!(restored.clip_handle, 7, "idle clip must come back");
+        assert!(restored.playing, "a walking actor must not stay frozen");
+        assert_eq!(restored.local_time, 0.4);
+        assert_eq!(restored.prev_time, 0.3);
+        assert_eq!(restored.speed, 1.05);
+        drop(restored);
+        assert!(!world.has::<Seated>(actor));
+    }
+
+    /// The restore must be scoped to actors that were actually seated —
+    /// `clear_ambient_behavior` runs on every package handover, including for
+    /// the six locomotion procedures that never touch `AnimationPlayer`.
+    #[test]
+    fn unseating_does_not_touch_an_actor_that_was_never_seated() {
+        use byroredux_core::animation::AnimationPlayer;
+
+        let mut world = World::new();
+        world.register::<AnimationPlayer>();
+        world.register::<Seated>();
+        world.register::<WanderBehavior>();
+        let actor = world.spawn();
+        let mid_clip = AnimationPlayer {
+            clip_handle: 3,
+            local_time: 1.25,
+            prev_time: 1.2,
+            playing: true,
+            speed: 0.97,
+            reverse_direction: true,
+            root_entity: None,
+        };
+        world.insert(actor, mid_clip);
+
+        clear_ambient_behavior(&world, actor);
+
+        let after = world.get::<AnimationPlayer>(actor).unwrap();
+        // No `Seated` means nothing to restore — the player must be untouched.
+        assert_eq!(after.clip_handle, 3);
+        assert_eq!(after.local_time, 1.25);
+        assert_eq!(after.prev_time, 1.2);
+        assert!(after.playing);
+        assert_eq!(after.speed, 0.97);
+        assert!(after.reverse_direction);
     }
 
     #[test]

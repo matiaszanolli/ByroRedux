@@ -49,6 +49,19 @@ pub struct EscortBehavior {
     pub target_form_id: Option<u32>,
     pub destination_form_id: Option<u32>,
     pub destination_radius: Option<f32>,
+    /// Authored collect range (world units) — the distance at which the
+    /// target counts as collected and the lead phase begins. `None` falls
+    /// back to `escort_system::ESCORT_COLLECT_DISTANCE`.
+    ///
+    /// #3332 — sourced from the package's `PKE2` ("Escort Distance" per
+    /// xEdit's FNV definitions), falling back to `PTDT.count_or_distance`
+    /// (the same field [`super::follow::FollowBehavior::follow_distance`]
+    /// reads) when no `PKE2` is authored. Every one of vanilla FNV's 12
+    /// Escort packages authors a `PKE2` larger than the engine default, so
+    /// before this the collect range was 1.6×–6.25× too tight on 100% of the
+    /// corpus and the escort walked into the player's personal space before
+    /// starting to lead.
+    pub collect_distance: Option<f32>,
     pub form_id: u32,
 }
 

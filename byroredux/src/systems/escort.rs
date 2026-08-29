@@ -77,8 +77,14 @@ use byroredux_scripting::condition::resolve_entity_by_global_form_id;
 use std::collections::VecDeque;
 
 /// Distance (world units) within which the target is considered
-/// "collected" — the collect phase ends and the lead phase begins. Engine
-/// default, same scale as `follow.rs::FOLLOW_DEFAULT_DISTANCE`.
+/// "collected" — the collect phase ends and the lead phase begins.
+///
+/// Engine **fallback** only, same scale as
+/// `follow.rs::FOLLOW_DEFAULT_DISTANCE`. `EscortBehavior::collect_distance`
+/// wins whenever the package authored one, which on vanilla FNV is every
+/// Escort package there is (#3332) — this constant is reached only by
+/// content that authors neither `PKE2` nor a non-zero
+/// `PTDT.count_or_distance`.
 const ESCORT_COLLECT_DISTANCE: f32 = 128.0;
 
 /// Fallback pick radius (world units) around an actor's current position,
@@ -260,7 +266,9 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 None => true, // nothing to collect — skip straight to leading
                 Some(pos) => {
                     let d = Vec3::new(pos.x - current.x, 0.0, pos.z - current.z);
-                    d.length() <= ESCORT_COLLECT_DISTANCE + LOCOMOTION_ARRIVAL_EPSILON
+                    d.length()
+                        <= behavior.collect_distance.unwrap_or(ESCORT_COLLECT_DISTANCE)
+                            + LOCOMOTION_ARRIVAL_EPSILON
                 }
             };
 
@@ -480,6 +488,7 @@ mod tests {
                 target_form_id: None,
                 destination_form_id: None,
                 destination_radius: Some(200.0),
+                collect_distance: None,
                 form_id: 0x0006_0006,
             },
         );
@@ -518,6 +527,7 @@ mod tests {
                 target_form_id: Some(0x0007_0001),
                 destination_form_id: None,
                 destination_radius: Some(200.0),
+                collect_distance: None,
                 form_id: 0x0007_0002,
             },
         );
@@ -558,6 +568,7 @@ mod tests {
                 target_form_id: Some(0x0008_0001),
                 destination_form_id: None,
                 destination_radius: Some(200.0),
+                collect_distance: None,
                 form_id: 0x0008_0002,
             },
         );
@@ -590,6 +601,7 @@ mod tests {
                 target_form_id: None,
                 destination_form_id: None,
                 destination_radius: Some(100.0),
+                collect_distance: None,
                 form_id: 0x0009_0009,
             },
         );
@@ -651,6 +663,7 @@ mod tests {
                 target_form_id: Some(0x000F_0001),
                 destination_form_id: None,
                 destination_radius: Some(200.0),
+                collect_distance: None,
                 form_id: 0x000F_0002,
             },
         );
@@ -725,6 +738,64 @@ mod tests {
         );
     }
 
+    /// #3332 — an authored collect distance must win over the engine
+    /// constant. Every one of vanilla FNV's 12 Escort packages authors a
+    /// `PKE2` larger than `ESCORT_COLLECT_DISTANCE` (200..600 against 128),
+    /// and 5 of them additionally carry a non-zero `PTDT.count_or_distance`
+    /// (256 x4, 800 x1) — both signals were being discarded, so 100% of the
+    /// corpus collected 1.6x-6.25x tighter than authored and the escort
+    /// walked into the player's personal space before starting to lead.
+    ///
+    /// `GomezEscortToAtrium`'s real geometry: the actor stands 300 units from
+    /// the player, which is inside its authored 800 but well outside 128.
+    #[test]
+    fn authored_collect_distance_beats_the_engine_default() {
+        fn run(collect_distance: Option<f32>) -> bool {
+            let mut world = World::new();
+            register_all(&mut world);
+            let target_pos = Vec3::new(300.0, 0.0, 0.0);
+            spawn_entity_at(&mut world, 0x0011_0001, target_pos);
+
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(Vec3::ZERO));
+            world.insert(
+                actor,
+                EscortBehavior {
+                    target_form_id: Some(0x0011_0001),
+                    destination_form_id: None,
+                    destination_radius: Some(200.0),
+                    collect_distance,
+                    form_id: 0x0011_0002,
+                },
+            );
+
+            escort_system(&world, 0.0);
+
+            // Reaching the lead phase stamps a resolved destination; still
+            // collecting leaves it `None`.
+            let sq = world
+                .query::<EscortState>()
+                .expect("EscortState registered");
+            sq.get(actor).unwrap().destination.is_some()
+        }
+
+        assert!(
+            !run(None),
+            "300 units is outside the 128 engine default — still collecting"
+        );
+        assert!(
+            run(Some(800.0)),
+            "300 units is inside GomezEscortToAtrium's authored 800 — must \
+             already count as collected and switch to the lead phase (#3332)"
+        );
+        // The authored value is honoured in the tightening direction too, so
+        // this is a real read rather than an "any Some means collected".
+        assert!(
+            !run(Some(64.0)),
+            "an authored distance smaller than the default must also be obeyed"
+        );
+    }
+
     #[test]
     fn escort_system_routes_through_a_resident_navmesh_tile_during_the_lead_phase() {
         let mut world = World::new();
@@ -745,6 +816,7 @@ mod tests {
                 target_form_id: None,
                 destination_form_id: None,
                 destination_radius: Some(1.0),
+                collect_distance: None,
                 form_id: 0x0010_0001,
             },
         );
@@ -791,6 +863,7 @@ mod tests {
                 target_form_id: Some(0x0011_0001),
                 destination_form_id: None,
                 destination_radius: Some(200.0),
+                collect_distance: None,
                 form_id: 0x0011_0002,
             },
         );

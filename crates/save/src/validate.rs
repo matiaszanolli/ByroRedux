@@ -594,6 +594,7 @@ mod tests {
             actor,
             Seated {
                 furniture: never_spawned,
+                animation_restore: Default::default(),
             },
         );
 

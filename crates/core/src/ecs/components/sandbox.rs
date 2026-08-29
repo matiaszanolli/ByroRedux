@@ -49,11 +49,58 @@ impl Component for SandboxBehavior {
 /// future stand-up / reservation-release path can free the seat. Its
 /// presence is the one-shot guard that stops `sandbox_seat_system` from
 /// re-seating an already-seated actor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Seated {
     /// The furniture entity this actor is seated on.
     pub furniture: EntityId,
+    /// The actor's `AnimationPlayer` playback state as it was immediately
+    /// *before* `sandbox_seat_system` parked it on the sit-enter clip's final
+    /// frame — see [`SeatedAnimationRestore`].
+    ///
+    /// #3333 — seating overwrites five `AnimationPlayer` fields to hold the
+    /// seated end pose, including `playing = false`. Nothing used to undo
+    /// that: `clear_ambient_behavior` removed `Seated` and the fourteen AI
+    /// components but never touched `AnimationPlayer`, so an actor un-seated
+    /// at a package handover walked its next package frozen in a chair pose
+    /// and never animated again. Carrying the pre-seat snapshot here makes
+    /// the restore a pure component read — no archive access, no idle-clip
+    /// re-resolution, and correct even for an actor whose idle differs from
+    /// the spawn default.
+    pub animation_restore: SeatedAnimationRestore,
+}
+
+/// The `AnimationPlayer` playback fields `sandbox_seat_system` overwrites
+/// when it parks an actor in a seat, captured before the overwrite so
+/// un-seating can put them back verbatim (#3333).
+///
+/// Exactly the five fields the park writes — no more, so a restore can never
+/// clobber state the seat never touched (`reverse_direction`, `root_entity`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct SeatedAnimationRestore {
+    pub clip_handle: u32,
+    pub local_time: f32,
+    pub prev_time: f32,
+    pub playing: bool,
+    pub speed: f32,
+}
+
+impl Default for SeatedAnimationRestore {
+    /// A neutral *playing* idle at normal speed — deliberately not
+    /// `#[derive(Default)]`, which would give `playing: false, speed: 0.0`,
+    /// i.e. the frozen state this type exists to undo. Used when an actor is
+    /// seated without an `AnimationPlayer` at all; restoring it is a no-op
+    /// because the teardown only writes to actors that have one.
+    fn default() -> Self {
+        Self {
+            clip_handle: 0,
+            local_time: 0.0,
+            prev_time: 0.0,
+            playing: true,
+            speed: 1.0,
+        }
+    }
 }
 
 impl Component for Seated {

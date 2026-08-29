@@ -75,7 +75,19 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// weapon" — the ambiguity the field split exists to remove. Defaulting the
 /// new field would re-introduce exactly that guess, so old snapshots are
 /// rejected instead.
-pub const FORMAT_MAJOR: u16 = 8;
+/// Version 9 adds a required `Seated.animation_restore` — the actor's
+/// `AnimationPlayer` playback state as it stood *before* `sandbox_seat_system`
+/// parked it on the sit-enter clip's final frame (#3333). Both `Seated` and
+/// `AnimationPlayer` are saved columns, so a pre-v9 snapshot of a seated actor
+/// persists the *parked* player (`playing = false`, pinned on the last frame)
+/// with no record of what preceded it. Un-seating such an actor after load —
+/// which `ambient_ai_package_system` does on any schedule handover — would
+/// have nothing to restore, and the actor walks its next package frozen in a
+/// chair pose for the rest of the session. Defaulting the new field would be a
+/// guess at the actor's idle clip and phase, the exact footgun this doc's
+/// `Option` / `serde(default)` rule exists to prevent, so old snapshots are
+/// rejected instead.
+pub const FORMAT_MAJOR: u16 = 9;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

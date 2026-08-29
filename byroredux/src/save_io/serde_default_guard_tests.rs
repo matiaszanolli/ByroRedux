@@ -297,8 +297,25 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // word is authoritative. A bump would have invalidated existing saves to
     // delete two unread booleans. Adding a *required* field, or changing the
     // meaning of an existing one, still requires the bump.
-    const BASELINE_MAJOR: u16 = 8;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb05_045b_3e14_934a;
+    //
+    // #3332 — this guard is **file**-scoped, not type-scoped. It hashes every
+    // serialized-shape span in each file of `save_type_sources()`, and
+    // `crates/core/src/ecs/components/escort.rs` is in that set because
+    // `EscortState` is registered. The field added there
+    // (`EscortBehavior::collect_distance`) is on the *sibling* type, which
+    // `registry_completeness_tests` lists as deliberately NOT saved
+    // ("active-package-derived config rebuilt at spawn and replaced by
+    // ambient_ai_package_system"). No on-disk shape changed, so no save can
+    // be invalidated by it. If a future edit moves this fingerprint, check
+    // whether the changed type is actually registered before reaching for a
+    // FORMAT_MAJOR bump — that change alone invalidated nothing.
+    //
+    // #3333 — v9 is a genuine one: `Seated.animation_restore` is a required
+    // field on a registered column, and both it and `AnimationPlayer` are
+    // saved, so a pre-v9 snapshot of a seated actor carries the *parked*
+    // player with no record of what preceded it.
+    const BASELINE_MAJOR: u16 = 9;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2edb_c5ab_987b_9d28;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
