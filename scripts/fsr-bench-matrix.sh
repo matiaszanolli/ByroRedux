@@ -98,6 +98,15 @@ scene_entity_floor() {
     whiterun)   echo 2500 ;;
     medtek)     echo 16000 ;;
     dugout)     echo 3600 ;;
+    # #3467 — UNCALIBRATED. Every other floor here was set from a measured
+    # run; this one has never been run, so 0 is a placeholder, not a
+    # threshold, and `gridcross` is deliberately NOT in the default SCENES
+    # list below. Calibrate it on the first successful run (take the observed
+    # entity count, round down generously) and add it to the default set then
+    # — shipping an uncalibrated floor in the default matrix would let a
+    # near-empty exterior load pass as a valid bench row, which is exactly
+    # what the per-scene floors exist to catch.
+    gridcross) echo 0 ;;
     *)          echo 0 ;;
   esac
 }
@@ -109,6 +118,7 @@ scene_dir() {
     whiterun)   echo "$GAMES_ROOT/Skyrim Special Edition/Data" ;;
     medtek)     echo "$GAMES_ROOT/Fallout 4/Data" ;;
     dugout)     echo "$GAMES_ROOT/Fallout 4/Data" ;;
+    gridcross)  echo "$GAMES_ROOT/Fallout New Vegas/Data" ;;
   esac
 }
 
@@ -154,6 +164,22 @@ run_scene_args() {
       ARGS+=(--textures-bsa "Fallout4 - TexturesPatch.ba2"
              --materials-ba2 "Fallout4 - Materials.ba2")
       ;;
+    # #3467 — the first EXTERIOR scene in the matrix. Every other entry is an
+    # interior `--cell`, which is why the resumable global-geometry rebuild
+    # (`GEOMETRY_REBUILD_CHUNK_BYTES`) has no bench coverage at all: it only
+    # engages once streaming grows the geometry pool past a few hundred MB,
+    # which interiors never do. Without a row here, re-picking that constant
+    # against the new `geom_rebuild` timing cannot be regression-gated.
+    #
+    # FNV + `--grid 0,0 --radius 3` is the documented exterior invocation
+    # (README / CLAUDE.md); radius 3 is a 7x7 grid, enough traversal to grow
+    # the pool without making a bench run take minutes.
+    gridcross)
+      ARGS=(--esm FalloutNV.esm --grid 0,0 --radius 3
+            --bsa "Fallout - Meshes.bsa"
+            --textures-bsa "Fallout - Textures.bsa"
+            --textures-bsa "Fallout - Textures2.bsa")
+      ;;
     *)
       echo "unknown scene '$scene'" >&2
       return 1
@@ -161,6 +187,9 @@ run_scene_args() {
   esac
 }
 
+# `gridcross` (#3467) is defined above but intentionally absent here until its
+# entity floor is calibrated — run it explicitly with
+# `FSR_BENCH_SCENES="gridcross" ./scripts/fsr-bench-matrix.sh`.
 SCENES=("${FSR_BENCH_SCENES:-cornell prospector whiterun medtek dugout}")
 read -r -a SCENES <<< "${SCENES[0]}"
 

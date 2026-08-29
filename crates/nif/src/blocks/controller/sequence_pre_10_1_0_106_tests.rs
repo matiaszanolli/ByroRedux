@@ -63,7 +63,12 @@ fn pre_10_1_0_106_sequence_layout_is_byte_exact() {
     // ── NiSequence ──
     push_inline_string(&mut data, "Seq"); //  7 B  Name
     push_inline_string(&mut data, "Root"); //  8 B  Accum Root Name (until 10.1.0.103)
-    data.extend_from_slice(&(-1i32).to_le_bytes()); //  4 B  Text Keys ref (until 10.1.0.103)
+    data.extend_from_slice(&3i32.to_le_bytes()); //  4 B  Text Keys ref (until 10.1.0.103)
+                                                 //        #3468: a REAL index, not -1. The
+                                                 //        original fixture wrote NULL, so the
+                                                 //        `is_null()` assertion below passed
+                                                 //        both before and after the payload was
+                                                 //        carried forward — it could not fail.
     data.extend_from_slice(&1u32.to_le_bytes()); //  4 B  Num Controlled Blocks
                                                  //        Array Grow By ABSENT (since 10.1.0.106)
 
@@ -120,14 +125,35 @@ fn pre_10_1_0_106_sequence_layout_is_byte_exact() {
          phantom Interpolator read"
     );
     assert_eq!(cb.priority, 0, "Priority is since=10.1.0.106 && #BSSTREAM#");
-    assert!(cb.node_name.is_none(), "IDTag strings are since=10.1.0.104");
+    // #3468 SIBLING — also retargeted. The IDTag strings really are
+    // `since="10.1.0.104"` and absent here, but `Target Name`
+    // (`until="10.1.0.103"`, read in the prologue) is the same
+    // "which node does this block drive" concept for this band. Leaving
+    // `node_name` None short-circuited `anim/controlled_block.rs`'s target
+    // resolution, so no channel in the sequence bound at all.
+    assert_eq!(
+        cb.node_name.as_deref(),
+        Some("Target"),
+        "#3468: Target Name must back node_name below 10.1.0.104"
+    );
     assert!(cb.interpolator_id.is_none());
 
     // nif.xml's own defaults for the absent derived-class fields.
     assert_eq!(seq.weight, 1.0);
     assert_eq!(seq.frequency, 1.0);
     assert_eq!(seq.cycle_type, 0, "CYCLE_CLAMP");
-    assert!(seq.text_keys_ref.is_null());
+    // #3468 — retargeted from `is_null()`. The prologue ref
+    // (`until="10.1.0.103"`) is the NiSequence-side declaration of the field
+    // NiControllerSequence re-declares `since="10.1.0.106"`; exactly one is
+    // present for any version, so it must reach the same slot the way
+    // `accum_root_name` already does. Dropping it yielded zero text-key
+    // events (footstep / hit / sound) for every sequence on this band.
+    assert_eq!(
+        seq.text_keys_ref.index(),
+        Some(3),
+        "#3468: the pre-10.1.0.104 Text Keys ref must back text_keys_ref, \
+         mirroring Accum Root Name backing accum_root_name"
+    );
     assert!(seq.manager_ref.is_null());
     assert!(seq.anim_note_refs.is_empty(), "bsver 4 carries no anim notes");
 }

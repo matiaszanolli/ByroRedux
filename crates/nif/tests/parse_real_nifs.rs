@@ -193,6 +193,83 @@ fn parse_rate_starfield() {
     run_game(Game::Starfield, None);
 }
 
+/// Minimum clean-parse rate for one archive in an all-meshes gate.
+///
+/// Recoverable is always gated at 100% ([`MIN_RECOVERABLE_RATE`]); `min_clean`
+/// is the per-archive *clean* floor, set by the project convention of
+/// "measured minus ~0.5%, rounded down to the nearest 0.5%" so a real
+/// regression trips the gate while a single new drift does not.
+struct ArchiveSpec {
+    name: &'static str,
+    min_clean: f64,
+}
+
+/// Shared driver for the per-game "walk every mesh-bearing archive, gate each
+/// one independently" tests.
+///
+/// #3466 — extracted rather than hand-copied a third time. The FO4 and
+/// Starfield gates were already byte-identical loops differing only in their
+/// spec list and log label; adding Fallout 76 would have made three copies of
+/// the same assertions, and the per-archive attribution in those messages is
+/// the whole reason these exist separately from the headline `run_game` gate.
+///
+/// Deliberately skips a missing archive with `continue` rather than taking the
+/// whole game down the way [`open_all_mesh_archives`]'s all-or-nothing rule
+/// does: these gates assert *rates*, so an absent archive contributes nothing
+/// and costs nothing. That is the same reasoning behind
+/// `Game::optional_mesh_archives` (#3369), which serves the headline gate.
+fn run_all_meshes_gate(game: Game, archives: &[ArchiveSpec]) {
+    let Some(_data_dir) = common::game_data_dir(game) else {
+        return; // skip cleanly when the game is not installed
+    };
+
+    let mut walked = 0usize;
+    let mut total_nifs = 0usize;
+    for spec in archives {
+        let Some(archive) = open_ba2_by_name(game, spec.name) else {
+            eprintln!("[{}] skipping {}: not found", game.label(), spec.name);
+            continue;
+        };
+        let stats = parse_all_nifs_in_archive(&archive, None);
+        stats.print_summary(&format!("{}/{}", game.label(), spec.name));
+        walked += 1;
+        total_nifs += stats.total;
+
+        // An archive that exists but holds no NIFs is a spec error (wrong
+        // name, or a texture/voice archive listed by mistake), not a pass.
+        assert!(
+            stats.total > 0,
+            "[{}/{}] expected at least one NIF — is this a mesh-bearing archive?",
+            game.label(),
+            spec.name
+        );
+        assert!(
+            stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+            "[{}/{}] recoverable rate {:.2}% below 100% threshold ({} hard failures)",
+            game.label(),
+            spec.name,
+            stats.recoverable_rate() * 100.0,
+            stats.failures.len()
+        );
+        assert!(
+            stats.success_rate() >= spec.min_clean,
+            "[{}/{}] clean rate {:.2}% below {:.1}% minimum ({} truncated)",
+            game.label(),
+            spec.name,
+            stats.success_rate() * 100.0,
+            spec.min_clean * 100.0,
+            stats.truncated.len()
+        );
+    }
+    eprintln!(
+        "[{}] all-meshes gate: {}/{} archive(s) present, {} NIFs",
+        game.label(),
+        walked,
+        archives.len(),
+        total_nifs,
+    );
+}
+
 /// Full Starfield mesh corpus — walks all 5 vanilla mesh archives so the
 /// per-archive clean rates are each independently gated. The headline
 /// `parse_rate_starfield` test only covers Meshes01 (~35% of total NIFs).
@@ -218,68 +295,39 @@ fn parse_rate_starfield() {
 #[test]
 #[ignore]
 fn parse_rate_starfield_all_meshes() {
-    struct ArchiveSpec {
-        name: &'static str,
-        // Minimum clean-parse rate (0.0–1.0). Recoverable is always gated
-        // at 100% via the outer assertion.
-        min_clean: f64,
-    }
-    let archives: &[ArchiveSpec] = &[
-        ArchiveSpec {
-            name: "Starfield - Meshes01.ba2",
-            min_clean: 0.995,
-        },
-        ArchiveSpec {
-            name: "Starfield - Meshes02.ba2",
-            min_clean: 0.995,
-        },
-        ArchiveSpec {
-            name: "Starfield - MeshesPatch.ba2",
-            min_clean: 0.995,
-        },
-        ArchiveSpec {
-            name: "Starfield - LODMeshes.ba2",
-            min_clean: 0.995,
-        },
-        ArchiveSpec {
-            name: "Starfield - FaceMeshes.ba2",
-            min_clean: 0.995,
-        },
-    ];
-
-    let Some(_data_dir) = common::game_data_dir(Game::Starfield) else {
-        return; // skip cleanly when Starfield is not installed
-    };
-
-    for spec in archives {
-        let Some(archive) = open_ba2_by_name(Game::Starfield, spec.name) else {
-            eprintln!("[Starfield] skipping {}: not found", spec.name);
-            continue;
-        };
-        let stats = parse_all_nifs_in_archive(&archive, None);
-        stats.print_summary(&format!("Starfield/{}", spec.name));
-
-        assert!(
-            stats.total > 0,
-            "[Starfield/{}] expected at least one NIF",
-            spec.name
-        );
-        assert!(
-            stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
-            "[Starfield/{}] recoverable rate {:.2}% below 100% threshold ({} hard failures)",
-            spec.name,
-            stats.recoverable_rate() * 100.0,
-            stats.failures.len()
-        );
-        assert!(
-            stats.success_rate() >= spec.min_clean,
-            "[Starfield/{}] clean rate {:.2}% below {:.1}% minimum ({} truncated)",
-            spec.name,
-            stats.success_rate() * 100.0,
-            spec.min_clean * 100.0,
-            stats.truncated.len()
-        );
-    }
+    // #3466 — widened from 5 archives to the full official corpus. The five
+    // originals gated ~74% of shipped NIFs; the omissions were led by
+    // `LODMeshesPatch` (19,540 NIFs — the sibling of the *gated*
+    // `MeshesPatch`) and `ShatteredSpace - Main01` (9,198).
+    //
+    // Floors for the newly-added archives follow the same "measured minus
+    // ~0.5%" rule as their five siblings, measured 2026-08-29.
+    run_all_meshes_gate(
+        Game::Starfield,
+        &[
+            ArchiveSpec { name: "Starfield - Meshes01.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "Starfield - Meshes02.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "Starfield - MeshesPatch.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "Starfield - LODMeshes.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "Starfield - FaceMeshes.ba2", min_clean: 0.995 },
+            // #3466 additions.
+            ArchiveSpec { name: "Starfield - LODMeshesPatch.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "ShatteredSpace - Main01.ba2", min_clean: 0.995 },
+            // `ShatteredSpace - Main02.ba2` is deliberately absent: measured
+            // 2026-08-29 it holds 14,934 files and **zero** NIF entries
+            // (14,799 `.ffxanim`, plus `.btd` terrain and strings). Listing
+            // it would trip this gate's own "is this a mesh-bearing archive?"
+            // assertion, which is what surfaced the fact.
+            ArchiveSpec { name: "SFBGS003 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SFBGS004 - Main.ba2", min_clean: 0.995 },
+            // SFBGS006 / SFBGS007 are omitted: measured 2026-08-29 they hold
+            // 27 and 29 files respectively and zero NIF entries.
+            ArchiveSpec { name: "SFBGS008 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SFBGS00D - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SFBGS047 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SFBGS050 - Main.ba2", min_clean: 0.995 },
+        ],
+    );
 }
 
 /// #1075 / FO4-D5-005 — Full FO4 mesh corpus across both vanilla
@@ -301,54 +349,95 @@ fn parse_rate_starfield_all_meshes() {
 #[test]
 #[ignore]
 fn parse_rate_fo4_all_meshes() {
-    struct ArchiveSpec {
-        name: &'static str,
-        min_clean: f64,
-    }
-    let archives: &[ArchiveSpec] = &[
-        ArchiveSpec {
-            name: "Fallout4 - Meshes.ba2",
-            min_clean: 0.995, // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin
-        },
-        ArchiveSpec {
-            name: "Fallout4 - MeshesExtra.ba2",
-            min_clean: 0.995, // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin
-        },
-    ];
+    // #3466 — widened from the two base archives (70.8% of shipped NIFs) with
+    // the six DLC `Main.ba2`s, mirroring the FO3/FNV lists in
+    // `Game::mesh_archives` which already enumerate every DLC. `DLCCoast`
+    // (34,411 NIFs) and `DLCNukaWorld` (27,511) are the bulk of the gap.
+    // `DLCUltraHighResolution` is textures only and stays out.
+    run_all_meshes_gate(
+        Game::Fallout4,
+        &[
+            // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin.
+            ArchiveSpec { name: "Fallout4 - Meshes.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "Fallout4 - MeshesExtra.ba2", min_clean: 0.995 },
+            // #3466 additions.
+            ArchiveSpec { name: "DLCCoast - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "DLCNukaWorld - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "DLCRobot - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "DLCworkshop01 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "DLCworkshop02 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "DLCworkshop03 - Main.ba2", min_clean: 0.995 },
+        ],
+    );
+}
 
-    let Some(_data_dir) = common::game_data_dir(Game::Fallout4) else {
-        return; // skip cleanly when FO4 is not installed
-    };
-
-    for spec in archives {
-        let Some(archive) = open_ba2_by_name(Game::Fallout4, spec.name) else {
-            eprintln!("[Fallout 4] skipping {}: not found", spec.name);
-            continue;
-        };
-        let stats = parse_all_nifs_in_archive(&archive, None);
-        stats.print_summary(&format!("Fallout 4/{}", spec.name));
-
-        assert!(
-            stats.total > 0,
-            "[Fallout 4/{}] expected at least one NIF",
-            spec.name
-        );
-        assert!(
-            stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
-            "[Fallout 4/{}] recoverable rate {:.2}% below 100% threshold ({} hard failures)",
-            spec.name,
-            stats.recoverable_rate() * 100.0,
-            stats.failures.len()
-        );
-        assert!(
-            stats.success_rate() >= spec.min_clean,
-            "[Fallout 4/{}] clean rate {:.2}% below {:.1}% minimum ({} truncated)",
-            spec.name,
-            stats.success_rate() * 100.0,
-            spec.min_clean * 100.0,
-            stats.truncated.len()
-        );
-    }
+/// #3466 — Fallout 76 had **no** all-meshes gate at all: `Game::mesh_archives`
+/// lists only `SeventySix - Meshes.ba2`, which is 34.8% of the 168,220 NIFs
+/// the game ships. The `unknown_ceiling_fallout_76` baseline reads
+/// `unknown_blocks 0` and passes precisely because that one archive genuinely
+/// has zero — every `BSDistantObjectExtraData` block (#3461) sits in the
+/// content no gate opened.
+///
+/// The 16 `*UpdateMain` archives are the live-service patch stack; each
+/// carries mesh overrides, so they are gated individually like the DLC
+/// archives on the other titles.
+///
+/// MEASURED 2026-08-29, and the reason this gate was worth adding: the two
+/// `GeneratedMeshes` archives carry a large truncation tail that no gate had
+/// ever seen. `GeneratedMeshes02` is **0.00% clean — all 2,049 of its NIFs
+/// truncate**, and `GeneratedMeshes01` is 95.03% (1,007 truncated). Both are
+/// 100% *recoverable*, so nothing hard-fails and the headline gate stays
+/// green; the content is distant-LOD, which points at the same
+/// `BSDistantObjectExtraData` dispatch gap as #3461. Every other FO76 archive
+/// is 100.00% clean. Total: 20/20 archives, 168,208 NIFs.
+///
+/// NOTE (#3466): the `block_coverage_baselines` / `per_block_baselines`
+/// ceilings are deliberately NOT regenerated alongside this. Those harnesses
+/// key on `Game::mesh_archives` and compare absolute counts; regenerating them
+/// before #3461 lands would bake FO76's 112,716 `NiUnknown` blocks into the
+/// accepted ceiling. This gate is rate-based, so it can widen independently —
+/// which is the whole reason the two tiers are separate.
+#[test]
+#[ignore]
+fn parse_rate_fo76_all_meshes() {
+    run_all_meshes_gate(
+        Game::Fallout76,
+        &[
+            ArchiveSpec { name: "SeventySix - Meshes.ba2", min_clean: 0.995 },
+            // `SeventySix - MeshesExtra.ba2` is deliberately absent despite the
+            // name: measured 2026-08-29 it is 2,219 files, all `.tome`, and
+            // zero NIF entries. The issue's suggested list included it.
+            ArchiveSpec { name: "SeventySix - StaticMeshes.ba2", min_clean: 0.995 },
+            // 95.03% clean measured 2026-08-29 (19,238/20,245; 1,007 truncated,
+            // 100% recoverable). Floor is measured−0.5% per the convention, so
+            // it gates a REGRESSION from today's state — it is not an
+            // endorsement of the tail. See the module note below.
+            ArchiveSpec { name: "SeventySix - GeneratedMeshes01.ba2", min_clean: 0.945 },
+            // 0.00% clean measured 2026-08-29 — every one of its 2,049 NIFs
+            // truncates (100% recoverable, so no hard failure). A clean floor
+            // cannot gate anything below 0, so this entry is carried by the
+            // `recoverable >= 100%` assertion alone; the 0.0 is honest
+            // bookkeeping, not a threshold. Raise it the moment the tail is
+            // fixed, or the fix has nothing pinning it.
+            ArchiveSpec { name: "SeventySix - GeneratedMeshes02.ba2", min_clean: 0.0 },
+            ArchiveSpec { name: "SeventySix - 00UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 01UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 02UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 03UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 04UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 05UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 06UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 07UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 08UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 09UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 10UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 11UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 12UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 13UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 14UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec { name: "SeventySix - 15UpdateMain.ba2", min_clean: 0.995 },
+        ],
+    );
 }
 
 /// Smoke subset — runs the first 50 NIFs from each available game in one

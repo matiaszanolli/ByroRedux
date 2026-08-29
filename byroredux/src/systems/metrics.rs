@@ -217,6 +217,9 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         cpu_pass_ms.insert("rof_post_draw".to_string(), cpu.rof_post_draw_ms);
         cpu_pass_ms.insert("rof_pre_draw".to_string(), cpu.rof_pre_draw_ms);
         cpu_pass_ms.insert("ssbo_build".to_string(), cpu.ssbo_build_ms);
+    // #3467 — exported so a bench run can chart the rebuild slice that
+    // `GEOMETRY_REBUILD_CHUNK_BYTES` is supposed to bound.
+    cpu_pass_ms.insert("geometry_rebuild".to_string(), cpu.geometry_rebuild_ms);
         cpu_pass_ms.insert("submit_present".to_string(), cpu.submit_present_ms);
         cpu_pass_ms.insert("tlas_build".to_string(), cpu.tlas_build_ms);
     }

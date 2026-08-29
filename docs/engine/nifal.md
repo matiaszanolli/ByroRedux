@@ -486,7 +486,7 @@ FO4 precombined CSG geometry also carries this full payload; the former
 `PrecombineMaterial` subset and field-by-field patch operation were removed.
 
 Texture paths cross the NIF boundary in one generic semantic contract:
-`MaterialTextureSet<T>`. Its 18 named roles plus four ordered decal layers cover
+`MaterialTextureSet<T>`. Its 22 named roles plus four ordered decal layers cover
 legacy `NiTexturingProperty`, `BSShaderTextureSet`, inline effect shaders, and
 BGSM/BGEM material files. The source-specific slot vocabulary is gone before
 runtime spawning; the same shape is reused as `MaterialTextureSet<Option<String>>`
@@ -584,11 +584,18 @@ The material slice was executed this session as the template. Mechanics:
   | 2 — post-texture | `resolve_normal_alpha_spec_roughness` | `Material::roughness` for the normal-alpha-as-spec convention (#1480) |
   | 2 — post-texture | `resolve_msn_z_source` | `MAT_FLAG_MSN_HAS_AUTHORED_Z` for model-space normals (#2826) |
 
-  Both Phase-2 resolvers run at **both** spawn sites, immediately after
-  `MaterialTextureHandles` is attached. Both are idempotent and read only
-  canonical components, so this is a staging constraint rather than a
-  mutable-state leak — and it is why the render path carries no material
-  heuristic of its own (#1480's "resolve once at spawn" contract).
+  Both Phase-2 resolvers run at **every `translate_material` caller that
+  attaches `MaterialTextureHandles`**, immediately after that attachment
+  (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The third
+  production caller, `cell_loader/placement_lod.rs`, is exempt because it
+  attaches no `MaterialTextureHandles` — both resolvers read their inputs out
+  of that component and early-return without it, so calling them there would
+  be a no-op rather than a correctness gap (#3465; the text used to say
+  "both spawn sites", which stopped identifying the set once the third caller
+  landed). Both are idempotent and read only canonical components, so this is
+  a staging constraint rather than a mutable-state leak — and it is why the
+  render path carries no material heuristic of its own (#1480's "resolve once
+  at spawn" contract).
 
   This is load-bearing for Skyrim: it ships no dedicated gloss map and puts its
   spec mask in the normal-map alpha, so most Skyrim architecture's shipped

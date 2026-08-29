@@ -40,12 +40,21 @@
 //! | 2 — post-texture-resolution | [`resolve_normal_alpha_spec_roughness`] | `Material::roughness`, for the Skyrim/Gamebryo normal-alpha-as-spec convention (#1480) |
 //! | 2 — post-texture-resolution | [`resolve_msn_z_source`] | `MAT_FLAG_MSN_HAS_AUTHORED_Z`, for model-space normal maps (#2826) |
 //!
-//! Both Phase-2 resolvers are called from **both** spawn sites, immediately
-//! after `MaterialTextureHandles` is attached
-//! (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). Both are
-//! idempotent and read only canonical components, so re-running them cannot
-//! change a value — this is a staging constraint, not a mutable-state leak,
-//! and it is why the render path carries no heuristic of its own.
+//! Both Phase-2 resolvers are called from **every [`translate_material`]
+//! caller that attaches `MaterialTextureHandles`**, immediately after that
+//! attachment (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`).
+//!
+//! #3465 — this used to say "both spawn sites", which stopped identifying the
+//! set when a third production caller landed. `cell_loader/placement_lod.rs`
+//! is that third one and is exempt: it attaches no `MaterialTextureHandles`,
+//! and both resolvers read their inputs out of that component and early-return
+//! without it, so calling them there would be a no-op rather than a
+//! correctness gap. If placement LOD ever gains texture handles, it gains the
+//! resolvers with them.
+//!
+//! Both are idempotent and read only canonical components, so re-running them
+//! cannot change a value — this is a staging constraint, not a mutable-state
+//! leak, and it is why the render path carries no heuristic of its own.
 //!
 //! Which phase actually *owns* `Material::roughness` for a given draw is
 //! worth stating precisely, because the two Skyrim populations split
@@ -1625,6 +1634,81 @@ mod tests {
                  translation boundary (`{boundary_fn}`). Without one they fall into the \
                  render path's no-`Material` arm and shade against hardcoded literals — \
                  a second materialization site outside the single source of truth (#2444)."
+            );
+        }
+    }
+
+    /// #3465 — keep the two hand-written texture-role lists in the docs
+    /// honest against the struct they describe.
+    ///
+    /// `MaterialTextureSet`'s role vocabulary is documented in prose twice
+    /// (`docs/engine/nifal.md` and `.claude/commands/audit-nifal/SKILL.md`),
+    /// and the SKILL text is the checklist an auditor diffs `values()` against
+    /// — the one role walk the compiler does not protect. Both said "18 named
+    /// roles" long after the struct reached 22, so the checklist was missing
+    /// four roles for anyone auditing against it.
+    ///
+    /// Scanning the docs from a test makes that self-maintaining: add a role
+    /// and forget the prose, and this fails with the count that is now true.
+    #[test]
+    fn documented_texture_role_list_matches_the_struct() {
+        // Source of truth: the struct's own field list. Counted from the
+        // declaration rather than a hardcoded number so this test cannot
+        // drift the same way the prose did.
+        const TYPES_SRC: &str = include_str!("../../crates/nif/src/import/types.rs");
+        let struct_body = TYPES_SRC
+            .split_once("pub struct MaterialTextureSet<T> {")
+            .expect("MaterialTextureSet must still be declared here")
+            .1
+            .split_once("\n}")
+            .expect("unterminated struct")
+            .0;
+        let named_roles = struct_body
+            .lines()
+            .filter(|l| {
+                let l = l.trim();
+                l.starts_with("pub ") && l.ends_with(": T,")
+            })
+            .count();
+
+        assert!(
+            named_roles > 0,
+            "field-scan found no roles — the struct's shape changed and this \
+             test's parse needs updating, not silencing"
+        );
+
+        for (name, src) in [
+            ("docs/engine/nifal.md", include_str!("../../docs/engine/nifal.md")),
+            (
+                ".claude/commands/audit-nifal/SKILL.md",
+                include_str!("../../.claude/commands/audit-nifal/SKILL.md"),
+            ),
+        ] {
+            assert!(
+                src.contains(&format!("{named_roles} named roles")),
+                "{name} does not say \"{named_roles} named roles\" — \
+                 `MaterialTextureSet` has {named_roles}, and this prose is the \
+                 checklist the Dimension-8 role walk is audited against (#3465)"
+            );
+        }
+
+        // The SKILL list is enumerated, so also pin every role by name: a
+        // correct count with a wrong member is the failure mode that made
+        // #3465 worth a test rather than a one-line edit.
+        const SKILL_SRC: &str = include_str!("../../.claude/commands/audit-nifal/SKILL.md");
+        for line in struct_body.lines() {
+            let line = line.trim();
+            let Some(field) = line
+                .strip_prefix("pub ")
+                .and_then(|rest| rest.strip_suffix(": T,"))
+            else {
+                continue;
+            };
+            assert!(
+                SKILL_SRC.contains(&format!("`{field}`")),
+                "audit-nifal SKILL.md's role list omits `{field}` — an auditor \
+                 diffing `values()` against it would not notice that role \
+                 going missing (#3465)"
             );
         }
     }

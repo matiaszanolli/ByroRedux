@@ -150,9 +150,17 @@ impl NiControllerSequence {
         } else {
             None
         };
-        if stream.version() <= NifVersion::V10_1_0_103 {
-            let _seq_text_keys_ref = stream.read_block_ref()?;
-        }
+        // #3468 — bound, not discarded. `text_keys_ref` has exactly one
+        // consumer (`anim/sequence.rs`, which feeds `collect_text_key_events`
+        // and thence the ECS footstep / hit / sound channel), so leaving this
+        // on the floor silently yielded zero text events for every sequence on
+        // this band — the exact asymmetry #2345 avoided one line above for the
+        // accum root name.
+        let seq_text_keys_ref = if stream.version() <= NifVersion::V10_1_0_103 {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
 
         let num_controlled_blocks = stream.read_u32_le()?;
 
@@ -190,9 +198,20 @@ impl NiControllerSequence {
             // Target Name — nif.xml `SizedString until="10.1.0.103"`. #2345:
             // never read at all before this fix, so every pre-10.1.0.104
             // ControlledBlock started one length-prefixed string too early.
-            if stream.version() <= NifVersion::V10_1_0_103 {
-                let _target_name = stream.read_sized_string()?;
-            }
+            //
+            // #3468 SIBLING — and, like the Text Keys ref above, it was then
+            // read and discarded. `Target Name` is the pre-10.1.0.104
+            // declaration of the same "which node does this block drive"
+            // concept `Node Name` (`since="10.1.0.104"`) carries above that
+            // band, so it feeds the same `node_name` slot. Dropping it left
+            // `node_name == None` for the whole band, which short-circuits
+            // `anim/controlled_block.rs`'s target resolution — every channel
+            // in the sequence failed to bind, not just its text events.
+            let target_name = if stream.version() <= NifVersion::V10_1_0_103 {
+                Some(Arc::from(stream.read_sized_string()?.as_str()))
+            } else {
+                None
+            };
             // Interpolator — nif.xml `since="10.1.0.106"`. #2345: read
             // unconditionally before this fix, a 4-byte over-read on
             // anything below that version.
@@ -276,7 +295,10 @@ impl NiControllerSequence {
                             stream.read_string()?,
                         )
                     } else {
-                        (None, None, None, None, None)
+                        // #3468 SIBLING — below 10.1.0.104 the node this
+                        // block drives is named by `Target Name`, read in
+                        // the prologue above. Same slot, disjoint gate.
+                        (target_name.clone(), None, None, None, None)
                     };
                 controlled_blocks.push(ControlledBlock {
                     interpolator_ref,
@@ -320,10 +342,14 @@ impl NiControllerSequence {
         } else {
             1.0
         };
+        // The derived class's own Text Keys ref (`since="10.1.0.106"`).
+        // Below that band it comes from the NiSequence base field read in
+        // the prologue instead — same concept declared twice with disjoint
+        // gates, exactly like `accum_root_name` below (#3468).
         let text_keys_ref = if has_ctlr_seq_fields {
             stream.read_block_ref()?
         } else {
-            BlockRef::NULL
+            seq_text_keys_ref
         };
         let cycle_type = if has_ctlr_seq_fields {
             stream.read_u32_le()?

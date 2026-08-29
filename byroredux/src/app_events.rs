@@ -849,6 +849,12 @@ impl ApplicationHandler for App {
                     let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
                     let tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
                     let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
+                    // #3467 — the resumable geometry-rebuild slice. Reported
+                    // here so `GEOMETRY_REBUILD_CHUNK_BYTES` can finally be
+                    // re-picked against a measured number instead of the
+                    // "chosen conservatively pending live tuning" its own doc
+                    // still carries.
+                    let geom_rebuild_ms = ft.geometry_rebuild_ns as f64 / n / 1e6;
                     let cmd_ms = ft.cmd_record_ns as f64 / n / 1e6;
                     let submit_ms = ft.submit_present_ns as f64 / n / 1e6;
                     let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
@@ -927,7 +933,8 @@ impl ApplicationHandler for App {
                          wall_fps={:.1} wall_ms={:.2} \
                          frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
-                         [fence={:.2} tlas_ms={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
+                         [fence={:.2} tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
+                         cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
                          gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
@@ -953,6 +960,7 @@ impl ApplicationHandler for App {
                         fence_ms,
                         tlas_ms,
                         ssbo_ms,
+                        geom_rebuild_ms,
                         cmd_ms,
                         submit_ms,
                         gpu[0],

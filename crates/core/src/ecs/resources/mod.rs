@@ -705,6 +705,14 @@ pub struct CpuFrameTimings {
     /// Instance SSBO fill + upload (memcpy + indirect draws).
     /// Dominant CPU-side work per frame on dense cells.
     pub ssbo_build_ms: f32,
+    /// The resumable global-geometry SSBO rebuild (#3298), including
+    /// its per-frame chunk. Its own constant is documented as
+    /// "chosen conservatively pending live tuning"; this is the
+    /// number that tuning needs, and nothing else isolates it —
+    /// it otherwise hides inside `rof_pre_draw` alongside
+    /// `build_render_data`, material interning and the UI tick
+    /// (#3467). Zero on frames with no rebuild in flight.
+    pub geometry_rebuild_ms: f32,
     /// All command-buffer recording between begin_render_pass
     /// and end_command_buffer.
     pub cmd_record_ms: f32,

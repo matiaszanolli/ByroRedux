@@ -394,6 +394,9 @@ pub struct MeshRegistry {
     /// the per-call create/destroy fallback. Mirrors
     /// `TextureRegistry::staging_pool`.
     geometry_staging_pool: Option<StagingPool>,
+    /// #3467 — accumulated wall time in `rebuild_geometry_ssbo`, drained once
+    /// per frame by [`Self::take_geometry_rebuild_ns`] into `FrameTimings`.
+    geometry_rebuild_ns: u64,
     /// In-flight multi-frame global geometry SSBO rebuild (#3298). `None`
     /// when no rebuild is running. See [`GeometryRebuildInProgress`].
     geometry_rebuild: Option<GeometryRebuildInProgress>,
@@ -448,6 +451,7 @@ impl MeshRegistry {
             mesh_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
             geometry_staging_pool: None,
+            geometry_rebuild_ns: 0,
             geometry_rebuild: None,
             deferred_compaction: None,
         }
@@ -1260,6 +1264,50 @@ impl MeshRegistry {
     /// device-loss protection stays intact as the low-headroom recovery
     /// path, not the common case.
     pub fn rebuild_geometry_ssbo(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        rt_enabled: bool,
+    ) -> Result<()> {
+        // #3467 — bracket the whole call, resumable chunk included. The chunk
+        // is bounded in BYTES, not time, and each one is a synchronous staged
+        // copy ending in a fence wait, so "one bounded slice" can still be a
+        // dropped frame. Nothing could measure it: there is no GPU timer for
+        // it (the copy is submitted on its own one-time command buffer,
+        // outside `draw_frame`'s recording, so `gpu_timers` cannot bracket
+        // it), and on the CPU side it sat inside `render_one_frame`'s
+        // `rof_pre_draw` bracket along with `build_render_data`, material
+        // interning and the UI tick. Until `GEOMETRY_REBUILD_CHUNK_BYTES` can
+        // be re-picked against a real number, its own doc's "chosen
+        // conservatively pending live tuning" has no path to a tuned value.
+        let rebuild_t0 = std::time::Instant::now();
+        let result = self.rebuild_geometry_ssbo_inner(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            rt_enabled,
+        );
+        self.geometry_rebuild_ns = self
+            .geometry_rebuild_ns
+            .saturating_add(rebuild_t0.elapsed().as_nanos() as u64);
+        result
+    }
+
+    /// Nanoseconds spent in [`Self::rebuild_geometry_ssbo`] since the last
+    /// call to this, then reset to zero.
+    ///
+    /// #3467 — accumulates rather than overwrites because the frame driver
+    /// may call the rebuild more than once per frame (the dirty-append path
+    /// runs after the in-progress advance), and a per-frame reading has to
+    /// include both.
+    pub fn take_geometry_rebuild_ns(&mut self) -> u64 {
+        std::mem::take(&mut self.geometry_rebuild_ns)
+    }
+
+    fn rebuild_geometry_ssbo_inner(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,

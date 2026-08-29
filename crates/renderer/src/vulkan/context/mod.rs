@@ -981,6 +981,13 @@ pub struct FrameTimings {
     /// Instance SSBO fill loop (773 × GpuInstance) + `upload_instances`
     /// memcpy + `upload_indirect_draws`. Dominant CPU-side work per frame.
     pub ssbo_build_ns: u64,
+    /// `MeshRegistry::rebuild_geometry_ssbo` — the resumable global geometry
+    /// SSBO copy (#3298), including its per-frame chunk. Drained from the
+    /// registry rather than measured here because the call happens in
+    /// `render_one_frame` before `draw_frame`, and it is a synchronous staged
+    /// copy on a one-time command buffer, so no GPU timer can bracket it
+    /// (#3467). Zero on every frame with no rebuild in flight.
+    pub geometry_rebuild_ns: u64,
     /// `begin_render_pass` through `end_command_buffer` — Vulkan command
     /// recording for geometry, UI, SVGF, TAA, SSAO, composite.
     pub cmd_record_ns: u64,

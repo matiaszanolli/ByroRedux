@@ -586,6 +586,7 @@ impl App {
                         cpu_t.fence_wait_ms = ft.fence_wait_ns as f32 * NS_TO_MS;
                         cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
                         cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
+                        cpu_t.geometry_rebuild_ms = ft.geometry_rebuild_ns as f32 * NS_TO_MS;
                         cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
                         cpu_t.submit_present_ms = ft.submit_present_ns as f32 * NS_TO_MS;
                         cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
@@ -601,6 +602,7 @@ impl App {
                             b.fence_wait_ns += ft.fence_wait_ns;
                             b.tlas_build_ns += ft.tlas_build_ns;
                             b.ssbo_build_ns += ft.ssbo_build_ns;
+                            b.geometry_rebuild_ns += ft.geometry_rebuild_ns;
                             b.cmd_record_ns += ft.cmd_record_ns;
                             b.submit_present_ns += ft.submit_present_ns;
                         }

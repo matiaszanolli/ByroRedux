@@ -3410,6 +3410,10 @@ impl VulkanContext {
                 .is_ok();
         }
         t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
+        // #3467 — drained here rather than measured here: the rebuild runs in
+        // `render_one_frame` before `draw_frame` is entered, so this is the
+        // first point in the frame that owns a `FrameTimings` to put it in.
+        t.geometry_rebuild_ns = self.mesh_registry.take_geometry_rebuild_ns();
 
         // Pre-populate the blend pipeline cache for any new (src, dst)
         // combos this frame. Resolved up-front because the hot draw
