@@ -934,6 +934,56 @@ pub(crate) fn unresolved_material_warning(path: &str, has_starfield_cdb: bool) -
     }
 }
 
+/// The CDB-gated PBR flip — Starfield's fallback when no authored sidecar
+/// payload is available for a material path.
+///
+/// #3230 (SF-2026-08-20-D9-01) — this used to be an unconditional early
+/// return at the top of [`merge_external_material`], which meant that on any
+/// session with a Starfield CDB registered, a `.bgsm`/`.bgem` path that
+/// *did* resolve to a real file was never parsed: the resolvers sit further
+/// down the function and the return preceded them. Now there are two
+/// distinct entry points:
+///
+/// * The `.mat` arm calls it **directly**, and still early-returns. That is
+///   correct and not a shortcut: Starfield ships no `.mat` sidecar files at
+///   all (a census of all 129 vanilla + Creation archives found zero loose
+///   `.bgsm`/`.bgem` and only 20 `.mat`, all third-party), so there is no
+///   resolver for a `.mat` path to miss.
+/// * `.bgsm`/`.bgem` names reach it **only after** `resolve_bgsm` /
+///   `resolve_bgem` has actually missed.
+///
+/// Keeping the fallback for those names (rather than returning
+/// `Unresolved`) is deliberate, and measured: the CDB key's extension
+/// column is the literal constant `"mat"`, so a CDB lookup ignores the
+/// reference's own suffix and `.bgsm`/`.bgem`-named Starfield paths really
+/// do resolve to CDB materials — 17 of 57 in the sampled corpus. See
+/// `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md` §1. The CDB is the right
+/// destination on a sidecar miss, not a consolation prize.
+fn apply_cdb_pbr_fallback(material: &mut ImportedMaterial, path: &str) -> MergeOutcome {
+    material.is_pbr = true;
+    // `from_bgsm` deliberately NOT set — that flag gates BGSM
+    // spec-glossiness translation (an FO4-specific format convention).
+    if !path.ends_with(".mat") {
+        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
+        let mut warned = WARNED
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if warned.insert(path.to_owned()) {
+            // #3230 — the message can now state the miss as fact. Pre-fix it
+            // claimed "has no external BGSM/BGEM payload" without ever having
+            // looked, which was actively wrong for the case this fix restores.
+            log::warn!(
+                "Starfield shader material '{}': no BGSM/BGEM sidecar resolved; \
+                 falling back to CDB-gated PBR routing",
+                path
+            );
+        }
+    }
+    MergeOutcome::PresenceOnly
+}
+
 /// What [`merge_external_material`] actually did, for the caller and for
 /// diagnostics.
 ///
@@ -1064,66 +1114,63 @@ pub(crate) fn merge_external_material(
     // stay at the NIF-derived values — better than Lambert but still
     // approximate; Phase 2 will walk the CDB to extract authored values.
     //
-    // The CDB-presence gate prevents accidental PBR routing for modded
+    // The CDB-presence check prevents accidental PBR routing for modded
     // sidecars against non-Starfield archives. Starfield's shipped NIFs use
     // `.bgsm`/`.bgem`-named references even though no such files exist in its
-    // archives (#3053), so route those names through the same capability gate.
+    // archives (#3053), so those names are in scope for it too — but as a
+    // *fallback* reached on a resolve miss, not as a gate that pre-empts the
+    // resolvers (#3230). Only `.mat` short-circuits.
     let starfield_named_material =
         path.ends_with(".mat") || path.ends_with(".bgsm") || path.ends_with(".bgem");
-    if starfield_named_material && provider.has_starfield_cdb() {
-        material.is_pbr = true;
-        // `from_bgsm` deliberately NOT set — that flag gates BGSM
-        // spec-glossiness translation (FO4-specific format convention).
-        // Starfield .mat authors metalness/roughness directly, but this
-        // `.mat` arm returns early without touching them — NIF import
-        // (`bs_geometry.rs` / `bs_tri_shape.rs` /
-        // `import::material::classify_legacy_pbr`) already ran the
-        // keyword classifier on `metalness_override`/`roughness_override`
-        // before this function ever runs.
-        //
-        // #2707 (SF-D8-01) fixed what those overrides actually are for
-        // the DOMINANT Starfield case (a `material_reference` stub — 97.9%
-        // of sampled meshes): pre-fix, `classify_legacy_pbr` ran on an
-        // all-defaults `MaterialInfo` (the walker returns before writing
-        // any field for a stub) and unconditionally stamped its terminal
-        // `Some(0.0)/Some(0.85)` fallback anyway, permanently disabling
-        // `Material::resolve_pbr`'s NaN-sentinel backstop. Post-fix, a
-        // stub with no classifier signal at all leaves both overrides
-        // `None`, so the NaN sentinel DOES reach `resolve_pbr` — which
-        // re-runs the same classifier against whatever real texture /
-        // normal-map / env-map-scale data has been merged in BY THEN
-        // (this function's own BGSM/BGEM/`.mat` resolution included),
-        // rather than the empty snapshot the importer saw. Non-stub
-        // Starfield meshes (inline shader data present) still arrive with
-        // real `Some(...)` overrides, unchanged.
-        //
-        // Phase 2 (CDB per-field extraction) should still *overwrite*
-        // whichever value is present here with CDB-authored data when a
-        // lookup succeeds; a lookup MISS now correctly falls through to
-        // the sentinel/classifier fallback instead of silently keeping a
-        // fabricated constant.
-        //
-        // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets
-        // exactly one routing flag and forwards no authored field. Phase 2
-        // should return `Merged` once a CDB lookup actually supplies data.
-        if !path.ends_with(".mat") {
-            static WARNED: std::sync::OnceLock<
-                std::sync::Mutex<std::collections::HashSet<String>>,
-            > = std::sync::OnceLock::new();
-            let mut warned = WARNED
-                .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if warned.insert(path.clone()) {
-                log::warn!(
-                    "Starfield shader material '{}' has no external BGSM/BGEM payload; \
-                     using CDB-gated PBR fallback",
-                    path
-                );
-            }
-        }
-        return MergeOutcome::PresenceOnly;
+    let starfield_cdb_gate = starfield_named_material && provider.has_starfield_cdb();
+
+    // `.mat` short-circuits: Starfield ships no `.mat` sidecar files, so
+    // there is no resolver below for this path to miss and nothing is
+    // gained by running the dispatch. See [`apply_cdb_pbr_fallback`] for
+    // the full rationale and for why the `.bgsm`/`.bgem` names do NOT
+    // short-circuit here any more (#3230).
+    //
+    // `from_bgsm` is deliberately left unset by that helper — the flag
+    // gates BGSM spec-glossiness translation (an FO4 format convention).
+    // Starfield `.mat` authors metalness/roughness directly, and this arm
+    // forwards neither: NIF import (`bs_geometry.rs` / `bs_tri_shape.rs` /
+    // `import::material::classify_legacy_pbr`) already ran the keyword
+    // classifier on `metalness_override` / `roughness_override` before
+    // this function was called.
+    //
+    // #2707 (SF-D8-01) fixed what those overrides actually are for the
+    // DOMINANT Starfield case (a `material_reference` stub — 97.9% of
+    // sampled meshes): pre-fix, `classify_legacy_pbr` ran on an
+    // all-defaults `MaterialInfo` (the walker returns before writing any
+    // field for a stub) and unconditionally stamped its terminal
+    // `Some(0.0)/Some(0.85)` fallback anyway, permanently disabling
+    // `Material::resolve_pbr`'s NaN-sentinel backstop. Post-fix, a stub
+    // with no classifier signal at all leaves both overrides `None`, so
+    // the NaN sentinel DOES reach `resolve_pbr` — which re-runs the same
+    // classifier against whatever real texture / normal-map / env-map-scale
+    // data has been merged in BY THEN (this function's own BGSM/BGEM/`.mat`
+    // resolution included), rather than the empty snapshot the importer
+    // saw. Non-stub Starfield meshes (inline shader data present) still
+    // arrive with real `Some(...)` overrides, unchanged.
+    //
+    // Phase 2 (#3398, CDB per-field extraction) should *overwrite* whichever
+    // value is present here with CDB-authored data when a lookup succeeds; a
+    // lookup MISS correctly falls through to the sentinel/classifier fallback
+    // instead of silently keeping a fabricated constant.
+    //
+    // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets exactly
+    // one routing flag and forwards no authored field. Phase 2 should return
+    // `Merged` once a CDB lookup actually supplies data.
+    if starfield_cdb_gate && path.ends_with(".mat") {
+        return apply_cdb_pbr_fallback(material, &path);
     }
+
+    // #3230 — for `.bgsm`/`.bgem` names the CDB flip is a *fallback*, not a
+    // gate. `starfield_cdb_gate` is non-`.mat` by construction past the
+    // early return above, so this is exactly "a Starfield session named a
+    // sidecar we should try to parse first". Consumed at each resolve-miss
+    // site below.
+    let cdb_pbr_fallback = starfield_cdb_gate;
 
     // BGSM/BGEM scalar-override state. The `Option<String>` slots use
     // `is_none()` to detect "NIF left this empty", but scalar PBR fields
@@ -1187,6 +1234,14 @@ pub(crate) fn merge_external_material(
 
     if dispatch_kind == Some(MaterialKind::Bgsm) {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
+            // #3230 — a Starfield session reaches here having genuinely
+            // tried and missed, which is the state the CDB flip describes.
+            // Taking it BEFORE the diagnostic below is deliberate: that
+            // warning's whole premise ("keeps its NIF-native keyword-
+            // classified material") is false once the flip runs.
+            if cdb_pbr_fallback {
+                return apply_cdb_pbr_fallback(material, &path);
+            }
             // #2601 — `resolve_bgsm` already logged WHY the resolve failed
             // (missing archive entry, parse error, template-cycle recovery
             // failure — see its own `log::warn!` sites) and recorded `path`
@@ -1601,6 +1656,10 @@ pub(crate) fn merge_external_material(
         }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
+            // #3230 — sibling of the BGSM arm's fallback above.
+            if cdb_pbr_fallback {
+                return apply_cdb_pbr_fallback(material, &path);
+            }
             // #2601 — sibling of the BGSM arm's diagnostic above. Same
             // consequence: this mesh keeps the NIF-native keyword-
             // classified fallback instead of authoritative BGEM data.
@@ -1853,6 +1912,15 @@ pub(crate) fn merge_external_material(
                 "{}",
                 unresolved_material_warning(&path, provider.has_starfield_cdb())
             );
+        }
+        // #3230 SIBLING — not reachable for a `.bgsm`/`.bgem` path today
+        // (`ext_kind` is always `Some` for those, so `dispatch_kind` is too,
+        // and both its variants are handled above). It becomes reachable the
+        // moment `peek_magic` learns a third `MaterialKind`, and the answer
+        // for a Starfield session would be the same as the two arms above,
+        // so wire it now rather than leave a hole for that change to fall in.
+        if cdb_pbr_fallback {
+            return apply_cdb_pbr_fallback(material, &path);
         }
         return MergeOutcome::Unresolved;
     }

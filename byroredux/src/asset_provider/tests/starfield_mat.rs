@@ -333,3 +333,99 @@ fn starfield_bgem_named_reference_gets_pbr_fallback() {
     assert_eq!(outcome, MergeOutcome::PresenceOnly);
     assert!(mesh.material.is_pbr);
 }
+
+/// #3230 (SF-2026-08-20-D9-01) regression — the core case: a `.bgsm` that
+/// **does** resolve, on a session with a Starfield CDB registered.
+///
+/// Pre-fix the `.mat` arm's early return sat above every resolver in
+/// `merge_external_material` and fired on `path.ends_with(".bgsm")` for any
+/// provider with a CDB, so this material's authored texture roles, PBR
+/// scalars and `from_bgsm` translation were all discarded in favour of the
+/// presence-only `is_pbr = true` flip. The gate is a **provider** capability,
+/// not a per-path one, so nothing narrowed it by which archive the mesh came
+/// from — a mixed session was enough.
+///
+/// The two assertions that matter are `merged()` (not `PresenceOnly`) and a
+/// forwarded texture role: together they prove the resolver actually ran.
+#[test]
+fn registered_cdb_does_not_shadow_a_resolvable_bgsm() {
+    use byroredux_bgsm::{template::ResolvedMaterial, BgsmFile};
+
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/setdressing/realpayload.bgsm";
+    let mut provider = MaterialProvider::new();
+    // A Starfield session: CDB registered, capability gate live.
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    assert!(provider.has_starfield_cdb());
+    // ...but this particular path has a genuine sidecar behind it.
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                diffuse_texture: "textures/real/diffuse.dds".into(),
+                normal_texture: "textures/real/normal.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+
+    assert!(
+        outcome.merged(),
+        "#3230: a resolvable BGSM must reach the BGSM arm even with a CDB \
+         registered — got {outcome:?}"
+    );
+    assert!(
+        mesh.material.from_bgsm,
+        "#3230: the BGSM spec-glossiness translation must run; the CDB flip \
+         deliberately leaves from_bgsm false, so this pins which arm executed"
+    );
+    let diffuse = mesh
+        .material
+        .textures
+        .base_color
+        .and_then(|s| pool.resolve(s).map(|t| t.to_string()));
+    assert_eq!(
+        diffuse.as_deref(),
+        Some("textures/real/diffuse.dds"),
+        "#3230: authored texture roles must be forwarded, not discarded"
+    );
+}
+
+/// The other half of #3230: with a CDB registered, a `.bgsm` that resolves to
+/// **nothing** must still land on the CDB-gated PBR fallback rather than
+/// returning `Unresolved`.
+///
+/// This is what keeps #3053's benefit intact, and it is the dominant vanilla
+/// case — a census of all 129 vanilla + Creation Starfield archives found 0
+/// loose `.bgsm` and 0 loose `.bgem`, so essentially every shipped `.bgsm`
+/// name misses. Measured separately, the fallback is also the *right*
+/// destination and not merely a safe one: the CDB key's extension column is
+/// the constant `"mat"`, so `.bgsm`/`.bgem`-named paths do resolve to real
+/// CDB materials (17 of 57 sampled) — see
+/// `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md` §1.
+#[test]
+fn unresolvable_bgsm_still_falls_back_to_cdb_pbr() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
+
+    let mut mesh =
+        imported_mesh_with_material_path(&mut pool, "materials/setdressing/nopayload.bgsm");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+
+    assert_eq!(
+        outcome,
+        MergeOutcome::PresenceOnly,
+        "#3053's benefit must survive #3230's fix: a missing sidecar still \
+         routes through the CDB gate"
+    );
+    assert!(mesh.material.is_pbr);
+    assert!(
+        !mesh.material.from_bgsm,
+        "the fallback must not claim BGSM provenance it never parsed"
+    );
+}
