@@ -82,6 +82,34 @@ fn main() {
     let cdb = ComponentDatabaseFile::parse(&bytes).unwrap();
     println!("## parsed: {} classes, {} instances\n", cdb.classes.len(), cdb.instances.len());
 
+    // ---- 0. class field layout: declaration order vs `offset` order ----
+    // `read_user_class` reads values sequentially in declaration order and
+    // ignores `Field::offset`. If the two orders disagree for any class,
+    // every field name in that class is bound to the wrong value.
+    println!("## 0. declaration order vs offset order");
+    let mut disagree = 0usize;
+    for c in &cdb.classes {
+        let offs: Vec<u16> = c.fields.iter().map(|f| f.offset).collect();
+        let sorted = { let mut v = offs.clone(); v.sort_unstable(); v };
+        if offs != sorted {
+            disagree += 1;
+            if disagree <= 8 {
+                println!("     MISMATCH {} ({} fields)", c.name, c.fields.len());
+                for f in &c.fields {
+                    println!("        decl .{:<24} offset={:<4} size={}", f.name, f.offset, f.size);
+                }
+            }
+        }
+    }
+    println!("     classes whose declaration order != offset order: {disagree}/{}", cdb.classes.len());
+    for c in cdb.classes.iter().filter(|c| c.name == "BSResource::ID") {
+        println!("     BSResource::ID layout:");
+        for f in &c.fields {
+            println!("        decl .{:<8} offset={:<4} size={}", f.name, f.offset, f.size);
+        }
+    }
+    println!();
+
     // ---- 1. STRT `.mat` inventory -------------------------------------
     let raw = cdb.strings.raw();
     let s = String::from_utf8_lossy(raw);

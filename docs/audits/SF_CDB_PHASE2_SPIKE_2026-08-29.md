@@ -74,11 +74,24 @@ all 48,749 keys, those names do **not** describe their contents:
 | `.File` | **1** — always `0x0074616d` | **The extension, as packed ASCII** — `0x0074616d` is `"mat\0"` |
 
 The constant column is the giveaway and is what made the mapping decidable
-rather than a guess. Whether this is a Bethesda naming quirk or an
-off-by-one in our own field-name resolution in
-[`reader.rs`](../../crates/sfmaterial/src/reader.rs) is not settled here —
-either way, a Phase-2 consumer must not trust the labels. Worth a follow-up
-to check the class layout's declared field order against the offsets.
+rather than a guess. A Phase-2 consumer must not trust the labels.
+
+The class layout was checked against the offsets, and `BSResource::ID` itself
+declares cleanly ascending offsets (`Dir`@0, `File`@4, `Ext`@8), so a
+sequential read binds names to those slots consistently. The empirical column
+semantics above are nevertheless certain — one column is the literal constant
+`"mat"`, one has 48,423 distinct values, one has 2,168 — so **some**
+permutation exists between Bethesda's declared names and their contents. The
+mechanism is unresolved and is left as follow-up work.
+
+**Separately confirmed while checking this**: `read_user_class`
+([`reader.rs:537-545`](../../crates/sfmaterial/src/reader.rs)) reads field
+values *sequentially in declaration order* and never consults
+`Field::offset`. For 96 of 97 classes the two orders agree, so this is
+invisible. `XMCOLOR` is the exception — declared `r, g, b, a` at offsets
+`2, 1, 0, 3` — so its channels are currently bound to the wrong values.
+That is a live defect in the reader, independent of Phase 2, and worth its
+own issue.
 
 ### The hash
 
