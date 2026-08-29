@@ -102,6 +102,72 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
 
 // ── M41.5 Phase A — idle desync + pool selection ──────────────────
 
+/// #3390 — a placed FNV creature must reach the world with `ActorVitals`.
+///
+/// That component is the gate `combat.rs::resolve_actor_root` filters on
+/// (`.filter(|a| world.get::<ActorVitals>(*a).is_some())`), so without it
+/// a melee ray landing on a creature's bone collider logs "first
+/// obstruction is not an actor" and emits no `HitEvent` — the entire
+/// FO3/FNV bestiary was untargetable and unkillable. `stamp_actor_values`
+/// inserts it whenever the derived pairs carry the Health AVIF, and
+/// creatures now derive one from their own `CREA` `DATA`.
+#[test]
+fn fnv_spawned_creature_gets_actor_vitals_from_its_own_data() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::records::{AvifRecord, CreatureStats};
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.register::<ActorValues>();
+    world.register::<ActorVitals>();
+
+    let health = 0x450;
+    let strength = 0x3E8;
+    let mut index = EsmIndex {
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..EsmIndex::default()
+    };
+    for (fid, edid) in [(health, "AVHealth"), (strength, "AVStrength")] {
+        index.actor_values.insert(
+            fid,
+            AvifRecord {
+                form_id: fid,
+                editor_id: edid.to_owned(),
+                ..AvifRecord::default()
+            },
+        );
+    }
+
+    // The `VCrTier3GiantRadscorpionMedPers` (00167EA7) block, and no class
+    // — a creature references none.
+    let crea = NpcRecord {
+        form_id: 0x0016_7EA7,
+        is_creature: true,
+        creature_stats: Some(CreatureStats {
+            creature_type: 2,
+            combat_skill: 65,
+            magic_skill: 50,
+            stealth_skill: 50,
+            health: 150,
+            damage: 60,
+            attributes: [9, 6, 6, 6, 5, 3, 8],
+        }),
+        ..NpcRecord::default()
+    };
+
+    let target = world.spawn();
+    stamp_actor_values(&mut world, target, &crea, &index);
+
+    assert_eq!(
+        world.get::<ActorVitals>(target).map(|v| v.health),
+        Some(health),
+        "a creature must carry ActorVitals or combat cannot see it",
+    );
+    let values = world.get::<ActorValues>(target).expect("ActorValues");
+    assert_eq!(values.current(health), 150.0);
+    assert_eq!(values.current(strength), 9.0);
+}
+
 #[test]
 fn idle_desync_is_deterministic_per_form_id() {
     // Same FormId → identical seed every call (save/reload + cell

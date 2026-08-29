@@ -119,7 +119,17 @@ pub(super) fn complete_reference_load(
         let mut freed: Vec<u32> = Vec::new();
         reg.accumulate_hits(this_call_hits);
         reg.accumulate_misses(this_call_misses);
-        reg.touch_keys(pending_hits.iter().map(String::as_str));
+        // Sorted so the ticks this cell hands out are assigned in a
+        // run-stable order (#3387). `pending_hits` became a `HashSet`,
+        // whose iteration order varies per process; every key here lands
+        // at the top of the LRU either way, so the order only decides
+        // which of *this cell's own* hits is evicted first — reachable
+        // only when one cell's unique-model count exceeds the whole
+        // cache cap, but non-determinism in an eviction path is not
+        // worth the saved sort over ~150 keys.
+        let mut touched: Vec<&str> = pending_hits.iter().map(String::as_str).collect();
+        touched.sort_unstable();
+        reg.touch_keys(touched);
         // #544 — commit per-call clip handles into the process-lifetime
         // registry. Future cell loads of the same NIF reach the
         // memoised handle through `clip_handle_for` without

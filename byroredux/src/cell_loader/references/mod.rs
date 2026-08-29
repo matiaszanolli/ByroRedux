@@ -13,7 +13,7 @@ use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
@@ -831,7 +831,15 @@ struct RefLoadAccum {
     this_call_misses: u64,
     /// #523 per-call parse/hit shadows + #544 clip handles, committed after the loop.
     pending_new: HashMap<String, Option<Arc<CachedNifImport>>>,
-    pending_hits: Vec<String>,
+    /// Cache keys hit during this cell, for the end-of-load LRU touch.
+    ///
+    /// #3387 — a set, not a `Vec` pushed per placement. A cell with
+    /// 2 000 static placements over 150 unique meshes used to hold ~1 850
+    /// duplicate `String`s for the whole (resumable, possibly
+    /// multi-frame) apply, then make `touch_keys` hash each duplicate
+    /// again to rewrite the same ~150 slots — where only the last write
+    /// per key survived anyway.
+    pending_hits: HashSet<String>,
     pending_clip_handles: HashMap<String, u32>,
 }
 
@@ -857,7 +865,7 @@ impl RefLoadAccum {
             this_call_hits: 0,
             this_call_misses: 0,
             pending_new: HashMap::new(),
-            pending_hits: Vec::new(),
+            pending_hits: HashSet::new(),
             pending_clip_handles: HashMap::new(),
         }
     }

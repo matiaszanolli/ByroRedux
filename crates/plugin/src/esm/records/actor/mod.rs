@@ -223,6 +223,66 @@ impl NpcFaceGenRecipe {
     }
 }
 
+/// Byte length of a FO3 / FNV `CREA` `DATA` sub-record — see
+/// [`CreatureStats`] for the field-by-field layout and its source.
+pub const CREATURE_DATA_LEN: usize = 17;
+
+/// FO3 / FNV `CREA` `DATA` — a creature's authored stat block.
+///
+/// Creature stats are **not** class-derived: `CREA` has no CLAS reference
+/// at all (its `CNAM` names an `IPDS` or nothing — 0/1578 FNV and 0/533
+/// FO3 records resolve one, #3383), so the `NPC_` auto-calc model does not
+/// apply and this record *is* the source (#3390).
+///
+/// Layout from xEdit `Core/wbDefinitionsFNV.pas` `wbRecord(CREA, …)`
+/// `wbStruct(DATA, …)`, byte-identical in `wbDefinitionsFO3.pas`:
+///
+/// ```text
+/// {00} Type            u8   (0 Animal, 1 Mutated Animal, 2 Mutated Insect,
+///                            3 Abomination, 4 Super Mutant, 5 Feral Ghoul,
+///                            6 Robot, 7 Giant — wbCreatureTypeEnum)
+/// {01} Combat Skill    u8
+/// {02} Magic Skill     u8
+/// {03} Stealth Skill   u8
+/// {04} Health          i16
+/// {06} (unused)        2 bytes
+/// {08} Damage          i16
+/// {10} Attributes      u8 × 7  (Strength, Perception, Endurance, Charisma,
+///                               Intelligence, Agility, Luck)
+/// ```
+///
+/// 17 bytes total. Verified against `FalloutNV.esm`
+/// `VCrTier3GiantRadscorpionMedPers` (`00167EA7`), whose DATA reads
+/// `02 41 32 32 96 00 00 00 3C 00 09 06 06 06 05 03 08` — Mutated Insect,
+/// combat 65, health 150, damage 60, `S9 P6 E6 C6 I5 A3 L8`.
+///
+/// The `NPC_` `DATA` of the same games is a *different* struct (`i32` Base
+/// Health + the same 7 attributes = 11 bytes, or 25 with the legacy unused
+/// tail), which is why the parse arm keys on the exact 17-byte length.
+///
+/// [`CREATURE_DATA_LEN`] is the size the parse arm keys on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CreatureStats {
+    /// `wbCreatureTypeEnum` discriminant. Retained verbatim — the engine
+    /// has no creature-family taxonomy to translate it into yet.
+    pub creature_type: u8,
+    /// The three aggregate skill values that stand in for `NPC_`'s 13
+    /// individual skills. Parsed because they are authored data; **not**
+    /// derived into `ActorValues`, because FO3/FNV publish no `AVIF` these
+    /// three map onto and inventing one would be a guess.
+    pub combat_skill: u8,
+    pub magic_skill: u8,
+    pub stealth_skill: u8,
+    /// Base Health, straight to the `Health` `AVIF`.
+    pub health: i16,
+    /// The creature's attack damage. Authored here rather than on a weapon
+    /// (creatures fight unarmed); not an actor value in FO3/FNV, so it is
+    /// parsed and left for a future combat consumer.
+    pub damage: i16,
+    /// S-P-E-C-I-A-L, in `AttributeSet::FALLOUT` order.
+    pub attributes: [u8; 7],
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NpcRecord {
     pub form_id: u32,
@@ -249,6 +309,11 @@ pub struct NpcRecord {
     /// `CREA` `RNAM` is a 1-byte attack reach, not a race FormID), so the
     /// humanoid body/head/hair/eye recipe does not apply to them. See #2567.
     pub is_creature: bool,
+    /// FO3 / FNV `CREA` `DATA` — the creature's own stat block (#3390).
+    ///
+    /// `None` for `NPC_` (whose `DATA` is a different, 11-byte struct) and
+    /// for every other game. See [`CreatureStats`].
+    pub creature_stats: Option<CreatureStats>,
     /// Race form ID (RNAM).
     pub race_form_id: u32,
     /// Class form ID (CNAM).
@@ -796,6 +861,7 @@ pub fn parse_npc(
         model_path: common.model_path,
         body_part_models: Vec::new(),
         is_creature: false,
+        creature_stats: None,
         race_form_id: 0,
         class_form_id: 0,
         voice_form_id: 0,
@@ -939,6 +1005,39 @@ fn parse_npc_core(
                     .filter(|part| !part.is_empty())
                     .map(|part| String::from_utf8_lossy(part).into_owned()),
             );
+        }
+        // #3390 — FO3 / FNV `CREA` `DATA`: the creature's own stat block,
+        // the only source of actor values for the whole bestiary. Layout
+        // and its provenance are documented on [`CreatureStats`].
+        //
+        // Keyed on the exact 17-byte length rather than on the record
+        // group, because `parse_npc` is shared by `NPC_` and `CREA` and
+        // does not know which one it read (`is_creature` is stamped by the
+        // dispatcher afterwards). The two `DATA` structs are unambiguous by
+        // size in these games: `NPC_` authors 11 bytes (`i32` Base Health +
+        // 7 attributes), or 25 with the legacy unused tail. Neither is 17.
+        b"DATA" if matches!(game, GameKind::Fallout3NV) && sub.data.len() == CREATURE_DATA_LEN => {
+            let mut r = SubReader::new(&sub.data);
+            let creature_type = r.u8_or_default();
+            let combat_skill = r.u8_or_default();
+            let magic_skill = r.u8_or_default();
+            let stealth_skill = r.u8_or_default();
+            let health = r.u16_or_default() as i16;
+            let _unused = r.u16_or_default();
+            let damage = r.u16_or_default() as i16;
+            let mut attributes = [0u8; 7];
+            for slot in &mut attributes {
+                *slot = r.u8_or_default();
+            }
+            record.creature_stats = Some(CreatureStats {
+                creature_type,
+                combat_skill,
+                magic_skill,
+                stealth_skill,
+                health,
+                damage,
+                attributes,
+            });
         }
         // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
         b"SNAM" if sub.data.len() >= 8 => {

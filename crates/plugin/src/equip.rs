@@ -424,12 +424,30 @@ fn resolve_inherited_record<'a>(
     if let Some(base) = index.npcs.get(&npc.template_form_id) {
         return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
     }
+    // #3390 — `CREA.TPLT` points at `[CREA, LVLC]`, never at `NPC_`
+    // (xEdit `wbDefinitionsFNV.pas`, and 0/815 FNV + 0/399 FO3 templated
+    // creatures resolve to an `NPC_`). Creatures live in their own index
+    // map, so before this arm the walker matched nothing for them and
+    // every templated creature resolved to its own shell — 815 of 1578 on
+    // FNV and 399 of 533 on FO3, i.e. most of both bestiaries deriving the
+    // generic spawn-shell stat block instead of their authored one.
+    // FormIDs are unique across record classes, so consulting both maps is
+    // unambiguous.
+    if let Some(base) = index.creatures.get(&npc.template_form_id) {
+        return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
+    }
     // LVLN template — pick the highest-level eligible variant whose
     // form ID resolves to an NPC_, then recurse into IT. Vanilla
     // LVLN entries point at NPC_ records directly (no LVLI-style
     // multi-pick on the leveled-NPC path), but the same level-gate
     // applies.
-    if let Some(lvln) = index.leveled_npcs.get(&npc.template_form_id) {
+    // LVLN (NPC_) or LVLC (CREA, #3390) — 429 of FNV's 815 templated
+    // creatures and 130 of FO3's 399 route through LVLC.
+    let leveled = index
+        .leveled_npcs
+        .get(&npc.template_form_id)
+        .or_else(|| index.leveled_creatures.get(&npc.template_form_id));
+    if let Some(lvln) = leveled {
         let mut eligible: Vec<&_> = lvln
             .entries
             .iter()
@@ -440,7 +458,11 @@ fn resolve_inherited_record<'a>(
         // so ties break on insertion order (stable).
         eligible.sort_by_key(|e| e.level);
         if let Some(pick) = eligible.last() {
-            if let Some(base) = index.npcs.get(&pick.form_id) {
+            if let Some(base) = index
+                .npcs
+                .get(&pick.form_id)
+                .or_else(|| index.creatures.get(&pick.form_id))
+            {
                 return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
             }
         }

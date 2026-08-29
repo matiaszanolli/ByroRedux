@@ -1682,3 +1682,164 @@ fn parse_real_oblivion_race_head_part_indices() {
     assert!(path_at(head_part::Role::LeftEye).ends_with("eyelefthuman.nif"));
     assert!(path_at(head_part::Role::RightEye).ends_with("eyerighthuman.nif"));
 }
+
+// ── CREA DATA + creature actor values (#3390) ─────────────────────────
+
+/// Wire-level pin for the sourced `CREA` `DATA` layout — xEdit
+/// `Core/wbDefinitionsFNV.pas` `wbRecord(CREA, …) wbStruct(DATA, …)`,
+/// byte-identical in `wbDefinitionsFO3.pas`. Payload is the real
+/// `FalloutNV.esm` `VCrTier3GiantRadscorpionMedPers` (`00167EA7`) block.
+#[test]
+fn crea_data_decodes_the_sourced_seventeen_byte_layout() {
+    let data: [u8; 17] = [
+        0x02, // Type — Mutated Insect
+        0x41, // Combat Skill 65
+        0x32, // Magic Skill 50
+        0x32, // Stealth Skill 50
+        0x96, 0x00, // Health 150 (i16)
+        0x00, 0x00, // unused
+        0x3C, 0x00, // Damage 60 (i16)
+        0x09, 0x06, 0x06, 0x06, 0x05, 0x03, 0x08, // S P E C I A L
+    ];
+    let subs = vec![
+        sub(b"EDID", b"VCrTier3GiantRadscorpionMedPers\0"),
+        sub(b"DATA", &data),
+    ];
+    let crea = parse_npc(0x0016_7EA7, &subs, GameKind::Fallout3NV, &None);
+
+    assert_eq!(
+        crea.creature_stats,
+        Some(CreatureStats {
+            creature_type: 2,
+            combat_skill: 65,
+            magic_skill: 50,
+            stealth_skill: 50,
+            health: 150,
+            damage: 60,
+            attributes: [9, 6, 6, 6, 5, 3, 8],
+        }),
+    );
+}
+
+/// `parse_npc` is shared by `NPC_` and `CREA` and does not know which
+/// group it read, so the creature arm keys on the exact 17-byte length.
+/// FNV `NPC_` `DATA` is a different struct — `i32` Base Health + the same
+/// 7 attributes, 11 bytes (25 with the legacy unused tail) — and must not
+/// be decoded as a creature block.
+#[test]
+fn npc_data_is_not_mistaken_for_a_creature_stat_block() {
+    let mut npc_data = Vec::new();
+    npc_data.extend_from_slice(&250i32.to_le_bytes()); // Base Health
+    npc_data.extend_from_slice(&[5, 5, 5, 5, 5, 5, 5]); // Attributes
+    assert_eq!(npc_data.len(), 11);
+    let npc = parse_npc(
+        0x0000_0001,
+        &[sub(b"DATA", &npc_data)],
+        GameKind::Fallout3NV,
+        &None,
+    );
+    assert_eq!(npc.creature_stats, None);
+
+    // The legacy long form.
+    npc_data.extend_from_slice(&[0u8; 14]);
+    assert_eq!(npc_data.len(), 25);
+    let legacy = parse_npc(
+        0x0000_0002,
+        &[sub(b"DATA", &npc_data)],
+        GameKind::Fallout3NV,
+        &None,
+    );
+    assert_eq!(legacy.creature_stats, None);
+}
+
+/// Skyrim onward folded creatures into `NPC_` and author no `CREA` at
+/// all; a 17-byte `DATA` on another game must not reach this decoder.
+#[test]
+fn crea_data_arm_is_gated_to_the_fallout3_fnv_era() {
+    let data = [0u8; 17];
+    for game in [
+        GameKind::Oblivion,
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+        GameKind::Starfield,
+    ] {
+        let record = parse_npc(0x0000_0003, &[sub(b"DATA", &data)], game, &None);
+        assert_eq!(
+            record.creature_stats, None,
+            "{game:?} must not decode a CREA stat block",
+        );
+    }
+}
+
+/// Real-data guard for #3390 over every `FalloutNV.esm` `CREA`: the whole
+/// bestiary must decode a stat block and derive actor values from it.
+///
+/// Pre-fix the count on both halves was zero — `CREA` `DATA` was never
+/// parsed and the auto-calc arm's class lookup could not hit, so all 1 578
+/// creatures spawned with no `ActorValues`, hence no `ActorVitals`, hence
+/// untargetable by the P2 melee slice. Spot-checks are vanilla values.
+#[test]
+#[ignore]
+fn parse_real_fnv_creatures_derive_actor_values() {
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = crate::esm::records::parse_esm(&data).expect("parse_esm");
+    assert!(!index.creatures.is_empty(), "FNV must ship CREA records");
+
+    let health_key = index
+        .actor_value_form_id("Health")
+        .expect("FNV must author a Health AVIF");
+    let mut without_data = Vec::new();
+    let mut derived = 0usize;
+    let mut with_health = 0usize;
+    for crea in index.creatures.values() {
+        if crea.creature_stats.is_none() {
+            without_data.push(crea.form_id);
+        }
+        let pairs = crate::esm::records::derive_npc_actor_values(crea, &index);
+        if !pairs.is_empty() {
+            derived += 1;
+        }
+        if pairs.iter().any(|(k, _)| *k == health_key) {
+            with_health += 1;
+        }
+    }
+    assert!(
+        without_data.is_empty(),
+        "every FNV CREA authors a 17-byte DATA; {} did not: {:08X?}",
+        without_data.len(),
+        &without_data[..without_data.len().min(8)],
+    );
+    assert_eq!(
+        derived,
+        index.creatures.len(),
+        "every creature must derive a non-empty actor-value set",
+    );
+    // The remainder are `*DEAD` corpse props authored at health 0, which
+    // correctly stay without `ActorVitals`.
+    assert!(
+        with_health * 100 / index.creatures.len() >= 85,
+        "only {with_health}/{} creatures derived Health",
+        index.creatures.len(),
+    );
+
+    let by_edid = |edid: &str| {
+        index
+            .creatures
+            .values()
+            .find(|c| c.editor_id == edid)
+            .unwrap_or_else(|| panic!("{edid} missing"))
+    };
+    let health_of = |crea: &NpcRecord| {
+        crate::esm::records::derive_npc_actor_values(crea, &index)
+            .iter()
+            .find(|(k, _)| *k == health_key)
+            .map(|(_, v)| *v)
+    };
+    assert_eq!(health_of(by_edid("VCrDeathclawTier1TypeA")), Some(250.0));
+    assert_eq!(health_of(by_edid("VCrTier1RadroachMed")), Some(12.0));
+}

@@ -434,12 +434,21 @@ impl NifImportRegistry {
     /// entries are protected from LRU eviction. Called from the
     /// end-of-load batched commit (one write lock instead of one per
     /// REFR — preserves #523's batching invariant).
+    ///
+    /// Keys absent from the cache are skipped: this only refreshes
+    /// residents, it never resurrects an entry evicted earlier in the
+    /// same load.
+    ///
+    /// #3387 — was `contains_key(key)` followed by
+    /// `insert(key.to_string(), t)`, which allocated a `String` and
+    /// re-hashed the key to overwrite a `u64` in a slot it had already
+    /// located. Same shape as #832. `get_mut` does one hash and no
+    /// allocation.
     pub(crate) fn touch_keys<'a, I: IntoIterator<Item = &'a str>>(&mut self, keys: I) {
         for key in keys {
-            if self.access_tick.contains_key(key) {
-                let t = self.next_tick;
+            if let Some(slot) = self.access_tick.get_mut(key) {
+                *slot = self.next_tick;
                 self.next_tick = self.next_tick.wrapping_add(1);
-                self.access_tick.insert(key.to_string(), t);
             }
         }
     }

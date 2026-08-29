@@ -165,15 +165,14 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
 /// wasn't parsed. Individual missing Skyrim AVIFs are skipped independently.
 ///
-/// **Creatures (`CREA`, FO3/FNV) are not populated by this function** (#3383).
-/// They share `NpcRecord` and the whole spawn tail with `NPC_` (#442/#2567),
-/// but their stats are not class-derived: `CNAM` is not a CLAS FormID on
-/// `CREA` (0/1578 FNV and 0/533 FO3 resolve to one), so the auto-calc arm's
-/// class lookup necessarily misses and the result is empty for the entire
-/// bestiary. This is a known structural gap, not a rare parse failure —
-/// decoding `CREA`'s own `DATA` needs a sourced field layout, tracked
-/// separately. Callers must treat an empty result for a creature as
-/// "unpopulated", never as "all zero".
+/// - **Creatures (`CREA`, FO3/FNV)**: SPECIAL and Health read straight off
+///   the record's own `DATA` (#3390). They share `NpcRecord` and the whole
+///   spawn tail with `NPC_` (#442/#2567) but not the stat model: `CNAM` is
+///   not a CLAS FormID on `CREA` (0/1578 FNV and 0/533 FO3 resolve to one,
+///   #3383), so the auto-calc arm's class lookup can never hit. The model
+///   is selected per record — via [`CharacterRulesProfile::creature_stat_model`]
+///   rather than a game branch — so `is_creature` is the only thing this
+///   function asks about the record's class.
 ///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
@@ -186,14 +185,57 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
     // from drifting apart again — the gap arose because only one of three
     // resolved.
     let npc = crate::equip::resolve_inherited_stats(npc, effective_actor_level(npc), index);
-    match index.character_rules.npc_stat_model() {
+    // #3390 — creatures and NPCs are different stat models *within* one
+    // game, so the model is chosen by record kind and the profile still
+    // owns which model that is. Consumers never branch on game identity.
+    let model = if npc.is_creature {
+        index.character_rules.creature_stat_model()
+    } else {
+        index.character_rules.npc_stat_model()
+    };
+    match model {
         NpcStatModel::Stored => derive_stored_actor_values(npc, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
         NpcStatModel::ClassAutoCalc { health } => {
             derive_autocalc_actor_values(npc, index, index.character_rules, health)
         }
+        NpcStatModel::CreatureData => derive_creature_actor_values(npc, index),
         NpcStatModel::None => Vec::new(),
     }
+}
+
+/// FO3 / FNV `CREA`: the seven SPECIAL attributes and Health, verbatim from
+/// the creature's own `DATA` block (#3390).
+///
+/// No auto-calc and no class: `CREA` references no CLAS at all, and the
+/// three aggregate skills it authors (`Combat` / `Magic` / `Stealth`) are
+/// deliberately **not** emitted — FO3/FNV publish no `AVIF` those map onto,
+/// and inventing a mapping would be a guess. `DATA.Damage` is likewise
+/// parsed but not an actor value in these games; both stay on
+/// [`CreatureStats`] for a future consumer.
+///
+/// Empty when the record carries no `DATA` (a shell that inherits
+/// everything, whose `TPLT` chain `resolve_inherited_stats` has already
+/// followed) — the same "unpopulated, not zero" contract the other arms
+/// use. Health is skipped when non-positive: `i16` is the authored type,
+/// and a shell can leave it at 0.
+fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    let Some(stats) = npc.creature_stats else {
+        return Vec::new();
+    };
+    let roster = AttributeSet::FALLOUT.members();
+    let mut out = Vec::with_capacity(roster.len() + 1);
+    for (i, attr) in roster.iter().enumerate() {
+        if let Some(fid) = index.actor_value_form_id(attr.editor_id()) {
+            out.push((fid, f32::from(stats.attributes[i])));
+        }
+    }
+    if stats.health > 0 {
+        if let Some(fid) = index.health_actor_value_key() {
+            out.push((fid, f32::from(stats.health)));
+        }
+    }
+    out
 }
 
 /// TES5 NPC resource pools are authored as race starting values plus signed
@@ -326,6 +368,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::esm::records::actor::CreatureStats;
     use crate::esm::records::{AvifRecord, ClassRecord, RaceRecord};
 
     fn avif(form_id: u32, editor_id: &str) -> AvifRecord {
@@ -823,5 +866,209 @@ mod tests {
                 profile.name()
             );
         }
+    }
+
+    // ── Creatures (#3390) ────────────────────────────────────────────
+
+    fn creature(stats: CreatureStats) -> NpcRecord {
+        NpcRecord {
+            form_id: 0x0016_7EA7,
+            is_creature: true,
+            creature_stats: Some(stats),
+            ..NpcRecord::default()
+        }
+    }
+
+    /// The `VCrTier3GiantRadscorpionMedPers` stat block from
+    /// `FalloutNV.esm`, decoded.
+    fn radscorpion_stats() -> CreatureStats {
+        CreatureStats {
+            creature_type: 2,
+            combat_skill: 65,
+            magic_skill: 50,
+            stealth_skill: 50,
+            health: 150,
+            damage: 60,
+            attributes: [9, 6, 6, 6, 5, 3, 8],
+        }
+    }
+
+    /// #3390 — a creature derives its seven SPECIAL and its Health from
+    /// its own `DATA`, with no class involved. Pre-fix the whole FO3/FNV
+    /// bestiary fell through the auto-calc arm's class lookup (`CNAM` is
+    /// not a CLAS FormID on `CREA`) and derived nothing at all, which cost
+    /// it `ActorVitals` and therefore made it untargetable by the melee
+    /// slice.
+    #[test]
+    fn creature_derives_special_and_health_from_its_own_data() {
+        // Note the class exists in the index and is deliberately NOT the
+        // creature's — a creature must never reach the auto-calc arm.
+        let index = fnv_index_with_class(0x2000, [1, 1, 1, 1, 1, 1, 1]);
+        let pairs = derive_npc_actor_values(&creature(radscorpion_stats()), &index);
+
+        let val = |name: &str| {
+            let fid = index.actor_value_form_id(name).expect("AVIF");
+            pairs
+                .iter()
+                .find(|(k, _)| *k == fid)
+                .map(|(_, v)| *v)
+                .unwrap_or_else(|| panic!("{name} missing from {pairs:?}"))
+        };
+        assert_eq!(val("Strength"), 9.0);
+        assert_eq!(val("Perception"), 6.0);
+        assert_eq!(val("Endurance"), 6.0);
+        assert_eq!(val("Charisma"), 6.0);
+        assert_eq!(val("Intelligence"), 5.0);
+        assert_eq!(val("Agility"), 3.0);
+        assert_eq!(val("Luck"), 8.0);
+        assert_eq!(val("Health"), 150.0, "authored, not the NPC_ END curve");
+
+        // 7 SPECIAL + Health. The three aggregate skills and Damage are
+        // deliberately not emitted — no AVIF maps onto them.
+        assert_eq!(pairs.len(), 8, "{pairs:?}");
+    }
+
+    /// An `NPC_` in the same index still takes the auto-calc path — the
+    /// model is chosen per record, not per game.
+    #[test]
+    fn an_npc_beside_a_creature_still_auto_calcs() {
+        let index = fnv_index_with_class(0x2000, [5, 5, 5, 5, 5, 5, 5]);
+        let mut npc = npc_with_class(0x2000);
+        npc.level = 1;
+
+        let pairs = derive_npc_actor_values(&npc, &index);
+        assert_eq!(pairs.len(), 21, "7 SPECIAL + 13 FNV skills + Health");
+    }
+
+    /// A `*DEAD` corpse prop authors `health = 0`; skipping Health there
+    /// keeps the "unpopulated, not zero" contract and leaves the entity
+    /// without `ActorVitals`, which is correct for scenery.
+    #[test]
+    fn creature_with_non_positive_health_still_derives_special() {
+        let index = fnv_index_with_class(0x2000, [5; 7]);
+        let stats = CreatureStats {
+            health: 0,
+            ..radscorpion_stats()
+        };
+        let pairs = derive_npc_actor_values(&creature(stats), &index);
+
+        let health_key = index.actor_value_form_id("Health").unwrap();
+        assert!(!pairs.iter().any(|(k, _)| *k == health_key));
+        assert_eq!(pairs.len(), 7, "the seven SPECIAL survive");
+    }
+
+    /// A creature record with no `DATA` at all yields an empty set, the
+    /// same "unpopulated" signal every other arm uses.
+    #[test]
+    fn creature_without_a_data_block_derives_nothing() {
+        let index = fnv_index_with_class(0x2000, [5; 7]);
+        let npc = NpcRecord {
+            is_creature: true,
+            ..NpcRecord::default()
+        };
+        assert!(derive_npc_actor_values(&npc, &index).is_empty());
+    }
+
+    /// Oblivion's `CREA` `DATA` is a different struct that has not been
+    /// sourced, so its profile selects no creature model and the arm stays
+    /// closed rather than mis-decoding.
+    #[test]
+    fn oblivion_creatures_select_no_stat_model() {
+        assert_eq!(
+            CharacterRulesProfile::OBLIVION.creature_stat_model(),
+            byroredux_core::character::NpcStatModel::None,
+        );
+        let index = EsmIndex {
+            character_rules: CharacterRulesProfile::OBLIVION,
+            ..EsmIndex::default()
+        };
+        assert!(derive_npc_actor_values(&creature(radscorpion_stats()), &index).is_empty());
+    }
+
+    /// #3390 — `CREA.TPLT` points at `[CREA, LVLC]`, never `NPC_`. Before
+    /// the walker learned those two maps it matched nothing for creatures,
+    /// so 815 of 1578 FNV and 399 of 533 FO3 templated creatures derived
+    /// their own shell block (health 50, SPECIAL all 5) instead of the
+    /// base's authored stats.
+    #[test]
+    fn creature_use_stats_follows_a_crea_template() {
+        let mut index = fnv_index_with_class(0x2000, [5; 7]);
+        index
+            .creatures
+            .insert(0x3000, creature(radscorpion_stats()));
+
+        let shell = NpcRecord {
+            is_creature: true,
+            template_form_id: 0x3000,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            creature_stats: Some(CreatureStats {
+                health: 50,
+                attributes: [5; 7],
+                ..CreatureStats::default()
+            }),
+            ..NpcRecord::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let health_key = index.actor_value_form_id("Health").unwrap();
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| *k == health_key)
+                .map(|(_, v)| *v),
+            Some(150.0),
+            "the template's authored Health, not the shell's 50",
+        );
+        let str_key = index.actor_value_form_id("Strength").unwrap();
+        assert_eq!(
+            pairs.iter().find(|(k, _)| *k == str_key).map(|(_, v)| *v),
+            Some(9.0),
+        );
+    }
+
+    /// The `LVLC` half of the same chain — 429 of FNV's templated
+    /// creatures and 130 of FO3's route through a leveled-creature list.
+    #[test]
+    fn creature_use_stats_follows_an_lvlc_template() {
+        use crate::esm::records::{LeveledEntry, LeveledList};
+
+        let mut index = fnv_index_with_class(0x2000, [5; 7]);
+        index
+            .creatures
+            .insert(0x3000, creature(radscorpion_stats()));
+        index.leveled_creatures.insert(
+            0x4000,
+            LeveledList {
+                form_id: 0x4000,
+                editor_id: "LvlRadscorpion".to_owned(),
+                chance_none: 0,
+                flags: 0,
+                entries: vec![LeveledEntry {
+                    level: 1,
+                    form_id: 0x3000,
+                    count: 1,
+                }],
+            },
+        );
+
+        let shell = NpcRecord {
+            is_creature: true,
+            level: 5,
+            template_form_id: 0x4000,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            creature_stats: Some(CreatureStats::default()),
+            ..NpcRecord::default()
+        };
+
+        let health_key = index.actor_value_form_id("Health").unwrap();
+        let pairs = derive_npc_actor_values(&shell, &index);
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| *k == health_key)
+                .map(|(_, v)| *v),
+            Some(150.0),
+            "LVLC leaf's Health must reach the shell",
+        );
     }
 }

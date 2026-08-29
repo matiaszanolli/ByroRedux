@@ -34,6 +34,13 @@ pub enum NpcStatModel {
     RaceBaseOffsets,
     /// FO4+: stored `PRPS` actor values plus baked `DNAM` resources.
     Stored,
+    /// FO3/FNV `CREA`: SPECIAL and Health authored in the record's own
+    /// `DATA`, with no class and no auto-calc (#3390).
+    ///
+    /// A *creature* model, not a game model — it is reached through
+    /// [`CharacterRulesProfile::creature_stat_model`], so consumers still
+    /// branch on record kind rather than on game identity.
+    CreatureData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +61,12 @@ pub struct CharacterRulesProfile {
     name: &'static str,
     skills: SkillSet,
     npc_stats: NpcStatModel,
+    /// How a `CREA`-family actor obtains its stats, when the game has such
+    /// a record class at all. Split from [`Self::npc_stats`] because the
+    /// two are genuinely different models within one game: an FO3/FNV
+    /// `NPC_` auto-calculates from its CLAS, while a `CREA` reads its own
+    /// `DATA` and references no class whatsoever (#3390).
+    creature_stats: NpcStatModel,
     ruleset: RulesetBuilder,
 }
 
@@ -62,6 +75,7 @@ impl CharacterRulesProfile {
         name: "unsupported",
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::None,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -69,6 +83,7 @@ impl CharacterRulesProfile {
         name: "Oblivion",
         skills: SkillSet::OBLIVION,
         npc_stats: NpcStatModel::None,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -82,6 +97,7 @@ impl CharacterRulesProfile {
                 level_multiplier: 10.0,
             },
         },
+        creature_stats: NpcStatModel::CreatureData,
         ruleset: RulesetBuilder::Fallout3,
     };
 
@@ -96,6 +112,7 @@ impl CharacterRulesProfile {
                 level_multiplier: 5.0,
             },
         },
+        creature_stats: NpcStatModel::CreatureData,
         ruleset: RulesetBuilder::FalloutNewVegas,
     };
 
@@ -103,6 +120,7 @@ impl CharacterRulesProfile {
         name: "Skyrim",
         skills: SkillSet::SKYRIM,
         npc_stats: NpcStatModel::RaceBaseOffsets,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -110,6 +128,7 @@ impl CharacterRulesProfile {
         name: "Fallout 4",
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::Fallout4,
     };
 
@@ -117,6 +136,7 @@ impl CharacterRulesProfile {
         name: "Fallout 76",
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -124,6 +144,7 @@ impl CharacterRulesProfile {
         name: "Starfield",
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
+        creature_stats: NpcStatModel::None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -140,6 +161,17 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn npc_stat_model(self) -> NpcStatModel {
         self.npc_stats
+    }
+
+    /// How a `CREA`-family actor obtains its stats under this profile.
+    ///
+    /// [`NpcStatModel::None`] on every game that has no separate creature
+    /// record class (Skyrim onward folded creatures into `NPC_`), and on
+    /// Oblivion, whose `CREA` `DATA` is a different struct this has not
+    /// been sourced for.
+    #[must_use]
+    pub const fn creature_stat_model(self) -> NpcStatModel {
+        self.creature_stats
     }
 
     /// Build the canonical runtime ruleset with authored AVIF FormIDs.

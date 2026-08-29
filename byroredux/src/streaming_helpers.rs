@@ -437,12 +437,38 @@ pub fn drain_streaming_state(
         object_lod_blocks.len(),
         placement_lod_blocks.len(),
     );
-    for ((_gx, _gy), slot) in cells {
-        cell_loader::unload_cell(world, ctx, slot.cell_root);
-    }
-    if let Some(cell_root) = persistent_root {
-        cell_loader::unload_cell(world, ctx, cell_root);
-    }
+    // #3386 — one batch, not one call per cell. `unload_cell` is
+    // `unload_cell_inner` *plus* `finish_unload_batch`, whose
+    // `world.shrink_storages()` + `shrink_blas_scratch_to_fit` are
+    // whole-engine passes: the scratch shrink walks the entire
+    // mesh-handle-indexed `blas_entries` table, which never reuses a
+    // slot and so grows monotonically across a session. This drain tears
+    // down the *whole* resident set — 49 cells at `--radius 3`, 121 at
+    // `DEFAULT_TRANSITION_RADIUS` — where the boundary eviction ring
+    // that motivated `unload_cells` handles three. Per-cell semantics
+    // are identical between the two; only the finalization count
+    // differs.
+    let roots: Vec<_> = cells
+        .into_iter()
+        .map(|((_gx, _gy), slot)| slot.cell_root)
+        .chain(persistent_root)
+        .collect();
+    let unload_timings = cell_loader::unload_cells(world, ctx, &roots);
+    // Logged rather than fed to `TelemetryState::record_unload_phases`:
+    // that records the steady-state eviction ring's per-boundary
+    // histograms, and a one-off whole-resident-set teardown would skew
+    // every percentile it reports. This is the only visibility the
+    // drain's cost has.
+    log::info!(
+        "Cell transition: {} roots unloaded in one batch — index {:?}, handles {:?}, gpu {:?}, owned {:?}, despawn {:?}, finalize {:?}",
+        roots.len(),
+        unload_timings.ownership_index,
+        unload_timings.handle_collection,
+        unload_timings.gpu_release,
+        unload_timings.owned_state_release,
+        unload_timings.despawn,
+        unload_timings.finalization,
+    );
     for block in &lod_blocks {
         cell_loader::unload_lod_block(world, ctx, block);
     }

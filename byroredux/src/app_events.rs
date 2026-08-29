@@ -47,9 +47,16 @@ impl App {
                 "Streaming shutdown: unloading {} streamed cells before ctx destroy",
                 cells.len()
             );
-            for ((_gx, _gy), slot) in cells {
-                cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
-            }
+            // #3386 — the same one-batch rule as `drain_streaming_state`:
+            // `unload_cell`'s `finish_unload_batch` half is a whole-engine
+            // pass (`shrink_storages` + the full `blas_entries` walk in
+            // `shrink_blas_scratch_to_fit`), and this sweep hands it the
+            // entire resident set rather than the eviction ring's three.
+            let roots: Vec<_> = cells
+                .into_iter()
+                .map(|((_gx, _gy), slot)| slot.cell_root)
+                .collect();
+            cell_loader::unload_cells(&mut self.world, ctx, &roots);
             ctx.flush_pending_destroys();
         }
         if let Some(mut state) = self.streaming.take() {

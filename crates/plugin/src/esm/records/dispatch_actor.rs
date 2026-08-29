@@ -58,8 +58,9 @@ pub(super) fn dispatch_actor_group(
                 // `Background.class_form_id` on 990 creature entities and
                 // fed `GetIsClass`. Clear it here — the one site that knows
                 // which group it read — so the field is honestly "no class"
-                // rather than confidently wrong. Creature stats do not come
-                // from CLAS at all; see `derive_npc_actor_values`.
+                // rather than confidently wrong. Creature stats come from
+                // the record's own `DATA` instead (#3390) — see
+                // `CreatureStats` and `derive_npc_actor_values`.
                 record.class_form_id = 0;
                 index.creatures.insert(fid, record);
             })?
@@ -76,7 +77,9 @@ pub(super) fn dispatch_actor_group(
         b"FACT" => {
             let fact_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"FACT", &mut |fid, subs| {
-                index.factions.insert(fid, parse_fact(fid, subs, &fact_remap));
+                index
+                    .factions
+                    .insert(fid, parse_fact(fid, subs, &fact_remap));
             })?
         }
         _ => unreachable!("dispatch_actor_group: unexpected label {label:?}"),

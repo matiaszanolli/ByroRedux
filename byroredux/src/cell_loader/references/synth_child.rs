@@ -490,7 +490,7 @@ pub(super) fn spawn_synth_child(
                 // get evicted under `BYRO_NIF_CACHE_MAX`. The
                 // batched flush keeps the read path on a shared
                 // lock — preserves the #523 invariant.
-                accum.pending_hits.push(cache_key.clone());
+                accum.pending_hits.insert(cache_key.clone());
                 entry
             }
             None => {

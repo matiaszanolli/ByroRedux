@@ -518,3 +518,52 @@ fn clear_empties_content_and_touch_state() {
     assert_eq!(reg.core.hits(), 0);
     assert_eq!(reg.core.misses(), 0);
 }
+
+/// #3387 — `touch_keys` must refresh a resident key in place and leave
+/// no trace of a non-resident one.
+///
+/// The old body proved the entry existed with `contains_key` and then
+/// called `insert(key.to_string(), t)`, allocating a `String` and
+/// re-hashing to overwrite a `u64` in a slot it had already located.
+/// The `get_mut` rewrite is only correct if it keeps both halves of that
+/// behaviour: bump what's there, insert nothing for what isn't. A key
+/// absent from the cache but present in `access_tick` would be an
+/// LRU victim that can never be evicted — the sweep looks for the
+/// minimum tick over `access_tick`, not over the cache.
+#[test]
+fn touch_keys_bumps_residents_and_never_inserts_absent_keys() {
+    let mut reg = NifImportRegistry::new();
+    let _ = reg.insert("door.nif".into(), Some(dummy_cached()));
+    let before = reg.access_tick["door.nif"];
+
+    reg.touch_keys(["door.nif", "never-loaded.nif"].iter().copied());
+
+    assert!(
+        reg.access_tick["door.nif"] > before,
+        "a resident key's tick must advance",
+    );
+    assert_eq!(
+        reg.access_tick.len(),
+        1,
+        "an absent key must not gain an access_tick row: {:?}",
+        reg.access_tick,
+    );
+}
+
+/// The tick counter advances once per *touched resident*, not once per
+/// key offered. Pins that the early-out moved from after the
+/// `next_tick` bump to before it — a non-resident key used to be free,
+/// and must stay free, or a cell full of evicted keys would inflate the
+/// tick space for nothing.
+#[test]
+fn touch_keys_spends_no_tick_on_a_non_resident_key() {
+    let mut reg = NifImportRegistry::new();
+    let _ = reg.insert("door.nif".into(), Some(dummy_cached()));
+    let tick_before = reg.next_tick;
+
+    reg.touch_keys(["absent-a.nif", "absent-b.nif"].iter().copied());
+    assert_eq!(reg.next_tick, tick_before, "no residents, no ticks spent");
+
+    reg.touch_keys(["door.nif"].iter().copied());
+    assert_eq!(reg.next_tick, tick_before + 1, "one resident, one tick");
+}

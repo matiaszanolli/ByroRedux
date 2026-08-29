@@ -212,15 +212,21 @@ pub(crate) fn stamp_cell_root_range(
     first: EntityId,
     last: EntityId,
 ) {
-    for eid in first..last {
-        // `insert` is overwrite-safe; every spawned entity in
-        // `first..last` gets a `CellRoot` row regardless of whether
-        // it received any other components. The unload path filters
-        // `CellRoot` storage by `cell_root`, so this stamp is what
-        // makes the entity reachable from `unload_cell` (post-#791,
-        // also via the `CellRootIndex` populated below).
-        world.insert(eid, CellRoot(cell_root));
-    }
+    // Every spawned entity in `first..last` gets a `CellRoot` row
+    // regardless of whether it received any other components. The unload
+    // path filters `CellRoot` storage by `cell_root`, so this stamp is
+    // what makes the entity reachable from `unload_cell` (post-#791,
+    // also via the `CellRootIndex` populated below).
+    //
+    // #3388 — one component type over a contiguous entity range is
+    // exactly the shape `insert_batch` exists for, so the `TypeId`
+    // lookups, `RwLock::get_mut` and `downcast_mut` of `World::insert`'s
+    // preamble are paid once instead of per entity. `SparseSetStorage`
+    // takes the default `insert_bulk` (a loop of `insert`), so the
+    // per-entity semantics — including overwrite-safety, which the
+    // interior loader's re-stamp relies on — are unchanged. The index
+    // half below has been batched since #885.
+    world.insert_batch((first..last).map(|eid| (eid, CellRoot(cell_root))));
     // Populate the inverted index. Production always registers the
     // resource at App init (`main.rs:258`); test fixtures that drive
     // stamp_cell_root through reduced setups may not. Skip silently in
@@ -740,6 +746,93 @@ pub(crate) fn resolve_cell_lighting(
     let template_form = cell.lighting_template_form?;
     let template = index.lighting_templates.get(&template_form)?;
     Some(lighting_from_template(template))
+}
+
+#[cfg(test)]
+mod stamp_cell_root_range_tests {
+    use super::*;
+    use crate::components::CellRootIndex;
+    use byroredux_core::ecs::World;
+
+    fn world_with_index() -> World {
+        let mut world = World::new();
+        world.insert_resource(CellRootIndex::new());
+        world
+    }
+
+    /// #3388 — the switch from a per-entity `world.insert` loop to
+    /// `insert_batch` must leave the component half's coverage
+    /// untouched: every entity in the half-open range gets a `CellRoot`
+    /// row, and nothing outside it does. That row is what makes the
+    /// entity reachable from `unload_cell`, so a gap here is a leak.
+    #[test]
+    fn every_entity_in_the_range_gets_a_cell_root_row() {
+        let mut world = world_with_index();
+        let root = world.spawn();
+        let first = world.next_entity_id();
+        let inside: Vec<_> = (0..5).map(|_| world.spawn()).collect();
+        let last = world.next_entity_id();
+        let outside = world.spawn();
+
+        stamp_cell_root_range(&mut world, root, first, last);
+
+        for eid in &inside {
+            assert_eq!(
+                world.get::<CellRoot>(*eid).map(|c| c.0),
+                Some(root),
+                "entity {eid} in [{first},{last}) was not stamped",
+            );
+        }
+        assert!(
+            world.get::<CellRoot>(outside).is_none(),
+            "an entity past `last` must not be claimed by the cell",
+        );
+    }
+
+    /// `insert_batch` dispatches to `insert_bulk`, which `SparseSetStorage`
+    /// takes at its default (a loop of `insert`) — so the overwrite
+    /// semantics the interior loader's re-stamp relies on survive the
+    /// batching. Last writer wins.
+    #[test]
+    fn a_later_stamp_overwrites_an_earlier_roots_claim() {
+        let mut world = world_with_index();
+        let first_root = world.spawn();
+        let second_root = world.spawn();
+        let first = world.next_entity_id();
+        let entity = world.spawn();
+        let last = world.next_entity_id();
+
+        stamp_cell_root_range(&mut world, first_root, first, last);
+        assert_eq!(world.get::<CellRoot>(entity).map(|c| c.0), Some(first_root));
+
+        stamp_cell_root_range(&mut world, second_root, first, last);
+        assert_eq!(
+            world.get::<CellRoot>(entity).map(|c| c.0),
+            Some(second_root),
+            "re-stamping must overwrite, not keep the first claim",
+        );
+    }
+
+    /// The range is documented as possibly empty — the resumable loader
+    /// calls this after a slice that spawned nothing. Neither half may
+    /// do anything then.
+    #[test]
+    fn an_empty_range_stamps_nothing() {
+        let mut world = world_with_index();
+        let root = world.spawn();
+        let boundary = world.next_entity_id();
+
+        stamp_cell_root_range(&mut world, root, boundary, boundary);
+
+        assert!(
+            world
+                .resource::<CellRootIndex>()
+                .map
+                .get(&root)
+                .is_none_or(Vec::is_empty),
+            "an empty range must not add index rows",
+        );
+    }
 }
 
 #[cfg(test)]
