@@ -22,7 +22,7 @@
 //! `data_offset` indexes straight into that space; [`CsgArchive::read_psg`]
 //! resolves it, decompressing (and caching) only the chunks it touches.
 
-use crate::safety::{checked_chunk_size, checked_entry_count};
+use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use flate2::read::ZlibDecoder;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -223,6 +223,53 @@ impl CsgArchive {
     /// transparently decompressing and stitching across 64 KiB chunk
     /// boundaries.
     pub fn read_psg(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        // #3758 / SAFE-2026-08-30-D2-01 — `len` is the one size in this
+        // reader that originates OUTSIDE the crate, and it used to reach
+        // `Vec::with_capacity` before a single bounds check ran. Its only
+        // production caller derives it from three raw `u32`s off an FO4
+        // `_oc.nif` (`num_verts * stride + (tri_start + lod_count) * 6`),
+        // none of which the NIF parser ever has to reconcile against a byte
+        // budget: unlike the non-shared `BSPackedGeomData` variant, the
+        // shared variant's arrays live out here in the `.csg`. With
+        // `tri_count_lod0` alone at `u32::MAX` that reaches ~26 GB; with
+        // `num_verts` at `u32::MAX` and a 48-byte stride, ~200 GB. On
+        // allocation failure Rust calls `handle_alloc_error`, which ABORTS —
+        // not an `Err`, and not interceptable by `catch_unwind`, so the
+        // caller's `continue`-on-`Err` skip arms were unreachable for this
+        // one failure. Same class as #388 / #408 / #2614 / #3011 / #3399 /
+        // #3410.
+        //
+        // The tight bound is the archive's own PSG space: chunk `i` covers
+        // `[i*CSG_CHUNK_SIZE, (i+1)*CSG_CHUNK_SIZE)`, so a read that ends
+        // past `chunks.len() * CSG_CHUNK_SIZE` can never succeed — the loop
+        // below would reject it at `idx >= self.chunks.len()` after having
+        // already reserved. Reject it here instead. (Deliberately the cheap
+        // upper bound rather than `psg_size()`, which must inflate the last
+        // chunk: the loop's per-chunk `local >= chunk.len()` check still
+        // catches a read that runs into the short final chunk, so valid
+        // reads behave exactly as before.)
+        let end = offset.checked_add(len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CSG read_psg: offset {offset} + len {len} overflows"),
+            )
+        })?;
+        let psg_space = (self.chunks.len() as u64).saturating_mul(CSG_CHUNK_SIZE as u64);
+        if end > psg_space {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "CSG read_psg: [{offset}, {end}) past PSG space ({} chunks, \
+                     {psg_space} bytes)",
+                    self.chunks.len()
+                ),
+            ));
+        }
+        // Absolute ceiling shared with the rest of this crate's readers, for
+        // the pathological archive whose own chunk table is large enough
+        // that `psg_space` is not a useful bound on its own.
+        let len = checked_chunk_size_usize(len, "CSG PSG read")?;
+
         let mut out = Vec::with_capacity(len);
         let mut remaining = len;
         let mut pos = offset;
@@ -463,6 +510,49 @@ mod tests {
         let p = write_temp(&build_csg(&[c0]), "pasteof");
         let csg = CsgArchive::open(&p).unwrap();
         assert!(csg.read_psg(50, 100).is_err());
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// #3758 / SAFE-2026-08-30-D2-01 — `read_psg`'s `len` is the only size
+    /// in this reader that originates outside the crate, and it used to reach
+    /// `Vec::with_capacity` before any bounds check. Its production caller
+    /// derives it from three unvalidated `u32`s off an FO4 `_oc.nif`, so a
+    /// corrupt or hostile file — ordinary mod-distribution content, on a path
+    /// that runs for every FO4 cell load — drove a multi-gigabyte reservation.
+    /// On allocation failure that is `handle_alloc_error`, which ABORTS: not
+    /// an `Err` the caller's `continue` arms could skip, and not interceptable
+    /// by `catch_unwind`.
+    ///
+    /// Both amplifiers from the finding must now come back as an ordinary
+    /// `Err`, cheaply.
+    #[test]
+    fn oversized_read_len_is_rejected_before_it_is_reserved() {
+        let c0: Vec<u8> = (0..100).map(|i| i as u8).collect();
+        let p = write_temp(&build_csg(&[c0]), "hugelen");
+        let csg = CsgArchive::open(&p).unwrap();
+
+        // `num_verts = u32::MAX` at a 48-byte stride — the ~200 GB case.
+        let by_verts = usize::try_from(u32::MAX as u64 * 48).unwrap_or(usize::MAX);
+        let err = csg
+            .read_psg(0, by_verts)
+            .expect_err("a ~200 GB read must be declined, not reserved");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+
+        // `tri_count_lod0 = u32::MAX` at 6 bytes per triangle — the ~26 GB case.
+        let by_tris = usize::try_from(u32::MAX as u64 * 6).unwrap_or(usize::MAX);
+        assert!(
+            csg.read_psg(0, by_tris).is_err(),
+            "a ~26 GB read must be declined"
+        );
+
+        // `offset + len` overflowing `u64` must be an error, not a wrap into
+        // a small in-range end.
+        assert!(csg.read_psg(u64::MAX, 1).is_err());
+
+        // The bound must not cost valid reads anything: this archive's real
+        // 100 bytes still read back exactly.
+        assert_eq!(csg.read_psg(0, 8).unwrap(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+
         std::fs::remove_file(&p).ok();
     }
 
