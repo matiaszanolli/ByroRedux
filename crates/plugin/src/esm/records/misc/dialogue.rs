@@ -1,7 +1,7 @@
 //! `DIAL` / `INFO` / `MESG` dialogue and message records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
-use super::super::condition::{push_ctda, ConditionList};
+use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -172,7 +172,67 @@ pub fn parse_info(
             _ => {}
         }
     }
+    if out.actor_form_id == 0 {
+        out.actor_form_id = speaker_from_conditions(&out.conditions);
+    }
     out
+}
+
+/// `GetIsID` — the Oblivion-era speaker signal. See
+/// [`speaker_from_conditions`].
+const CONDITION_GET_IS_ID: u32 = 72;
+
+/// Derive an INFO's speaker from its `CTDA` conditions when `ANAM` is
+/// absent (#3600).
+///
+/// `ANAM` was introduced after Oblivion: a sub-record census over all
+/// 19,278 `Oblivion.esm` INFO records finds **zero** `ANAM` and **zero**
+/// `PNAM`, so `actor_form_id` was 0 on every record of the entire title.
+/// Oblivion identifies the speaker through conditions instead, and the
+/// signal is both present and unambiguous — 19,345 `GetIsID` conditions
+/// across 15,736 of the 19,278 records.
+///
+/// The rule, measured rather than assumed, over `Oblivion.esm`:
+///
+/// * `run_on` is `Subject` on **19,345 of 19,345** — which for dialogue is
+///   the speaker by definition (Oblivion's 24-byte CTDA has no run-on field
+///   at all, so this is structural, not a coincidence of authoring).
+/// * `param_1` resolves to an `NPC_` on **19,344 of 19,345**.
+/// * Only the **positive** form identifies a speaker. 2,432 of the 19,345
+///   are not `== 1` — those are exclusions ("this line is not for X") and
+///   reading one as the speaker would invert its meaning.
+/// * Exactly one positive `GetIsID` on **12,940** records — an unambiguous
+///   speaker. **1,626** carry several (an OR list of alternate speakers, so
+///   there is no single one) and **4,712** carry none (generic topics).
+///   Both of those keep `actor_form_id == 0`, which is already the
+///   documented "works for any actor" value, so the ambiguous and absent
+///   cases degrade to exactly the prior behaviour rather than to a guess.
+///
+/// Only consulted when `ANAM` is absent, so FO3+ is untouched.
+fn speaker_from_conditions(conditions: &ConditionList) -> u32 {
+    let mut speaker = 0u32;
+    let mut count = 0usize;
+    for condition in conditions {
+        if condition.function_index != CONDITION_GET_IS_ID
+            || !matches!(condition.run_on, RunOn::Subject)
+            || condition.comparator != ComparisonOp::Eq
+        {
+            continue;
+        }
+        let ConditionValue::Literal(value) = condition.comparand else {
+            continue;
+        };
+        if (value - 1.0).abs() > f32::EPSILON || condition.param_1 == 0 {
+            continue;
+        }
+        speaker = condition.param_1;
+        count += 1;
+    }
+    if count == 1 {
+        speaker
+    } else {
+        0
+    }
 }
 
 /// Build a conversation tree from flat INFO list.
@@ -189,8 +249,28 @@ pub fn build_conversation_tree(
         info_map.insert(info.form_id, info);
     }
 
+    // #3600 — Oblivion authors NO `PNAM`: a census over all 19,278
+    // `Oblivion.esm` INFO records finds zero. Every record therefore looks
+    // like a chain head, the walk below degenerates into 19,278
+    // single-element chains, and the whole title's dialogue comes out
+    // unordered — silently, with no parse error.
+    //
+    // `PNAM` was introduced after Oblivion; that generation orders INFOs by
+    // their record order within the DIAL group's Topic Children sub-GRUP,
+    // which `extract_dial_with_info` already preserves (it pushes in walk
+    // order). So when the group carries no `PNAM` at all, slice order IS the
+    // authored order and the group is one chain.
+    //
+    // Gated on "not one single record in this group has a PNAM" rather than
+    // on a game enum: a genuine FO3+ group always has at least one
+    // non-head, and a hand-built single-INFO group is one chain either way.
+    // That keeps the FO3+ path bit-identical and needs no game plumbed in
+    // here.
+    let record_order_is_authoritative =
+        !infos.is_empty() && infos.iter().all(|info| info.previous_info == 0);
+
     let mut visited = std::collections::HashSet::new();
-    let mut chains = Vec::new();
+    let mut chains: Vec<Vec<u32>> = Vec::new();
 
     // Find all chain heads (previous_info == 0) and follow each to its tail.
     for info in infos {
@@ -284,6 +364,13 @@ pub fn build_conversation_tree(
                 chains.push(chain);
             }
         }
+    }
+
+    // #3600 — collapse to the single record-order chain when the group
+    // authored no `PNAM` at all. Done here rather than as an early return so
+    // the `topic_links` map below is built identically on both paths.
+    if record_order_is_authoritative {
+        chains = vec![infos.iter().map(|info| info.form_id).collect()];
     }
 
     // Build topic_links map: info_form_id → destination topics.
@@ -571,5 +658,150 @@ mod tests {
             "orphan should become a 1-element chain"
         );
         assert_eq!(tree.chains[0], vec![0xAAAA]);
+    }
+}
+
+#[cfg(test)]
+mod oblivion_generation_tests {
+    use super::*;
+    use crate::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+
+    fn get_is_id(form_id: u32, positive: bool) -> Condition {
+        Condition {
+            function_index: super::CONDITION_GET_IS_ID,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(if positive { 1.0 } else { 0.0 }),
+            param_1: form_id,
+            param_2: 0,
+            param_1_text: None,
+            param_2_text: None,
+            run_on: RunOn::Subject,
+            reference_form_id: 0,
+            extra_data_id: 0,
+            or_next: false,
+        }
+    }
+
+    fn info(form_id: u32, conditions: Vec<Condition>) -> InfoRecord {
+        InfoRecord {
+            form_id,
+            conditions,
+            ..Default::default()
+        }
+    }
+
+    /// #3600 — Oblivion authors zero `ANAM` on all 19,278 INFO records, so
+    /// `actor_form_id` was 0 for the entire title. It identifies the speaker
+    /// through `GetIsID` conditions instead: 19,345 of them across 15,736
+    /// records, `run_on == Subject` on 19,345 of 19,345 (structural —
+    /// Oblivion's 24-byte CTDA has no run-on field), `param_1` resolving to
+    /// an `NPC_` on 19,344 of 19,345.
+    #[test]
+    fn a_single_positive_get_is_id_is_the_speaker() {
+        let subs = vec![
+            sub_of(b"NAM1", b"Greetings.\0"),
+            ctda_of(&get_is_id(0x0002_1234, true)),
+        ];
+        let parsed = parse_info(0xAAAA, &subs, &None);
+        assert_eq!(
+            parsed.actor_form_id, 0x0002_1234,
+            "an unambiguous GetIsID must supply the speaker ANAM never carried"
+        );
+    }
+
+    /// Only the POSITIVE form. 2,432 of the 19,345 vanilla `GetIsID`
+    /// conditions are not `== 1` — those are exclusions ("this line is NOT
+    /// for X"), and reading one as the speaker inverts its meaning.
+    #[test]
+    fn a_negated_get_is_id_is_an_exclusion_not_a_speaker() {
+        let subs = vec![ctda_of(&get_is_id(0x0002_1234, false))];
+        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0);
+    }
+
+    /// Several positive `GetIsID`s are an OR list of alternate speakers
+    /// (1,626 vanilla records), so there is no single one. Falling back to 0
+    /// is not a loss: 0 is already the documented "works for any actor"
+    /// value, so the ambiguous case degrades to the prior behaviour rather
+    /// than to a guess.
+    #[test]
+    fn several_positive_get_is_ids_leave_the_speaker_unset() {
+        let subs = vec![
+            ctda_of(&get_is_id(0x0002_1234, true)),
+            ctda_of(&get_is_id(0x0002_5678, true)),
+        ];
+        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0);
+    }
+
+    /// An authored `ANAM` always wins — FO3+ must be bit-identical.
+    #[test]
+    fn an_authored_anam_is_never_overridden_by_conditions() {
+        let anam = 0xDEAD_BEEFu32.to_le_bytes();
+        let subs = vec![
+            sub_of(b"ANAM", &anam),
+            ctda_of(&get_is_id(0x0002_1234, true)),
+        ];
+        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0xDEAD_BEEF);
+    }
+
+    /// #3600 — with zero `PNAM` in the group (every vanilla Oblivion DIAL),
+    /// the PNAM walk gave 19,278 single-element chains and the title's
+    /// dialogue came out unordered. Record order within the DIAL group's
+    /// Topic Children sub-GRUP is the authored order for that generation,
+    /// and `extract_dial_with_info` preserves it.
+    #[test]
+    fn a_group_with_no_pnam_orders_by_record_order() {
+        let infos = vec![info(0x111, vec![]), info(0x222, vec![]), info(0x333, vec![])];
+        let tree = build_conversation_tree(&infos).expect("no PNAM is not an error");
+        assert_eq!(
+            tree.chains,
+            vec![vec![0x111, 0x222, 0x333]],
+            "one chain, in record order — not three single-element chains"
+        );
+    }
+
+    /// The FO3+ path must be untouched: a group with even one `PNAM` still
+    /// walks the chain. Gating on "not one record has a PNAM" rather than a
+    /// game enum is what keeps that true without plumbing the game in here.
+    #[test]
+    fn a_group_with_any_pnam_still_walks_the_chain() {
+        let mut b = info(0x222, vec![]);
+        b.previous_info = 0x111;
+        let mut c = info(0x333, vec![]);
+        c.previous_info = 0x222;
+        // Scrambled input order — the PNAM walk must reorder it.
+        let infos = vec![c, info(0x111, vec![]), b];
+        let tree = build_conversation_tree(&infos).expect("valid chain");
+        assert_eq!(tree.chains, vec![vec![0x111, 0x222, 0x333]]);
+    }
+
+    /// An empty group must stay empty rather than becoming an empty chain.
+    #[test]
+    fn an_empty_group_produces_no_chains() {
+        let tree = build_conversation_tree(&[]).expect("empty is not an error");
+        assert!(tree.chains.is_empty());
+    }
+
+    fn sub_of(code: &[u8; 4], data: &[u8]) -> SubRecord {
+        SubRecord {
+            sub_type: *code,
+            data: data.to_vec(),
+        }
+    }
+
+    /// A 24-byte Oblivion CTDA payload for `condition`.
+    fn ctda_of(condition: &Condition) -> SubRecord {
+        let mut data = Vec::with_capacity(24);
+        // type byte: comparator in the high 3 bits (Eq == 0), no flags.
+        data.push(0u8);
+        data.extend_from_slice(&[0, 0, 0]); // unused
+        let ConditionValue::Literal(value) = condition.comparand else {
+            unreachable!("fixture only builds literal comparands")
+        };
+        data.extend_from_slice(&value.to_le_bytes());
+        data.extend_from_slice(&condition.function_index.to_le_bytes());
+        data.extend_from_slice(&condition.param_1.to_le_bytes());
+        data.extend_from_slice(&condition.param_2.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // run-on absent pre-FO3
+        sub_of(b"CTDA", &data)
     }
 }
