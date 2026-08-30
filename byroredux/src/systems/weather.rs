@@ -275,11 +275,46 @@ pub(crate) const DEFAULT_TOD_HOURS: [f32; 4] = crate::env_translate::FB_TOD_HOUR
 ///
 /// Interior cells are skipped so XCLL/LGTM-authored values survive —
 /// mirrors the interior gate in the main update path (#782).
+///
+/// #3561 — the *direction* is preserved, not rebuilt. This used to call
+/// `compute_sun_arc(6.0, DEFAULT_TOD_HOURS)` and install the result, which
+/// overwrote whatever direction the resource was created with. Two things
+/// were wrong with that:
+///
+/// 1. `6.0` is `DEFAULT_TOD_HOURS[0]` — `sunrise_begin` — so `solar_hour`
+///    is 0, the arc angle is 0, and the vector is `[0.989, 0, 0.148]`: a
+///    horizon-grazing due-east sun, hardcoded, every frame, regardless of
+///    the live `GameTimeRes` hour this function's caller has in scope.
+/// 2. It clobbered authored directions. `--cornell-sun` installs
+///    `procedural_fallback_cell_lighting(sun_dir())` (≈48° elevation) and
+///    the same value into `SkyParamsRes.sun_direction`; because this branch
+///    `return`s before the `SkyParamsRes` write block, frame 1 left the two
+///    ~48° apart. That harness exists precisely so a sign flip or axis swap
+///    in the directional chain shows up as a moved shadow — every
+///    conclusion drawn from it was measured against the wrong reference.
+///
+/// What this function is *for*, per the doc above, is supplying neutral
+/// magnitudes so a weather-less exterior doesn't render pitch-black. The
+/// direction belongs to whoever installed the resource. Preserving it keeps
+/// `CellLightingRes.directional_dir` and `SkyParamsRes.sun_direction` in
+/// sync on the no-`WeatherDataRes` path, and removes the hardcoded hour
+/// entirely.
 fn apply_neutral_exterior_fallback(cell_lit: &mut CellLightingRes) {
     if cell_lit.is_interior {
         return;
     }
-    let (sun_dir, _intensity) = compute_sun_arc(6.0, DEFAULT_TOD_HOURS);
+    let installed_dir = cell_lit.directional_dir;
+    // A degenerate direction can't light anything; fall back to the canonical
+    // arc rather than installing a zero sun. `CellLightingRes::default` is
+    // `[0, 1, 0]`, so this only fires on a resource built with an explicitly
+    // zeroed or non-finite direction.
+    let sun_dir = if installed_dir.iter().all(|c| c.is_finite())
+        && installed_dir.iter().any(|c| *c != 0.0)
+    {
+        installed_dir
+    } else {
+        compute_sun_arc(DEFAULT_TOD_HOURS[0], DEFAULT_TOD_HOURS).0
+    };
     *cell_lit = crate::env_translate::procedural_fallback_cell_lighting(sun_dir);
 }
 

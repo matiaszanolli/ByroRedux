@@ -20,8 +20,18 @@
 //! exterior load uses) with a fixed [`SUN_DIR_RAW`]. The sun is then the only
 //! light in the scene, so any sign flip / axis swap / dropped term in the
 //! directional chain shows up as a moved or missing shadow rather than a
-//! plausible-looking image. No `WeatherDataRes` is inserted, so
-//! `weather_system` stays inert and the direction does not drift with TOD.
+//! plausible-looking image. No `WeatherDataRes` is inserted, so the sun
+//! does not drift with TOD.
+//!
+//! #3561 — that used to read "`weather_system` stays inert", which was
+//! never true once `ensure_game_time` started running for every scene kind:
+//! the system's `GameTimeRes` guard passes here, and its missing-
+//! `WeatherDataRes` branch reached `apply_neutral_exterior_fallback`, which
+//! rebuilt `CellLightingRes` from a hardcoded hour-6 sun and returned before
+//! the `SkyParamsRes` write — leaving the shading directional and the
+//! painted sun disc ~48 degrees apart from frame 1. `weather_system` still
+//! runs; what makes the direction stable is that the fallback now preserves
+//! the direction it was handed instead of inventing one.
 //!
 //! The scene is the classic Cornell box (white floor/ceiling/back wall,
 //! red left wall, green right wall, a ceiling area light) populated with
@@ -2164,6 +2174,38 @@ mod tests {
             "SkyParamsRes and CellLightingRes must carry the same direction"
         );
         assert!(sky.sun_intensity > 0.0);
+        drop(sky);
+
+        // #3561 — and the invariant has to survive the live path, not just
+        // install time. `weather_system` is registered unconditionally
+        // (`Stage::Early`, exclusive), and `setup_scene` calls
+        // `ensure_game_time` for EVERY scene kind before any `--cornell`
+        // branch, so its `GameTimeRes` guard passes here. With no
+        // `WeatherDataRes` installed it reached
+        // `apply_neutral_exterior_fallback`, which rebuilt the whole
+        // `CellLightingRes` from a hardcoded hour-6 sun and then `return`ed
+        // BEFORE the `SkyParamsRes` write block — leaving the shading
+        // directional and the painted sun disc ~48 degrees apart from frame 1
+        // onward. This assertion, not the ones above, is what that bug
+        // failed; the install-time pin never ran the system.
+        // `setup_scene` calls `world_setup::ensure_game_time` for every scene
+        // kind, so the clock is present on the real `--cornell-sun` path;
+        // mirror that here (13:00, mid-sky, unlike the hardcoded hour 6 the
+        // fallback used to install).
+        world.insert_resource(crate::components::GameTimeRes::new(13.0, 0.0));
+        crate::systems::weather::weather_system(&world, 0.016);
+
+        let lit = world.resource::<CellLightingRes>();
+        assert_eq!(
+            lit.directional_dir, expected,
+            "the first scheduler tick must not overwrite the harness's authored sun"
+        );
+        drop(lit);
+        let sky = world.resource::<SkyParamsRes>();
+        assert_eq!(
+            sky.sun_direction, expected,
+            "SkyParamsRes and CellLightingRes must still agree after weather_system"
+        );
     }
 
     /// Regression for #2248 (REN-D21-01): `--cornell` must carry a local
