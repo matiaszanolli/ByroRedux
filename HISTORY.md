@@ -24,6 +24,71 @@ Commits hold that record.
 
 ---
 
+## Session 76 — Audit-bundle closeout: 127 issues, corpus gates tripled, CDB Phase 2 unblocked  (2026-08-29, `e350b7ab..f3f6b60c`, 34 commits)
+
+Session 75 ended by filing 139 issues from a 25-audit comprehensive sweep.
+This session spent itself closing them — 127 issues, almost all in four-issue
+batches. Two pieces of groundwork came out of the fixing rather than the
+filing, and both were found the same way: by checking a premise instead of
+inheriting it. The NIF corpus gates turned out to be measuring a third of what
+they claimed, and the Starfield CDB's material vocabulary — blocked for
+multiple sessions on "nobody has written this down" — was cracked in an
+afternoon once someone actually ran the probes.
+
+- **NIF corpus gates** — the parse-rate gates walked 34.8% of FO76, 70.8% of
+  FO4 and 74.1% of Starfield, and Skyrim SE omitted 715 Creation Club /
+  Anniversary NIFs (#3369, #3466). All four now cover their full official
+  corpora: **603 207 NIFs across seven games, up from 184 886**. #3369's
+  suggested fix would have broken two sibling harnesses — `open_all_mesh_archives`
+  drops the whole game on a missing archive, and the baseline harnesses compare
+  absolute counts — so account-varying content got its own present-only tier
+  (`Game::optional_mesh_archives`) consumed by the rate-based gate alone.
+  Widening immediately surfaced a truncation tail no gate could see: FO76
+  `GeneratedMeshes02` is **0.00% clean**, `01` is 95.03%, both fully
+  recoverable and therefore invisible to the assertion that actually gates.
+  Three archives the issue named carry zero NIFs and were dropped on
+  measurement, not assumption.
+- **Starfield CDB Phase 2 (#3398)** — the blocker was knowledge, not code:
+  which class carries a texture path, and how a material keys to the path a NIF
+  names, existed nowhere in this repo or in the Gibbed reference. The RE spike
+  answered both. `CompiledDB.HashMap` is a 48 749-entry `BSResource::ID → u64`
+  index; the hash is reflected CRC-32 (poly `0xEDB88320`) with **init 0 and no
+  final XOR**, over the lowercased backslash path with directory and stem
+  hashed separately — 98.3% match on real NIF-named paths, against a control
+  that matches 0/3084. `BSResource::ID`'s decoded field labels are rotated
+  relative to their contents, and the layout check turned up a live `XMCOLOR`
+  field-offset defect on the side. The real remaining blocker is the 9.19 GB
+  parse, not the vocabulary.
+- **Animation runtime** — `App::resumed`'s `dt == 0` priming tick fired every
+  text key of every looping clip in the scene, into a consumer that writes
+  `QuestStageState` (#3470); the blend pass never re-applied the weight pass's
+  empty-key filter, blending a bone at scale 1 to exactly 2.0 (#3471); the
+  pre-10.1.0.104 `NiSequence` prologue dropped both its Text Keys ref and
+  `ControlledBlock`'s Target Name, so that band lost every channel binding, not
+  just its text events (#3468).
+- **Renderer + perf** — per-skinned-draw `vkGetBufferDeviceAddress` cached on
+  the slot, `draw.rs` now free of the call entirely (#3469); the resumable
+  geometry rebuild got the timer its own constant's "pending live tuning" doc
+  depends on, plus the bench matrix's first exterior scene (#3467a — the
+  constant itself is deliberately unchanged, since re-picking it needs a GPU
+  run); reversed-Z payoff measured end-to-end (#3308).
+- **Scripting / ECS** — the quest-advance sink invariant made structural across
+  all six writers rather than patched at the one that broke it (#3277);
+  `Disable()` given an alias-aware receiver and its first runtime consumer,
+  gated at spawn so one check covers visibility, collision and interaction
+  (#3278); NAVM waypoint caches invalidated on tile residency change (#3256);
+  `settings_io` routed through the save crate's atomic-write dance instead of
+  its own fsync-less write-then-rename (#3472).
+- **Tooling** — `check-issue-traceability.sh --window` was losing citations to
+  SIGPIPE under `pipefail`: `rg --quiet` exits on first match, the `printf`
+  feeding it dies 141, and `pipefail` calls that "no citation" (#3538, filed
+  last window at a 38% false-positive rate). Size-dependent, so its two-line
+  self-test never reached it. The 32%/38% uncited figures quoted in ROADMAP and
+  in #3218's commit message both came from that path.
+
+Net: tests 6142 → 6326 (+184); Rust `src/` LOC +12 614; NIF sweep corpus
+184 886 → 603 207 (3.3×). Audit-bundle closeout — no milestone churn.
+
 ## Session 75 — Comprehensive audit suite, 139 issues filed, and a per-game correctness sweep  (2026-08-28, `4d3f9761..d5a8c36c`, 68 commits)
 
 The session's spine is a full `/audit-suite --preset comprehensive` run —
