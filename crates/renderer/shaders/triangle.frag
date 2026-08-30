@@ -221,7 +221,12 @@ void main() {
     // consistent. Parallax operates on the post-transform UV so the
     // displaced height lookup lines up with the other samplers.
     vec2 sampleUV = baseUV;
-    if (mat.parallaxMapIndex != 0u && (dbgFlags & DBG_BYPASS_POM) == 0u) {
+    // #3530 — bit 31 is the PARALLAX_ALPHA_HEIGHT_BIT channel selector, not
+    // part of the index, so mask it off before the "is a height map bound"
+    // test. `parallaxDisplaceUV` masks it again for its own sampling and
+    // reads `.a` when it is set.
+    if ((mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT) != 0u
+        && (dbgFlags & DBG_BYPASS_POM) == 0u) {
         vec3 N0 = normalize(fragNormalEffective);
         vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
         sampleUV = parallaxDisplaceUV(
@@ -1561,7 +1566,7 @@ void main() {
             (mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u;
         vec3 roleColor = hasNormalRole
             ? (modelSpaceNormal ? vec3(0.72, 0.20, 1.00) : vec3(0.10, 1.00, 0.25))
-            : (mat.parallaxMapIndex != 0u)
+            : ((mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT) != 0u)
                 ? vec3(1.00, 0.42, 0.05)
             : (mat.envMapIndex != 0u || mat.envMaskIndex != 0u)
                 ? vec3(0.05, 0.85, 1.00)

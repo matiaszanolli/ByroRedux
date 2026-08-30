@@ -295,7 +295,20 @@ pub(super) fn collect_static_mesh_draws(
                 let glow_map_index = texture_indices.emissive;
                 let detail_map_index = texture_indices.detail;
                 let mut gloss_map_index = texture_indices.smooth_spec;
-                let parallax_map_index = texture_indices.height;
+                // #3530 — Oblivion's `APPLY_HILIGHT2` materials bind the
+                // NORMAL map into the height slot and carry their height in
+                // its alpha, because that game ships no separate height
+                // texture. The per-game rule was resolved at the NIFAL
+                // boundary; this only flags the channel for the shader, and
+                // only when an actual texture is bound (a bare bit on index 0
+                // would make the shader's "is a height map bound" test pass
+                // and sample texture 0).
+                let mut parallax_map_index = texture_indices.height;
+                if parallax_map_index != 0
+                    && mat.is_some_and(|material| material.parallax_height_in_alpha)
+                {
+                    parallax_map_index |= crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
+                }
                 let env_map_index = texture_indices.environment;
                 let env_mask_index = texture_indices.environment_mask;
                 let greyscale_lut_index = texture_indices.greyscale_lut;

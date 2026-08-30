@@ -447,6 +447,21 @@ pub const MAT_FLAG_EFFECT_LI_SHIFT: u32 = 16;
 // re-exports this value rather than re-declaring it (#1500 / REN2-15).
 pub const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
 
+// High bit OR'd into `GpuMaterial.parallaxMapIndex` to tell the fragment
+// shader "this height map's values live in the ALPHA channel, not `.r`".
+// Same mechanism and same value as `NORMAL_ALPHA_SPEC_BIT` above, on a
+// different field — named separately because it encodes a different fact and
+// the two are set from different predicates.
+//
+// #3530 — Oblivion's only authored parallax signal is
+// `NiTexturingProperty`'s `APPLY_HILIGHT2` Apply Mode, and that game ships no
+// separate height texture (`Oblivion - Textures - Compressed.bsa` has zero
+// `_p.dds` entries), so the parser binds the NORMAL map into the height slot
+// and flags the channel. Set per-draw CPU-side in
+// `byroredux::render::static_meshes` from `Material.parallax_height_in_alpha`;
+// `parallaxDisplaceUV` masks it off for the index and samples `.a`.
+pub const PARALLAX_ALPHA_HEIGHT_BIT: u32 = 0x8000_0000;
+
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
 pub const WATER_CALM: u32 = byroredux_core::ecs::components::water::WaterKind::Calm as u32;

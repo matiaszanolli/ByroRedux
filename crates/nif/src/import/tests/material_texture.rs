@@ -101,6 +101,7 @@ fn import_extracts_oblivion_bump_texture_as_normal_map() {
             controller_ref: BlockRef::NULL,
         },
         flags: 0,
+        apply_mode: 2,
         texture_count: 6,
         base_texture: Some(TexDesc {
             source_ref: BlockRef(5),
@@ -183,6 +184,126 @@ fn import_extracts_oblivion_bump_texture_as_normal_map() {
     );
 }
 
+/// #3530 — Oblivion's only authored parallax signal.
+///
+/// `APPLY_HILIGHT2` is nif.xml's *"Parallax Flag in some Oblivion meshes"*
+/// (1,433 properties across 741 vanilla meshes). Oblivion has no dedicated
+/// parallax slot — that is v20.2.0.5+ — and ships no `_p.dds` height texture
+/// at all, so the height lives in the normal map's alpha and the importer
+/// binds the normal map into the parallax slot, flagging the channel.
+#[test]
+fn oblivion_apply_hilight2_routes_the_normal_map_into_the_parallax_slot() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+    use crate::blocks::texture::NiSourceTexture;
+    use std::sync::Arc;
+
+    let make_src = |name: &str| NiSourceTexture {
+        net: crate::blocks::base::NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        },
+        use_external: true,
+        filename: Some(Arc::from(name)),
+        pixel_data_ref: BlockRef::NULL,
+        pixel_layout: 0,
+        use_mipmaps: 0,
+        alpha_format: 0,
+        is_static: true,
+    };
+    let slot = |index: u32| {
+        Some(TexDesc {
+            source_ref: BlockRef(index),
+            flags: 0,
+            clamp_mode: 0,
+            transform: None,
+        })
+    };
+    // Vanilla shape: base + bump (Oblivion's normal-map slot), nothing else.
+    let build = |apply_mode: u32| {
+        let tex_prop = NiTexturingProperty {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            apply_mode,
+            texture_count: 6,
+            base_texture: slot(5),
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            bump_texture: slot(4),
+            normal_texture: None,
+            parallax_texture: None,
+            parallax_offset: 0.0,
+            decal_textures: Vec::new(),
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape(
+                "CaveWall",
+                identity_transform(),
+                2,
+                vec![BlockRef(3)],
+            )),
+            Box::new(make_tri_shape_data()),
+            Box::new(tex_prop),
+            Box::new(make_src("textures\\dungeons\\caves\\crm01_n.dds")),
+            Box::new(make_src("textures\\dungeons\\caves\\crm01.dds")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
+        assert_eq!(meshes.len(), 1);
+        let m = meshes.into_iter().next().unwrap();
+        let normal =
+            test_support::resolve_path(&pool, m.material.textures.normal).map(str::to_owned);
+        let height =
+            test_support::resolve_path(&pool, m.material.textures.height).map(str::to_owned);
+        (normal, height, m.material)
+    };
+
+    // APPLY_HILIGHT2 (4) — the parallax flag.
+    let (normal, height, material) = build(4);
+    assert_eq!(
+        normal.as_deref(),
+        Some("textures\\dungeons\\caves\\crm01_n.dds")
+    );
+    assert_eq!(
+        height.as_deref(),
+        Some("textures\\dungeons\\caves\\crm01_n.dds"),
+        "the height slot binds the NORMAL map — Oblivion ships no `_p.dds`, \
+         so the height lives in that texture's alpha"
+    );
+    assert!(
+        material.parallax_height_in_alpha,
+        "the channel must be flagged at the parser boundary; the render side \
+         only transports it as a bit on the texture index"
+    );
+    // The engine-wide defaults, not a value invented for Oblivion — the same
+    // pair every consumer's `unwrap_or` already used.
+    assert_eq!(material.parallax_height_scale, Some(0.04));
+    assert_eq!(material.parallax_max_passes, Some(4.0));
+
+    // APPLY_MODULATE (2) — the no-op default on 32,810 of the 35,161 vanilla
+    // Oblivion properties. Must NOT bind a height map.
+    let (normal, height, material) = build(2);
+    assert_eq!(
+        normal.as_deref(),
+        Some("textures\\dungeons\\caves\\crm01_n.dds"),
+        "the normal map is unaffected either way"
+    );
+    assert_eq!(
+        height, None,
+        "the default apply mode must not fabricate a parallax binding"
+    );
+    assert!(!material.parallax_height_in_alpha);
+    assert_eq!(material.parallax_height_scale, None);
+}
+
 /// When both `bump_texture` and `normal_texture` slots are populated
 /// (an FO3/FNV mesh exported by a tool that kept the legacy slot
 /// filled), the importer should prefer `normal_texture` — it's the
@@ -215,6 +336,7 @@ fn import_prefers_normal_texture_over_bump_texture() {
             controller_ref: BlockRef::NULL,
         },
         flags: 0,
+        apply_mode: 2,
         texture_count: 7,
         base_texture: None,
         dark_texture: None,

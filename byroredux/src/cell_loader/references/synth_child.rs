@@ -521,7 +521,15 @@ pub(super) fn spawn_synth_child(
                         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
                         if is_spt {
                             let tree_record = record_index.trees.get(&child_form_id);
-                            parse_and_import_spt(&d, &model_path, tree_record, &mut pool)
+                            // #3528 — the provider resolves TREE.ICON's
+                            // bare filename against the real archive layout.
+                            parse_and_import_spt(
+                                &d,
+                                &model_path,
+                                tree_record,
+                                &mut pool,
+                                Some(tex_provider),
+                            )
                         } else {
                             parse_and_import_nif(
                                 &d,

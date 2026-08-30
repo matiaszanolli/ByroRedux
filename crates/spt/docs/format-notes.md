@@ -585,6 +585,32 @@ the current entry is `Bare`; otherwise consume `u32` length + raw
 bytes as a `String`. Robust against observed vanilla (the 104-byte
 curve length doesn't coincide with any dictionary tag).
 
+### Zero-length candidate: `Bare` (settled 2026-08-29, #3531)
+
+#1822 later narrowed the String arm further, requiring the peeked
+candidate bytes to be printable-ASCII curve text. That left one length
+the discriminator cannot discriminate: **zero**. `Iterator::all` is
+vacuously true on an empty slice and `peek_string_lp_bytes` returns
+`Some(&[])` for a declared length of `0`, so a bare 13005 before a tail
+whose leading `u32` is `0` still took the String arm.
+
+Measured before deciding: instrumenting the `MaybeStringElseBare` arm and
+running it over every vanilla `.spt` in `Fallout - Meshes.bsa` (FNV, 10
+files), `Fallout - Meshes.bsa` (FO3, 10) and `Oblivion - Meshes.bsa`
+(113) reaches the arm **exactly 4 times across all 133 files** — the four
+bimodal Oblivion files above, every one `len=104, plausible=true`. A
+zero-length payload **never occurs in vanilla content**, so the corpus
+cannot select the arm directly.
+
+The **risk asymmetry** selects it instead. A zero-length curve string
+carries no curve, so classifying it `Bare` discards nothing; classifying
+a tail's leading `0` as a string consumes 4 bytes and desynchronises
+every byte after it — the #1822 failure mode. `Bare` is therefore the
+arm, enforced by the `!bytes.is_empty()` guard in
+`is_plausible_spt_curve_string` and pinned by
+`tag_13005_before_zero_leading_tail_resolves_as_bare`. Revisit only if
+mod content is ever observed emitting a genuine zero-length 13005 string.
+
 ### Open: tag `768` bail in the 4 outliers (corrected 2026-07-04, #1821)
 
 After the #999 fix, the same 4 files decode 28 more entries each but

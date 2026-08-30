@@ -169,9 +169,28 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
 /// a bare length-range check, it doesn't get fooled by a tail u32 that
 /// happens to decode to a small, in-bounds "length".
 fn is_plausible_spt_curve_string(bytes: &[u8]) -> bool {
-    bytes
-        .iter()
-        .all(|&b| matches!(b, 0x20..=0x7E | b'\t' | b'\n' | b'\r'))
+    // #3531 — the emptiness check is load-bearing, not defensive tidying.
+    // `Iterator::all` is vacuously true on an empty slice and
+    // `peek_string_lp_bytes` returns `Some(&[])` for a declared length of
+    // `0`, so without this a bare 13005 sitting before a geometry tail whose
+    // leading `u32` is `0` still took the String arm, consumed 4 bytes and
+    // shifted `tail_offset` past the true tail start — the exact #1822
+    // failure mode, for the one candidate length the printable-ASCII
+    // discriminator cannot discriminate. A leading `0` (a zero count or
+    // index) is an ordinary way for a binary tail to begin.
+    //
+    // Which arm is right for a zero-length candidate is a format question,
+    // and the corpus does not answer it directly: instrumenting this arm over
+    // all 133 vanilla `.spt` files reaches it exactly 4 times, every one the
+    // known 104-byte `BezierSpline` blob, never a zero length. The risk is
+    // asymmetric, which is what settles it — a zero-length curve string
+    // carries no curve, so reading it as `Bare` loses nothing, while reading
+    // a tail's leading `0` as a string desynchronises every byte after it.
+    // See `docs/format-notes.md`, "Tag 13005 bimodal payload".
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .all(|&b| matches!(b, 0x20..=0x7E | b'\t' | b'\n' | b'\r'))
 }
 
 /// Read the payload for a tag of a known [`SptTagKind`].
@@ -460,5 +479,52 @@ mod tests {
             "tail_offset must sit at 13005's successor, not past a swallowed string"
         );
         assert!(scene.unknown_tags.is_empty());
+    }
+
+    /// #3531 — the residue of #1822: the one candidate length the
+    /// printable-ASCII discriminator cannot discriminate. `Iterator::all` is
+    /// vacuously true on an empty slice, so a tail whose leading `u32` is `0`
+    /// took the String arm, consumed 4 bytes as an empty string and shifted
+    /// `tail_offset` past the true tail start. The #1822 guard above
+    /// deliberately uses a leading tail value of `8`, so this case was
+    /// unpinned in both directions.
+    #[test]
+    fn tag_13005_before_zero_leading_tail_resolves_as_bare() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_HEAD);
+        bytes.extend_from_slice(&13005u32.to_le_bytes());
+        let tail_start = bytes.len();
+        // A geometry tail beginning with a zero count/index — an ordinary
+        // shape for a binary tail, and a "declared length 0" string to the
+        // peek. Follow it with binary bytes so nothing else can absorb them.
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xDE, 0xAD]);
+
+        let scene = parse_spt(&bytes).expect("must parse");
+        assert_eq!(scene.entries.len(), 1);
+        assert_eq!(scene.entries[0].tag, 13005);
+        assert_eq!(
+            scene.entries[0].value,
+            SptValue::Bare,
+            "a zero-length candidate must not take the String arm — an empty \
+             curve string carries no curve, but a swallowed tail u32 \
+             desynchronises every byte after it"
+        );
+        assert_eq!(
+            scene.tail_offset, tail_start,
+            "tail_offset must sit at 13005's successor, not 4 bytes past it"
+        );
+        assert!(scene.unknown_tags.is_empty());
+    }
+
+    /// The discriminator itself, including the vacuous-`all` hole directly.
+    #[test]
+    fn empty_candidate_is_not_a_plausible_curve_string() {
+        assert!(
+            !is_plausible_spt_curve_string(b""),
+            "`Iterator::all` is vacuously true on an empty slice (#3531)"
+        );
+        assert!(is_plausible_spt_curve_string(b"BezierSpline 0\t1\t0\n"));
+        assert!(!is_plausible_spt_curve_string(&[0xFF, 0x00]));
     }
 }

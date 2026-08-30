@@ -333,8 +333,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `normalized_serialized_shapes` to drop skipped fields would be more
     // precise, but this file is itself inside the scanned set, so the change
     // perturbs its own input — left alone rather than made self-referential.
-    const BASELINE_MAJOR: u16 = 9;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xdea3_af01_3be5_a008;
+    // #3530 — v10 is a genuine bump of the v5/v6/v7 `Material` class:
+    // `Material::parallax_height_in_alpha` is a new required field on a
+    // registered column. See `FORMAT_MAJOR`'s doc for why the bump was taken
+    // even though `false` happens to be the correct value for every pre-v10
+    // snapshot — the blanket rule is the point.
+    const BASELINE_MAJOR: u16 = 10;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9b75_ff99_1abb_bf91;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

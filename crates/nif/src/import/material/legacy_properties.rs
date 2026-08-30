@@ -9,6 +9,13 @@
 
 use super::*;
 
+/// nif.xml `ApplyMode::APPLY_HILIGHT2` — *"Parallax Flag in some Oblivion
+/// meshes"* (nif.xml's own annotation on the enum option). Gamebryo v3.2
+/// renamed modes 3 and 4 to `APPLY_DEPRECATED`/`APPLY_DEPRECATED2`, so the
+/// Oblivion parallax convention is the value's only surviving meaning.
+/// #3530.
+const APPLY_HILIGHT2: u32 = 4;
+
 fn legacy_env_map_scale(shader_flags_1: u32, env_map_scale: f32) -> f32 {
     use crate::shader_flags::fo3nv_f1::{
         ENVIRONMENT_MAPPING, EYE_ENVIRONMENT_MAPPING, WINDOW_ENVIRONMENT_MAPPING,
@@ -228,6 +235,47 @@ fn apply_texturing_property(
             // `parallax_height_scale = 0.04, parallax_max_passes =
             // 4.0` (`renderer/src/vulkan/material.rs:216-217`).
             if info.parallax_map.is_some() {
+                if info.parallax_max_passes.is_none() {
+                    info.parallax_max_passes = Some(4.0);
+                }
+                if info.parallax_height_scale.is_none() {
+                    info.parallax_height_scale = Some(0.04);
+                }
+            }
+        }
+        // #3530 — Oblivion's only authored parallax signal.
+        //
+        // The dedicated parallax slot above is `v20.2.0.5+`, so it does not
+        // exist on Oblivion (v20.0.0.4/5); the other two `parallax_map`
+        // producers are `BSShaderTextureSet` slot 3 (FO3+) and BGSM
+        // `TextureRole::Height` (FO4+). Oblivion's signal is instead
+        // `NiTexturingProperty`'s Apply Mode, which nif.xml annotates
+        // directly: `APPLY_HILIGHT2` is the *"Parallax Flag in some Oblivion
+        // meshes"*, and Gamebryo v3.2 renamed modes 3/4 to
+        // `APPLY_DEPRECATED`/`APPLY_DEPRECATED2`, so it has no surviving
+        // general meaning to collide with. 1,433 properties across 741
+        // distinct vanilla meshes carry it; FNV/FO3/Skyrim are 100 %
+        // `APPLY_MODULATE`, so this branch cannot fire there.
+        //
+        // The height source is the **normal map's alpha channel**:
+        // `Oblivion - Textures - Compressed.bsa` contains zero `_p.dds`
+        // entries, so no separate height texture ships and there is nothing
+        // to synthesise a path for. Binding the normal map into the parallax
+        // slot and flagging the channel reuses the engine's existing
+        // `NORMAL_ALPHA_SPEC_BIT` mechanism verbatim (a high bit on the
+        // texture index telling the shader to sample another slot's alpha),
+        // rather than inventing a second one.
+        //
+        // Deliberately last: a mesh that authored a real parallax slot or
+        // came through a BSShader path keeps it, because `parallax_map` is
+        // already `Some` by here.
+        if tex_prop.apply_mode == APPLY_HILIGHT2 && info.parallax_map.is_none() {
+            if let Some(normal) = info.normal_map {
+                info.parallax_map = Some(normal);
+                info.parallax_height_in_alpha = true;
+                // Same engine defaults the slot-7 branch above installs, and
+                // the same pair every consumer's `unwrap_or` already used —
+                // no new constant is introduced for Oblivion.
                 if info.parallax_max_passes.is_none() {
                     info.parallax_max_passes = Some(4.0);
                 }

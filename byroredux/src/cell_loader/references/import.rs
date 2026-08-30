@@ -269,11 +269,95 @@ pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -
 /// Parse failures degrade to the placeholder (with a warning) so a malformed
 /// `.spt` never removes its REFR from the world; the cache still prevents
 /// subsequent placements from re-attempting the doomed parse.
+
+/// Candidate directories a bare `TREE.ICON` filename resolves against, in
+/// probe order.
+///
+/// #3528 — **every vanilla `TREE.ICON` is a bare filename with no directory
+/// component**, so the engine's only path normalisation
+/// (`normalize_texture_path`, which prepends `textures\`) produced
+/// `textures\<Name>.dds` — a path that exists in no shipped archive. The
+/// placeholder billboard's one visible surface therefore always fell through
+/// to the magenta checker, on 100 % of vanilla SpeedTree content across all
+/// three `.spt` games.
+///
+/// The order is measured, not assumed. A census over `FalloutNV.esm`,
+/// `Fallout3.esm` and `Oblivion.esm` (3 + 9 + 81 = 93 unique ICON values, 0
+/// containing a path separator) resolved each filename against every texture
+/// archive of its game:
+///
+/// | Directory | ICONs found there |
+/// |---|---:|
+/// | `textures\trees\leaves\` | **93 / 93** |
+/// | `textures\trees\billboards\` | 10 / 93 |
+///
+/// `leaves\` covers the corpus completely and `billboards\` is a strict
+/// subset that is never the sole location — which is what settles the
+/// ordering question the finding deliberately left open. `billboards\` stays
+/// in the chain as a second probe rather than being dropped, since it costs
+/// one `contains` call on the miss path and covers mod content that ships
+/// only the billboard variant.
+const TREE_ICON_CANDIDATE_DIRS: [&str; 2] = ["trees\\leaves\\", "trees\\billboards\\"];
+
+/// Resolve a `TREE.ICON` value to a path that actually exists in the loaded
+/// archives (#3528).
+///
+/// `probe` answers "does this texture exist", normally
+/// `TextureProvider::has_texture` — a `contains` check against the archive
+/// file tables, no extraction or decompression. Pure over that closure so the
+/// ordering is unit-testable without a BSA on disk.
+///
+/// The ICON is tried **verbatim first**: an authored path (mod content, or
+/// any future vanilla record that carries one) is authoritative and must not
+/// be second-guessed by a directory this function invented. Only a bare name
+/// that does not already resolve falls through to
+/// [`TREE_ICON_CANDIDATE_DIRS`].
+///
+/// Deliberately scoped to the SpeedTree route. `normalize_texture_path` is
+/// shared by every texture consumer in the engine, and `trees\` prefixing is
+/// a `TREE.ICON` rule, not a general one — pushing it down there would apply
+/// it to every bare-filename texture field in the tree.
+pub(super) fn resolve_tree_icon_path<'a>(
+    icon: &'a str,
+    probe: impl Fn(&str) -> bool,
+) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    if probe(icon) {
+        return Cow::Borrowed(icon);
+    }
+    // An ICON that already names a directory has been tried as authored and
+    // missed; prefixing a `trees\` folder onto it would only build a path
+    // its author never meant. Leave it alone so the miss is reported against
+    // what the record actually said.
+    if icon.contains('\\') || icon.contains('/') {
+        log::warn!(
+            "TREE.ICON '{icon}' names a directory but does not resolve in any \
+             loaded texture archive — the SpeedTree placeholder will render \
+             with the missing-texture checker (#3528)"
+        );
+        return Cow::Borrowed(icon);
+    }
+    for dir in TREE_ICON_CANDIDATE_DIRS {
+        let candidate = format!("{dir}{icon}");
+        if probe(&candidate) {
+            return Cow::Owned(candidate);
+        }
+    }
+    log::warn!(
+        "TREE.ICON '{icon}' resolves in no loaded texture archive, verbatim or \
+         under {:?} — the SpeedTree placeholder will render with the \
+         missing-texture checker (#3528)",
+        TREE_ICON_CANDIDATE_DIRS,
+    );
+    Cow::Borrowed(icon)
+}
+
 pub(super) fn parse_and_import_spt(
     spt_data: &[u8],
     label: &str,
     tree_record: Option<&byroredux_plugin::esm::records::TreeRecord>,
     pool: &mut byroredux_core::string::StringPool,
+    tex_provider: Option<&crate::asset_provider::TextureProvider>,
 ) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_spt::parse_spt(spt_data) {
         Ok(s) => {
@@ -315,9 +399,19 @@ pub(super) fn parse_and_import_spt(
     // field defaults gracefully when the record is absent — a `.spt`
     // referenced from a stub TREE (or from non-TREE content) still
     // gets a generic-sized placeholder.
-    let leaf_texture_override = tree_record
+    // #3528 — the ICON is a bare filename on 100 % of vanilla TREE records,
+    // so it has to be resolved against the archives before it can be the
+    // billboard's texture. Without a provider (the loose-`.spt` route and the
+    // unit tests) there is nothing to probe against, so the value passes
+    // through as authored.
+    let resolved_leaf_texture = tree_record
         .map(|t| t.leaf_texture.as_str())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|icon| match tex_provider {
+            Some(provider) => resolve_tree_icon_path(icon, |p| provider.has_texture(p)),
+            None => std::borrow::Cow::Borrowed(icon),
+        });
+    let leaf_texture_override = resolved_leaf_texture.as_deref();
 
     let bounds = tree_record.and_then(|t| t.bounds).map(|b| {
         let min = [b.min[0] as f32, b.min[1] as f32, b.min[2] as f32];

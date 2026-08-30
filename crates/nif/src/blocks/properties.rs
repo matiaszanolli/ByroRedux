@@ -115,6 +115,25 @@ impl NiAlphaProperty {
 pub struct NiTexturingProperty {
     pub net: NiObjectNETData,
     pub flags: u16,
+    /// nif.xml `ApplyMode` — how the texture combines with vertex colour:
+    /// `0 = APPLY_REPLACE`, `1 = APPLY_DECAL`, `2 = APPLY_MODULATE` (the
+    /// default), `3 = APPLY_HILIGHT` (PS2 only), `4 = APPLY_HILIGHT2`.
+    ///
+    /// Stored from **both** on-disk homes so consumers need not know which
+    /// generation they hold: a standalone `uint` below 20.1.0.2, and bits
+    /// 1-3 of [`Self::flags`] (`TexturingFlags.Apply Mode`, mask `0x000E`)
+    /// at and above it.
+    ///
+    /// #3530 — this was read and immediately discarded, which mattered on
+    /// exactly one game. nif.xml annotates value 4 as *"Parallax Flag in
+    /// some Oblivion meshes"*, and Gamebryo v3.2 renames modes 3 and 4 to
+    /// `APPLY_DEPRECATED`/`APPLY_DEPRECATED2`, so the Oblivion parallax
+    /// convention is the value's only surviving meaning. A sweep of
+    /// `Oblivion - Meshes.bsa` + its 7 DLC/SI mesh archives (9,537 NIFs)
+    /// found 1,433 `APPLY_HILIGHT2` properties across 741 distinct meshes —
+    /// cave and stone architecture and rock clutter. FNV/FO3/Skyrim are
+    /// 100 % `APPLY_MODULATE`, so the field is inert there.
+    pub apply_mode: u32,
     pub texture_count: u32,
     pub base_texture: Option<TexDesc>,
     pub dark_texture: Option<TexDesc>,
@@ -232,11 +251,16 @@ impl NiTexturingProperty {
             0
         };
 
-        // Apply Mode: since 3.3.0.13, until 20.1.0.1.
+        // Apply Mode: since 3.3.0.13, until 20.1.0.1 as a standalone `uint`;
+        // at 20.1.0.2+ it lives in `flags` bits 1-3 instead (nif.xml
+        // `TexturingFlags`, mask 0x000E). Decode both into one field so no
+        // consumer has to branch on version (#3530).
         // `until=` is inclusive per the version.rs doctrine — present at v20.1.0.1.
-        if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
-            let _apply_mode = stream.read_u32_le()?;
-        }
+        let apply_mode = if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
+            stream.read_u32_le()?
+        } else {
+            u32::from((flags >> 1) & 0x7)
+        };
 
         let texture_count = stream.read_u32_le()?;
 
@@ -414,6 +438,7 @@ impl NiTexturingProperty {
         Ok(Self {
             net,
             flags,
+            apply_mode,
             texture_count,
             base_texture,
             dark_texture,

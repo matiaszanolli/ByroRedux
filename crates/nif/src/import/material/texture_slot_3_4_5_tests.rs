@@ -531,6 +531,7 @@ fn ni_texturing_uv_transform_survives_preceding_ni_material_property() {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 1,
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,
@@ -664,6 +665,7 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 1,
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,
@@ -1667,6 +1669,7 @@ fn ni_texturing_property_parallax_slot_defaults_scalars_when_no_pp_lighting() {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 8,
         base_texture: None,
         dark_texture: None,
@@ -1726,6 +1729,7 @@ fn ni_texturing_property_decals_reach_semantic_overlay_slots() {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 2,
         base_texture: None,
         dark_texture: None,
@@ -1780,6 +1784,7 @@ fn ni_texturing_property_without_parallax_slot_leaves_scalars_none() {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 0,
         base_texture: None,
         dark_texture: None,

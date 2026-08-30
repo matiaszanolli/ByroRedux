@@ -644,7 +644,11 @@ fn secondary_ray_material_hits_resolve_parallax_uvs() {
         "vec2 resolveRayHitUV(",
         "VERTEX_NORMAL_OFFSET_FLOATS",
         "VERTEX_TANGENT_OFFSET_FLOATS",
-        "mat.parallaxMapIndex == 0u",
+        // #3530 — masked before the bail test; sampling
+        // `textures[0x8000000N]` would be a wildly out-of-bounds bindless
+        // index, so the mask here is load-bearing, not cosmetic.
+        "uint parallaxIdx = mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT;",
+        "parallaxIdx == 0u",
         "(dbgFlags & DBG_BYPASS_POM) != 0u",
         "textureLod(",
     ] {
@@ -2005,6 +2009,62 @@ fn bethesda_lighting_response_is_masked_shadowable_and_palette_scaled() {
     );
 }
 
+/// #3530 — the alpha-channel height path. `PARALLAX_ALPHA_HEIGHT_BIT` rides
+/// in bit 31 of `GpuMaterial.parallaxMapIndex`, so **every** reader must mask
+/// it before using the value as a bindless index: `textures[0x8000000N]` is a
+/// wildly out-of-bounds descriptor read, not a cosmetic mistake. Both POM
+/// implementations (the raster one in `material_sampling.glsl` and the
+/// secondary-ray one in `ray_hit.glsl`) must also honour the channel, or an
+/// Oblivion cave wall parallaxes correctly in the raster pass and samples a
+/// normal's red channel as height in reflections.
+#[test]
+fn parallax_alpha_height_bit_is_masked_and_honoured_by_every_reader() {
+    let sampling = include_str!("../../../shaders/include/material_sampling.glsl");
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    // The constant must reach GLSL through the generated header, not a
+    // hand-copied literal.
+    let constants = include_str!("../../../shaders/include/shader_constants.glsl");
+    assert!(
+        constants.contains("#define PARALLAX_ALPHA_HEIGHT_BIT"),
+        "the bit must be generated from `shader_constants_data.rs`, so a value \
+         flip changes both sides in lockstep"
+    );
+
+    for (name, src) in [
+        ("material_sampling.glsl", sampling),
+        ("ray_hit.glsl", hit),
+        ("triangle.frag", frag),
+    ] {
+        assert!(
+            src.contains("& ~PARALLAX_ALPHA_HEIGHT_BIT"),
+            "{name} reads parallaxMapIndex but never masks the channel bit off \
+             — bit 31 is not part of the bindless index (#3530)"
+        );
+    }
+
+    // Both marchers select the channel rather than hardcoding `.r`.
+    assert!(
+        sampling.contains("heightInAlpha ? texel.a : texel.r"),
+        "the raster POM must sample alpha when the bit is set"
+    );
+    assert!(
+        hit.contains("heightInAlpha ? heightTexel.a : heightTexel.r"),
+        "the secondary-ray POM must honour the same channel selection, or \
+         reflections disagree with the raster pass"
+    );
+    // And no un-masked `.r` height fetch survives in either marcher.
+    assert!(
+        !sampling.contains("textures[nonuniformEXT(parallaxMapIdx)], currentUV).r"),
+        "a raw `.r` height fetch survived in the raster POM"
+    );
+    assert!(
+        !hit.contains("textures[nonuniformEXT(mat.parallaxMapIndex)]"),
+        "the secondary-ray POM must sample the masked index, never the raw one"
+    );
+}
+
 #[test]
 fn material_role_debug_view_is_semantic_and_format_agnostic() {
     let frag = include_str!("../../../shaders/triangle.frag");
@@ -2012,7 +2072,9 @@ fn material_role_debug_view_is_semantic_and_format_agnostic() {
         "debugMode == RENDER_DEBUG_MATERIAL_ROLE",
         "MAT_FLAG_MODEL_SPACE_NORMALS",
         "mat.normalMapIndex != 0u",
-        "mat.parallaxMapIndex != 0u",
+        // #3530 — bit 31 of `parallaxMapIndex` is the alpha-height channel
+        // selector, so every reader masks it off before testing the index.
+        "(mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT) != 0u",
         "mat.envMapIndex != 0u || mat.envMaskIndex != 0u",
         "mat.tintMapIndex != 0u",
     ] {

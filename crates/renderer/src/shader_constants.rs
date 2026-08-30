@@ -207,6 +207,7 @@ mod tests {
             ("BLOOM_INTENSITY", format!("#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}")),
             ("VOLUME_FAR", format!("#define VOLUME_FAR {VOLUME_FAR:?}")),
             ("NORMAL_ALPHA_SPEC_BIT", format!("#define NORMAL_ALPHA_SPEC_BIT {NORMAL_ALPHA_SPEC_BIT}u")),
+            ("PARALLAX_ALPHA_HEIGHT_BIT", format!("#define PARALLAX_ALPHA_HEIGHT_BIT {PARALLAX_ALPHA_HEIGHT_BIT}u")),
             ("WATER_CALM", format!("#define WATER_CALM {WATER_CALM}u")),
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),

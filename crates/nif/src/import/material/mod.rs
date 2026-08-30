@@ -438,6 +438,20 @@ pub(super) struct MaterialInfo {
     /// stopped reading at slot 2, so every Pitt / Point Lookout / Hoover
     /// Dam parallax wall landed flat. See #452 / #2317.
     pub parallax_map: Option<FixedString>,
+    /// Whether [`Self::parallax_map`]'s height values live in the texture's
+    /// **alpha** channel rather than the usual `.r`.
+    ///
+    /// #3530 — set only by the Oblivion `APPLY_HILIGHT2` route, where
+    /// `parallax_map` is bound to the *normal* map because no separate height
+    /// texture ships (`Oblivion - Textures - Compressed.bsa` has zero
+    /// `_p.dds` entries). Every other producer — `NiTexturingProperty` slot 7,
+    /// `BSShaderTextureSet` slot 3, BGSM `TextureRole::Height` — binds a
+    /// dedicated greyscale height map and leaves this `false`.
+    ///
+    /// The decision belongs here, at the parser→`Material` boundary: the
+    /// render side transports it as a bit on the texture index (the existing
+    /// `NORMAL_ALPHA_SPEC_BIT` mechanism) and never re-derives it.
+    pub parallax_height_in_alpha: bool,
     /// Environment cubemap (`BSShaderTextureSet` slot 4). Drives the
     /// glass bottle / power-armor / smooth-metal reflection branch.
     /// `env_map_scale` is already captured but had no texture route
@@ -1099,6 +1113,7 @@ impl Default for MaterialInfo {
             dark_map: None,
             decal_maps: [None; 4],
             parallax_map: None,
+            parallax_height_in_alpha: false,
             env_map: None,
             env_mask: None,
             greyscale_lut_map: None,
@@ -1453,6 +1468,7 @@ impl MaterialInfo {
             parallax_height_scale: self.parallax_height_scale,
             vertex_color_mode: self.vertex_color_mode as u8,
             texture_clamp_mode: self.texture_clamp_mode,
+            parallax_height_in_alpha: self.parallax_height_in_alpha,
             emissive_color: self.emissive_color,
             emissive_mult: self.emissive_mult,
             emissive_source: self.emissive_source,

@@ -87,7 +87,23 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// guess at the actor's idle clip and phase, the exact footgun this doc's
 /// `Option` / `serde(default)` rule exists to prevent, so old snapshots are
 /// rejected instead.
-pub const FORMAT_MAJOR: u16 = 9;
+/// Version 10 adds a required `Material.parallax_height_in_alpha` — the
+/// NIFAL canonical-boundary flag recording that a material's height map
+/// carries its values in the texture's alpha channel rather than `.r` (#3530,
+/// Oblivion's `APPLY_HILIGHT2` parallax route). Same class as the v5/v6/v7
+/// `Material` additions.
+///
+/// Unlike v8 and v9, `false` would in fact have been the correct value for
+/// every pre-v10 snapshot: no build before this one could detect Oblivion
+/// parallax, so no saved material was ever in the alpha-height state. The
+/// bump is taken anyway because this doc's rule and its
+/// `serde_default_on_saved_struct_requires_format_major_bump` guard are
+/// deliberately blanket — a per-field "but this default is safe" judgement is
+/// the exact reasoning #1714 (SAVE-D2-01) removed from the loop, and the
+/// judgement is only safe while the field's meaning never changes. Recorded
+/// here so a future migrator chain can reclassify this one as compatible
+/// rather than re-derive whether it was.
+pub const FORMAT_MAJOR: u16 = 10;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

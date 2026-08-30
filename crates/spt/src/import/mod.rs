@@ -114,6 +114,40 @@ pub struct SptImportParams<'a> {
 const DEFAULT_BILLBOARD_WIDTH: f32 = 256.0;
 const DEFAULT_BILLBOARD_HEIGHT: f32 = 512.0;
 
+/// Safe band for a placeholder billboard extent, in game units. Below the
+/// floor a tree is a 1-pixel mosquito; above the ceiling it is a
+/// floor-to-skybox planet. Named (#3529) because the band is now enforced by
+/// one helper rather than six inline `clamp` calls.
+const MIN_BILLBOARD_EXTENT: f32 = 16.0;
+const MAX_BILLBOARD_EXTENT: f32 = 8192.0;
+
+/// Clamp one billboard extent into the safe band, rejecting non-finite input.
+///
+/// #3529 — `f32::clamp` is **NaN-transparent**: it returns `self` unchanged
+/// when `self` is NaN, so a bare `clamp` is not the corrupt-input guard this
+/// module's docs claimed it was. BNAM is the one tier fed by a raw
+/// unvalidated `f32` read off disk (`plugin`'s `parse_tree` does no
+/// finiteness check), and a NaN width propagates into the quad's vertex
+/// positions, `local_bound_center`/`local_bound_radius`, the ECS
+/// `LocalBound`, the parent-fold `WorldBound`, frustum-cull comparisons and
+/// ultimately a static BLAS build — undefined behaviour on the Vulkan side,
+/// not just a visual artifact.
+///
+/// Returning `Option` rather than substituting a value keeps the tier
+/// precedence honest: a non-finite field falls through to the next tier
+/// exactly as an absent one does, instead of silently winning with a
+/// fabricated size. Same shape as the MODB tier's existing `> 0.0` filter,
+/// which already rejects NaN — the pattern was applied inconsistently rather
+/// than deliberately omitted. Sibling of #3194, the identical NaN class in
+/// `apply_speedtree_wind`'s gust.
+fn clamp_billboard_extent(value: f32) -> Option<f32> {
+    value.is_finite().then(|| {
+        value
+            .abs()
+            .clamp(MIN_BILLBOARD_EXTENT, MAX_BILLBOARD_EXTENT)
+    })
+}
+
 /// `BillboardMode::BsRotateAboutUp` — yaw-to-camera with no pitch.
 /// Mirrors `crates/core/src/ecs/components/billboard.rs` enum values
 /// so the engine's billboard_system picks up the correct rotation
@@ -228,22 +262,34 @@ pub fn import_spt_scene(
 ///
 /// All paths clamp to the `[16, 8192]` band so corrupt input can't
 /// produce a 1-pixel mosquito or a floor-to-skybox planet-sized
-/// billboard.
+/// billboard — and, since #3529, a *non-finite* field falls through to
+/// the next tier rather than clamping to itself (`f32::clamp` passes NaN
+/// straight through). See [`clamp_billboard_extent`].
 fn compute_billboard_size(params: &SptImportParams) -> (f32, f32) {
+    // Every tier goes through `clamp_billboard_extent`, so a non-finite
+    // field falls through instead of poisoning the quad (#3529). OBND
+    // reaches the cell route as `i16`→`f32` and cannot be NaN today, but
+    // `SptImportParams` is public and the guard costs nothing.
     if let Some((min, max)) = params.bounds {
-        let width = (max[0] - min[0]).abs().clamp(16.0, 8192.0);
-        let height = (max[2] - min[2]).abs().clamp(16.0, 8192.0);
-        return (width, height);
+        if let (Some(width), Some(height)) = (
+            clamp_billboard_extent(max[0] - min[0]),
+            clamp_billboard_extent(max[2] - min[2]),
+        ) {
+            return (width, height);
+        }
     }
     if let Some((w, h)) = params.billboard_size {
-        let width = w.abs().clamp(16.0, 8192.0);
-        let height = h.abs().clamp(16.0, 8192.0);
-        return (width, height);
+        if let (Some(width), Some(height)) = (clamp_billboard_extent(w), clamp_billboard_extent(h))
+        {
+            return (width, height);
+        }
     }
     if let Some(r) = params.bound_radius.filter(|r| *r > 0.0) {
-        let width = r.clamp(16.0, 8192.0);
-        let height = (2.0 * r).clamp(16.0, 8192.0);
-        return (width, height);
+        if let (Some(width), Some(height)) =
+            (clamp_billboard_extent(r), clamp_billboard_extent(2.0 * r))
+        {
+            return (width, height);
+        }
     }
     (DEFAULT_BILLBOARD_WIDTH, DEFAULT_BILLBOARD_HEIGHT)
 }
@@ -642,6 +688,66 @@ mod tests {
         let mesh = &imported.meshes[0];
         // |-500| = 500 stays in band; 50000 clamps to 8192.
         assert_eq!(mesh.positions[2], [250.0, 8192.0, 0.0]);
+    }
+
+    /// #3529 — `f32::clamp` is NaN-transparent, so the `[16, 8192]` band was
+    /// never the corrupt-input guard the module docs claimed. BNAM is the one
+    /// tier read as a raw unvalidated `f32` off disk, and a NaN there reached
+    /// the quad's vertex positions, the `LocalBound` sphere and a static BLAS
+    /// build. A non-finite pair must now fall through to the next tier.
+    #[test]
+    fn non_finite_bnam_falls_through_instead_of_producing_a_nan_quad() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+
+        // No other tier authored → the default 256 × 512 must win.
+        let params = SptImportParams {
+            billboard_size: Some((f32::NAN, f32::NAN)),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        assert!(
+            mesh.positions
+                .iter()
+                .all(|p| p.iter().all(|c| c.is_finite())),
+            "a non-finite BNAM must not reach the vertex positions"
+        );
+        assert!(
+            mesh.local_bound_center.iter().all(|c| c.is_finite())
+                && mesh.local_bound_radius.is_finite(),
+            "a non-finite BNAM must not reach the bounding sphere — a NaN \
+             WorldBound propagates up the placement hierarchy and into BLAS"
+        );
+        // 256 wide × 512 tall, same corner the default-size test checks.
+        assert_eq!(mesh.positions[2], [128.0, 512.0, 0.0]);
+
+        // Infinity is the same class and must behave identically.
+        let params = SptImportParams {
+            billboard_size: Some((f32::INFINITY, 700.0)),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        assert_eq!(
+            imported.meshes[0].positions[2],
+            [128.0, 512.0, 0.0],
+            "one non-finite component invalidates the pair — a half-authored \
+             size is not a size"
+        );
+
+        // And the tier really does fall THROUGH rather than short-circuit to
+        // the default: MODB below it still wins when it is authored.
+        let params = SptImportParams {
+            billboard_size: Some((f32::NAN, f32::NAN)),
+            bound_radius: Some(300.0),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        assert_eq!(
+            imported.meshes[0].positions[2],
+            [150.0, 600.0, 0.0],
+            "MODB (R, 2R) must still be reached past a non-finite BNAM"
+        );
     }
 
     /// #1002 — precedence chain order: when OBND is absent but both

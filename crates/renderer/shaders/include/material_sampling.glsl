@@ -9,8 +9,12 @@
 //
 // Standard step + linear-interpolate POM using screen-space derivatives
 // (no vertex tangents needed). Height values live in `parallaxMapIdx`'s
-// `.r` channel in [0,1]; the surface is displaced INWARD (along -N) as
-// the view grazes, so the sampled UV slides along -viewTS.xy.
+// `.r` channel in [0,1] — or its `.a` channel when the caller sets
+// PARALLAX_ALPHA_HEIGHT_BIT on the index (#3530: Oblivion ships no separate
+// height texture, so `APPLY_HILIGHT2` meshes bind the NORMAL map here and
+// read height out of its alpha, the same trick NORMAL_ALPHA_SPEC_BIT already
+// uses for gloss). The surface is displaced INWARD (along -N) as the view
+// grazes, so the sampled UV slides along -viewTS.xy.
 //
 // Returns the displaced UV. When `parallaxMapIdx == 0` the caller
 // short-circuits and this function is never entered.
@@ -21,16 +25,29 @@
 // benefit at typical FOV. Caller feeds `BSShaderPPLightingProperty.
 // parallax_max_passes` (default 4) and `parallax_scale` (default 0.04),
 // matching the Gamebryo runtime defaults. See #453.
+// Sample one height value, honouring the caller's channel selection.
+// Height in alpha is #3530's Oblivion path; every other producer binds a
+// dedicated greyscale map and reads `.r` exactly as before.
+float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha) {
+    vec4 texel = texture(textures[nonuniformEXT(idx)], uv);
+    return heightInAlpha ? texel.a : texel.r;
+}
+
 vec2 parallaxDisplaceUV(
     vec2 uv,
     vec3 viewWorld,
     vec3 N,
     vec3 worldPos,
     vec4 vertexTangent,
-    uint parallaxMapIdx,
+    uint parallaxMapIdxRaw,
     float heightScale,
     float maxPasses
 ) {
+    // #3530 — the high bit selects the height channel; mask it off before
+    // the index is used to sample. Materials that leave it clear keep bit 31
+    // clear and sample `.r`, exactly as before.
+    uint parallaxMapIdx = parallaxMapIdxRaw & ~PARALLAX_ALPHA_HEIGHT_BIT;
+    bool heightInAlpha = (parallaxMapIdxRaw & PARALLAX_ALPHA_HEIGHT_BIT) != 0u;
     // Prefer the authored/synthesized vertex tangent, exactly like
     // perturbNormal. The old POM path always rebuilt a derivative tangent,
     // so normal-map detail and parallax motion could disagree at UV seams.
@@ -89,15 +106,15 @@ vec2 parallaxDisplaceUV(
     vec2 currentUV = uv;
     float currentDepth = 0.0;
     float sampledHeight =
-        texture(textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
+        sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha);
     for (int i = 0; i < steps; ++i) {
         if (currentDepth >= sampledHeight) {
             break;
         }
         currentUV -= deltaUV;
         currentDepth += layerDepth;
-        sampledHeight = texture(
-            textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
+        sampledHeight =
+            sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha);
     }
 
     // Secant-style interpolation between the last two layers removes the
@@ -105,7 +122,7 @@ vec2 parallaxDisplaceUV(
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = sampledHeight - currentDepth;
     float beforeDepth =
-        texture(textures[nonuniformEXT(parallaxMapIdx)], prevUV).r
+        sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha)
         - (currentDepth - layerDepth);
     float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));

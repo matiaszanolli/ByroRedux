@@ -575,6 +575,10 @@ pub struct ImportedMaterial {
     pub parallax_height_scale: Option<f32>,
     pub vertex_color_mode: u8,
     pub texture_clamp_mode: u8,
+    /// Whether `parallax_map`'s height lives in the texture's alpha channel
+    /// rather than `.r`. Set only by the Oblivion `APPLY_HILIGHT2` route,
+    /// which binds the normal map into the height slot (#3530).
+    pub parallax_height_in_alpha: bool,
     pub emissive_color: [f32; 3],
     pub emissive_mult: f32,
     pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
@@ -685,6 +689,7 @@ impl Default for ImportedMaterial {
             parallax_height_scale: None,
             vertex_color_mode: 2,
             texture_clamp_mode: 0,
+            parallax_height_in_alpha: false,
             emissive_color: [0.0; 3],
             emissive_mult: 0.0,
             emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,

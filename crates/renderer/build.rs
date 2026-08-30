@@ -624,6 +624,18 @@ fn main() {
 
     writeln!(
         out,
+        "// Alpha-channel-height marker bit (OR'd into `GpuMaterial.parallaxMapIndex`)."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define PARALLAX_ALPHA_HEIGHT_BIT {PARALLAX_ALPHA_HEIGHT_BIT}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(
+        out,
         "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`)."
     )
     .unwrap();

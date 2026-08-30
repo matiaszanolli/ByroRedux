@@ -81,6 +81,7 @@ fn oblivion_shape_properties() -> (NiMaterialProperty, NiTexturingProperty) {
     let tex = NiTexturingProperty {
         net: empty_net(),
         flags: 0,
+        apply_mode: 2,
         texture_count: 1,
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,

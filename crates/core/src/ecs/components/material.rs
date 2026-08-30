@@ -408,6 +408,21 @@ pub struct Material {
     /// tier independently at each call site (the exact hand-synced-
     /// duplication failure mode NIFAL exists to eliminate).
     pub texture_clamp_mode: u8,
+    /// Whether the parallax/height texture carries its height in the **alpha**
+    /// channel rather than `.r`.
+    ///
+    /// #3530 — Oblivion's only authored parallax signal is
+    /// `NiTexturingProperty`'s `APPLY_HILIGHT2` Apply Mode, and no separate
+    /// height texture ships for that game, so the parser binds the *normal*
+    /// map into the height slot and sets this. Every other producer binds a
+    /// dedicated greyscale height map and leaves it `false`.
+    ///
+    /// Canonical material state, resolved once at the NIFAL boundary. The
+    /// render path transports it as a high bit on the parallax texture index
+    /// (`PARALLAX_ALPHA_HEIGHT_BIT`, the same mechanism `NORMAL_ALPHA_SPEC_BIT`
+    /// already uses for gloss-in-normal-alpha) and never re-derives the
+    /// per-game rule.
+    pub parallax_height_in_alpha: bool,
     /// `NiAlphaProperty` source blend factor (Gamebryo `AlphaFunction`
     /// enum; `6` = SRC_ALPHA is the Gamebryo default). Only meaningful
     /// when the material's alpha-blend path is active. Copied verbatim
@@ -560,6 +575,7 @@ impl Default for Material {
             // INV_SRC_ALPHA (7) is the Gamebryo default blend-factor pair;
             // `0` (CLAMP_S_CLAMP_T) is that struct's stub clamp default.
             texture_clamp_mode: 0,
+            parallax_height_in_alpha: false,
             src_blend_mode: 6,
             dst_blend_mode: 7,
         }

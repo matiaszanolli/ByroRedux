@@ -583,6 +583,7 @@ pub(crate) fn translate_material(
         // canonical component instead of re-reading `ImportedMaterial`
         // independently. See the field docs on `Material`.
         texture_clamp_mode: source.texture_clamp_mode,
+        parallax_height_in_alpha: source.parallax_height_in_alpha,
         src_blend_mode: source.src_blend_mode,
         dst_blend_mode: source.dst_blend_mode,
     };
@@ -742,6 +743,20 @@ pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> M
 /// sides in lockstep and is impossible to desync.
 pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 =
     byroredux_renderer::shader_constants::NORMAL_ALPHA_SPEC_BIT;
+
+/// High bit OR'd into `GpuMaterial.parallaxMapIndex` to tell the shader the
+/// height values live in the bound texture's **alpha** channel (#3530).
+///
+/// Same re-export discipline as [`NORMAL_ALPHA_SPEC_BIT`] above: the value
+/// comes from the renderer's shader-constants single source of truth, which
+/// also generates the GLSL `#define`, so the two sides cannot desync.
+///
+/// Unlike `NORMAL_ALPHA_SPEC_BIT`, this is **not** a render-time predicate —
+/// it transports a decision already made at the parser→`Material` boundary
+/// (`Material::parallax_height_in_alpha`). Oblivion's `APPLY_HILIGHT2` rule
+/// lives in the NIF importer; this side only moves the answer to the GPU.
+pub(crate) const PARALLAX_ALPHA_HEIGHT_BIT: u32 =
+    byroredux_renderer::shader_constants::PARALLAX_ALPHA_HEIGHT_BIT;
 
 /// The normal-alpha-as-spec population gate (Skyrim/Gamebryo era): a lit
 /// surface (`material_kind < 100`) that ships a normal map but no dedicated

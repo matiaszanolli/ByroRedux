@@ -290,7 +290,13 @@ vec2 resolveRayHitUV(
     vec2 uv = transformRayHitUV(
         mat, getHitUV(instanceIdx, primitiveIdx, barycentrics));
     uint dbgFlags = floatBitsToUint(jitter.z);
-    if (mat.parallaxMapIndex == 0u
+    // #3530 — bit 31 selects the height CHANNEL and is not part of the index.
+    // Masking is mandatory here, not cosmetic: sampling
+    // `textures[0x8000000N]` would be a wildly out-of-bounds bindless index.
+    uint parallaxIdx = mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT;
+    bool heightInAlpha =
+        (mat.parallaxMapIndex & PARALLAX_ALPHA_HEIGHT_BIT) != 0u;
+    if (parallaxIdx == 0u
         || mat.parallaxHeightScale <= 0.0
         || (dbgFlags & DBG_BYPASS_POM) != 0u) {
         return uv;
@@ -327,31 +333,26 @@ vec2 resolveRayHitUV(
     vec2 deltaUV = planarSlide / float(steps);
     vec2 currentUV = uv;
     float currentDepth = 0.0;
-    float sampledHeight = textureLod(
-        textures[nonuniformEXT(mat.parallaxMapIndex)],
-        currentUV,
-        0.0
-    ).r;
+    vec4 heightTexel =
+        textureLod(textures[nonuniformEXT(parallaxIdx)], currentUV, 0.0);
+    float sampledHeight = heightInAlpha ? heightTexel.a : heightTexel.r;
     for (int i = 0; i < steps; ++i) {
         if (currentDepth >= sampledHeight) {
             break;
         }
         currentUV -= deltaUV;
         currentDepth += layerDepth;
-        sampledHeight = textureLod(
-            textures[nonuniformEXT(mat.parallaxMapIndex)],
-            currentUV,
-            0.0
-        ).r;
+        heightTexel =
+            textureLod(textures[nonuniformEXT(parallaxIdx)], currentUV, 0.0);
+        sampledHeight = heightInAlpha ? heightTexel.a : heightTexel.r;
     }
 
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = sampledHeight - currentDepth;
-    float beforeDepth = textureLod(
-        textures[nonuniformEXT(mat.parallaxMapIndex)],
-        prevUV,
-        0.0
-    ).r - (currentDepth - layerDepth);
+    vec4 prevTexel =
+        textureLod(textures[nonuniformEXT(parallaxIdx)], prevUV, 0.0);
+    float beforeDepth = (heightInAlpha ? prevTexel.a : prevTexel.r)
+        - (currentDepth - layerDepth);
     float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }

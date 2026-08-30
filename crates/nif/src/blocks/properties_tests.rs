@@ -303,6 +303,74 @@ fn tex_desc_clamp_mode_decodes_from_the_right_nibble_per_version() {
     );
 }
 
+/// #3530 — Apply Mode has two on-disk homes and was read then discarded at
+/// both. nif.xml annotates value 4 directly: `APPLY_HILIGHT2` is the
+/// *"Parallax Flag in some Oblivion meshes"*, and Oblivion has no other
+/// parallax signal (the dedicated slot-7 parallax texture is v20.2.0.5+).
+#[test]
+fn ni_texturing_property_apply_mode_decodes_from_both_homes() {
+    let build = |version: NifVersion, flags: u16, standalone_apply: u32| {
+        let header = NifHeader {
+            version,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // name
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        if version <= NifVersion::V10_0_1_2 || version >= NifVersion::V20_1_0_2 {
+            data.extend_from_slice(&flags.to_le_bytes());
+        }
+        if version <= NifVersion::STRING_TABLE_THRESHOLD {
+            data.extend_from_slice(&standalone_apply.to_le_bytes());
+        }
+        data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+        data.push(0); // base slot: has = 0 (read unconditionally)
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
+        let mut stream = NifStream::new(&data, &header);
+        NiTexturingProperty::parse(&mut stream).expect("should parse")
+    };
+
+    // Oblivion (v20.0.0.5) — standalone `uint` field. 1,433 vanilla
+    // properties across 741 meshes carry APPLY_HILIGHT2.
+    assert_eq!(build(NifVersion::V20_0_0_5, 0, 4).apply_mode, 4);
+    assert_eq!(
+        build(NifVersion::V20_0_0_5, 0, 2).apply_mode,
+        2,
+        "APPLY_MODULATE is the no-op default — 32,810 of the 35,161 vanilla \
+         Oblivion properties"
+    );
+
+    // FNV / FO3 / Skyrim (v20.2.0.7) — bits 1-3 of the `TexturingFlags`
+    // word (nif.xml mask 0x000E), not a standalone field. Measured 100 %
+    // APPLY_MODULATE there, so the value is inert but must still decode.
+    assert_eq!(
+        build(NifVersion::V20_2_0_7, 0b0000_0100, 0).apply_mode,
+        2,
+        "0x0004 is Apply Mode 2 in the packed layout — bits 1-3, not 0-2"
+    );
+    assert_eq!(
+        build(NifVersion::V20_2_0_7, 0b0000_1000, 0).apply_mode,
+        4,
+        "0x0008 is APPLY_HILIGHT2 in the packed layout"
+    );
+    // The Multitexture bit (0) and Decal Count (bits 4-11) must not leak in.
+    assert_eq!(
+        build(NifVersion::V20_2_0_7, 0b0000_1111_0000_1001, 0).apply_mode,
+        4,
+        "only bits 1-3 belong to Apply Mode"
+    );
+}
+
 /// Regression test for issue #400 — NiTexturingProperty decal slots
 /// (Oblivion pre-20.2.0.5 path, slots 6..=texture_count-1) are now
 /// retained on the block instead of silently discarded. Builds a
