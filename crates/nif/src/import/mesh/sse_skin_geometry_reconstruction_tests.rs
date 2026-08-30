@@ -970,11 +970,18 @@ fn sse_buffer_without_normals_or_uvs_does_not_trigger_tangent_synthesis() {
     )
     .expect("VF_VERTEX-only SSE buffer must still reconstruct positions/indices");
 
-    assert_eq!(
-        mesh.normals,
-        vec![[0.0, 1.0, 0.0]; 3],
-        "normals must be the renderer-safe fallback, not authored data"
-    );
+    // #3541 — a `VF_NORMALS`-clear buffer now gets normals DERIVED from the
+    // reconstructed positions + indices rather than the constant `[0,1,0]`
+    // fill `sse_recon` uses to keep its arrays length-aligned. Still not
+    // authored data, which is what the tangent assertion below turns on.
+    assert_eq!(mesh.normals.len(), 3);
+    for n in &mesh.normals {
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-5,
+            "derived normals must be unit length, got {n:?}"
+        );
+    }
     assert_eq!(
         mesh.uvs,
         vec![[0.0, 0.0]; 3],

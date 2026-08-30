@@ -77,17 +77,32 @@ pub fn extract_bs_tri_shape(
     // real signal — `sse_normals.is_some()` alone would still be vacuous
     // since `sse_recon.rs` fabricates its own `[0,1,0]` fallback before
     // handing the (always-populated) vector up here.
-    let normals_authored = if sse_normals.is_some() {
+    let sse_normals_is_some = sse_normals.is_some();
+    let normals_authored = if sse_normals_is_some {
         sse_normals_authored
     } else {
         !shape.normals.is_empty()
     };
-    let normals: Vec<[f32; 3]> = if let Some(n) = sse_normals {
+    // #3541 — derive from face geometry when nothing authored a normal
+    // lane. 20.4% of imported Skyrim shapes are in this state (LOD `Land`,
+    // unnamed LOD sub-meshes, all 3,201 vanilla FaceGen heads), as is 90%
+    // of the FO4 `.bto`/`.btr` corpus. `normals_authored` above stays the
+    // authorship signal for tangent synthesis — a derived normal is real
+    // geometry, but it is still not an authored one, and #2363 / #2817 turn
+    // on authorship rather than on the vector's value.
+    let normals: Vec<[f32; 3]> = if let Some(n) = sse_normals.filter(|_| sse_normals_authored) {
         n
+    } else if sse_normals_is_some && !normals_authored {
+        // SSE-reconstructed buffer with `VF_NORMALS` clear. `sse_recon`
+        // fabricates its own `[0,1,0]` fill to keep the parallel arrays
+        // length-aligned, so taking it verbatim here would reintroduce the
+        // constant this pass exists to remove. Derive from the
+        // reconstructed positions + indices instead.
+        super::normal::derive_normals_from_u32_indices(&positions, &indices)
     } else if !shape.normals.is_empty() {
         shape.normals.iter().map(zup_point_to_yup).collect()
     } else {
-        vec![[0.0, 1.0, 0.0]; positions.len()]
+        super::normal::derive_normals_from_u32_indices(&positions, &indices)
     };
 
     // Same authorship split as `normals_authored`, for `VF_UVS` /

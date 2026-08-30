@@ -26,6 +26,7 @@ mod decode;
 mod material_path;
 mod morph;
 mod ni_tri_shape;
+mod normal;
 mod skin;
 mod sse_recon;
 mod tangent;

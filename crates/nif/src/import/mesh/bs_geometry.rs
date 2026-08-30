@@ -246,7 +246,12 @@ pub fn extract_bs_geometry(
             })
             .collect()
     } else {
-        vec![[0.0, 1.0, 0.0]; positions.len()]
+        // #3541 — derive rather than substitute a constant. Starfield's
+        // `.mesh` corpus is measured at 0 of 675,407 affected (there is no
+        // distant-LOD `.mesh` content), so this arm is inert on shipped
+        // Starfield today; it is here so the rule is uniform across every
+        // extraction path rather than special-cased per game, per NIFAL.
+        super::normal::synthesize_normals_or_default(&positions, &mesh_data.triangles)
     };
 
     // #2099 (SF2D2-02) — `mesh_data.uvs1` (the secondary UV channel;

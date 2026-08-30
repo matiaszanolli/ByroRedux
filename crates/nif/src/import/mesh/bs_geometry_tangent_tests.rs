@@ -215,10 +215,18 @@ fn placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis() {
     let mesh = extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None)
         .expect("populated internal BSGeometry must import");
 
-    assert_eq!(mesh.normals, vec![[0.0, 1.0, 0.0]; 3]);
+    // #3541 — normals are now DERIVED from face geometry when the source
+    // authors none, so they are no longer the constant `[0,1,0]`. They must
+    // still be unit-length and must still not authorize tangent synthesis:
+    // authorship, not the vector's value, is what gates that (#2363 / #2817).
+    assert_eq!(mesh.normals.len(), 3);
+    for n in &mesh.normals {
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        assert!((len - 1.0).abs() < 1e-5, "derived normals must be unit, got {n:?}");
+    }
     assert!(
         mesh.tangents.is_empty(),
-        "placeholder normals must not authorize tangent synthesis"
+        "un-authored normals must not authorize tangent synthesis, derived or not"
     );
 }
 

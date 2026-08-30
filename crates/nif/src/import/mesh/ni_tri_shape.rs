@@ -132,11 +132,17 @@ pub fn extract_mesh(
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
-    // Convert normals with same axis swap (fall back to +Y up if none)
+    // Convert normals with the same axis swap. #3541 — when the mesh
+    // authors none, DERIVE them from face geometry rather than substituting
+    // a constant world-up: 100% of Oblivion's distant-terrain LOD meshes
+    // ship without a normal lane, and flat-shading them against `[0,1,0]`
+    // is why distant terrain reads as uniformly lit regardless of slope.
+    // `synthesize_normals_yup` returns empty only when there is nothing to
+    // derive from, in which case the old constant still applies.
     let normals: Vec<[f32; 3]> = if !geom.normals.is_empty() {
         geom.normals.iter().map(zup_point_to_yup).collect()
     } else {
-        vec![[0.0, 1.0, 0.0]; positions.len()]
+        super::normal::synthesize_normals_or_default(&positions, &geom.triangles)
     };
 
     // Get UVs from first UV set (if available)
