@@ -96,15 +96,24 @@ pub(super) fn parse_and_import_nif(
     }
     let lights = byroredux_nif::import::import_nif_lights(&scene);
     let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-    let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
-    // Cell-load path doesn't yet attach `Name` components or a
-    // per-placement subtree root to spawned mesh entities, so the
-    // AnimationStack's name-keyed subtree lookup can't anchor onto the
-    // flat-spawn hierarchy. Clips extracted here are captured on the
-    // cache entry for a follow-up wiring pass (add placement-root
-    // entities + parent meshes under them, then attach a scoped
-    // AnimationPlayer per placement). See #261. The loose-NIF
-    // `load_nif_bytes` path already consumes embedded clips end-to-end.
+    // #3602 — `import_embedded_animations` alone never looks at
+    // `NiControllerSequence`, so every animated Oblivion static spawned
+    // frozen (423 files / 792 sequences in `Oblivion - Meshes.bsa` alone).
+    let (embedded_clip, skipped_sequences) =
+        byroredux_nif::anim::import_embedded_animations_with_sequences(&scene);
+    if skipped_sequences > 0 {
+        log::debug!(
+            "NIF '{label}': {skipped_sequences} further NiControllerSequence \
+             animation(s) present; playing the first, matching the loose-NIF \
+             `.kf` path. Selecting among them needs a trigger system (#3602)."
+        );
+    }
+    // The clip is registered once per unique NIF in `partial.rs` /
+    // `load_references` and bound to each placement by `spawn.rs`'s #544
+    // `AnimationPlayer` insert, whose `root_entity` is the placement root.
+    // (The note that used to sit here — "cell-load path doesn't yet attach a
+    // per-placement subtree root, captured for a follow-up wiring pass" —
+    // predates #544 / #2221 / #3345, which built exactly that.)
     if let Some(ref clip) = embedded_clip {
         log::debug!(
             "NIF '{}' has {} embedded controllers ({} float + {} color + {} bool) \

@@ -166,3 +166,107 @@ fn import_sequence_carries_authored_phase() {
     let clip = import_sequence(&scene, &seq);
     assert!((clip.phase - 0.6).abs() < 1e-6);
 }
+
+/// #3602 — the cell loader called `import_embedded_animations` alone, which
+/// by construction never looks at `NiControllerSequence`. Measured over
+/// `Oblivion - Meshes.bsa` (8,032 files): 423 files carry 792 sequences,
+/// `import_kf` yields clips in 423 of 423, and `import_embedded_animations`
+/// yields one in 72 of 8,032. Oblivion's animated statics — gates,
+/// machinery, banners — imported perfectly and spawned frozen.
+///
+/// `import_embedded_animations_with_sequences` is what the cell loader
+/// calls now. These pin that it sees the sequences.
+#[test]
+fn embedded_import_with_sequences_picks_up_a_nicontrollersequence() {
+    use crate::blocks::controller::{NiControllerManager, NiControllerSequence};
+    use crate::blocks::controller::NiTimeControllerBase;
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    let pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: [1.0, 0.0, 0.0, 0.0],
+        scale: 1.0,
+    };
+    let lookat = NiLookAtInterpolator {
+        flags: 0,
+        look_at: BlockRef::NULL,
+        look_at_name: None,
+        transform: pose,
+        interp_translation: BlockRef::NULL,
+        interp_roll: BlockRef::NULL,
+        interp_scale: BlockRef::NULL,
+    };
+    let make_seq = |node: &str| {
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(0);
+        cb.node_name = Some(Arc::from(node));
+        cb.controller_type = Some(Arc::from("NiTransformController"));
+        NiControllerSequence {
+            name: Some(Arc::from(node)),
+            controlled_blocks: vec![cb],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        }
+    };
+    let manager = NiControllerManager {
+        base: NiTimeControllerBase {
+            next_controller_ref: BlockRef::NULL,
+            flags: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            target_ref: BlockRef::NULL,
+        },
+        cumulative: false,
+        sequence_refs: vec![BlockRef(2), BlockRef(3)],
+        object_palette_ref: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(lookat),
+            Box::new(manager),
+            Box::new(make_seq("GateOpen")),
+            Box::new(make_seq("GateClose")),
+        ],
+        ..NifScene::default()
+    };
+
+    // The old entry point is blind to sequences — this is the defect.
+    assert!(
+        import_embedded_animations(&scene).is_none(),
+        "import_embedded_animations must remain standalone-controller-only; \
+         it is the one the cell loader used to call alone (#3602)"
+    );
+
+    let (clip, extra) = import_embedded_animations_with_sequences(&scene);
+    let clip = clip.expect("a NIF with embedded sequences must yield a clip");
+    assert!(
+        clip.channels.contains_key("GateOpen"),
+        "the first sequence's transform channels must reach the clip"
+    );
+    assert_eq!(
+        extra, 1,
+        "the remaining sequences must be reported, not silently dropped — \
+         selecting among them needs a trigger system that does not exist yet"
+    );
+
+    // A scene with no sequences must behave exactly as before.
+    let bare = NifScene::default();
+    let (clip, extra) = import_embedded_animations_with_sequences(&bare);
+    assert!(clip.is_none());
+    assert_eq!(extra, 0);
+}

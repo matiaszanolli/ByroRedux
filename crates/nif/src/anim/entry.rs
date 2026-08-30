@@ -646,3 +646,59 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
 
     Some(clip)
 }
+
+/// The clip a cell-loaded REFR should play: the standalone single-interp
+/// controllers plus, when the NIF embeds them, its `NiControllerSequence`
+/// animation.
+///
+/// #3602 — the cell loader called [`import_embedded_animations`] alone,
+/// which by construction looks only at the standalone controllers
+/// (`NiFlipController`, `NiMaterialColorController`,
+/// `NiTextureTransformController`, `NiSingleInterpController`,
+/// `NiLight*Controller`, `BsShaderController`) and never at
+/// `NiControllerSequence`. Measured over `Oblivion - Meshes.bsa` (8,032
+/// files): 423 files carry 792 sequences, [`import_kf`] yields clips in
+/// 423 of 423, and `import_embedded_animations` yields a clip in 72 of
+/// 8,032. So Oblivion's animated statics — gates, machinery, banners, the
+/// `obgate*` / `oblivionarchgate*` family — imported perfectly and then
+/// spawned frozen, because the sequence clips were never handed to the
+/// `AnimationClipRegistry` for a placed REFR. Name resolution was measured
+/// and ruled out: 637 of 637 transform channels resolve to a real `NiNode`.
+///
+/// The two sources are disjoint in channel kind — sequences carry the
+/// `channels` (transform) map, standalone controllers carry the
+/// float/color/bool/texture-flip vectors — so they are merged rather than
+/// one shadowing the other. A NIF with both gets both.
+///
+/// **First sequence only**, matching the loose-NIF `.kf` path in
+/// `scene.rs::load_nif_bytes`, which registers every clip but plays
+/// `first_handle`. Selecting among a mesh's sequences (an Oblivion gate's
+/// Open vs Close) needs a trigger system that does not exist yet; the
+/// count of skipped sequences is returned so the caller can say so.
+///
+/// Returns `(clip, additional_sequences_not_taken)`.
+pub fn import_embedded_animations_with_sequences(
+    scene: &NifScene,
+) -> (Option<AnimationClip>, usize) {
+    let standalone = import_embedded_animations(scene);
+    let mut sequences = import_kf(scene);
+    if sequences.is_empty() {
+        return (standalone, 0);
+    }
+    let extra = sequences.len() - 1;
+    let first = sequences.remove(0);
+    let Some(mut clip) = standalone else {
+        return (Some(first), extra);
+    };
+    // Merge the sequence's transform channels into the standalone clip.
+    // Disjoint by construction, but prefer the sequence on a name collision:
+    // a `NiControllerSequence` is the authored animation, a standalone
+    // controller is a per-property effect.
+    clip.channels.extend(first.channels);
+    clip.duration = clip.duration.max(first.duration);
+    if clip.accum_root_name.is_none() {
+        clip.accum_root_name = first.accum_root_name;
+    }
+    clip.text_keys.extend(first.text_keys);
+    (Some(clip), extra)
+}
