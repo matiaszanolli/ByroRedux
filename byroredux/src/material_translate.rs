@@ -578,6 +578,30 @@ pub(crate) fn translate_material(
         subsurface: 0.0,
         sheen: 0.0,
         sheen_tint: 0.0,
+        // #3613 — `anisotropic` is the one exception to the line above, and
+        // the distinction matters to anyone deciding whether to wire it. The
+        // source formats DO carry an anisotropy ENABLE bit:
+        // `BgsmFile::aniso_lighting` is parsed (`crates/bgsm/src/bgsm.rs`),
+        // and both `skyrim_slsf2::ANISOTROPIC_LIGHTING` and
+        // `fo4_slsf2::ANISOTROPIC_LIGHTING` are defined
+        // (`crates/nif/src/shader_flags.rs`). What no format supplies is the
+        // STRENGTH scalar this field wants, so zero here is the no-guessing
+        // policy, not an absence of source data. `aniso_lighting` is already
+        // listed in `asset_provider/material.rs`'s inventory of BGSM fields
+        // that decode but have no `ImportedMaterial` sink.
+        //
+        // Consequence for audits: the Disney anisotropic lobe
+        // (`distributionGGXAniso` / `deriveAxAy` in `include/pbr.glsl`, the
+        // `mat.anisotropic > 0.0` branch in `include/lighting.glsl`) and its
+        // #1250 / #1254 regression guards are green but cover no shipping
+        // content — they execute only in the Cornell harness.
+        //
+        // If the lobe is ever driven from content, the enable bit MUST be read
+        // through the `TextureSlotLayout` gate `dedicated_shader.rs` already
+        // uses for the sibling SLSF2 bits: bit 21 (`0x0020_0000`) is
+        // `Alpha_Decal` on FO3/FNV, an equality `shader_flags.rs` asserts
+        // deliberately, so an ungated read would turn every FNV decal into an
+        // anisotropic surface.
         anisotropic: 0.0,
         // #2571 (OBL-D5-01) — copied verbatim so spawn sites read the
         // canonical component instead of re-reading `ImportedMaterial`
@@ -982,6 +1006,56 @@ pub(crate) fn resolve_msn_z_source(world: &mut World, entity: EntityId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3613 / REN-2026-08-30-D17-03 — the rationale beside `anisotropic:
+    /// 0.0` used to be filed under "no source-format equivalent (no
+    /// BGSM/BGEM/inline-NIF field maps to them)". Half of that is wrong: the
+    /// enable bit exists in both families. Pin the corrected claim against the
+    /// code it describes, so the comment cannot drift back to denying source
+    /// data that demonstrably parses one crate away — a reader acting on the
+    /// old wording would conclude there is nothing to read and stop looking,
+    /// when only the strength scalar is actually missing.
+    #[test]
+    fn anisotropic_rationale_matches_what_the_source_formats_carry() {
+        let src = include_str!("material_translate.rs");
+        let (prod, _) = src
+            .split_once("#[cfg(test)]")
+            .expect("material_translate.rs must have a test module");
+
+        // The claim: an enable bit exists, a strength scalar does not.
+        assert!(
+            prod.contains("aniso_lighting"),
+            "the `anisotropic: 0.0` rationale must name `BgsmFile::aniso_lighting`, the \
+             parsed enable bit the old wording denied existed (#3613)"
+        );
+        assert!(
+            prod.contains("ANISOTROPIC_LIGHTING"),
+            "the rationale must name the SLSF2 enable bits Skyrim and FO4 both define \
+             (#3613)"
+        );
+
+        // …and the code that backs it must still be there.
+        assert!(
+            include_str!("../../crates/bgsm/src/bgsm.rs").contains("pub aniso_lighting: bool"),
+            "BgsmFile lost `aniso_lighting` — the #3613 rationale in material_translate.rs \
+             now overstates what BGSM carries"
+        );
+        let flags = include_str!("../../crates/nif/src/shader_flags.rs");
+        for family in ["skyrim_slsf2", "fo4_slsf2"] {
+            assert!(
+                flags.contains(&format!("pub mod {family}")),
+                "{family} must still exist for the #3613 rationale to hold"
+            );
+        }
+        // The FO3/FNV collision is why an ungated read is unsafe; that warning
+        // is only worth keeping while the bits really do alias.
+        assert_eq!(
+            byroredux_nif::shader_flags::fo3nv_f2::ALPHA_DECAL,
+            byroredux_nif::shader_flags::skyrim_slsf2::ANISOTROPIC_LIGHTING,
+            "the #3613 note warns that reading the anisotropy bit ungated would turn \
+             every FO3/FNV decal anisotropic — that warning assumes this collision"
+        );
+    }
 
     /// Regression for #2490 (NIFAL-D6-04) — the blend/decal/facing marker
     /// derivation lived copy-pasted at both spawn sites, so a rule added to
