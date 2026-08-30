@@ -195,14 +195,45 @@ fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<Val
 
 /// Every saved inventory index must resolve to the same entity's Inventory.
 fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
-    let inv = world.query::<Inventory>();
+    // #3580 — SNAPSHOT the inventories, then drop the guard, rather than
+    // holding it across the `EquipmentSlots` / `EquippedWeapon` scans below.
+    //
+    // Those scans used to run underneath a live `Inventory` guard, recording
+    // `Inventory -> EquipmentSlots` in `lock_tracker`'s process-wide graph.
+    // The scripting runtime reaches the same pair through
+    // `query_2_mut_mut::<Inventory, EquipmentSlots>`, which acquires in
+    // **TypeId order** — an order no source site can predict, and which is
+    // therefore the one that has to win. Any hand-ordered pair here is a
+    // coin flip that closes a cycle whenever it lands the other way, which
+    // is exactly what turned the `lock-order-check` CI job red from two
+    // different crates. Not overlapping the guards at all is what makes this
+    // site order-independent.
+    //
+    // The snapshot is the base FormID list per entity, which is everything
+    // both scans need (`len()` for the range check, `[index]` for the
+    // weapon's identity check). Validation runs once per save, over one
+    // world.
+    let inventories: std::collections::HashMap<EntityId, Vec<u32>> =
+        match world.query::<Inventory>() {
+            Some(q) => q
+                .iter()
+                .map(|(entity, inventory)| {
+                    (
+                        entity,
+                        inventory
+                            .items
+                            .iter()
+                            .map(|stack| stack.base_form_id)
+                            .collect(),
+                    )
+                })
+                .collect(),
+            None => std::collections::HashMap::new(),
+        };
 
     if let Some(q_equip) = world.query::<EquipmentSlots>() {
         for (entity, slots) in q_equip.iter() {
-            let item_count = inv
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|i| i.items.len());
+            let item_count = inventories.get(&entity).map(|items| items.len());
             // #3112 — spans the weapon slot too, which is a separate field
             // rather than a biped occupant and would otherwise restore
             // unvalidated.
@@ -214,24 +245,24 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
 
     if let Some(q_weapons) = world.query::<EquippedWeapon>() {
         for (entity, weapon) in q_weapons.iter() {
-            let inventory = inv.as_ref().and_then(|q| q.get(entity));
+            let inventory = inventories.get(&entity);
             validate_inventory_index(
                 entity,
                 "EquippedWeapon",
                 weapon.inventory_index.0,
-                inventory.map(|i| i.items.len()),
+                inventory.map(|items| items.len()),
                 errors,
             );
-            if let Some(stack) =
-                inventory.and_then(|i| i.items.get(weapon.inventory_index.0 as usize))
+            if let Some(base_form_id) =
+                inventory.and_then(|items| items.get(weapon.inventory_index.0 as usize))
             {
-                if stack.base_form_id != weapon.base_form_id {
+                if *base_form_id != weapon.base_form_id {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::Equipment,
                         detail: format!(
                             "EquippedWeapon base FormID {:08X} does not match inventory[{}] ({:08X})",
-                            weapon.base_form_id, weapon.inventory_index.0, stack.base_form_id
+                            weapon.base_form_id, weapon.inventory_index.0, base_form_id
                         ),
                     });
                 }

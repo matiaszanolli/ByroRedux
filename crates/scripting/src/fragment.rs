@@ -1834,10 +1834,20 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
         return;
     }
 
-    let Some(player) = world.try_resource::<crate::papyrus_demo::PlayerEntity>() else {
+    // #3580 — copy the entity out and DROP the `PlayerEntity` guard before
+    // `push_quest_stage_advances` acquires the `QuestStageAdvancedBatch`
+    // storage. Binding the guard to a `let ... else` local kept it alive
+    // across that call, recording `PlayerEntity -> QuestStageAdvancedBatch`
+    // and closing a ring with the other two edges the quest systems record.
+    // Every other `PlayerEntity` site in the crate already copies the id out
+    // of a statement-scoped temporary; this one did not.
+    let Some(player) = world
+        .try_resource::<crate::papyrus_demo::PlayerEntity>()
+        .map(|player| player.0)
+    else {
         return;
     };
-    crate::quest_stages::push_quest_stage_advances(world, player.0, advances);
+    crate::quest_stages::push_quest_stage_advances(world, player, advances);
 }
 
 /// Consume [`QuestStageAdvanced`] markers and run the matching

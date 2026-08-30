@@ -150,18 +150,26 @@ fn full_world_round_trips_through_container() {
 
     // Inventory + equipment preserved.
     {
-        // EquipmentSlots before Inventory — matches `validate_world`'s
-        // acquisition order for this pair (#313).
-        let qe = dst.query::<EquipmentSlots>().expect("equip storage");
-        let qi = dst.query::<Inventory>().expect("inventory storage");
-        let (e, inv) = qi.iter().next().unwrap();
-        assert_eq!(e, 4);
-        assert_eq!(inv.items.len(), 2);
-        assert_eq!(inv.items[0].base_form_id, 0xDEAD);
-        assert_eq!(inv.items[1].count, 5);
-
-        let (_, equip) = qe.iter().next().unwrap();
-        assert_eq!(equip.occupants[0], Some(InventoryIndex(0)));
+        // #3580 — do NOT hold both guards at once. The scripting runtime
+        // reaches this same pair through
+        // `query_2_mut_mut::<Inventory, EquipmentSlots>`, which acquires in
+        // TypeId order; any hand-picked order here is a coin flip that
+        // closes a cycle in `lock_tracker`'s process-wide graph whenever it
+        // lands the other way. `validate_equipment` was made
+        // order-independent the same way (it snapshots instead of holding).
+        {
+            let qi = dst.query::<Inventory>().expect("inventory storage");
+            let (e, inv) = qi.iter().next().unwrap();
+            assert_eq!(e, 4);
+            assert_eq!(inv.items.len(), 2);
+            assert_eq!(inv.items[0].base_form_id, 0xDEAD);
+            assert_eq!(inv.items[1].count, 5);
+        }
+        {
+            let qe = dst.query::<EquipmentSlots>().expect("equip storage");
+            let (_, equip) = qe.iter().next().unwrap();
+            assert_eq!(equip.occupants[0], Some(InventoryIndex(0)));
+        }
     }
 
     // FormIdComponent resolves back to the SAME stable pair through the

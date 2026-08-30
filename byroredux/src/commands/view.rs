@@ -172,17 +172,27 @@ pub(super) fn combat_approach_line_of_sight_reaches(
     camera_pos: Vec3,
     aim_pos: Vec3,
 ) -> bool {
-    let Some(physics) = world.try_resource::<byroredux_physics::PhysicsWorld>() else {
-        return true;
-    };
     let direction = aim_pos - camera_pos;
     let distance = direction.length();
     if distance <= 0.0 {
         return true;
     }
 
-    // Same lock discipline as the swing: resolve body ownership before
-    // touching PhysicsWorld-adjacent component storages.
+    // Same lock discipline as the swing: resolve body ownership BEFORE
+    // acquiring `PhysicsWorld`, and never hold the two overlapping.
+    //
+    // #3580 — this comment used to sit under a `PhysicsWorld` guard bound to
+    // a named local for the whole function body, so the `RapierHandles` and
+    // `ActorColliderOwner` storages below were taken *underneath* it. That
+    // recorded `PhysicsWorld -> RapierHandles` in `lock_tracker`'s single
+    // TypeId graph (`World::try_resource` and `World::query` share it), which
+    // closed a ring against two long-standing canonical edges:
+    // `RapierHandles -> GlobalTransform` (`physics::sync::collect_newcomers`
+    // / `push_kinematic`, documented in `docs/engine/ecs.md`) and
+    // `GlobalTransform -> PhysicsWorld` (`ragdoll_writeback_system`). Every
+    // other `PhysicsWorld` site in the tree takes storages first and drops
+    // them first; this was the only inversion, and it turned the
+    // `lock-order-check` CI job red.
     let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
         Some(handles) => {
             let excluded = handles.get(player).map(|handles| handles.body);
@@ -195,10 +205,14 @@ pub(super) fn combat_approach_line_of_sight_reaches(
         None => (None, Vec::new()),
     };
 
-    let Some(hit_body) = physics
-        .cast_ray(camera_pos, direction, distance, excluded_body)
-        .and_then(|hit| hit.body)
-    else {
+    // Scoped to the cast alone: the guard is taken and dropped inside this
+    // expression, so it never overlaps a storage guard. A cell with no
+    // physics resource still trivially passes, as before.
+    let hit = match world.try_resource::<byroredux_physics::PhysicsWorld>() {
+        Some(physics) => physics.cast_ray(camera_pos, direction, distance, excluded_body),
+        None => return true,
+    };
+    let Some(hit_body) = hit.and_then(|hit| hit.body) else {
         // Nothing between the eye and the actor's head — the swing's own ray
         // will reach it.
         return true;

@@ -631,16 +631,28 @@ pub fn evaluate_function(
             // FormIDs. Resolve each occupied index through the actor's
             // Inventory and compare its base record with param_1.
             use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
-            let Some(slots) = world.get::<EquipmentSlots>(entity) else {
+            // #3112 — `equipped_indices()` spans the biped occupants AND the
+            // wielded weapon, which lives outside the occupancy array. A bare
+            // `occupants` scan reports every equipped weapon as unequipped.
+            //
+            // #3580 — collect the indices and DROP the `EquipmentSlots` guard
+            // before taking `Inventory`. Holding the two overlapped recorded
+            // `EquipmentSlots -> Inventory`, while the fragment runtime
+            // reaches the same pair through
+            // `query_2_mut_mut::<Inventory, EquipmentSlots>`, which acquires
+            // in TypeId order. One of the two orders is then always wrong,
+            // and the cycle detector aborted whichever ran second. Not
+            // overlapping the guards makes this site order-independent.
+            let Some(equipped_indices) = world
+                .get::<EquipmentSlots>(entity)
+                .map(|slots| slots.equipped_indices().collect::<Vec<_>>())
+            else {
                 return 0.0;
             };
             let Some(inventory) = world.get::<Inventory>(entity) else {
                 return 0.0;
             };
-            // #3112 — `equipped_indices()` spans the biped occupants AND the
-            // wielded weapon, which lives outside the occupancy array. A bare
-            // `occupants` scan reports every equipped weapon as unequipped.
-            let equipped = slots.equipped_indices().any(|index| {
+            let equipped = equipped_indices.into_iter().any(|index| {
                 inventory
                     .get(index)
                     .is_some_and(|stack| stack.count > 0 && stack.base_form_id == condition.param_1)

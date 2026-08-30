@@ -260,19 +260,36 @@ pub fn trigger_detection_system(world: &World) {
                                     crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
                                         expected
                                     ) if expected == *base_form_id
-                                ) && !world
-                                    .try_resource::<crate::quest_stages::QuestStageState>()
-                                    .is_some_and(|stages| {
-                                        stages.get_stage_done(
-                                            advance.owning_quest,
-                                            advance.target_stage,
-                                        )
-                                    })
-                                    && crate::condition::evaluate(
-                                        &advance.conditions,
-                                        world,
-                                        &crate::condition::ConditionContext::for_subject(trigger),
-                                    )
+                                ) && {
+                                    // #3580 — bind and DROP the
+                                    // `QuestStageState` guard before
+                                    // `condition::evaluate` runs. A
+                                    // `try_resource(...).is_some_and(..) &&
+                                    // evaluate(..)` chain keeps the guard's
+                                    // temporary alive to the end of the whole
+                                    // expression, so `evaluate` ran underneath
+                                    // it — and its `IsSceneActionComplete` arm
+                                    // takes `SceneRegistry`. That recorded
+                                    // `QuestStageState -> SceneRegistry`,
+                                    // closing a cycle against
+                                    // `actor_quest_trigger_is_in_sequence`
+                                    // below, which holds `SceneRegistry`
+                                    // across its own `QuestStageState`
+                                    // acquisition.
+                                    let already_done = world
+                                        .try_resource::<crate::quest_stages::QuestStageState>()
+                                        .is_some_and(|stages| {
+                                            stages.get_stage_done(
+                                                advance.owning_quest,
+                                                advance.target_stage,
+                                            )
+                                        });
+                                    !already_done
+                                } && crate::condition::evaluate(
+                                    &advance.conditions,
+                                    world,
+                                    &crate::condition::ConditionContext::for_subject(trigger),
+                                )
                             })
                         });
                     if inside
@@ -341,35 +358,45 @@ fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool 
     let Some(players) = world.query::<crate::ScenePlayer>() else {
         return true;
     };
-    let Some(registry) = world.try_resource::<crate::SceneRegistry>() else {
-        return true;
-    };
-
-    let mut has_running_scene = false;
-    let mut has_finished_scene = false;
-    let mut awaited_stages = Vec::new();
-    for (_, player) in players.iter() {
-        let Some(scene) = registry.definition(player.scene_form_id) else {
-            continue;
+    // #3580 — this scope exists so the `SceneRegistry` guard is DROPPED
+    // before the `QuestStageState` acquisition below. Holding it across that
+    // read recorded `SceneRegistry -> QuestStageState`, which closed a cycle
+    // against the opposite edge the trigger scan records
+    // (`QuestStageState -> SceneRegistry`, via `condition::evaluate`'s
+    // `IsSceneActionComplete` arm). Nothing here needs the registry after the
+    // loop — only the three summary values it produces.
+    let (has_running_scene, has_finished_scene, awaited_stages) = {
+        let Some(registry) = world.try_resource::<crate::SceneRegistry>() else {
+            return true;
         };
-        if scene.quest_form_id != Some(advance.owning_quest.0) {
-            continue;
-        }
-        if player.is_running() {
-            has_running_scene = true;
-            if let Some(phase) = scene.phases.get(player.current_phase as usize) {
-                awaited_stages.extend(phase.completion_conditions.iter().filter_map(|condition| {
+
+        let mut has_running_scene = false;
+        let mut has_finished_scene = false;
+        let mut awaited_stages = Vec::new();
+        for (_, player) in players.iter() {
+            let Some(scene) = registry.definition(player.scene_form_id) else {
+                continue;
+            };
+            if scene.quest_form_id != Some(advance.owning_quest.0) {
+                continue;
+            }
+            if player.is_running() {
+                has_running_scene = true;
+                if let Some(phase) = scene.phases.get(player.current_phase as usize) {
+                    awaited_stages.extend(phase.completion_conditions.iter().filter_map(|condition| {
                     (condition.function_index == 59
                         && condition.comparator == ComparisonOp::Eq
                         && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON)
                         && condition.param_1 == advance.owning_quest.0)
                     .then_some(condition.param_2 as u16)
                 }));
+                }
+            } else if player.state == crate::ScenePlaybackState::Finished {
+                has_finished_scene = true;
             }
-        } else if player.state == crate::ScenePlaybackState::Finished {
-            has_finished_scene = true;
         }
-    }
+        (has_running_scene, has_finished_scene, awaited_stages)
+    };
     if has_running_scene {
         let allowed = awaited_stages
             .into_iter()
