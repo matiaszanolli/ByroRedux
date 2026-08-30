@@ -163,10 +163,25 @@ step_cell_transition`. Sequence:
    load-bearing: all cells within the saved radius settle before delta remap,
    preventing saved state outside the arrival cell from being dropped (#3280).
 4. **Restore whole resources**: `restore_resources`
-   (`crates/save/src/driver.rs`, called from `save_io.rs:1260`) replaces
-   resources like `ItemInstancePool` and `GameTimeRes` wholesale, first,
-   so instance ids resolve correctly and the next weather tick re-derives
-   sky, fog, sun, and exterior directional lighting from the saved clock.
+   (`crates/save/src/driver.rs`) replaces resources like `ItemInstancePool`
+   and `GameTimeRes` wholesale, so instance ids resolve correctly and the
+   next weather tick re-derives sky, fog, sun, and exterior directional
+   lighting from the saved clock.
+
+   It runs **twice**, and the first call is the load-bearing one (#3789).
+   `ReferenceEnableState` has a *spawn-time* consumer —
+   `cell_loader::spawn::placement_is_disabled` reads it per placed REFR,
+   ahead of any mesh, collider or light — so the cell reload in §3 takes its
+   spawn decisions against whatever ledger is live at that moment. Restoring
+   only afterwards meant a fresh `--load N` (live ledger empty, everything
+   enabled) respawned every `Disable()`d reference solid and interactive,
+   with nothing to correct it: `apply_deltas` is additive-only and can
+   neither spawn nor despawn. The restore therefore happens before the
+   reload; the second call re-asserts saved values over what the reload
+   itself rebuilds (`CurrentCellContext`, `PlayerPose`). It is a plain
+   per-resource overwrite, so running it twice is idempotent. Doing it first
+   also means a resource-restore failure aborts before the irreversible
+   cell/streaming teardown rather than after it.
 5. **Reconcile entity identity**: `build_form_id_remap`
    (`crates/save/src/driver.rs:226`) matches each saved `FormIdPair`
    against the freshly-reloaded cell's live `FormIdComponent`s, building
@@ -221,7 +236,9 @@ already uses to rebuild whatever runtime state that fact implies removing
 and this load path — see #3022). There is still no generic delete persistence
 mechanism. Reference visibility is no longer part of that gap: scripted
 `Disable()` records the stable FormID in the saved `ReferenceEnableState`
-resource, and reload/spawn/render consumers reapply it. Future destructive
+resource, and reload/spawn/render consumers reapply it — which requires the
+resource-restore ordering in §4, without which the reload consumer read the
+wrong ledger (#3789). Future destructive
 domain operations still need an explicit saved fact plus reconciler rather
 than teaching the generic `apply_deltas` driver domain semantics.
 

@@ -374,3 +374,62 @@ fn quest_alias_inventory_grant_ledger_survives_live_reload_with_new_entity_id() 
         .expect("restored grant ledger remains serializable");
     assert_eq!(restored_grants.len(), 2);
 }
+
+/// #3789 — the saved `ReferenceEnableState` must be in the world BEFORE the
+/// cell reload spawns anything.
+///
+/// Since #3278 the ledger has a *spawn-time* consumer:
+/// `cell_loader::spawn::placement_is_disabled` consults it per placed REFR,
+/// ahead of any mesh, collider or light. `restore_resources` used to run
+/// only after the reload, so the reload took its spawn decisions against the
+/// live session's ledger — on a fresh `--load N` that is
+/// `ReferenceEnableState::default()`, i.e. everything enabled, so every
+/// reference the save recorded as disabled came back solid. `apply_deltas`,
+/// which follows, is additive-only by contract and can neither spawn nor
+/// despawn, so nothing downstream could correct it.
+///
+/// Pinned by source ordering: `execute_pending_save_loads` needs a live
+/// `VulkanContext` and on-disk archives, so the spawn decision itself is not
+/// reachable from a unit test. What is checkable — and what actually broke —
+/// is that the restore precedes the reload.
+#[test]
+fn saved_resources_are_restored_before_the_cell_reload() {
+    // No production/test split needed: this module lives in its own file,
+    // and `save_io.rs`'s inline test module contains none of the tokens
+    // matched below.
+    let source = include_str!("../save_io.rs");
+    let start = source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist");
+    let body = &source[start..];
+
+    let pre_restore = body
+        .find("byroredux_save::restore_resources(world, &registry, &snapshot)")
+        .expect("the drain must restore saved resources");
+    let interior_reload = body
+        .find("reload_interior_session(")
+        .expect("the drain must reload the saved interior");
+    let exterior_reload = body
+        .find("reload_exterior_session(")
+        .expect("the drain must reload the saved exterior");
+
+    assert!(
+        pre_restore < interior_reload && pre_restore < exterior_reload,
+        "saved resources must be restored BEFORE either reload branch — the \
+         spawn gate reads `ReferenceEnableState` while the cell is being \
+         built, and a post-reload restore arrives too late to affect it \
+         (#3789)"
+    );
+
+    // Both branches are equally exposed: `assemble_exterior_streaming`
+    // reaches the same `spawn_placed_instances`. And the post-reload restore
+    // must survive, since it is what re-asserts saved values over what the
+    // reload itself rebuilt (`CurrentCellContext`, `PlayerPose`).
+    let after_reload = body[exterior_reload..]
+        .find("byroredux_save::restore_resources(world, &registry, &snapshot)")
+        .expect(
+            "the post-reload restore must stay — it re-asserts saved values \
+             over resources the reload rebuilds",
+        );
+    assert!(after_reload > 0);
+}

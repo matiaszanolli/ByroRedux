@@ -1388,6 +1388,45 @@ pub fn execute_pending_save_loads(
     // `app_step.rs` for the shape a shared cache should take.
     let args = crate::cli_args::effective_args();
 
+    // #3789 — restore saved resources BEFORE the reload, not only after it.
+    //
+    // `ReferenceEnableState` is the FormID-keyed ledger a Papyrus `Disable()`
+    // writes to, and since #3278 it has a *spawn-time* consumer:
+    // `cell_loader::spawn::placement_is_disabled` consults it per placed
+    // REFR, before any mesh, collider or light. The reload below therefore
+    // takes every spawn decision against whatever ledger the live session
+    // happens to hold, and the saved one used to arrive seventeen lines
+    // later — too late to matter, because `apply_deltas` is additive-only by
+    // contract and can neither spawn nor despawn.
+    //
+    // On the most common load in the game — start the engine, load a save —
+    // the live ledger is `ReferenceEnableState::default()`, i.e. everything
+    // enabled, so every reference the save recorded as disabled came back
+    // solid and interactive. Nothing logged it: from the loader's point of
+    // view it correctly honoured the ledger it was shown. The symmetric
+    // same-session case is a reference disabled *after* the save spawning
+    // content-less for the whole of that cell's residency.
+    //
+    // Restoring here is also the right place for the preflight ordering the
+    // block above establishes: a resource-restore failure now aborts BEFORE
+    // the irreversible cell/streaming teardown rather than after it, so a
+    // bad snapshot can no longer leave a torn-down world behind.
+    //
+    // The post-reload call is kept (see below) rather than replaced: it
+    // re-asserts the saved values over anything the reload itself rebuilt
+    // (`CurrentCellContext`, `PlayerPose`), which is what it was there for.
+    // `restore_resources` is a straight per-resource overwrite from the
+    // snapshot, so running it twice is idempotent.
+    if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
+        let message = format!(
+            "save load ABORTED — resource restore failed before cell reload; \
+             keeping the current session: {e}"
+        );
+        log::error!("{message}");
+        notify_player(world, message);
+        return;
+    }
+
     let outcome = if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
         reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
     } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
@@ -1406,8 +1445,11 @@ pub fn execute_pending_save_loads(
         return;
     };
 
-    // Restore saved resources (ItemInstancePool) so inventory instance
-    // ids resolve, then overlay the form-id-keyed mutable deltas.
+    // Re-assert saved resources over anything the reload rebuilt
+    // (`CurrentCellContext`, `PlayerPose`), so inventory instance ids
+    // resolve, then overlay the form-id-keyed mutable deltas. The
+    // spawn-time consumers were served by the pre-reload restore above
+    // (#3789); this second pass is the one that has always been here.
     if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
         let message = format!("save load: resource restore failed: {e}");
         log::error!("{message}");
