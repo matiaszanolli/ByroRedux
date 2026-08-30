@@ -2869,9 +2869,29 @@ void main() {
             float legacyGate = max(
                 bethesdaRimFactor(mat, NdotV, NdotL),
                 bethesdaBackFactor(mat, rawNdotL));
+            // #3574 — the #1147 Phase 2b subsurface block further down this
+            // iteration is driven by `backDotL = max(-dot(N, L), 0.0)`, i.e.
+            // exactly the half-space on which all three gate terms above are
+            // identically zero for a material carrying MAT_FLAG_TRANSLUCENCY
+            // and nothing else from the Bethesda lighting-response family
+            // (the flags are disjoint on real content: TRANSLUCENCY comes from
+            // BGSM v>=8, SOFT/BACK_LIGHTING from BGSM v<8 or Skyrim SLSF2).
+            // Without a translucency driver here the early-out `continue`d on
+            // every fragment that block could ever shade, so the whole feature
+            // emitted zero on 100% of loaded content. Fold the driver into the
+            // gate rather than moving the block, so the early-out keeps doing
+            // its job while agreeing with the set of lobes evaluated below it.
+            // `pow(backDotL, 4.0)` (the thin-sheet arm) only shrinks this, so
+            // the term is a conservative upper bound — it never keeps a light
+            // the block would then ignore.
+            float sssGate =
+                ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u)
+                    ? max(-rawNdotL, 0.0) * mat.translucencyTransmissiveScale
+                    : 0.0;
             float contribution = max(
-                max(diffuseGate.r, max(diffuseGate.g, diffuseGate.b)),
-                legacyGate) * atten;
+                max(max(diffuseGate.r, max(diffuseGate.g, diffuseGate.b)),
+                    legacyGate),
+                sssGate) * atten;
             if (contribution < 0.001) {
                 continue;
             }

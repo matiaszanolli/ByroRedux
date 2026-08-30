@@ -2340,6 +2340,55 @@ fn bethesda_rim_exponent_substitutes_the_format_default_not_the_clamp_floor() {
     );
 }
 
+/// #3574 / REN-2026-08-30-D17-01 — the per-light early-out in `triangle.frag`
+/// must agree with the set of lobes evaluated below it. The #1147 Phase 2b
+/// subsurface block is driven by `max(-dot(N, L), 0.0)`, non-zero only where
+/// `rawNdotL < 0` — exactly the half-space on which the three Bethesda gate
+/// terms are identically zero for a `MAT_FLAG_TRANSLUCENCY`-only material
+/// (the flags are disjoint on real content). Without a translucency term in
+/// the gate the loop `continue`d on every fragment that block could shade, so
+/// the whole feature emitted zero on 100% of loaded content while `mat.dump`
+/// and `viewMaterialLobe` both reported it live. Nothing else in the suite can
+/// see this: both blocks are independently correct, the defect is their
+/// control-flow ordering.
+#[test]
+fn translucency_drives_the_per_light_contribution_gate() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    let start = frag
+        .find("float rawNdotL = dot(N, L);")
+        .expect("triangle.frag must compute rawNdotL in the cluster light loop");
+    let end = frag[start..]
+        .find("if (contribution < 0.001) {")
+        .expect("triangle.frag must early-out on the contribution gate")
+        + start;
+    let gate = &frag[start..end];
+
+    assert!(
+        gate.contains("MAT_FLAG_TRANSLUCENCY"),
+        "the per-light contribution gate must include a translucency term, or the \
+         Phase 2b subsurface block below it is unreachable — the gate `continue`s on \
+         exactly the back-facing half-space that block exists to shade. See #3574."
+    );
+    assert!(
+        gate.contains("max(-rawNdotL, 0.0)"),
+        "the gate's translucency term must be driven by the same back-side `-N·L` the \
+         Phase 2b block uses; a term that is zero wherever the block is non-zero \
+         re-orphans it. See #3574."
+    );
+    assert!(
+        gate.contains("sssGate) * atten;"),
+        "the translucency term must actually reach `contribution` — computing it and \
+         dropping it out of the `max(...)` fold is the same bug. See #3574."
+    );
+
+    // And the block it feeds must still be there, driven by that same term.
+    assert!(
+        frag.contains("float backDotL = max(-dot(N, L), 0.0);"),
+        "the Phase 2b subsurface block's driver moved — re-derive the gate term to match"
+    );
+}
+
 /// #2244 — `sampleDalcCube` returns authored directional irradiance. A
 /// bounded path that escapes the TLAS consumes environment radiance, so the
 /// DALC branch needs the Lambertian irradiance-to-radiance conversion.
