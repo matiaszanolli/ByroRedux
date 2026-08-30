@@ -6,6 +6,7 @@ pub(crate) use game_time::GameTimeRes;
 
 use byroredux_audio::Sound;
 use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
 use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
@@ -1499,19 +1500,22 @@ impl Default for InputState {
 ///
 /// `last_position` and `accumulated_stride` are mutated each frame
 /// by `footstep_system`; `stride_threshold` is read-only configuration
-/// — a stride distance that triggers one footstep. Defaults to 1.5
-/// game-units (~1.5m at FNV scale; reasonable walking cadence).
+/// — a stride distance that triggers one footstep. See
+/// [`DEFAULT_STRIDE_THRESHOLD_BU`] for the unit, which is the whole
+/// story of #3520.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FootstepEmitter {
     /// World position last frame, in renderer Y-up game units. Set
     /// from the entity's `GlobalTransform.translation` on first tick;
     /// updated each frame.
     pub(crate) last_position: Vec3,
-    /// Horizontal distance walked since the last footstep fire,
-    /// game-units. XZ plane only — vertical motion (jumping, falling)
-    /// doesn't count toward stride.
+    /// Horizontal distance walked since the last footstep fire, in
+    /// **Bethesda units** — it accumulates deltas of
+    /// `GlobalTransform.translation`, which is BU. XZ plane only —
+    /// vertical motion (jumping, falling) doesn't count toward stride.
     pub(crate) accumulated_stride: f32,
-    /// Stride distance that triggers a footstep dispatch.
+    /// Stride distance that triggers a footstep dispatch, in **Bethesda
+    /// units**, because that is what it is compared against.
     pub(crate) stride_threshold: f32,
     /// Whether `last_position` has been initialised. False on first
     /// tick so the system seeds it without computing a bogus delta
@@ -1523,12 +1527,34 @@ impl Component for FootstepEmitter {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Default footstep stride, in **Bethesda units**.
+///
+/// #3520 — this was `1.5` with a docstring reading "~1.5m at FNV scale".
+/// It is compared against an accumulation of `GlobalTransform.translation`
+/// deltas, which are BU (that is the entire premise of #3178's
+/// `bu_to_audio_space` seam, which divides the very same value by
+/// [`BETHESDA_UNITS_PER_METER`]). So the effective threshold was
+/// 1.5 BU = 2.1 cm of travel, not 1.5 m.
+///
+/// The engine states the travel it is measured against twice, independently:
+/// the fly cam's `move_speed: 200.0` BU/s and the character controller's
+/// `220.0`. 200 / 60 = 3.33 BU per frame at 60 FPS — already 2.2x the old
+/// threshold before the x3 sprint boost. Since the fire branch is an `if`,
+/// not a `while`, the observable behaviour was exactly one footstep per
+/// frame while moving: 60 Hz against a human cadence of ~1.8 Hz.
+///
+/// Authored in BU rather than converted at the compare site so
+/// `footstep_system` stays entirely in world space and
+/// `bu_to_audio_space` remains the subsystem's only unit seam. 0.75 m is a
+/// walking stride; at 70 BU/m that is 52.5 BU, ≈2.6 steps/s at 200 BU/s.
+pub(crate) const DEFAULT_STRIDE_THRESHOLD_BU: f32 = 0.75 * BETHESDA_UNITS_PER_METER;
+
 impl FootstepEmitter {
     pub(crate) fn new() -> Self {
         Self {
             last_position: Vec3::ZERO,
             accumulated_stride: 0.0,
-            stride_threshold: 1.5,
+            stride_threshold: DEFAULT_STRIDE_THRESHOLD_BU,
             initialised: false,
         }
     }

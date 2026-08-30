@@ -344,6 +344,7 @@ mod footstep_tests {
     use super::*;
     use crate::components::{
         FootstepConfig, FootstepEmitter, FootstepScratch, WaterAudioConfig, WaterAudioState,
+        DEFAULT_STRIDE_THRESHOLD_BU,
     };
     use byroredux_audio::{Frame, Sound, SoundSettings};
     use byroredux_core::ecs::{Transform, World};
@@ -413,6 +414,83 @@ mod footstep_tests {
         assert_eq!(fs.accumulated_stride, 0.0);
     }
 
+    /// #3520 — the unit guard, mirroring
+    /// `default_attenuation_band_is_metres_not_bethesda_units` on the other
+    /// half of the same seam.
+    ///
+    /// `stride_threshold` is compared against an accumulation of
+    /// `GlobalTransform.translation` deltas, which are Bethesda units. It was
+    /// authored as `1.5` with a docstring reading "~1.5m at FNV scale", so
+    /// the effective threshold was 1.5 BU = 2.1 cm. The engine's own movement
+    /// constants (fly cam 200 BU/s, character controller 220 BU/s) put
+    /// 3.33 BU on every frame at 60 FPS, so the threshold was crossed every
+    /// tick.
+    ///
+    /// The assertion is deliberately on the ORDER OF MAGNITUDE against a
+    /// per-frame travel distance, not on the literal value: a future stride
+    /// retune is fine, silently reverting to metre-scale is not.
+    #[test]
+    fn stride_threshold_is_bethesda_units_not_metres() {
+        let threshold = FootstepEmitter::new().stride_threshold;
+        // One frame of ordinary walking at the fly cam's own 200 BU/s.
+        let per_frame_bu = 200.0 / 60.0;
+        assert!(
+            threshold > per_frame_bu * 4.0,
+            "stride_threshold {threshold} is within a few frames of travel \
+             ({per_frame_bu:.2} BU/frame at 200 BU/s) — it has been authored \
+             in metres against a Bethesda-unit delta again (#3520)"
+        );
+        // And a sanity ceiling: a human stride is under two metres.
+        assert!(
+            threshold < 2.0 * byroredux_core::lighting::BETHESDA_UNITS_PER_METER,
+            "stride_threshold {threshold} BU is more than a two-metre stride"
+        );
+    }
+
+    /// #3520 — cadence, end to end. Walk an emitter at the fly cam's own
+    /// 200 BU/s for one simulated second at 60 FPS and count footsteps.
+    ///
+    /// A human walking cadence is roughly 2 steps/s. Pre-fix this fired
+    /// **60** — one per frame — because the 1.5 BU threshold was crossed by
+    /// every 3.33 BU frame.
+    #[test]
+    fn walking_for_one_second_fires_a_walking_cadence_not_one_per_frame() {
+        let (mut world, _sound) = synth_world(0.1);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, FootstepEmitter::new());
+
+        const FPS: usize = 60;
+        const SPEED_BU_PER_S: f32 = 200.0;
+        let dt = 1.0 / FPS as f32;
+        let step_bu = SPEED_BU_PER_S * dt;
+
+        footstep_system(&world, dt); // seed
+        let mut fired = 0usize;
+        for frame in 1..=FPS {
+            {
+                let mut q = world.query_mut::<GlobalTransform>().unwrap();
+                let gt = q.get_mut(entity).unwrap();
+                gt.translation = Vec3::new(step_bu * frame as f32, 0.0, 0.0);
+            }
+            footstep_system(&world, dt);
+            let mut scratch = world.resource_mut::<FootstepScratch>();
+            fired += scratch.triggers.len();
+            scratch.triggers.clear();
+        }
+
+        assert!(
+            (2..=5).contains(&fired),
+            "one second of walking at {SPEED_BU_PER_S} BU/s fired {fired} \
+             footsteps; a walking cadence is ~2-4/s and one-per-frame would \
+             be {FPS} (#3520)"
+        );
+    }
+
     /// Walking exactly one threshold distance fires exactly one
     /// footstep. Vertical motion is excluded — only XZ delta counts.
     #[test]
@@ -429,16 +507,19 @@ mod footstep_tests {
         // Tick 1: seed last_position at origin.
         footstep_system(&world, 0.016);
 
-        // Move 1.5 game-units along +X (exactly the default threshold).
+        // Move exactly the default threshold along +X. Expressed through
+        // the constant rather than a literal (#3520): a hardcoded distance
+        // is what let this test pass identically whether the threshold was
+        // metres or Bethesda units.
         // Also bump Y by 100 — vertical-only motion that must NOT
         // contribute to stride.
         {
             let mut q = world.query_mut::<GlobalTransform>().unwrap();
             let gt = q.get_mut(entity).unwrap();
-            gt.translation = Vec3::new(1.5, 100.0, 0.0);
+            gt.translation = Vec3::new(DEFAULT_STRIDE_THRESHOLD_BU, 100.0, 0.0);
         }
 
-        // Tick 2: stride accumulates 1.5 units, hits threshold, fires.
+        // Tick 2: stride accumulates one threshold, hits it, fires.
         footstep_system(&world, 0.016);
 
         // Count the footsteps the system *triggered* this tick, not the
@@ -451,7 +532,7 @@ mod footstep_tests {
         assert_eq!(
             scratch.triggers.len(),
             1,
-            "1.5-unit horizontal stride must fire exactly one footstep"
+            "a one-threshold horizontal stride must fire exactly one footstep"
         );
     }
 
@@ -474,11 +555,11 @@ mod footstep_tests {
 
         footstep_system(&world, 0.016); // seed
 
-        // 6.0 horizontal units in one frame — 4× threshold.
+        // 4× the threshold in one frame.
         {
             let mut q = world.query_mut::<GlobalTransform>().unwrap();
             let gt = q.get_mut(entity).unwrap();
-            gt.translation = Vec3::new(6.0, 0.0, 0.0);
+            gt.translation = Vec3::new(4.0 * DEFAULT_STRIDE_THRESHOLD_BU, 0.0, 0.0);
         }
 
         footstep_system(&world, 0.016);
