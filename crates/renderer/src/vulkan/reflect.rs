@@ -606,39 +606,49 @@ mod tests {
     fn camera_ubo_size_matches_gpu_camera_in_every_shader() {
         use crate::vulkan::scene_buffer::GpuCamera;
         let expected = std::mem::size_of::<GpuCamera>() as u32;
-        // Every shader that declares the `CameraUBO` block. Add new readers
-        // here so they are pinned too.
-        let shaders: &[(&str, &[u8])] = &[
-            (
-                "triangle.vert",
-                include_bytes!("../../shaders/triangle.vert.spv"),
-            ),
-            (
-                "triangle.frag",
-                include_bytes!("../../shaders/triangle.frag.spv"),
-            ),
-            (
-                "cluster_cull.comp",
-                include_bytes!("../../shaders/cluster_cull.comp.spv"),
-            ),
-            ("water.vert", include_bytes!("../../shaders/water.vert.spv")),
-            ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
-            (
-                "caustic_splat.comp",
-                include_bytes!("../../shaders/caustic_splat.comp.spv"),
-            ),
-        ];
-        for (name, spv) in shaders {
-            let size = uniform_block_size_by_name(spv, "CameraUBO")
+        // #3564 / REN-2026-08-30-D3-02 — this used to enumerate six `.spv`
+        // by hand, with a comment asking the next person to add new readers.
+        // A guard whose coverage depends on remembering to extend it is the
+        // convention it was built to replace, so walk every committed `.spv`
+        // instead and pin each one that actually reflects a `CameraUBO`
+        // block. A new camera reader is then covered the moment it is
+        // compiled, with no list to update.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let mut checked: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("shaders dir") {
+            let path = entry.expect("shaders dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("spv") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .expect("spv file stem")
+                .to_string();
+            let spv = std::fs::read(&path).expect("read .spv");
+            let Some(size) = uniform_block_size_by_name(&spv, "CameraUBO")
                 .unwrap_or_else(|e| panic!("{name}: reflect CameraUBO failed: {e}"))
-                .unwrap_or_else(|| panic!("{name}: declares no CameraUBO block"));
+            else {
+                continue; // not a camera reader
+            };
             assert_eq!(
                 size, expected,
                 "{name}.spv CameraUBO is {size} B but GpuCamera is {expected} B — \
                  the shader's committed .spv is stale; recompile it \
                  (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #1447."
             );
+            checked.push(name);
         }
+        checked.sort();
+        // Sanity floor on the walk itself: if the discovery ever silently
+        // matched nothing (wrong directory, renamed block), the loop above
+        // would pass vacuously.
+        assert!(
+            checked.len() >= 6,
+            "only {} committed .spv reflect a CameraUBO block ({checked:?}) — expected at \
+             least the six known readers; the discovery walk is broken, not the shaders",
+            checked.len()
+        );
     }
 
     /// Regression: #1493. The volumetrics UBOs grew a `render_origin`

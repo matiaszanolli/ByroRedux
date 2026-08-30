@@ -1317,6 +1317,14 @@ fn gpu_water_params_rust_and_glsl_copies_stay_in_lockstep() {
     let vert_src = include_str!("../../../shaders/water.vert");
     let frag_src = include_str!("../../../shaders/water.frag");
 
+    // #3564 — water.vert / water.frag are the only mirrors today; pin the set
+    // so a third reader cannot be added outside this field-order comparison.
+    assert_mirror_list_is_complete(
+        "struct WaterParams",
+        &[("water.vert", vert_src), ("water.frag", frag_src)],
+        "#3564",
+    );
+
     let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuWaterParams");
     let vert_fields = parse_glsl_struct_fields(vert_src, "struct WaterParams");
     let frag_fields = parse_glsl_struct_fields(frag_src, "struct WaterParams");
@@ -1650,6 +1658,87 @@ fn perturb_normal_guards_post_projection_tangent_length() {
 
 // ── GpuLight four-way GLSL lockstep (#1916) ──
 
+/// Every shader source under `crates/renderer/shaders/` that **declares**
+/// `decl` (e.g. `"struct GpuInstance"`), discovered by walking the directory
+/// rather than read off a hand-maintained list. Paths are returned relative to
+/// the shaders directory, sorted, so they can be compared against the
+/// `SOURCES` tables below verbatim.
+///
+/// #3564 / REN-2026-08-30-D3-02 — the GLSL-mirror lockstep guards each
+/// hardcode the SET of files they check as `include_str!` literals, so a new
+/// shader that declares one of these structs is born completely outside the
+/// contract and every existing test stays green. That delegates the guard's
+/// own correctness back to the code-review convention the guard exists to stop
+/// relying on. Pairing each `SOURCES` table with this walk converts "someone
+/// forgot to add the file" from silent into a named test failure.
+///
+/// A line counts as a declaration only if the text before any `//` comment
+/// starts with `decl` followed by whitespace or `{`. That is what separates a
+/// real declaration from a source comment *mentioning* the struct — the
+/// near-miss already on record is `skin_vertices.comp`, whose comment names
+/// `struct GpuInstance` while the file declares none (a bare `str::contains`,
+/// and `extract_struct_body`'s `find`, would both count it).
+fn shader_sources_declaring(decl: &str) -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read shader dir {}: {e}", dir.display()))
+        {
+            let path = entry.expect("shader dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_glsl = matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("vert" | "frag" | "comp" | "glsl")
+            );
+            if !is_glsl {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let declares = src.lines().any(|raw| {
+                let code = match raw.find("//") {
+                    Some(i) => &raw[..i],
+                    None => raw,
+                };
+                let code = code.trim_start();
+                code.strip_prefix(decl)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '{']))
+            });
+            if declares {
+                found.push(
+                    path.strip_prefix(&root)
+                        .expect("under shaders root")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Assert the hand-written `SOURCES` table for a GLSL-mirror lockstep test
+/// covers exactly the files that actually declare `decl` (#3564).
+fn assert_mirror_list_is_complete(decl: &str, sources: &[(&str, &str)], issue: &str) {
+    let mut listed: Vec<String> = sources.iter().map(|(n, _)| (*n).to_string()).collect();
+    listed.sort();
+    let discovered = shader_sources_declaring(decl);
+    assert_eq!(
+        discovered, listed,
+        "`{decl}` mirror set drifted: crates/renderer/shaders/ declares it in {discovered:?} \
+         but the lockstep test checks {listed:?}. Every declaration must be in the SOURCES \
+         table — an unlisted mirror with a dropped or reordered field silently corrupts the \
+         data for whichever pass reads it, with a fully green `cargo test` ({issue})."
+    );
+}
+
 /// Strip a GLSL struct body down to its bare `<type> <name>;` declaration
 /// lines — drop `//` line comments and blank lines, collapse internal
 /// whitespace. Two struct bodies with identical stripped output declare
@@ -1697,6 +1786,8 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
             include_str!("../../../shaders/volumetrics_inject.comp"),
         ),
     ];
+
+    assert_mirror_list_is_complete("struct GpuLight", SOURCES, "#1916 / #3564");
 
     let mut reference: Option<(&str, Vec<String>)> = None;
     for (name, src) in SOURCES {
@@ -1764,6 +1855,8 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
             include_str!("../../../shaders/caustic_splat.comp"),
         ),
     ];
+
+    assert_mirror_list_is_complete("struct GpuInstance", SOURCES, "#2748 / #3564");
 
     let mut reference: Option<(&str, Vec<String>)> = None;
     for (name, src) in SOURCES {
@@ -2551,6 +2644,14 @@ fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
 fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
     const BINDINGS_GLSL: &str = include_str!("../../../shaders/include/bindings.glsl");
     const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
+
+    // #3564 — bindings.glsl is the only declaration today; pin that so a
+    // second mirror cannot appear outside this comparison.
+    assert_mirror_list_is_complete(
+        "struct GpuTerrainTile",
+        &[("include/bindings.glsl", BINDINGS_GLSL)],
+        "#2463 / #3564",
+    );
 
     let glsl = strip_struct_body(
         extract_struct_body(BINDINGS_GLSL, "struct GpuTerrainTile")
