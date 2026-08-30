@@ -12,6 +12,14 @@ closing_issue_numbers() {
         sort -nu
 }
 
+# Reads the haystack on stdin. Callers MUST feed it with a here-string, not a
+# pipe: `rg --quiet` exits on its first match, and under `set -o pipefail` a
+# writer still pushing bytes into that pipe takes SIGPIPE and turns the whole
+# pipeline's status into 141 — reported as "no citation" for an issue that IS
+# cited. The failure is size-dependent (a body under the 64 KiB pipe buffer
+# completes before rg exits, so it passes), which is why this went unnoticed:
+# a real session's commit-message body is hundreds of KiB and a two-line
+# self-test fixture is not.
 commit_cites_issue() {
     local issue="$1"
     rg --quiet --ignore-case \
@@ -23,8 +31,18 @@ if [[ "${1:-}" == "--self-test" ]]; then
     mapfile -t sample_issues < <(printf '%s\n' "${sample_body}" | closing_issue_numbers)
     [[ "${sample_issues[*]}" == "12 34" ]]
     printf '%s\n' 'fix(core): bounded walk' 'Fix #12' | commit_cites_issue 12
-    if printf '%s\n' 'fix(core): bounded walk (#12)' | commit_cites_issue 12; then
+    if commit_cites_issue 12 <<<'fix(core): bounded walk (#12)'; then
         echo "check-issue-traceability: self-test accepted a non-closing citation" >&2
+        exit 1
+    fi
+    # A body larger than the 64 KiB pipe buffer, with the citation FIRST so
+    # `rg --quiet` exits long before the writer is done. Under the old
+    # `printf | commit_cites_issue` shape this returned 141 and the issue was
+    # reported uncited; the two-line fixtures above cannot reach that path.
+    big_body="Fix #12"$'\n'"$(head -c 200000 /dev/zero | tr '\0' 'x')"
+    if ! commit_cites_issue 12 <<<"${big_body}"; then
+        echo "check-issue-traceability: self-test lost a citation in a large body \
+(SIGPIPE/pipefail regression)" >&2
         exit 1
     fi
     echo "check-issue-traceability: self-test passed"
@@ -72,7 +90,7 @@ if [[ "${1:-}" == "--window" ]]; then
 
     uncited=()
     for issue in "${closed[@]}"; do
-        printf '%s\n' "${commit_messages}" | commit_cites_issue "${issue}" && continue
+        commit_cites_issue "${issue}" <<<"${commit_messages}" && continue
         uncited+=("${issue}")
     done
 
@@ -118,7 +136,7 @@ fi
 commit_messages="$(git log --format='%B' "${base}..${head}")"
 missing=()
 for issue in "${closing_issues[@]}"; do
-    if ! printf '%s\n' "${commit_messages}" | commit_cites_issue "${issue}"; then
+    if ! commit_cites_issue "${issue}" <<<"${commit_messages}"; then
         missing+=("#${issue}")
     fi
 done
