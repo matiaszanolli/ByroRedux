@@ -71,6 +71,7 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -78,6 +79,7 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -92,6 +94,7 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -99,6 +102,7 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -351,6 +355,7 @@ fn deleted_refr_tombstone_is_skipped() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -358,6 +363,7 @@ fn deleted_refr_tombstone_is_skipped() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -426,6 +432,7 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -433,6 +440,7 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -475,6 +483,7 @@ fn parse_refr_extracts_position_and_scale() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -482,6 +491,7 @@ fn parse_refr_extracts_position_and_scale() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -511,6 +521,7 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -518,6 +529,7 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -545,6 +557,7 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -552,6 +565,7 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -600,6 +614,7 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -607,6 +622,7 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -916,6 +932,7 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -923,6 +940,7 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -947,6 +965,7 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -954,6 +973,7 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();
@@ -1049,6 +1069,7 @@ fn parse_refr_group_collects_navm_records() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
     let mut deleted = Vec::new();
     parse_refr_group(
         &mut reader,
@@ -1056,6 +1077,7 @@ fn parse_refr_group_collects_navm_records() {
         &mut refs,
         &mut land,
         &mut navmeshes,
+        &mut pathgrids,
         &mut deleted,
     )
     .unwrap();

@@ -145,6 +145,7 @@ fn parse_cell_group_inner(
                         let mut refs = Vec::new();
                         let mut _land = None; // Interior cells don't have LAND records
                         let mut navmeshes = Vec::new();
+                        let mut pathgrids = Vec::new();
                         let mut deleted = Vec::new();
                         parse_refr_group(
                             reader,
@@ -152,11 +153,13 @@ fn parse_cell_group_inner(
                             &mut refs,
                             &mut _land,
                             &mut navmeshes,
+                            &mut pathgrids,
                             &mut deleted,
                         )?;
                         if let Some(cell) = cells.get_mut(key) {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
+                            cell.pathgrids.extend(pathgrids);
                             cell.deleted_refs.extend(deleted);
                         }
                     } else {
@@ -621,6 +624,7 @@ fn parse_cell_group_inner(
                             precombined_mesh_hashes,
                             absorbed_refs,
                             navmeshes: Vec::new(),
+                            pathgrids: Vec::new(),
                             deleted_refs: Vec::new(),
                         },
                     );
@@ -656,9 +660,10 @@ pub(crate) fn parse_refr_group(
     refs: &mut Vec<PlacedRef>,
     landscape: &mut Option<LandscapeData>,
     navmeshes: &mut Vec<NavmRecord>,
+    pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
 ) -> Result<()> {
-    parse_refr_group_inner(reader, end, refs, landscape, navmeshes, deleted, 0)
+    parse_refr_group_inner(reader, end, refs, landscape, navmeshes, pathgrids, deleted, 0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -668,6 +673,7 @@ fn parse_refr_group_inner(
     refs: &mut Vec<PlacedRef>,
     landscape: &mut Option<LandscapeData>,
     navmeshes: &mut Vec<NavmRecord>,
+    pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
     depth: u32,
 ) -> Result<()> {
@@ -685,6 +691,7 @@ fn parse_refr_group_inner(
                 refs,
                 landscape,
                 navmeshes,
+                pathgrids,
                 deleted,
                 depth + 1,
             )?;
@@ -1042,6 +1049,15 @@ fn parse_refr_group_inner(
                     header.form_id
                 ),
             }
+        } else if &header.record_type == b"PGRD" {
+            // #3598 — Oblivion's ONLY navigation format. It authors zero
+            // NAVI and zero NAVM, so before this arm all 8,228 of its
+            // pathgrids fell through to the catch-all skip below and the
+            // title had no navigation data at all — while its 7,209 PACK
+            // records parsed fine and had nothing to path on. PGRD attaches
+            // to the CELL group the same way LAND does.
+            let subs = reader.read_sub_records(&header)?;
+            pathgrids.push(crate::esm::records::parse_pgrd(header.form_id, &subs));
         } else if &header.record_type == b"NAVM" {
             // #1272 — NAVMs nest under cell persistent/temporary
             // children GRUPs (group_type 6 / 8); the top-level NAVM

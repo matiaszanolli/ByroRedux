@@ -295,6 +295,7 @@ fn parse_wrld_children_inner(
                         let mut refs = Vec::new();
                         let mut land = None;
                         let mut navmeshes = Vec::new();
+                        let mut pathgrids = Vec::new();
                         let mut deleted = Vec::new();
                         parse_refr_group(
                             reader,
@@ -302,6 +303,7 @@ fn parse_wrld_children_inner(
                             &mut refs,
                             &mut land,
                             &mut navmeshes,
+                            &mut pathgrids,
                             &mut deleted,
                         )?;
                         let cell = match cell_target {
@@ -311,6 +313,7 @@ fn parse_wrld_children_inner(
                         if let Some(cell) = cell {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
+                            cell.pathgrids.extend(pathgrids);
                             cell.deleted_refs.extend(deleted);
                             if land.is_some() && cell.landscape.is_none() {
                                 cell.landscape = land;
@@ -566,6 +569,7 @@ fn parse_wrld_children_inner(
                     precombined_mesh_hashes,
                     absorbed_refs,
                     navmeshes: Vec::new(),
+                    pathgrids: Vec::new(),
                     deleted_refs: Vec::new(),
                 };
                 if force_persistent {

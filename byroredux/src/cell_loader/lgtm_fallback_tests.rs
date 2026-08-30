@@ -71,6 +71,7 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
         precombined_mesh_hashes: Vec::new(),
         absorbed_refs: std::collections::HashSet::new(),
         navmeshes: Vec::new(),
+        pathgrids: Vec::new(),
         deleted_refs: Vec::new(),
     }
 }

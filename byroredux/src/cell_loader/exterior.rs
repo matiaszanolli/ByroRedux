@@ -569,6 +569,7 @@ mod resolve_persistent_cell_tests {
             precombined_mesh_hashes: Vec::new(),
             absorbed_refs: std::collections::HashSet::new(),
             navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
             deleted_refs: Vec::new(),
         }
     }
@@ -744,6 +745,7 @@ mod persistent_root_survives_crossing_tests {
                 precombined_mesh_hashes: Vec::new(),
                 absorbed_refs: std::collections::HashSet::new(),
                 navmeshes: Vec::new(),
+                pathgrids: Vec::new(),
                 deleted_refs: Vec::new(),
             },
         );
@@ -995,6 +997,7 @@ mod persistent_cell_identity_unchanged_tests {
             precombined_mesh_hashes: Vec::new(),
             absorbed_refs: std::collections::HashSet::new(),
             navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
             deleted_refs: Vec::new(),
         }
     }
