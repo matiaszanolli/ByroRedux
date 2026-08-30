@@ -378,8 +378,11 @@ pub fn pick_physical_device(
     let Some(selected) = selected else {
         anyhow::bail!(
             "No suitable GPU found (need graphics + present queues, swapchain support, \
-             shaderInt64, and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / \
-             Arc or newer required)"
+             shaderInt64, Vulkan 1.3 synchronization2, and VK_KHR_ray_query + \
+             VK_KHR_acceleration_structure + VK_KHR_deferred_host_operations — the \
+             committed shader set declares RayQueryKHR and \
+             PhysicalStorageBufferAddresses, so RT is mandatory, not optional. \
+             RTX 20-series / RDNA2 / Arc or newer required)"
         );
     };
 
@@ -421,8 +424,37 @@ fn is_device_suitable(
         }
     }
 
-    // Check optional RT extensions.
+    // Check the RT extensions. Despite `RT_EXTENSIONS`' historical
+    // "optional" framing, these are load-bearing for the shader set this
+    // renderer actually ships (#3759).
     let ray_query_supported = RT_EXTENSIONS.iter().all(|ext| has_extension(ext));
+    // The committed shader modules declare `RayQueryKHR` (`triangle.frag`,
+    // `water.frag`, `caustic_splat.comp`, `volumetrics_inject.comp`) and
+    // `PhysicalStorageBufferAddresses` (`triangle.vert`, `triangle.frag`,
+    // `skin_vertices.comp`). Per the Vulkan SPIR-V environment appendix those
+    // require `VkPhysicalDeviceRayQueryFeaturesKHR::rayQuery` and
+    // `VkPhysicalDeviceVulkan12Features::bufferDeviceAddress` to be ENABLED,
+    // and `create_logical_device` withholds both when this flag is false — so
+    // an RT-less device cannot legally create them
+    // (VUID-VkShaderModuleCreateInfo-pCode-08740). Identical reasoning, and
+    // identical shape, to the `shaderInt64` rejection below.
+    //
+    // #1561 fixed only the `water.frag` half of this, by gating
+    // `WaterPipeline` on the flag. The MAIN geometry pipeline is created
+    // unconditionally in `context::init`, and `triangle.vert` carries
+    // `PhysicalStorageBufferAddresses` even though it has no ray query at
+    // all — so there was no partial-render fallback to preserve: the whole
+    // main pass was illegal on such a device. Rejecting here is what makes
+    // `init.rs`'s "RT is mandatory" comment true.
+    //
+    // Deliberately scoped to device selection: no pipeline is restructured.
+    // The now-unreachable `ray_query_supported == false` branches
+    // (`accel_manager`, `skin_compute`, `skin_palette`, `water`, the
+    // rt-disabled descriptor-layout permutation, the `buffer_device_address`
+    // gating) are left in place for a follow-up rather than removed here.
+    if !ray_query_supported {
+        return Ok(None);
+    }
 
     // Optional `VK_EXT_memory_budget`. Live per-heap usage / budget
     // for the debug-UI VRAM panel — without it we fall back to
@@ -930,6 +962,89 @@ mod caps_tests {
 
         let supported = vk::PhysicalDeviceFeatures::default().shader_int64(true);
         assert!(supports_committed_shader_int64(&supported));
+    }
+
+    /// #3759 — the committed SPIR-V is what makes RT mandatory, so pin the
+    /// two facts together: (a) the modules the UNCONDITIONALLY-created main
+    /// geometry pipeline loads really do declare capabilities that need the
+    /// RT feature set enabled, and (b) `is_device_suitable` therefore rejects
+    /// a device without it.
+    ///
+    /// `RayQueryKHR` requires `VkPhysicalDeviceRayQueryFeaturesKHR::rayQuery`
+    /// and `PhysicalStorageBufferAddresses` requires
+    /// `VkPhysicalDeviceVulkan12Features::bufferDeviceAddress`; both are
+    /// withheld by `create_logical_device` when `ray_query_supported` is
+    /// false, so creating these modules there violates
+    /// VUID-VkShaderModuleCreateInfo-pCode-08740.
+    ///
+    /// #1561 gated `WaterPipeline` on the flag and stopped there. This
+    /// catches the same defect for any module that joins the ungated set:
+    /// recompiling the shaders without RT would make (a) fail loudly instead
+    /// of quietly deleting the reason for the rejection.
+    #[test]
+    fn committed_shader_contract_requires_a_ray_query_capable_device() {
+        /// `OpCapability`, and the two capability operands that need the RT
+        /// feature set. Values from the SPIR-V registry.
+        const OP_CAPABILITY: u32 = 17;
+        const RAY_QUERY_KHR: u32 = 4472;
+        const PHYSICAL_STORAGE_BUFFER_ADDRESSES: u32 = 5347;
+
+        /// Decode the `OpCapability` operands out of a committed `.spv`.
+        /// The capability block is the first thing in the module after the
+        /// 5-word header, so a linear instruction walk reaches all of them.
+        fn capabilities(spv: &[u8]) -> Vec<u32> {
+            let words: Vec<u32> = spv
+                .chunks_exact(4)
+                .map(|w| u32::from_le_bytes(w.try_into().expect("chunks_exact(4)")))
+                .collect();
+            assert_eq!(words.first().copied(), Some(0x0723_0203), "SPIR-V magic");
+            let mut out = Vec::new();
+            let mut i = 5; // past the header
+            while i < words.len() {
+                let word_count = (words[i] >> 16) as usize;
+                let opcode = words[i] & 0xFFFF;
+                assert!(word_count > 0, "zero-length SPIR-V instruction");
+                if opcode == OP_CAPABILITY {
+                    out.push(words[i + 1]);
+                }
+                i += word_count;
+            }
+            out
+        }
+
+        // The two modules `create_triangle_pipeline` loads verbatim, with no
+        // `ray_query_supported` gate at the call site.
+        let vert = capabilities(super::super::pipeline::TRIANGLE_VERT_SPV);
+        let frag = capabilities(super::super::pipeline::TRIANGLE_FRAG_SPV);
+
+        assert!(
+            frag.contains(&RAY_QUERY_KHR),
+            "triangle.frag must still declare RayQueryKHR for this gate to be \
+             the reason RT is mandatory; got {frag:?}"
+        );
+        // `triangle.vert` has no ray query at all, only the buffer-address
+        // capability — which is why there is no partial-render fallback on an
+        // RT-less device: the whole main pass is illegal, not just the
+        // ray-traced half.
+        assert!(
+            vert.contains(&PHYSICAL_STORAGE_BUFFER_ADDRESSES),
+            "triangle.vert must still declare PhysicalStorageBufferAddresses; \
+             got {vert:?}"
+        );
+
+        // (b) Given (a), device selection must decline an RT-less device
+        // rather than record the flag and carry on. Pinned by source
+        // inspection: `is_device_suitable` needs a live `VkInstance` and a
+        // physical device, neither of which a unit test can conjure.
+        let source = include_str!("device.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]")
+            .expect("device.rs must retain its test module")];
+        let normalized: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            normalized.contains("if!ray_query_supported{returnOk(None);}"),
+            "is_device_suitable must reject a device lacking the RT extensions"
+        );
     }
 
     /// #1636 / #1478 — the GPU-timer gate must require BOTH `timestamp` and
