@@ -1392,11 +1392,13 @@ impl VulkanContext {
         let presentation = PresentationPipeline::new(
             &device,
             pipeline_cache,
-            swapchain_state.format.format,
-            &swapchain_state.image_views,
-            frame_upscaler.output_views(),
-            &health_handles,
-            frame_extents.output,
+            crate::vulkan::presentation::PresentationTargets {
+                swapchain_format: swapchain_state.format.format,
+                swapchain_views: &swapchain_state.image_views,
+                upscaled_views: frame_upscaler.output_views(),
+                health_buffers: &health_handles,
+                extent: frame_extents.output,
+            },
             pipelines.layout,
         )
         .context("create presentation pipeline")?;

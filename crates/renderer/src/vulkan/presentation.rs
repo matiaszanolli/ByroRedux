@@ -114,6 +114,30 @@ pub(crate) struct UiOverlayDraw {
     pub instance_index: u32,
 }
 
+/// The per-swapchain inputs [`PresentationPipeline::new`] binds: the
+/// swapchain it presents to, the upscaler output it samples, the
+/// image-health counters it writes, and the extent all three share.
+///
+/// #3525 — bundled because passing them separately put `new` at 8
+/// parameters, one past `clippy::too_many_arguments`, and the workspace CI
+/// gate is `cargo clippy --workspace -- -D warnings`. The grouping is not
+/// arbitrary: every field here is invalidated together by a swapchain
+/// recreate, which is exactly when the two call sites (`context::init` and
+/// `context::resize`) rebuild this pipeline. Mirrors the `Dx10TexInfo`
+/// precedent in `crates/bsa/src/ba2.rs`.
+#[derive(Debug, Clone, Copy)]
+pub struct PresentationTargets<'a> {
+    pub swapchain_format: vk::Format,
+    pub swapchain_views: &'a [vk::ImageView],
+    /// Per-frame-in-flight upscaler outputs — the pipeline's sampled source.
+    pub upscaled_views: &'a [vk::ImageView],
+    /// Per-frame-in-flight image-health counter buffers (EX-05 / #2736).
+    /// Handles only; the allocations are owned by `VulkanContext` because
+    /// they must survive the swapchain recreate that rebuilds this pipeline.
+    pub health_buffers: &'a [vk::Buffer],
+    pub extent: vk::Extent2D,
+}
+
 pub struct PresentationPipeline {
     render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
@@ -145,13 +169,16 @@ impl PresentationPipeline {
     pub fn new(
         device: &ash::Device,
         pipeline_cache: vk::PipelineCache,
-        swapchain_format: vk::Format,
-        swapchain_views: &[vk::ImageView],
-        upscaled_views: &[vk::ImageView],
-        health_buffers: &[vk::Buffer],
-        extent: vk::Extent2D,
+        targets: PresentationTargets<'_>,
         overlay_pipeline_layout: vk::PipelineLayout,
     ) -> Result<Self> {
+        let PresentationTargets {
+            swapchain_format,
+            swapchain_views,
+            upscaled_views,
+            health_buffers,
+            extent,
+        } = targets;
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         let mut pipeline = Self {
@@ -707,11 +734,13 @@ impl PresentationPipeline {
         *self = Self::new(
             device,
             pipeline_cache,
-            swapchain_format,
-            swapchain_views,
-            upscaled_views,
-            &health_buffers,
-            extent,
+            PresentationTargets {
+                swapchain_format,
+                swapchain_views,
+                upscaled_views,
+                health_buffers: &health_buffers,
+                extent,
+            },
             overlay_pipeline_layout,
         )?;
         Ok(())

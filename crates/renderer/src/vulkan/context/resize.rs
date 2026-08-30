@@ -1040,11 +1040,13 @@ impl VulkanContext {
             super::super::presentation::PresentationPipeline::new(
                 &self.device,
                 self.pipeline_cache,
-                self.swapchain_state.format.format,
-                &self.swapchain_state.image_views,
-                &upscaled_views,
-                &health_handles,
-                self.frame_extents.output,
+                super::super::presentation::PresentationTargets {
+                    swapchain_format: self.swapchain_state.format.format,
+                    swapchain_views: &self.swapchain_state.image_views,
+                    upscaled_views: &upscaled_views,
+                    health_buffers: &health_handles,
+                    extent: self.frame_extents.output,
+                },
                 self.pipeline_layout,
             )
             .context("recreate presentation pipeline")?,

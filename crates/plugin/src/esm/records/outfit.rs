@@ -57,27 +57,30 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
-        match &sub.sub_type {
-            // #3356 — `INAM` is ONE sub-record holding an ARRAY of 4-byte
-            // FormIDs (xEdit `wbDefinitionsTES5.pas`: `wbArray(INAM,
-            // 'Items', wbFormIDCk('Item', [ARMO, LVLI]))`), not one FormID
-            // per sub-record. Reading a single `u32` consumed the first
-            // entry and discarded bytes 4..N, so every outfit yielded
-            // exactly one item however many it authored — 765 of 1,246
-            // Skyrim.esm items (61%) dropped, 387 of 481 outfits truncated.
-            // The old `len() >= 4` guard made it invisible: a 20-byte
-            // 5-item array passes it and contributes one item.
-            //
-            // `chunks_exact(4)` keeps the existing "short / trailing bytes
-            // are dropped" contract that `malformed_inam_short_payload_is_dropped`
-            // pins.
-            b"INAM" => {
-                for chunk in sub.data.chunks_exact(4) {
-                    let id = u32::from_le_bytes(chunk.try_into().expect("chunks_exact(4)"));
-                    out.items.push(remap_fid(id, remap));
-                }
+        // #3356 — `INAM` is ONE sub-record holding an ARRAY of 4-byte
+        // FormIDs (xEdit `wbDefinitionsTES5.pas`: `wbArray(INAM,
+        // 'Items', wbFormIDCk('Item', [ARMO, LVLI]))`), not one FormID
+        // per sub-record. Reading a single `u32` consumed the first
+        // entry and discarded bytes 4..N, so every outfit yielded
+        // exactly one item however many it authored — 765 of 1,246
+        // Skyrim.esm items (61%) dropped, 387 of 481 outfits truncated.
+        // The old `len() >= 4` guard made it invisible: a 20-byte
+        // 5-item array passes it and contributes one item.
+        //
+        // `chunks_exact(4)` keeps the existing "short / trailing bytes
+        // are dropped" contract that `malformed_inam_short_payload_is_dropped`
+        // pins.
+        //
+        // OTFT authors exactly one interesting sub-record, so this is an
+        // `if` rather than a `match` (#3525 — a single-arm `match` plus
+        // `_ => {}` is `clippy::single_match`, and the workspace gate is
+        // `-D warnings`). A second sub-record of interest turns it back
+        // into a `match`.
+        if &sub.sub_type == b"INAM" {
+            for chunk in sub.data.chunks_exact(4) {
+                let id = u32::from_le_bytes(chunk.try_into().expect("chunks_exact(4)"));
+                out.items.push(remap_fid(id, remap));
             }
-            _ => {}
         }
     }
     out

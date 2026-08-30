@@ -208,7 +208,13 @@ pub(crate) fn stream_object_lod_blocks(
             break;
         }
         attempted += 1;
-        match spawn_object_lod_quad(world, ctx, tex_provider, wctx, scheme, level, qx, qy) {
+        let quad = ObjectLodQuadKey {
+            scheme,
+            level,
+            qx,
+            qy,
+        };
+        match spawn_object_lod_quad(world, ctx, tex_provider, wctx, quad) {
             Some(blk) => {
                 if !blk.entities.is_empty() {
                     spawned += 1;
@@ -241,6 +247,24 @@ pub(crate) fn stream_object_lod_blocks(
     complete
 }
 
+/// Which distant-object-LOD quad to load: the scheme plus the
+/// `(level, qx, qy)` address on the worldspace-relative quad grid.
+///
+/// #3525 — bundled into one value because passing the four separately put
+/// [`spawn_object_lod_quad`] at 8 parameters, one past
+/// `clippy::too_many_arguments`, and the workspace CI gate is
+/// `cargo clippy --workspace -- -D warnings`. They already travel together
+/// everywhere: the residency map is keyed `(level, qx, qy)` and `scheme` is
+/// fixed per worldspace, so this is the address the two path builders
+/// (`object_lod_archive_path` / `object_lod_atlas_path`) both consume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObjectLodQuadKey {
+    scheme: ObjectLodScheme,
+    level: i32,
+    qx: i32,
+    qy: i32,
+}
+
 /// Resolve + import + spawn one quad's `.bto`. Returns `None` when the quad
 /// has no baked `.bto` (the common case), `Some(empty)`-equivalent is handled
 /// by the caller. Each imported sub-mesh becomes an [`IsLodTerrain`] entity
@@ -263,11 +287,14 @@ fn spawn_object_lod_quad(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
-    scheme: ObjectLodScheme,
-    level: i32,
-    qx: i32,
-    qy: i32,
+    quad: ObjectLodQuadKey,
 ) -> Option<ObjectLodBlock> {
+    let ObjectLodQuadKey {
+        scheme,
+        level,
+        qx,
+        qy,
+    } = quad;
     let path = object_lod_archive_path(scheme, &wctx.worldspace_key, level, qx, qy);
     let bytes = tex_provider.extract_mesh(&path)?;
     let scene = match byroredux_nif::parse_nif(&bytes) {

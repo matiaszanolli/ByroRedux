@@ -253,23 +253,6 @@ pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -
     None
 }
 
-/// Parse a SpeedTree `.spt` byte slice and convert it to the same
-/// [`CachedNifImport`] shape every other model goes through. Lets the
-/// cache + spawn paths consume `.spt` REFRs without a parallel
-/// dispatch tree.
-///
-/// Today (Phase 1.4 + 1.5) the SPT importer ships the **placeholder
-/// fallback** — a single yaw-billboard quad textured with the leaf
-/// icon resolved from the matching `TreeRecord` (TREE.ICON wins,
-/// `.spt` tag 4003 falls back). When the geometry-tail decoder lands
-/// later, `byroredux_spt::import_spt_scene` will start producing
-/// real branch / frond meshes + per-leaf billboards without any
-/// signature change here.
-///
-/// Parse failures degrade to the placeholder (with a warning) so a malformed
-/// `.spt` never removes its REFR from the world; the cache still prevents
-/// subsequent placements from re-attempting the doomed parse.
-
 /// Candidate directories a bare `TREE.ICON` filename resolves against, in
 /// probe order.
 ///
@@ -352,6 +335,22 @@ pub(super) fn resolve_tree_icon_path<'a>(
     Cow::Borrowed(icon)
 }
 
+/// Parse a SpeedTree `.spt` byte slice and convert it to the same
+/// [`CachedNifImport`] shape every other model goes through. Lets the
+/// cache + spawn paths consume `.spt` REFRs without a parallel
+/// dispatch tree.
+///
+/// Today (Phase 1.4 + 1.5) the SPT importer ships the **placeholder
+/// fallback** — a single yaw-billboard quad textured with the leaf
+/// icon resolved from the matching `TreeRecord` (TREE.ICON wins,
+/// `.spt` tag 4003 falls back). When the geometry-tail decoder lands
+/// later, `byroredux_spt::import_spt_scene` will start producing
+/// real branch / frond meshes + per-leaf billboards without any
+/// signature change here.
+///
+/// Parse failures degrade to the placeholder (with a warning) so a malformed
+/// `.spt` never removes its REFR from the world; the cache still prevents
+/// subsequent placements from re-attempting the doomed parse.
 pub(super) fn parse_and_import_spt(
     spt_data: &[u8],
     label: &str,
