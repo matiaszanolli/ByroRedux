@@ -477,13 +477,36 @@ impl VulkanContext {
                             // dependency this chain's own, and purely additive:
                             // a wider dst stage mask can only add execution
                             // dependencies, never remove one.
+                            //
+                            // #3582 — `COMPUTE_SHADER` joins the dst mask for
+                            // the same reason #2403 added `FRAGMENT_SHADER`:
+                            // a new consumer appeared. `caustic_splat.comp`
+                            // dereferences `hit.skinnedVertexAddress` through
+                            // its own inline `SkinnedVertexRef` block (added
+                            // by `9bf7d024`) rather than through
+                            // `include/ray_hit.glsl`, so an include-graph
+                            // trace still comes back clean while the deref
+                            // exists — which is how the 2026-08-14 audit
+                            // cleared this exact missing bit one day before
+                            // it became wrong. Execution order was already
+                            // established by chaining (skin compute ->
+                            // AS_BUILD here, AS_BUILD -> COMPUTE in
+                            // `draw.rs`); what was missing was purely memory
+                            // VISIBILITY to COMPUTE/SHADER_READ. Every
+                            // intervening barrier was walked in command
+                            // order: none covers `COMPUTE`/`SHADER_WRITE` ->
+                            // `COMPUTE`/`SHADER_READ`. The one that would
+                            // (`post_passes.rs`'s volumetrics barrier) runs
+                            // AFTER the caustic pass and is gated behind the
+                            // volumetrics triple.
                             memory_barrier(
                                 &self.device,
                                 cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
                                 vk::AccessFlags::SHADER_WRITE,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
-                                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                                    | vk::PipelineStageFlags::COMPUTE_SHADER,
                                 vk::AccessFlags::SHADER_READ,
                             );
                             // #911 — first-sight BLAS BUILDs piggyback
@@ -826,6 +849,82 @@ impl VulkanContext {
         // `skin.coverage`; distinct from the GPU brackets (#1194), which
         // time the device work this function only records.
         self.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+    }
+}
+
+// #3582 / CONC-D2-2026-08-30-01 — the skin-output publish barrier's dst
+// stage mask must cover every stage that reads the skinned-vertex SSBO.
+//
+// The mask has been wrong twice for the same reason: a new consumer was
+// added and nobody re-audited the one barrier that publishes to all of them.
+// #2403 added `FRAGMENT_SHADER` when `include/ray_hit.glsl` started
+// dereferencing `GpuInstance.skinnedVertexAddress`; `9bf7d024` then gave
+// `caustic_splat.comp` its own INLINE `SkinnedVertexRef` deref, which an
+// include-graph trace structurally cannot see — the 2026-08-14 audit walked
+// the include graph, found nothing, and explicitly cleared the missing
+// `COMPUTE_SHADER` bit one day before it became wrong.
+//
+// So pin the relationship itself rather than the mask: if any compute shader
+// other than the producer touches `skinnedVertexAddress`, the dst mask must
+// name `COMPUTE_SHADER`.
+#[cfg(test)]
+mod skin_publish_barrier_consumer_tests {
+    #[test]
+    fn every_compute_consumer_of_the_skinned_vertex_ssbo_is_in_the_publish_dst_mask() {
+        /// The producer — it writes the buffer, it does not read it.
+        const PRODUCER: &str = "skin_vertices.comp";
+
+        let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let mut compute_consumers: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&shader_dir).expect("shaders/ must be readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("comp") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("shader file name")
+                .to_owned();
+            if name == PRODUCER {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("readable shader source");
+            // An inline `buffer_reference` deref is what the include-graph
+            // trace misses, so match on the address field itself — the one
+            // token any consumer must name, however it reaches the data.
+            if source.contains("skinnedVertexAddress") {
+                compute_consumers.push(name);
+            }
+        }
+
+        if compute_consumers.is_empty() {
+            // Nothing to require. If a future refactor removes the last
+            // compute consumer the barrier may legitimately drop the bit.
+            return;
+        }
+
+        /// The publish barrier's dst half, whitespace-stripped. Written out
+        /// rather than assembled so the expectation reads as the code does.
+        const EXPECTED_DST_MASK: &str = concat!(
+            "vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR",
+            "|vk::PipelineStageFlags::FRAGMENT_SHADER",
+            "|vk::PipelineStageFlags::COMPUTE_SHADER,",
+            "vk::AccessFlags::SHADER_READ,",
+        );
+
+        let src = include_str!("skinned_blas_refit.rs");
+        let production = &src[..src
+            .find("#[cfg(test)]")
+            .expect("skinned_blas_refit.rs must retain its test modules")];
+        let normalized: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            normalized.contains(EXPECTED_DST_MASK),
+            "{compute_consumers:?} read the skinned-vertex SSBO from COMPUTE, so \
+             the skin-output publish barrier's dst stage mask must include \
+             COMPUTE_SHADER alongside ACCELERATION_STRUCTURE_BUILD_KHR and \
+             FRAGMENT_SHADER (#3582)"
+        );
     }
 }
 
