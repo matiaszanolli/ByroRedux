@@ -76,6 +76,7 @@ fn empty_cell(editor_id: &str, refr_form_ids: &[u32]) -> CellData {
         lighting_template_form: None,
         ownership: None,
         navmeshes: Vec::new(),
+        pathgrids: Vec::new(),
         deleted_refs: Vec::new(),
     }
 }

@@ -497,9 +497,17 @@ mod tests {
             extract_quest_dialogue_scene_tree(r, end, &mut quests, &mut dialogues, &mut scenes)
         });
         check("parse_refr_group", &any, &mut |r, end| {
-            let (mut refs, mut land, mut navmeshes, mut deleted) =
-                (Vec::new(), None, Vec::new(), Vec::new());
-            parse_refr_group(r, end, &mut refs, &mut land, &mut navmeshes, &mut deleted)
+            let (mut refs, mut land, mut navmeshes, mut pathgrids, mut deleted) =
+                (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
+            parse_refr_group(
+                r,
+                end,
+                &mut refs,
+                &mut land,
+                &mut navmeshes,
+                &mut pathgrids,
+                &mut deleted,
+            )
         });
         check("parse_modl_group", &any, &mut |r, end| {
             let mut statics = HashMap::new();

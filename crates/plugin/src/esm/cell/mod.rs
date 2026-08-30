@@ -327,6 +327,15 @@ pub struct CellData {
     /// `parse_esm`. Empty when the cell has no navmesh children, which
     /// is the common case for tiny interior cells. See #1272.
     pub navmeshes: Vec<crate::esm::records::NavmRecord>,
+    /// `PGRD` pathgrids attached to this cell (#3598).
+    ///
+    /// Oblivion's ONLY navigation format — it authors zero `NAVI` and zero
+    /// `NAVM`, so before this field every one of its 8,228 pathgrids was
+    /// dropped and the title had no navigation data at all while every
+    /// other supported game did. A cell carries at most one in vanilla, but
+    /// this is a `Vec` to match `navmeshes` and to tolerate a plugin that
+    /// authors more.
+    pub pathgrids: Vec<crate::esm::records::PathGridRecord>,
     /// REFR/ACHR/ACRE FormIDs this specific plugin's own parse marked
     /// Deleted (the tombstone flag, `RECORD_FLAG_DELETED`) within this
     /// cell (EX-09/17 item 7, #2370). Deliberately transient, unlike
