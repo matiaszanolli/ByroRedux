@@ -44,15 +44,18 @@ no longer spell out archives per game.
 ## Checked-in baselines (verified — `ls .claude/audit-baselines/runtime/`)
 
 Five runtime baselines are committed today (the original fnv/fo4 pair plus the
-fo3/oblivion/skyrim_se trio created in the 2026-06-14 `--game all` sweep):
+fo3/oblivion/skyrim_se trio created in the 2026-06-14 `--game all` sweep).
+**Every figure below moved between 2026-08-09 and 2026-08-28** — read the TSVs,
+not this table, before calling a delta a regression; the table is oriented at
+the last sync (2026-08-29) and will drift again:
 
 | Baseline TSV | Cell | Notes |
 |--------------|------|-------|
-| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. ~9 250 entities, post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
-| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. Regenerated 2026-06-19 (RT-4 / #1621) post the efd3c41b precombine alpha-blend wall fix; entities_total drifted 9167→11279 intentionally. Profile `sample_cells` lists this EDID. |
-| `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Created 2026-06-14. ~3 311 entities, zero fallback textures. |
-| `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | Created 2026-06-14. ~701 entities, cleanest path (zero fallback textures / parse fails). |
-| `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Created 2026-06-14. ~6 044 entities; `mesh_cache_failed_count=11` includes 2 corrupted control-char paths (see AUDIT_RUNTIME_2026-06-14 RT-3). |
+| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. **7 174 entities** as of the 2026-08-27 re-baseline (`104189a5`) — down 22.6% from ~9 250, traced to an armor fix, i.e. a deliberate correction, not a loss. `mesh_cache_failed_count=0`. Post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
+| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. **18 256 entities** as of the 2026-08-22 regen (was 9 167 → 11 279 at the 2026-06-19 RT-4 / #1621 regen). `mesh_cache_failed_count=0`. Profile `sample_cells` lists this EDID. |
+| `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Created 2026-06-14; re-baselined 2026-08-28 (#3407 corrected the draw count). **3 493 entities**, `mesh_cache_failed_count=3`. |
+| `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | Created 2026-06-14; refreshed 2026-08-26 (#3288, which held the other three). **705 entities**, `mesh_cache_failed_count=0` — still the cleanest path. |
+| `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Created 2026-06-14, last regenerated 2026-08-09. **8 126 entities** (was ~6 044); `mesh_cache_failed_count=9` (was 11), still including the 2 corrupted control-char paths (see AUDIT_RUNTIME_2026-06-14 RT-3). |
 
 > The `.claude/audit-baselines/sf-esm/` dir holds Starfield **ESM resolve-rate**
 > baselines for the `--sf-smoke` harness (`byroredux/src/sf_smoke.rs`), NOT this

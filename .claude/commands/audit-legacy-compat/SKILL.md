@@ -181,8 +181,26 @@ table, §5 LOD, §7 rollout status).
   (`byroredux/src/cell_loader/placement_lod.rs`, #1726) — do not re-flag it as
   unimplemented. It is gated to `GameKind::Oblivion` (`placement_lod_supported`)
   because FO3/FNV ship **zero** `distantlod\*.lod` files in any vanilla archive
-  (FO3-D4-01 / #2086) — "FO3/FNV distant-object LOD is missing" is a real gap but
-  not a `placement_lod.rs` gap. `docs/engine/exal.md` §5 is the coverage
+  (FO3-D4-01 / #2086) — that part is still true, and it is not a
+  `placement_lod.rs` gap. **But "FO3/FNV distant-object LOD is missing" is NO
+  LONGER a gap (#3321, `e23a9908`, 2026-08-27) — do not re-file it.** #2086
+  probed only for `distantlod\` and `_far.nif`, which are *Oblivion's* scheme,
+  and concluded from their absence that FO3/FNV had no scheme at all; `exal.md`
+  then encoded a guess ("Bethesda folded landmark-object LOD into the
+  terrain-LOD block system") as recorded design rationale. Re-derived with
+  `crates/bsa/examples/probe_lod_corpus.rs`, which counts all three families
+  side by side: FNV ships **2 663** `landscape\lod` entries, 0 `_far.nif`, 0
+  `distantlod\`, and **355 `blocks\` level-4 object-LOD meshes across 8
+  worldspaces** (295 in `wastelandnv` alone — the issue's unconfirmed figure was
+  exact); FO3 ships 2 232 and `blocks\` across 15 worldspaces at level 4 and 8.
+  Two further corrections: the "2 `_far.nif`" `exal.md` attributed to FNV are
+  **FO3's** (FNV ships zero), and *washmontop* / *dcworld03* / *dcworld09* are not
+  "landmark sub-folders" inside the terrain tree — they are ordinary worldspace
+  folders each with a `blocks\` sibling. `object_lod.rs` now routes
+  `GameKind::Fallout3NV` through `ObjectLodScheme::FalloutLegacyBlocks`. The
+  general lesson worth carrying: a probe that searches for *one* game's asset
+  convention and finds nothing has established absence of that convention, not
+  absence of the feature. `docs/engine/exal.md` §5 is the coverage
   source of truth for what remains open here. WRLD `NAM3`/`NAM4` LOD-water are
   **parsed** (#1849, onto `WorldspaceRecord::lod_water_form` /
   `lod_water_height`) **and consumed** (#2449 / EXAL-01). WRLD `OFST` is

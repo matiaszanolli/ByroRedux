@@ -47,7 +47,29 @@ and MedTekResearch01 (FO4, CSG-precombine-heavy).
 
 The Session 46 perf batch (#1371–#1379) and Session 47 precision work
 (#1489–#1498) **already landed**. Treat their invariants as **regression
-guards to verify still hold**, not as findings to re-propose. A finding that
+guards to verify still hold**, not as findings to re-propose.
+
+**So did the Session 75/76 batch (2026-08-26→29)** — same treatment:
+- **Global geometry SSBO rebuild is chunked and resumable across frames**
+  (#3298 / #3372 / #3443, `crates/renderer/src/mesh.rs`), with
+  `take_geometry_rebuild_ns` reporting its cost (#3467) and
+  `geometry_rebuild_needs_idle` deciding when a chunk must serialize instead of
+  duplicating buffers. See `/audit-renderer` Dim 5 for the full contract. A
+  reinstated single-frame rebuild is the regression.
+- **Distant-LOD archive-presence probe is memoised** (#3385) — a per-placement
+  archive probe was the cost.
+- **Batched drains / batched `CellRoot` stamp / `touch_keys` allocation removal**
+  (#3386 / #3388 / #3387), and the persistent-CELL stamp cursor (#3379) plus the
+  skip of drain+rebuild when crossing identity is unchanged (#2369).
+- **The `FxHash` conversion is finished** (#3051 closed the cluster; #3045 covered
+  the skinning scratches) — the hot-path rule in `_audit-common.md` now has no
+  known stragglers, so a `std::collections::HashMap` on a per-frame per-entity
+  keyspace is a fresh regression, not leftover debt.
+- **`MorphSlot` eviction drains outside the `skin_compute` + `accel_manager`
+  guard** (#3374).
+- **`PackedStorage::clear_erased` releases capacity** and
+  `SparseSetStorage::remove_entities_erased` early-outs (#2395/#2397) — both on
+  the cell-unload path, so they pay per streaming cycle. A finding that
 re-proposes a landed fix is noise; a finding that the guard has eroded is real.
 Each dimension lists its guards inline — confirm the cited symbol is present
 before reporting anything in that area.

@@ -27,7 +27,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 | NIF format      | v20.2.0.7 (BSVER 34) — same as FNV                                          |
 | BSA format      | v104 ✓                                                                       |
 | ESM parser      | Shared with FNV (`crates/plugin/src/esm/`); no FO3-specific arm             |
-| NIF parse rate  | 100.00% (10 989) — ROADMAP compat matrix                                    |
+| NIF parse rate  | 100.00% (17 172 across 6 archives — base + 5 DLC; re-measured 2026-08-28 under #3041, which moved the gate off the single `Fallout - Meshes.bsa` onto `open_all_mesh_archives`. The old 10 989 figure was one archive's worth) |
 | ESM records     | 44 657 = 37 459 structured + 7 198 NAVMs (re-verified 2026-05-26)           |
 | Interior        | ✓ — Megaton, **929 REFRs** (parse-side baseline; NOT the stale 1609 figure) |
 | Exterior        | Wired (Capital Wasteland WRLD); **fresh GPU bench pending (R6a-stale-15)**   |
@@ -136,7 +136,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Subagent**: `general-purpose`
 **Entry points**: `crates/bsa/src/archive/`, `crates/nif/examples/nif_stats.rs`, `crates/nif/tests/parse_real_nifs.rs`
 **Checklist**:
-- `Fallout - Meshes.bsa` lists + extracts cleanly; current NIF parse rate **100% / 10 989** (`nif_stats`). `Fallout - Textures.bsa` DDS extraction yields valid BC1/BC3/BC5 headers. Folder-hash collisions across FO3's subdirectories. Format is identical to FNV — divergence here would be a v104 regression, not a format gap.
+- `Fallout - Meshes.bsa` lists + extracts cleanly; current NIF parse rate **100% / 17 172 across all 6 mesh-bearing archives** (base + 5 DLC — the gate walks `open_all_mesh_archives` since #3041, per-archive attributed; `nif_stats` for one archive at a time). `Fallout - Textures.bsa` DDS extraction yields valid BC1/BC3/BC5 headers. Folder-hash collisions across FO3's subdirectories. Format is identical to FNV — divergence here would be a v104 regression, not a format gap.
 - Pick **Megaton** interior (validated baseline — should match 929 REFRs / current entity count; capture `/cmd stats` and compare to feature-matrix, NOT the stale 1609/199-tex/42-FPS numbers).
 - Load a creature mesh (e.g. deathclaw): verify NiSkinData skinning extraction (`crates/nif/src/import/mesh/skin.rs`).
 - Pick a UI/menu `BSShaderNoLightingProperty` element: verify the fullbright (non-Phong) route.

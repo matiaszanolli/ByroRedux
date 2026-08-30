@@ -32,7 +32,7 @@ Still open (legitimate forward scope): `_precomb.nif` collision, `.uvd` occlusio
 | BA2 format   | Exhaustive `match` over `{1, 2, 3, 7, 8}` in `crates/bsa/src/ba2.rs` (consts `BA2_V_FO4=1`, `BA2_V_FO4_NEXT_GEN_TEX=7`, `BA2_V_FO4_NEXT_GEN_MESH=8`); GNRL + DX10 |
 | ESM records  | SCOL / MOVS / PKIN / TXST in `crates/plugin/src/esm/records/`; SCOL/PKIN expand in `byroredux/src/cell_loader/refr.rs` |
 | Precombines  | M49 CSG pipeline landed — `crates/bsa/src/csg.rs` → `crates/nif/src/import/precombine.rs` → `byroredux/src/cell_loader/precombined.rs` |
-| Parse rate   | 100.00% clean on both vanilla mesh archives per #1457 (`parse_rate_fo4_all_meshes`, 2026-06-14); the FaceGen truncation tail the 2026-06-02 ROADMAP snapshot recorded is gone. ROADMAP compat-matrix now also reads 100.00% (159 866/159 866, #1593) — still re-run the harness before citing a parse rate. |
+| Parse rate   | 100.00% clean across **all 8 mesh-bearing archives** — the two base plus the six DLC `Main.ba2`s — **235 082 / 235 082**, re-measured 2026-08-29 under #3466, which took the gate from 166 568 (70.8% of the shipped corpus). The older 159 866 / #1593 / "both vanilla mesh archives" framings are all pre-#3466 and understate coverage. `DLCUltraHighResolution` is textures-only and stays out. Still re-run the harness before citing a parse rate. |
 | Rendering    | Interior cells render end-to-end (MedTekResearch01 bench, ~21k entities). BGSM/BGEM merged; precombined entities spawned interior + exterior. |
 | Reference    | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/` |
 | Bench        | `--cell MedTekResearch01` (see ROADMAP for the full `--bsa`/`--textures-ba2`/`--materials-ba2` invocation) |
@@ -159,7 +159,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 **Subagent**: `general-purpose`
 **Entry points**: `crates/nif/tests/parse_real_nifs.rs` (`parse_rate_fallout_4`, `parse_rate_fo4_all_meshes`), `crates/nif/examples/nif_stats.rs`, `ROADMAP.md`, `docs/feature-matrix.md`.
 **Checklist**:
-- Re-run `BYROREDUX_FO4_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored fo4` (`parse_rate_fo4_all_meshes` covers both `Fallout4 - Meshes.ba2` + `Fallout4 - MeshesExtra.ba2`) — both archives parse 100.00% clean per #1457. Report the measured number; do not cite the stale ROADMAP figure without re-running.
+- Re-run `BYROREDUX_FO4_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored fo4` (`parse_rate_fo4_all_meshes` covers all 8 mesh-bearing archives since #3466 — the two base plus the six DLC `Main.ba2`s — not just `Fallout4 - Meshes.ba2` + `MeshesExtra.ba2`) — all parse 100.00% clean, 235 082 NIFs. Report the measured number; do not cite the stale ROADMAP figure without re-running.
 - Trace `import_nif_scene` on: a settlement workshop item, a creature (deathclaw / super mutant), a power-armor frame (heavy skinning + BSConnectPoint), a modular weapon (receiver/barrel/stock via BSConnectPoint). For each: mesh count, material_path (BGSM ref or null), skinned vs rigid, connect-point extra-data presence.
 - **Forward scope** (do NOT re-file as blockers): `_precomb.nif` collision, `.uvd` occlusion volumes, MOVS physics runtime, FaceGen NIF truncation tail, deeper cell coverage (LIGH power state / CONT leveled items / NPC_ face morph), `BSBehaviorGraphExtraData` parse-only (verify nothing pretends to drive it). The BGSM parser, SCOL/PKIN expansion, and the M49 CSG pipeline are **all shipped** — never list them as pending.
 **Output**: `/tmp/audit/fo4/dim_9.md`

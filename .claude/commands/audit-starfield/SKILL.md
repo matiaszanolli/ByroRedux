@@ -141,11 +141,54 @@ drops every DLC/Creation material database. Walk the parse path: header (`parse_
 `peek_magic` correctly distinguishes a CDB from a loose BGSM. Correctness, not
 just "it parses": does the per-`.mat` material resolution forward roughness /
 metalness / texture-slot values into the `ImportedMesh`, or do `.mat`-resolved
-materials currently reach the Disney lobe with NIF defaults? (Per the ROADMAP
-forward-blocker chain, per-field CDB extraction is the #1289 Phase 2 follow-up —
-confirm current state and scope the gap, don't re-report it as new.) Count
-unique CDB material handles vs loose BGSM/BGEM references in a Starfield archive
-to confirm CDB supersedes loose-file BGSM for vanilla content.
+materials currently reach the Disney lobe with NIF defaults? (Per-field CDB
+extraction is the #1289/#3398 Phase 2 follow-up — confirm current state and
+scope the gap, don't re-report it as new.)
+**CDB Phase 2 is UNBLOCKED as of 2026-08-29 (#3398, `c5cd4e6f`) — audit text
+calling the lookup key or the field vocabulary "unknown" is stale.** Measured
+against the vanilla 105 MB CDB and 3 085 real NIF-named material paths, and
+recorded in `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md`:
+  * The key exists and is computable. `BSMaterial::Internal::CompiledDB.HashMap`
+    is a 48 749-entry `BSResource::ID → u64` index; `DBFileIndex::ObjectInfo`
+    carries the same `BSResource::ID` as *PersistentID*, joining path → DBID →
+    components → edge graph.
+  * The hash is **reflected CRC-32 (poly `0xEDB88320`), init 0, no final XOR**,
+    over the lowercased backslash path, hashed as **directory and stem
+    separately**. One of nine tried parameterisations matched, at 3 032/3 084
+    (98.3%); the reversed column assignment matches 0/3 084.
+  * `BSResource::ID`'s decoded field labels are **rotated** relative to their
+    contents: `.Dir` holds the stem hash, `.Ext` holds the directory hash, and
+    `.File` is the constant `0x0074616d` — the literal `"mat"` extension. The
+    rotation is NOT explained by the `read_user_class` offset defect below
+    (`BSResource::ID` declares ascending offsets); it stays unresolved and does
+    not affect the empirical column semantics.
+  * 61 `BSMaterial::*` classes are reached, ~20 relevant, already tabulated
+    against their `ImportedMaterial` targets with real field names and value
+    shapes. Enum fields are **strings** (`"Deferred"`, `"AlphaBlend"`,
+    `"MATERIAL_LAYER_0"`) — each needs an explicit arm plus a documented
+    default. The old "schema and counts only" framing was wrong.
+  * **The real Phase-2 blocker is memory, not vocabulary**: `parse` peaks at
+    **9.19 GB on a 105 MB CDB**, and `ParseLimits` is a pre-walk reject, not a
+    streaming budget. An indexed reader is the project, and there are **13
+    CDBs** to index, not one.
+  * **Live defect, still open (#3398, `93095413`)**: `read_user_class` reads
+    field values in *declaration* order and never consults `Field::offset`. For
+    96 of 97 CDB classes the two orders agree; *XMCOLOR* is the exception —
+    declared `r,g,b,a` at offsets 2,1,0,3 — so its channels bind to the wrong
+    values today. The declaration-order-vs-offset-order check lives in the spike
+    example.
+Count unique CDB material handles vs loose BGSM/BGEM references in a Starfield
+archive — but do NOT conclude "CDB supersedes loose-file BGSM" as a rule: the
+key's extension column is the literal constant `"mat"`, so a lookup ignores the
+reference's own suffix, and 17 of 57 `.bgsm`/`.bgem`-named paths in the sampled
+corpus resolve to real CDB materials. Neither "always CDB" nor "always BGSM" is
+correct — #3230 (`e3dd71e8`) made it **try-then-fall-through**: `.bgsm`/`.bgem`
+fall through to `resolve_bgsm` / `resolve_bgem` first and reach the CDB PBR flip
+(`apply_cdb_pbr_fallback`, `byroredux/src/asset_provider/material.rs`) only on a
+resolver miss, while `.mat` keeps its early return (Starfield ships no `.mat`
+sidecar files at all, so there is no resolver for that path to miss). A re-added
+early `PresenceOnly` return above the resolvers is the regression — it discarded
+every authored texture role, `glass_enabled` flag and PBR scalar.
 **Output**: `/tmp/audit/starfield/dim_3.md`
 
 ### Dimension 4: Starfield ESM Resolve-Rate Baseline
@@ -317,8 +360,11 @@ the classification feeding it happens at the single `translate_material` boundar
      shader flag arrays (anything derivable empirically from observed hashes).
    - **Remaining-Work Chain** (per `starfield-esm-roadmap.md` — Phases 0+1 done,
      2-4 invalidated by the 99.9%-parity measurement) — in order: per-field CDB
-     extraction (#1289 Phase 2 follow-up — `.mat`-resolved materials currently
-     reach the Disney lobe with NIF defaults), exterior worldspace tiles,
+     extraction (#1289/#3398 Phase 2 follow-up — `.mat`-resolved materials
+     currently reach the Disney lobe with NIF defaults; the lookup key and field
+     vocabulary are **solved** as of 2026-08-29, so what is left is the indexed
+     reader that avoids the 9.19 GB parse peak, plus the *XMCOLOR* field-offset
+     fix), exterior worldspace tiles,
      space-cell / planet / GBFM records, and the #746/#747 NIF truncation tail.
      Do NOT frame this as a "BGSM parser first / ESM very far" chain — both have
      shipped.

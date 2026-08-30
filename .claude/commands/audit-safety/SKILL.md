@@ -15,19 +15,23 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 
 ## Scale of the surface
 
-`unsafe` is concentrated, not scattered: ~760 occurrences live in
-`crates/renderer/src` (ash FFI + gpu-allocator), then a long tail —
-~11 each in `crates/nif` and `crates/fsr3-sys` (the vendored FSR 3.1 FFI,
-Dimension 1), ~6 in `crates/core`, 2 in `byroredux`, and one each in
-`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`, `crates/ui`, and
-`crates/pex` (the M47.2 decompiler — its single `unsafe` is a guarded
-`transmute` in `opcode.rs`, see Dimension 2). `crates/save` (M45),
-`crates/hkx` (M47.2, a deliberately safe packfile reader) and
-`crates/mod-runtime` (the sandbox host, Dimension 11) have no `unsafe` —
-for the last two that absence is itself the safety property, so verify it
-rather than skipping them.
+`unsafe` is concentrated, not scattered: **~830** occurrences live in
+`crates/renderer/src` (ash FFI + gpu-allocator; ~760 at the last count, so this
+mass grows) then a long tail — ~13 in `crates/nif` and ~11 in `crates/fsr3-sys`
+(the vendored FSR 3.1 FFI, Dimension 1), ~6 in `crates/core`, **1** in
+`byroredux` (`cell_loader/unload.rs`), and one each in `crates/plugin`,
+`crates/facegen`, `crates/cxx-bridge`, `crates/ui`, and `crates/pex` (the M47.2
+decompiler — its single `unsafe` is a guarded `transmute` in `opcode.rs`, see
+Dimension 2). `crates/save` (M45), `crates/hkx` (M47.2, a deliberately safe
+packfile reader), `crates/bsa` (its untrusted-input bounds in `safety.rs` are
+entirely safe code) and `crates/mod-runtime` (the sandbox host, Dimension 11)
+have **no** `unsafe` — for the last three that absence is itself the safety
+property, so verify it rather than skipping them.
 Counts drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather
-than trusting these figures. Renderer carries roughly nine `SAFETY` comments
+than trusting these figures, **but read the hits, don't just count them**: that
+recipe matches the substring inside identifiers too (it reports ~12 for
+`byroredux` on the strength of `serde_attr_declares_unsafe_default` alone), so
+a count that jumps without a matching `unsafe {` block is a false alarm. Renderer carries roughly nine `SAFETY` comments
 per ten `unsafe` tokens; the residual gap is where the unsafe-without-comment
 (MEDIUM) findings live. Budget your time accordingly — do not audit the
 nif/core/pex tail at the expense of the renderer FFI mass. The Dimension-4
@@ -118,7 +122,10 @@ guard below.
   in the discriminant sequence, or a refactor that drops the bound check, makes an
   out-of-range byte UB. Verify the guard and the contiguity (no skipped values in
   the enum) on any opcode-table change.
-- Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal.
+- **Archive/record decompression bounds (`crates/bsa/src/safety.rs`, 2026-08-28).** This module is the one place the untrusted-archive size ceilings live: `checked_entry_count` (`MAX_ENTRY_COUNT` = 10 M), `checked_chunk_size` / `checked_chunk_size_usize` (`MAX_CHUNK_BYTES` = 1 GiB), `checked_chunk_total` (`MAX_RECORD_TOTAL_BYTES` = 2 GiB) and `inflate_bounded` (#3410). Its ESM counterpart is `read_sub_records`' bound (#3399, `/audit-esm` Dim 1) — same shape, same "a short decode stays `Ok`" contract. A new archive reader that hands a file-controlled length to `Vec::with_capacity` or an unbounded `read_to_end`, rather than routing through these, is the regression; so is the two implementations diverging.
+- **The LZ4 `safe-decode` feature is load-bearing and pinned (#3392, `caa14cc5`).** The `catch_unwind` around `lz4_flex::decompress` was originally attributed to "a property of one pinned version" — wrong: the absence of panics is a property of the **`safe-decode` Cargo feature**. With it on, `decompress` is `vec![0; n]` plus a bounds-checked `SliceSink` under `forbid(unsafe_code)`, so a short hint is `Err(OutputTooSmall)` and the documented panic is structurally impossible. With it **off**, the same call writes through raw pointers with no capacity check and a short hint is a **heap overflow — UB no `catch_unwind` can intercept**. The feature was reachable only via `default` on an unpinned `lz4_flex = "0.11"`. It is now pinned explicitly, with `byroredux-bsa` its sole dependent, and the `catch_unwind` stays as defence-in-depth. Verify the pin survives any dependency bump; treat a `default-features = false` or an unpinned range here as HIGH, not a housekeeping nit.
+- **Byte-range `&str` slicing on archive-derived names is a panic, not a miss (#3391, HIGH).** `canonical_mesh_path` tested its `.mesh` suffix with a `&str` byte-range slice, which panics whenever the cut lands inside a multi-byte scalar. `mesh_name` arrives from `read_sized_string`, which falls back to `from_utf8_lossy`, so both valid non-ASCII (`"модель"` is 12 bytes; 12−5 is mid-char) and lossily-decoded invalid bytes reach it — and `extract_bs_geometry` runs on the main thread **outside every `catch_unwind` guard** under `panic = "unwind"`, so it aborted the process rather than missing a lookup. Vanilla content is ASCII-only; the exposure is mods, localized paths and corrupt archives. Sweep for the pattern generally: any `&s[a..b]` on a name that came off disk must be byte-wise (`as_bytes()`), the technique `has_head` and `normalize_mesh_path` already use.
+- Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal. The ESM GRUP walkers are bounded as of #3503 (`/audit-esm` Dim 1) and NIF shape resolution as of #1385.
 
 ### 3. Memory & Resource Leaks (HIGH when per-frame/per-cell)
 
@@ -244,7 +251,7 @@ guard below.
   This includes the newest scalars: the BGSM translucency suite
   (`translucency_subsurface_r/g/b`, `…_transmissive_scale`, `…_turbulence`) and the
   Disney lobe (`ior`, `subsurface`, `sheen`, `sheen_tint`, `anisotropic`).
-- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 348 B; an
+- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 432 B; an
   uninit hole poisons dedup). New scalars must be zeroed in `GpuMaterial::default()`
   so default materials still dedup to slot 0.
 - **Intern cap (#797).** `MaterialTable::intern` caps at `MAX_MATERIALS = 16384`

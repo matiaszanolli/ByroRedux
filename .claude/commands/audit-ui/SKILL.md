@@ -135,8 +135,36 @@ landing them harder.
   per eviction, and the one-shot warn cannot re-arm into per-frame spam.
 - **A drained batch may be non-contiguous** once eviction has fired. Verify
   `drain_calls`' doc contract is honoured by consumers — any consumer that treats
-  `sequence` as gap-free is wrong (#2714 wired the first real consumer; check it
-  reads `dropped_calls` alongside the batch).
+  `sequence` as gap-free is wrong. **The engine now actually reads the drop
+  counter (#2969, `a984836c`)**: `UiManager::dropped_host_calls()` sits beside
+  `drain_host_calls()`, and `byroredux/src/app_frame.rs` latches it, warning on
+  each *increase* with how many calls the menu lost and how many the current
+  batch holds. Latched rather than compared against zero so the message tracks
+  increases instead of repeating every frame; a **decrease** is a menu swap
+  handing over a fresh bridge, which `host_call_gap` treats as a reset rather
+  than letting `checked_sub` wrap it into an enormous gap. The bridge's own
+  producer-side warn says "a call was lost"; this says "the batch you are about
+  to act on has a hole in it", which is the one that stops being cosmetic once
+  the loop routes calls into quest / inventory / player state. Regression =
+  dropping the latch, or comparing against zero. Sibling check: every other
+  bounded channel here (`callbacks_capped`, `known_methods_capped`,
+  `unknown_methods_capped`, `unanswered_methods_capped` via `insert_bounded`,
+  and `player.rs`'s `resource_errors_capped` / `resource_loads_capped`) logs
+  once at the point it trips — the drop counter was the only one stored for a
+  consumer and never read.
+- **One SWF decode per menu open (#2968, `0e91fc5e`).** `crates/ui/src/prepare.rs`
+  (`prepare_movie`, `PreparedMovie`, `SwfDecodeCounts`) does the decompress once
+  and the tag parse at most once, then hands each load stage what it wanted.
+  `SwfPlayer`'s constructors used to hand raw bytes to four independent stages —
+  profile detection, host-object injection, `ImportAssets` extraction, and
+  Ruffle's `SwfMovie::from_data` — each re-inflating the whole compressed stream
+  and two of them walking every tag, synchronously on the winit main-loop
+  thread. On FO4's multi-megabyte `hudmenu.swf` / `pipboymenu.swf` that was four
+  inflates and two tag walks per menu open. The final `SwfMovie::from_data`
+  still decompresses (Ruffle exposes no constructor taking an already-decoded
+  `SwfBuf`), so the floor is **two inflates and one tag walk**, not one — and
+  `SwfDecodeCounts` exists to make that assertable rather than intended.
+  Regression = a stage re-added that takes raw bytes instead of `PreparedMovie`.
 - `ScaleformValue` conversion in both directions: AS → Rust on call arguments,
   Rust → AS on `respond`. Verify number/bool/string/null round-trips and that an
   unrepresentable value becomes an explicit Null rather than a panic.
@@ -270,6 +298,30 @@ adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
 - Resize: `UiManager.width/height` vs the `TextureTarget` size vs
   `register_ui_quad`'s descriptor. Verify all three move together on a window
   resize, and that a resize during an active menu does not orphan the old target.
+- **The overlay composites AFTER tone-mapping, in the presentation pass
+  (regression guard, #3426, `b28acb0c`).** The UI quad used to draw at the tail
+  of the *main geometry* pass, alpha-blended into colour attachment 0 — the
+  render-resolution HDR direct-lighting G-buffer — so every menu went through
+  height fog / volumetric transmittance keyed off the world depth still under
+  it, the M58 bloom add, TAA accumulation with a zero motion vector and no FSR
+  reactive or transparency mask, FSR upscaling, and only then
+  `aces(graded * exposure)` in `presentation.frag`, which maps linear 1.0 to
+  ~0.80 — white menu chrome reached the swapchain at ~80% grey. It now draws
+  inside the presentation pass, immediately after the fullscreen tone-map
+  triangle and in the same subpass, at **output** resolution straight onto the
+  swapchain. `create_ui_pipeline` is built against that render pass (one colour
+  attachment, so the old eight-entry blend table with its
+  `color_write_mask(empty)` G-buffer masking is gone) and is owned by
+  `PresentationPipeline`, which is what a swapchain recreate rebuilds — the
+  former `VulkanContext::pipeline_ui` and its geometry-pass lifecycle are
+  retired. `ui.vert`/`ui.frag` and the shared scene pipeline layout are
+  unchanged, so the overlay still reads its bindless `textureIndex` out of the
+  instance SSBO; **both descriptor sets are rebound before the draw** because
+  the tone-map draw binds a layout-incompatible set 0 — dropping that rebind is
+  the subtle regression. No texture-format change: the capture is sRGB-encoded
+  bytes uploaded as `R8G8B8A8_SRGB`, the sampler linearises, Vulkan blends in
+  linear space. Regression = the quad moving back into the geometry pass, or a
+  UI pipeline rebuilt anywhere but the presentation-pass recreate.
 - Teardown order: `SwfPlayer` (and its wgpu device) must drop before the Vulkan
   context tears down its allocator. Cross-reference `/audit-concurrency` Dim 6 —
   report the ordering fact here, keep the GPU-teardown finding there.

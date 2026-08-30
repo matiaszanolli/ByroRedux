@@ -304,13 +304,27 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
   (2026-08-19)** and are in scope like any other code — `swimlevel_reached`,
   `swim_vertical_velocity`, `advance_breath`, `apply_player_drowning_damage` in
   `byroredux/src/systems/character.rs`. Audit them; do not confirm their absence.
+  Two defects there are already fixed and are now regression guards, not open
+  findings (#3125/#3128, `303329d9`): `swim_vertical_velocity`'s damping is
+  **dt-correct**, not frame-rate dependent, and `advance_breath` no longer
+  refills the breath reserve on a zero-dt tick. A re-added per-tick constant
+  damping factor, or a zero-dt path that credits breath, is the regression.
+- **Water-hazard and drowning deaths reconcile in ONE place (#3119).** Both can
+  mark an actor `Dead` from different stages, so the structural consequences
+  (AI-behaviour teardown, ragdoll activation) are applied by
+  `reconcile_pending_dead_actors_system` — a `Stage::Late` exclusive in
+  `byroredux/src/boot.rs`, draining `PendingDeathReconciliations`. It is the
+  same reconciler combat and save-load use. A second site performing the
+  teardown inline, from whichever producer noticed first, is the regression.
 **Output**: `/tmp/audit/physics/dim_6.md`
 
 ### Dimension 7: Queries, Diagnostics & Cost
 **Entry points**: `crates/physics/src/world.rs` — `cast_ray`, `colliders_near_xz`,
 `static_colliders_aabb`, `NearbyCollider`, `PhysicsRayHit`, `body_count`,
 `awake_counts`; `crates/physics/src/sync.rs` — `dump_spawn_collider_census`,
-`SpawnCensusEntry`; `byroredux/src/commands/scene.rs`
+`SpawnCensusEntry`; `byroredux/src/commands/physics.rs` (the `phys.stats` /
+`phys.census` console surface, split out under #3495 — *not* `commands/scene.rs`,
+which only carries the `ragdoll` command now)
 **Checklist**:
 - `colliders_near_xz` allocates a `Vec` per call. Find its callers and their
   frequency — a per-frame call on a radius-12 exterior is a hot-path allocation

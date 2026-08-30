@@ -202,9 +202,27 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `ComponentRef::Deref`) — all #1367. Each MUST have a SAFETY comment tying
   validity to the live guard. Verify no new unsafe block lacks one (MEDIUM min
   per `_audit-severity`).
+- **That aliasing model is CI-checked as of #2271 (`3e151c2f`)**: the
+  `ecs-query-miri` job in `.github/workflows/ci.yml` runs
+  `cargo miri test -p byroredux-core --lib ecs::world::tests`, deliberately
+  scoped (not the whole crate) and skipping `resource_visible_to_system_via_scheduler`,
+  which trips crossbeam-epoch's platform thread-local pinning that Miri's
+  concurrency model does not support — that test exercises the scheduler, not
+  the cached-pointer contract. So "this needs Miri" is no longer an open
+  recommendation for this module; a *new* unsafe pattern outside
+  `ecs::world::tests`' reach still is. Regression = widening the skip list, or
+  a new cached-pointer site with no test under that module.
 - `World::spawn` uses `checked_add` and panics on `EntityId` overflow (#36);
-  `despawn` does NOT reclaim IDs (no generational tagging — #372) — document,
-  do not "fix" by reusing IDs (silent corruption on dangling `Parent` refs).
+  `despawn` does NOT reclaim IDs (no generational tagging — #372, re-confirmed
+  by #3375) — document, do not "fix" by reusing IDs (silent corruption on
+  dangling `Parent` refs), and do not describe `EntityId` as *generational*:
+  it is monotonic and never recycled, which is a different safety argument.
+- **Erased-storage removal paths (regression guards, #2395/#2397, `eb944ec5`)**:
+  `PackedStorage::clear_erased` releases capacity rather than only truncating,
+  and `SparseSetStorage::remove_entities_erased` early-outs on an empty victim
+  set. `PackedStorage::remove_entities_erased`'s sort-order and dirty-marking
+  invariants are pinned by #2396's tests. These run on every cell unload, so a
+  regression here is a per-streaming-cycle cost, not a one-off.
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 

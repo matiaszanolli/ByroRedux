@@ -20,11 +20,15 @@ purpose. Re-run the recipe; report what it surfaces today.
 
 See `.claude/commands/_audit-common.md` for project layout, the crate roster,
 methodology, deduplication, context rules, severity, and finding format. Do not
-duplicate any of that here. The newest crates — `crates/pex/` (M47.2 compiled-
-Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load),
-`crates/hkx/` (M47.2 Havok packfile reader for the MQ101 cinematic slice), and
-the expanded `crates/scripting/` (M47.1/M47.2 recognizer chain) — are young code
-that has not yet seen a debt sweep; the dimensions below should reach them.
+duplicate any of that here. The newest crates — `crates/sdk/` (the
+renderer-independent Studio surface, landed 2026-08-25 with its engine-side
+adapter `byroredux/src/studio_host.rs` and, per #3457, without a layout row),
+`crates/mod-runtime/` (the sandboxed-WASM mod host, still consumer-less),
+`crates/pex/` (M47.2 compiled-Papyrus `.pex` decompiler), `crates/save/` (M45
+full-ECS snapshot save/load), `crates/hkx/` (M47.2 Havok packfile reader for the
+MQ101 cinematic slice), and the expanded `crates/scripting/` (M47.1/M47.2
+recognizer chain) — are young code that has not yet seen a debt sweep; the
+dimensions below should reach them.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -130,33 +134,35 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    whole-repo grep, which also matches markdown prose mentioning the literal
    string `#[ignore]` (#2262).
    The **production**->2000-LOC set (Dim 1's actual subject, re-verified
-   2026-08-19 with *prod_loc*) is currently 4 files: `context/mod.rs`
-   (~4060), `context/draw.rs` (~3490 — most of its file-total length, not
-   merely its production share: only a few small scattered `#[cfg(test)]`
-   blocks sit inside an otherwise huge production body), `volumetrics.rs`
-   (~2770), and `texture_registry.rs` (~2010). That last one is a real
-   disagreement with this issue's own filed evidence table (which reported
-   `texture_registry.rs` production at 838 — majority-test): re-checking the
-   file directly finds only 3 `#[cfg(test)]` markers total, all within the
-   last ~100 lines, two of which are `#[path = "..."] mod tests;`
-   declarations pointing at separate files — the file's own content is
-   genuinely ~2010 lines of production texture-registry logic (samplers,
-   path normalisation, bindless acquire/release). Filed as a real Dim 1
-   finding here rather than silently adopting a figure this check disproves.
-   `material.rs` (#2257, ~1330 production) and `gpu_instance_layout_tests.rs`
-   (0 production — reached only via an external `#[cfg(test)] mod`
-   declaration in its parent) both confirm as false positives under the OLD
-   total-LOC recipe. The separate total-LOC->2000 bucket (test-heavy files,
-   lower priority — report but do not auto-file as Dim 1) currently also
-   includes `svgf.rs`, `misc/world.rs`,
-   `crates/physics/src/world.rs`, `env_translate.rs`, `cornell.rs`, `mesh.rs`,
-   `import/collision/shape.rs`, and `plugin/tests/parse_real_esm.rs` — check
-   each with *prod_loc* before filing; only a production count over 2000
-   belongs in Dim 1. Note #2258/#2259 (2026-08-03, `record_post_passes` /
-   `build_tlas` decomposition) extracted helpers *within* `post_passes.rs` /
-   `tlas.rs`, which stayed well under 2000 LOC before and after — file-level
-   crossings and function-level splits are independent signals; don't assume
-   one moves the other.
+   2026-08-29 with *prod_loc*) is currently 5 files: `context/draw.rs`
+   (~3620 — most of its file-total length, not merely its production share:
+   only a few small scattered `#[cfg(test)]` blocks sit inside an otherwise
+   huge production body), `volumetrics.rs` (~2860), `context/mod.rs` (~2470),
+   `crates/renderer/src/mesh.rs` (~2210) and `texture_registry.rs` (~2010).
+   Membership moved since the 2026-08-19 check: `context/mod.rs` came DOWN
+   from ~4060 and `mesh.rs` came UP through the threshold — so the set is
+   genuinely churning, and re-running the recipe is not a formality.
+   `texture_registry.rs` is a standing real disagreement with #3081's own
+   filed evidence table (which reported its production at 838 —
+   majority-test): re-checking the file directly finds only 3 `#[cfg(test)]`
+   markers total, all within the last ~100 lines, two of which are
+   `#[path = "..."] mod tests;` declarations pointing at separate files — the
+   file's own content is genuinely ~2010 lines of production texture-registry
+   logic (samplers, path normalisation, bindless acquire/release). File that
+   as a real Dim 1 finding rather than silently adopting a figure this check
+   disproves. `crates/renderer/src/vulkan/material.rs` (#2257, ~1440
+   production) and `gpu_instance_layout_tests.rs` (0 production — reached
+   only via an external `#[cfg(test)] mod` declaration in its parent) both
+   confirm as false positives under the OLD total-LOC recipe. The separate
+   total-LOC->2000 bucket (test-heavy files, lower priority — report but do
+   not auto-file as Dim 1) had 30 members at the 2026-08-29 re-check, up from
+   8; naming them here would rot within a session, so re-run the command and
+   check each hit with *prod_loc* before filing — only a production count
+   over 2000 belongs in Dim 1. Note #2258/#2259 (2026-08-03,
+   `record_post_passes` / `build_tlas` decomposition) extracted helpers
+   *within* `post_passes.rs` / `tlas.rs`, which stayed well under 2000 LOC
+   before and after — file-level crossings and function-level splits are
+   independent signals; don't assume one moves the other.
 
 ## Phase 2: Dimension Agents
 
@@ -202,11 +208,11 @@ previously-split module can grow back over threshold).
   splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
   before proposing barrier/order changes.
 - `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
-- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 834 LOC; the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1356 LOC, and it mixes UI input routing with the canonical player-action/activation producer — a real seam) and `byroredux/src/app_events.rs` (1039 LOC).
+- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1053 LOC; the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — but note main.rs has grown 834 → 1053 since the split, so it is drifting back, not settled. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1493 LOC, and it mixes UI input routing with the canonical player-action/activation producer — a real seam), `byroredux/src/app_events.rs` (1146 LOC) and `byroredux/src/boot.rs` (2048 total / ~1800 production, the single scheduler-registration wall).
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
-- `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` now 1210 LOC, under threshold). Split further per resource domain (rendering/world/audio/scripting) only if it re-bloats.
+- `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
 - Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases

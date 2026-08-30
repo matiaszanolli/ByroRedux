@@ -737,28 +737,35 @@ refresh; not otherwise covered by this dimension's checklist below).
   loop back into the dispatch queue — only a `SetStage`/quest-lifecycle effect
   inside a branch does, and that re-enters the *outer* cascade queue, not this
   recursion).
-- **`Effect::Disable` / `ReferenceEnableState` (`fragment.rs`, 2026-08-24,
-  `5f38402e`)**: unlike `AddItem`/`MoveTo`/`EquipItem` (which resolve their
-  object/actor receivers through the alias-aware `resolve_object`/
-  `resolve_actor`, i.e. `deferred.scene_actor_bindings`), `Effect::Disable`
-  resolves its `object: ObjectRef` through the narrower
-  `resolve_property_form_id(vmad, object.property_name())` — the same
-  strict-form-id-only function Dim 5's `QuestRef::Property` bullet documents
-  as deliberately non-alias-aware because quests aren't alias-fillable. A
-  `Disable` receiver is, in authored content, frequently the same kind of
-  scene-marker `ObjectReference Property` that `AddItem`/`MoveTo` alias-bind
-  through — verify whether this is a deliberate narrower scope for `Disable`
-  (documented somewhere) or an inconsistency that makes `<AliasBoundMarker>.Disable()`
-  silently decline where the equivalent `AddItem`/`MoveTo` on the same alias
-  would resolve. Separately: `ReferenceEnableState::is_enabled` (the read
-  side of the resource `Effect::Disable` writes to via
-  `deferred.reference_enable_changes`) has **no production call site**
-  anywhere in `byroredux/` as of 2026-08-24 (only a unit test calls it) —
-  the effect records disable intent but nothing in cell loading, streaming,
-  or rendering currently consults it to actually hide/skip the reference.
-  Flag this as a real gap if a finding assumes `Disable` already suppresses
-  a reference at runtime; this is a report-worthy functional concern, not a
-  skill-doc correction.
+- **`Effect::Disable` / `ReferenceEnableState` — BOTH 2026-08-24 gaps are now
+  CLOSED (#3278, `26f8738d` + `265f0c9b`). This bullet is a regression guard,
+  not an open finding; do not re-file either half.**
+  * *Alias-aware receiver (half b, `26f8738d`)*: `Effect::Disable` used to
+    resolve its `object: ObjectRef` through the narrow
+    `resolve_property_form_id(vmad, object.property_name())` while
+    `AddItem`/`MoveTo`/`EquipItem` went through the alias-aware
+    `resolve_object`/`resolve_actor` (`deferred.scene_actor_bindings`) — so
+    `<AliasBoundMarker>.Disable()` silently declined in exactly the cases where
+    the same alias-bound receiver resolves fine for every sibling effect.
+    Dispatch now classifies the receiver through the same `receiver_object`.
+    Note the asymmetry that remains and is *correct*: `ReferenceEnableState` is
+    deliberately **FormID-keyed, not entity-keyed**, so a disable survives its
+    reference's cell being unloaded — an alias-bound receiver resolves to an
+    entity and must therefore come back to a form id via `entity_global_form_id`
+    (`fragment.rs`). A "simplification" that keys the sink by entity is the
+    regression. `Effect::SetGlobalValue` keeping `resolve_property_form_id` is
+    also correct (a GLOB is a top-level resource, never alias-bound).
+  * *Runtime consumer (half a, `265f0c9b`)*: `ReferenceEnableState::is_enabled`
+    used to have no production call site, so a script-disabled reference stayed
+    fully visible, collidable and interactive. `spawn_placed_instances`
+    (`byroredux/src/cell_loader/spawn.rs`) now consults it, gating **after the
+    placement root but before any mesh, collider or light** — that position is
+    load-bearing, because one check there covers all three (an unspawned mesh
+    cannot render, an unspawned collider cannot block, an unspawned light cannot
+    contribute). A render-side visibility flag would have covered only the
+    first: `AnimatedVisibility` is honoured in `render/static_meshes.rs` but not
+    in `render/skinned.rs`. Regression = moving the gate to the render side, or
+    after collider/light spawn. Guard: `byroredux/src/cell_loader/reference_enable_gate_tests.rs`.
 - **`Effect::SetGlobalValue` (`fragment.rs::apply_effect`)**: resolves the
   `global: ObjectRef` the same strict way as `Disable`
   (`resolve_property_form_id`, no alias branch — correct here, since a GLOB
@@ -992,7 +999,21 @@ Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_
   `HitEvent`, `TimerExpired`, `AnimationTextKeyEvents`, `OnUpdateEvent`,
   `QuestStageAdvancedBatch` (the actual drained `Component`; the bare
   `QuestStageAdvanced` struct it wraps carries no `Component` impl and is
-  never inserted directly), the rumble/camera/UI command markers,
+  never inserted directly — and since **#3277** (`26f8738d`) **every producer
+  must go through `push_quest_stage_advances` (`quest_stages.rs`), never a bare
+  `insert`**: the batch is one `SparseSetStorage` slot on one shared entity, so
+  an `insert` replaces it and silently drops any same-frame producer's events.
+  #1864 documented that but left it a convention each writer re-implemented —
+  five of six open-coded `get_mut`-then-`extend` correctly and
+  `quest_fragment_dispatch_system`'s tail did not, which was harmless only
+  while it happened to be scheduled last, and stopped being harmless once
+  `quest_alias_readiness_stage_system` and `scene_fragment_dispatch_system`
+  were scheduled ahead of it. All six writers now route through the helper, and
+  the helper's own `insert` is the only one left. It deliberately carries **no**
+  emptiness guard — every call site already returns early on an empty batch —
+  so adding one is dead code that reads as load-bearing. Regression = a seventh
+  producer inserting directly. Guard:
+  `push_quest_stage_advances_merges_same_frame_producers`), the rumble/camera/UI command markers,
   `SceneEventBatch`, `SceneFragmentInvocationBatch` (added 2026-08-23,
   `27875a02` — the invocation marker `scene_fragment_dispatch_system`
   consumes), `OnTriggerEnterEvent`, `OnCellLoadEvent`, `OnEquipEvent`.

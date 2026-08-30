@@ -5,9 +5,10 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` — the second-largest crate in the workspace (~45k LOC,
-95 files) and, until this skill landed, the **largest subsystem with no owner
-audit**. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each sample one
+Audit `crates/plugin/` — the third-largest crate in the workspace (~51k LOC
+over 73 files under `src/`; ~59k over 108 counting tests and examples — behind
+`crates/nif` at ~86k and `crates/renderer` at ~78k, re-measured 2026-08-29) and,
+until this skill landed, the **largest subsystem with no owner audit**. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each sample one
 game's slice of it; nothing has ever audited the parser as a parser: the GRUP
 walker, sub-record byte accounting, per-record schema dispatch, the FormID
 load-order remap, the CELL/WRLD walkers, and the `EsmIndex` → ECS handoff.
@@ -111,7 +112,9 @@ Everything downstream then decodes garbage that *looks* structurally valid.
 - `GameKind::from_header` maps the HEDR `Version` f32 to a game through
   **banded** comparisons, never float equality. The bands must leave clear gaps
   between the sampled vanilla values (FO3 0.94, FO4 1.0, Starfield 0.96,
-  FNV 1.34, Skyrim SE 1.71, FO76 68.0). This mapping was **inverted once
+  FNV 1.34, Skyrim SE 1.71, **FO76 266.0** — this table read `68.0` until
+  #3405 corrected it on 2026-08-28; shipped FO76 masters are `00 00 85 43`,
+  i.e. 266.0, and the band's floor sits deliberately far below it). This mapping was **inverted once
   already** (#439 / FO3-3-01, FO3↔FO4) and was latent because the item DATA
   arms bucket FO4 with FO3NV — re-verify each band end-to-end, and check
   whether any *new* schema split has since made a mis-band non-latent.
@@ -132,19 +135,38 @@ Everything downstream then decodes garbage that *looks* structurally valid.
   extract_dial_with_info, extract_quest_dialogue_scene_tree_inner}` and
   `cell/walkers.rs::parse_cell_group` + `cell/wrld.rs::parse_wrld_children`
   (Dimension 5) — each threading a `depth + 1` argument through its `_inner`
-  recursion. This is **not yet universal**: `cell/support.rs`'s
-  `parse_modl_group`, `parse_ltex_group`, `parse_txst_group`,
-  `parse_scol_group`, `parse_pkin_group`, `parse_movs_group`, and
-  `parse_mswp_group` all still recurse on a raw, unbounded
-  `reader.group_content_end(&sub)`, as does `cell/walkers.rs::parse_refr_group`
-  (see Dimension 5) — check whether that gap has been closed, and if not,
-  flag it as the live instance of exactly the stack-overflow risk this bullet
-  exists to catch, not as a new finding invented from scratch.
+  recursion. **This is now universal (#3503, `fa511bbf`, 2026-08-29)** — the last eight
+  unbounded walkers were converted: `cell/support.rs`'s `parse_modl_group`,
+  `parse_ltex_group`, `parse_txst_group`, `parse_scol_group`, `parse_pkin_group`,
+  `parse_movs_group`, `parse_mswp_group`, and `cell/walkers.rs::parse_refr_group`
+  all take `bounded_group_content_end` now. The only remaining
+  `reader.group_content_end` call sites in production code are the
+  non-recursive top-level walk in `records/mod.rs`; everything else is in test
+  fixtures. Regression = a *new* recursive walker introduced against the raw
+  `group_content_end`, or a `depth` argument dropped from an `_inner` recursion
+  so the counter never advances — the second is silent, since the bound is
+  still called.
 - Record flag `FLAG_COMPRESSED`: the 4-byte uncompressed-size prefix is read
   first, `data_size - 4` is the zlib payload. Verify `data_size >= 4` is checked
   *before* the subtraction (an underflow here is a panic on hostile input) and
   that the decompressed buffer is capacity-hinted, not trusted — a lying prefix
-  must not pre-allocate unbounded memory.
+  must not pre-allocate unbounded memory. **Bounded as of #3399 (`05bdb969`)** —
+  `read_sub_records` used to hand the file-controlled prefix straight to
+  `Vec::with_capacity` (a lone `0xFFFFFFFF` bought a 4 GiB reservation off a
+  24-byte header) and inflate with `read_to_end`, which has no output limit at
+  all. Both halves are now bounded against the one quantity the file cannot
+  inflate for free — its own compressed length: the ceiling is
+  `min(64 MiB, max(64 KiB, compressed_len * 512))`, then the decoder is held to
+  the validated declared size via `take(declared + 1)` so a prefix that lies
+  downward is rejected rather than silently truncating. The constants are
+  **measured**: a census over every compressed record in four shipped masters
+  (33 179 in FalloutNV.esm, 44 153 in Skyrim.esm, 56 399 in Fallout4.esm, 0 in
+  Oblivion.esm, which compresses nothing) puts the worst real ratio at 102.1:1
+  and the largest real inflated record at 225 433 bytes — 512 is 5× the worst
+  ratio, 64 MiB is ~290× the largest record, and all 133 731 records pass. It
+  mirrors `byroredux_bsa::safety::inflate_bounded` (#3410), including its "a
+  short decode stays Ok" contract. Regression = either bound removed, or the
+  two implementations diverging.
 **Output**: `/tmp/audit/esm/dim_1.md`
 
 ### Dimension 2: Sub-Record Byte Accounting (the densest bug class)
@@ -232,6 +254,7 @@ width shifts every later field in the same sub-record, and the result parses
   in particular that the standalone arm has **not** been "fixed" into a clamp —
   the comment explains why clamping is strictly worse (two forms colliding on
   one global id inside `EsmIndex`).
+- **The remap sweep is finished for the `records/` tier as well (#3400/#3401, `05bdb969`).** #3314 made the remap structural for the `cell/` tier by making it a required parameter of `read_form_id`; `records/` was swept afterwards. `read_record_header` remaps every record's own FormID, so `EsmIndex`'s maps are keyed in global space — a sub-record reference left raw misses every lookup the moment the remap is non-identity, which it is for the second and later plugin of any multi-master load order (every FO4 DLC has exactly one master, so its forms are authored `0x01…` while `allocate_global_slot` keys them `0x02…`) and for every ESL by construction. The live half was `SCOL.ONAM`/`FLTR` and `PKIN.CNAM`/`VNAM`: their consumers look children up in `index.scols` / `index.packins` / `index.statics`, so on the second and later DLC every SCOL child resolved to nothing and `expand_packin_placements_with_depth` returned `None` for the whole package-in — DLC- and mod-added static collections and package-ins rendered as empty space, indistinguishable from unshipped content. Regression = a newly-added sub-record FormID read that bypasses the remap.
 - Every `HashMap<u32, _>` in `EsmIndex` is keyed by the **remapped** id. Find any
   decoder that stores a raw plugin-local id into the index, or that compares a
   remapped key against a raw reference — that's a cross-plugin dangling ref.
@@ -271,6 +294,28 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
   (multi-plugin) applies the same rule.
 - `crates/plugin/src/esm/records/actor_value_derive.rs` is the CHARAL feed —
   cross-reference `/audit-character` Dim 4 rather than re-auditing the formulas.
+**Recently settled decodes — verify they hold, do NOT re-derive** (all landed
+2026-08-27→29; each has a test and an xEdit/nif.xml citation at its site):
+  * `INAM` is **one array of FormIDs**, not one FormID per sub-record (#3356).
+  * A `CREA` `CNAM` is **not** a class FormID and must not be stored as one
+    (#3383); `CREA` actor values come from its own arm (#3390).
+  * `TPLT` "Use Stats" resolves for **every** stat model, not only the
+    auto-calc one (#3381/#3382).
+  * `FACT` rank ladder (#3338), zero-duration `PSDT` (#3352), and the
+    `WMI1` faction→reputation edge + `WEAP` VATS decode (#3324/#3325).
+  * `LVLI` multi-pick semantics are pinned against the shipped FalloutNV
+    master (#3285) with a nested-ladder regression test for the 0x02-vs-0x04
+    fix (#3217), and a Skyrim pin (#3367).
+  * `NAVM` door/cover/grid decoded and the cross-tile join question settled
+    (#3300); the FNV NAVM count carries a floor assertion (#2341).
+  * `ARMO`/`ARMA`: an `ARMO` contributes **every** race-matching `ARMA` mesh,
+    not just the first (#3357); `MOD3` is the female mesh (#3414); the ARMA
+    alternative gate is #3411.
+  * `RACE` head sections gate per-gender with sub-part spawn (#3419/#3418/
+    #3420), and a zero-mask race skin keeps its body (#3408).
+  * A `REFR` tombstone removes the placement wherever it lives (#3362).
+  * FO76 `HEDR` is **266.0** (#3405) — check this against the `from_header`
+    bands above; it is the one value most likely to be mis-remembered.
 **Output**: `/tmp/audit/esm/dim_4.md`
 
 ### Dimension 5: CELL / WRLD Walkers & Placement Data

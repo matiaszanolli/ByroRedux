@@ -118,12 +118,27 @@ the crate; the crate audit is incomplete without it):
   preflight (`restore_world` runs it before `clear_entities`; the live path
   runs it before any cell/streaming teardown) — added 2026-08-24 (#3163) so a
   malformed column is rejected before either restore path can touch a world.
-- `FORMAT_MAJOR` is 5 (was 4 as of the last skill sync) — the bump added
-  required `Material.water_shader_flags`/`Material.is_water_shader`,
-  `RigidBodyData.collidable`, and the newly-saved `CharacterController`
-  column (#3164/#3165). Do not hardcode this number elsewhere in findings —
-  re-read `crates/save/src/snapshot.rs`'s `FORMAT_MAJOR` doc comment, it will
-  drift again.
+- `FORMAT_MAJOR` is **10** as of 2026-08-29 — it was 5 at the previous skill
+  sync and has taken five bumps since, each adding a REQUIRED field rather
+  than a defaulted one: v6 `Material.texture_clamp_mode`/`src_blend_mode`/
+  `dst_blend_mode` (#2571, the NIFAL canonical-boundary fields); v7 the
+  canonical glass-optics + Bethesda authored lighting-response material state;
+  v8 moving `EquipmentSlots`' wielded weapon out of biped occupancy bit 31 into
+  a required `weapon` field (#3112 — bit 31 is a real authorable Skyrim+ `BOD2`
+  slot, body-part 61 / `FX01`, so a pre-v8 save cannot distinguish "armor
+  occupies slot 61" from "this is the wielded weapon"); v9 a required
+  `Seated.animation_restore` (#3333 — without it, un-seating a loaded actor
+  leaves it walking its next package frozen in a chair pose); v10
+  `Material.parallax_height_in_alpha` (#3530, Oblivion's `APPLY_HILIGHT2`
+  parallax route). **v10 is the one worth reading the doc comment for**: `false`
+  would in fact have been correct for every pre-v10 snapshot, and the bump was
+  taken anyway, because the rule and its
+  `serde_default_on_saved_struct_requires_format_major_bump` guard are
+  deliberately blanket — a per-field "but this default is safe" judgement is
+  exactly what #1714 (SAVE-D2-01) removed from the loop. An audit proposing to
+  relax the rule for a "safe" default is re-opening that. Do not hardcode this
+  number elsewhere in findings — re-read `crates/save/src/snapshot.rs`'s
+  `FORMAT_MAJOR` doc comment, it will drift again.
 
 **Doc-rot check**: `docs/feature-matrix.md:189` already carries an explicit
 `TD3-002` comment noting Save/load (M45/M45.1) shipped 2026-06-21 — the
