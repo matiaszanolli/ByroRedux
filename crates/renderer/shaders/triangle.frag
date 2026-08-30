@@ -3343,7 +3343,13 @@ void main() {
                         vec3 rayDir;
                         float rayDist;
                         if (lightType < 1.5) {
-                            float lightDiskRadius = max(radius * 0.025, 1.5);
+                            // #3575 — the emitter disk is `params.y`, the
+                            // canonical source radius the CPU already derived
+                            // at the translation boundary; do NOT re-derive it
+                            // from `position_radius.w`, which is the CULL
+                            // radius (2x the authored range). See the
+                            // legacy-WRS arm below for the full rationale.
+                            float lightDiskRadius = max(lights[i].params.y, 1.0);
                             vec3 jitteredTarget =
                                 lightPos + (Tb * diskSample.x + Bb * diskSample.y) * lightDiskRadius;
                             rayDir = normalize(jitteredTarget - rayOrigin);
@@ -3491,12 +3497,35 @@ void main() {
 
             if (lightType < 1.5) {
                 // Point / spot: jittered ray toward the light's physical disk.
-                // Physical light-disk radius → soft penumbra. Scales with the
-                // light's influence radius (bigger lamp = softer shadow), with
-                // a 1.5-unit floor so even small point lights cast a visible
-                // penumbra. (Was briefly hard-coded to 0.1 for penumbra-noise
-                // diagnostics — that DIAG value shipped a near-hard shadow.)
-                float lightDiskRadius = max(radius * 0.025, 1.5);
+                // Physical light-disk radius → soft penumbra: bigger lamp =
+                // softer shadow. (Was briefly hard-coded to 0.1 for penumbra-
+                // noise diagnostics — that DIAG value shipped a near-hard
+                // shadow.)
+                //
+                // #3575 — read `params.y`, the emitter's canonical source
+                // radius, NOT `position_radius.w * 0.025`. `.w` is the CULL
+                // radius: `gpu_light_from_emitter` uploads it as
+                // `range * LEGACY_LIGHT_CULL_RANGE_MULTIPLIER` (2.0), which
+                // `pointSpotAtten` has to undo as `kneeFrac * R` to recover
+                // the authored range. The old derivation `range * 2.0 * 0.025`
+                // equalled the canonical `range * 0.05` only in the unclamped
+                // middle: the CPU clamps the source radius to [1, 32] units
+                // (`Emitter::from_legacy_world_units`) while the shader grew
+                // linearly forever, so a 1024-unit exterior lamp got a 51.2-
+                // unit disk against a canonical 32 (1.6x), and a 4096-unit
+                // worldspace light 204.8 against 32 (6.4x). Procedural
+                // emitters diverged worse still: volumetric combustion lights
+                // carry a physically derived `(3V/4pi)^(1/3)` source radius in
+                // `params.y`, so a 3 m flame at the 0.02 m minimum wanted 1.4
+                // units and got 10.5 (7.5x) — the old 1.5-unit floor alone
+                // already exceeded the canonical value. It also let a pure
+                // cull-window tunable silently own shadow softness. `params.y`
+                // is the same field `pointSpotAtten` reads as `sourceRadius`
+                // and `traceShadowTransmittanceDetailed` receives as
+                // `emitterRadius`, so all three now agree on how big the lamp
+                // is. The 1.0 floor mirrors the CPU-side `clamp(1.0, 32.0)`,
+                // keeping a hand-built emitter with a zero `params.y` visible.
+                float lightDiskRadius = max(lights[i].params.y, 1.0);
                 vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 rayDir = normalize(jitteredTarget - rayOrigin);
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;

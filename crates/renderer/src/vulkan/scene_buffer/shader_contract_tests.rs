@@ -2389,6 +2389,58 @@ fn translucency_drives_the_per_light_contribution_gate() {
     );
 }
 
+/// #3575 / REN-2026-08-30-D17-02 — both shadow-sampling arms must size the
+/// soft-shadow emitter disk from `lights[i].params.y`, the canonical source
+/// radius `Emitter::from_legacy_world_units` derives once at the translation
+/// boundary and clamps to `[1, 32]` units. They used to re-derive it as
+/// `position_radius.w * 0.025`, where `.w` is the CULL radius — uploaded as
+/// `range * LEGACY_LIGHT_CULL_RANGE_MULTIPLIER` (2.0) and undone again inside
+/// `pointSpotAtten`. The two formulas agree only in the unclamped middle
+/// (`range * 2.0 * 0.025 == range * 0.05`): the shader had no ceiling, so a
+/// 4096-unit worldspace light got a 204.8-unit disk against a canonical 32,
+/// and volumetric combustion lights — the one emitter class for which someone
+/// computed a real physical `(3V/4pi)^(1/3)` radius — came out up to 7.5x too
+/// soft, with the old 1.5-unit floor alone already exceeding their canonical
+/// value. It also let a pure cull-window tunable silently own penumbra width.
+///
+/// `params.y` is the same field `pointSpotAtten` reads as `sourceRadius` and
+/// `traceShadowTransmittanceDetailed` receives as `emitterRadius`, so this
+/// makes all three agree. The two arms are byte-identical copies, so the pin
+/// checks both.
+#[test]
+fn soft_shadow_disk_reads_the_canonical_source_radius_not_the_cull_radius() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    let sites: Vec<&str> = frag
+        .match_indices("float lightDiskRadius =")
+        .map(|(i, _)| {
+            let end = frag[i..].find(';').expect("declaration must terminate") + i;
+            &frag[i..end]
+        })
+        .collect();
+    assert_eq!(
+        sites.len(),
+        2,
+        "expected the ReSTIR and legacy-WRS shadow arms to be the only \
+         `lightDiskRadius` sites, found {}: {sites:?}",
+        sites.len()
+    );
+    for site in &sites {
+        assert!(
+            site.contains("lights[i].params.y"),
+            "soft-shadow disk site `{site}` must read the canonical source radius \
+             `lights[i].params.y` — see #3575"
+        );
+        assert!(
+            !site.contains("radius * 0.025"),
+            "soft-shadow disk site `{site}` went back to re-deriving the emitter size \
+             from the CULL radius `position_radius.w`. That is 2x the authored range \
+             (LEGACY_LIGHT_CULL_RANGE_MULTIPLIER), has no 32-unit ceiling, and makes a \
+             culling tunable own shadow softness. See #3575."
+        );
+    }
+}
+
 /// #2244 — `sampleDalcCube` returns authored directional irradiance. A
 /// bounded path that escapes the TLAS consumes environment radiance, so the
 /// DALC branch needs the Lambertian irradiance-to-radiance conversion.
