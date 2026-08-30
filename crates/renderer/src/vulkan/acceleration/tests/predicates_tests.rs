@@ -973,3 +973,104 @@ fn blas_budget_derives_from_the_compatible_allocation_heap() {
         None
     );
 }
+
+// ── #3540 — per-frame static-BLAS recovery bound ──────────────
+
+/// The ordinary case: a handful of meshes came back into view after
+/// eviction, and the visible set is nowhere near the budget. Restore
+/// all of them in one frame — the cap must be inert here.
+#[test]
+fn small_recovery_inside_budget_restores_everything() {
+    // 1000 resident entries totalling 100 MB → 100 KB mean; 1200 visible
+    // draws project to ~117 MB against a 4 GB budget.
+    assert_eq!(
+        plan_static_blas_restore(
+            12,
+            1200,
+            100 * 1024 * 1024,
+            1000,
+            4 * 1024 * 1024 * 1024,
+            MAX_STATIC_BLAS_RESTORES_PER_FRAME,
+        ),
+        12
+    );
+}
+
+/// A large but fittable recovery is amortised across frames rather than
+/// stalling one frame on a single fence-waiting batch.
+#[test]
+fn large_fittable_recovery_is_capped_per_frame() {
+    assert_eq!(
+        plan_static_blas_restore(
+            5_000,
+            8_000,
+            100 * 1024 * 1024,
+            1000,
+            4 * 1024 * 1024 * 1024,
+            MAX_STATIC_BLAS_RESTORES_PER_FRAME,
+        ),
+        MAX_STATIC_BLAS_RESTORES_PER_FRAME
+    );
+}
+
+/// The #3540 hang: Starfield `citycydoniamainlevel` scale. ~95 k visible
+/// rigid draws at a 100 KB mean project to ~9 GB against a 4 GB budget,
+/// so every restore displaces a mesh the same frame still needs. The
+/// pass must decline entirely instead of rebuild/evict thrashing — that
+/// cycle is what pinned one core at frame 0 for over ten minutes.
+#[test]
+fn visible_set_larger_than_budget_declines_the_whole_pass() {
+    assert_eq!(
+        plan_static_blas_restore(
+            40_000,
+            95_095,
+            100 * 1024 * 1024,
+            1000,
+            4 * 1024 * 1024 * 1024,
+            MAX_STATIC_BLAS_RESTORES_PER_FRAME,
+        ),
+        0
+    );
+}
+
+/// Exactly at the budget still fits — the projection declines only on a
+/// strict breach, matching `blas_over_budget`'s `>` line.
+#[test]
+fn visible_set_exactly_at_budget_still_restores() {
+    // 10 resident entries × 1 MB mean, 4096 visible → 4096 MB projected
+    // against a 4096 MB budget.
+    let budget = 4096 * 1024 * 1024;
+    assert_eq!(
+        plan_static_blas_restore(1, 4096, 10 * 1024 * 1024, 10, budget, 256),
+        1
+    );
+    assert_eq!(
+        plan_static_blas_restore(1, 4097, 10 * 1024 * 1024, 10, budget, 256),
+        0
+    );
+}
+
+/// With nothing resident there is no measured mean to project from, so
+/// only the cap applies. It alone still bounds the frame.
+#[test]
+fn no_resident_entries_falls_back_to_the_cap_alone() {
+    assert_eq!(
+        plan_static_blas_restore(100_000, 100_000, 0, 0, 4 * 1024 * 1024 * 1024, 256),
+        256
+    );
+}
+
+/// Degenerate inputs must not panic or over-restore: nothing missing,
+/// a zero cap, and a zero budget all resolve to "do nothing".
+#[test]
+fn degenerate_recovery_inputs_do_nothing() {
+    assert_eq!(plan_static_blas_restore(0, 5000, 1024, 1, 1 << 30, 256), 0);
+    assert_eq!(plan_static_blas_restore(10, 5000, 1024, 1, 1 << 30, 0), 0);
+    assert_eq!(plan_static_blas_restore(10, 5000, 1024, 1, 0, 256), 0);
+    // Saturating projection: a huge mean over a huge visible count must
+    // clamp rather than wrap into a false "fits".
+    assert_eq!(
+        plan_static_blas_restore(10, usize::MAX, u64::MAX, 1, u64::MAX - 1, 256),
+        0
+    );
+}

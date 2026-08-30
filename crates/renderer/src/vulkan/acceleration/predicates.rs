@@ -749,3 +749,58 @@ pub(super) fn shadow_mask_for_instance(
         }
     }
 }
+
+/// How many missing static BLAS the per-frame recovery pass should
+/// rebuild this frame. #3540.
+///
+/// `restore_missing_static_blas_for_draws` rebuilds BLAS that eviction
+/// reclaimed but the current draw set needs again. `build_blas_batched`
+/// evicts to stay inside `blas_budget_bytes`, so the pass is only
+/// coherent while the *whole* visible rigid set fits that budget. When
+/// it doesn't, every BLAS restored displaces another one the same frame
+/// still needs; the next frame finds those missing and rebuilds them,
+/// and the cycle never converges. Starfield's `citycydoniamainlevel`
+/// (~95 k static draws, far past a 4 GB budget) is the observed case:
+/// the engine sat single-threaded on frame 0 for over ten minutes with
+/// RSS oscillating between 12 and 20.6 GB.
+///
+/// Two bounds, in order:
+///
+/// 1. **Fit projection.** Estimate the visible set's BLAS footprint from
+///    the mean size of the currently-resident entries. If that projects
+///    past the budget the pass is futile — return `0` and let the frame
+///    render. Raster is unaffected; RT loses the over-budget tail, which
+///    eviction was going to take regardless.
+/// 2. **Per-frame cap.** Otherwise rebuild at most `per_frame_cap`, so
+///    a large but fittable recovery is spread across frames rather than
+///    stalling one on a single fence-waiting batch.
+///
+/// `resident_count == 0` means there is no measured BLAS size to project
+/// from (first recovery after a full evict, or an RT-less context). The
+/// projection is skipped in that case and only the cap applies — the cap
+/// alone already bounds the frame.
+///
+/// Pure so the policy can be pinned without a live Vulkan device.
+pub fn plan_static_blas_restore(
+    missing: usize,
+    visible: usize,
+    static_blas_bytes: vk::DeviceSize,
+    resident_count: usize,
+    budget_bytes: vk::DeviceSize,
+    per_frame_cap: usize,
+) -> usize {
+    if missing == 0 || per_frame_cap == 0 {
+        return 0;
+    }
+    if resident_count > 0 {
+        let mean = static_blas_bytes / resident_count as vk::DeviceSize;
+        // `visible` is the full draw set; `missing` can't exceed it, but
+        // take the max so a caller that passes only the missing subset
+        // still gets a projection rather than an under-estimate.
+        let projected = mean.saturating_mul(visible.max(missing) as vk::DeviceSize);
+        if projected > budget_bytes {
+            return 0;
+        }
+    }
+    missing.min(per_frame_cap)
+}

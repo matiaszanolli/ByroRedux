@@ -408,6 +408,20 @@ impl AccelerationManager {
         self.static_blas_bytes
     }
 
+    /// The static-BLAS residency budget in bytes — the line
+    /// `evict_unused_blas` reclaims against and `should_evict_mid_batch`
+    /// measures its 90% early warning from.
+    ///
+    /// Exposed (#3540) so the per-frame recovery pass can tell a
+    /// transient miss ("this mesh was evicted while off-screen, restore
+    /// it") from a structural one ("the visible set is larger than the
+    /// budget, so restoring anything only displaces something else this
+    /// frame needs"). Without that distinction the pass rebuild/evict
+    /// thrashes forever. See `plan_static_blas_restore`.
+    pub fn blas_budget_bytes(&self) -> vk::DeviceSize {
+        self.blas_budget_bytes
+    }
+
     /// Number of *populated* static BLAS slots.
     ///
     /// `blas_entries` is indexed by mesh handle, so its `len()` only ever grows

@@ -138,3 +138,21 @@ pub(super) const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
         vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
             | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION.as_raw(),
     );
+
+/// Upper bound on how many static BLAS the per-frame recovery pass
+/// (`VulkanContext::restore_missing_static_blas_for_draws`) may rebuild
+/// in a single frame. #3540.
+///
+/// That pass exists so a mesh evicted under residency pressure comes
+/// back when it re-enters the draw set, but it had no bound at all: it
+/// handed *every* missing handle to `build_blas_batched` in one
+/// synchronous, fence-waiting batch. On a cell whose visible rigid set
+/// is tens of thousands of meshes that is a multi-minute frame.
+///
+/// 256 is ~2 orders of magnitude above what a real recovery frame needs
+/// (a cell transition re-exposes a handful of meshes at a time), so the
+/// cap is inert on every cell that isn't already pathological, while
+/// still amortising a large legitimate recovery over frames instead of
+/// stalling one. Paired with `plan_static_blas_restore`, which is what
+/// decides whether the pass should run at all.
+pub const MAX_STATIC_BLAS_RESTORES_PER_FRAME: usize = 256;

@@ -287,11 +287,48 @@ impl VulkanContext {
         // Protect the complete upcoming rigid TLAS set before the builder's
         // pre-/mid-batch budget checks can select eviction candidates.
         accel.mark_static_blas_used(&handles);
+        let visible = handles.len();
         handles.retain(|&handle| !accel.has_blas(handle));
 
         if handles.is_empty() {
             return 0;
         }
+
+        // #3540 — bound the recovery. `build_blas_batched` evicts to stay
+        // inside the static-BLAS budget, so this pass is only coherent while
+        // the whole visible rigid set fits that budget; past it, every BLAS
+        // restored displaces another one the same frame still needs and the
+        // next frame rebuilds those instead — a cycle that never converges.
+        // Starfield's `citycydoniamainlevel` (~95 k static draws) is the
+        // observed case: single-threaded on frame 0 for over ten minutes,
+        // RSS oscillating 12 -> 20.6 GB. `plan_static_blas_restore` skips
+        // the pass when the set cannot fit and otherwise caps how many BLAS
+        // one frame may rebuild.
+        let restore_count = crate::vulkan::acceleration::plan_static_blas_restore(
+            handles.len(),
+            visible,
+            accel.static_blas_bytes(),
+            accel.live_static_blas_count(),
+            accel.blas_budget_bytes(),
+            crate::vulkan::acceleration::MAX_STATIC_BLAS_RESTORES_PER_FRAME,
+        );
+        if restore_count == 0 {
+            // One-shot: the condition is a property of the cell, so it holds
+            // for every frame spent in it. Warn once rather than per frame.
+            static OVER_BUDGET_WARNED: std::sync::Once = std::sync::Once::new();
+            OVER_BUDGET_WARNED.call_once(|| {
+                log::warn!(
+                    "Static BLAS recovery skipped: {visible} rigid draws project past the \
+                     {:.1} MB BLAS budget ({} resident, {:.1} MB). Ray-traced shadows / \
+                     reflections / GI will miss the over-budget tail; raster is unaffected.",
+                    accel.blas_budget_bytes() as f64 / (1024.0 * 1024.0),
+                    accel.live_static_blas_count(),
+                    accel.static_blas_bytes() as f64 / (1024.0 * 1024.0),
+                );
+            });
+            return 0;
+        }
+        handles.truncate(restore_count);
 
         let vertex_stride = std::mem::size_of::<crate::Vertex>() as u64;
         let index_stride = std::mem::size_of::<u32>() as u64;
@@ -502,6 +539,51 @@ mod tests {
         assert!(
             protect < missing_filter && missing_filter < build,
             "protect the complete draw set, then select missing handles, then rebuild"
+        );
+    }
+
+    /// #3540 — the recovery pass must stay bounded. Handing every missing
+    /// handle to `build_blas_batched` in one synchronous batch is what let
+    /// Starfield's `citycydoniamainlevel` sit on frame 0 for ten minutes,
+    /// so the plan call has to sit between the missing-handle filter and
+    /// the build, and its result has to actually shorten the batch.
+    #[test]
+    fn static_blas_recovery_is_bounded_per_frame() {
+        let source = include_str!("resources.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("resources.rs must retain its test module")];
+        let start = production
+            .find("pub fn restore_missing_static_blas_for_draws(")
+            .expect("pre-TLAS static BLAS recovery entry point must exist");
+        let body = &production[start..];
+        let body = &body[..body
+            .find("\n    /// Register the fullscreen quad")
+            .expect("static BLAS recovery must remain a bounded method")];
+
+        let missing_filter = body
+            .find("handles.retain(|&handle| !accel.has_blas(handle))")
+            .expect("only missing BLAS should enter the recovery batch");
+        let plan = body
+            .find("plan_static_blas_restore(")
+            .expect("recovery must consult the per-frame restore plan");
+        let truncate = body
+            .find("handles.truncate(restore_count)")
+            .expect("the plan's count must actually bound the batch");
+        let build = body
+            .find("accel.build_blas_batched(")
+            .expect("missing static BLAS must be rebuilt before TLAS");
+        assert!(
+            missing_filter < plan && plan < truncate && truncate < build,
+            "select missing handles, plan the bounded restore, truncate, then rebuild"
+        );
+        assert!(
+            body.contains("MAX_STATIC_BLAS_RESTORES_PER_FRAME"),
+            "the per-frame cap must come from the shared tunable, not a local literal"
+        );
+        assert!(
+            body.contains("if restore_count == 0 {"),
+            "a zero plan must skip the batch entirely rather than fall through"
         );
     }
 
