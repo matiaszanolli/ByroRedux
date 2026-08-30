@@ -303,8 +303,34 @@ pub(super) fn collect_static_mesh_draws(
                 // only when an actual texture is bound (a bare bit on index 0
                 // would make the shader's "is a height map bound" test pass
                 // and sample texture 0).
+                //
+                // #3562 — and only when that texture actually HAS an alpha
+                // channel. `dds::format_has_alpha` is false for every
+                // BC1/BC4/BC5 variant, and the sampler returns `A = 1.0` for
+                // them by format. A constant height of 1.0 makes
+                // `parallaxDisplaceUV`'s `currentDepth >= sampledHeight`
+                // guard unreachable, so the marcher runs every step and
+                // returns `uv - planarSlide` — the FULL slide (≈0.8 UV units
+                // at grazing incidence), at every fragment, view-dependent
+                // per frame. And `sampleUV` feeds every later fetch (base,
+                // normal, detail, glow, gloss, dark, the eight terrain splat
+                // layers), so the whole material swims rather than just the
+                // height read. Mixed-block BC1 is worse than either extreme:
+                // 3-colour blocks decode `A = 0` (instant break) while
+                // 4-colour blocks decode `A = 1` (full slide), tearing the
+                // surface along block boundaries.
+                //
+                // This is the same gate `NORMAL_ALPHA_SPEC_BIT` already uses
+                // (`normal_alpha_spec_binding_applies`), which #3530's own
+                // comments cite as the pattern being reused — the alpha
+                // check was the half that didn't come across. It belongs
+                // here rather than at the NIFAL boundary because the DDS
+                // format is not known there; that is why `normal_has_alpha`
+                // is a render-side `MaterialTextureHandles` field and not a
+                // `Material` field.
                 let mut parallax_map_index = texture_indices.height;
                 if parallax_map_index != 0
+                    && normal_has_alpha
                     && mat.is_some_and(|material| material.parallax_height_in_alpha)
                 {
                     parallax_map_index |= crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
