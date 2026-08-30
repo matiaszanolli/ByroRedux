@@ -29,6 +29,38 @@
 # between that sweep and the #2351 fix-issue pass touches
 # `draw_sort_key`/`group_state`/batch-merge logic. Closed as
 # non-reproducing at HEAD; no baseline change needed.
+#
+# ── #3548 (RT-2), resolved 2026-08-30 ──────────────────────────────────
+# RT-2 reported bench_draws_batches 9 -> 20 (x2.22) and gpu_calls 2 -> 4
+# (x2.00) against this file and asked whether the cell shares #2215's
+# alpha-over-sort mechanism. It does not, and the baseline values below were
+# CORRECT — the engine had regressed away from them. NOT regenerated:
+# `git bisect run` over the 826 commits since the 2026-08-06 regen, testing
+# the live batch count on this exact cell, landed on `4b0a0418`
+# ("fix(water): place interior planes from cell references", 2026-08-19),
+# which widened the interior water plane from a fixed default to the cell's
+# whole REFR bounding box. That exposed a latent gate bug: an XCLW of exactly
+# 0.0 is Skyrim+/FO4's inert Creation-Kit default, not a water surface, and
+# the interior loader treated it as one. Dragonsreach logged
+# `submersion: ENTER underwater — depth=253.1` inside its own throne hall,
+# and the extra blend draws from that plane are what split the batches.
+#
+# Interior XCLW census over the five shipped masters (cells authoring the
+# sub-record): Skyrim 240 authored / 240 exactly 0.0; FO4 324 / 324; FNV
+# 39 / 0; FO3 1 / 0; Oblivion 118 / 0. So 564 interiors across the two newest
+# titles rendered underwater. Gated in `cell_loader::water::interior_water_height`.
+# Post-fix, measured twice: 2457/9b/2c and zero submersion events — the batch
+# axes below are matched again. `bench_draws_cmds` reads 2457 vs the 2342
+# here (+4.9%, inside the x1.1 gate) and `entities_total` 9428 vs 8126;
+# both are the separate entity-creep signal (RT-8), left for that finding to
+# regen deliberately rather than folded in here.
+#
+# The #2351 rationale below is retracted in one respect: it argued this cell
+# could not move on the batch axes because it doesn't share #2215's sort
+# mechanism. The premise held — it doesn't — but a cell can move on those
+# axes through any change that adds blend geometry, which is what happened.
+# A future breach here should be bisected against the live cell, not
+# reasoned about from the sort key.
 entities_total	8126
 tex_missing_unique_paths	0
 mesh_cache_failed_count	9

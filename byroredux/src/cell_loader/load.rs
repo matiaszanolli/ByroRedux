@@ -445,7 +445,29 @@ pub fn load_cell_with_masters(
     // 0 and purges the path map, so every reload re-reserved a fresh
     // unflushed slot. 21 of FNV's 39 real-water interiors are affected, and
     // the same shape applies to Oblivion / FO3 / Skyrim / FO4.
-    if let Some(water_height) = cell.water_height {
+    // #3548 — an XCLW of exactly 0.0 is Skyrim+/FO4's inert Creation-Kit
+    // default, NOT a water surface. Interior XCLW census over the five
+    // shipped masters, every interior cell that authors the sub-record:
+    //
+    //   Skyrim   240 authored — 240 are exactly 0.0,   0 are anything else
+    //   FO4      324 authored — 324 are exactly 0.0,   0 are anything else
+    //   FNV       39 authored —   0 are 0.0,          39 are real heights
+    //   FO3        1 authored —   0 are 0.0,           1 is a real height
+    //   Oblivion 118 authored —   0 are 0.0,         118 are real heights
+    //
+    // The split is total and falls on the engine generation, so this is one
+    // data-derived rule rather than a per-game branch: on the titles that
+    // author 0.0 it is *always* inert, and on the titles that author real
+    // interior water 0.0 never occurs, so nothing real is lost.
+    //
+    // Without the gate every such cell got a plane at renderer y = 0, above
+    // an interior floor that sits below it — flooding 240 of Skyrim's 590
+    // interiors (40.7%) and 324 of FO4's 1,195 (27.1%). `WhiterunDragonsreach`
+    // logged `submersion: ENTER underwater — depth=253.1` in its own throne
+    // hall. Latent until `4b0a0418` widened the plane from a fixed default to
+    // the cell's whole REFR bounding box, which is what made it cover the room
+    // and surfaced it as RT-2's draw-batch split.
+    if let Some(water_height) = water::interior_water_height(cell.water_height) {
         let (water_center, water_half_extent) = water::interior_water_placement(
             cell.references.iter().map(|reference| reference.position),
         );

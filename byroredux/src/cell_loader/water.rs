@@ -78,6 +78,38 @@ const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 16;
 /// displacement from collapsing into four giant corner panels.
 const LOD_WATER_RING_SUBDIVISIONS: usize = 8;
 
+/// Whether a cell's authored `XCLW` height is a real interior water surface.
+///
+/// #3548 — an `XCLW` of exactly `0.0` is Skyrim+/FO4's inert Creation-Kit
+/// default, not a water plane. Interior `XCLW` census over the five shipped
+/// masters, counting every interior cell that authors the sub-record:
+///
+/// | Game | authored | `== 0.0` | `!= 0.0` |
+/// |---|---:|---:|---:|
+/// | Skyrim | 240 | **240** | 0 |
+/// | FO4 | 324 | **324** | 0 |
+/// | FNV | 39 | 0 | **39** |
+/// | FO3 | 1 | 0 | **1** |
+/// | Oblivion | 118 | 0 | **118** |
+///
+/// The split is total and falls on the engine generation, so this is one
+/// data-derived rule rather than a per-game branch: on the titles that author
+/// `0.0` it is *always* inert, and on the titles that author real interior
+/// water `0.0` never occurs — so nothing real is lost.
+///
+/// Without this gate every such cell got a plane at renderer `y = 0`, above an
+/// interior floor that sits below it: 240 of Skyrim's 590 interiors (40.7%)
+/// and 324 of FO4's 1,195 (27.1%) rendered underwater. `WhiterunDragonsreach`
+/// logged `submersion: ENTER underwater — depth=253.1` inside its own throne
+/// hall.
+///
+/// Deliberately scoped to the interior route. The exterior path has its own
+/// `water_height_is_explicit` sentinel handling, and an exterior cell at sea
+/// level can legitimately sit at `0.0`.
+pub(super) fn interior_water_height(authored: Option<f32>) -> Option<f32> {
+    authored.filter(|h| *h != 0.0)
+}
+
 /// Derive a conservative horizontal placement for an interior water plane
 /// from the cell's authored REFR positions. Interior references are stored in
 /// Bethesda Z-up coordinates; the renderer's horizontal axes are X/Z after
@@ -1238,5 +1270,42 @@ mod tests {
             crate::env_translate::translate_lod_water(&Default::default(), "missing"),
             (None, None)
         );
+    }
+}
+
+#[cfg(test)]
+mod interior_water_gate_tests {
+    use super::interior_water_height;
+
+    /// #3548 — the exact value Skyrim and FO4 author on every one of their
+    /// 240 / 324 XCLW-bearing interiors, and which neither Oblivion, FO3 nor
+    /// FNV ever authors. It is the Creation Kit's inert default, not a
+    /// surface, and treating it as one flooded 564 interiors across the two
+    /// newest titles.
+    #[test]
+    fn a_zero_xclw_is_the_inert_default_not_a_water_surface() {
+        assert_eq!(interior_water_height(Some(0.0)), None);
+        assert_eq!(interior_water_height(Some(-0.0)), None);
+    }
+
+    /// Real interior water must still spawn. These are measured vanilla
+    /// values: FNV's flooded caves cluster at 14095.908, Techatticup Mine at
+    /// 30345, FO3's radio cache below zero, Oblivion's test cells at 7070 and
+    /// -368. Zero is the only value the census ever finds inert.
+    #[test]
+    fn every_authored_non_zero_height_still_spawns() {
+        for h in [14095.908_f32, 30345.0, -1547.9294, 7070.0, -368.0, 0.001, -0.001] {
+            assert_eq!(
+                interior_water_height(Some(h)),
+                Some(h),
+                "a non-zero authored XCLW is a real water surface"
+            );
+        }
+    }
+
+    /// An absent XCLW was never water and still isn't.
+    #[test]
+    fn an_absent_xclw_stays_absent() {
+        assert_eq!(interior_water_height(None), None);
     }
 }
