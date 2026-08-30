@@ -339,12 +339,24 @@ pub(crate) fn parse_modl_group(
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
 ) -> Result<()> {
+    parse_modl_group_inner(reader, end, statics, 0)
+}
+
+fn parse_modl_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    depth: u32,
+) -> Result<()> {
     let remap = reader.get_form_id_remap();
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_modl_group(reader, sub_end, statics)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_modl_group")
+            else {
+                continue;
+            };
+            parse_modl_group_inner(reader, sub_end, statics, depth + 1)?;
             continue;
         }
 
@@ -373,11 +385,24 @@ pub(crate) fn parse_ltex_group(
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
 ) -> Result<()> {
+    parse_ltex_group_inner(reader, end, ltex_to_txst, direct_paths, 0)
+}
+
+fn parse_ltex_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    ltex_to_txst: &mut HashMap<u32, u32>,
+    direct_paths: &mut HashMap<u32, String>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_ltex_group(reader, sub_end, ltex_to_txst, direct_paths)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_ltex_group")
+            else {
+                continue;
+            };
+            parse_ltex_group_inner(reader, sub_end, ltex_to_txst, direct_paths, depth + 1)?;
             continue;
         }
 
@@ -431,11 +456,32 @@ pub(crate) fn parse_txst_group(
     texture_sets: &mut HashMap<u32, TextureSet>,
     game: GameKind,
 ) -> Result<()> {
+    parse_txst_group_inner(reader, end, txst_textures, texture_sets, game, 0)
+}
+
+fn parse_txst_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    txst_textures: &mut HashMap<u32, String>,
+    texture_sets: &mut HashMap<u32, TextureSet>,
+    game: GameKind,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_txst_group(reader, sub_end, txst_textures, texture_sets, game)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_txst_group")
+            else {
+                continue;
+            };
+            parse_txst_group_inner(
+                reader,
+                sub_end,
+                txst_textures,
+                texture_sets,
+                game,
+                depth + 1,
+            )?;
             continue;
         }
 
@@ -553,11 +599,24 @@ pub(crate) fn parse_scol_group(
     statics: &mut HashMap<u32, StaticObject>,
     scols: &mut HashMap<u32, crate::esm::records::ScolRecord>,
 ) -> Result<()> {
+    parse_scol_group_inner(reader, end, statics, scols, 0)
+}
+
+fn parse_scol_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    scols: &mut HashMap<u32, crate::esm::records::ScolRecord>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_scol_group(reader, sub_end, statics, scols)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_scol_group")
+            else {
+                continue;
+            };
+            parse_scol_group_inner(reader, sub_end, statics, scols, depth + 1)?;
             continue;
         }
 
@@ -628,11 +687,24 @@ pub(crate) fn parse_pkin_group(
     statics: &mut HashMap<u32, StaticObject>,
     packins: &mut HashMap<u32, crate::esm::records::PkinRecord>,
 ) -> Result<()> {
+    parse_pkin_group_inner(reader, end, statics, packins, 0)
+}
+
+fn parse_pkin_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    packins: &mut HashMap<u32, crate::esm::records::PkinRecord>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_pkin_group(reader, sub_end, statics, packins)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_pkin_group")
+            else {
+                continue;
+            };
+            parse_pkin_group_inner(reader, sub_end, statics, packins, depth + 1)?;
             continue;
         }
 
@@ -695,11 +767,24 @@ pub(crate) fn parse_movs_group(
     statics: &mut HashMap<u32, StaticObject>,
     movables: &mut HashMap<u32, crate::esm::records::MovableStaticRecord>,
 ) -> Result<()> {
+    parse_movs_group_inner(reader, end, statics, movables, 0)
+}
+
+fn parse_movs_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    statics: &mut HashMap<u32, StaticObject>,
+    movables: &mut HashMap<u32, crate::esm::records::MovableStaticRecord>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_movs_group(reader, sub_end, statics, movables)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_movs_group")
+            else {
+                continue;
+            };
+            parse_movs_group_inner(reader, sub_end, statics, movables, depth + 1)?;
             continue;
         }
 
@@ -758,11 +843,23 @@ pub(crate) fn parse_mswp_group(
     end: usize,
     material_swaps: &mut HashMap<u32, crate::esm::records::MaterialSwapRecord>,
 ) -> Result<()> {
+    parse_mswp_group_inner(reader, end, material_swaps, 0)
+}
+
+fn parse_mswp_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    material_swaps: &mut HashMap<u32, crate::esm::records::MaterialSwapRecord>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_mswp_group(reader, sub_end, material_swaps)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_mswp_group")
+            else {
+                continue;
+            };
+            parse_mswp_group_inner(reader, sub_end, material_swaps, depth + 1)?;
             continue;
         }
 

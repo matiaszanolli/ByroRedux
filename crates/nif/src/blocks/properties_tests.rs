@@ -206,6 +206,103 @@ fn parse_string_palette() {
     assert_eq!(stream.position() as usize, data.len());
 }
 
+/// #3516 — `TexDesc` carries two disjoint on-disk encodings in one `flags`
+/// word, so `clamp_mode` is decoded at parse time and both branches must
+/// agree on the *meaning*. Values are the measured real ones: a census over
+/// `Fallout - Meshes.bsa` found 2236 of 2258 base descriptors authoring the
+/// raw word `0x3200` (clamp 3 = WRAP/WRAP, filter 2), and Oblivion's
+/// synthesized equivalent for the same clamp mode is `0x0023`.
+#[test]
+fn tex_desc_clamp_mode_decodes_from_the_right_nibble_per_version() {
+    // Build a one-slot NiTexturingProperty and read back its base TexDesc.
+    let parse_base = |version: NifVersion, body: &[u8]| {
+        let header = NifHeader {
+            version,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // NiObjectNET base: inline empty name + 0 extras + null controller.
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        if version <= NifVersion::V10_0_1_2 || version >= NifVersion::V20_1_0_2 {
+            data.extend_from_slice(&0u16.to_le_bytes()); // property flags
+        }
+        if version <= NifVersion::STRING_TABLE_THRESHOLD {
+            data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
+        }
+        data.extend_from_slice(&1u32.to_le_bytes()); // texture_count = 1 (base only)
+        data.push(1); // base has = 1
+        data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
+        data.extend_from_slice(body);
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
+        let mut stream = NifStream::new(&data, &header);
+        NiTexturingProperty::parse(&mut stream)
+            .expect("NiTexturingProperty should parse")
+            .base_texture
+            .expect("base slot is populated")
+    };
+
+    // FNV / FO3 (v20.2.0.7, >= 20.1.0.3): the raw `TexturingMapFlags` word.
+    // Clamp is bits 12-15, so `flags & 0xF` — what the consumer used to read
+    // — is 0 here and would have selected CLAMP_S_CLAMP_T for every one of
+    // those 2236 WRAP/WRAP descriptors.
+    let mut fnv_body = Vec::new();
+    fnv_body.extend_from_slice(&0x3200u16.to_le_bytes());
+    fnv_body.push(0); // has_transform = 0
+    let fnv = parse_base(NifVersion::V20_2_0_7, &fnv_body);
+    assert_eq!(fnv.flags, 0x3200, "the raw word is stored verbatim");
+    assert_eq!(
+        fnv.flags & 0xF,
+        0,
+        "the old low-nibble read really did yield 0"
+    );
+    assert_eq!(
+        fnv.clamp_mode, 3,
+        "0x3200 is clamp mode 3 (WRAP_S_WRAP_T), filter 2 — nif.xml's \
+         `0xYZ00 = clamp mode Y, filter mode Z`"
+    );
+
+    // Oblivion (v20.0.0.5, < 20.1.0.3): three separate uints, packed into the
+    // synthesized layout with clamp in the LOW nibble. Same clamp mode, and
+    // the low-nibble read is correct here — which is why the bug was
+    // invisible on the game the code was written against.
+    let mut obl_body = Vec::new();
+    obl_body.extend_from_slice(&3u32.to_le_bytes()); // clamp_mode = WRAP_S_WRAP_T
+    obl_body.extend_from_slice(&2u32.to_le_bytes()); // filter_mode
+    obl_body.extend_from_slice(&0u32.to_le_bytes()); // uv_set
+    obl_body.push(0); // has_transform = 0
+    let obl = parse_base(NifVersion::V20_0_0_5, &obl_body);
+    assert_eq!(
+        obl.flags, 0x0023,
+        "synthesized: clamp low nibble, filter next"
+    );
+    assert_eq!(
+        obl.clamp_mode, 3,
+        "same authored clamp mode as the FNV case"
+    );
+
+    // And the clamped end of the range, so the test cannot pass by returning
+    // a constant 3.
+    let mut clamp_body = Vec::new();
+    clamp_body.extend_from_slice(&0x0200u16.to_le_bytes()); // clamp 0, filter 2
+    clamp_body.push(0);
+    assert_eq!(
+        parse_base(NifVersion::V20_2_0_7, &clamp_body).clamp_mode,
+        0,
+        "0x0200 is CLAMP_S_CLAMP_T — the 21 FNV descriptors that authored it"
+    );
+}
+
 /// Regression test for issue #400 — NiTexturingProperty decal slots
 /// (Oblivion pre-20.2.0.5 path, slots 6..=texture_count-1) are now
 /// retained on the block instead of silently discarded. Builds a

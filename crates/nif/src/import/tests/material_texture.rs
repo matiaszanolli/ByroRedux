@@ -105,6 +105,7 @@ fn import_extracts_oblivion_bump_texture_as_normal_map() {
         base_texture: Some(TexDesc {
             source_ref: BlockRef(5),
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         dark_texture: None,
@@ -114,6 +115,7 @@ fn import_extracts_oblivion_bump_texture_as_normal_map() {
         bump_texture: Some(TexDesc {
             source_ref: BlockRef(4),
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         normal_texture: None,
@@ -222,11 +224,13 @@ fn import_prefers_normal_texture_over_bump_texture() {
         bump_texture: Some(TexDesc {
             source_ref: BlockRef(4),
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         normal_texture: Some(TexDesc {
             source_ref: BlockRef(5),
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         parallax_texture: None,

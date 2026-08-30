@@ -535,6 +535,7 @@ fn ni_texturing_uv_transform_survives_preceding_ni_material_property() {
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,
             flags: 0,
+            clamp_mode: 0,
             transform: Some(TexTransform {
                 translation: [0.5, 0.0],
                 scale: [2.0, 1.0],
@@ -667,6 +668,7 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,
             flags: 0,
+            clamp_mode: 0,
             transform: Some(TexTransform {
                 translation: [0.99, 0.99],
                 scale: [9.0, 9.0],
@@ -1676,6 +1678,7 @@ fn ni_texturing_property_parallax_slot_defaults_scalars_when_no_pp_lighting() {
         parallax_texture: Some(TexDesc {
             source_ref: BlockRef(0),
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         parallax_offset: 0.0,
@@ -1737,11 +1740,13 @@ fn ni_texturing_property_decals_reach_semantic_overlay_slots() {
             TexDesc {
                 source_ref: BlockRef(0),
                 flags: 0,
+                clamp_mode: 0,
                 transform: None,
             },
             TexDesc {
                 source_ref: BlockRef(1),
                 flags: 0,
+                clamp_mode: 0,
                 transform: None,
             },
         ],

@@ -1418,6 +1418,19 @@ pub fn execute_pending_save_loads(
     match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
         Ok(applied) => {
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
+            // #3488 — the overlay is additive-only, so a saved *absence*
+            // (unarmed) cannot clear a live `EquippedWeapon` off the
+            // process-lifetime player body, which survives the cell reload
+            // untouched. Re-derive it from the `EquipmentSlots` + `Inventory`
+            // rows just overlaid, using the same reconciler the runtime
+            // equip/unequip path uses. Sibling of the `Dead` reconciler
+            // above, per the contract in `byroredux_save::apply_deltas`.
+            let player = world
+                .try_resource::<crate::systems::PlayerEntity>()
+                .and_then(|entity| entity.0);
+            if let Some(player) = player {
+                crate::inventory::reconcile_player_equipped_weapon(world, player);
+            }
             log::info!(
                 "save load: {location_label} reloaded ({count_label}); applied {} saved deltas \
                  across {} form-id-matched entities; reconciled {} dead actors",

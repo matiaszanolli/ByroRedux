@@ -145,7 +145,37 @@ pub struct NiTexturingProperty {
 #[derive(Debug)]
 pub struct TexDesc {
     pub source_ref: crate::types::BlockRef,
+    /// The slot's mode word — **two disjoint encodings share this field**,
+    /// which is why [`Self::clamp_mode`] exists.
+    ///
+    /// - `>= 20.1.0.3` (FO3 / FNV / Skyrim): the raw on-disk
+    ///   `TexturingMapFlags` word — texture index in bits 0-7, filter mode
+    ///   in bits 8-11, clamp mode in bits 12-15 (nif.xml: *"clamp and
+    ///   filter mode stored in upper byte with 0xYZ00 = clamp mode Y,
+    ///   filter mode Z"*).
+    /// - `< 20.1.0.3` (Oblivion and earlier): no such word exists on disk —
+    ///   nif.xml has separate `Clamp Mode` / `Filter Mode` / `UV Set`
+    ///   `uint`s, which this parser packs into a *synthesized* layout with
+    ///   clamp in bits 0-3, filter in bits 4-7 and UV set in bits 8-11.
+    ///
+    /// Read [`Self::clamp_mode`] rather than masking this yourself (#3516).
     pub flags: u16,
+    /// `TexClampMode` for this slot, `0..=3` — decoded at parse time from
+    /// whichever of the two [`Self::flags`] encodings the file version
+    /// selects, so consumers never have to know which one they hold.
+    ///
+    /// `0 = CLAMP_S_CLAMP_T`, `1 = CLAMP_S_WRAP_T`, `2 = WRAP_S_CLAMP_T`,
+    /// `3 = WRAP_S_WRAP_T` (nif.xml's default).
+    ///
+    /// #3516 — the single consumer used to mask `flags & 0xF`
+    /// unconditionally. That is the synthesized layout, so it was right on
+    /// Oblivion and wrong on every `>= 20.1.0.3` file: a census over
+    /// `Fallout - Meshes.bsa` found 2236 of 2258 base `TexDesc`s authoring
+    /// `0x3200` (clamp 3 = WRAP/WRAP, filter 2), every one of which read
+    /// back as `0` = CLAMP/CLAMP — so all tiled FO3/FNV architecture,
+    /// terrain trim and repeated detail sampled with
+    /// `CLAMP_TO_EDGE` and smeared its border texel.
+    pub clamp_mode: u8,
     /// Optional per-slot UV transform. Populated when the NIF sets
     /// `Has Texture Transform = true` on the slot; `None` when the slot
     /// uses the identity transform. Only the base-texture slot is
@@ -416,6 +446,10 @@ impl NiTexturingProperty {
 
         if stream.version() >= NifVersion::V20_1_0_3 {
             let flags = stream.read_u16_le()?;
+            // Raw `TexturingMapFlags`: clamp mode is the top nibble. See
+            // `TexDesc::clamp_mode` for why this is decoded here and not by
+            // the consumer (#3516).
+            let clamp_mode = ((flags >> 12) & 0xF) as u8;
             // nif.xml: Has Texture Transform (bool) since 10.1.0.0,
             // present in every modern file. We read the 32-byte TexDesc
             // transform body when the bool is set and store it on the
@@ -434,6 +468,7 @@ impl NiTexturingProperty {
             Ok(Some(TexDesc {
                 source_ref,
                 flags,
+                clamp_mode,
                 transform,
             }))
         } else {
@@ -459,12 +494,15 @@ impl NiTexturingProperty {
                 None
             };
 
+            // Synthesized layout — clamp in the LOW nibble here, unlike the
+            // raw word above (#3516).
             let flags = ((clamp_mode & 0xF) as u16)
                 | (((filter_mode & 0xF) as u16) << 4)
                 | (((uv_set & 0xF) as u16) << 8);
             Ok(Some(TexDesc {
                 source_ref,
                 flags,
+                clamp_mode: (clamp_mode & 0xF) as u8,
                 transform,
             }))
         }

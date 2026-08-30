@@ -379,12 +379,20 @@ mod tests {
     }
 
     fn tes5_group(payload: Vec<u8>) -> Vec<u8> {
+        tes5_group_typed(payload, 0)
+    }
+
+    /// `group_type` selects which walker arm the nesting drives: the
+    /// `records/` walkers and the `support.rs` family recurse on any group,
+    /// but `parse_cell_group` only recurses on block/sub-block (2/3) and
+    /// `parse_wrld_children` on exterior block/sub-block (4/5).
+    fn tes5_group_typed(payload: Vec<u8>, group_type: u32) -> Vec<u8> {
         let total_size = 24u32 + u32::try_from(payload.len()).expect("synthetic group fits u32");
         let mut bytes = Vec::with_capacity(total_size as usize);
         bytes.extend_from_slice(b"GRUP");
         bytes.extend_from_slice(&total_size.to_le_bytes());
         bytes.extend_from_slice(b"TEST");
-        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&group_type.to_le_bytes());
         bytes.extend_from_slice(&[0; 8]);
         bytes.extend_from_slice(&payload);
         bytes
@@ -413,5 +421,121 @@ mod tests {
             bytes.len(),
             "skipping the over-depth group must preserve outer byte accounting"
         );
+    }
+    /// #3503 — every self-recursive GRUP walker in the parser must honour the
+    /// shared cap, not just the four `records/` ones the #3237 fixture
+    /// happened to point at. That fix wired `bounded_group_content_end` into
+    /// 6 sites and left 8 self-recursive walkers calling the unguarded
+    /// `group_content_end`, so the stack-overflow-on-crafted-plugin vector
+    /// stayed live through `parse_refr_group` (reachable from both the
+    /// interior-cell and the worldspace descents) and the seven
+    /// `cell/support.rs` top-level walkers.
+    ///
+    /// Table-driven on purpose: the next walker added without a `depth`
+    /// parameter fails here rather than shipping unguarded.
+    #[test]
+    fn every_recursive_grup_walker_honours_the_shared_depth_cap() {
+        use crate::esm::cell::support::{
+            parse_ltex_group, parse_modl_group, parse_movs_group, parse_mswp_group,
+            parse_pkin_group, parse_scol_group, parse_txst_group,
+        };
+        use crate::esm::cell::walkers::{parse_cell_group, parse_refr_group};
+        use crate::esm::cell::wrld::parse_wrld_children;
+        use crate::esm::records::GameKind;
+
+        // One fixture shape, three group types — see `tes5_group_typed`.
+        //
+        // The innermost payload is a deliberately TRUNCATED record header
+        // (10 bytes, short of the 24 a TES5 header needs) — that is what
+        // gives this test teeth. A walker that honours the cap calls
+        // `skip_group` at the ceiling and never reads those bytes, so it
+        // returns `Ok` with clean byte accounting. A walker that recurses
+        // unguarded reaches the bottom and `read_record_header` fails
+        // `ensure!(remaining >= header_size)`, so the `Err` arm below fires.
+        // Byte accounting alone would NOT discriminate: an unguarded walker
+        // that survived the descent still ends at `end`.
+        let nest = |group_type: u32| {
+            let mut bytes = vec![0xAAu8; 10];
+            for _ in 0..(MAX_GRUP_NESTING_DEPTH + 128) {
+                bytes = tes5_group_typed(bytes, group_type);
+            }
+            bytes
+        };
+        let any = nest(0); // walkers that recurse on any group
+        let cell = nest(2); // parse_cell_group: interior block
+        let wrld = nest(4); // parse_wrld_children: exterior block
+
+        let mut check =
+            |name: &str,
+             bytes: &[u8],
+             walk: &mut dyn FnMut(&mut EsmReader, usize) -> Result<()>| {
+                let mut reader = EsmReader::new(bytes);
+                walk(&mut reader, bytes.len()).unwrap_or_else(|e| {
+                    panic!("{name}: over-depth GRUP input must be skipped without aborting: {e:#}")
+                });
+                assert_eq!(
+                    reader.position(),
+                    bytes.len(),
+                    "{name}: skipping the over-depth group must preserve outer byte accounting"
+                );
+            };
+
+        check("extract_records", &any, &mut |r, end| {
+            extract_records(r, end, b"GMST", &mut |_, _| {})
+        });
+        check("extract_records_with_modl", &any, &mut |r, end| {
+            let mut statics = HashMap::new();
+            extract_records_with_modl(r, end, b"GMST", &mut statics, &mut |_, _| {})
+        });
+        check("extract_dial_with_info", &any, &mut |r, end| {
+            let mut dialogues = HashMap::new();
+            extract_dial_with_info(r, end, &mut dialogues)
+        });
+        check("extract_quest_dialogue_scene_tree", &any, &mut |r, end| {
+            let (mut quests, mut dialogues, mut scenes) =
+                (HashMap::new(), HashMap::new(), HashMap::new());
+            extract_quest_dialogue_scene_tree(r, end, &mut quests, &mut dialogues, &mut scenes)
+        });
+        check("parse_refr_group", &any, &mut |r, end| {
+            let (mut refs, mut land, mut navmeshes, mut deleted) =
+                (Vec::new(), None, Vec::new(), Vec::new());
+            parse_refr_group(r, end, &mut refs, &mut land, &mut navmeshes, &mut deleted)
+        });
+        check("parse_modl_group", &any, &mut |r, end| {
+            let mut statics = HashMap::new();
+            parse_modl_group(r, end, &mut statics)
+        });
+        check("parse_ltex_group", &any, &mut |r, end| {
+            let (mut ltex_to_txst, mut direct) = (HashMap::new(), HashMap::new());
+            parse_ltex_group(r, end, &mut ltex_to_txst, &mut direct)
+        });
+        check("parse_txst_group", &any, &mut |r, end| {
+            let (mut textures, mut sets) = (HashMap::new(), HashMap::new());
+            parse_txst_group(r, end, &mut textures, &mut sets, GameKind::Fallout3NV)
+        });
+        check("parse_scol_group", &any, &mut |r, end| {
+            let (mut statics, mut scols) = (HashMap::new(), HashMap::new());
+            parse_scol_group(r, end, &mut statics, &mut scols)
+        });
+        check("parse_pkin_group", &any, &mut |r, end| {
+            let (mut statics, mut packins) = (HashMap::new(), HashMap::new());
+            parse_pkin_group(r, end, &mut statics, &mut packins)
+        });
+        check("parse_movs_group", &any, &mut |r, end| {
+            let (mut statics, mut movables) = (HashMap::new(), HashMap::new());
+            parse_movs_group(r, end, &mut statics, &mut movables)
+        });
+        check("parse_mswp_group", &any, &mut |r, end| {
+            let mut swaps = HashMap::new();
+            parse_mswp_group(r, end, &mut swaps)
+        });
+        check("parse_cell_group", &cell, &mut |r, end| {
+            let mut cells = HashMap::new();
+            parse_cell_group(r, end, &mut cells, GameKind::Fallout3NV)
+        });
+        check("parse_wrld_children", &wrld, &mut |r, end| {
+            let (mut exterior, mut persistent) = (HashMap::new(), None);
+            parse_wrld_children(r, end, &mut exterior, &mut persistent, false)
+        });
     }
 }

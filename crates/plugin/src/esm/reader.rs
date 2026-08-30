@@ -834,6 +834,17 @@ impl<'a> EsmReader<'a> {
     /// error-prone `reader.position() + total_size - 24` pattern, which
     /// bakes in a Tes5Plus header size and breaks on Oblivion's 20-byte
     /// group header (#391).
+    ///
+    /// **A self-recursive walker must not call this** — it has no nesting
+    /// bound, so a crafted plugin of nested minimal GRUPs drives the
+    /// recursion until the native stack aborts the process (an uncatchable
+    /// crash, not a `Result`). Use [`Self::bounded_group_content_end`] and
+    /// thread a `depth` parameter, the `_inner(…, depth: u32)` shape every
+    /// recursive walker in `esm/` follows. This stays available for the
+    /// non-recursive top-level dispatch loops (`records/mod.rs`,
+    /// `parse_wrld_group`) and for tests, which enter a group exactly once.
+    /// #3237 established the guard; #3503 is what it cost to have eight
+    /// walkers keep calling this one.
     pub fn group_content_end(&self, header: &GroupHeader) -> usize {
         self.pos + self.group_content_len(header)
     }

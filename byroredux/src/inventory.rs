@@ -464,6 +464,41 @@ pub(crate) fn apply_action(
     mutation
 }
 
+/// Rebuild the runtime [`EquippedWeapon`] consequence of the persisted
+/// `EquipmentSlots.weapon` + `Inventory` facts, after a live load has
+/// overlaid them.
+///
+/// The save overlay is **additive-only** (`byroredux_save::apply_deltas`):
+/// it can update or insert a component row, never remove one. Runtime
+/// removals that are consequences of a persisted fact must be rebuilt by
+/// the binary afterwards — `reconcile_dead_actor_runtime_state` is the model
+/// this follows (#3022).
+///
+/// `EquippedWeapon` is removed at runtime by [`reconcile_equipped_weapon`]'s
+/// `else` arm whenever the player unequips their weapon through the pause
+/// menu. Without this call the removal could not survive a load: the player
+/// body is spawned in `scene::setup_scene` with no `CellRoot`, so
+/// `unload_cell_inner` never collects it and it keeps every component the
+/// *current* session gave it. Saving while unarmed, equipping a weapon and
+/// quickloading left the player still holding it — with the restored
+/// `EquipmentSlots.weapon == None` and a freshly-overlaid `Inventory`
+/// contradicting the surviving `EquippedWeapon`, whose `inventory_index`
+/// pointed into an inventory that had just been wholesale replaced. Melee
+/// then dealt the live session's weapon damage rather than the saved
+/// unarmed damage, with no log line anywhere (#3488 / SAVE-D1-2026-08-27-01).
+///
+/// Re-deriving is the whole point: the same function that owns the runtime
+/// transition owns the reload, so the two can't drift.
+pub(crate) fn reconcile_player_equipped_weapon(
+    world: &mut World,
+    player: byroredux_core::ecs::EntityId,
+) {
+    let weapon_slot = world
+        .get::<EquipmentSlots>(player)
+        .and_then(|equipment| equipment.weapon);
+    reconcile_equipped_weapon(world, player, weapon_slot);
+}
+
 fn reconcile_equipped_weapon(
     world: &mut World,
     player: byroredux_core::ecs::EntityId,
@@ -561,6 +596,66 @@ mod tests {
             ]),
         });
         (world, player)
+    }
+
+    /// #3488 — the removal direction across a live load. The save overlay is
+    /// additive-only, so a snapshot taken while unarmed carries no
+    /// `EquippedWeapon` row at all; the live component on the surviving
+    /// player body is never touched by `apply_deltas`. This reconstructs the
+    /// post-overlay state — restored `EquipmentSlots.weapon == None`, live
+    /// `EquippedWeapon` still standing — and pins that the reconciler clears
+    /// it.
+    #[test]
+    fn load_reconciler_clears_a_weapon_the_save_did_not_have() {
+        let (mut world, player) = fixture();
+
+        // Live session: the player equips the Iron Sword (index 2).
+        world
+            .get_mut::<EquipmentSlots>(player)
+            .unwrap()
+            .equip_weapon(InventoryIndex(2));
+        reconcile_player_equipped_weapon(&mut world, player);
+        assert_eq!(
+            world.get::<EquippedWeapon>(player).map(|w| w.base_form_id),
+            Some(0x9ABC),
+            "precondition: the live session is holding the sword"
+        );
+
+        // The overlay lands the saved (unarmed) `EquipmentSlots` — and
+        // cannot remove the live `EquippedWeapon`, which is the whole bug.
+        world.insert(player, EquipmentSlots::new());
+        assert!(
+            world.get::<EquippedWeapon>(player).is_some(),
+            "apply_deltas is additive-only: the stale weapon is still here"
+        );
+
+        reconcile_player_equipped_weapon(&mut world, player);
+        assert!(
+            world.get::<EquippedWeapon>(player).is_none(),
+            "the load reconciler must clear a weapon the save did not have — \
+             otherwise melee keeps dealing the live session's weapon damage \
+             instead of the saved unarmed damage (#3488)"
+        );
+    }
+
+    /// The other direction, so the reconciler cannot pass by removing
+    /// unconditionally: a save taken while armed must re-derive the weapon
+    /// onto a body that is currently unarmed.
+    #[test]
+    fn load_reconciler_restores_a_weapon_the_save_did_have() {
+        let (mut world, player) = fixture();
+        world
+            .get_mut::<EquipmentSlots>(player)
+            .unwrap()
+            .equip_weapon(InventoryIndex(2));
+
+        reconcile_player_equipped_weapon(&mut world, player);
+        let weapon = world
+            .get::<EquippedWeapon>(player)
+            .expect("armed slots must re-derive the component");
+        assert_eq!(weapon.base_form_id, 0x9ABC);
+        assert_eq!(weapon.inventory_index, InventoryIndex(2));
+        assert_eq!(weapon.damage, 12.0);
     }
 
     #[test]

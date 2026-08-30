@@ -65,13 +65,20 @@ pub const GEOMETRY_REBUILD_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 /// `MeshRegistry::advance_geometry_rebuild` swaps them out, and only once
 /// both targets are fully copied. That means two full geometry SSBO
 /// generations are resident in device-local memory at once for the
-/// rebuild's duration. This is an accepted trade-off (#3298): it smooths a
-/// multi-hundred-ms atomic stall into several bounded per-frame chunks, at
-/// the cost of a temporarily higher VRAM high-water mark. If the up-front
-/// allocation for the second generation fails (no headroom), the caller
-/// (`MeshRegistry::rebuild_geometry_ssbo`) falls back to the original
-/// atomic idle-reclaim-then-build path unchanged — #2374's device-loss
-/// protection stays intact as a fallback, not the common case.
+/// rebuild's duration. This is an accepted trade-off (#3298) *below*
+/// [`GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`]: it smooths a multi-hundred-ms
+/// atomic stall into several bounded per-frame chunks, at the cost of a
+/// temporarily higher VRAM high-water mark.
+///
+/// #3443 — at or above that threshold the caller
+/// (`MeshRegistry::rebuild_geometry_ssbo`) never starts one of these at
+/// all; the rebuild goes to the atomic idle-reclaim path up front. #3298
+/// shipped this state with no size condition, which routed around the very
+/// case #2374 filed the threshold for: on a 6 GB card an FO4 boundary
+/// crossing duplicates ~800-900 MiB, the largest non-texture allocation
+/// class, on top of a ~1.7 GB steady state. A duplicate allocation that
+/// *succeeds* there and dies later cannot be caught by the `Err` arm.
+/// The allocation-failure fallback still exists for the sub-threshold case.
 /// A computed-but-unpublished geometry compaction (#3372).
 ///
 /// Produced by `plan_geometry_compaction`, applied by `apply_compaction_plan`.
@@ -1257,12 +1264,23 @@ impl MeshRegistry {
     /// chunk per call, across as many frames as it takes — smoothing what
     /// used to be a single multi-hundred-ms stall (the FO4 boundary-
     /// crossing 1.50 s worst frame, #2376/EX-06/07) into several bounded
-    /// slices. If the up-front allocation for the second (temporarily
-    /// duplicate) generation fails, this falls back unchanged to the
-    /// original atomic idle-reclaim-then-build path
-    /// ([`Self::rebuild_geometry_ssbo_atomic_fallback`]) — #2374's
-    /// device-loss protection stays intact as the low-headroom recovery
-    /// path, not the common case.
+    /// slices.
+    ///
+    /// Two conditions send a rebuild to the original atomic
+    /// idle-reclaim-then-build path
+    /// ([`Self::rebuild_geometry_ssbo_atomic_fallback`]) instead:
+    ///
+    /// 1. The projected size is at or above
+    ///    [`GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`] and an old generation
+    ///    exists — [`geometry_rebuild_needs_idle`] (#2374 / #3443). This is
+    ///    checked **before** allocating, because the hazard the threshold
+    ///    guards against is the duplicate allocation *succeeding* on a
+    ///    constrained device and escalating to `VK_ERROR_DEVICE_LOST` later.
+    /// 2. The up-front allocation for the second (temporarily duplicate)
+    ///    generation fails outright.
+    ///
+    /// So #2374's device-loss protection is a size-gated route, not merely
+    /// a post-hoc `Err` recovery.
     pub fn rebuild_geometry_ssbo(
         &mut self,
         device: &ash::Device,
@@ -1349,7 +1367,30 @@ impl MeshRegistry {
         // Only meaningful once there's an old generation to duplicate
         // alongside — a first build has nothing to keep serving draws, so
         // it always goes straight through the chunked path below.
-        if has_existing_buffers {
+        //
+        // #3443 — and only while duplicating that generation is *safe*.
+        // `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` exists precisely because
+        // above 256 MiB a mid-range GPU may **succeed** at the second
+        // full-size allocation (driver-managed residency / system-memory
+        // spill) and then escalate to an unrecoverable
+        // `VK_ERROR_DEVICE_LOST` under later pressure — which the `Err` arm
+        // below cannot catch, because there is no `Err`. #3298 landed the
+        // chunked path with no size condition at all, leaving
+        // `geometry_rebuild_needs_idle` reachable only from the fallback it
+        // routes around. At or above the threshold the rebuild takes
+        // #2374's atomic idle-reclaim route again; below it, the chunked
+        // path duplicates as designed. On the FO4 boundary crossing that is
+        // ~800-900 MiB against a documented 6 GB RT minimum, on top of a
+        // ~1.7 GB steady state.
+        let duplicate_is_safe = !geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers);
+        if has_existing_buffers && !duplicate_is_safe {
+            log::info!(
+                "Geometry SSBO rebuild ({:.1} MiB) is at or above the {} MiB duplication                  ceiling — taking the atomic idle-reclaim path instead of holding two                  generations resident (#2374 / #3443)",
+                projected_bytes as f64 / (1024.0 * 1024.0),
+                GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES / (1024 * 1024),
+            );
+        }
+        if has_existing_buffers && duplicate_is_safe {
             let rt_usage = if rt_enabled {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
@@ -2234,6 +2275,46 @@ mod pool_growth_cap_tests {
             "vertex cap should be larger memory budget than index cap (got {} vs {} bytes)",
             vertex_bytes,
             index_bytes,
+        );
+    }
+
+    /// #3443 — the size gate must be consulted **before** the duplicate
+    /// allocation, not only after it has already failed. #3298's chunked
+    /// path allocated a second full-size generation unconditionally whenever
+    /// an old one existed, which left `geometry_rebuild_needs_idle` reachable
+    /// only from `rebuild_geometry_ssbo_atomic_fallback` — i.e. only after an
+    /// `Err`. The hazard the threshold guards is the opposite case: on a
+    /// constrained device the duplicate allocation *succeeds* (driver
+    /// residency / system-memory spill) and escalates to an unrecoverable
+    /// `VK_ERROR_DEVICE_LOST` later, with no `Err` to catch.
+    ///
+    /// Source-level because the arm needs a live Vulkan device to execute;
+    /// the predicate's own behaviour is covered by the test below.
+    #[test]
+    fn chunked_rebuild_consults_the_idle_threshold_before_duplicating() {
+        let src = include_str!("mesh.rs");
+        let body = src
+            .split_once("fn rebuild_geometry_ssbo_inner(")
+            .expect("rebuild_geometry_ssbo_inner must exist")
+            .1;
+        let body = body
+            .split_once("fn rebuild_geometry_ssbo_atomic_fallback(")
+            .map_or(body, |(before, _)| before);
+
+        let gate = body
+            .find("geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers)")
+            .expect(
+                "the chunked path must consult geometry_rebuild_needs_idle — without it a \
+                 >= 256 MiB rebuild duplicates the largest non-texture allocation class \
+                 and routes around #2374",
+            );
+        let allocate = body
+            .find("try_allocate_empty_geometry_buffers(")
+            .expect("the chunked path must allocate the replacement generation");
+        assert!(
+            gate < allocate,
+            "the size gate must precede the duplicate allocation: a post-hoc Err check \
+             cannot see an allocation that succeeds and dies later (#3443)"
         );
     }
 

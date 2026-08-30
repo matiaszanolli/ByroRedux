@@ -85,6 +85,7 @@ fn oblivion_shape_properties() -> (NiMaterialProperty, NiTexturingProperty) {
         base_texture: Some(TexDesc {
             source_ref: BlockRef::NULL,
             flags: 0,
+            clamp_mode: 0,
             transform: None,
         }),
         dark_texture: None,

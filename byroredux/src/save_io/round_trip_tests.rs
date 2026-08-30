@@ -83,6 +83,53 @@ fn delta_columns_carry_only_session_stable_fields() {
     );
 }
 
+/// #3488 — the additive-only overlay cannot express a removal, so any
+/// `MUTABLE_DELTA_COLUMNS` type that a *production* path removes at runtime
+/// needs a reconciler in `execute_pending_save_loads`' tail, exactly as
+/// `Dead` has `reconcile_dead_actor_runtime_state` (#3022). Otherwise the
+/// removal silently fails to survive a live load on any entity that outlives
+/// the cell reload — which the process-lifetime player body always does.
+///
+/// Rust has no reflection for "which components does this crate remove", so
+/// this scans the tree for production `world.remove::<T>` sites the same way
+/// the sibling above pins the column set: by hand-audited list. Adding one
+/// makes this fail and forces the maintainer to write the reconciler.
+#[test]
+fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
+    /// Every `MUTABLE_DELTA_COLUMNS` type with a production (non-test)
+    /// `world.remove::<T>` site, paired with the reconciler that rebuilds
+    /// the removal after `apply_deltas`.
+    const RECONCILED: &[(&str, &str)] = &[
+        // inventory.rs' `reconcile_equipped_weapon` else-arm, reached from
+        // the pause menu's unequip action (main.rs' `inventory_actions`).
+        ("EquippedWeapon", "reconcile_player_equipped_weapon"),
+    ];
+
+    let save_io = include_str!("../save_io.rs");
+    for (column, reconciler) in RECONCILED {
+        assert!(
+            MUTABLE_DELTA_COLUMNS.contains(column),
+            "{column} is listed as reconciled but is no longer a delta column"
+        );
+        assert!(
+            save_io.contains(reconciler),
+            "{column} is removed at runtime but `{reconciler}` is not called from \
+             save_io.rs — the additive-only overlay would leave the live component \
+             standing after a load (#3488)"
+        );
+    }
+
+    // The audit half: `EquippedWeapon` must still be the only delta column a
+    // production path removes. `Dead` is removed nowhere; every other
+    // `world.remove::<T>` in the tree is inside a `#[cfg(test)]` module.
+    let inventory = include_str!("../inventory.rs");
+    assert!(
+        inventory.contains("world.remove::<EquippedWeapon>(player)"),
+        "the removal this reconciler exists for moved — re-check whether \
+         `reconcile_player_equipped_weapon` still covers it (#3488)"
+    );
+}
+
 /// The binary's curated registry must round-trip its full type set —
 /// including the cross-crate `ScriptTimer`, a stable form id, and
 /// (SAVE-D2-04 / #2021) `LightSource`/`LightFlicker` — through

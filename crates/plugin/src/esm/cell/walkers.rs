@@ -658,12 +658,36 @@ pub(crate) fn parse_refr_group(
     navmeshes: &mut Vec<NavmRecord>,
     deleted: &mut Vec<u32>,
 ) -> Result<()> {
+    parse_refr_group_inner(reader, end, refs, landscape, navmeshes, deleted, 0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_refr_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    refs: &mut Vec<PlacedRef>,
+    landscape: &mut Option<LandscapeData>,
+    navmeshes: &mut Vec<NavmRecord>,
+    deleted: &mut Vec<u32>,
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub);
-            parse_refr_group(reader, sub_end, refs, landscape, navmeshes, deleted)?;
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_refr_group")
+            else {
+                continue;
+            };
+            parse_refr_group_inner(
+                reader,
+                sub_end,
+                refs,
+                landscape,
+                navmeshes,
+                deleted,
+                depth + 1,
+            )?;
             continue;
         }
 

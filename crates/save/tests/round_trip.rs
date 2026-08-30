@@ -381,6 +381,76 @@ fn player_body_inventory_survives_live_load() {
     );
 }
 
+/// #3488 — the removal direction, which the test above does not cover.
+///
+/// `apply_deltas` is additive-only by design: it can update or insert a row,
+/// never remove one. So a component the *live* session has and the *save*
+/// does not survives the overlay untouched. On a cell-scoped entity that is
+/// harmless (the reload despawns it), but the player body is spawned outside
+/// any `CellRoot` and deliberately outlives cell unload, so on that entity a
+/// runtime removal silently fails to survive a load.
+///
+/// This pins the contract half. The consequence — a stale `EquippedWeapon`
+/// contradicting the restored `EquipmentSlots.weapon == None` — is rebuilt by
+/// the binary's `inventory::reconcile_player_equipped_weapon`, called from
+/// `execute_pending_save_loads`' tail, and pinned there by
+/// `load_reconciler_clears_a_weapon_the_save_did_not_have`. `EquipmentSlots`
+/// stands in for `EquippedWeapon` here because this crate does not depend on
+/// the binary's component set; the semantics under test belong to
+/// `apply_deltas`, not to the component.
+#[test]
+fn player_body_component_the_save_lacks_is_not_removed_by_the_overlay() {
+    use byroredux_core::form_id::PLAYER_FORM_ID_PAIR;
+    use byroredux_save::{apply_deltas, build_form_id_remap};
+
+    // ── "Saved session": the player carries an Inventory but NO
+    //    EquipmentSlots — the analogue of quicksaving while unarmed. ──
+    let mut saved_world = World::new();
+    saved_world.insert_resource(StringPool::new());
+    saved_world.insert_resource(FormIdPool::new());
+    let saved_player = saved_world.spawn();
+    saved_world.insert(saved_player, Inventory::new());
+    let fid = saved_world
+        .resource_mut::<FormIdPool>()
+        .intern(PLAYER_FORM_ID_PAIR);
+    saved_world.insert(saved_player, FormIdComponent(fid));
+
+    let reg = registry();
+    let snapshot = save_world(&saved_world, &reg).unwrap();
+
+    // ── "Live session": the same process-lifetime player body, which has
+    //    since acquired EquipmentSlots. The reload does not despawn it. ──
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let live_player = live.spawn();
+    let fid = live
+        .resource_mut::<FormIdPool>()
+        .intern(PLAYER_FORM_ID_PAIR);
+    live.insert(live_player, FormIdComponent(fid));
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(3));
+    live.insert(live_player, slots);
+
+    let remap = build_form_id_remap(&live, &reg, &snapshot);
+    apply_deltas(
+        &mut live,
+        &reg,
+        &snapshot,
+        &remap,
+        &["Inventory", "EquipmentSlots"],
+    )
+    .unwrap();
+
+    assert_eq!(
+        live.get::<EquipmentSlots>(live_player)
+            .and_then(|slots| slots.weapon),
+        Some(InventoryIndex(3)),
+        "apply_deltas is additive-only — a live row the save has no counterpart \
+         for survives the overlay. Anything that must be *cleared* on load needs \
+         an explicit reconciler in the binary (#3488 / #3022's model)."
+    );
+}
+
 /// #1696 — `apply_deltas` remaps each row's entity *key* (saved id → live id)
 /// but moves the component *value* verbatim. `AnimationPlayer.root_entity` is
 /// an `Option<EntityId>` holding a *saved-session* id; overlaying it would

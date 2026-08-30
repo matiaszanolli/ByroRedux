@@ -257,10 +257,15 @@ fn apply_texturing_property(
         // no UV transform of its own and so was wrongly suppressing
         // this branch when it preceded `NiTexturingProperty` in
         // Oblivion / FO3 / FNV property arrays).
-        // Capture the diffuse slot's `clamp_mode` (lower 4 bits of
-        // `TexDesc.flags` — see `properties.rs:464`) so the
+        // Capture the diffuse slot's `TexDesc::clamp_mode` so the
         // renderer can pick the matching `VkSamplerAddressMode`
-        // pair at descriptor-write time. Pre-#610 the value was
+        // pair at descriptor-write time. #3516 — this used to mask
+        // `flags & 0xF` here, which is the *synthesized* pre-20.1.0.3
+        // layout; on FO3/FNV that nibble is the low half of the raw
+        // texture index and reads 0 (CLAMP/CLAMP) for essentially
+        // every legacy-chain material. The decode now lives at the
+        // parse site, where the version that selects the encoding is
+        // known. Pre-#610 the value was
         // dropped and every NiTexturingProperty texture rendered
         // with REPEAT/REPEAT — visible as edge bleed on decals,
         // Oblivion architecture trim, and pre-shader skybox seams.
@@ -271,7 +276,7 @@ fn apply_texturing_property(
         // REPEAT/REPEAT.
         if info.texture_clamp_mode == 3 {
             if let Some(base) = tex_prop.base_texture.as_ref() {
-                info.texture_clamp_mode = (base.flags & 0xF) as u8;
+                info.texture_clamp_mode = base.clamp_mode;
             }
         }
         if !info.has_uv_transform {
