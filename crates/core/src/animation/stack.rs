@@ -9,7 +9,7 @@ use super::interpolation::{sample_rotation, sample_scale, sample_translation};
 use super::player::{finite_time_delta, fold_reverse_time};
 use super::registry::AnimationClipRegistry;
 use super::text_events::visit_text_key_events;
-use super::types::CycleType;
+use super::types::{CycleType, TransformChannel};
 
 /// A single animation layer in an AnimationStack.
 #[derive(Debug, Clone)]
@@ -33,6 +33,18 @@ pub struct AnimationLayer {
     pub blend_out_total: f32,
     /// Previous frame's local_time — used for text key event detection.
     pub prev_time: f32,
+    /// The delta [`advance_stack`] actually applied last tick. See
+    /// [`crate::animation::player::AnimationPlayer::last_delta`] — same
+    /// reason (#3470): `prev == curr` on a `Loop` clip means either "N full
+    /// periods elapsed" or "did not move", and only the delta separates them.
+    /// Not persisted (`serde(skip)`): this is per-frame transient state,
+    /// rewritten by the next `advance_*` before any consumer reads it, and a
+    /// freshly-loaded save has by definition not advanced — so the `0.0`
+    /// default is not merely safe but correct, suppressing text keys for that
+    /// first tick exactly as #3470 requires. Keeps the on-disk save shape
+    /// unchanged, so no `FORMAT_MAJOR` bump (SAVE-D2-01 / #1714).
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub last_delta: f32,
 }
 
 impl AnimationLayer {
@@ -49,6 +61,7 @@ impl AnimationLayer {
             blend_out_remaining: 0.0,
             blend_out_total: 0.0,
             prev_time: 0.0,
+            last_delta: 0.0,
         }
     }
 
@@ -168,6 +181,9 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
         // Same guard as `advance_time`'s — this arm has the identical
         // `Loop` latch (#3258).
         let delta = finite_time_delta(dt * layer.speed * clip.frequency);
+        // #3470 — recorded for `visit_stack_text_events`, the byte-identical
+        // sibling of `advance_time`'s own record.
+        layer.last_delta = delta;
         match clip.cycle_type {
             CycleType::Clamp => {
                 layer.local_time = (layer.local_time + delta).min(clip.duration);
@@ -237,6 +253,7 @@ pub fn visit_stack_text_events(
             layer.prev_time,
             layer.local_time,
             layer.reverse_direction,
+            layer.last_delta,
             |time, sym| {
                 // Deduplicate labels across layers. Small seen-set (usually
                 // 0–3 entries per frame); linear scan on `FixedString` is
@@ -325,6 +342,29 @@ pub fn collect_stack_text_events(
 /// weighted average is used. Returns None if no layer has data for this node.
 ///
 /// Zero-allocation: uses inline iteration instead of collecting into Vecs.
+/// Does this channel carry any transform keys at all?
+///
+/// #3471 — hoisted out of [`sample_blended_transform`]'s weight pass so its
+/// blend pass can apply the identical filter. The two used to disagree: the
+/// weight pass excluded an all-empty channel from `total_weight`, the blend
+/// pass did not exclude it from the blend, and the three `sample_*` calls then
+/// fell back to `Vec3::ZERO` / `Quat::IDENTITY` / `1.0`. A keyless channel at
+/// the winning priority therefore added a spurious `+1.0 * w` to
+/// `blended_scale` (a bone at scale 1 blending toward 2) and slerped
+/// `blended_rot` toward identity, while `accumulated_weight` ran past the
+/// `total_weight` denominator that never counted it.
+///
+/// All-empty channels are ordinary output, not a corrupt-input case:
+/// `constant_transform_channel` (`crates/nif/src/anim/transform.rs`) emits
+/// empty key vectors for every axis whose pose is the `FLT_MAX` "no static
+/// pose" sentinel, and nothing between there and `channels.insert` filters
+/// them out.
+fn channel_has_keys(channel: &TransformChannel) -> bool {
+    !(channel.translation_keys.is_empty()
+        && channel.rotation_keys.is_empty()
+        && channel.scale_keys.is_empty())
+}
+
 pub fn sample_blended_transform(
     stack: &AnimationStack,
     registry: &AnimationClipRegistry,
@@ -349,10 +389,7 @@ pub fn sample_blended_transform(
         };
         // Only inspect key presence here. Sampling is deferred to the blend
         // pass below so interpolation happens once per channel (#3031).
-        if channel.translation_keys.is_empty()
-            && channel.rotation_keys.is_empty()
-            && channel.scale_keys.is_empty()
-        {
+        if !channel_has_keys(channel) {
             continue;
         }
         match max_priority {
@@ -394,6 +431,13 @@ pub fn sample_blended_transform(
             continue;
         };
         if channel.priority != max_priority {
+            continue;
+        }
+
+        // #3471 — the same filter the weight pass applied. Without it a
+        // channel excluded from `total_weight` still reached the blend, and
+        // its `unwrap_or` fallbacks below are identity values, not "skip".
+        if !channel_has_keys(channel) {
             continue;
         }
 

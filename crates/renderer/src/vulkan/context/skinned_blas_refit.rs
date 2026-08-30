@@ -650,7 +650,7 @@ impl VulkanContext {
                                     cmd,
                                     entity_id,
                                     crate::vulkan::acceleration::SkinnedBlasGeometry {
-                                        vertex_buffer: slot.output_buffer.buffer,
+                                        vertex_address: slot.output_address(),
                                         vertex_count,
                                         index_buffer: idx_buffer,
                                         index_count: idx_count,

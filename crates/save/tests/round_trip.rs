@@ -498,6 +498,7 @@ fn animation_stack_round_trips_through_container() {
         blend_out_remaining: 0.1,
         blend_out_total: 0.3,
         prev_time: 1.4,
+        last_delta: 0.0,
     };
     let layer1 = AnimationLayer {
         clip_handle: 9,
@@ -511,6 +512,7 @@ fn animation_stack_round_trips_through_container() {
         blend_out_remaining: 0.0,
         blend_out_total: 0.0,
         prev_time: 2.9,
+        last_delta: 0.0,
     };
     src.insert(
         actor,

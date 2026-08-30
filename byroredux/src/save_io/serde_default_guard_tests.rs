@@ -314,8 +314,27 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // field on a registered column, and both it and `AnimationPlayer` are
     // saved, so a pre-v9 snapshot of a seated actor carries the *parked*
     // player with no record of what preceded it.
+    // #3470 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, deliberately,
+    // and this is the case the #3332 note above tells you to check for.
+    // `AnimationPlayer::last_delta` and `AnimationLayer::last_delta` are new
+    // fields on two registered columns, but both carry
+    // `#[cfg_attr(feature = "inspect", serde(skip))]`: they are never written
+    // to disk and are defaulted on read, so old and new snapshots have
+    // byte-identical JSON for both types and no save is invalidated.
+    //
+    // Defaulting is not a guess here either, which is what separates this from
+    // the `serde(default)` footgun the sibling test bans: `last_delta` is
+    // per-frame transient state rewritten by the next `advance_*` before any
+    // consumer reads it, and a freshly-loaded save has by definition not
+    // advanced — so `0.0` is the correct value, not a fabricated one.
+    //
+    // NOTE this fingerprint hashes raw struct source, so it moves for a
+    // `serde(skip)` field even though the on-disk shape did not. Teaching
+    // `normalized_serialized_shapes` to drop skipped fields would be more
+    // precise, but this file is itself inside the scanned set, so the change
+    // perturbs its own input — left alone rather than made self-referential.
     const BASELINE_MAJOR: u16 = 9;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2edb_c5ab_987b_9d28;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xdea3_af01_3be5_a008;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

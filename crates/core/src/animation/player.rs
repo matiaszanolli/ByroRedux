@@ -24,6 +24,23 @@ pub struct AnimationPlayer {
     /// Previous frame's local_time — used by `collect_text_key_events()` to
     /// detect which text keys were crossed during the last `advance_time()`.
     pub prev_time: f32,
+    /// The time delta [`advance_time`] actually applied last tick, *after*
+    /// `speed` / `frequency` scaling and `finite_time_delta`'s non-finite
+    /// fold.
+    ///
+    /// #3470 — the `(prev_time, local_time)` pair cannot distinguish "N full
+    /// periods elapsed on a `Loop` clip" from "the playhead did not move at
+    /// all": both land on `prev == curr`. The first must fire every text key,
+    /// the second must fire none. Only the applied delta separates them, so
+    /// it is recorded rather than inferred.
+    /// Not persisted (`serde(skip)`): this is per-frame transient state,
+    /// rewritten by the next `advance_*` before any consumer reads it, and a
+    /// freshly-loaded save has by definition not advanced — so the `0.0`
+    /// default is not merely safe but correct, suppressing text keys for that
+    /// first tick exactly as #3470 requires. Keeps the on-disk save shape
+    /// unchanged, so no `FORMAT_MAJOR` bump (SAVE-D2-01 / #1714).
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub last_delta: f32,
 }
 
 impl AnimationPlayer {
@@ -36,6 +53,7 @@ impl AnimationPlayer {
             reverse_direction: false,
             root_entity: None,
             prev_time: 0.0,
+            last_delta: 0.0,
         }
     }
 
@@ -135,6 +153,9 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
 
     player.prev_time = player.local_time;
     let delta = finite_time_delta(dt * player.speed * clip.frequency);
+    // #3470 — recorded for the text-key visitor, which cannot otherwise tell a
+    // full-period wrap from a zero advance.
+    player.last_delta = delta;
 
     match clip.cycle_type {
         CycleType::Clamp => {

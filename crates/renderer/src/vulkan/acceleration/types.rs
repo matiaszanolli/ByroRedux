@@ -29,8 +29,13 @@ pub struct BlasBuildSource {
 /// arguments that travel together into [`super::AccelerationManager::refit_skinned_blas`].
 #[derive(Clone, Copy)]
 pub struct SkinnedBlasGeometry {
-    /// Post-skinning vertex buffer (the skin-compute output).
-    pub vertex_buffer: vk::Buffer,
+    /// Device address of the post-skinning vertex buffer (the skin-compute
+    /// output).
+    ///
+    /// #3469 — was the `vk::Buffer` handle, which the refit then resolved to
+    /// an address on every call. `SkinSlot` caches that address at slot
+    /// creation, so the caller now passes it straight through.
+    pub vertex_address: vk::DeviceAddress,
     /// Number of vertices in `vertex_buffer`.
     pub vertex_count: u32,
     /// Index buffer for the skinned mesh.

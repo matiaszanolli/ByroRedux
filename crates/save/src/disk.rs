@@ -32,12 +32,47 @@ pub fn slot_path(dir: &Path, slot: u32) -> PathBuf {
 /// the live slot. The re-read catches a lying filesystem / short write
 /// before it can replace a good save with a bad one.
 pub fn write_slot(dir: &Path, slot: u32, bytes: &[u8]) -> Result<PathBuf, SaveError> {
+    // Kept here, not in `atomic_write`: this function's contract promises it.
     fs::create_dir_all(dir)?;
     let final_path = slot_path(dir, slot);
     let tmp_path = final_path.with_extension(format!("{SAVE_EXT}.tmp"));
+    atomic_write(&final_path, &tmp_path, bytes)
+        .map_err(SaveError::Io)
+        .map(|()| final_path)
+}
 
+/// Write `bytes` to `final_path` crash-safely, staging through `tmp_path`.
+///
+/// The full durable sequence, in the order that makes each step meaningful:
+/// create the temp → `write_all` → `flush` → `sync_all` (the data is now on
+/// the platter, not just in the page cache) → read back and compare (catches a
+/// lying filesystem or a short write *before* it can replace a good file with
+/// a bad one) → `rename` (atomic on POSIX) → fsync the **parent directory**.
+///
+/// That last step is the one most often missed and is why this is a shared
+/// helper rather than a comment: a successful `rename` is not durable until
+/// the directory's own metadata is fsynced. A crash immediately after can
+/// otherwise lose the new directory entry — the path points at the old inode
+/// or none — even though the call returned `Ok`. Opening a directory as a
+/// `File` is a Unix capability; platforms that cannot (Windows) journal the
+/// rename, so the step is skipped there rather than failing.
+///
+/// #3472 — extracted from [`write_slot`] so `byroredux::settings_io` can share
+/// it. That writer had `fs::write` + `fs::rename` with none of the three
+/// durability steps, so a crash in the window between the rename hitting the
+/// directory journal and the data reaching the platter left a zero-length or
+/// truncated `settings.toml`. Two writers in one binary with two different
+/// durability contracts, only one of them documented.
+///
+/// Does NOT create the parent directory — callers own that, since they know
+/// whether an absent parent is an error or a first-run condition.
+pub fn atomic_write(
+    final_path: &Path,
+    tmp_path: &Path,
+    bytes: &[u8],
+) -> Result<(), std::io::Error> {
     {
-        let mut f = fs::File::create(&tmp_path)?;
+        let mut f = fs::File::create(tmp_path)?;
         f.write_all(bytes)?;
         f.flush()?;
         f.sync_all()?;
@@ -45,27 +80,24 @@ pub fn write_slot(dir: &Path, slot: u32, bytes: &[u8]) -> Result<PathBuf, SaveEr
 
     // Read-back verification: the bytes on disk must equal what we wrote.
     let mut readback = Vec::with_capacity(bytes.len());
-    fs::File::open(&tmp_path)?.read_to_end(&mut readback)?;
+    fs::File::open(tmp_path)?.read_to_end(&mut readback)?;
     if readback != bytes {
         // Don't leave a corrupt temp lying around.
-        let _ = fs::remove_file(&tmp_path);
-        return Err(SaveError::Io(std::io::Error::other(
-            "save read-back verification failed (short or corrupt write)",
-        )));
+        let _ = fs::remove_file(tmp_path);
+        return Err(std::io::Error::other(
+            "atomic write read-back verification failed (short or corrupt write)",
+        ));
     }
 
-    fs::rename(&tmp_path, &final_path)?;
+    fs::rename(tmp_path, final_path)?;
 
-    // SAVE-D3-01 — a successful `rename` isn't durable until the parent
-    // directory's own metadata is fsynced: a crash immediately after can
-    // otherwise lose the new directory entry (slot points at the old or no
-    // inode) even though we returned Ok. Opening a directory as a `File`
-    // and fsyncing it is a Unix capability; platforms that can't open a
-    // directory (Windows) journal the rename, so skip there.
-    if let Ok(dir_file) = fs::File::open(dir) {
-        dir_file.sync_all()?;
+    // SAVE-D3-01 — see the durability note above.
+    if let Some(dir) = final_path.parent() {
+        if let Ok(dir_file) = fs::File::open(dir) {
+            dir_file.sync_all()?;
+        }
     }
-    Ok(final_path)
+    Ok(())
 }
 
 /// Read the raw bytes of `slot` under `dir`.
@@ -205,6 +237,66 @@ impl SaveRing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3472 — the durable sequence, exercised through the shared helper both
+    /// `write_slot` and `byroredux::settings_io` now use.
+    ///
+    /// Cannot assert the fsyncs happened (nothing in `std` observes that), so
+    /// it pins the observable half: the temp file is consumed, the target
+    /// holds exactly the bytes written, and an existing target is replaced
+    /// rather than appended to or left half-written.
+    #[test]
+    fn atomic_write_replaces_the_target_and_consumes_the_temp() {
+        let dir = std::env::temp_dir().join(format!(
+            "byroredux-atomic-write-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create test dir");
+        let target = dir.join("settings.toml");
+        let tmp = dir.join("settings.toml.tmp");
+
+        // First write onto a path that does not exist yet.
+        atomic_write(&target, &tmp, b"version = 1\n").expect("first write");
+        assert_eq!(fs::read(&target).unwrap(), b"version = 1\n");
+        assert!(
+            !tmp.exists(),
+            "#3472: the temp must be renamed away, not left behind"
+        );
+
+        // Second write must REPLACE, not append — the failure mode a
+        // non-atomic write-in-place produces when the new content is shorter.
+        atomic_write(&target, &tmp, b"v = 2\n").expect("second write");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"v = 2\n",
+            "#3472: a shorter payload must fully replace the longer one"
+        );
+        assert!(!tmp.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The read-back check must reject rather than rename a bad temp into
+    /// place — that is the step which keeps a lying filesystem or a short
+    /// write from replacing a good file with a corrupt one. Verified by
+    /// pointing the helper at a target whose parent does not exist, the
+    /// closest failure this API can be driven into deterministically.
+    #[test]
+    fn atomic_write_fails_without_renaming_when_the_temp_cannot_be_created() {
+        let missing = std::env::temp_dir()
+            .join("byroredux-atomic-write-absent-parent")
+            .join("nested")
+            .join("settings.toml");
+        let tmp = missing.with_extension("toml.tmp");
+        let err = atomic_write(&missing, &tmp, b"x").expect_err("must not succeed");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            !missing.exists(),
+            "#3472: a failed write must leave no target behind"
+        );
+    }
 
     #[test]
     fn ring_wraps() {

@@ -418,7 +418,7 @@ impl AccelerationManager {
         geometry: SkinnedBlasGeometry,
     ) -> Result<()> {
         let SkinnedBlasGeometry {
-            vertex_buffer,
+            vertex_address,
             vertex_count,
             index_buffer,
             index_count,
@@ -532,13 +532,16 @@ impl AccelerationManager {
         // must move together with `SKIN_OUTPUT_STRIDE_FLOATS`; a stale
         // stride here reads garbage positions into the BLAS.
         let vertex_stride = crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;
-        // SAFETY: vertex_buffer is live with SHADER_DEVICE_ADDRESS usage; the
-        // caller-required compute-write → AS-input-read barrier ensures visibility.
-        let vertex_address = unsafe {
-            device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
-            )
-        };
+        // #3469 — `vertex_address` arrives cached on the `SkinSlot`; this
+        // used to be a third `vkGetBufferDeviceAddress` here. The remaining
+        // two (index, scratch) stay queries on purpose: the index buffer is
+        // the `MeshRegistry`'s global SSBO and the scratch buffer is
+        // reallocated from three separate sites (`memory.rs`,
+        // `blas_static.rs`, and this file's own grow path), so caching those
+        // trades a nanosecond-scale win on a once-per-*moving*-actor path for
+        // a stale-address GPU fault if any realloc site forgets to refresh.
+        // Not worth it without the invalidation being structural.
+        //
         // SAFETY: index_buffer is live with SHADER_DEVICE_ADDRESS usage.
         let index_address = unsafe {
             device.get_buffer_device_address(

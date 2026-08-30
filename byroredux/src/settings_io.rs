@@ -134,8 +134,19 @@ fn save_to_path(registry: &SettingsRegistry, path: &Path) -> std::io::Result<()>
         fs::create_dir_all(parent)?;
     }
     let temp_path = temporary_path(path);
-    fs::write(&temp_path, source)?;
-    if let Err(rename_error) = fs::rename(&temp_path, path) {
+    // #3472 — was `fs::write` + `fs::rename` with none of the durability
+    // steps: no fsync on the temp file, no read-back, no parent-directory
+    // sync. A crash in the window between the rename hitting the directory
+    // journal and the data reaching the platter left a zero-length or
+    // truncated `settings.toml`. The loader degrades gracefully (a
+    // `toml::from_str` failure is logged and skipped), so the cost was the
+    // user's bindings and preferences rather than the session — but there is
+    // no reason for two writers in one binary to have two different
+    // durability contracts when one of them already implements the correct
+    // dance. Shared with `crates/save/src/disk.rs`'s `write_slot` rather than
+    // re-implemented, so the two cannot drift.
+    if let Err(rename_error) = byroredux_save::disk::atomic_write(path, &temp_path, source.as_bytes())
+    {
         // Windows does not replace an existing destination with rename. Keep
         // the file usable there even though the fallback is not atomic.
         if path.exists() {

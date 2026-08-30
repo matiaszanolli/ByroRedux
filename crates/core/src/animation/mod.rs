@@ -647,15 +647,15 @@ mod tests {
         };
 
         // Cross the first key.
-        let events = collect_text_key_events(&clip, &pool, 0.3, 0.6, false);
+        let events = collect_text_key_events(&clip, &pool, 0.3, 0.6, false, 0.3f32);
         assert_eq!(events, vec!["hit"]);
 
         // Cross two keys at once.
-        let events = collect_text_key_events(&clip, &pool, 0.4, 1.1, false);
+        let events = collect_text_key_events(&clip, &pool, 0.4, 1.1, false, 0.7f32);
         assert_eq!(events, vec!["hit", "sound: swing"]);
 
         // No crossing.
-        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4, false);
+        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4, false, 0.3f32);
         assert!(events.is_empty());
     }
 
@@ -680,7 +680,9 @@ mod tests {
         };
 
         // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).
-        let events = collect_text_key_events(&clip, &pool, 1.7, 0.3, false);
+        // Honest advance: forward +0.6 through the wrap in a 2.0 clip, not
+        // the `curr - prev` difference (which is negative because of the wrap).
+        let events = collect_text_key_events(&clip, &pool, 1.7, 0.3, false, 0.6f32);
         assert_eq!(events, vec!["start", "end"]);
     }
 
@@ -711,15 +713,127 @@ mod tests {
         };
 
         // A whole period (2.0s) elapsed and the loop landed exactly back at
-        // 0.5 — every key must fire once, not zero times.
-        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false);
+        // 0.5 — every key must fire once, not zero times. #3470: the delta is
+        // now what says a period elapsed; the (prev, curr) pair alone cannot.
+        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false, 2.0f32);
         assert_eq!(events, vec!["hit", "end"]);
 
         // The pair carries no period count — a caller reporting 2 or 3
         // full periods presents the identical (prev, curr) pair. Each key
         // must still fire exactly once, not N times (ONCE-EACH).
-        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false);
+        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false, 6.0f32);
         assert_eq!(events, vec!["hit", "end"]);
+    }
+
+    /// #3470 — the `Loop` sibling of the `Clamp` guard below, and the case
+    /// #3034's arm did not distinguish.
+    ///
+    /// `prev == curr` on a `Loop` clip has two causes: N full periods elapsed
+    /// (fire every key), or the playhead did not move at all (fire none). The
+    /// pair carries no period count, so only the applied delta separates them.
+    ///
+    /// The zero case is live, not hypothetical: `App::resumed` runs the
+    /// scheduler once with `dt == 0.0` to prime transform state, so pre-fix
+    /// every looping clip in the scene delivered ALL of its text keys on the
+    /// priming tick — and `AnimationTextKeyEvents` feeds
+    /// `cinematic_animation_event_system`, which writes `QuestStageState`.
+    #[test]
+    fn text_key_loop_at_zero_advance_stays_silent() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+        };
+
+        // Identical (prev, curr) to `text_key_full_period_advance_fires_every_key_once`
+        // — the ONLY difference is that nothing advanced.
+        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false, 0.0f32);
+        assert!(
+            events.is_empty(),
+            "#3470: a zero advance must fire nothing; got {events:?}"
+        );
+
+        // Drive it through the real player at dt == 0.0, the exact shape of
+        // `App::resumed`'s priming tick.
+        let mut player = AnimationPlayer::new(0);
+        player.local_time = 0.5;
+        player.prev_time = 0.5;
+        advance_time(&mut player, &clip, 0.0);
+        assert_eq!(player.prev_time, player.local_time, "premise: prev == curr");
+        let primed = collect_text_key_events(
+            &clip,
+            &pool,
+            player.prev_time,
+            player.local_time,
+            false,
+            player.last_delta,
+        );
+        assert!(
+            primed.is_empty(),
+            "#3470: the dt == 0.0 priming tick must not fire text keys; got {primed:?}"
+        );
+    }
+
+    /// #3470's worse latent variant, named in the issue: `finite_time_delta`
+    /// folds a non-finite `dt * speed * frequency` to `0.0` (#3258). A clip
+    /// reaching the registry with a NaN frequency from any producer other than
+    /// `anim_convert` would therefore present `prev == curr` on EVERY frame —
+    /// so pre-fix it fired every text key forever, not just once at startup.
+    ///
+    /// `advance_stack_survives_a_non_finite_clip_frequency` builds this clip
+    /// already but gives it no `text_keys`, which is why the interaction was
+    /// invisible to the suite.
+    #[test]
+    fn text_key_loop_with_non_finite_frequency_stays_silent_every_frame() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "nan-freq".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: f32::NAN,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+        };
+
+        let mut player = AnimationPlayer::new(0);
+        player.local_time = 0.5;
+        player.prev_time = 0.5;
+        for frame in 0..4 {
+            advance_time(&mut player, &clip, 0.016);
+            let events = collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            );
+            assert!(
+                events.is_empty(),
+                "#3470: a NaN-frequency clip folds to a zero advance, so frame \
+                 {frame} must fire nothing; got {events:?}"
+            );
+        }
     }
 
     #[test]
@@ -747,7 +861,11 @@ mod tests {
             texture_flip_channels: Vec::new(),
             text_keys: vec![(1.0, pool.intern("end"))],
         };
-        let events = collect_text_key_events(&clip, &pool, 1.0, 1.0, false);
+        // Clamp saturated at `duration`: the playhead genuinely stopped, so
+        // the applied delta is whatever the caller supplied but the arm is
+        // gated on CycleType anyway. Non-zero here to prove that gate, not
+        // the #3470 one, is what keeps it silent.
+        let events = collect_text_key_events(&clip, &pool, 1.0, 1.0, false, 0.5f32);
         assert!(events.is_empty());
     }
 
@@ -782,18 +900,19 @@ mod tests {
 
         // Backward leg 1.2 → 0.4 crosses "hit" (0.5) and "swing" (1.0), NOT
         // "end" (1.5). With reverse_direction=true we get exactly those.
-        let events = collect_text_key_events(&clip, &pool, 1.2, 0.4, true);
+        // The backward leg's delta really is negative — this one is honest.
+        let events = collect_text_key_events(&clip, &pool, 1.2, 0.4, true, -0.8f32);
         assert_eq!(events, vec!["hit", "swing"]);
 
         // The pre-#2082 path (reverse_direction=false) mis-reads the
         // descending step as a loop wrap and fires the complement — "end".
         // Kept as a guard so a regression that drops the direction flag fails.
-        let wrap_misfire = collect_text_key_events(&clip, &pool, 1.2, 0.4, false);
+        let wrap_misfire = collect_text_key_events(&clip, &pool, 1.2, 0.4, false, -0.8f32);
         assert_eq!(wrap_misfire, vec!["end"]);
 
         // Forward leg 0.4 → 1.2 (no reverse, no wrap) crosses the same
         // interior keys — parity with the backward leg.
-        let forward = collect_text_key_events(&clip, &pool, 0.4, 1.2, false);
+        let forward = collect_text_key_events(&clip, &pool, 0.4, 1.2, false, 0.8f32);
         assert_eq!(forward, vec!["hit", "swing"]);
     }
 
@@ -816,7 +935,7 @@ mod tests {
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
-        let events = collect_text_key_events(&clip, &pool, 0.0, 1.0, false);
+        let events = collect_text_key_events(&clip, &pool, 0.0, 1.0, false, 1.0f32);
         assert!(events.is_empty());
     }
 
@@ -848,20 +967,41 @@ mod tests {
         // First advance: 0.0 → 0.6, should cross "hit" at 0.5.
         advance_time(&mut player, &clip, 0.6);
         let events =
-            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
+            collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            );
         assert_eq!(events, vec!["hit"]);
 
         // Second advance: 0.6 → 1.2, should cross "sound: swing" at 1.0.
         advance_time(&mut player, &clip, 0.6);
         let events =
-            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
+            collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            );
         assert_eq!(events, vec!["sound: swing"]);
 
         // Advance past loop wrap: 1.2 → (1.2+1.0=2.2 mod 2.0=0.2),
         // should cross "end" at 1.8.
         advance_time(&mut player, &clip, 1.0);
         let events =
-            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
+            collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            );
         assert!(events.contains(&"end".to_string()));
     }
 
@@ -888,13 +1028,27 @@ mod tests {
 
         advance_time(&mut player, &clip, 2.0);
         assert_eq!(
-            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false,),
+            collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            ),
             vec!["exitcartend"]
         );
 
         advance_time(&mut player, &clip, 1.0);
         assert!(
-            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false,)
+            collect_text_key_events(
+                &clip,
+                &pool,
+                player.prev_time,
+                player.local_time,
+                false,
+                player.last_delta,
+            )
                 .is_empty()
         );
     }
@@ -906,6 +1060,103 @@ mod tests {
         assert_eq!(i0, 0);
         assert_eq!(i1, 1);
         assert!((t - 0.5).abs() < 1e-5);
+    }
+
+    /// Regression for #3471 — a keyless channel at the winning priority must
+    /// be excluded from the blend, not just from the weight sum.
+    ///
+    /// `sample_blended_transform`'s weight pass skipped an all-empty channel;
+    /// its blend pass filtered only on priority. The excluded layer therefore
+    /// still blended, and because the three `sample_*` calls fall back to
+    /// identity values rather than "skip", it contributed a real `+1.0 * w` to
+    /// `blended_scale` and slerped the rotation toward identity — while
+    /// `accumulated_weight` ran past the `total_weight` denominator that never
+    /// counted it.
+    ///
+    /// All-empty channels are ordinary output: `constant_transform_channel`
+    /// emits them for every axis whose pose is the `FLT_MAX` sentinel.
+    #[test]
+    fn keyless_channel_at_max_priority_is_excluded_from_the_blend() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mk_clip = |keyed: bool| {
+            let mut channels = HashMap::new();
+            channels.insert(
+                node,
+                TransformChannel {
+                    translation_keys: if keyed {
+                        vec![TranslationKey {
+                            time: 0.0,
+                            value: Vec3::new(10.0, 0.0, 0.0),
+                            forward: Vec3::ZERO,
+                            backward: Vec3::ZERO,
+                            tbc: None,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    translation_type: KeyType::Linear,
+                    rotation_keys: Vec::new(),
+                    rotation_type: KeyType::Linear,
+                    scale_keys: if keyed {
+                        vec![ScaleKey {
+                            time: 0.0,
+                            value: 1.0,
+                            forward: 0.0,
+                            backward: 0.0,
+                            tbc: None,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    scale_type: KeyType::Linear,
+                    // Same priority on purpose: the keyless layer must lose to
+                    // the filter, not to a priority comparison.
+                    priority: 0,
+                },
+            );
+            AnimationClip {
+                name: "c".to_string(),
+                duration: 1.0,
+                cycle_type: CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: None,
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        };
+
+        let mut registry = AnimationClipRegistry::new();
+        let keyed = registry.add(mk_clip(true));
+        let keyless = registry.add(mk_clip(false));
+
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(keyed));
+        stack.layers.push(AnimationLayer::new(keyless));
+
+        let (pos, _rot, scale) = sample_blended_transform(&stack, &registry, node)
+            .expect("the keyed layer alone must still produce a transform");
+
+        assert!(
+            (scale - 1.0).abs() < 1e-5,
+            "#3471: keyless channel contributed its 1.0 scale fallback — got {scale}, \
+             expected the keyed layer's 1.0 alone"
+        );
+        assert!(
+            (pos.x - 10.0).abs() < 1e-4,
+            "#3471: the keyed layer's translation must not be diluted by a layer \
+             the weight pass excluded — got {}, expected 10.0",
+            pos.x
+        );
     }
 
     /// Regression for #469: two layers at equal layer-weight but one

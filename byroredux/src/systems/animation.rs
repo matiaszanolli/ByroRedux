@@ -453,6 +453,12 @@ struct PlaybackState {
     /// threaded to `visit_text_key_events` so a backward leg fires the keys
     /// it crossed rather than the loop-wrap complement. FNV-D6-01 / #2082.
     reverse_direction: bool,
+    /// The delta `advance_time` actually applied, threaded to
+    /// `visit_text_key_events` so its full-period `Loop` arm can tell N
+    /// elapsed periods from a playhead that did not move. #3470 — without it
+    /// `App::resumed`'s `dt == 0.0` priming tick fired every text key of every
+    /// looping clip in the scene.
+    last_delta: f32,
 }
 
 /// Reusable per-frame scratch buffers for [`animation_system_inner`].
@@ -626,6 +632,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 current_time: player.local_time,
                 prev_time: player.prev_time,
                 reverse_direction: player.reverse_direction,
+                last_delta: player.last_delta,
             });
         }
     } // AnimationPlayer lock released here
@@ -644,6 +651,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 ps.prev_time,
                 ps.current_time,
                 ps.reverse_direction,
+                ps.last_delta,
                 |time, sym| {
                     player_events.push(AnimationTextKeyEvent { label: sym, time });
                 },

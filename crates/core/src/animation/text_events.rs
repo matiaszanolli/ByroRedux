@@ -25,6 +25,13 @@ use crate::string::{FixedString, StringPool};
 /// the keys actually crossed. Loop/Clamp clips (which never reverse) always
 /// pass `false`. See FNV-D6-01 / #2082.
 ///
+/// `applied_delta` must be the time delta the caller's `advance_*` actually
+/// applied this tick (`AnimationPlayer::last_delta` / `AnimationLayer::last_delta`),
+/// *after* speed/frequency scaling and the non-finite fold. It disambiguates
+/// the full-period `Loop` arm from a zero advance, which the `(prev, curr)`
+/// pair alone cannot (#3470). Pass `0.0` only to mean "the playhead did not
+/// move".
+///
 /// Prefer this over `collect_text_key_events` in hot per-frame paths — the
 /// collecting wrapper allocates even for empty result sets, which fires on
 /// every frame for every animated entity whose playhead didn't cross any
@@ -34,6 +41,7 @@ pub fn visit_text_key_events(
     prev_time: f32,
     curr_time: f32,
     reverse_direction: bool,
+    applied_delta: f32,
     mut visit: impl FnMut(f32, FixedString),
 ) {
     if clip.text_keys.is_empty() {
@@ -52,7 +60,11 @@ pub fn visit_text_key_events(
                 visit(*t, *sym);
             }
         }
-    } else if curr_time == prev_time && clip.duration > 0.0 && clip.cycle_type == CycleType::Loop {
+    } else if curr_time == prev_time
+        && applied_delta != 0.0
+        && clip.duration > 0.0
+        && clip.cycle_type == CycleType::Loop
+    {
         // #3034 — a `CycleType::Loop` clip whose delta this step is an
         // exact multiple of `duration` (one full period, or several) wraps
         // back onto the same instant it started from. The normal forward
@@ -61,6 +73,22 @@ pub fn visit_text_key_events(
         // firing for the period(s) actually traversed. Fire each key once —
         // the semantically defensible reading for a single frame — rather
         // than falling through to the empty result.
+        //
+        // #3470 — `applied_delta != 0.0` is what makes that reading correct.
+        // `prev == curr` on a Loop clip has TWO causes and the pair carries no
+        // period count: N full periods (this arm), or the playhead simply not
+        // moving. The zero case is live — `App::resumed` runs the scheduler
+        // once with `dt == 0.0` to prime transform state, so pre-fix every
+        // looping clip in the scene fired ALL of its text keys on the priming
+        // tick, before any had been crossed. `AnimationTextKeyEvents` feeds
+        // `cinematic_animation_event_system`, which writes `QuestStageState`,
+        // so a spurious batch could advance quest state at launch. It also
+        // covers the `speed == 0` / `frequency == 0` paused-clip variants, and
+        // the worse latent one: `finite_time_delta` folds a non-finite
+        // `dt * speed * frequency` to `0.0` (#3258), so a clip reaching the
+        // registry with a NaN/inf frequency from a producer other than
+        // `anim_convert` would otherwise have fired every key on EVERY frame,
+        // forever.
         //
         // `Clamp` and `Reverse` never reach this arm: `Clamp` saturates at
         // `duration` and stays there on every subsequent frame (a *settled*
@@ -102,12 +130,20 @@ pub fn collect_text_key_events(
     prev_time: f32,
     curr_time: f32,
     reverse_direction: bool,
+    applied_delta: f32,
 ) -> Vec<String> {
     let mut events = Vec::new();
-    visit_text_key_events(clip, prev_time, curr_time, reverse_direction, |_, sym| {
-        if let Some(s) = pool.resolve(sym) {
-            events.push(s.to_owned());
-        }
-    });
+    visit_text_key_events(
+        clip,
+        prev_time,
+        curr_time,
+        reverse_direction,
+        applied_delta,
+        |_, sym| {
+            if let Some(s) = pool.resolve(sym) {
+                events.push(s.to_owned());
+            }
+        },
+    );
     events
 }

@@ -1027,6 +1027,7 @@ mod tests {
             speed: 1.05,
             reverse_direction: false,
             root_entity: None,
+            last_delta: 0.0,
         };
         let (idle_clip, idle_local, idle_prev, idle_speed) = (
             idle.clip_handle,
@@ -1092,6 +1093,7 @@ mod tests {
             speed: 0.97,
             reverse_direction: true,
             root_entity: None,
+            last_delta: 0.0,
         };
         world.insert(actor, mid_clip);
 

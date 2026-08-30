@@ -91,6 +91,20 @@ pub struct SkinSlot {
     /// skinned-BLAS build/refit is the only consumer and takes position
     /// alone.
     pub output_buffer: GpuBuffer,
+    /// Device address of [`Self::output_buffer`], resolved once at slot
+    /// creation.
+    ///
+    /// #3469 — the per-instance `GpuInstance` build loop used to call
+    /// `vkGetBufferDeviceAddress` for this, every frame, for every skinned
+    /// draw. A `VkBuffer`'s device address is fixed for the buffer's lifetime
+    /// once bound (Vulkan spec), and this slot's own `descriptor_bindings`
+    /// doc already leans on that invariant ("the buffer doesn't move"), so the
+    /// query was pure per-frame driver traffic in the innermost
+    /// O(visible-instance) loop of `draw_frame`. The sibling `MorphSlot`,
+    /// added to the same subsystem days later, already caches its two
+    /// addresses this way; the two adjacent code paths did the same job two
+    /// different ways.
+    output_address: vk::DeviceAddress,
     /// Capacity of the output buffer in bytes (equal to the active
     /// vertex_count × SKIN_OUTPUT_STRIDE_BYTES at allocation time).
     pub output_size: vk::DeviceSize,
@@ -151,6 +165,17 @@ impl SkinSlot {
     /// Number of vertices this slot was sized for.
     pub fn vertex_count(&self) -> u32 {
         self.vertex_count
+    }
+
+    /// Device address of the deformed-vertex output buffer (#3469).
+    ///
+    /// Mirrors [`super::morph_compute::MorphSlot::delta_address`]. Callers
+    /// must still apply whatever validity gate their site requires — notably
+    /// `skin_slot_backs_mesh` (#2402), which must stay IN FRONT of this read:
+    /// a cached address is no more valid than a queried one for a slot that no
+    /// longer backs the mesh being drawn.
+    pub fn output_address(&self) -> vk::DeviceAddress {
+        self.output_address
     }
 }
 
@@ -510,8 +535,20 @@ impl SkinComputePipeline {
             descriptor_sets[i] = *set;
         }
 
+        // SAFETY: `output_buffer` was just created device-local with
+        // SHADER_DEVICE_ADDRESS usage (`create_device_local_uninit` above),
+        // and is not destroyed until `destroy_slot`. The address is stable for
+        // the buffer's lifetime per the Vulkan spec, which is what makes
+        // caching it correct rather than merely faster.
+        let output_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(output_buffer.buffer),
+            )
+        };
+
         Ok(SkinSlot {
             output_buffer,
+            output_address,
             output_size,
             descriptor_sets,
             vertex_count,
@@ -1591,6 +1628,59 @@ mod tests {
                 i,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod device_address_caching_tests {
+    //! #3469 — keep the per-draw device-address query from coming back.
+    //!
+    //! The fix itself (a `vk::DeviceAddress` cached on `SkinSlot` at creation)
+    //! cannot be asserted without a live device: constructing a `SkinSlot`
+    //! needs a real `ash::Device`, an allocator and a descriptor pool. What is
+    //! testable — and what actually regresses — is the *call site*: a future
+    //! edit reaching for `get_buffer_device_address` inside `draw_frame`'s
+    //! per-instance loop would silently restore hundreds of driver round-trips
+    //! per frame with nothing failing.
+    //!
+    //! Same shape as the source-scan guards in `material_translate.rs` and
+    //! `shader_constants::tests`.
+
+    /// `draw.rs` is the innermost O(visible-instance) loop of the frame. A
+    /// `VkBuffer`'s device address is fixed for its lifetime once bound
+    /// (Vulkan spec), so *any* query here is per-frame driver traffic for a
+    /// value that could have been resolved once at creation.
+    #[test]
+    fn draw_frame_resolves_no_buffer_device_addresses() {
+        const DRAW: &str = include_str!("context/draw.rs");
+        assert!(
+            !DRAW.contains("get_buffer_device_address"),
+            "#3469: `draw.rs` queries a buffer device address again. Addresses \
+             are fixed for a buffer's lifetime — cache one on the owning slot \
+             at creation (see `SkinSlot::output_address` / \
+             `MorphSlot::delta_address`) and read the field here instead."
+        );
+    }
+
+    /// The paired half: the cached read must stay BEHIND the
+    /// `skin_slot_backs_mesh` validity filter (#2402). A cached address is no
+    /// more valid than a queried one for a slot that no longer backs the mesh
+    /// being drawn, so reordering these would turn a perf fix into a
+    /// wrong-geometry bug.
+    #[test]
+    fn cached_skin_address_read_stays_behind_the_backing_filter() {
+        const DRAW: &str = include_str!("context/draw.rs");
+        let filter = DRAW
+            .find("skin_slot_backs_mesh(slot.vertex_count()")
+            .expect("#2402 backing filter must still guard the skinned-draw address");
+        let read = DRAW
+            .find("slot.output_address()")
+            .expect("#3469 cached address read must still be the source of slot_address");
+        assert!(
+            filter < read,
+            "#3469/#2402: the cached address read must follow the \
+             `skin_slot_backs_mesh` filter, not precede it"
+        );
     }
 }
 
