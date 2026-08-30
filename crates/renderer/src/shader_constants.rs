@@ -106,6 +106,93 @@ mod tests {
         );
     }
 
+    /// #3563 / REN-2026-08-30-D3-01 — the census guard above compares
+    /// `DBG_BITS.len()` against a TEXT count of `pub const DBG_*` lines; it
+    /// asserts nothing about the values. That is the one guard the `DBG_*`
+    /// field cannot afford to be missing, because its `u32` is fully
+    /// allocated: bits 0-31 are all taken, so a 33rd debug view can only be
+    /// spelled as a duplicate of an existing bit — and a duplicate keeps the
+    /// entry count in step, so it passes the census guard,
+    /// `generated_header_contains_all_defines`, and
+    /// `triangle_frag_dbg_bits_not_redeclared`, then ships as two debug views
+    /// silently firing each other.
+    ///
+    /// Modelled on `instance_flag_bits_unique_and_outside_packed_windows`
+    /// (`vulkan/scene_buffer/constants.rs`), which has defended the sibling
+    /// `INSTANCE_FLAG_*` field — the one that still has free bits — since
+    /// #869. The three compound views are unions of bits listed above them
+    /// rather than bits of their own, so they are skipped by name and then
+    /// checked separately.
+    #[test]
+    fn dbg_bits_are_single_bit_and_pairwise_disjoint() {
+        const COMPOUNDS: &[&str] = &[
+            "DBG_VIZ_MATERIAL_LOBES",
+            "DBG_VIZ_RT_LOD",
+            "DBG_VIZ_SHADOW_VISIBILITY",
+        ];
+
+        let singles: Vec<(&str, u32)> = DBG_BITS
+            .iter()
+            .copied()
+            .filter(|(name, _)| !COMPOUNDS.contains(name))
+            .collect();
+
+        let mut union = 0u32;
+        for (i, (a_name, a)) in singles.iter().enumerate() {
+            assert_eq!(
+                a.count_ones(),
+                1,
+                "{a_name} ({a:#010x}) is not a single bit — every non-compound \
+                 DBG_* constant selects one debug view and must own exactly one bit"
+            );
+            for (b_name, b) in singles.iter().skip(i + 1) {
+                assert_eq!(
+                    a & b,
+                    0,
+                    "{a_name} ({a:#010x}) and {b_name} ({b:#010x}) share a bit. The \
+                     DBG_* u32 is fully allocated (bits 0-31), so a new view cannot be \
+                     given a fresh value — recycle DBG_RESERVED_20 (bit 5) or \
+                     DBG_RESERVED_200 (bit 9) by renaming it in place, or move the new \
+                     view to a second flag word in the unused GpuCamera.render_debug.w \
+                     lane. See #3563."
+                );
+            }
+            union |= a;
+        }
+
+        // Compounds must be unions of bits that are already allocated above —
+        // never a way to smuggle in an unlisted bit.
+        for (name, mask) in DBG_BITS.iter().filter(|(n, _)| COMPOUNDS.contains(n)) {
+            assert!(
+                mask.count_ones() > 1,
+                "{name} ({mask:#010x}) is listed as a compound view but holds a single \
+                 bit — either it is a real bit (drop it from COMPOUNDS) or it lost a term"
+            );
+            assert_eq!(
+                mask & !union,
+                0,
+                "{name} ({mask:#010x}) sets bit(s) outside the allocated single-bit set \
+                 ({union:#010x}) — a compound view must be a union of DBG_* bits that \
+                 are themselves catalogued"
+            );
+        }
+
+        // Make the exhaustion visible rather than tribal knowledge: while no
+        // free bit remains, the two recyclable placeholders must stay in the
+        // catalog, because they are the entire allocation pool.
+        let free = (!union).count_ones();
+        if free == 0 {
+            for slot in ["DBG_RESERVED_20", "DBG_RESERVED_200"] {
+                assert!(
+                    singles.iter().any(|(n, _)| *n == slot),
+                    "{slot} was removed from DBG_BITS while the DBG_* u32 has 0 free \
+                     bits — it and DBG_RESERVED_200/20 are the only slots a new debug \
+                     view can be allocated from. See #3563."
+                );
+            }
+        }
+    }
+
     #[test]
     fn max_bones_per_mesh_matches_core() {
         assert_eq!(

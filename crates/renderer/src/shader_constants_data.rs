@@ -938,6 +938,23 @@ pub const fn dbg_viz_raw_output_any_mask() -> u32 {
 /// `DBG_VIZ_MOTION`) bypassed both the value-pin and the no-redeclare guard
 /// silently. See #1482 (original catalog fix) / #1860 (this fix, moving the
 /// catalog here so `build.rs` can drive its emit from it too).
+///
+/// **The `u32` is full.** #3563 — the 32 single-bit `DBG_*` constants cover
+/// bits 0-31 with no gaps, so there is no free bit to allocate and a 33rd
+/// bit could only be written as a duplicate of an existing value.
+/// `dbg_bits_are_single_bit_and_pairwise_disjoint` (`shader_constants.rs`)
+/// is what catches that; the pre-existing count-parity guard cannot, because
+/// it compares entry counts, never values.
+///
+/// Two slots are recyclable and exist for exactly this purpose:
+/// [`DBG_RESERVED_20`] (bit 5) and [`DBG_RESERVED_200`] (bit 9) — rename one
+/// in place rather than inventing a value. Past those two, the real expansion
+/// room is `GpuCamera.render_debug`, a `uvec4` whose `.w` lane is unused
+/// (`triangle.frag` reads only `.x` mode, `.y` rtLodScale, `.z`
+/// rtLodTelemetryEnabled), so a second flag word costs zero bytes.
+///
+/// The last three entries are compound unions of bits already listed above
+/// them, not bits of their own; the uniqueness guard skips them by name.
 pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_BYPASS_POM", DBG_BYPASS_POM),
     ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
