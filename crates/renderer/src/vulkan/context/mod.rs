@@ -1807,7 +1807,6 @@ pub struct VulkanContext {
     /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
     /// #3061 — `FxHashSet`, the per-frame half of `blend_pipeline_cache`.
     blend_seen_scratch: FxHashSet<(u8, u8, bool, bool)>,
-    pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
     pub ui_quad_handle: Option<u32>,

@@ -756,7 +756,6 @@ pub(super) unsafe fn destroy_render_pass_pipelines(
     pipeline: &mut vk::Pipeline,
     pipeline_wireframe: &mut Option<vk::Pipeline>,
     blend_pipeline_cache: &mut rustc_hash::FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
-    pipeline_ui: &mut vk::Pipeline,
 ) {
     device.destroy_pipeline(*pipeline, None);
     *pipeline = vk::Pipeline::null();
@@ -766,8 +765,9 @@ pub(super) unsafe fn destroy_render_pass_pipelines(
     for (_, pipe) in blend_pipeline_cache.drain() {
         device.destroy_pipeline(pipe, None);
     }
-    device.destroy_pipeline(*pipeline_ui, None);
-    *pipeline_ui = vk::Pipeline::null();
+    // The UI overlay pipeline is NOT here: #3426 moved it into the
+    // presentation pass, so `PresentationPipeline::destroy` owns it and a
+    // swapchain recreate rebuilds it along with that pass.
 }
 
 pub(super) fn create_command_pool(

@@ -9,7 +9,7 @@
 
 use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
-use super::super::presentation::{ImageSpaceModifierView, PresentationFrame};
+use super::super::presentation::{ImageSpaceModifierView, PresentationFrame, UiOverlayDraw};
 use super::{SkyParams, VulkanContext};
 use ash::vk;
 
@@ -236,6 +236,7 @@ impl VulkanContext {
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifierView,
+        ui_instance_idx: Option<u32>,
     ) {
         self.record_svgf_pass(cmd, frame);
         self.record_caustic_splat_pass(cmd, frame, caustic_history_valid);
@@ -269,7 +270,14 @@ impl VulkanContext {
         // contained sky/GI/caustics. See `record_bloom_pass`'s doc.
         self.record_bloom_pass(cmd, frame);
         self.record_upscale_pass(cmd, frame, fsr_frame);
-        self.record_presentation_pass(cmd, frame, img, underwater, image_space_modifier);
+        self.record_presentation_pass(
+            cmd,
+            frame,
+            img,
+            underwater,
+            image_space_modifier,
+            ui_instance_idx,
+        );
     }
 
     /// Water-caustic barrier + SVGF temporal accumulation (#2258 /
@@ -1044,6 +1052,7 @@ impl VulkanContext {
         img: usize,
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifierView,
+        ui_instance_idx: Option<u32>,
     ) {
         // SAFETY: `cmd` is recording outside a render pass, and presentation,
         // exposure, swapchain-image, and timer resources are live for this frame.
@@ -1055,6 +1064,45 @@ impl VulkanContext {
                 super::super::exposure::NO_EXPOSURE_RESOURCE_FALLBACK,
                 |value| value.value(),
             );
+            // #3426 — the Scaleform overlay composites inside the
+            // presentation pass now, so its draw state is assembled here and
+            // handed to `dispatch`. `None` (no UI texture this frame, no
+            // registered quad, or a quad with no per-mesh buffers — the
+            // #2505 global-only case) simply skips the overlay draw.
+            // Assembled with combinators rather than `?` on purpose: every
+            // line from the SVGF latch to `queue_submit` must stay
+            // error-propagation-free, and
+            // `record_post_passes_has_no_error_propagation_after_the_svgf_latch`
+            // enforces that by scanning this file's text (#2146 / #917).
+            let overlay =
+                ui_instance_idx
+                    .zip(self.ui_quad_handle)
+                    .and_then(|(instance_index, ui_quad)| {
+                        self.mesh_registry.get(ui_quad).and_then(|mesh| {
+                            mesh.vertex_buffer
+                                .as_ref()
+                                .zip(mesh.index_buffer.as_ref())
+                                .map(|(vb, ib)| UiOverlayDraw {
+                                    texture_set: self.texture_registry.descriptor_set(frame),
+                                    scene_set: self.scene_buffers.descriptor_set(frame),
+                                    vertex_buffer: vb.buffer,
+                                    index_buffer: ib.buffer,
+                                    index_count: mesh.index_count,
+                                    instance_index,
+                                })
+                        })
+                    });
+            if overlay.is_none() && ui_instance_idx.is_some() {
+                // Mirrors the warn-once the geometry pass carried for this
+                // case before the overlay moved (#2505 / D12-2026-08-07-03).
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| {
+                    log::warn!(
+                        "UI overlay quad has no per-mesh vertex/index buffer \
+                         (global-only) — skipping UI draw. #2505"
+                    );
+                });
+            }
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_presentation_start(&self.device, cmd, frame);
             }
@@ -1073,6 +1121,7 @@ impl VulkanContext {
                         render_debug_flags: self.render_debug_flags,
                         render_debug_mode: self.render_debug_mode.shader_value(),
                     },
+                    overlay,
                 );
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_presentation_end(&self.device, cmd, frame);

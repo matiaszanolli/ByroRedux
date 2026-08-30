@@ -84,6 +84,36 @@ pub(crate) struct PresentationFrame {
     pub render_debug_mode: u32,
 }
 
+/// One Scaleform overlay draw, recorded inside this pass immediately after
+/// the tone-map triangle (#3426).
+///
+/// The overlay used to be the tail of the *main geometry* render pass, which
+/// blended it into the render-resolution HDR G-buffer — so every menu was
+/// fogged, bloomed, exposure-scaled, ACES tone-mapped, TAA-accumulated with a
+/// zero motion vector and no reactive mask, and FSR-upscaled. Drawing it here
+/// instead puts it after all of that, at output resolution, straight onto the
+/// swapchain: `aces()` has already been applied to the world behind it and is
+/// not applied to the overlay at all.
+///
+/// The colour round-trip is exact and needs no shader work. Ruffle's capture
+/// is sRGB-encoded bytes uploaded as `R8G8B8A8_SRGB`, so the sampler
+/// linearises it; Vulkan blends in linear space against the sRGB swapchain
+/// attachment and re-encodes on write. (Re-uploading the capture as `_UNORM`
+/// — a natural-looking companion change — would double-encode it here.)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UiOverlayDraw {
+    /// Bindless texture set (set 0) and scene set (set 1) — the same two the
+    /// geometry pass binds, since the overlay still runs `ui.vert`/`ui.frag`
+    /// and reads its `textureIndex` out of the instance SSBO.
+    pub texture_set: vk::DescriptorSet,
+    pub scene_set: vk::DescriptorSet,
+    pub vertex_buffer: vk::Buffer,
+    pub index_buffer: vk::Buffer,
+    pub index_count: u32,
+    /// Index of the UI quad's `GpuInstance`, passed as `firstInstance`.
+    pub instance_index: u32,
+}
+
 pub struct PresentationPipeline {
     render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
@@ -93,6 +123,14 @@ pub struct PresentationPipeline {
     sampler: vk::Sampler,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// Scaleform overlay pipeline, built against *this* pass's render pass so
+    /// the menu composites after tone-mapping and upscale (#3426). Owned here
+    /// because it is render-pass-bound and this struct is what a swapchain
+    /// recreate rebuilds; `overlay_pipeline_layout` is NOT owned — it is the
+    /// shared scene layout (set 0 bindless textures, set 1 scene SSBOs) that
+    /// `VulkanContext` creates and destroys.
+    overlay_pipeline: vk::Pipeline,
+    overlay_pipeline_layout: vk::PipelineLayout,
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
     extent: vk::Extent2D,
@@ -112,6 +150,7 @@ impl PresentationPipeline {
         upscaled_views: &[vk::ImageView],
         health_buffers: &[vk::Buffer],
         extent: vk::Extent2D,
+        overlay_pipeline_layout: vk::PipelineLayout,
     ) -> Result<Self> {
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
@@ -125,6 +164,8 @@ impl PresentationPipeline {
             health_buffers: health_buffers.to_vec(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
+            overlay_pipeline: vk::Pipeline::null(),
+            overlay_pipeline_layout,
             vert_module: vk::ShaderModule::null(),
             frag_module: vk::ShaderModule::null(),
             extent,
@@ -419,6 +460,20 @@ impl PresentationPipeline {
                 ));
             }
         };
+
+        // #3426 — the Scaleform overlay composites in THIS pass, so its
+        // pipeline is built against this render pass (one swapchain colour
+        // attachment) rather than the geometry pass's eight-attachment
+        // G-buffer. Failure here is fatal for the same reason the pipeline
+        // above is: `create` is unwound by `new`/`recreate`, which destroy
+        // every handle produced so far.
+        self.overlay_pipeline = super::pipeline::create_ui_pipeline(
+            device,
+            self.render_pass,
+            self.extent,
+            self.overlay_pipeline_layout,
+            pipeline_cache,
+        )?;
         Ok(())
     }
 
@@ -458,6 +513,7 @@ impl PresentationPipeline {
         frame: usize,
         image_index: usize,
         input: PresentationFrame,
+        overlay: Option<UiOverlayDraw>,
     ) {
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {
@@ -551,7 +607,79 @@ impl PresentationPipeline {
                 constant_bytes,
             );
             device.cmd_draw(cmd, 3, 1, 0, 0);
+            // #3426 — the Scaleform overlay, composited on top of the
+            // tone-mapped output rather than blended into the HDR G-buffer.
+            // Same subpass as the draw above, so rasterization order gives
+            // the blend its ordering for free; the viewport/scissor set for
+            // the fullscreen triangle are the output extent, which is exactly
+            // what the overlay wants, but they are re-set below anyway for
+            // the reason `UI_PIPELINE_DYNAMIC_STATES` documents.
+            if let Some(overlay) = overlay {
+                // SAFETY: the render pass is open (begun above) and the caller
+                // supplies live per-frame descriptor sets and the UI quad's
+                // live vertex/index buffers.
+                self.record_overlay(device, cmd, overlay);
+            }
             device.cmd_end_render_pass(cmd);
+        }
+    }
+
+    /// Record the Scaleform overlay quad inside the already-open presentation
+    /// render pass.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording inside this pipeline's render pass, and every
+    /// handle in `overlay` must be live for the frame being recorded.
+    unsafe fn record_overlay(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        overlay: UiOverlayDraw,
+    ) {
+        use super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
+        // CONTRACT (#663), inherited from the geometry pass this draw moved
+        // out of: the explicit `cmd_set_*` calls below must cover every state
+        // in `UI_PIPELINE_DYNAMIC_STATES`. Depth / cull / depth-bias state on
+        // the overlay pipeline is STATIC and applied by the bind itself.
+        const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
+            assert!(
+                UI_PIPELINE_DYNAMIC_STATES.len() == 2,
+                "UI overlay path covers VIEWPORT + SCISSOR only —                  extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+            );
+        };
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.extent.width as f32,
+            height: self.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent: self.extent,
+        };
+        unsafe {
+            // SAFETY: fn contract — `cmd` is recording inside this render
+            // pass and every supplied handle is live.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.overlay_pipeline);
+            device.cmd_set_viewport(cmd, 0, &[viewport]);
+            device.cmd_set_scissor(cmd, 0, &[scissor]);
+            // The presentation draw above bound this pass's own set 0, which
+            // is layout-incompatible with the scene layout, so both overlay
+            // sets are (re)bound here rather than inherited.
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.overlay_pipeline_layout,
+                0,
+                &[overlay.texture_set, overlay.scene_set],
+                &[],
+            );
+            device.cmd_bind_vertex_buffers(cmd, 0, &[overlay.vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(cmd, overlay.index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_draw_indexed(cmd, overlay.index_count, 1, 0, 0, overlay.instance_index);
         }
     }
 
@@ -568,6 +696,9 @@ impl PresentationPipeline {
         // `VulkanContext` and deliberately survive a swapchain recreate, so
         // the rebuilt pipeline must rebind the same ones.
         let health_buffers = std::mem::take(&mut self.health_buffers);
+        // Borrowed handle, not owned — `destroy` leaves it set, but read it
+        // out explicitly so the rebuild does not depend on that.
+        let overlay_pipeline_layout = self.overlay_pipeline_layout;
         unsafe {
             // SAFETY: swapchain recreation waits for device idle before this
             // method is called.
@@ -581,6 +712,7 @@ impl PresentationPipeline {
             upscaled_views,
             &health_buffers,
             extent,
+            overlay_pipeline_layout,
         )?;
         Ok(())
     }
@@ -604,6 +736,18 @@ impl PresentationPipeline {
                 device.destroy_pipeline(self.pipeline, None)
             };
             self.pipeline = vk::Pipeline::null();
+        }
+        // Destroyed before `render_pass` below, which it was built against
+        // (#3426). `overlay_pipeline_layout` is deliberately NOT destroyed —
+        // it is `VulkanContext::pipeline_layout`, shared with the scene
+        // pipelines and outliving every swapchain recreate.
+        if self.overlay_pipeline != vk::Pipeline::null() {
+            unsafe {
+                // SAFETY: created by this device in `create`; no in-flight
+                // command buffer binds it (fn contract).
+                device.destroy_pipeline(self.overlay_pipeline, None)
+            };
+            self.overlay_pipeline = vk::Pipeline::null();
         }
         if self.vert_module != vk::ShaderModule::null() {
             unsafe {
@@ -684,6 +828,60 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(PresentationPushConstants, fade_color),
             112
+        );
+    }
+
+    /// #3426 — the Scaleform overlay must composite in this pass, after the
+    /// tone-map draw, and must no longer be blended into the geometry pass's
+    /// render-resolution HDR G-buffer (where it was fogged, bloomed,
+    /// exposure-scaled, ACES tone-mapped, TAA-accumulated with a zero motion
+    /// vector and FSR-upscaled).
+    #[test]
+    fn ui_overlay_composites_after_the_tone_map_draw() {
+        let src = include_str!("presentation.rs");
+        let dispatch = src
+            .split_once("pub(crate) unsafe fn dispatch(")
+            .expect("dispatch must exist")
+            .1;
+        let body = dispatch
+            .split_once("unsafe fn record_overlay(")
+            .expect("record_overlay must follow dispatch")
+            .0;
+        let tone_map = body
+            .find("cmd_draw(cmd, 3, 1, 0, 0)")
+            .expect("the fullscreen tone-map triangle must still be drawn");
+        let overlay = body
+            .find("self.record_overlay(")
+            .expect("the overlay must be recorded in the presentation pass");
+        let end = body
+            .find("cmd_end_render_pass(cmd)")
+            .expect("the pass must end");
+        assert!(
+            tone_map < overlay && overlay < end,
+            "the overlay must be recorded after the tone-map draw and before \
+             the pass ends, so the menu is composited onto tone-mapped output \
+             rather than being tone-mapped itself (#3426)"
+        );
+
+        // The other half: the geometry pass must not draw it any more.
+        let geometry = include_str!("context/geometry_pass.rs");
+        assert!(
+            !geometry.contains("pipeline_ui"),
+            "the geometry pass must not bind a UI pipeline — the overlay \
+             belongs to the presentation pass since #3426"
+        );
+
+        // And the pipeline it binds must be built for a single swapchain
+        // colour attachment, not the eight-attachment G-buffer.
+        let pipeline = include_str!("pipeline.rs");
+        let ui_pipeline = pipeline
+            .split_once("pub fn create_ui_pipeline(")
+            .expect("create_ui_pipeline must exist")
+            .1;
+        assert!(
+            ui_pipeline.contains("let color_blend_attachment = [ui_blend];"),
+            "the UI pipeline must declare exactly one colour-blend attachment \
+             — the presentation pass's swapchain target (#3426)"
         );
     }
 

@@ -109,7 +109,8 @@ RGBA pixel buffer (cached; only re-emitted when `dirty`)
         ▼  byroredux::app_frame → texture_registry.update_rgba(ui_texture_handle, …)
 existing Vulkan VkImage replaced in place (deferred-destroy of the old one)
         │
-        ▼  draw_frame: bind pipeline_ui (no depth, alpha blend, bindless sampler)
+        ▼  presentation pass: fullscreen tone-map triangle writes the swapchain
+        ▼  then bind the overlay pipeline (no depth, alpha blend, bindless sampler)
         ▼  draw the fullscreen UI quad, sampling textures[textureIndex]
 Pixels on screen
 ```
@@ -283,22 +284,42 @@ follow-up work, not implemented here.
 
 ## Vulkan integration
 
-The UI is drawn at the tail of the main render pass, not in a separate
-pass or subpass. The renderer side has a dedicated UI pipeline
-(`pipeline::create_ui_pipeline`, stored as `VulkanContext::pipeline_ui`)
-with:
+The UI is drawn at the tail of the **presentation** pass — the
+output-resolution pass that writes the swapchain — immediately after its
+fullscreen tone-map triangle and inside the same subpass (#3426). It is
+therefore composited onto the finished, tone-mapped, upscaled image, and
+nothing downstream touches it.
+
+Before #3426 it was the tail of the *main geometry* render pass, blended
+into the render-resolution HDR G-buffer. Every menu consequently went
+through height fog / volumetric transmittance keyed off the world depth
+behind it, the bloom add, TAA accumulation with a zero motion vector and no
+FSR reactive or transparency mask, FSR upscaling, and finally
+`aces(graded * exposure)` in `presentation.frag` — which maps linear 1.0 to
+~0.80, so pure-white menu chrome reached the swapchain at ~80 % grey.
+
+The colour round-trip needs no shader work and no format change: Ruffle's
+capture is sRGB-encoded bytes uploaded as `R8G8B8A8_SRGB`, so the sampler
+linearises it, Vulkan blends in linear space against the **sRGB** swapchain
+attachment, and the hardware re-encodes on write. (Re-uploading the capture
+as `_UNORM` would double-encode it against this target.)
+
+The renderer side has a dedicated UI pipeline
+(`pipeline::create_ui_pipeline`), built against the presentation render pass
+and owned by `PresentationPipeline` — which is what a swapchain recreate
+rebuilds — with:
 
 - **No depth test / no depth write / no stencil** — UI draws on top of
   the world (`depth_test_enable(false)`, `depth_write_enable(false)`,
   `stencil_test_enable(false)`; world-geometry stencil lives in the
   opaque/blend pipelines, #337).
-- **Alpha blend** on the HDR color slot (`SRC_ALPHA`,
-  `ONE_MINUS_SRC_ALPHA`; alpha channel `ONE`/`ZERO`).
-- **G-buffer masked off.** The main render pass has 6 color attachments
-  (HDR + normal + motion + mesh-id + …). The UI pipeline writes RGBA to
-  slot 0 (HDR) only; the other five attachments use a no-op blend state
-  with `color_write_mask(empty)` so the UI quad never pollutes the
-  normal / motion-vector / mesh-id G-buffer.
+- **Alpha blend** on the presentation pass's single swapchain color
+  attachment (`SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`; alpha channel
+  `ONE`/`ZERO`). The eight-entry blend table the pipeline used to carry —
+  RGBA into HDR slot 0, `color_write_mask(empty)` on normal / motion /
+  mesh-id / raw-indirect / albedo / the two FSR masks — went away with the
+  move: there is one attachment to blend into and no G-buffer to keep the
+  overlay out of.
 - **Lightweight vertex format.** The UI quad uses `UiVertex` (position +
   UV only, **20 bytes** — `[f32; 3]` + `[f32; 2]`, 2 attribute
   descriptions) rather than the full 104-byte scene `Vertex`. The split
@@ -317,10 +338,12 @@ with:
 - **Static-vs-dynamic state invariant.** Viewport and scissor are the UI
   pipeline's only dynamic states (`UI_PIPELINE_DYNAMIC_STATES`, len 2);
   depth/cull/depth-bias are static and applied by the pipeline bind
-  itself. `draw.rs` re-sets viewport/scissor after binding `pipeline_ui`
-  (defensive, #133) and a `const` assertion fires if anyone grows the
-  dynamic-state list without extending the explicit `cmd_set_*` calls
-  (#663).
+  itself. `PresentationPipeline::record_overlay` re-sets viewport/scissor
+  after binding the overlay pipeline (defensive, #133) and a `const`
+  assertion fires if anyone grows the dynamic-state list without extending
+  the explicit `cmd_set_*` calls (#663). Both descriptor sets are (re)bound
+  there too: the tone-map draw immediately before it binds this pass's own
+  set 0, which is layout-incompatible with the scene layout.
 
 ### Texture upload — `register_rgba` / `update_rgba`
 
@@ -591,7 +614,7 @@ call the host every frame" intuition, which the corpus does not support.
   catalog, Scaleform extensions, the GFx interpreter contract
 - [Papyrus API Reference](../legacy/papyrus-api-reference.md) — what UI
   events a menu can receive, what the script side needs to expose
-- [Vulkan Renderer](renderer.md) — the `pipeline_ui` setup, bindless
+- [Vulkan Renderer](renderer.md) — the overlay pipeline setup, bindless
   texture array, and `update_rgba` deferred-destruction path
 - [Game Loop](game-loop.md) — where the inline UI tick/render fits in the
   per-frame flow

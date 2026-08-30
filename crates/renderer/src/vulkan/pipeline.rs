@@ -856,6 +856,12 @@ pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
 /// 128-byte push-constant layout on a separate pipeline layout). The UI
 /// vertex shader reads only the `textureIndex` field; vertices are
 /// already in NDC clip space so the `model` matrix is ignored.
+///
+/// `render_pass` is the **presentation** pass, not the geometry pass (#3426):
+/// the overlay composites onto the tone-mapped, upscaled swapchain image, so
+/// the pipeline is built for that pass's single colour attachment and is
+/// owned by `PresentationPipeline` (which is what a swapchain recreate
+/// rebuilds). `extent` is therefore the output extent.
 pub fn create_ui_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -923,11 +929,21 @@ pub fn create_ui_pipeline(
         .depth_write_enable(false)
         .stencil_test_enable(false);
 
-    // Alpha blending for UI transparency.
-    // Main render pass has 8 color attachments. UI writes to HDR (slot 0)
-    // with alpha blending and masks out writes to normal/motion/mesh_id
-    // via color_write_mask(empty) so UI doesn't pollute the G-buffer.
-    let ui_hdr_blend = vk::PipelineColorBlendAttachmentState::default()
+    // Alpha blending for UI transparency, over the presentation pass's single
+    // swapchain colour attachment.
+    //
+    // #3426 — this used to be an eight-entry table because the overlay was
+    // the tail of the *geometry* pass: it blended into the render-resolution
+    // HDR G-buffer (slot 0) and masked itself out of normal/motion/mesh_id so
+    // it would not pollute them, and it wrote no FSR reactive/transparency
+    // mask at all. That put every menu through fog, bloom, exposure, ACES,
+    // TAA (with a zero motion vector and no reactive mask) and FSR upscale.
+    // The overlay now composites in `presentation.rs`, after all of it, at
+    // output resolution — so there is exactly one attachment to blend into
+    // and nothing left to mask off. The swapchain attachment is sRGB, so this
+    // blend happens in linear space and is re-encoded on write, which is the
+    // exact inverse of the `R8G8B8A8_SRGB` sampler read of Ruffle's capture.
+    let ui_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
         .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
@@ -936,23 +952,7 @@ pub fn create_ui_pipeline(
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
         .alpha_blend_op(vk::BlendOp::ADD);
-    let ui_noop_blend = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::empty())
-        .blend_enable(false);
-    let color_blend_attachment = [
-        ui_hdr_blend,  // 0 HDR color (UI blends over)
-        ui_noop_blend, // 1 normal
-        ui_noop_blend, // 2 motion
-        ui_noop_blend, // 3 mesh_id
-        ui_noop_blend, // 4 raw_indirect
-        ui_noop_blend, // 5 albedo
-        // The Scaleform overlay writes no FSR mask. Marking it reactive
-        // would only paper over the real fix, which is moving the overlay
-        // out of the render-resolution pass entirely so it is composited
-        // after upscale and never enters temporal reconstruction.
-        ui_noop_blend, // 6 fsr_reactive
-        ui_noop_blend, // 7 fsr_transparency
-    ];
+    let color_blend_attachment = [ui_blend];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_attachment);

@@ -3646,7 +3646,6 @@ impl VulkanContext {
             &batches,
             draw_commands,
             water_commands,
-            ui_instance_idx,
         );
         // SAFETY: tail of the per-frame command buffer — depth-history
         // snapshot, post/denoise/composite chain, egui overlay, screenshot
@@ -3715,6 +3714,7 @@ impl VulkanContext {
                 fsr_frame,
                 underwater,
                 image_space_modifier,
+                ui_instance_idx,
             );
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).

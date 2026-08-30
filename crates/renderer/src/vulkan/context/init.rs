@@ -683,14 +683,11 @@ impl VulkanContext {
             device_caps.fill_mode_non_solid_supported,
         )?;
 
-        // 15. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
-        let pipeline_ui = pipeline::create_ui_pipeline(
-            &device,
-            render_pass,
-            render_extent,
-            pipelines.layout,
-            pipeline_cache,
-        )?;
+        // 15. The UI overlay pipeline used to be created here, against the
+        // geometry render pass. #3426 moved it into `PresentationPipeline`
+        // (built below with `pipelines.layout`) so the Scaleform overlay
+        // composites onto the tone-mapped, upscaled swapchain image instead
+        // of being blended into the render-resolution HDR G-buffer.
 
         // 15a. Water pipeline (transparent, RT reflection/refraction,
         // SRC_ALPHA blend on HDR only — G-buffer attachments masked
@@ -1400,6 +1397,7 @@ impl VulkanContext {
             frame_upscaler.output_views(),
             &health_handles,
             frame_extents.output,
+            pipelines.layout,
         )
         .context("create presentation pipeline")?;
         let frame_upscaler = Some(frame_upscaler);
@@ -1467,7 +1465,6 @@ impl VulkanContext {
             pipeline_wireframe: pipelines.opaque_wireframe,
             blend_pipeline_cache: FxHashMap::default(),
             blend_seen_scratch: FxHashSet::default(),
-            pipeline_ui,
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
             particle_quad_handle: None,

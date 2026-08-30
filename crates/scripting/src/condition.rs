@@ -467,14 +467,31 @@ pub fn evaluate_function(
                 CharacterLevel, CharacterRuleset, DerivedOutput, DerivedScope,
             };
             use byroredux_core::ecs::components::ActorValues;
-            let Some(avs) = world.get::<ActorValues>(entity) else {
-                return 0.0; // no `ActorValues` → absent-AV default
+            // #3441 — the `ActorValues` storage guard must NOT stay live
+            // across the `CharacterRuleset` resource acquire below.
+            // `pool_regen_tick_system` (`character/regen.rs`) and
+            // `melee_damage_charal_bonus` (`combat.rs`) both take the pair the
+            // other way round (`CharacterRuleset` → `ActorValues`, the write
+            // side in the former), so holding the guard here closes a 2-cycle
+            // in the `BYRO_LOCK_ORDER_CHECK` graph — `lock_tracker` keys
+            // storages and resources into one `TypeId` map. Snapshot what the
+            // ruleset branch needs and drop the guard first; the clone only
+            // happens on the rare fall-through (the carried-value fast path
+            // above returns while the guard is still the cheap borrow).
+            let avs = {
+                let Some(avs) = world.get::<ActorValues>(entity) else {
+                    return 0.0; // no `ActorValues` → absent-AV default
+                };
+                // A carried value wins — populated SPECIAL/skills, baked FO4
+                // Health/AP, perk/effect modifiers.
+                if avs.get(condition.param_1).is_some() {
+                    return avs.current(condition.param_1);
+                }
+                avs.clone()
             };
-            // A carried value wins — populated SPECIAL/skills, baked FO4
-            // Health/AP, perk/effect modifiers.
-            if avs.get(condition.param_1).is_some() {
-                return avs.current(condition.param_1);
-            }
+            // `CharacterLevel` too: read it before the ruleset so the surviving
+            // direction stays `CharacterRuleset` → (nothing).
+            let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
             // Absent → if this game *derives* the stat actor-generally (Carry
             // Weight / Melee Damage / Crit Chance / Unarmed Damage from
             // SPECIAL/skills), compute it from the per-game `CharacterRuleset`.
@@ -503,7 +520,6 @@ pub fn evaluate_function(
                     if formula.scope == DerivedScope::ActorGeneral
                         && formula.kind == DerivedOutput::Absolute
                     {
-                        let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
                         return rs
                             .derived_value(condition.param_1, &avs, level)
                             .unwrap_or(0.0);
@@ -1465,6 +1481,73 @@ mod tests {
             evaluate(&list, &world, &ctx(actor)),
             "Health stays 0 (player-only)"
         );
+    }
+
+    /// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both
+    /// acquire `CharacterRuleset` → `ActorValues` (the former for write), so
+    /// the `GetActorValue` arm must not hold its `ActorValues` guard across
+    /// the ruleset acquire. `lock_tracker` keys storages and resources into
+    /// one `TypeId` graph, so the reverse hold is a real 2-cycle.
+    #[test]
+    fn get_actor_value_does_not_hold_actor_values_across_ruleset() {
+        let src = include_str!("condition.rs");
+        let arm_start = src
+            .find("ConditionFunction::GetActorValue => {")
+            .expect("the GetActorValue arm must exist");
+        let arm = &src[arm_start..];
+        let arm = &arm[..arm
+            .find("ConditionFunction::GetDistance => {")
+            .expect("GetDistance must follow GetActorValue")];
+
+        let snapshot = arm
+            .find("avs.clone()")
+            .expect("the arm must snapshot ActorValues instead of holding the guard");
+        let level = arm
+            .find("world.get::<CharacterLevel>")
+            .expect("the arm must read CharacterLevel");
+        let ruleset = arm
+            .find("try_resource::<CharacterRuleset>()")
+            .expect("the arm must consult the ruleset");
+        assert!(
+            snapshot < ruleset,
+            "ActorValues must be cloned and its guard dropped before CharacterRuleset is acquired"
+        );
+        assert!(
+            level < ruleset,
+            "CharacterLevel must be read before CharacterRuleset is acquired"
+        );
+
+        // Under the opt-in detector, drive the real evaluator after the
+        // production hold order has been observed: a surviving reverse hold
+        // panics inside `record_and_check`.
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        use byroredux_core::character::fallout4_ruleset;
+        use byroredux_core::ecs::components::ActorValues;
+
+        let resolve = |id: &str| match id {
+            "Strength" => Some(0x05u32),
+            "Endurance" => Some(0x07),
+            "Agility" => Some(0x0A),
+            "CarryWeight" => Some(0x2D1),
+            _ => None,
+        };
+        let mut world = World::new();
+        world.insert_resource(fallout4_ruleset(resolve));
+        let actor = world.spawn();
+        world.insert(actor, ActorValues::from_pairs([(0x05, 7.0)]));
+
+        // CharacterRuleset → ActorValues (W) — `pool_regen_tick_system`'s order.
+        {
+            let _rs = world
+                .try_resource::<byroredux_core::character::CharacterRuleset>()
+                .unwrap();
+            let _avs = world.query_mut::<ActorValues>().unwrap();
+        }
+        // Carry Weight is absent → the arm falls through to the ruleset branch.
+        let list = vec![cond(14, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
     #[test]

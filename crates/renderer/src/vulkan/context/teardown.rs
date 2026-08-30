@@ -293,25 +293,25 @@ impl Drop for VulkanContext {
                 );
             }
 
-            // `destroy_render_pass_pipelines` destroys both
-            // `self.pipeline` (the opaque raster path), every entry
-            // in `blend_pipeline_cache`, AND `self.pipeline_ui`.
-            // All four share the single `self.pipeline_layout`
-            // destroyed immediately below — `pipeline::create_ui_pipeline`
-            // is called with `pipelines.layout` (the same layout
-            // returned by `create_triangle_pipeline`) at
-            // initialisation, so a single layout destroy covers
-            // every pipeline. Pre-fix the sharing was load-bearing
-            // but undocumented; if a future ui-pipeline variant
-            // needs its own layout, this site needs a matching
-            // second `destroy_pipeline_layout` call. See
-            // REN-D7-NEW-01 (audit 2026-05-09).
+            // `destroy_render_pass_pipelines` destroys `self.pipeline`
+            // (the opaque raster path), the wireframe variant, and every
+            // entry in `blend_pipeline_cache`. They all share the single
+            // `self.pipeline_layout` destroyed immediately below, so one
+            // layout destroy covers every pipeline. Pre-fix the sharing was
+            // load-bearing but undocumented; a future pipeline variant with
+            // its own layout needs a matching second
+            // `destroy_pipeline_layout` call here. See REN-D7-NEW-01 (audit
+            // 2026-05-09).
+            //
+            // The UI overlay pipeline shares that same layout but is owned by
+            // `PresentationPipeline` since #3426, and is destroyed with it
+            // far above (`presentation.destroy()`) — i.e. still before this
+            // layout destroy, which is the ordering that matters.
             destroy_render_pass_pipelines(
                 &self.device,
                 &mut self.pipeline,
                 &mut self.pipeline_wireframe,
                 &mut self.blend_pipeline_cache,
-                &mut self.pipeline_ui,
             );
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);

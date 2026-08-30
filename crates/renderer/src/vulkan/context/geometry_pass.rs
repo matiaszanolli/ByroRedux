@@ -25,7 +25,6 @@ impl VulkanContext {
         batches: &[DrawBatch],
         draw_commands: &[DrawCommand],
         water_commands: &[WaterDrawCommand],
-        ui_instance_idx: Option<u32>,
     ) {
         // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
@@ -37,9 +36,12 @@ impl VulkanContext {
 
             // No unconditional pipeline bind here — the batch loop below
             // initializes `last_pipeline_key` to a sentinel Blended value
-            // so the first real batch always rebinds to its own pipeline,
-            // and the UI overlay rebinds `pipeline_ui` regardless. An
-            // opaque bind at this point would always be discarded. #507.
+            // so the first real batch always rebinds to its own pipeline.
+            // An opaque bind at this point would always be discarded. #507.
+            //
+            // The Scaleform overlay used to be the tail of this pass; #3426
+            // moved it into `presentation.rs` so it composites after
+            // tone-mapping and upscale instead of entering the G-buffer.
 
             // Dynamic viewport + scissor.
             let viewports = [vk::Viewport {
@@ -599,102 +601,6 @@ impl VulkanContext {
                                 );
                             }
                         }
-                    }
-                }
-            }
-
-            // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
-            // The UI instance was appended to gpu_instances before the bulk upload,
-            // so it's already in the SSBO with a proper flush.
-            //
-            // CONTRACT (#663). Defensive `cmd_set_*` calls below cover
-            // every state in `UI_PIPELINE_DYNAMIC_STATES` so the UI
-            // overlay is decoupled from whatever dynamic-state values
-            // the last main-batch pipeline left set. Depth / cull /
-            // depth-bias state on `pipeline_ui` is STATIC and applied
-            // by the pipeline bind itself — no `cmd_set_*` is legal
-            // for those (validation would reject it). If you grow
-            // `UI_PIPELINE_DYNAMIC_STATES`, the const assertion below
-            // fires and you must add the matching `cmd_set_*` here
-            // before the draw.
-            if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
-                if let Some(mesh) = self.mesh_registry.get(ui_quad) {
-                    // #2505 / D12-2026-08-07-03 — checked before any
-                    // pipeline/dynamic-state commands are recorded; see the
-                    // `else` arm below for why.
-                    if let Some((vb, ib)) =
-                        mesh.vertex_buffer.as_ref().zip(mesh.index_buffer.as_ref())
-                    {
-                        use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
-                        const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
-                            // Update the explicit cmd_set_* calls below to cover
-                            // every state in this list when the count changes.
-                            assert!(
-                                UI_PIPELINE_DYNAMIC_STATES.len() == 2,
-                                "UI overlay path covers VIEWPORT + SCISSOR only — \
-                                 extend it before growing UI_PIPELINE_DYNAMIC_STATES",
-                            );
-                        };
-                        self.device.cmd_bind_pipeline(
-                            cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            self.pipeline_ui,
-                        );
-                        // Defensive re-set of dynamic viewport/scissor after the
-                        // UI pipeline bind (#133). The opaque/blend pipelines
-                        // all declare both as VK_DYNAMIC_STATE, so the state set
-                        // at the start of the render pass is inherited —
-                        // today. A future UI variant that rendered at a
-                        // different extent (e.g. scaled Scaleform overlay on
-                        // a non-native resolution) would silently use the
-                        // inherited values. Cheap two-command insurance.
-                        //
-                        // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
-                        // "redundant" because the values match the
-                        // inherited ones every frame today. Keeping the
-                        // re-set is intentional — the alternative is to
-                        // gate it on "does this UI variant change extent"
-                        // which moves a one-liner of pre-bind state into
-                        // a per-variant capability check, more code than
-                        // the two `cmd_set_*` calls cost. The audit
-                        // recommendation is acknowledged + declined.
-                        let viewports = [vk::Viewport {
-                            x: 0.0,
-                            y: 0.0,
-                            width: self.frame_extents.render.width as f32,
-                            height: self.frame_extents.render.height as f32,
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }];
-                        self.device.cmd_set_viewport(cmd, 0, &viewports);
-                        let scissors = [vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: self.frame_extents.render,
-                        }];
-                        self.device.cmd_set_scissor(cmd, 0, &scissors);
-                        self.device
-                            .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                        self.device
-                            .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
-                        self.device
-                            .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
-                    } else {
-                        // #2505 / D12-2026-08-07-03 — no live path registers
-                        // the UI quad global-only today (mirrors the
-                        // water-loop guard above and `dispatch_direct`'s
-                        // existing skip, #956 / REN-D5-NEW-05), but the
-                        // precondition is a call-site convention, not a
-                        // type-level guarantee. Checked before any
-                        // pipeline/dynamic-state commands are recorded, so
-                        // a missing buffer skips the whole overlay cleanly
-                        // instead of panicking mid-render-pass.
-                        static ONCE: std::sync::Once = std::sync::Once::new();
-                        ONCE.call_once(|| {
-                            log::warn!(
-                                "UI overlay mesh has no per-mesh vertex/index buffer \
-                                 (global-only) — skipping UI draw. #2505"
-                            );
-                        });
                     }
                 }
             }

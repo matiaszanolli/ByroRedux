@@ -203,7 +203,6 @@ impl VulkanContext {
                     &mut self.pipeline,
                     &mut self.pipeline_wireframe,
                     &mut self.blend_pipeline_cache,
-                    &mut self.pipeline_ui,
                 );
 
                 self.device.destroy_render_pass(self.render_pass, None);
@@ -327,13 +326,9 @@ impl VulkanContext {
             self.pipeline = pipelines.opaque;
             self.pipeline_wireframe = pipelines.opaque_wireframe;
 
-            self.pipeline_ui = pipeline::create_ui_pipeline(
-                &self.device,
-                self.render_pass,
-                self.frame_extents.render,
-                self.pipeline_layout,
-                self.pipeline_cache,
-            )?;
+            // The UI overlay pipeline is not rebuilt here — since #3426 it
+            // belongs to the presentation pass, which is destroyed and
+            // recreated further down with the new swapchain views.
 
             // Water pipeline depends on the render pass. Destroy +
             // recreate when the render pass changes; absorb failure
@@ -1050,6 +1045,7 @@ impl VulkanContext {
                 &upscaled_views,
                 &health_handles,
                 self.frame_extents.output,
+                self.pipeline_layout,
             )
             .context("recreate presentation pipeline")?,
         );

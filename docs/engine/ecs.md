@@ -625,6 +625,16 @@ snapshots and drops `GlobalTransform` before reading `CharacterController`;
 holding them as `GlobalTransform → CharacterController` would close the live
 cycle through `CharacterController → Transform → GlobalTransform` (#3260).
 
+The CHARAL pair has its own settled direction: **`CharacterRuleset` →
+`ActorValues`** (#3441). `pool_regen_tick_system` (`core/src/character/regen.rs`)
+and `melee_damage_charal_bonus` (`byroredux/src/combat.rs`) both take the
+ruleset resource first, and the former takes `ActorValues` for *write*, so the
+resource is the outer lock. `evaluate_function`'s `GetActorValue` arm
+(`crates/scripting/src/condition.rs`) reads `ActorValues` first because that is
+its fast path, so it clones the component and drops the guard before touching
+the ruleset — it must never hold the two together. `CharacterLevel` is read on
+the same snapshot-first rule.
+
 Two properties make a violation cheap to miss and expensive to hit:
 
 - Exclusive systems can invert the order and never deadlock, because no two
