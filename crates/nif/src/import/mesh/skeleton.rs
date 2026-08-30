@@ -167,12 +167,22 @@ pub fn bind_world_position(bone: &BsSkinBoneTrans) -> [f32; 3] {
 /// bones is zero. Every other outcome returns `None` so the caller keeps its
 /// existing behaviour: ambiguous (several anchors fit) and unsolved (none
 /// fits) are both declines, never guesses.
+#[cfg(test)]
 pub fn solve_bone_names(binds: &[[f32; 3]], skeleton: &SkeletonBones) -> Option<Vec<Arc<str>>> {
+    solve_bone_names_with_offset(binds, skeleton).map(|(names, _)| names)
+}
+
+/// [`solve_bone_names`], also returning the solved offset so a caller can
+/// memoise it per skeleton.
+pub fn solve_bone_names_with_offset(
+    binds: &[[f32; 3]],
+    skeleton: &SkeletonBones,
+) -> Option<(Vec<Arc<str>>, [f32; 3])> {
     if binds.len() < MIN_BONES_TO_SOLVE || skeleton.is_empty() {
         return None;
     }
     let anchor = binds[0];
-    let mut solution: Option<Vec<Arc<str>>> = None;
+    let mut solution: Option<(Vec<Arc<str>>, [f32; 3])> = None;
     let mut full_matches = 0usize;
     for (joint, _) in &skeleton.joints {
         let c = [
@@ -180,14 +190,7 @@ pub fn solve_bone_names(binds: &[[f32; 3]], skeleton: &SkeletonBones) -> Option<
             anchor[1] - joint[1],
             anchor[2] - joint[2],
         ];
-        let mut names = Vec::with_capacity(binds.len());
-        for b in binds {
-            match skeleton.nearest([b[0] - c[0], b[1] - c[1], b[2] - c[2]]) {
-                Some(n) => names.push(n.clone()),
-                None => break,
-            }
-        }
-        if names.len() == binds.len() {
+        if let Some(names) = names_at_offset(binds, skeleton, c) {
             full_matches += 1;
             if full_matches > 1 {
                 // Ambiguous: more than one C fits every bone. Decline rather
@@ -195,10 +198,46 @@ pub fn solve_bone_names(binds: &[[f32; 3]], skeleton: &SkeletonBones) -> Option<
                 // uniqueness.
                 return None;
             }
-            solution = Some(names);
+            solution = Some((names, c));
         }
     }
     solution
+}
+
+/// Every bone's name at a **known** offset, or `None` unless all of them land
+/// on a skeleton joint.
+///
+/// The all-or-nothing requirement is the half of the zero-wrong result that
+/// does not depend on how C was obtained, which is what makes it safe to
+/// reuse an offset another mesh established by a unique solve.
+pub fn names_at_offset(
+    binds: &[[f32; 3]],
+    skeleton: &SkeletonBones,
+    c: [f32; 3],
+) -> Option<Vec<Arc<str>>> {
+    let mut names = Vec::with_capacity(binds.len());
+    for b in binds {
+        names.push(
+            skeleton
+                .nearest([b[0] - c[0], b[1] - c[1], b[2] - c[2]])?
+                .clone(),
+        );
+    }
+    Some(names)
+}
+
+/// Per-skeleton offset, populated by the first unique solve against it.
+///
+/// C is a property of the skeleton, not of the mesh: measured near-identical
+/// across every outfit that solves against the human skeleton
+/// (~`[0, 0.0018, -1.632]`). Reusing it lets a mesh whose own anchor search
+/// is ambiguous still resolve — with C fixed there is nothing left to
+/// disambiguate, and the all-bones-must-match guard still applies.
+fn offset_memo() -> &'static std::sync::Mutex<std::collections::HashMap<&'static str, [f32; 3]>> {
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<&'static str, [f32; 3]>>,
+    > = std::sync::OnceLock::new();
+    MEMO.get_or_init(Default::default)
 }
 
 /// Skeleton NIFs a NULL-ref Starfield skin is resolved against, in probe
@@ -256,7 +295,23 @@ pub fn resolve_external_bone_names(
                 .clone()
         };
         let Some(skeleton) = skeleton else { continue };
-        if let Some(names) = solve_bone_names(binds, &skeleton) {
+        if let Some((names, c)) = solve_bone_names_with_offset(binds, &skeleton) {
+            offset_memo()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(path)
+                .or_insert(c);
+            return Some(names);
+        }
+        // This mesh's own anchor search was ambiguous or found nothing. If an
+        // earlier mesh established C for this skeleton by a UNIQUE solve,
+        // apply it directly — see `offset_memo`.
+        let known = offset_memo()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .copied();
+        if let Some(names) = known.and_then(|c| names_at_offset(binds, &skeleton, c)) {
             return Some(names);
         }
     }
@@ -350,6 +405,30 @@ mod tests {
             solve_bone_names(&binds, &s).is_none(),
             "several offsets fit — must decline"
         );
+    }
+
+    /// A mesh whose own anchor search is ambiguous still resolves once C is
+    /// known from another mesh's unique solve — with the offset fixed there
+    /// is nothing left to disambiguate, and the all-bones-must-match guard
+    /// (the half of the zero-wrong result independent of how C was obtained)
+    /// still applies. This is what lifts apparel coverage from ~21% to ~47%.
+    #[test]
+    fn a_known_offset_resolves_what_an_ambiguous_search_cannot() {
+        let joints: Vec<([f32; 3], &str)> = (0..12)
+            .map(|i| ([0.0, 0.0, i as f32], "j"))
+            .collect();
+        let s = skel(&joints);
+        // Evenly spaced and colinear: several offsets fit, so the search
+        // itself must decline...
+        let binds: Vec<[f32; 3]> = (0..10).map(|i| [0.0, 0.0, i as f32]).collect();
+        assert!(solve_bone_names(&binds, &s).is_none());
+        // ...but with C supplied, every bone lands and it resolves.
+        assert_eq!(
+            names_at_offset(&binds, &s, [0.0, 0.0, 0.0]).map(|n| n.len()),
+            Some(10)
+        );
+        // A C that does NOT place every bone on a joint still declines.
+        assert!(names_at_offset(&binds, &s, [0.0, 0.0, 0.5]).is_none());
     }
 
     /// Too few bones to be overdetermined against C's 3 DOF.
