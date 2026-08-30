@@ -212,6 +212,25 @@ pub(super) fn resolve_mesh_paths(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
                 mesh.material.textures.height,
             );
+
+            // #3596 — Oblivion's `APPLY_HILIGHT2` parallax route. The
+            // importer records the *rule* ("this material's height lives in
+            // the height texture's alpha") but cannot bind the texture,
+            // because Oblivion authors no normal slot: the normal map only
+            // exists once `derive_normal_map_path` has synthesized it, which
+            // is here. Bind the derived normal into the height slot so the
+            // route can actually fire. `parallax_height_in_alpha` is only
+            // ever set with `parallax_map` absent, so this cannot displace an
+            // authored height map.
+            //
+            // The shader-side alpha-presence gate (#3562) still applies: a
+            // BC1/BC5 normal with no real alpha is not treated as height.
+            if textures.height.is_none() && mesh.material.parallax_height_in_alpha {
+                textures.height = textures.normal.clone();
+                if textures.height.is_some() {
+                    sources.height = sources.normal;
+                }
+            }
             (textures.greyscale_lut, sources.greyscale_lut) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::GreyscaleLut)),
                 mesh.material.textures.greyscale_lut,
@@ -1169,6 +1188,74 @@ mod tests {
             "filtered source index must remain inert"
         );
         assert_eq!(deltas[2], [4.0, 5.0, 6.0, 0.0]);
+    }
+
+    /// #3596 — the Oblivion `APPLY_HILIGHT2` parallax route only becomes
+    /// reachable here.
+    ///
+    /// Oblivion does not put normal maps in NIF texture slots at all; it
+    /// resolves them by the `<base>_n.dds` filename convention (#1303),
+    /// which happens at THIS boundary, downstream of `MaterialInfo`. #3530
+    /// gated its binding on `info.normal_map` being `Some`, so it never
+    /// fired: measured over the two vanilla mesh archives, 0 of 1,430
+    /// `APPLY_HILIGHT2` properties carry a normal or bump slot, and
+    /// `parallax_height_in_alpha` was true on 0 of 35,322 imported meshes.
+    ///
+    /// The importer now records the rule; the derived normal is bound into
+    /// the height slot here.
+    #[test]
+    fn oblivion_apply_hilight2_binds_the_derived_normal_as_its_height_map() {
+        let mut pool = StringPool::new();
+        let diffuse = pool.intern(r"textures\dungeons\caves\crm01.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        // The vanilla shape: a diffuse slot, no normal slot, no height slot,
+        // and the parser's `APPLY_HILIGHT2` decision recorded on the material.
+        let mut mesh = empty_mesh();
+        mesh.material.textures.base_color = Some(diffuse);
+        mesh.material.parallax_height_in_alpha = true;
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
+        assert_eq!(
+            resolved[0].textures.normal.as_deref(),
+            Some(r"textures\dungeons\caves\crm01_n.dds"),
+            "the `_n.dds` convention still derives the normal"
+        );
+        assert_eq!(
+            resolved[0].textures.height.as_deref(),
+            Some(r"textures\dungeons\caves\crm01_n.dds"),
+            "and the height slot must bind that same derived texture — \
+             Oblivion ships no `_p.dds`, so the height lives in its alpha"
+        );
+        assert_eq!(
+            resolved[0].sources.height,
+            MaterialTextureSource::DerivedNormal,
+            "provenance must say the height path was synthesized, not authored"
+        );
+    }
+
+    /// The flag is the only trigger: a material without it must not acquire
+    /// a height binding from the derived normal, however the normal arrived.
+    #[test]
+    fn a_derived_normal_alone_does_not_bind_a_height_map() {
+        let mut pool = StringPool::new();
+        let diffuse = pool.intern(r"textures\clutter\barrel01.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.textures.base_color = Some(diffuse);
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
+        assert_eq!(
+            resolved[0].textures.normal.as_deref(),
+            Some(r"textures\clutter\barrel01_n.dds")
+        );
+        assert_eq!(
+            resolved[0].textures.height, None,
+            "only the APPLY_HILIGHT2 decision may synthesize a height binding"
+        );
     }
 
     #[test]

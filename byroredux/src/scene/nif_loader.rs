@@ -924,6 +924,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             }
         }
 
+        // #3596 — the loose-NIF half of the `APPLY_HILIGHT2` binding. Same
+        // reasoning as `cell_loader::spawn::mesh_instance`: the importer
+        // records the rule, the derived `_n.dds` only exists here, so bind it
+        // into the height slot. `parallax_height_in_alpha` is only ever set
+        // with no authored height map, so nothing is displaced.
+        if owned_textures.height.is_none() && mesh.material.parallax_height_in_alpha {
+            owned_textures.height = owned_textures.normal.clone();
+            if owned_textures.height.is_some() {
+                texture_sources.height = texture_sources.normal;
+            }
+        }
+
         // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
         // replaces only the SkinTint head diffuse. A FaceGeom NIF also
         // contains mouth, brows, eyes, hairline, and hair meshes with their

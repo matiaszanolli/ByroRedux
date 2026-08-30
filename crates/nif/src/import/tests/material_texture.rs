@@ -219,7 +219,9 @@ fn oblivion_apply_hilight2_routes_the_normal_map_into_the_parallax_slot() {
             transform: None,
         })
     };
-    // Vanilla shape: base + bump (Oblivion's normal-map slot), nothing else.
+    // A mesh that DOES author a bump slot — mod content and Skyrim-era
+    // conversions. Vanilla Oblivion authors none (see
+    // `apply_hilight2_flags_the_alpha_channel_without_a_normal_slot`).
     let build = |apply_mode: u32| {
         let tex_prop = NiTexturingProperty {
             net: crate::blocks::base::NiObjectNETData {
@@ -301,6 +303,117 @@ fn oblivion_apply_hilight2_routes_the_normal_map_into_the_parallax_slot() {
         "the default apply mode must not fabricate a parallax binding"
     );
     assert!(!material.parallax_height_in_alpha);
+    assert_eq!(material.parallax_height_scale, None);
+}
+
+/// #3596 — the vanilla Oblivion shape: `APPLY_HILIGHT2` with **no** normal
+/// or bump slot at all.
+///
+/// #3530 gated the route on `info.normal_map` being `Some`, which made it
+/// unreachable on 100% of the corpus it was written for. Oblivion does not
+/// put normal maps in NIF texture slots; it resolves them by the
+/// `<base>_n.dds` filename convention, downstream of `MaterialInfo`.
+/// Measured over `Oblivion - Meshes.bsa` + `DLCShiveringIsles - Meshes.bsa`:
+/// **zero** of 1,430 `APPLY_HILIGHT2` properties carry a normal or bump
+/// slot (the pair has 14 `bump_texture` uses in total, across 34,850
+/// properties), and `parallax_height_in_alpha` was true on 0 of 35,322
+/// imported meshes.
+///
+/// The parser must therefore record the *rule* — height lives in the alpha
+/// of whatever ends up in the height slot — and leave the binding to the
+/// asset provider, which is where the derived path exists. Pinned on the
+/// byroredux side by
+/// `oblivion_apply_hilight2_binds_the_derived_normal_as_its_height_map`.
+#[test]
+fn apply_hilight2_flags_the_alpha_channel_without_a_normal_slot() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+    use crate::blocks::texture::NiSourceTexture;
+    use std::sync::Arc;
+
+    let make_src = |name: &str| NiSourceTexture {
+        net: crate::blocks::base::NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+        },
+        use_external: true,
+        filename: Some(Arc::from(name)),
+        pixel_data_ref: BlockRef::NULL,
+        pixel_layout: 0,
+        use_mipmaps: 0,
+        alpha_format: 0,
+        is_static: true,
+    };
+    let slot = |index: u32| {
+        Some(TexDesc {
+            source_ref: BlockRef(index),
+            flags: 0,
+            clamp_mode: 0,
+            transform: None,
+        })
+    };
+    let build = |apply_mode: u32| {
+        let tex_prop = NiTexturingProperty {
+            net: crate::blocks::base::NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            apply_mode,
+            texture_count: 6,
+            base_texture: slot(4),
+            dark_texture: None,
+            detail_texture: None,
+            gloss_texture: None,
+            glow_texture: None,
+            // The vanilla case: NO bump, NO normal.
+            bump_texture: None,
+            normal_texture: None,
+            parallax_texture: None,
+            parallax_offset: 0.0,
+            decal_textures: Vec::new(),
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+            Box::new(make_ni_node(identity_transform(), vec![BlockRef(1)])),
+            Box::new(make_ni_tri_shape(
+                "CaveWall",
+                identity_transform(),
+                2,
+                vec![BlockRef(3)],
+            )),
+            Box::new(make_tri_shape_data()),
+            Box::new(tex_prop),
+            Box::new(make_src("textures\\dungeons\\caves\\crm01.dds")),
+        ];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
+        assert_eq!(meshes.len(), 1);
+        meshes.into_iter().next().unwrap().material
+    };
+
+    let material = build(4);
+    assert!(
+        material.parallax_height_in_alpha,
+        "APPLY_HILIGHT2 must record the alpha-height rule even with no normal \
+         slot to bind — vanilla Oblivion never authors one (#3596)"
+    );
+    assert!(
+        material.textures.height.is_none(),
+        "the parser cannot bind a texture it has no path for; the asset \
+         provider binds the derived `_n.dds`"
+    );
+    // The engine-wide defaults still install, so the downstream binding has
+    // usable marcher parameters.
+    assert_eq!(material.parallax_height_scale, Some(0.04));
+    assert_eq!(material.parallax_max_passes, Some(4.0));
+
+    let material = build(2);
+    assert!(
+        !material.parallax_height_in_alpha,
+        "APPLY_MODULATE — 32,810 of 35,161 vanilla properties — must stay inert"
+    );
     assert_eq!(material.parallax_height_scale, None);
 }
 

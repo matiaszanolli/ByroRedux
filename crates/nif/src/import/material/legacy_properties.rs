@@ -269,19 +269,42 @@ fn apply_texturing_property(
         // Deliberately last: a mesh that authored a real parallax slot or
         // came through a BSShader path keeps it, because `parallax_map` is
         // already `Some` by here.
+        //
+        // #3596 — the flag is set on the APPLY_HILIGHT2 *intent* alone; the
+        // `info.normal_map` binding below is opportunistic, not a gate.
+        //
+        // Gating on `normal_map` made this route unreachable on 100% of the
+        // corpus it was written for: Oblivion does not put normal maps in
+        // NIF texture slots at all. It resolves them by filename convention
+        // (`<base>_n.dds`, `derive_normal_map_path`, #1303), which happens
+        // DOWNSTREAM of `MaterialInfo` — so at this point the Oblivion
+        // normal map does not exist yet. Measured over
+        // `Oblivion - Meshes.bsa` + `DLCShiveringIsles - Meshes.bsa`: of
+        // 1,430 `APPLY_HILIGHT2` properties, **zero** carry a normal or bump
+        // slot (the whole archive pair has 14 `bump_texture` uses total),
+        // and `parallax_height_in_alpha` was true on 0 of 35,322 imported
+        // meshes. The feature shipped inert.
+        //
+        // So the parser records the decision — "if a height texture ends up
+        // bound for this material, its height is in the alpha channel" — and
+        // the asset provider binds the derived `_n.dds` into the height slot
+        // when it resolves one. The parser still owns the *rule*; only the
+        // texture path, which it cannot know, moves downstream. A mesh that
+        // does author a normal slot (mod content, Skyrim-era conversions)
+        // still binds here, unchanged.
         if tex_prop.apply_mode == APPLY_HILIGHT2 && info.parallax_map.is_none() {
+            info.parallax_height_in_alpha = true;
             if let Some(normal) = info.normal_map {
                 info.parallax_map = Some(normal);
-                info.parallax_height_in_alpha = true;
-                // Same engine defaults the slot-7 branch above installs, and
-                // the same pair every consumer's `unwrap_or` already used —
-                // no new constant is introduced for Oblivion.
-                if info.parallax_max_passes.is_none() {
-                    info.parallax_max_passes = Some(4.0);
-                }
-                if info.parallax_height_scale.is_none() {
-                    info.parallax_height_scale = Some(0.04);
-                }
+            }
+            // Same engine defaults the slot-7 branch above installs, and
+            // the same pair every consumer's `unwrap_or` already used —
+            // no new constant is introduced for Oblivion.
+            if info.parallax_max_passes.is_none() {
+                info.parallax_max_passes = Some(4.0);
+            }
+            if info.parallax_height_scale.is_none() {
+                info.parallax_height_scale = Some(0.04);
             }
         }
         for (slot, decal) in info
