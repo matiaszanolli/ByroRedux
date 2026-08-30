@@ -355,8 +355,15 @@ bool giLightSample(
 // PI)`) but left the sky-mix and interior-fallback arms in irradiance
 // units, so a Skyrim DALC cell's bounded-path escape came out ~π× dimmer
 // than an otherwise-identical FO3/FNV/Oblivion XCLL cell. `skyTint` is
-// already rendered sky radiance (see `triangle.frag`'s `skyColor =
-// skyTint.rgb` background write) and is untouched by the conversion.
+// already rendered sky radiance and is untouched by the conversion — see
+// the RT-miss blends that consume it directly as radiance,
+// `triangle.frag`'s `skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5` and its
+// `include/raytrace.glsl` `missCol` twin. (#3620: this used to cite a
+// `skyColor = skyTint.rgb` "background write" in `triangle.frag`. That
+// line is gone — #3323 rewrote it to `skyColor = exteriorSkyTint.rgb`,
+// and it was never a background write but the glass window-portal escape,
+// a branch whose own comment warns it must not be generalised. The units
+// argument holds; the citation pointed at the one special case.)
 vec3 pathEnvironmentRadiance(vec3 direction) {
     vec3 rayDir = normalize(direction);
     if (jitter.w > 0.5) {

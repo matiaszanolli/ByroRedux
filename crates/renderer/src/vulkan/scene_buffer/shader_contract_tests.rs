@@ -2441,6 +2441,47 @@ fn soft_shadow_disk_reads_the_canonical_source_radius_not_the_cull_radius() {
     }
 }
 
+/// #3620 / REN-2026-08-30-D18-03 — `pathEnvironmentRadiance`'s #3162
+/// irradiance-units comment justifies leaving `skyTint` out of the `1/PI`
+/// conversion. Its evidence used to be a `skyColor = skyTint.rgb` "background
+/// write" in `triangle.frag`, which does not exist: #3323 rewrote that line to
+/// `skyColor = exteriorSkyTint.rgb`, and it was never a background write but
+/// the glass window-portal escape — a branch whose own comment warns it must
+/// not be generalised, so a reader chasing the citation to confirm the units
+/// invariant landed in the one place the codebase calls a special case. The
+/// units argument itself is sound; only the citation had rotted. Pin the
+/// evidence it now points at, so the same drift is caught rather than reviewed.
+#[test]
+fn path_environment_radiance_cites_live_sky_tint_evidence() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let raytrace = include_str!("../../../shaders/include/raytrace.glsl");
+
+    assert!(
+        !lighting.contains("skyTint.rgb` background write"),
+        "the retired `skyColor = skyTint.rgb` background-write citation came back — \
+         no such line exists at HEAD (#3620)"
+    );
+    assert!(
+        !frag.contains("skyColor = skyTint.rgb"),
+        "if triangle.frag really regained a `skyColor = skyTint.rgb` write, the #3620 \
+         comment fix needs revisiting rather than this assertion relaxing"
+    );
+
+    // The radiance-space evidence the comment now cites must actually be there,
+    // in both consumers.
+    const MISS_BLEND: &str = "skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5";
+    assert!(
+        frag.contains(MISS_BLEND),
+        "triangle.frag must still consume skyTint directly as radiance in the RT-miss \
+         blend — that is what the units comment cites (#3620)"
+    );
+    assert!(
+        raytrace.contains(MISS_BLEND),
+        "raytrace.glsl's `missCol` twin must still consume skyTint the same way (#3620)"
+    );
+}
+
 /// #2244 — `sampleDalcCube` returns authored directional irradiance. A
 /// bounded path that escapes the TLAS consumes environment radiance, so the
 /// DALC branch needs the Lambertian irradiance-to-radiance conversion.
