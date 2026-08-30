@@ -108,7 +108,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
             index.item_mods.insert(fid, parse_imod(fid, subs));
         })?,
         b"ARMA" => extract_records(reader, end, b"ARMA", &mut |fid, subs| {
-            index.armor_addons.insert(fid, parse_arma(fid, subs, game));
+            index.armor_addons.insert(fid, parse_arma(fid, subs, game, &remap));
         })?,
         // OTFT — Skyrim+ outfit (default-equipped armor list).
         // Pre-Skyrim plugins don't ship OTFT groups; the walker

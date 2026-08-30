@@ -1425,7 +1425,17 @@ fn read_f32_array_into(src: &[u8], dst: &mut [f32]) {
     }
 }
 
-pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecord {
+/// #3714 — takes the load-order `remap` because `WNAM` (the default skin
+/// ARMO) and Oblivion's `XNAM` race-reaction pairs are embedded FormIDs.
+/// `WNAM` is looked up in `EsmIndex.items`, which is keyed in GLOBAL space,
+/// so a raw id missed for every DLC- or ESL-added race and the armor
+/// resolved to zero meshes — indistinguishable from an unshipped mesh.
+pub fn parse_race(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> RaceRecord {
     // Helper claims a single MODL; RACE records carry multiple body
     // parts in MODL — keep that arm custom and ignore the helper's
     // last-MODL string. TD3-203 / #1113.
@@ -1721,7 +1731,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             }
             b"XNAM" if is_oblivion && sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
-                let other_race = r.u32_or_default();
+                let other_race = remap_fid(r.u32_or_default(), remap);
                 let adjustment = r.i32_or_default();
                 record.race_reactions.push((other_race, adjustment));
             }
@@ -1736,7 +1746,8 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             // along automatically; TES4/FO3/FNV RACE records don't
             // author WNAM at all.
             b"WNAM" if game.uses_prebaked_facegen() && sub.data.len() >= 4 => {
-                record.default_skin = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.default_skin = Some(remap_fid(raw, remap));
             }
             _ => {}
         }
@@ -1893,7 +1904,11 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     0
                 };
                 record.relations.push(FactionRelation {
-                    other_faction: other,
+                    // #3714 SIBLING — the related faction's FormID.
+                    // `index.factions` is global-keyed, and the sibling
+                    // `WMI1` arm right below already remaps for exactly this
+                    // reason (#3325).
+                    other_faction: remap_fid(other, remap),
                     modifier,
                     combat_reaction: combat,
                 });

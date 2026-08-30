@@ -1,7 +1,8 @@
 //! Equipment / crafting / generic-record records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
-use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::records::common::remap_fid;
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// ARMA — armor addon record. Race-specific biped slot variants for
@@ -64,7 +65,19 @@ pub struct ArmaRecord {
 
 /// Parse an ARMA record. Game-aware because MODL has different
 /// meanings (string path vs FormID list) on Skyrim+ vs FNV/FO3.
-pub fn parse_arma(form_id: u32, subs: &[SubRecord], game: GameKind) -> ArmaRecord {
+///
+/// #3714 — takes the load-order `remap` because `RNAM` (the race this
+/// addon fits) and the Skyrim+ additional-race `MODL` array are embedded
+/// FormIDs. They are matched against `NPC_.RNAM`, which IS remapped
+/// (`actor/mod.rs`), so leaving these raw failed the race match for every
+/// DLC-added-race addon and dropped the actor into the deliberately
+/// single-valued pass-2 fallback — the multi-addon collapse #3357 fixed.
+pub fn parse_arma(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ArmaRecord {
     let mut out = ArmaRecord {
         form_id,
         ..Default::default()
@@ -96,14 +109,15 @@ pub fn parse_arma(form_id: u32, subs: &[SubRecord], game: GameKind) -> ArmaRecor
                 out.dr = r.i16_or_default();
             }
             b"RNAM" if is_skyrim_or_later && sub.data.len() >= 4 => {
-                out.race_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                out.race_form_id = remap_fid(raw, remap);
             }
             b"MODL" => {
                 if is_skyrim_or_later {
                     // Skyrim+ ARMA additional-races: 4-byte FormID per
                     // entry. Multiple MODL sub-records can appear.
                     if let Ok(id) = SubReader::new(&sub.data).u32() {
-                        out.additional_races.push(id);
+                        out.additional_races.push(remap_fid(id, remap));
                     }
                 } else if out.male_biped_model.is_empty() {
                     // FNV/FO3 ARMA male biped — first MODL only;
@@ -370,7 +384,7 @@ mod tests {
             sub(b"BMDT", &bmdt),
             sub(b"DNAM", &dnam),
         ];
-        let a = parse_arma(0x0006_2103, &subs, GameKind::Fallout3NV);
+        let a = parse_arma(0x0006_2103, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(a.editor_id, "MetalArmor");
         assert_eq!(a.biped_flags, 0x0000_000C);
         assert_eq!(a.general_flags, 0x0000_0001);
@@ -501,5 +515,126 @@ mod tests {
         assert_eq!(g.value, 0, "short DATA must not bleed bytes into value");
         assert_eq!(g.current_soul, 0, "empty SOUL stays at default");
         assert_eq!(g.soul_capacity, 3);
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+    use crate::esm::reader::GlobalSlot;
+    use crate::esm::records::{parse_armo, parse_race};
+
+    /// The remap shape of every shipped FO4 DLC master: one master
+    /// (Fallout4.esm), so the plugin's own forms are authored `0x01…` while
+    /// `allocate_global_slot` keys them `0x02…`.
+    fn dlc_remap() -> Option<FormIdRemap> {
+        Some(FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(0x02),
+            master_slots: vec![GlobalSlot::Regular(0x00)],
+        })
+    }
+
+    fn mk(typ: &[u8; 4], v: u32) -> SubRecord {
+        SubRecord {
+            sub_type: *typ,
+            data: v.to_le_bytes().to_vec(),
+        }
+    }
+
+    /// #3714 — walk the whole FO4 armor-equip chain under a non-identity
+    /// remap: `RACE.WNAM` -> `ARMO.MODL` (armature list) -> `ARMA.RNAM`
+    /// (race match). `EsmIndex.armor_addons` / `.items` / `.races` are keyed
+    /// in GLOBAL space because `read_record_header` remaps every record's
+    /// own FormID, so a raw embedded id misses every lookup.
+    ///
+    /// 326 of 408 armature references across the three shipped FO4 DLC
+    /// masters are self-referential, so this is the majority case on any
+    /// DLC load, and non-identity by construction for every ESL. Left raw,
+    /// `resolve_armor_meshes` ended `Vec::new()` and DLC armor rendered as
+    /// empty space — indistinguishable from an unshipped mesh.
+    #[test]
+    fn the_fo4_armor_equip_chain_is_remapped_into_global_space() {
+        let remap = dlc_remap();
+
+        // RACE.WNAM — the default-skin ARMO this plugin adds.
+        let race = parse_race(
+            0x0200_0001,
+            &[mk(b"WNAM", 0x0100_1111)],
+            GameKind::Fallout4,
+            &remap,
+        );
+        assert_eq!(
+            race.default_skin,
+            Some(0x0200_1111),
+            "RACE.WNAM is looked up in `EsmIndex.items`, which is global-keyed"
+        );
+
+        // ARMO.MODL — the armature list. One self-owned, one master-owned;
+        // the master reference must pass through unchanged.
+        let armo = parse_armo(
+            0x0200_1111,
+            &[mk(b"MODL", 0x0100_2222), mk(b"MODL", 0x0000_3333)],
+            GameKind::Fallout4,
+            &remap,
+        );
+        let crate::esm::records::ItemKind::Armor { armatures, .. } = &armo.kind else {
+            panic!("ARMO must parse as ItemKind::Armor");
+        };
+        assert_eq!(*armatures, vec![0x0200_2222, 0x0000_3333]);
+
+        // ARMA.RNAM — the race this addon fits. Matched against
+        // `NPC_.RNAM`, which is already remapped, so leaving it raw failed
+        // the race match and collapsed the actor into the single-valued
+        // pass-2 fallback (#3357).
+        let arma = parse_arma(
+            0x0200_2222,
+            &[
+                mk(b"RNAM", 0x0100_0001),
+                mk(b"MODL", 0x0100_0004),
+                mk(b"MODL", 0x0000_0005),
+            ],
+            GameKind::Fallout4,
+            &remap,
+        );
+        assert_eq!(arma.race_form_id, 0x0200_0001);
+        assert_eq!(arma.additional_races, vec![0x0200_0004, 0x0000_0005]);
+
+        // The chain closes: the race's skin resolves to the ARMO, whose
+        // armature resolves to the ARMA, whose race matches the race.
+        assert_eq!(race.default_skin, Some(armo.form_id));
+        assert_eq!(armatures[0], arma.form_id);
+        assert_eq!(arma.race_form_id, race.form_id);
+    }
+
+    /// A single-plugin vanilla load has an identity remap, which is why the
+    /// defect never showed on `Fallout4.esm` alone. `None` must be a no-op.
+    #[test]
+    fn no_remap_leaves_the_chain_unchanged() {
+        let race = parse_race(
+            0x0000_0001,
+            &[mk(b"WNAM", 0x0001_1111)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(race.default_skin, Some(0x0001_1111));
+
+        let armo = parse_armo(
+            0x0001_1111,
+            &[mk(b"MODL", 0x0001_2222)],
+            GameKind::Fallout4,
+            &None,
+        );
+        let crate::esm::records::ItemKind::Armor { armatures, .. } = &armo.kind else {
+            panic!("ARMO must parse as ItemKind::Armor");
+        };
+        assert_eq!(*armatures, vec![0x0001_2222]);
+
+        let arma = parse_arma(
+            0x0001_2222,
+            &[mk(b"RNAM", 0x0000_0001)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(arma.race_form_id, 0x0000_0001);
     }
 }

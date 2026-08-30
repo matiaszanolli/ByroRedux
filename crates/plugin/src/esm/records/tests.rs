@@ -2173,6 +2173,16 @@ fn record_parsers_with_embedded_form_ids_take_a_remap() {
         ("misc/world.rs", include_str!("misc/world.rs"), "parse_acti"),
         ("misc/world.rs", include_str!("misc/world.rs"), "parse_navm"),
         ("misc/world.rs", include_str!("misc/world.rs"), "parse_regn"),
+        // #3714 — the FO4 armor-equip chain: RACE.WNAM -> ARMO.MODL
+        // (armature list) -> ARMA.RNAM (race match). All three read
+        // embedded FormIDs and all three used to leave them raw.
+        ("items.rs", include_str!("items.rs"), "parse_armo"),
+        (
+            "misc/equipment.rs",
+            include_str!("misc/equipment.rs"),
+            "parse_arma",
+        ),
+        ("actor/mod.rs", include_str!("actor/mod.rs"), "parse_race"),
     ];
     for (file, source, parser) in sources {
         let at = source

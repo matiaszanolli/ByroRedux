@@ -990,7 +990,7 @@ fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
         sub(b"FULL", b"Nord\0"),
         sub(b"DATA", &data),
     ];
-    let r = parse_race(0x10001, &subs, GameKind::Oblivion);
+    let r = parse_race(0x10001, &subs, GameKind::Oblivion, &None);
     // 5 real bonuses, 3 None-sentinel slots dropped.
     assert_eq!(r.skill_bonuses.len(), 5);
     assert_eq!(r.skill_bonuses[0], (0x0E, 10));
@@ -1030,7 +1030,7 @@ fn race_oblivion_subrecords_captured() {
         sub(b"UNAM", &unam),
         sub(b"XNAM", &xnam_breton),
     ];
-    let r = parse_race(0x10002, &subs, GameKind::Oblivion);
+    let r = parse_race(0x10002, &subs, GameKind::Oblivion, &None);
     let a = r.base_attributes.expect("ATTR captured");
     assert_eq!(a.male.strength, 50);
     assert_eq!(a.male.luck, 50);
@@ -1061,7 +1061,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
         sub(b"ATTR", &attr),
         sub(b"DNAM", &dnam),
     ];
-    let r = parse_race(0x10003, &subs, GameKind::Fallout3NV);
+    let r = parse_race(0x10003, &subs, GameKind::Fallout3NV, &None);
     assert!(r.base_attributes.is_none());
     assert!(r.default_hair.is_none());
     // DATA path still runs — FNV shares the 36-byte shape.
@@ -1085,7 +1085,7 @@ fn race_multiple_xnam_pairs_collected() {
         sub(b"XNAM", &x1),
         sub(b"XNAM", &x2),
     ];
-    let r = parse_race(0x10004, &subs, GameKind::Oblivion);
+    let r = parse_race(0x10004, &subs, GameKind::Oblivion, &None);
     assert_eq!(r.race_reactions.len(), 2);
     assert_eq!(r.race_reactions[0], (0x10010, 5));
     assert_eq!(r.race_reactions[1], (0x10011, -3));
@@ -1103,7 +1103,7 @@ fn race_skyrim_wnam_captured() {
         sub(b"EDID", b"NordRace\0"),
         sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
     ];
-    let r = parse_race(0x10005, &subs, GameKind::Skyrim);
+    let r = parse_race(0x10005, &subs, GameKind::Skyrim, &None);
     assert_eq!(r.default_skin, Some(0x0001_3746));
 }
 
@@ -1117,7 +1117,7 @@ fn race_wnam_skipped_on_non_prebaked_games() {
             sub(b"EDID", b"SomeRace\0"),
             sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
         ];
-        let r = parse_race(0x10006, &subs, game);
+        let r = parse_race(0x10006, &subs, game, &None);
         assert!(
             r.default_skin.is_none(),
             "{game:?} must not capture WNAM as a skin form"
@@ -1275,7 +1275,7 @@ fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
     data[40..44].copy_from_slice(&75.0f32.to_le_bytes());
     data[44..48].copy_from_slice(&100.0f32.to_le_bytes());
 
-    let r = parse_race(0x900, &[sub(b"DATA", &data)], GameKind::Skyrim);
+    let r = parse_race(0x900, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
     assert_eq!(
         r.skill_bonuses,
         vec![(0x07, 10)],
@@ -1303,7 +1303,7 @@ fn vanilla_skyrim_nordrace_data_decodes_to_its_documented_racials() {
         0x80, 0x3f, 0x43, 0x89, 0xa0, 0x50,
     ]);
 
-    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Skyrim);
+    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
 
     // Nord: Two-Handed +10; One-Handed, Block, Smithing, Speech, Light
     // Armor +5 each. Skyrim actor-value skill indices, not TES4's.
@@ -1335,7 +1335,7 @@ fn vanilla_skyrim_elderrace_decodes_to_no_skill_bonuses() {
     data[16..20].copy_from_slice(&1.0f32.to_le_bytes());
     data[20..24].copy_from_slice(&1.0f32.to_le_bytes());
 
-    let r = parse_race(0x13744, &[sub(b"DATA", &data)], GameKind::Skyrim);
+    let r = parse_race(0x13744, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
     assert!(r.skill_bonuses.is_empty());
     assert_eq!(r.base_height, (1.0, 1.0), "height still decodes");
 }
@@ -1362,13 +1362,13 @@ fn fallout4_race_data_decodes_height_from_offset_zero() {
 
     let mut data = vec![0u8; 200];
     data[..36].copy_from_slice(&human);
-    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Fallout4);
+    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Fallout4, &None);
     assert!((r.base_height.0 - 1.0).abs() < 1e-6);
     assert!((r.base_height.1 - 0.98).abs() < 1e-6);
 
     let mut data = vec![0u8; 200];
     data[..36].copy_from_slice(&child);
-    let child_race = parse_race(0x1, &[sub(b"DATA", &data)], GameKind::Fallout4);
+    let child_race = parse_race(0x1, &[sub(b"DATA", &data)], GameKind::Fallout4, &None);
     assert!(
         (child_race.base_height.0 - 0.825).abs() < 1e-6,
         "the child race must decode shorter than the adult — this is what \
@@ -1388,7 +1388,7 @@ fn fallout76_race_data_shares_the_fallout4_height_offsets() {
     let mut data = vec![0u8; 216];
     data[0..4].copy_from_slice(&1.15f32.to_le_bytes());
     data[4..8].copy_from_slice(&0.95f32.to_le_bytes());
-    let r = parse_race(0x2, &[sub(b"DATA", &data)], GameKind::Fallout76);
+    let r = parse_race(0x2, &[sub(b"DATA", &data)], GameKind::Fallout76, &None);
     assert_eq!(r.base_height, (1.15, 0.95));
     assert!(r.skill_bonuses.is_empty());
 }
@@ -1399,7 +1399,7 @@ fn fallout76_race_data_shares_the_fallout4_height_offsets() {
 #[test]
 fn unhandled_race_data_shape_leaves_defaults_intact() {
     let data = vec![0x5Au8; 40];
-    let r = parse_race(0x3, &[sub(b"DATA", &data)], GameKind::Starfield);
+    let r = parse_race(0x3, &[sub(b"DATA", &data)], GameKind::Starfield, &None);
     assert!(r.skill_bonuses.is_empty());
     assert_eq!(r.base_height, (1.0, 1.0));
     assert_eq!(r.base_weight, (1.0, 1.0));
@@ -1414,7 +1414,7 @@ fn oblivion_race_data_36b_still_decodes() {
     // base_height/weight live at bytes 16..32 (4 f32). Set height male = 2.0.
     data[16..20].copy_from_slice(&2.0f32.to_le_bytes());
     let subs = vec![sub(b"DATA", &data)];
-    let r = parse_race(0x901, &subs, GameKind::Oblivion);
+    let r = parse_race(0x901, &subs, GameKind::Oblivion, &None);
     assert_eq!(r.base_height.0, 2.0, "Oblivion DATA must still decode");
 }
 
@@ -1571,7 +1571,7 @@ fn race_head_parts_stop_at_the_body_section_marker() {
         sub(b"INDX", &3u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\_Male\\UpperBodyHumanMale.egt\0"),
     ];
-    let race = parse_race(0x000987DF, &subs, GameKind::Fallout3NV);
+    let race = parse_race(0x000987DF, &subs, GameKind::Fallout3NV, &None);
 
     assert_eq!(
         race.head_parts,
@@ -1611,7 +1611,7 @@ fn race_oblivion_head_section_stays_untagged() {
         sub(b"INDX", &0u32.to_le_bytes()),
         sub(b"ICON", b"Characters\\Imperial\\UpperBody.dds\0"),
     ];
-    let race = parse_race(0x00000907, &subs, GameKind::Oblivion);
+    let race = parse_race(0x00000907, &subs, GameKind::Oblivion, &None);
 
     assert_eq!(
         race.head_parts,

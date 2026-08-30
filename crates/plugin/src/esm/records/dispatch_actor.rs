@@ -65,9 +65,17 @@ pub(super) fn dispatch_actor_group(
                 index.creatures.insert(fid, record);
             })?
         }
-        b"RACE" => extract_records(reader, end, b"RACE", &mut |fid, subs| {
-            index.races.insert(fid, parse_race(fid, subs, game));
-        })?,
+        b"RACE" => {
+            // #3714 — `WNAM` (default skin ARMO) and Oblivion's `XNAM`
+            // race-reaction pairs are embedded FormIDs; the index they are
+            // looked up in is keyed in global space.
+            let race_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"RACE", &mut |fid, subs| {
+                index
+                    .races
+                    .insert(fid, parse_race(fid, subs, game, &race_remap));
+            })?
+        }
         b"CLAS" => extract_records(reader, end, b"CLAS", &mut |fid, subs| {
             index.classes.insert(fid, parse_clas(fid, subs, game));
         })?,

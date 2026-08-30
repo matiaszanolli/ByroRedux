@@ -9,7 +9,7 @@
 //! Adding more fields later is straightforward; the parsers walk sub-records
 //! by 4-char code and ignore anything they don't recognize.
 
-use super::common::CommonItemFields;
+use super::common::{remap_fid, CommonItemFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -368,7 +368,9 @@ pub fn parse_weap(
             // expose only canonical item fields to gameplay code.
             b"DNAM" if matches!(game, GameKind::Fallout4) => {
                 let mut r = SubReader::new(&sub.data);
-                ammo_form = r.u32_or_default(); // 0: AMMO FormID
+                // #3714 SIBLING — embedded AMMO FormID; `index.items` is
+                // global-keyed, so a raw id misses on any non-identity remap.
+                ammo_form = remap_fid(r.u32_or_default(), remap); // 0: AMMO FormID
                 speed = r.f32_or_default(); // 4
                 let _reload_speed = r.f32_or_default(); // 8
                 reach = r.f32_or_default(); // 12
@@ -404,7 +406,8 @@ pub fn parse_weap(
             // Ammunition reference (FO3/FNV). Skyrim uses ETYP for ammo
             // *type* and per-arrow NAM7; not yet decoded.
             b"AMMO" => {
-                ammo_form = SubReader::new(&sub.data).u32_or_default();
+                // #3714 SIBLING — see the FO4 `DNAM` arm above.
+                ammo_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"DESC" => {} // description string (we don't store it yet)
             b"ETYP" => {
@@ -537,7 +540,15 @@ pub fn parse_armo(
             // it into `common.model_path`, so we leave it alone there.
             b"MODL" if is_skyrim_or_later => {
                 if let Ok(id) = SubReader::new(&sub.data).u32() {
-                    armatures.push(id);
+                    // #3714 — remap. `EsmIndex.armor_addons` is keyed in
+                    // GLOBAL space (`read_record_header` remaps every
+                    // record's own FormID), so a raw armature reference
+                    // misses the moment the remap is non-identity — which it
+                    // is for the second and later plugin of any multi-master
+                    // load order, and for every ESL by construction. 326 of
+                    // 408 armature references across the three shipped FO4
+                    // DLC masters point at an ARMA the same plugin adds.
+                    armatures.push(remap_fid(id, remap));
                 }
             }
             // #3416 — the female biped mesh on Oblivion / FO3 / FNV. Only
@@ -787,7 +798,8 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 addiction_chance = r.f32_or_default();
             }
             b"EFID" => {
-                magic_effects.push(SubReader::new(&sub.data).u32_or_default());
+                // #3714 SIBLING — embedded MGEF FormID.
+                magic_effects.push(remap_fid(SubReader::new(&sub.data).u32_or_default(), remap));
             }
             _ => {}
         }
@@ -808,7 +820,8 @@ pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     let mut magic_effects = Vec::new();
     for sub in subs {
         if &sub.sub_type == b"EFID" {
-            magic_effects.push(SubReader::new(&sub.data).u32_or_default());
+            // #3714 SIBLING — embedded MGEF FormID.
+            magic_effects.push(remap_fid(SubReader::new(&sub.data).u32_or_default(), remap));
         }
     }
     ItemRecord {
@@ -890,7 +903,9 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 common.weight = r.f32_or_default();
             }
             b"SNAM" => {
-                topic_form = SubReader::new(&sub.data).u32_or_default();
+                // #3714 SIBLING — NOTE.SNAM is the linked DIAL topic's
+                // FormID; the dialogue index is global-keyed.
+                topic_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
