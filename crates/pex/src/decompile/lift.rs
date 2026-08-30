@@ -342,6 +342,26 @@ fn check_assign(node: Node) -> Node {
 /// index in that direction."
 const NO_LINK: usize = usize::MAX;
 
+/// Maximum nesting depth copy-propagation may fold an expression tree to
+/// (#3783).
+///
+/// Matches `byroredux_papyrus::parser::expr::MAX_EXPR_DEPTH`, deliberately:
+/// that is the same quantity — an expression's nesting depth — arriving
+/// through the *other* Papyrus frontend (`.psc` source instead of compiled
+/// `.pex`), so the two frontends share one stack-safety budget rather than
+/// each guessing its own. Real Papyrus does not approach it; the deepest
+/// vanilla expressions are single digits.
+///
+/// Without a cap, `rebuild_expression`'s fold nests each folded producer
+/// inside its consumer, so a chain of N temp-producing instructions
+/// collapses into a tree of depth N. `Node`'s derived `Clone` and its drop
+/// glue then recurse once per level: measured abort at N = 30 000 on an
+/// 8 MB main-thread stack (~10 000 on a default 2 MB worker), both far
+/// inside the wire format's `u16` instruction ceiling. That abort is a
+/// `SIGABRT` `catch_unwind` cannot intercept, so it bypasses
+/// `translate_pex`'s panic guard.
+pub(super) const MAX_EXPR_DEPTH: usize = 256;
+
 pub(super) fn rebuild_expression(
     scope: &mut Vec<Node>,
     func_name: &str,
@@ -373,6 +393,12 @@ pub(super) fn rebuild_expression(
         .map(|i| if i == 0 { NO_LINK } else { i - 1 })
         .collect();
     let mut removed = vec![false; len];
+    // #3783 — per-slot expression-tree depth. Every freshly-lifted node is a
+    // single instruction's shape (a few levels at most), so 1 is the right
+    // starting rank: what this ledger has to bound is the *folding*, which is
+    // the only thing that can grow a tree without limit. Folding `i` into `j`
+    // nests `i`'s whole tree one level inside `j`'s.
+    let mut depth: Vec<usize> = vec![1; len];
 
     let mut i = 0usize;
     while i != NO_LINK {
@@ -420,6 +446,21 @@ pub(super) fn rebuild_expression(
                         ip: scope[j].begin,
                     });
                 }
+
+                // #3783 — the fold just nested `i`'s tree inside `j`'s, so
+                // `j` is now one level deeper than the deeper of the two.
+                // Refuse past the cap instead of handing a tree to `Node`'s
+                // unbounded derived `Clone` (and its drop glue), which
+                // aborts the process rather than unwinding.
+                let folded_depth = depth[j].max(depth[i] + 1);
+                if folded_depth > MAX_EXPR_DEPTH {
+                    return Err(DecompileError::ExpressionTooDeep {
+                        function: func_name.to_string(),
+                        ip: scope[j].begin,
+                        limit: MAX_EXPR_DEPTH,
+                    });
+                }
+                depth[j] = folded_depth;
 
                 // Unlink `i` from the live chain.
                 removed[i] = true;
@@ -747,5 +788,81 @@ mod tests {
              under the O(n) fix; a multi-second time here means the quadratic scan-restart \
              and/or Vec::remove shifting has regressed",
         );
+    }
+
+    /// #3783 — build the chain the finding describes: N temp-producing
+    /// instructions where each consumes the previous one's `::tempK`. Copy
+    /// propagation folds them into ONE `Node` tree of depth N, and `Node`'s
+    /// derived `Clone` / drop glue recurse once per level with no cap — a
+    /// stack-overflow `SIGABRT` at N ≈ 30 000 on an 8 MB main-thread stack,
+    /// ~10 000 on a default 2 MB worker, both far inside the wire format's
+    /// `u16` instruction ceiling. Every count in this input is well-formed.
+    ///
+    /// Must now be a clean `Err`, because a `SIGABRT` is strictly worse than
+    /// a panic: `translate_pex`'s `catch_unwind` guard (#1816 / #3287)
+    /// cannot intercept it, so the whole graceful-degradation story is
+    /// bypassed and one hostile `.pex` in a mod archive kills the engine at
+    /// cell load.
+    #[test]
+    fn a_temp_chain_past_the_depth_cap_is_declined_not_aborted() {
+        // Comfortably past MAX_EXPR_DEPTH, but nowhere near the depth that
+        // would abort the test process if the cap were missing — the point
+        // is that the cap fires first.
+        let n = MAX_EXPR_DEPTH * 4;
+        let mut scope = chained_temp_scope(n);
+
+        let err = rebuild_expression(&mut scope, "AdversarialFn")
+            .expect_err("a chain deeper than the cap must be declined");
+        assert!(
+            matches!(
+                err,
+                DecompileError::ExpressionTooDeep { limit, .. } if limit == MAX_EXPR_DEPTH
+            ),
+            "expected ExpressionTooDeep at the shared frontend cap, got {err:?}"
+        );
+    }
+
+    /// The cap must not reject Papyrus anybody actually writes. A chain that
+    /// folds to exactly `MAX_EXPR_DEPTH` is legal and still decompiles —
+    /// vanilla expressions are single digits deep, so this is already two
+    /// orders of magnitude of headroom.
+    #[test]
+    fn a_temp_chain_inside_the_depth_cap_still_folds() {
+        // The producer chain contributes one level per fold on top of the
+        // first node's own rank of 1, so `MAX_EXPR_DEPTH - 1` producers plus
+        // the trailing assign lands exactly on the cap.
+        let mut scope = chained_temp_scope(MAX_EXPR_DEPTH - 1);
+        rebuild_expression(&mut scope, "DeepButLegalFn")
+            .expect("a chain at exactly the cap must still fold");
+        assert_eq!(scope.len(), 1, "the whole chain collapses to one Assign");
+    }
+
+    /// `::temp0 = a + b; ::temp1 = ::temp0 + b; …; x = ::temp{n-1}` — the
+    /// single-use-temp chain copy propagation collapses into one nested
+    /// tree. `n` counts the temp producers; the trailing `assign` is what
+    /// consumes the last one.
+    fn chained_temp_scope(n: usize) -> Vec<Node> {
+        let mut scope = Vec::with_capacity(n + 1);
+        for k in 0..n {
+            let left = if k == 0 {
+                Node::constant(k, Value::Identifier("a".into()))
+            } else {
+                Node::constant(k, Value::Identifier(format!("::temp{}", k - 1)))
+            };
+            scope.push(Node::binary_op(
+                k,
+                0,
+                Some(format!("::temp{k}")),
+                left,
+                "+",
+                Node::constant(k, Value::Identifier("b".into())),
+            ));
+        }
+        scope.push(Node::assign(
+            n,
+            Node::constant(n, Value::Identifier("x".into())),
+            Node::constant(n, Value::Identifier(format!("::temp{}", n - 1))),
+        ));
+        scope
     }
 }

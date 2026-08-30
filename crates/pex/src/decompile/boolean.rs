@@ -155,12 +155,29 @@ impl BoolPass<'_> {
                 it = self.cfg.next_key(current).unwrap_or(end);
                 continue;
             };
-            let scope = self.scopes.get(&current).cloned().unwrap_or_default();
-
             let mut reprocess = false;
-            if block.is_conditional() && !scope.is_empty() {
+            if block.is_conditional() {
                 if let Some(cond) = block.condition.clone() {
-                    if last_result(&scope).as_deref() == Some(&cond) {
+                    // #3783 — test the block shape and read the scope by
+                    // REFERENCE. This used to be a `.cloned()` lookup on
+                    // `self.scopes`, hoisted above the
+                    // `is_conditional()` test, so every
+                    // block on every visit — including straight-line
+                    // functions with no conditional block at all — paid a
+                    // full deep copy of its expression trees, once more per
+                    // `reprocess` re-visit. `Node`'s derived `Clone` recurses
+                    // once per tree level with no cap, so on a deep tree that
+                    // clone was a stack-overflow `SIGABRT` (not a panic:
+                    // `translate_pex`'s `catch_unwind` guard cannot intercept
+                    // it). The clone bought nothing — the scope is read here
+                    // and nowhere else in this iteration.
+                    let condition_is_last_result = self
+                        .scopes
+                        .get(&current)
+                        .is_some_and(|scope| {
+                            !scope.is_empty() && last_result(scope).as_deref() == Some(&cond)
+                        });
+                    if condition_is_last_result {
                         let end_plus_1 = block.end + 1;
                         if block.on_true() == end_plus_1 {
                             // Potential `&&`: true edge falls through.
@@ -786,6 +803,45 @@ mod tests {
         assert!(
             !text.contains("control-flow"),
             "and must not attribute itself to the control-flow pass: {text}"
+        );
+    }
+
+    /// #3783 — the pass must not deep-clone a block's node scope before it
+    /// knows the block is even conditional.
+    ///
+    /// `self.scopes.get(&current).cloned().unwrap_or_default()` used to sit
+    /// above the `is_conditional()` test, so a straight-line function with
+    /// no conditional block at all still paid a full recursive copy of every
+    /// block's expression trees — once more per `reprocess` re-visit. On a
+    /// deep tree `Node`'s derived `Clone` overflows the stack, and that is a
+    /// `SIGABRT` `translate_pex`'s `catch_unwind` guard cannot intercept.
+    ///
+    /// Pinned by source inspection because the failure mode aborts the
+    /// process rather than panicking — a behavioural test could not observe
+    /// it and survive. Whitespace-insensitive so a reformat can't break it.
+    #[test]
+    fn the_scope_is_read_by_reference_not_deep_cloned() {
+        let source = include_str!("boolean.rs");
+        // Scan the production half only — this test's own assertion strings
+        // quote the very pattern it forbids.
+        let production = &source[..source
+            .find("#[cfg(test)]")
+            .expect("boolean.rs must retain its test module")];
+        let normalized: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            !normalized.contains("self.scopes.get(&current).cloned()"),
+            "rebuild must read the block scope by reference; a `.cloned()` here \
+             is an unbounded recursive copy of every block's expression trees"
+        );
+        let guard = normalized
+            .find("ifblock.is_conditional()")
+            .expect("rebuild must gate on is_conditional()");
+        let read = normalized
+            .find("self.scopes.get(&current)")
+            .expect("rebuild must still read the block scope");
+        assert!(
+            guard < read,
+            "the block-shape test must run BEFORE the scope is touched"
         );
     }
 }

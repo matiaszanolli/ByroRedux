@@ -87,6 +87,30 @@ pub enum DecompileError {
         limit: usize,
     },
 
+    /// Copy-propagation nested an expression tree deeper than
+    /// [`lift::MAX_EXPR_DEPTH`] (#3783).
+    ///
+    /// Unlike [`Self::RecursionLimit`], which bounds a *pass's own*
+    /// recursion, this bounds the **data** that pass produces. A chain of N
+    /// temp-producing instructions (`::temp0 = a + b; ::temp1 = ::temp0 + b;
+    /// …`) folds into one `Node` tree of depth N, and nothing caps N except
+    /// the wire format — a function's instruction count is a `u16`, and the
+    /// string table has room for the ~40 000 distinct `::tempN` names such a
+    /// chain needs. Every count stays inside the format's own ceilings, so
+    /// the input is well-formed, not malformed.
+    ///
+    /// `Node` derives `Clone` and its children are `Box<Node>`, so the clone
+    /// and the drop glue both recurse once per level with no cap. That is a
+    /// `SIGABRT` stack overflow, which `catch_unwind` cannot intercept — it
+    /// bypasses `translate_pex`'s panic guard (#1816 / #3287) entirely. The
+    /// cap turns it into an ordinary `Err`.
+    #[error("expression in '{function}' at instruction {ip} nests deeper than {limit}")]
+    ExpressionTooDeep {
+        function: String,
+        ip: usize,
+        limit: usize,
+    },
+
     /// The `.pex` carried no object to decompile into a script.
     #[error(".pex has no object to decompile")]
     EmptyPex,
