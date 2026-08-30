@@ -123,7 +123,7 @@ fn bs_geometry_skin_instance_resolves_to_imported_skin() {
         ..NifScene::default()
     };
     let shape = bs_geometry_with_skin(3);
-    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data())
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
         .expect("BSGeometry with valid skin_instance_ref must resolve");
     assert_eq!(skin.bones.len(), 2, "bone count must match BsSkinInstance");
     assert_eq!(skin.bones[0].name.as_ref(), "Spine");
@@ -162,7 +162,7 @@ fn mismatched_bone_counts_return_none() {
         ..NifScene::default()
     };
     let shape = bs_geometry_with_skin(2);
-    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).is_none());
+    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None).is_none());
 }
 
 /// NULL skin_instance_ref returns None (rigid geometry — the common
@@ -172,7 +172,7 @@ fn null_skin_instance_ref_returns_none() {
     let scene = NifScene::default();
     let mut shape = bs_geometry_with_skin(0);
     shape.skin_instance_ref = BlockRef::NULL;
-    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).is_none());
+    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None).is_none());
 }
 
 /// Dangling skin_instance_ref (points at a non-existent block) returns
@@ -181,7 +181,7 @@ fn null_skin_instance_ref_returns_none() {
 fn dangling_skin_instance_ref_returns_none() {
     let scene = NifScene::default();
     let shape = bs_geometry_with_skin(99); // points at block 99, scene has 0
-    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).is_none());
+    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None).is_none());
 }
 
 /// Wrong block type at skin_instance_ref returns None (e.g., points at
@@ -193,7 +193,7 @@ fn wrong_block_type_at_skin_instance_ref_returns_none() {
         ..NifScene::default()
     };
     let shape = bs_geometry_with_skin(0); // points at the NiNode
-    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).is_none());
+    assert!(extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None).is_none());
 }
 
 /// Bone refs that don't resolve to a named NiObjectNET-bearing block
@@ -219,8 +219,8 @@ fn unresolvable_bone_ref_falls_back_to_synthetic_name() {
         ..NifScene::default()
     };
     let shape = bs_geometry_with_skin(2);
-    let skin =
-        extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).expect("must still resolve");
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
+        .expect("must still resolve");
     assert_eq!(skin.bones.len(), 2);
     assert_eq!(skin.bones[0].name.as_ref(), "Spine");
     assert_eq!(
@@ -291,7 +291,7 @@ fn bs_geometry_skin_weights_plumbed_through_when_present() {
             vec![bone_weight(1, 6), bone_weight(0, 4)],
         ],
     );
-    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data)
+    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data, None)
         .expect("BSGeometry with valid skin_instance_ref must resolve");
 
     assert_eq!(skin.vertex_bone_indices.len(), 2);
@@ -341,7 +341,7 @@ fn bs_geometry_skin_weights_keeps_top_four_by_weight() {
             bone_weight(5, 600),
         ]],
     );
-    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data)
+    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data, None)
         .expect("BSGeometry with valid skin_instance_ref must resolve");
 
     assert_eq!(
@@ -371,7 +371,7 @@ fn bs_geometry_skin_weights_vertex_count_mismatch_falls_back_to_empty() {
     let shape = bs_geometry_with_skin(3);
     // 1 skin_weights row but 2 vertices — mismatch.
     let mesh_data = mesh_data_with_weights(2, 1, vec![vec![bone_weight(0, 65535)]]);
-    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data)
+    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data, None)
         .expect("bone resolution must still succeed despite the weight mismatch");
 
     assert!(skin.vertex_bone_indices.is_empty());

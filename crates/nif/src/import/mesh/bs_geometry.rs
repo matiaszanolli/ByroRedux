@@ -345,7 +345,7 @@ pub fn extract_bs_geometry(
     // parse time since #873, plumbed through here since #2613. #1827
     // (FO4-D4-02) closed on the stale premise that this was undecoded;
     // it wasn't — just never passed to the extractor.
-    let skin = extract_skin_bs_geometry(scene, shape, mesh_data);
+    let skin = extract_skin_bs_geometry(scene, shape, mesh_data, resolver);
 
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
@@ -550,7 +550,10 @@ mod canonical_mesh_path_tests {
             canonical_mesh_path(r"geometries\foo\bar"),
             r"geometries\foo\bar.mesh"
         );
-        assert_eq!(canonical_mesh_path(r"foo\bar.mesh"), r"geometries\foo\bar.mesh");
+        assert_eq!(
+            canonical_mesh_path(r"foo\bar.mesh"),
+            r"geometries\foo\bar.mesh"
+        );
     }
 
     /// Both tests are case-insensitive and accept either separator, since
@@ -561,7 +564,10 @@ mod canonical_mesh_path_tests {
             canonical_mesh_path(r"GEOMETRIES\Foo\Bar.MESH"),
             r"GEOMETRIES\Foo\Bar.MESH"
         );
-        assert_eq!(canonical_mesh_path("Geometries/foo/bar"), r"Geometries/foo/bar.mesh");
+        assert_eq!(
+            canonical_mesh_path("Geometries/foo/bar"),
+            r"Geometries/foo/bar.mesh"
+        );
     }
 
     /// A stem that merely *starts with* the letters `geometries` but is not
@@ -581,7 +587,10 @@ mod canonical_mesh_path_tests {
     #[test]
     fn degenerate_names_are_still_composed() {
         assert_eq!(canonical_mesh_path(".mesh"), r"geometries\.mesh.mesh");
-        assert_eq!(canonical_mesh_path("geometries"), r"geometries\geometries.mesh");
+        assert_eq!(
+            canonical_mesh_path("geometries"),
+            r"geometries\geometries.mesh"
+        );
     }
 
     /// #3391 — a non-ASCII name must compose, not panic.
@@ -595,14 +604,14 @@ mod canonical_mesh_path_tests {
     #[test]
     fn non_ascii_names_compose_instead_of_panicking() {
         // Valid UTF-8, 12 bytes: `12 - 5 = 7` lands inside 'е'.
-        assert_eq!(
-            canonical_mesh_path("модель"),
-            "geometries\\модель.mesh"
-        );
+        assert_eq!(canonical_mesh_path("модель"), "geometries\\модель.mesh");
         // Lossily-decoded invalid bytes: each becomes a 3-byte U+FFFD, so
         // the cut lands inside the first replacement char.
         let lossy = String::from_utf8_lossy(&[0xFF, 0xFF]).into_owned();
-        assert_eq!(canonical_mesh_path(&lossy), format!("geometries\\{lossy}.mesh"));
+        assert_eq!(
+            canonical_mesh_path(&lossy),
+            format!("geometries\\{lossy}.mesh")
+        );
         // A non-ASCII name that genuinely IS already composed still passes
         // through untouched — the boundary fix must not change semantics.
         assert_eq!(

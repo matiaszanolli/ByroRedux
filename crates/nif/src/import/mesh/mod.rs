@@ -27,6 +27,7 @@ mod material_path;
 mod morph;
 mod ni_tri_shape;
 mod normal;
+pub mod skeleton;
 mod skin;
 mod sse_recon;
 mod tangent;

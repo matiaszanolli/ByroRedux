@@ -386,6 +386,7 @@ pub fn extract_skin_bs_geometry(
     scene: &NifScene,
     shape: &BSGeometry,
     mesh_data: &BSGeometryMeshData,
+    resolver: Option<&dyn crate::import::MeshResolver>,
 ) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_instance_ref.index()?;
 
@@ -399,10 +400,35 @@ pub fn extract_skin_bs_geometry(
         );
         return None;
     }
+    // #3549 — Starfield apparel and body meshes carry ALL-NULL `bone_refs`:
+    // 78,587 of 107,717 refs (73%) across 68,459 vanilla NIFs, with every ref
+    // null on 3,738 of 5,896 skins. The identity is not in the file at all
+    // (its header string table holds only `ExportScene`, `BSX`, the mesh name
+    // and material paths), so `resolve_node_name` returned `None` and the
+    // `Bone{i}` fallback below manufactured placeholders that could never
+    // match a skeleton — every SF NPC and every piece of apparel in bind
+    // pose. Recover the names from the external skeleton by solving the
+    // per-file bind offset; `resolve_external_bone_names` declines unless a
+    // unique offset matches every bone, and a decline leaves the historical
+    // fallback in place.
+    let external_names = if inst.bone_refs.iter().all(|r| r.index().is_none()) {
+        resolver.and_then(|r| {
+            let binds: Vec<[f32; 3]> = bone_data
+                .bones
+                .iter()
+                .map(super::skeleton::bind_world_position)
+                .collect();
+            super::skeleton::resolve_external_bone_names(&binds, r)
+        })
+    } else {
+        None
+    };
+
     let mut bones = Vec::with_capacity(inst.bone_refs.len());
     for (i, bone_ref) in inst.bone_refs.iter().enumerate() {
-        let name =
-            resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
+        let name = resolve_node_name(scene, *bone_ref)
+            .or_else(|| external_names.as_ref().map(|n| n[i].clone()))
+            .unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
         let bt = &bone_data.bones[i];
         bones.push(ImportedBone {
             name,
