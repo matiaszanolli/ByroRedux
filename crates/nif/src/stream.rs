@@ -117,6 +117,14 @@ impl<'a> NifStream<'a> {
         self.cursor.set_position(pos);
     }
 
+    /// Bytes left between the cursor and the end of the backing data.
+    ///
+    /// Saturates at 0 rather than underflowing when the cursor has been
+    /// parked past the end (`io::Cursor` permits that).
+    pub fn remaining(&self) -> u64 {
+        (self.cursor.get_ref().len() as u64).saturating_sub(self.cursor.position())
+    }
+
     /// Advance the cursor by `n` bytes.
     ///
     /// Returns `UnexpectedEof` if the skip would move past the end of

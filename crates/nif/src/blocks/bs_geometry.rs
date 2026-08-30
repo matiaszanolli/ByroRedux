@@ -534,11 +534,39 @@ impl BSGeometryMeshData {
         // Bulk struct reads — `Meshlet` (4 × u32 = 16 B) and `CullData`
         // (6 × f32 = 24 B) are `#[repr(C)] + Default + Copy` and decode
         // in one `read_pod_vec` per array. See #873.
-        let n_meshlets = stream.read_u32_le()?;
-        let meshlets = stream.read_pod_vec::<Meshlet>(n_meshlets as usize)?;
+        //
+        // #3777 — the meshlet + cull-data trailer is OPTIONAL. Starfield's
+        // facegen `.mesh` bodies end exactly at the last LOD entry and ship
+        // no trailer at all, so reading `n_meshlets` unconditionally hit
+        // `failed to fill whole buffer`, which cascaded: the Stage B LOD-slot
+        // loop in `import/mesh/bs_geometry.rs` logs the error at `debug!` and
+        // `continue`s, every slot exhausts, and the shape never becomes an
+        // `ImportedMesh`. End-to-end that was 1,282 of 1,282
+        // `Starfield - FaceMeshes.ba2` NIFs importing ZERO geometry — every
+        // Starfield NPC headless.
+        //
+        // A field-by-field walk classifying where each of the 680,239 vanilla
+        // `.mesh` bodies ends splits 4,832 `ENDS_AFTER_LODS` / 675,407
+        // `FULL_EXACT` (byte-exact through `cull_data`), and the split is
+        // 100% clean along the FaceMeshes archive boundary. It is NOT "skinned
+        // bodies omit the trailer" — 10,185 `FULL_EXACT` bodies carry skin
+        // weights too. So the rule is positional, not content-derived: if
+        // nothing follows the LOD array, there is no trailer.
+        //
+        // Deliberately gated on `remaining() == 0` rather than swallowing an
+        // EOF error from the reads themselves: a body that ends *mid*-trailer
+        // is corrupt and must still fail, and both arrays remain fully
+        // bounds-checked when they are present.
+        let (meshlets, cull_data) = if stream.remaining() == 0 {
+            (Vec::new(), Vec::new())
+        } else {
+            let n_meshlets = stream.read_u32_le()?;
+            let meshlets = stream.read_pod_vec::<Meshlet>(n_meshlets as usize)?;
 
-        let n_cull_data = stream.read_u32_le()?;
-        let cull_data = stream.read_pod_vec::<CullData>(n_cull_data as usize)?;
+            let n_cull_data = stream.read_u32_le()?;
+            let cull_data = stream.read_pod_vec::<CullData>(n_cull_data as usize)?;
+            (meshlets, cull_data)
+        };
 
         Ok(Self {
             version,
@@ -669,7 +697,91 @@ mod tests {
     ///
     /// #2032 / PERF-D8-01 replaced the per-row `allocate_vec` +
     /// `read_u16_le` loop with a single bulk `read_pod_vec` over
-    /// `outer_len * weights_per_vert` elements — that byte count
+     /// #3777 — the meshlet + cull-data trailer is OPTIONAL.
+    ///
+    /// Starfield facegen `.mesh` bodies end exactly at the last LOD entry.
+    /// Reading `n_meshlets` unconditionally hit "failed to fill whole
+    /// buffer", which cascaded through the Stage B LOD-slot loop (whose
+    /// `Err` arm logs at `debug!` and continues) until every slot exhausted
+    /// and the shape never became an `ImportedMesh`: 1,282 of 1,282
+    /// `Starfield - FaceMeshes.ba2` NIFs imported ZERO geometry, so every
+    /// Starfield NPC rendered headless.
+    ///
+    /// A field-by-field walk over all 680,239 vanilla `.mesh` bodies splits
+    /// 4,832 ending after the LODs / 675,407 byte-exact through
+    /// `cull_data`, 100% clean along the FaceMeshes archive boundary — and
+    /// NOT along "carries skin weights" (10,185 full-length bodies do too).
+    #[test]
+    fn a_body_ending_after_the_lod_array_parses_without_a_trailer() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // weights_per_vert
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_vertices
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv0
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_colors
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_normals
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tangents
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_total_weights
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_lods = 0 → EOF here
+
+        let data = BSGeometryMeshData::parse_from_bytes(&bytes)
+            .expect("a body that ends at the LOD array must parse, not EOF");
+        assert!(data.meshlets.is_empty());
+        assert!(data.cull_data.is_empty());
+    }
+
+    /// The trailer must still be read when it IS present — 675,407 of the
+    /// 680,239 vanilla bodies carry one, so tolerating its absence must not
+    /// become ignoring its presence.
+    #[test]
+    fn a_body_with_a_trailer_still_reads_it() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // weights_per_vert
+        for _ in 0..7 {
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // the seven count fields
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_lods = 0
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_meshlets = 1
+        bytes.extend_from_slice(&[0u8; 16]); // one Meshlet (4 x u32)
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_cull_data = 1
+        bytes.extend_from_slice(&[0u8; 24]); // one CullData (6 x f32)
+
+        let data = BSGeometryMeshData::parse_from_bytes(&bytes)
+            .expect("a full-length body must still parse");
+        assert_eq!(data.meshlets.len(), 1);
+        assert_eq!(data.cull_data.len(), 1);
+    }
+
+    /// A body that ends *mid*-trailer is corrupt and must still fail. The
+    /// tolerance is positional — "nothing follows the LOD array" — not a
+    /// swallowed EOF from the reads themselves.
+    #[test]
+    fn a_body_that_ends_inside_the_trailer_still_errors() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..7 {
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_lods = 0
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_meshlets = 1
+        bytes.extend_from_slice(&[0u8; 8]); // ...but only half a Meshlet
+
+        assert!(
+            BSGeometryMeshData::parse_from_bytes(&bytes).is_err(),
+            "a truncated trailer is corruption, not the facegen shape"
+        );
+    }
+
+   /// `outer_len * weights_per_vert` elements — that byte count
     /// (~17 GB here) trips `read_pod_vec`'s own `check_alloc` guard,
     /// which checks the hard `MAX_SINGLE_ALLOC_BYTES` cap BEFORE the
     /// remaining-stream-bytes check `allocate_vec` used,
