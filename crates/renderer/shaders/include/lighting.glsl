@@ -97,8 +97,20 @@ vec3 bethesdaDiffuseLightFactor(
 
 float bethesdaRimFactor(GpuMaterial mat, float NdotV, float frontNdotL) {
     if ((mat.materialFlags & MAT_FLAG_RIM_LIGHTING) == 0u) return 0.0;
-    float exponent = mat.rimlightPower > 0.0
+    // Skyrim carries the rim exponent in lightingEffect2 (parse_skyrim hard-
+    // sets rimlightPower to 0.0 by design); FO4/BGSM carries it in
+    // rimlightPower. Zero in BOTH lanes is the "nothing authored" state every
+    // no-value default site installs, not an authored exponent of zero — and
+    // the flag is already set, so the feature is on. Falling through to the
+    // clamp FLOOR there made no-value the BROADEST possible rim (weight 0.56
+    // head-on at NdotV 0.9), added across the whole surface instead of at its
+    // silhouette. Substitute nif.xml's declared `Lighting Effect 2` default of
+    // 2.0 instead — the same treatment bethesdaBackFactor already gives its own
+    // no-value case, and the same correction #2589 applied to the sibling
+    // grayscale-to-palette / Fresnel fields (#3448).
+    float authored = mat.rimlightPower > 0.0
         ? mat.rimlightPower : mat.lightingEffect2;
+    float exponent = authored > 0.0 ? authored : 2.0;
     exponent = clamp(exponent, 0.25, 16.0);
     return pow(clamp(1.0 - NdotV, 0.0, 1.0), exponent) * frontNdotL;
 }

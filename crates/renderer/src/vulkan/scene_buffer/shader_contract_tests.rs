@@ -2305,6 +2305,41 @@ fn disney_sheen_keeps_its_relative_weight_in_canonical_direct_path() {
     );
 }
 
+/// #3448 / REN-2026-08-27-D17-01 — `bethesdaRimFactor` resolves its exponent
+/// from `rimlightPower` then `lightingEffect2`. Both lanes are `0.0` at every
+/// no-value default site (`material_reference_stub`, `parse_fo4`,
+/// `parse_fo76_plus`, `MaterialInfo::default`, `ImportedMaterial::default`,
+/// `Material::default`), and `parse_skyrim` hard-sets `rimlightPower` to zero
+/// by design — so "nothing authored" must not be allowed to fall through the
+/// `clamp(exponent, 0.25, 16.0)` onto the FLOOR, which is the broadest
+/// possible rim (weight 0.56 head-on at `NdotV = 0.9`) added across the whole
+/// surface rather than at its silhouette. This is the same hazard #2589 fixed
+/// on the sibling `grayscale_to_palette_scale` / `fresnel_power` fields.
+#[test]
+fn bethesda_rim_exponent_substitutes_the_format_default_not_the_clamp_floor() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let body = extract_struct_body(lighting, "float bethesdaRimFactor")
+        .expect("lighting.glsl must declare bethesdaRimFactor");
+
+    assert!(
+        body.contains("float exponent = authored > 0.0 ? authored : 2.0;"),
+        "bethesdaRimFactor must substitute nif.xml's declared `Lighting Effect 2` \
+         default (2.0) when neither exponent lane is authored — see #3448"
+    );
+    assert!(
+        !body.contains("float exponent = mat.rimlightPower > 0.0"),
+        "bethesdaRimFactor went back to clamping the raw two-lane pick, so an \
+         unauthored (0.0, 0.0) material lands on the clamp FLOOR 0.25 again — the \
+         broadest rim, not a neutral one. See #3448."
+    );
+    // The clamp itself stays — it still bounds authored values — but it must
+    // no longer be the thing that decides the no-value case.
+    assert!(
+        body.contains("clamp(exponent, 0.25, 16.0)"),
+        "the authored-value clamp must be kept"
+    );
+}
+
 /// #2244 — `sampleDalcCube` returns authored directional irradiance. A
 /// bounded path that escapes the TLAS consumes environment radiance, so the
 /// DALC branch needs the Lambertian irradiance-to-radiance conversion.
