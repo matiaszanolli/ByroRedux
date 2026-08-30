@@ -22,8 +22,21 @@ const PRESENTATION_FRAG_SPV: &[u8] = include_bytes!("../../shaders/presentation.
 struct PresentationPushConstants {
     underwater: [f32; 4],
     exposure: f32,
-    render_debug_flags: f32,
-    render_debug_mode: f32,
+    // #3578 — `u32`, not `f32`. These are a bitfield and a small enum; the
+    // pass used to write them as `f32::from_bits(...)` and recover them with
+    // `floatBitsToUint`, which made the struct's correctness depend on float-
+    // representation preservation for data that is not a float. Most `DBG_*`
+    // masks (every one whose highest set bit is <= 22) and every non-zero
+    // debug mode are DENORMAL bit patterns, and masks spanning bits 23-30
+    // reach the Inf/NaN exponent band. It works — denorm flush-to-zero is
+    // specified for float *operations*, and neither a push-constant load nor
+    // `OpBitcast` is one — but it inverts the idiom `GpuCamera.render_debug`
+    // (`[u32; 4]` / `uvec4`) uses two files away, where a float riding in a
+    // uint lane is cast OUT with `uintBitsToFloat`, the safe direction. The
+    // fields sit in the same 16-byte block as `exposure` and `padding`, so
+    // the struct stays 128 B and every offset pin is unchanged.
+    render_debug_flags: u32,
+    render_debug_mode: u32,
     padding: f32,
     lens: [f32; 4],
     radial_curve: [f32; 4],
@@ -566,8 +579,8 @@ impl PresentationPipeline {
         let constants = PresentationPushConstants {
             underwater: input.underwater,
             exposure: input.exposure,
-            render_debug_flags: f32::from_bits(input.render_debug_flags),
-            render_debug_mode: f32::from_bits(input.render_debug_mode),
+            render_debug_flags: input.render_debug_flags,
+            render_debug_mode: input.render_debug_mode,
             padding: 0.0,
             lens: [
                 input.image_space.blur_radius_pixels,
@@ -857,6 +870,66 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(PresentationPushConstants, fade_color),
             112
+        );
+    }
+
+    /// #3578 / REN-2026-08-30-D3-03 — the two debug integers must stay
+    /// `u32` on both sides of the push-constant boundary. They used to be
+    /// declared `f32` and round-tripped through the float representation
+    /// (`f32::from_bits` on the host, `floatBitsToUint` in the shader), which
+    /// made a GPU struct's correctness depend on float-representation
+    /// preservation for data that has no reason to be typed as float: every
+    /// `DBG_*` mask whose highest set bit is <= 22 is a DENORMAL `f32`, every
+    /// non-zero `RENDER_DEBUG_*` mode is a denormal, and masks spanning bits
+    /// 23-30 land in the Inf/NaN exponent band. It also inverted the
+    /// `GpuCamera.render_debug` idiom (`[u32; 4]` / `uvec4`), where a float
+    /// riding in a uint lane is cast OUT with `uintBitsToFloat` — a uint lane
+    /// never subjects its payload to float interpretation.
+    ///
+    /// The size/offset pin above covers the layout; this pins the TYPES, on
+    /// both sides, so the fragile cast cannot be reintroduced.
+    #[test]
+    fn render_debug_push_constants_ride_in_uint_lanes() {
+        // Scan the production half only: the negative assertions below spell
+        // the forbidden casts literally, so scanning the whole file (this test
+        // included) would always self-match.
+        let src = include_str!("presentation.rs")
+            .split_once("#[cfg(test)]")
+            .expect("presentation.rs must have a test module")
+            .0;
+        let decl = src
+            .split_once("struct PresentationPushConstants {")
+            .expect("PresentationPushConstants must exist")
+            .1
+            .split_once('}')
+            .expect("struct must close")
+            .0;
+        for field in ["render_debug_flags: u32,", "render_debug_mode: u32,"] {
+            assert!(
+                decl.contains(field),
+                "PresentationPushConstants must declare `{field}` — a bitfield and a \
+                 small enum must not ride in f32 lanes as denormal bit patterns (#3578)"
+            );
+        }
+        assert!(
+            !src.contains("f32::from_bits(input.render_debug"),
+            "the host must assign the debug integers directly, not bitcast them into \
+             float lanes (#3578)"
+        );
+
+        let frag = include_str!("../../shaders/presentation.frag");
+        for field in ["uint renderDebugFlags;", "uint renderDebugMode;"] {
+            assert!(
+                frag.contains(field),
+                "presentation.frag's PresentationParams must declare `{field}` to mirror \
+                 the host struct (#3578)"
+            );
+        }
+        assert!(
+            !frag.contains("floatBitsToUint(params.renderDebug"),
+            "presentation.frag must read the debug integers straight out of their uint \
+             lanes; recovering them with floatBitsToUint means they were shipped as \
+             floats (#3578)"
         );
     }
 

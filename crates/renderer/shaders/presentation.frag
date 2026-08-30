@@ -24,8 +24,10 @@ layout(set = 0, binding = 1) buffer ImageHealth {
 layout(push_constant) uniform PresentationParams {
     vec4 underwater;
     float exposure;
-    float renderDebugFlags;
-    float renderDebugMode;
+    // #3578 — `uint`, matching `PresentationPushConstants`. See that struct
+    // for why these must not ride in float lanes.
+    uint renderDebugFlags;
+    uint renderDebugMode;
     float padding2;
     vec4 lens;
     vec4 radialCurve;
@@ -132,8 +134,8 @@ void main() {
     // display-linear [0,1]. Preserve categorical colours, scalar visibility,
     // and isolated lighting energy exactly: no lens kernels, grading,
     // exposure, ACES, underwater treatment, or scripted fades.
-    uint dbgFlags = floatBitsToUint(params.renderDebugFlags);
-    uint debugMode = floatBitsToUint(params.renderDebugMode);
+    uint dbgFlags = params.renderDebugFlags;
+    uint debugMode = params.renderDebugMode;
     // #2978 — the "which views are oracles" policy is generated into
     // shader_constants.glsl from DBG_VIZ_RAW_OUTPUT_ANY/_ALL, the same two
     // catalogs shader_constants.rs's debug_viz_requires_raw_output walks. Do
