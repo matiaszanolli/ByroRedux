@@ -1308,6 +1308,20 @@ fn pre_parse_cell(
         else {
             continue;
         };
+        // #3735 — SpeedTree `.spt` binaries are not NIFs and are not
+        // resolved through `extract_mesh`'s `meshes\` rooting; the sync REFR
+        // loader owns their archive-key resolution
+        // (`references::import::resolve_spt_model_path`). Prefetching them
+        // here was actively harmful, not merely useless: `extract_mesh`
+        // missed, and `finish_streaming_import`'s `None` arm wrote a
+        // NEGATIVE `NifImportRegistry` entry under the shared cache key —
+        // so the sync loader's three-tier lookup found a cached miss and
+        // skipped the REFR before its own resolver ran. On the exterior
+        // path, which is where trees actually live, that made the fix on
+        // the sync side unobservable.
+        if model_path.to_ascii_lowercase().ends_with(".spt") {
+            continue;
+        }
         // #3038 — must match the sync REFR loader's key exactly
         // (`references/synth_child.rs`), or the same asset ends up
         // cached under two different `NifImportRegistry` keys and gets

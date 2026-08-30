@@ -335,6 +335,84 @@ pub(super) fn resolve_tree_icon_path<'a>(
     Cow::Borrowed(icon)
 }
 
+/// Archive directories a `.spt` SpeedTree binary resolves against, in
+/// probe order.
+///
+/// #3735 — SpeedTree binaries live **outside** the `meshes\` root. Measured
+/// by folder/file-record walk: `Oblivion - Meshes.bsa` (v103) holds 113
+/// `.spt` under `trees\`, and `Fallout - Meshes.bsa` (v104, shared by FO3
+/// and FNV) holds 10, also under `trees\`. Not `meshes\trees\` — `trees\`
+/// is itself a top-level folder in all three games.
+///
+/// The engine's one generic normaliser (`normalize_mesh_path`) models the
+/// `meshes\` root, which is right for every other consumer and wrong for
+/// this one, so the probe list lives here rather than being pushed down
+/// into the shared path.
+const SPT_CANDIDATE_DIRS: [&str; 1] = ["trees\\"];
+
+/// Resolve a TREE record's `.spt` `MODL` value to a key the mesh archives
+/// actually hold (#3735).
+///
+/// `probe` answers "does this mesh exist" — normally
+/// `TextureProvider::has_mesh`, a `contains` check against the archive file
+/// tables with no extraction or decompression. Pure over that closure so
+/// the probe order is unit-testable without a BSA on disk.
+///
+/// Every vanilla `.spt` MODL is a leading-separator bare filename —
+/// `\Dbush16.spt`, `\WhiteOak01.spt`, `\Pine01.spt` — 154 of 154 across
+/// Oblivion (142), FO3 (9) and FNV (3), with zero exceptions. The generic
+/// composition (`"meshes\" + "\WhiteOak01.spt"`) produced
+/// `meshes\\whiteoak01.spt`, which no archive holds, so `extract_mesh`
+/// returned `None`, the `is_spt` dispatch was never entered, and the REFR
+/// was dropped with a debug-level "SPT not found in BSA". **0 of 154
+/// vanilla TREE records resolved**, which is why no SpeedTree billboard has
+/// ever rendered from a cell load.
+///
+/// Order: the authored value verbatim first (mod content that names a real
+/// archive path is authoritative and must not be second-guessed), then the
+/// `meshes\`-rooted form the generic composer builds, then the bare name
+/// under each of [`SPT_CANDIDATE_DIRS`]. On a total miss the
+/// `meshes\`-rooted form is returned so the existing not-found diagnostic
+/// still reports a meaningful key.
+///
+/// Deliberately `.spt`-scoped, mirroring what #3528 did for `TREE.ICON`:
+/// `normalize_mesh_path` is shared by every mesh consumer in the engine and
+/// `trees\` prefixing is a SpeedTree rule, not a general one.
+pub(super) fn resolve_spt_model_path(model_path: &str, probe: impl Fn(&str) -> bool) -> String {
+    let meshes_rooted = |path: &str| {
+        let lower = path.to_ascii_lowercase();
+        if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
+            path.to_owned()
+        } else {
+            format!("meshes\\{path}")
+        }
+    };
+
+    if probe(model_path) {
+        return model_path.to_owned();
+    }
+    let rooted = meshes_rooted(model_path);
+    if probe(&rooted) {
+        return rooted;
+    }
+    // Vanilla shape: a leading separator and no directory component.
+    let bare = model_path.trim_start_matches(['\\', '/']);
+    if !bare.contains('\\') && !bare.contains('/') {
+        for dir in SPT_CANDIDATE_DIRS {
+            let candidate = format!("{dir}{bare}");
+            if probe(&candidate) {
+                return candidate;
+            }
+        }
+    }
+    log::warn!(
+        "TREE MODL '{model_path}' resolves in no loaded mesh archive, verbatim, \
+         under `meshes\\`, or under {SPT_CANDIDATE_DIRS:?} — the SpeedTree \
+         placeholder will not spawn (#3735)"
+    );
+    rooted
+}
+
 /// Parse a SpeedTree `.spt` byte slice and convert it to the same
 /// [`CachedNifImport`] shape every other model goes through. Lets the
 /// cache + spawn paths consume `.spt` REFRs without a parallel

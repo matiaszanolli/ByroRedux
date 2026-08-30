@@ -294,3 +294,182 @@ fn vanilla_tree_icons_all_resolve() {
         );
     }
 }
+
+/// #3735 — a `.spt` TREE `MODL` is a leading-separator bare filename on
+/// 100 % of vanilla records (154 of 154 across Oblivion, FO3 and FNV), and
+/// SpeedTree binaries live outside the `meshes\` root. The generic
+/// composition therefore built `meshes\\<name>.spt`, which no archive holds,
+/// so `extract_mesh` returned `None`, the `.spt` dispatch was never entered,
+/// and the REFR was dropped. **No SpeedTree billboard had ever rendered from
+/// a cell load.**
+///
+/// Same shape as `tree_icon_resolves_bare_filenames_under_the_measured_directory`
+/// one step earlier in the chain: stubbed archive here, env-gated corpus in
+/// `vanilla_tree_models_all_resolve` below.
+#[test]
+fn tree_model_resolves_leading_separator_bare_names_under_the_measured_directory() {
+    use super::import::resolve_spt_model_path;
+
+    // The vanilla shape and layout, verbatim from the census.
+    let archive = |p: &str| p == "trees\\WhiteOak01.spt";
+    assert_eq!(
+        resolve_spt_model_path("\\WhiteOak01.spt", archive),
+        "trees\\WhiteOak01.spt",
+        "a leading-separator bare MODL must resolve against the real archive \
+         layout — `trees\\`, not `meshes\\`"
+    );
+
+    // A MODL that already resolves verbatim is authoritative and untouched:
+    // mod content naming a real archive path must not be second-guessed.
+    let verbatim = |p: &str| p == "trees\\custom\\ModTree.spt";
+    assert_eq!(
+        resolve_spt_model_path("trees\\custom\\ModTree.spt", verbatim),
+        "trees\\custom\\ModTree.spt"
+    );
+
+    // The `meshes\`-rooted form still wins when the archive really does keep
+    // the asset there — this must not become a regression for anything that
+    // resolved before the fix.
+    let under_meshes = |p: &str| p == "meshes\\trees\\Pine01.spt";
+    assert_eq!(
+        resolve_spt_model_path("trees\\Pine01.spt", under_meshes),
+        "meshes\\trees\\Pine01.spt"
+    );
+
+    // An authored path with a directory that misses everywhere is NOT
+    // re-prefixed into a path its author never wrote; the caller reports the
+    // miss against the `meshes\`-rooted key, as before.
+    assert_eq!(
+        resolve_spt_model_path("some\\mod\\Tree.spt", |_| false),
+        "meshes\\some\\mod\\Tree.spt"
+    );
+
+    // Nothing anywhere → the REFR is skipped, exactly as before the fix. No
+    // silent path invention.
+    assert_eq!(
+        resolve_spt_model_path("\\Missing.spt", |_| false),
+        "meshes\\\\Missing.spt"
+    );
+}
+
+/// #3735 corpus gate — every vanilla `.spt` TREE `MODL` must resolve to a
+/// real mesh-archive entry through `resolve_spt_model_path`.
+///
+/// The sibling of `vanilla_tree_icons_all_resolve`, and the test whose
+/// absence let this survive: #3528's guard pinned ICON resolution, and
+/// nothing pinned the MODL that feeds `extract_mesh` one step earlier. The
+/// pre-fix composition resolves for 0 of 154.
+///
+/// ```bash
+/// BYROREDUX_FNV_DATA=".../Fallout New Vegas/Data" \
+/// BYROREDUX_FO3_DATA=".../Fallout 3 goty/Data" \
+/// BYROREDUX_OBL_DATA=".../Oblivion/Data" \
+///     cargo test -p byroredux vanilla_tree_models_all_resolve -- --nocapture
+/// ```
+#[test]
+fn vanilla_tree_models_all_resolve() {
+    use super::import::resolve_spt_model_path;
+
+    let games: [(&str, &str, &str, &str); 3] = [
+        (
+            "FNV",
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+        ),
+        (
+            "FO3",
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+        ),
+        (
+            "OBL",
+            "BYROREDUX_OBL_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "Oblivion.esm",
+        ),
+    ];
+
+    let mut checked = 0usize;
+    let mut skipped = 0usize;
+    for (label, env, fallback, esm) in games {
+        let dir = std::env::var(env)
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists())
+            .or_else(|| {
+                let p = std::path::PathBuf::from(fallback);
+                p.exists().then_some(p)
+            });
+        let Some(dir) = dir else {
+            eprintln!("[{label}] skip: {env} unset and fallback missing");
+            skipped += 1;
+            continue;
+        };
+
+        let mut archives = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("bsa") {
+                    if let Ok(a) = byroredux_bsa::BsaArchive::open(&p) {
+                        archives.push(a);
+                    }
+                }
+            }
+        }
+        // The exact-key probe, matching `TextureProvider::has_mesh_exact` —
+        // the `.spt` route deliberately skips `normalize_mesh_path`'s
+        // `meshes\` rooting, which is what made the correct `trees\` key a
+        // guaranteed miss (#3735).
+        let probe = |path: &str| archives.iter().any(|a| a.contains(path));
+
+        let Ok(bytes) = std::fs::read(dir.join(esm)) else {
+            eprintln!("[{label}] skip: {esm} unreadable");
+            skipped += 1;
+            continue;
+        };
+        let index = byroredux_plugin::esm::records::parse_esm(&bytes).expect("parse esm");
+
+        let mut models: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for tree in index.trees.values() {
+            if tree.model_path.to_ascii_lowercase().ends_with(".spt") {
+                models.insert(tree.model_path.clone());
+            }
+        }
+        assert!(
+            !models.is_empty(),
+            "[{label}] no `.spt` TREE MODL values found — the census fixture is broken"
+        );
+
+        let mut unresolved = Vec::new();
+        for model in &models {
+            let resolved = resolve_spt_model_path(model, probe);
+            if !probe(&resolved) {
+                unresolved.push(model.clone());
+            }
+            checked += 1;
+        }
+        assert!(
+            unresolved.is_empty(),
+            "[{label}] {} of {} vanilla `.spt` TREE MODL values resolve to no \
+             mesh-archive entry: {unresolved:?}",
+            unresolved.len(),
+            models.len()
+        );
+        eprintln!(
+            "[{label}] all {} unique `.spt` TREE MODL values resolve",
+            models.len()
+        );
+    }
+
+    if skipped == 3 {
+        eprintln!("vanilla_tree_models_all_resolve: no game data available, nothing checked");
+    } else {
+        assert!(
+            checked > 0,
+            "at least one game's TREE MODLs must have been checked"
+        );
+    }
+}

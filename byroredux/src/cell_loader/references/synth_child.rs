@@ -446,7 +446,13 @@ pub(super) fn spawn_synth_child(
         return;
     }
 
-    let model_path = if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
+    // Pre-Skyrim TREE records point MODL at a `.spt` SpeedTree binary, and
+    // those live outside the `meshes\` root — see `resolve_spt_model_path`.
+    // Every other model reference gets the generic `meshes\` composition.
+    let is_spt = model_lower.ends_with(".spt");
+    let model_path = if is_spt {
+        super::import::resolve_spt_model_path(&stat.model_path, |p| tex_provider.has_mesh_exact(p))
+    } else if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
         stat.model_path.clone()
     } else {
         format!("meshes\\{}", stat.model_path)
@@ -510,13 +516,16 @@ pub(super) fn spawn_synth_child(
                 // from `record_index.trees` keyed by the same
                 // form id the cell loader resolved against
                 // `index.statics`. See SpeedTree plan 1.5.
-                let is_spt = model_path
-                    .as_str()
-                    .rsplit('.')
-                    .next()
-                    .map(|ext| ext.eq_ignore_ascii_case("spt"))
-                    .unwrap_or(false);
-                let parsed = match tex_provider.extract_mesh(&model_path) {
+                // `is_spt` was decided with `model_path` above, because the
+                // `.spt` route needs its own archive-path resolution (#3735).
+                // `.spt` uses the exact key `resolve_spt_model_path` picked;
+                // `extract_mesh`'s `meshes\` rooting would undo it (#3735).
+                let extracted = if is_spt {
+                    tex_provider.extract_mesh_exact(&model_path)
+                } else {
+                    tex_provider.extract_mesh(&model_path)
+                };
+                let parsed = match extracted {
                     Some(d) => {
                         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
                         if is_spt {

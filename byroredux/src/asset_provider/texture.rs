@@ -76,6 +76,38 @@ impl TextureProvider {
             .iter()
             .any(|archive| archive.contains(normalised.as_ref()))
     }
+
+    /// Whether a mesh exists at *exactly* this archive key — no `meshes\`
+    /// rooting.
+    ///
+    /// #3735 — SpeedTree `.spt` binaries live outside the `meshes\` root
+    /// (`trees\` is itself a top-level archive folder in Oblivion, FO3 and
+    /// FNV), so [`normalize_mesh_path`]'s rooting — correct for every other
+    /// mesh consumer — turns a correct `trees\<name>.spt` key into a
+    /// guaranteed miss. The `.spt` route resolves its own archive key
+    /// through `references::import::resolve_spt_model_path` and then needs a
+    /// lookup that takes it literally. Archive-internal case and separator
+    /// folding still happens inside `BsaArchive`.
+    ///
+    /// Deliberately additive: `normalize_mesh_path` is shared by every mesh
+    /// consumer in the engine and stays untouched, so this cannot change any
+    /// other lookup.
+    pub(crate) fn has_mesh_exact(&self, path: &str) -> bool {
+        self.mesh_archives
+            .iter()
+            .any(|archive| archive.contains(path))
+    }
+
+    /// [`Self::extract_mesh`]'s exact-key counterpart. See
+    /// [`Self::has_mesh_exact`] for why the `.spt` route needs it.
+    pub(crate) fn extract_mesh_exact(&self, path: &str) -> Option<Vec<u8>> {
+        for archive in &self.mesh_archives {
+            if let Ok(data) = archive.extract(path) {
+                return Some(data);
+            }
+        }
+        None
+    }
 }
 
 impl MeshResolver for TextureProvider {
