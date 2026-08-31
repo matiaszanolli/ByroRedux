@@ -952,10 +952,20 @@ impl CausticPipeline {
         };
 
         if history_valid {
-            // Wait for the slot's previous use (prior splat compute-write +
-            // composite fragment-read) before the decay pass scales it.
+            // Wait for the slot's previous use before the decay pass scales
+            // it. That prior use is one of three, not two: the steady-state
+            // splat compute-write + composite fragment-read, OR — #3646 —
+            // `clear_for_skip`'s `vkCmdClearColorImage` from an earlier
+            // visit to this slot, which is a TRANSFER_WRITE. The decay pass
+            // `imageLoad`s the accumulator, so leaving TRANSFER out of the
+            // source scope left the skip-clear's write with no dependency
+            // chain into this read.
             let pre_decay = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                .src_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::SHADER_WRITE
+                        | vk::AccessFlags::TRANSFER_WRITE,
+                )
                 .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
@@ -963,7 +973,9 @@ impl CausticPipeline {
                 .subresource_range(clear_range);
             device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -999,8 +1011,16 @@ impl CausticPipeline {
         } else {
             // Moving camera: clear the slot so an old-viewpoint pool can't
             // smear, then deposit full energy (decay_factor == 0).
+            // #3646 — TRANSFER_WRITE in the source scope for the same
+            // reason as `pre_decay` above: the slot's prior use may have
+            // been `clear_for_skip`'s clear rather than a compute/fragment
+            // access.
             let pre_clear_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                .src_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::SHADER_WRITE
+                        | vk::AccessFlags::TRANSFER_WRITE,
+                )
                 .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
@@ -1008,7 +1028,9 @@ impl CausticPipeline {
                 .subresource_range(clear_range);
             device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -1116,7 +1138,11 @@ impl CausticPipeline {
         // GENERAL-but-untouched from `initialize_layouts` (frame 0 / just
         // after resize) — safe either way.
         let pre_clear_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::SHADER_WRITE
+                    | vk::AccessFlags::TRANSFER_WRITE,
+            )
             .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -1124,7 +1150,9 @@ impl CausticPipeline {
             .subresource_range(clear_range);
         device.cmd_pipeline_barrier(
             cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::FRAGMENT_SHADER
+                | vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::TRANSFER,
             vk::DependencyFlags::empty(),
             &[],
@@ -1141,11 +1169,17 @@ impl CausticPipeline {
             &clear_value,
             &[clear_range],
         );
-        // TRANSFER → FRAGMENT directly (no compute dispatch follows this
-        // clear, unlike `dispatch`'s TRANSFER → COMPUTE mid-barrier).
+        // TRANSFER → FRAGMENT for composite's sample this frame, and
+        // TRANSFER → COMPUTE for the slot's *next* visit (#3646). No
+        // compute dispatch follows this clear within the frame, but the
+        // next visit to this slot is `dispatch`, whose decay pass
+        // `imageLoad`s what was cleared here. Naming only FRAGMENT left
+        // that cross-frame edge uncovered from this side; `dispatch`'s
+        // own barriers now name TRANSFER in their source scope too, so
+        // the chain is closed from both ends.
         let post_clear_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(slot_img)
@@ -1153,7 +1187,7 @@ impl CausticPipeline {
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
             &[],
@@ -1736,5 +1770,87 @@ mod parked_visit_tests {
                  finds the guard already disarmed"
             );
         }
+    }
+}
+
+/// #3646 / #3647 — a skip-path clear and the next visit to the same
+/// frame-in-flight slot must agree about `TRANSFER`.
+///
+/// `clear_for_skip` writes the accumulator with `vkCmdClearColorImage`
+/// (`TRANSFER_WRITE`); the slot's *next* visit is `dispatch`, whose decay
+/// pass `imageLoad`s that same image. Those two are in different command
+/// buffer submissions, so the only thing that can carry the write to the
+/// read is the barrier masks — and the clear published to `FRAGMENT_SHADER`
+/// only while `dispatch`'s barriers named `COMPUTE | FRAGMENT` in their
+/// source scope, so `TRANSFER` appeared on neither side.
+///
+/// Sync validation does not currently flag this (the both-slots fence wait
+/// at `MAX_FRAMES_IN_FLIGHT == 2` covers it — see `sync.rs`'s #870 block),
+/// which is exactly why a source-shape pin is warranted: the masks must
+/// stay right independently of a fence that #870 documents as fragile, and
+/// the #653 precedent (`taa.rs`, `svgf.rs`) already applies that rule
+/// elsewhere in this crate.
+#[cfg(test)]
+mod skip_clear_mask_pin_tests {
+    /// Source between `needle` and the next `fn ` after it — one function
+    /// body, without needing a real parser.
+    fn body_after<'a>(src: &'a str, needle: &str) -> &'a str {
+        let start = src
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` not found — the site moved or was renamed"));
+        let rest = &src[start + needle.len()..];
+        let end = rest.find("\n    pub unsafe fn ").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[test]
+    fn caustic_skip_clear_and_next_visit_agree_on_transfer() {
+        const CAUSTIC_RS: &str = include_str!("caustic.rs");
+
+        let clear = body_after(CAUSTIC_RS, "pub unsafe fn clear_for_skip");
+        assert!(
+            clear.contains(
+                "PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER"
+            ),
+            "clear_for_skip's post-clear barrier must publish to COMPUTE as \
+             well as FRAGMENT — the slot's next visit is `dispatch`'s decay \
+             compute read, not just this frame's composite sample (#3646)",
+        );
+
+        let dispatch = body_after(CAUSTIC_RS, "pub unsafe fn dispatch");
+        let transfer_srcs = dispatch
+            .matches("| vk::AccessFlags::TRANSFER_WRITE,")
+            .count();
+        assert!(
+            transfer_srcs >= 2,
+            "`dispatch`'s pre-decay and pre-clear barriers must both name \
+             TRANSFER_WRITE in their source scope, so a prior \
+             `clear_for_skip` on this slot chains into them — found \
+             {transfer_srcs} (#3646)",
+        );
+    }
+
+    #[test]
+    fn volumetrics_neutral_clear_and_next_visit_agree_on_transfer() {
+        const VOLUMETRICS_RS: &str = include_str!("volumetrics.rs");
+
+        assert!(
+            VOLUMETRICS_RS.contains(
+                ".src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_WRITE)"
+            ),
+            "`dispatch`'s `pre_int_write` must name TRANSFER_WRITE in its \
+             source scope — the slot's prior use is `record_neutral_frame`'s \
+             clear on every frame before the TLAS exists (#3647)",
+        );
+        let neutral = VOLUMETRICS_RS
+            .split_once("pub unsafe fn record_neutral_frame")
+            .expect("record_neutral_frame")
+            .1;
+        assert!(
+            neutral.contains("| vk::AccessFlags::TRANSFER_WRITE,"),
+            "`record_neutral_frame`'s own `to_clear` must name TRANSFER_WRITE \
+             in its source scope — at load every frame on this slot is a \
+             repeat neutral clear (#3647)",
+        );
     }
 }

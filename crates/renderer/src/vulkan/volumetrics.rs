@@ -2310,9 +2310,14 @@ impl VolumetricsPipeline {
         let inj_to_int = image_barrier_general_write_to_read(self.lighting_volumes[frame].image);
         // Plus a barrier on the integrated volume so last frame's
         // composite READ (sampler3D in fragment shader) is sequenced
-        // against this frame's integration WRITE.
+        // against this frame's integration WRITE. #3647 — the slot's
+        // prior use may instead have been `record_neutral_frame`'s
+        // `vkCmdClearColorImage` (a TRANSFER_WRITE), which is always the
+        // case at scene load while no TLAS exists yet; without TRANSFER
+        // in the source scope that clear has no dependency chain into
+        // this write.
         let pre_int_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_WRITE)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -2320,7 +2325,9 @@ impl VolumetricsPipeline {
             .subresource_range(subresource);
         device.cmd_pipeline_barrier(
             cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::FRAGMENT_SHADER
+                | vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
@@ -2566,8 +2573,15 @@ impl VolumetricsPipeline {
     ) {
         let subresource = super::descriptors::color_subresource_single_mip();
         let image = self.integrated_volumes[frame].image;
+        // #3647 — TRANSFER_WRITE in the source scope covers a repeat
+        // neutral frame on the same slot (the common case at load: every
+        // frame is neutral until the TLAS exists).
         let to_clear = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::SHADER_WRITE
+                    | vk::AccessFlags::TRANSFER_WRITE,
+            )
             .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -2575,7 +2589,9 @@ impl VolumetricsPipeline {
             .subresource_range(subresource);
         device.cmd_pipeline_barrier(
             cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::FRAGMENT_SHADER
+                | vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::TRANSFER,
             vk::DependencyFlags::empty(),
             &[],
