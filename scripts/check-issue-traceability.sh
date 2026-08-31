@@ -117,9 +117,87 @@ if [[ "${1:-}" == "--window" ]]; then
     exit 0
 fi
 
+# Orphan-fix mode (#3425). `--window` and the PR-mode default both start
+# from the CLOSED/declared set, so a fix that landed without ever closing
+# its issue is invisible to both: it isn't in a PR body (this repo's history
+# is overwhelmingly direct commits to main), and by definition it isn't in
+# the closed set either. Unlike a missing citation on an already-closed
+# issue, this direction loses more than archaeology — the issue stays OPEN,
+# so the fix gets re-planned, re-audited, and risks being reimplemented or
+# reverted.
+#
+# The signal this mode looks for is already in the tree: a fix author
+# writing the issue number into the source comment they land. So instead of
+# starting from a declared-closed set, this starts from every `#NNNN` a
+# commit in the range actually *added* to a `.rs` file, and flags the ones
+# that are still OPEN with no closing-keyword commit citing them.
+if [[ "${1:-}" == "--orphan" ]]; then
+    if [[ "$#" -ne 3 ]]; then
+        echo "usage: $0 --orphan <base-commit> <head-commit>" >&2
+        exit 2
+    fi
+    base="$2"
+    head="$3"
+    command -v gh >/dev/null 2>&1 || {
+        echo "check-issue-traceability: --orphan needs the gh CLI" >&2
+        exit 2
+    }
+
+    # Only lines a commit in this range *added* (single `+`, not the `+++`
+    # file-header line) — a reference that was already there before `base`
+    # isn't new to this range, and an added line is the exact shape of the
+    # motivating evidence (a fix comment citing its issue).
+    mapfile -t referenced < <(
+        git diff --unified=0 "${base}..${head}" -- '*.rs' |
+            grep -E '^\+[^+]' |
+            rg --only-matching '#[0-9]+' |
+            rg --only-matching '[0-9]+' |
+            sort -nu
+    )
+    if [[ "${#referenced[@]}" -eq 0 ]]; then
+        echo "check-issue-traceability: no #NNNN references added to a .rs file in ${base}..${head}"
+        exit 0
+    fi
+
+    commit_messages="$(git log --format='%B' "${base}..${head}")"
+
+    orphans=()
+    for issue in "${referenced[@]}"; do
+        commit_cites_issue "${issue}" <<<"${commit_messages}" && continue
+        state="$(gh issue view "${issue}" --json state --jq .state 2>/dev/null || echo '')"
+        [[ "${state}" == "OPEN" ]] || continue
+        orphans+=("${issue}")
+    done
+
+    echo "check-issue-traceability: ${#referenced[@]} issue number(s) newly referenced in ${base}..${head}'s .rs diff"
+    if [[ "${#orphans[@]}" -eq 0 ]]; then
+        echo "check-issue-traceability: every one is either cited by a closing-keyword commit or isn't OPEN"
+        exit 0
+    fi
+
+    echo
+    echo "CANDIDATE ORPHAN SET -- ${#orphans[@]} issue(s) are named in a comment this range"
+    echo "added, are still OPEN, and are not cited by any closing-keyword commit here. Each is"
+    echo "either:"
+    echo "  (a) a legitimately forward-looking reference (a TODO naming a future issue, e.g."
+    echo "      #3307/#3308) -- no action needed; or"
+    echo "  (b) genuinely fixed in this range without a closing keyword -- close it with a"
+    echo "      comment naming the landing commit."
+    echo
+    for issue in "${orphans[@]}"; do
+        title="$(gh issue view "${issue}" --json title --jq .title 2>/dev/null || echo '?')"
+        printf '  #%-6s %s\n' "${issue}" "${title}"
+    done
+    # Advisory, like --window: a source comment naming a future issue is a
+    # legitimate pattern this mode cannot distinguish from a forgotten
+    # closing keyword, so it reports candidates rather than failing a build.
+    exit 0
+fi
+
 if [[ "$#" -ne 2 ]]; then
     echo "usage: $0 <base-commit> <head-commit>" >&2
     echo "       $0 --window <base-commit> <head-commit>   # close-time citation audit" >&2
+    echo "       $0 --orphan <base-commit> <head-commit>   # fixed-but-never-closed audit" >&2
     exit 2
 fi
 

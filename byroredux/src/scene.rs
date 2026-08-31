@@ -1566,13 +1566,23 @@ pub(crate) fn setup_scene(
                                         // `ui.menu: loaded` prefix and the
                                         // `profile=` / `texture=` keys
                                         // stable — `m48-menu-load.sh`
-                                        // greps for them.
+                                        // greps for them (a fixed-string
+                                        // match on the prefix, so appending
+                                        // `state=` below is safe).
+                                        //
+                                        // #3427 — `state=` is the missing
+                                        // observable this line lacked: an
+                                        // AVM2 menu whose host object landed
+                                        // in `NotPresent` used to print this
+                                        // exact line with no way to tell it
+                                        // apart from a clean injection.
                                         log::info!(
-                                            "ui.menu: loaded path={} archive={} profile={:?} texture={:?}",
+                                            "ui.menu: loaded path={} archive={} profile={:?} texture={:?} state={:?}",
                                             menu_path,
                                             archive_path,
                                             profile,
-                                            handle
+                                            handle,
+                                            ui.host_object_state()
                                         );
                                         *ui_texture_handle = Some(handle);
                                         *ui_manager = Some(ui);
@@ -1627,7 +1637,15 @@ pub(crate) fn setup_scene(
                             {
                                 Ok(handle) => {
                                     *ui_texture_handle = Some(handle);
-                                    log::info!("UI texture registered (handle {})", handle);
+                                    // #3427 — same `state=` observable as the
+                                    // `--menu` archive route, so a loose-file
+                                    // AVM2 dev SWF whose host object landed in
+                                    // `NotPresent` is visible here too.
+                                    log::info!(
+                                        "UI texture registered (handle {}) state={:?}",
+                                        handle,
+                                        ui.host_object_state()
+                                    );
                                 }
                                 Err(e) => log::error!("Failed to register UI texture: {e:#}"),
                             }

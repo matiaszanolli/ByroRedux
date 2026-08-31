@@ -86,6 +86,12 @@ git log -1 --format="%h %s (%ci)"
 # no citation anywhere. All 14 were genuinely fixed; what broke was the link
 # `/audit-regression` structurally depends on.
 scripts/check-issue-traceability.sh --window <session-start-sha> HEAD
+
+# Fixed-but-never-closed audit (#3425) — the direction `--window` cannot
+# see, since a fix that lands without ever closing its issue is in neither
+# the PR-declared set nor the closed set. Looks for `#NNNN` a commit in
+# this session's range added to a `.rs` comment, still OPEN, uncited.
+scripts/check-issue-traceability.sh --orphan <session-start-sha> HEAD
 ```
 
 Fill in the **Ground truth** block below:
@@ -120,6 +126,17 @@ both cheap:
   `resolved as a side effect of #NNNN`. One line is enough, and it is
   the only place that archaeology can live, since by definition no
   commit will ever name it.
+
+If the orphan audit reports a candidate set, check each one before ending
+the session — this direction is worse than a missing citation, since the
+issue stays OPEN and risks being re-planned or re-implemented later. Two
+outcomes, both fine:
+
+- **A forward-looking reference** (a comment naming a future issue this
+  session didn't fix, e.g. #3307/#3308) — no action; this is why the mode
+  is advisory, not a hard gate.
+- **Genuinely fixed here without a closing keyword** — close it with
+  `gh issue close <N> --comment "Fixed in <commit-hash>"` before moving on.
 
 Note the sibling hazard recorded in project memory: `Fix #A #B #C`
 auto-closes only `#A`. Repeat the keyword per issue — `Fix #A, Fix #B` —

@@ -178,6 +178,17 @@ impl UiManager {
         self.player.as_ref().map(SwfPlayer::host_bridge)
     }
 
+    /// The active menu's native-object adapter state (#3427).
+    ///
+    /// [`SwfPlayer::host_object_state`] had no caller outside `crates/ui` —
+    /// an AVM2 movie that reaches [`ScaleformHostObjectState::NotPresent`]
+    /// logged identically to one that injected cleanly, since there was no
+    /// accessor through which the engine could tell them apart. `None` when
+    /// no menu is loaded.
+    pub fn host_object_state(&self) -> Option<ScaleformHostObjectState> {
+        self.player.as_ref().map(SwfPlayer::host_object_state)
+    }
+
     /// Take the ActionScript→engine calls recorded since the previous drain.
     ///
     /// The main loop calls this once per frame beside [`Self::tick`]. Keeping

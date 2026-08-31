@@ -159,9 +159,21 @@ pub(crate) fn inject_into_parsed_movie(
         let Some(data) = abc_payload(tag) else {
             continue;
         };
-        let abc = Reader::new(data)
-            .read()
-            .map_err(|error| format!("parsing root ABC candidate: {error}"))?;
+        // #3428 — a single ABC tag this reader cannot walk used to abort the
+        // whole scan via `?`, refusing the menu even when the lifecycle
+        // class lives in a different tag. Skip the unparseable candidate
+        // instead and keep looking, matching `referenced_host_methods_in_tags`'s
+        // non-fatal policy a few lines below.
+        let abc = match Reader::new(data).read() {
+            Ok(abc) => abc,
+            Err(error) => {
+                log::warn!(
+                    "Fallout 4 AVM2 adapter: ABC tag {index} did not parse while scanning for \
+                     the BGSCodeObj lifecycle class ({error}); skipping it"
+                );
+                continue;
+            }
+        };
         let contract_class = abc.instances.iter().find(|instance| {
             [object.property, object.on_create]
                 .into_iter()
@@ -182,10 +194,24 @@ pub(crate) fn inject_into_parsed_movie(
             break;
         }
     }
-    let root_abc_index = root_abc_index
-        .ok_or_else(|| "Fallout 4 BGSCodeObj lifecycle class was not found".to_string())?;
-    let root_class =
-        root_class.ok_or_else(|| "Fallout 4 lifecycle class has no qualified name".to_string())?;
+    // #3428 — a movie that declares the BGSCodeObj contract by name (the
+    // cheap byte scan above) but whose ABC never actually resolves to an
+    // instance carrying both required traits as instance-level traits
+    // (e.g. they're declared as static class traits instead, or only appear
+    // as constants) used to be a hard `Err`, refusing the whole menu load.
+    // `ScaleformHostObjectState::NotPresent` exists precisely for "this
+    // movie has no host object" — degrade into it instead, the same policy
+    // `referenced_host_methods_in_tags` already takes a few lines below.
+    // The hard `Err` is kept only for `patch_root_constructor`, where a
+    // partial rewrite really would hand Ruffle a corrupt SWF.
+    let (Some(root_abc_index), Some(root_class)) = (root_abc_index, root_class) else {
+        log::warn!(
+            "Fallout 4 AVM2 adapter: movie declares the BGSCodeObj contract but no lifecycle \
+             class with a resolvable qualified name carries both required traits; treating as \
+             NotPresent"
+        );
+        return Ok((None, ScaleformHostObjectState::NotPresent));
+    };
     let root_abc = abc_payload(&tags[root_abc_index])
         .ok_or_else(|| "Fallout 4 root ABC index does not reference an ABC tag".to_string())?;
     let patched_root_abc = patch_root_constructor(root_abc, &root_class)?;
@@ -1215,7 +1241,7 @@ mod tests {
         referenced_host_methods, referenced_host_methods_in_tags, uncataloged_host_methods,
         write_ops, DESTROYED_EVENT, DESTROY_CALLBACK, LOADED_CALLBACK,
     };
-    use crate::{ScaleformHostCatalog, ScaleformProfile};
+    use crate::{ScaleformHostCatalog, ScaleformHostObjectState, ScaleformProfile};
 
     /// FO4 interface archive used by the corpus sweeps, or `None` when the
     /// game isn't installed on this machine (the corpus is multi-gigabyte
@@ -1779,7 +1805,15 @@ mod tests {
     }
 
     #[test]
-    fn marker_without_a_lifecycle_class_is_rejected() {
+    fn marker_without_a_lifecycle_class_degrades_to_not_present() {
+        // #3428 — this used to be a hard `Err` (`.unwrap_err()`, asserting
+        // the error mentioned "lifecycle class"). The byte scan hits
+        // ("BGSCodeObj"/"onCodeObjCreate" are present as constant-pool
+        // strings, via `marker_abc`'s `instances: Vec::new()`), but no
+        // instance carries either trait, so no lifecycle class can ever be
+        // found. That is exactly the "movie has no host object" case
+        // `ScaleformHostObjectState::NotPresent` exists for, not a reason to
+        // refuse the whole menu load.
         let marker_abc = marker_abc();
         let mut header = swf::Header::default_with_swf_version(15);
         header.num_frames = 1;
@@ -1796,12 +1830,15 @@ mod tests {
         let mut source = Vec::new();
         swf::write_swf(&header, &tags, &mut source).unwrap();
 
-        let error = inject_host_object_adapter(
+        let (bytes, state) = inject_host_object_adapter(
             &source,
             ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2),
         )
-        .unwrap_err();
-        assert!(error.contains("lifecycle class"));
+        .expect("a movie with no resolvable lifecycle class must degrade, not fail");
+        assert_eq!(state, ScaleformHostObjectState::NotPresent);
+        // Unrewritten: `inject_host_object_adapter` hands back the original
+        // bytes unchanged when `inject_into_parsed_movie` returns `None`.
+        assert_eq!(bytes, source);
     }
 
     fn marker_abc() -> Vec<u8> {

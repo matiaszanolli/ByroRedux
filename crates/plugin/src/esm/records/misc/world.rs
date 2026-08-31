@@ -312,6 +312,16 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // is unchanged.
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
+    // `DATA`'s words 1-5 are counts that reconcile with the typed
+    // sub-records' own row counts on every one of 11,969 sampled FO3+FNV
+    // meshes (see this fn's doc comment) — read once, up front, since
+    // `DATA` isn't guaranteed to precede the sub-records it cross-checks
+    // in `subs`' order (#3404).
+    let data_words: Option<[u32; 6]> = subs
+        .iter()
+        .find(|s| s.sub_type == *b"DATA")
+        .filter(|s| s.data.len() >= 24)
+        .map(|s| std::array::from_fn(|i| u32_at(&s.data, i * 4).unwrap_or(0)));
     for sub in subs {
         let data = &sub.data;
         match &sub.sub_type {
@@ -321,32 +331,58 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"DATA" if data.len() >= 24 => {
                 out.cell_form = u32_at(data, 0);
             }
+            // #3404 — `rows_exact` refuses a stride remainder instead of
+            // silently truncating it away like `rows()` does, and the
+            // result is additionally discarded unless its row count also
+            // matches `DATA`'s own count for this sub-record — the same
+            // all-or-nothing posture `decode_nvgd`/`decode_nvnm` already
+            // take, so a format revision surfaces as "not recognised"
+            // rather than a half-filled lattice.
             b"NVVX" => {
-                out.vertices = rows(data, 12)
-                    .map(|r| {
-                        [
-                            f32::from_le_bytes([r[0], r[1], r[2], r[3]]),
-                            f32::from_le_bytes([r[4], r[5], r[6], r[7]]),
-                            f32::from_le_bytes([r[8], r[9], r[10], r[11]]),
-                        ]
+                out.vertices = rows_exact(data, 12)
+                    .map(|it| {
+                        it.map(|r| {
+                            [
+                                f32::from_le_bytes([r[0], r[1], r[2], r[3]]),
+                                f32::from_le_bytes([r[4], r[5], r[6], r[7]]),
+                                f32::from_le_bytes([r[8], r[9], r[10], r[11]]),
+                            ]
+                        })
+                        .collect::<Vec<_>>()
                     })
-                    .collect();
+                    .filter(|v| data_words.is_none_or(|w| w[1] as usize == v.len()))
+                    .unwrap_or_default();
             }
             // Same 16-byte row the packed `NVNM` body carries (#2738), so
             // both forms go through one decoder.
-            b"NVTR" => out.triangles = rows(data, 16).map(decode_nvtr_row).collect(),
+            b"NVTR" => {
+                out.triangles = rows_exact(data, 16)
+                    .map(|it| it.map(decode_nvtr_row).collect::<Vec<_>>())
+                    .filter(|v| data_words.is_none_or(|w| w[2] as usize == v.len()))
+                    .unwrap_or_default();
+            }
             b"NVEX" => {
-                out.external_connections = rows(data, 10).filter_map(decode_nvex_row).collect();
+                out.external_connections = rows_exact(data, 10)
+                    .map(|it| it.filter_map(decode_nvex_row).collect::<Vec<_>>())
+                    .filter(|v| data_words.is_none_or(|w| w[3] as usize == v.len()))
+                    .unwrap_or_default();
             }
             // #3300 — door / cover / grid, previously unwalked on the typed
             // form. Strides come from a census of the shipped Gamebryo corpus,
             // cross-checked against `DATA`: word 4 equals the `NVCA` count and
-            // word 5 the `NVDP` count on all 11,969 FO3+FNV meshes.
-            b"NVDP" => out.door_triangles = rows(data, 8).map(decode_nvdp_row).collect(),
+            // word 5 the `NVDP` count on all 11,969 FO3+FNV meshes — now
+            // enforced at decode time, not just documented (#3404).
+            b"NVDP" => {
+                out.door_triangles = rows_exact(data, 8)
+                    .map(|it| it.map(decode_nvdp_row).collect::<Vec<_>>())
+                    .filter(|v| data_words.is_none_or(|w| w[5] as usize == v.len()))
+                    .unwrap_or_default();
+            }
             b"NVCA" => {
-                out.cover_triangles = rows(data, 2)
-                    .map(|r| u16::from_le_bytes([r[0], r[1]]))
-                    .collect();
+                out.cover_triangles = rows_exact(data, 2)
+                    .map(|it| it.map(|r| u16::from_le_bytes([r[0], r[1]])).collect::<Vec<_>>())
+                    .filter(|v| data_words.is_none_or(|w| w[4] as usize == v.len()))
+                    .unwrap_or_default();
             }
             b"NVGD" => out.grid_accel = decode_nvgd(data),
             // #2738 — decode the Creation-Engine packed form into the same
@@ -817,6 +853,20 @@ fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
 /// dropping an entire region.
 fn rows(data: &[u8], stride: usize) -> impl Iterator<Item = &[u8]> {
     data.chunks_exact(stride.max(1))
+}
+
+/// Strict sibling of [`rows`]: refuses a non-zero remainder instead of
+/// silently discarding it. Mirrors the all-or-nothing posture
+/// [`decode_nvgd`] and [`decode_nvnm`] already take — a `None` here should
+/// make the caller treat the whole sub-record as unrecognised (an
+/// empty/default field) rather than half-filled, so a stride that stops
+/// matching a future game's data surfaces immediately instead of degrading
+/// silently (#3404).
+fn rows_exact(data: &[u8], stride: usize) -> Option<impl Iterator<Item = &[u8]>> {
+    if stride == 0 || !data.len().is_multiple_of(stride) {
+        return None;
+    }
+    Some(data.chunks_exact(stride))
 }
 
 /// Parse a region (`REGN`), including the `RDAT` data-entry chain (#2737).
@@ -2452,11 +2502,61 @@ mod navm_tests {
     }
 
     #[test]
-    fn ragged_payloads_drop_the_short_row_not_the_mesh() {
+    fn ragged_payloads_are_not_recognised_rather_than_truncated() {
+        // #3404 — a non-zero stride remainder used to be silently dropped
+        // by `rows()`, keeping the one row that did fit. `rows_exact` now
+        // refuses the whole sub-record instead, matching
+        // `decode_nvgd`/`decode_nvnm`'s posture: a format revision should
+        // surface as "not recognised", not a half-filled lattice.
         let mut d = tri([0, 1, 2], [0, 0, 0], 0);
-        d.push(0xFF); // 17 bytes
+        d.push(0xFF); // 17 bytes — not a multiple of NVTR's 16-byte stride
         let r = parse_navm(1, &[verts(3), sub(b"NVTR", &d)], &None);
+        assert_eq!(r.triangles.len(), 0);
+    }
+
+    /// Builds a 24-byte `DATA` payload with the given word-1..5 counts
+    /// (vertex, triangle, external, cover, door), word 0 = 0.
+    fn data_with_counts(words: [u32; 5]) -> Vec<u8> {
+        let mut d = 0u32.to_le_bytes().to_vec();
+        for w in words {
+            d.extend_from_slice(&w.to_le_bytes());
+        }
+        d
+    }
+
+    #[test]
+    fn a_data_header_count_that_matches_is_accepted() {
+        // #3404 — the cross-check must not reject the common, reconciling
+        // case; only a real mismatch should discard the row list.
+        let data = data_with_counts([0, 1, 0, 0, 0]); // triangle count = 1
+        let r = parse_navm(
+            1,
+            &[
+                verts(3),
+                sub(b"DATA", &data),
+                sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0)),
+            ],
+            &None,
+        );
         assert_eq!(r.triangles.len(), 1);
+    }
+
+    #[test]
+    fn a_data_header_count_mismatch_is_not_recognised_even_with_an_exact_stride() {
+        // #3404 — two valid 16-byte NVTR rows (an exact stride multiple)
+        // but a `DATA` header claiming only one triangle. The cross-check
+        // must win: an exact-multiple payload that still disagrees with
+        // the header is exactly the "future format revision" case #3404
+        // wants to surface, not silently accept.
+        let data = data_with_counts([0, 1, 0, 0, 0]); // triangle count = 1
+        let mut two_rows = tri([0, 1, 2], [0, 0, 0], 0);
+        two_rows.extend(tri([1, 2, 0], [0, 0, 0], 0));
+        let r = parse_navm(
+            1,
+            &[verts(3), sub(b"DATA", &data), sub(b"NVTR", &two_rows)],
+            &None,
+        );
+        assert_eq!(r.triangles.len(), 0);
     }
 
     // ── `select_active_region_sound` (EX-16 item 1, #2372) ────────────
