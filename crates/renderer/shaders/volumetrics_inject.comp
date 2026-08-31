@@ -22,8 +22,9 @@
 // sun ray for interiors (disambiguating a missing-ceiling no-hit from
 // a real window), then up to MAX_FROXEL_LIGHTS local lights x up to 2
 // rays each (opaque mask, then glass mask) = up to 10 ray-query
-// traversals per froxel. At the default 320x180x64 grid that is a
-// worst-case ~36.9M ray queries/frame from this pass alone. See
+// traversals per froxel. At the default froxel_xy_divisor=8 160x90x64
+// grid (1280x720 render extent) that is a worst-case ~9.2M ray
+// queries/frame from this pass alone. See
 // REN-D16-2026-08-07-02 / #2509.
 #version 460
 #extension GL_EXT_ray_query : require

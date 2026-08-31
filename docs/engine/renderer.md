@@ -62,12 +62,13 @@ Source: `crates/renderer/src/vulkan/`
   main render pass; RT reflection/refraction + sun-driven caustic synthesis
   (#1210), underwater tint
 - **Bloom** (M58): separable down/up pyramid (`bloom_downsample.comp` +
-  `bloom_upsample.comp`, `BLOOM_MIP_COUNT = 5`) added to scene HDR before
-  tone-mapping
-- **Volumetric lighting** (M55): froxel 3D-texture scaffold
-  (`volumetrics_inject.comp` + `volumetrics_integrate.comp`); allocation +
-  layout + dispatch plumbing live, scattering output not yet consumed
-  (`VOLUMETRIC_OUTPUT_CONSUMED = false`)
+  `bloom_upsample.comp`, `BLOOM_MIP_COUNT = 5`) applied to scene HDR by a
+  third compute shader, `bloom_apply.comp`, **after** composite (#2796)
+- **Volumetric lighting** (M55): froxel 3D-texture pipeline
+  (`volumetrics_inject.comp` + `volumetrics_integrate.comp`); TLAS shadow
+  raymarch + Henyey-Greenstein phase injection and ray-march integration
+  are live, and the scattering output is consumed by composite
+  (`VOLUMETRIC_OUTPUT_CONSUMED = true`)
 - **egui debug overlay**: dedicated `LOAD`-op render pass over the swapchain,
   driven by `egui-ash-renderer` (shares the engine allocator)
 - **Per-pass GPU timers** (#1194): one `VkQueryPool` per frame-in-flight slot
@@ -191,12 +192,15 @@ crates/renderer/src/vulkan/
 ├── water_caustic.rs    Per-FIF R32_UINT accumulator for water-side caustics
 │                       (#1255 / Phase C of #1210), cleared before the render pass
 ├── composite.rs        CompositePipeline — direct + denoised indirect +
-│                       caustic + bloom reassembly, ACES tone mapping
+│                       caustic + volumetrics reassembly, ACES tone mapping
+│                       (bloom is added AFTER this pass, see bloom.rs)
 ├── ssao.rs             SSAO compute pipeline (noise texture, kernel)
-├── bloom.rs            Bloom pyramid (M58) — separable down/up compute passes
-├── volumetrics.rs      Froxel volumetric scaffold (M55) — 3D-texture
-│                       allocation + inject/integrate dispatch (output not
-│                       yet consumed)
+├── bloom.rs            Bloom pyramid (M58) — separable down/up compute
+│                       passes plus bloom_apply.comp, which adds the result
+│                       to composite's HDR output in place, after composite
+├── volumetrics.rs      Froxel volumetric pipeline (M55) — 3D-texture
+│                       allocation + inject/integrate dispatch, output
+│                       consumed by composite
 ├── egui_pass.rs        egui debug overlay render pass (LOAD-op over swapchain)
 ├── gpu_timers.rs       Per-pass VkQueryPool timestamp brackets (#1194)
 ├── reflect.rs          SPIR-V reflection cross-check (`rspirv`) — every
@@ -510,9 +514,9 @@ the bloom output; computes `direct + indirect * albedo + caustic + bloom`
 linear-HDR image. Upscaling/native resolve and the output-resolution
 presentation pass run afterward; presentation owns exposure, ACES tone
 mapping, and the swapchain write. The volumetric term is folded in via
-`final = scene * vol.a + vol.rgb`, but its contribution is currently
-multiplied by 0.0 (`VOLUMETRIC_OUTPUT_CONSUMED` gate) until the M55
-inject/integrate passes produce real scattering.
+`combined = combined * vol.a + vol.rgb` (`VOLUMETRIC_OUTPUT_CONSUMED = true`):
+the M55 inject/integrate passes produce real scattering and composite
+consumes it every frame.
 
 ## Material table (R1)
 
@@ -643,13 +647,19 @@ shoot a shadow ray to the sun and synthesize caustics on a miss.
 ## Bloom (M58)
 
 [`vulkan/bloom.rs`](../../crates/renderer/src/vulkan/bloom.rs) with
-`shaders/bloom_downsample.comp` + `shaders/bloom_upsample.comp`.
+`shaders/bloom_downsample.comp` + `shaders/bloom_upsample.comp` +
+`shaders/bloom_apply.comp`.
 
 Separable compute pyramid: a down-pyramid of `BLOOM_MIP_COUNT = 5` half-res
 levels (4-tap bilinear box filter), then an up-pyramid of `BLOOM_MIP_COUNT - 1`
-levels that sum each upsampled level with the same-resolution down-mip. The
-final `up_mips[0]` is what composite adds to scene HDR before tone-mapping
-(`BLOOM_INTENSITY = 0.15`). Plain box filters were chosen over Jimenez's
+levels that sum each upsampled level with the same-resolution down-mip. Since
+#2796, composite does **not** add bloom — it runs first and its `bloomTex`
+binding is unused. The bloom chain runs **after** composite
+(`post_passes.rs::record_bloom_pass`, ordered after `record_composite_pass`),
+and a third shader, `bloom_apply.comp`, reads composite's HDR output back as
+a storage image and adds `up_mips[0]` in place
+(`scene.rgb + bloom * BLOOM_INTENSITY`, `BLOOM_INTENSITY = 0.15`) before
+upscaling/tone-mapping. Plain box filters were chosen over Jimenez's
 13-tap/9-tap weights deliberately — lifting those weights verbatim from the
 talk slides would be required to avoid violating the no-guessing rule, and
 the box filter lands ~80% of the visual win unambiguously.
@@ -668,12 +678,13 @@ with `shaders/volumetrics_inject.comp` + `shaders/volumetrics_integrate.comp`.
 
 Frostbite-style froxel volumetrics: a 3D texture indexed by
 `(screenUV.x, screenUV.y, sliceZ)` with denser slices near the camera
-(`VOLUME_FAR = 200`). **Phase 1 (current)** allocates the per-FIF 3D images,
-transitions them to `GENERAL`, and clears them to a composite no-op
-(`rgb = 0`, `a = 1`); the inject/integrate dispatch plumbing is wired but
-the output is gated off (`VOLUMETRIC_OUTPUT_CONSUMED = false`) until Phase 2
-adds density+lighting injection (TLAS shadow raymarch + Henyey-Greenstein
-phase) and ray-march integration.
+(`VOLUME_FAR = 8960.0` world units — the pre-retune `200` was a units bug:
+200 world units is ~2.86 m, far too near; see `shader_constants_data.rs`'s
+growth history). Allocation, layout, and dispatch plumbing are live, and so
+is Phase 2: `volumetrics_inject.comp` performs the TLAS shadow raymarch and
+Henyey-Greenstein phase injection, `volumetrics_integrate.comp` ray-marches
+the result, and composite consumes the output every frame
+(`VOLUMETRIC_OUTPUT_CONSUMED = true`).
 
 ## Multi-light SSBO
 

@@ -44,7 +44,7 @@ of them one physical and temporal contract.
 
 - The grid derives from the render extent after the FSR preset query, never
   from output resolution.
-- Defaults are one froxel per 4×4 render pixels, 64 Z slices, and a 128 m
+- Defaults are one froxel per 8×8 render pixels, 64 Z slices, and a 128 m
   grid far plane.
 - The first 5 m consume the first 1/8 of Z linearly. The remaining slices are
   exponential from 5 m to the configured far plane.
@@ -281,7 +281,7 @@ final.
 ## Configuration
 
 ```text
---froxel-xy-divisor <2..32>   default 4
+--froxel-xy-divisor <2..32>   default 8
 --froxel-z-slices <16..256>   default 64
 --fog-grid-far-m <32..512>    default 128
 BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
@@ -291,7 +291,7 @@ Example:
 
 ```bash
 cargo run --release -- --game fnv --cell GSProspectorSaloonInterior \
-  --froxel-xy-divisor 4 --froxel-z-slices 64 --fog-grid-far-m 128
+  --froxel-xy-divisor 8 --froxel-z-slices 64 --fog-grid-far-m 128
 ```
 
 ## Measurement table
@@ -303,8 +303,8 @@ The timer brackets inject plus integrate.
 
 | Dimension | Value | Froxel extent | Volumetrics GPU | Status / evidence |
 |---|---:|---:|---:|---|
-| XY divisor | 4 | 214×120×64 | 0.17–0.20 ms | default; exact slab transport + emissive sidecar, Vulkan validation runtime |
-| XY divisor | 8 | 107×60×64 | — | allocation/dispatch smoke passed; timed warmup pending |
+| XY divisor | 4 | 214×120×64 | 0.17–0.20 ms | exact slab transport + emissive sidecar, Vulkan validation runtime |
+| XY divisor | 8 | 107×60×64 | — | **default**; allocation/dispatch smoke passed; timed warmup pending |
 | XY divisor | 12 | 72×40×64 | 0.10–0.11 ms | Perlin-Worley/detail volumes; repeated FNV warm frames |
 | XY divisor | 16 | 54×30×64 | — | pending |
 | Z slices | 32 | 72×40×32 | — | pending |
@@ -324,9 +324,14 @@ inject+integrate after the texture-volume change, versus 0.110–0.125 ms for
 the prior three-octave ALU field. Shipping rotation mode 1 moved from 0.116 to
 0.105 ms; the four-mode mean fell from 0.1163 to 0.1035 ms (about 11%).
 
-At the default 214×120×64 grid, the four RGBA16F fields (raw, integrated,
-chemistry, velocity) plus the R32F emissive-history sidecar consume about
-56 MiB per frame slot. Target ranges for the
+At the default 107×60×64 grid (`froxel_xy_divisor = 8`), the five RGBA16F
+fields (raw, integrated, chemistry, velocity, `combustion_optical`) plus the
+R32F emissive-history sidecar — `FROXEL_VOLUMES_PER_SLOT = 6`,
+`FROXEL_BYTES_PER_SLOT = 44` — consume about 17.2 MiB per frame slot, ~34.5
+MiB across 2 FIF. (At the older 214×120×64 divisor-4 grid the same six-volume
+set would be about 69 MiB per frame slot — do not confuse this with the
+retired four-volume/36-B-per-froxel figure of 56 MiB, which predates the
+`combustion_optical` volume.) Target ranges for the
 reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
 the current combined timer as a final budget verdict.

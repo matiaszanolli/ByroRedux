@@ -540,8 +540,8 @@ fn build_fog_volume_clusters(
 /// light, miss = lit" test, the shader actually casts up to 10 ray-query
 /// traversals per froxel in the worst case (1 opaque + 1 glass-masked sun
 /// ray, plus up to `MAX_FROXEL_LIGHTS` local lights x up to 2 rays each) —
-/// ~36.9M ray queries/frame at the default 320x180x64 grid for a 1280x720
-/// render extent. See
+/// ~9.2M ray queries/frame at the default `froxel_xy_divisor = 8` 160x90x64
+/// grid for a 1280x720 render extent. See
 /// REN-D16-2026-08-07-02 / #2509.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
