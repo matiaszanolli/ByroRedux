@@ -19,6 +19,39 @@ for offline tooling while Phase 2 develops an indexed material lookup.
 
 ---
 
+## ESM Index (CPU-side)
+
+`EsmIndex` (`crates/plugin/src/esm/records/index.rs`) is 93 session-lifetime
+`HashMap`s, one per record type, populated by `parse_esm_with_load_order` and
+accumulated across a load order via `merge_from` (vanilla FO4 is base + 7 DLC
+masters). Nothing evicts these maps; they are held for the whole session.
+This is the largest single CPU-side allocation in a normal run and, unlike
+every other subsystem on this page, was previously undocumented here.
+
+Measured with `crates/plugin/examples/esm_dim8_bench` under
+`/usr/bin/time -f %M`, release build (2026-08-30):
+
+| Master | File size | Parse time | Peak RSS | Index ≈ RSS − file |
+|---|---|---|---|---|
+| `Oblivion.esm`   | 265 MB  | 1.41 s | 1 441 MB | ~1.18 GB |
+| `Fallout3.esm`   | 275 MB  | 1.23 s | 1 059 MB | ~0.78 GB |
+| `FalloutNV.esm`  | 234 MB  | 1.17 s |   861 MB | ~0.63 GB |
+| `Skyrim.esm`     | 238 MB  | 1.27 s |   980 MB | ~0.74 GB |
+| `Fallout4.esm`   | 315 MB  | 1.69 s | 1 440 MB | ~1.13 GB |
+| `SeventySix.esm` | 880 MB  | 3.41 s | 3 509 MB | ~2.63 GB |
+| `Starfield.esm`  | 1.39 GB | not run — no safe headroom on this host; extrapolating the FO76 ratio puts it near 4 GB | | |
+
+Survivable on a 12 GB+ dev box; not necessarily on a 16 GB machine with a
+modded FO76/Starfield load order, especially once other subsystems' RAM
+residency (streaming caches, asset-provider archive index) is added on top.
+
+Most of the 93 maps are lean, but a meaningful fraction — `camera_shots`,
+`menu_icons`, `voice_types`, and the ~30 `MinimalEsmRecord` stub maps — are
+`EDID`-only stubs with no consumer, each retaining a `String` per record.
+Trimming or lazily-populating those is a separate, unscoped follow-up.
+
+---
+
 ## Scene Buffers (per-frame SSBOs / UBOs)
 
 Resident for the lifetime of `VulkanContext`. Double-buffered

@@ -16,8 +16,10 @@ use std::any::Any;
 /// because `sparse` is indexed by raw `EntityId` and entity IDs are
 /// deliberately never reclaimed (#372), so every sparse storage that has ever
 /// seen an insert near the high-water mark keeps a slot for every ID below it
-/// — live or long dead. Halving the slot halves that floor across all 122
-/// `SparseSetStorage` component declarations.
+/// — live or long dead. Halving the slot halves that floor across every
+/// `SparseSetStorage` component declaration (168 at last count — re-derive
+/// with `grep -rn 'type Storage = SparseSetStorage' --include='*.rs' .`
+/// rather than trusting this number, it moves with every component added).
 ///
 /// `u32::MAX` is safe as the empty marker: it encodes a *dense* index, and the
 /// dense arrays are bounded by the live component count, which cannot reach
@@ -175,8 +177,12 @@ impl<T: Component<Storage = Self>> DynStorage for SparseSetStorage<T> {
         // trait default: skip the batch entirely when this storage holds no
         // components at all. An exterior unload fans thousands of victims to
         // every registered storage, and most `SparseSetStorage<T>` instances
-        // hold none of them (147 sparse component types vs. 11 packed), so
-        // this turns a guaranteed O(victims) empty-storage probe into O(1).
+        // hold none of them (168 sparse component types vs. 10 packed at
+        // last count, of which only 4 packed types are production
+        // components — re-derive with `grep -rn 'type Storage =
+        // \(SparseSet\|Packed\)Storage' --include='*.rs' .` rather than
+        // trusting these numbers), so this turns a guaranteed O(victims)
+        // empty-storage probe into O(1).
         if self.dense.is_empty() {
             return;
         }

@@ -184,11 +184,14 @@ impl GameKind {
                 // Pre-fix the FO3 band (0.94..=0.955) routed every FO3
                 // master to Fallout4 — and FO4's real 1.0 fell through
                 // to Fallout3NV — so the FO3↔FO4 classification was
-                // inverted. Latent because WEAP/ARMO/AMMO DATA arms in
-                // items.rs bucket Fallout4 with Fallout3NV/Oblivion;
-                // the first schema split (BGSM, dual-weapon SCOL, BOD2
-                // typing) would have silently corrupted FO3 data.
-                // See #439 / audit FO3-3-01.
+                // inverted. A mis-band today is no longer latent — three
+                // dedicated FO4 arms in items.rs now depend on it: `ARMO
+                // DATA` (items.rs, swaps the value/weight/health field
+                // order vs FO3NV/Oblivion at the same 12-byte length),
+                // `WEAP DATA` (empty FO4 arm — FO4 ships none), and `BOOK`
+                // (its own 8-byte FO4 arm). A FO3↔FO4 mis-band would
+                // silently swap armor weight and health and zero every
+                // weapon's value/weight/damage. See #439 / audit FO3-3-01.
                 if hedr_version >= 60.0 {
                     // Floor deliberately far below the real 266.0 (#3405):
                     // nothing else in the lineage exceeds 1.71, so the whole

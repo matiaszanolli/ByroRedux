@@ -170,11 +170,13 @@ fn character_rules_profile(game: GameKind, hedr_version: f32) -> CharacterRulesP
 /// form 0x01012345 doesn't collide with BrokenSteel's 0x01012345 in
 /// the same map. See #445.
 ///
-/// The current CLI entry point (`--esm <path>`) only wires a single
-/// plugin, so both paths produce the same output for vanilla content.
-/// The multi-plugin wiring is tracked as follow-up work — this
-/// function exists so downstream code can opt in without another
-/// parse-layer refactor when the CLI grows multi-plugin support.
+/// Multi-plugin loading is live since M46.0: `--master` is repeatable
+/// on the CLI, and `byroredux/src/cell_loader/load_order.rs` builds a
+/// real `FormIdRemap` per plugin and passes it to this function — see
+/// `CLAUDE.md`'s usage section for the multi-master invocation shape
+/// (`--master Skyrim.esm --master Update.esm --esm Dawnguard.esm`).
+/// Every embedded FormID read anywhere in `records/` must go through
+/// `common::remap_fid` so it participates in this remap.
 pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Result<EsmIndex> {
     let mut index = EsmIndex::default();
 
