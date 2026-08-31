@@ -847,7 +847,14 @@ impl ApplicationHandler for App {
                     let draw_ms = self.bench_render_ns as f64 / n / 1e6;
                     let ft = &self.bench_frame_timings;
                     let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
-                    let tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
+                    // #3629 — the HOST-side TLAS build cost, from
+                    // `FrameTimings`. Printed as `cpu_tlas_ms=` (renamed from
+                    // the bare `tlas_ms=`) because the device-side bracket
+                    // `gpu_tlas_build=` now appears on the same line, and the
+                    // old name was the only `tlas` token a harness could
+                    // extract — inviting the host number to be read as the
+                    // device one.
+                    let cpu_tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
                     let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
                     // #3467 — the resumable geometry-rebuild slice. Reported
                     // here so `GEOMETRY_REBUILD_CHUNK_BYTES` can finally be
@@ -905,6 +912,18 @@ impl ApplicationHandler for App {
                                     s.gpu_volumetrics_ms,
                                     s.gpu_cluster_cull_ms,
                                     s.gpu_presentation_ms,
+                                    // #3629 — appended, not inserted, so the
+                                    // four sweep harnesses' `key=<float>`
+                                    // extractors keep matching. These two
+                                    // brackets existed in `gpu_timers.rs` and
+                                    // in every other consumer (the debug-UI
+                                    // grid, `gpu_breakdown`, the
+                                    // `SkinCoverageStats` fill) but the bench
+                                    // line reported 12 of 14 while its own
+                                    // comment claimed a "full per-pass GPU
+                                    // breakdown".
+                                    s.gpu_tlas_build_ms,
+                                    s.gpu_caustic_splat_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -919,10 +938,12 @@ impl ApplicationHandler for App {
                                     s.gpu_volumetrics_active,
                                     s.gpu_cluster_cull_active,
                                     s.gpu_presentation_active,
+                                    s.gpu_tlas_build_active,
+                                    s.gpu_caustic_splat_active,
                                 ],
                             )
                         })
-                        .unwrap_or(([0.0; 12], [false; 12]));
+                        .unwrap_or(([0.0; 14], [false; 14]));
                     let gpu_inactive = bench_gpu_inactive_token(gpu_active);
                     let rt_integrity_line = self
                         .world
@@ -932,14 +953,16 @@ impl ApplicationHandler for App {
                         "bench: mode={} gate={} dt={} camera={} frames={} \
                          wall_fps={:.1} wall_ms={:.2} \
                          frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
+                         frame_max_over_p95={:.1} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
-                         [fence={:.2} tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
+                         [fence={:.2} cpu_tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
                          cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
                          gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
                          gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
-                         gpu_presentation={:.3}] gpu_inactive={} \
+                         gpu_presentation={:.3} gpu_tlas_build={:.3} \
+                         gpu_caustic_splat={:.3}] gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
@@ -954,11 +977,16 @@ impl ApplicationHandler for App {
                         frame_p50_ms,
                         frame_p95_ms,
                         frame_max_ms,
+                        // #3559 — appended as its own token so a harness can
+                        // gate on the relationship rather than a per-scene
+                        // millisecond threshold. `frame_max_ms` alone cannot
+                        // tell a heavy scene from one blocked frame.
+                        crate::bench_frame_max_over_p95([frame_p50_ms, frame_p95_ms, frame_max_ms]),
                         brd_ms,
                         ui_ms,
                         draw_ms,
                         fence_ms,
-                        tlas_ms,
+                        cpu_tlas_ms,
                         ssbo_ms,
                         geom_rebuild_ms,
                         cmd_ms,
@@ -975,6 +1003,8 @@ impl ApplicationHandler for App {
                         gpu[9],
                         gpu[10],
                         gpu[11],
+                        gpu[12],
+                        gpu[13],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

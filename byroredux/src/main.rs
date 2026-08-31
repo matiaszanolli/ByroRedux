@@ -86,9 +86,34 @@ fn bench_frame_distribution(samples_ms: &[f64]) -> [f64; 3] {
     [percentile(0.50), percentile(0.95), sorted[sorted.len() - 1]]
 }
 
+/// How far the worst frame overshot the p95 tail, as a ratio (#3559).
+///
+/// The raw `frame_max_ms` alone cannot distinguish "this scene is heavy"
+/// from "one frame blocked": FNV reports `p50=15.88 p95=16.77
+/// max=29164.91` — a p95 that is unremarkable next to a max three orders of
+/// magnitude above it, which is one blocking frame (interior cell load runs
+/// on the render thread), not a distribution problem. Skyrim (41 ms) and
+/// Oblivion (20 ms) do not show it, so the shape scales with cell content
+/// rather than being a harness artifact.
+///
+/// Reported as its own `frame_max_over_p95=` token so a sweep harness can
+/// gate on the *relationship* without hard-coding a per-scene millisecond
+/// threshold, and so a regression is visible without reading raw numbers.
+/// `0.0` when there is no p95 to divide by — an empty or degenerate run
+/// reports "no signal" rather than an infinity that would parse as a
+/// spurious alarm.
+fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
+    let [_, p95, max] = distribution;
+    if p95 > 0.0 && max.is_finite() {
+        max / p95
+    } else {
+        0.0
+    }
+}
+
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 12] = [
+const BENCH_GPU_KEYS: [&str; 14] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -101,6 +126,9 @@ const BENCH_GPU_KEYS: [&str; 12] = [
     "volumetrics",
     "cluster_cull",
     "presentation",
+    // #3629 — appended last so existing extractors are unaffected.
+    "tlas_build",
+    "caustic_splat",
 ];
 
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
@@ -113,7 +141,7 @@ const BENCH_GPU_KEYS: [&str; 12] = [
 /// extractor matching while giving the TSV the one bit it was missing — which
 /// zeros are real measurements. `none` (not the empty string) when every
 /// reported bracket ran, so a truncated line can never read as "all active".
-fn bench_gpu_inactive_token(active: [bool; 12]) -> String {
+fn bench_gpu_inactive_token(active: [bool; 14]) -> String {
     let inactive: Vec<&str> = BENCH_GPU_KEYS
         .iter()
         .zip(active)
@@ -171,7 +199,10 @@ mod host_call_gap_tests {
 
 #[cfg(test)]
 mod bench_frame_distribution_tests {
-    use super::{bench_frame_distribution, bench_gpu_inactive_token, BENCH_GPU_KEYS};
+    use super::{
+        bench_frame_distribution, bench_frame_max_over_p95, bench_gpu_inactive_token,
+        BENCH_GPU_KEYS,
+    };
 
     #[test]
     fn nearest_rank_reports_median_tail_and_worst_frame() {
@@ -180,19 +211,42 @@ mod bench_frame_distribution_tests {
         assert_eq!(bench_frame_distribution(&[]), [0.0; 3]);
     }
 
+    /// #3559 — the ratio must separate "heavy scene" from "one blocked
+    /// frame". The FNV numbers from the runtime audit are the worked
+    /// example; a well-behaved run sits near 1.
+    #[test]
+    fn frame_max_over_p95_separates_a_blocking_frame_from_a_heavy_scene() {
+        // FNV, AUDIT_RUNTIME_2026-08-30: one 29 s cell-load frame.
+        let blocked = bench_frame_max_over_p95([15.88, 16.77, 29164.91]);
+        assert!(
+            blocked > 1000.0,
+            "a single blocking frame must stand out by orders of magnitude,              got {blocked}"
+        );
+        // Skyrim: a genuinely heavy tail, no blocking frame.
+        let heavy = bench_frame_max_over_p95([8.58, 11.55, 41.11]);
+        assert!(
+            heavy < 5.0,
+            "an ordinary heavy tail must not read as a blocking frame, got              {heavy}"
+        );
+        // Degenerate runs report no signal rather than an infinity that
+        // would parse as a spurious alarm.
+        assert_eq!(bench_frame_max_over_p95([0.0; 3]), 0.0);
+        assert_eq!(bench_frame_max_over_p95(bench_frame_distribution(&[])), 0.0);
+    }
+
     /// #2821 — a skipped bracket must be nameable from the bench line. Before
     /// this the TSV recorded a hard `0.000` for it, indistinguishable from a
     /// pass that ran and measured zero.
     #[test]
     fn inactive_brackets_are_named_never_silently_zero() {
-        assert_eq!(bench_gpu_inactive_token([true; 12]), "none");
+        assert_eq!(bench_gpu_inactive_token([true; 14]), "none");
         assert_eq!(
-            bench_gpu_inactive_token([false; 12]),
+            bench_gpu_inactive_token([false; 14]),
             BENCH_GPU_KEYS.join(",")
         );
         // The realistic case: no skinned draws and TAA off under an FSR
         // preset, everything else measured.
-        let mut active = [true; 12];
+        let mut active = [true; 14];
         active[0] = false;
         active[1] = false;
         active[2] = false;
@@ -204,9 +258,42 @@ mod bench_frame_distribution_tests {
     /// cross-referenced with the numbers it qualifies.
     #[test]
     fn bench_gpu_keys_match_the_reported_bracket_order() {
-        assert_eq!(BENCH_GPU_KEYS.len(), 12);
+        assert_eq!(
+            BENCH_GPU_KEYS.len(),
+            14,
+            "gpu_timers.rs owns 14 brackets; the bench line reported 12 of \
+             them until #3629 while claiming a full per-pass breakdown"
+        );
         assert_eq!(BENCH_GPU_KEYS[4], "main_render");
         assert_eq!(BENCH_GPU_KEYS[11], "presentation");
+        assert_eq!(BENCH_GPU_KEYS[12], "tlas_build");
+        assert_eq!(BENCH_GPU_KEYS[13], "caustic_splat");
+    }
+
+    /// #3629 — the key list and the printed line were free to drift, and
+    /// did: `gpu_timers.rs` owned 14 brackets, `BENCH_GPU_KEYS` named 12,
+    /// and the format string printed those same 12 under a comment claiming
+    /// a "full per-pass GPU breakdown". Tie the three together — every key
+    /// must appear as a `gpu_<key>=` token in the line `app_events` prints,
+    /// so adding a bracket to one place without the others fails the build.
+    #[test]
+    fn every_bench_gpu_key_is_printed_on_the_bench_line() {
+        const APP_EVENTS_RS: &str = include_str!("app_events.rs");
+
+        for key in BENCH_GPU_KEYS {
+            let token = format!("gpu_{key}={{:.3}}");
+            assert!(
+                APP_EVENTS_RS.contains(&token),
+                "`{token}` is missing from the bench line's format string —                  BENCH_GPU_KEYS names a bracket the line never prints (#3629)",
+            );
+        }
+
+        // And the host-side TLAS number must stay distinguishable from the
+        // device-side bracket now that both are on the line.
+        assert!(
+            APP_EVENTS_RS.contains("cpu_tlas_ms={:.2}"),
+            "the FrameTimings TLAS cost must print as `cpu_tlas_ms=`, not a              bare `tlas_ms=`, now that `gpu_tlas_build=` shares the line              (#3629)",
+        );
     }
 }
 
