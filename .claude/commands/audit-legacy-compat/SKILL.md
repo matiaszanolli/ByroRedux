@@ -225,8 +225,13 @@ patterns, §7 "why Fallout is worse than Skyrim").
 
 - **The renderer is clean; the gaps are upstream** — parser/importer/cell-loader carry the
   per-game branches. Audit by the survey's three leak patterns:
-  - **Pattern A** — hardcoded BSVER constants where a named helper already exists but call
-    sites bypass it (`per-game-translation-survey.md` §5 Pattern A).
+  - **Pattern A** — hardcoded BSVER threshold *literals* that should be a named
+    `version::bsver::*` constant (`per-game-translation-survey.md` §5 Pattern A, corrected
+    2026-08-30). **Not** a bypassed `NifVariant` helper — those feature-flag predicates were
+    deliberately removed (#938/#1511/#1840/#1897) as an architectural foot-gun; `version.rs:699-718`
+    records the doctrine as fully enforced with zero predicates remaining. Do not flag a raw
+    `bsver()` comparison as "should call a NifVariant helper" — that helper does not exist and
+    should not be reintroduced.
   - **Pattern B** — feature-flag-on-an-enum where the wire format already discriminates the
     game (the correct shape; flag mis-dispatch, not "needs a trait").
   - **Pattern C** — variant-enum struct shapes for divergent records.

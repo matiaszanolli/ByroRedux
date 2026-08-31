@@ -95,30 +95,39 @@ Below is the categorical roll-up.
 
 ### 4.1 NIF parser (`crates/nif/src/blocks/`, `version.rs`)
 
-**Hardcoded threshold constants scattered across 30+ sites:**
+**Hardcoded threshold literals scattered across 30+ sites, most since named
+as `version::bsver::*` constants (the doctrine — see §5 Pattern A, corrected
+2026-08-30):**
 
-| Threshold | Meaning | Sites | Helper available? |
-|---|---|---|---|
-| `bsver > 34` | FO3/FNV (≤34) vs Skyrim+ (>34) | 8+ across `base.rs`, `particle.rs`, `tri_shape/`, `extra_data.rs`, `collision/` | Yes — `has_shader_alpha_refs`, `has_material_crc`; bypassed |
-| `bsver < FALLOUT4 (130)` | Pre-FO4 vs FO4+ | 12+ across `shader.rs`, `node.rs`, `light.rs`, `particle.rs`, `tri_shape/`, `texture.rs` | Partial — `has_effects_list`, `has_dynamic_effect_fields`; bypassed |
-| `bsver == 155` (strict) | FO76 only | 4+ in `particle.rs`, `tri_shape/bs_tri_shape.rs`, `shader.rs` | No — needs `has_fo76_bound_min_max`, `particle_system_geometry_variant` |
-| `bsver in [83..=139]` | Skyrim/FO4 legacy shader type | 1 in `shader.rs:786` | No — needs `shader_type_before_name` |
-| `bsver in [130..=139]` | FO4-only sub-block | 1 in `shader.rs::BSLightingShaderProperty::parse` | No — needs `fo4_subsurface_rimlight_backlight` |
-| `bsver >= 132` | FO4_CRC_FLAGS — CRC32 shader-flag encoding | 3+ in `shader.rs` | Partial — `uses_fo4_shader_flags`; bypassed |
-| `bsver >= 152` | FO76 SF2 CRCs | 1 in `shader.rs:400` | No — needs `has_fo76_sf2_crcs` |
-| `bsver >= 173` | Starfield dev-build form_id field | 1 in `node.rs:798` | No — needs `has_weak_ref_form_id` |
-| `bsver > 14` | FO3_REFRACTION trailing fields | 1 in `shader.rs:82` | No — needs `has_shader_refraction_fields` |
-| `bsver > 24` | FO3_PARALLAX (strict `>` — FO3@24 must NOT carry) | 1 in `shader.rs:90` | No — needs `has_shader_parallax_fields` |
-| `bsver <= 28` | Pre-anim-notes (Oblivion / early FO3) | 1 in `controller/sequence.rs:154` | No — needs `has_animation_notes` |
-| `bsver < 9` | Pre-collision-v2 | 1 in `collision/collision_object.rs:67` | No — needs `has_collision_v2` |
-| `bsver <= 34` (binary-extra-data tangent legacy) | FO3/FNV tangent blob layout | 1 in `extra_data.rs:1133` | No — needs `binary_extra_data_legacy` |
-| `version <= V20_0_0_5` (Oblivion-only constraint payload) | Oblivion vs FO3+ | 2 in `collision/constraints.rs:61, 285` | No |
+| Threshold | Meaning | Sites |
+|---|---|---|
+| `bsver > 34` | FO3/FNV (≤34) vs Skyrim+ (>34) | 8+ across `base.rs`, `particle.rs`, `tri_shape/`, `extra_data.rs`, `collision/` |
+| `bsver < FALLOUT4 (130)` | Pre-FO4 vs FO4+ | 12+ across `shader.rs`, `node.rs`, `light.rs`, `particle.rs`, `tri_shape/`, `texture.rs` |
+| `bsver == 155` (strict) | FO76 only | 4+ in `particle.rs`, `tri_shape/bs_tri_shape.rs`, `shader.rs` |
+| `bsver in [83..=139]` | Skyrim/FO4 legacy shader type | 1 in `shader.rs:786` |
+| `bsver in [130..=139]` | FO4-only sub-block | 1 in `shader.rs::BSLightingShaderProperty::parse` |
+| `bsver >= 132` | FO4_CRC_FLAGS — CRC32 shader-flag encoding | 3+ in `shader.rs` |
+| `bsver >= 152` | FO76 SF2 CRCs | 1 in `shader.rs:400` |
+| `bsver >= 173` | Starfield dev-build form_id field | 1 in `node.rs:798` |
+| `bsver > 14` | FO3_REFRACTION trailing fields | 1 in `shader.rs:82` |
+| `bsver > 24` | FO3_PARALLAX (strict `>` — FO3@24 must NOT carry) | 1 in `shader.rs:90` |
+| `bsver <= 28` | Pre-anim-notes (Oblivion / early FO3) | 1 in `controller/sequence.rs:154` |
+| `bsver < 9` | Pre-collision-v2 | 1 in `collision/collision_object.rs:67` |
+| `bsver <= 34` (binary-extra-data tangent legacy) | FO3/FNV tangent blob layout | 1 in `extra_data.rs:1133` |
+| `version <= V20_0_0_5` (Oblivion-only constraint payload) | Oblivion vs FO3+ | 2 in `collision/constraints.rs:61, 285` |
 
-The single most complex parse method is `BSLightingShaderProperty::parse`
-([`shader.rs:819-853`](../../crates/nif/src/blocks/shader.rs#L819)) with **12+
-embedded BSVER comparisons** spanning Skyrim LE/SE, FO4, and FO76/Starfield in
-one function. It's the textbook candidate for splitting into
-`BsLightingShaderVariant::{Skyrim, Fo4, Fo76Plus}` per-variant parsers.
+The removed "Helper available?" column named seven `NifVariant` feature-flag
+predicates that do not exist in the tree — see §5 Pattern A's correction.
+The real gap this table describes is scattered threshold *literals*, not
+bypassed helper predicates; most sites above now compare against a named
+`version::bsver::*` constant per the enforced doctrine rather than a bare
+number.
+
+**`BSLightingShaderProperty::parse` split into per-variant parsers, landed**
+(`shader.rs:903 parse_skyrim`, `:1009 parse_fo4`, `:1159 parse_fo76_plus`,
+plus `parse_shader_type_data_fo4` / `_fo76`) — the monolith this section
+used to describe as "the textbook candidate for splitting" no longer exists
+as a monolith.
 
 ### 4.2 NIF importer (`crates/nif/src/import/`)
 
@@ -263,18 +272,39 @@ sections 4.1–4.3.
 
 Three patterns repeat across every layer:
 
-### Pattern A: hardcoded BSVER constants where a helper exists
+### Pattern A: hardcoded BSVER thresholds without a named constant
 
-The single most common gap. `NifVariant` exposes `has_effects_list`,
+**CORRECTED 2026-08-30 (LC-2026-08-30-D6-01, #3795) — this section originally
+prescribed the exact inverse of enforced doctrine.** It named seven
+`NifVariant` feature-flag predicates (`has_effects_list`,
 `has_properties_list`, `has_material_crc`, `has_shader_alpha_refs`,
-`uses_bs_tri_shape`, `uses_fo4_shader_flags`, `uses_fo76_shader_flags` — and the
-parser calls `stream.bsver() < 130` or `stream.bsver() > 34` directly instead.
-Fix is mechanical: every raw `bsver()` comparison gets rewritten to call the
-named helper, and every threshold gains a helper if it doesn't have one.
+`uses_bs_tri_shape`, `uses_fo4_shader_flags`, `uses_fo76_shader_flags`) as
+"helpers" call sites should migrate to. Those predicates **do not exist**:
+#938 removed three, #1511 removed six more, #1840 removed seven more
+(including `has_material_crc`, `has_shader_alpha_refs`, `has_effects_list`,
+`uses_bs_tri_shape`), and #1897 removed the last survivor. `version.rs:699-718`
+records why — every one had zero production call sites, and "keeping a
+call-site-less predicate as an approved helper alongside the raw-bsver path
+was an architectural foot-gun": a contributor adopting one reintroduces the
+one-bsver-step transitional-export mis-parse those call sites were fixed to
+avoid. **No feature-flag predicates remain on `NifVariant` — this doctrine is
+fully enforced.**
 
-**Highest-leverage starter** because it's a pure-refactor with zero behavior
+The actual doctrine the tree enforces is named **constants**, not named
+**predicates**: a raw `stream.bsver()` compared against a named
+`version::bsver::*` constant (e.g. `bsver::FALLOUT4`), with the nif.xml
+`vercond` quoted at the call site (base.rs / node.rs, per #160 / #1331 /
+#1838 / #1839). The gap this pattern actually describes is scattered
+*threshold literals* that should be named constants, not bypassed helper
+predicates — see §4.1's table, which the same correction pass re-titled.
+
+~~**Highest-leverage starter** because it's a pure-refactor with zero behavior
 change and locks the helper-bypass regression class out (a clippy lint or
-custom test can enforce "no raw `bsver()` comparison outside `version.rs`").
+custom test can enforce "no raw `bsver()` comparison outside `version.rs`").~~
+**Retracted** — this would reintroduce the removed predicates. If a guard is
+wanted here, it is the inverse: a test asserting `NifVariant` exposes **no**
+feature-flag predicates, matching the doctrine `version.rs:699-718` declares
+enforced.
 
 ### Pattern B: feature-flag-on-an-enum, not trait-per-variant
 
@@ -424,10 +454,15 @@ The user's observation has a direct cause-list from this survey:
    emissive). One wrong threshold and FNV mesh imports break silently.
 6. **`flags2 bit 21` triple collision** — FO3/FNV decal vs Skyrim cloud-LOD
    vs FO4 anisotropic. Three games, same bit, three meanings.
-7. **FNV `classify_pbr_keyword` collapses everything to matte 0.8 roughness** —
-   already documented in `material-abstraction.md` Leak B. This single fact
-   accounts for the "Fallout looks like a different engine" perception more than
-   any other.
+7. ~~**FNV `classify_pbr_keyword` collapses everything to matte 0.8 roughness**~~
+   — **SUPERSEDED, see §2's correction note above.** This specific bug was
+   fixed by #1873 (commit `634873db`): the classifier
+   (`crates/core/src/ecs/components/material.rs:663+`) now runs an
+   evidence-cited keyword + `specular_authored` gate rather than a blanket
+   matte default. `material-abstraction.md`'s own "Leak B" passage carries the
+   same corrective banner. This item stood unmarked for one correction pass
+   after §2 was fixed (LC-2026-08-27-D6-01 / #3537); flagged here so it
+   cannot be read as a live claim.
 
 Skyrim is "easier" because its BSVER band is narrow, its property class is one
 (`BSLightingShaderProperty`), its inline LSP carries usable PBR scalars (so the
@@ -448,8 +483,10 @@ These are independently shippable, each closes a specific finding from above:
    silent-acceptance gap. Five-line fix each.
 4. **`CellLighting` variant enum** — replace the 28/40/92-byte size-based
    dispatch with a typed variant. Closes the FNV-malformed-as-Oblivion class.
-5. **Migrate raw `bsver()` comparisons to `NifVariant` helpers** — mechanical
-   refactor; add a custom clippy lint or grep-fail test to prevent regression.
+5. ~~**Migrate raw `bsver()` comparisons to `NifVariant` helpers**~~ —
+   **REVERTED, see §9's task-5 row.** #1840 / #1897 subsequently removed
+   every remaining `NifVariant` feature-flag predicate as an architectural
+   foot-gun (`version.rs:699-718`). Do not re-propose this task.
 6. **`ShaderFlags` variant enum** — bridge BSVER<132 (u32) vs BSVER≥132 (CRC32)
    under one consumer-visible type.
 7. **`classify_pbr` per-variant strategy** — unifies the FNV keyword path / FO4
@@ -474,32 +511,17 @@ Six of eight starter tasks landed on `feat/nif-translation-layer-epic`:
 | 1 | `extract_collision` per-variant | `8d3a6861` | + `CollisionAuthoring` discriminator; FO4 NP path is a tracked stub; phantoms recognised. 6 dispatch tests. |
 | 3 | `GameKind` gates on SCOL/PKIN/MOVS/MSWP | `dbabd880` | Single-point gate at `parse_esm` dispatcher; 8 tests including FO76/Skyrim positive+negative. |
 | 4 | XCLL game-size sanity gate | `7ffda15d` | Plumbed `GameKind` into `parse_cell_group`; warns on non-canonical (game, size) pairs. 6 tests pin canonical sizes + survey's 88-byte FNV regression class. |
-| 5 | `bsver()` → `NifVariant` helpers | `2bd447d5` | 6 sites migrated, 3 new helpers added. 5 sites kept on raw bsver where Unknown-low-bsver matters (regression-guarded by existing test). |
+| 5 | ~~`bsver()` → `NifVariant` helpers~~ | `2bd447d5` | **REVERTED** (2026-08-30 correction, #3795). Landed as 6 sites migrated, 3 new helpers added — then #1840 removed 7 more feature-flag predicates and #1897 removed the last survivor. `version.rs:699-718`: every one had zero production call sites, and keeping a call-site-less predicate as an "approved helper" alongside the raw-bsver path was an architectural foot-gun. **No `NifVariant` feature-flag predicates remain; every parser queries `stream.bsver()` directly per the raw-bsver doctrine.** Do not re-migrate. |
 | 6 | `ShaderFlags` typed variant view | `525a2262` | Three-variant enum (`LegacyFo3Fnv`/`LegacySkyrimFo4`/`Crc32`) with classify + `is_decal`/`is_two_sided`. Opt-in API; existing 35-call-site surface untouched. |
 | 8 | Cross-game translation-completeness harness | `294e68f1` | `cargo test … --test translation_completeness -- --ignored`. Per-game `MaterialStats` over 200-NIF sample; structural-consistency hard gate. Live output shows the `m_kind%` ramp (0 → 5.6 → 9.6 → 27.4 → 38.3 from Oblivion to FO4) — material-abstraction.md Leak B made visible. |
 
 **Task 2 (split `BSLightingShaderProperty::parse` into variant dispatch)** —
-**deferred to a dedicated session**. The parse method has 12+ BSVER
-comparisons across Skyrim LE/SE, FO4, and FO76/Starfield, and any
-regression would be subtle: a wrong field-order or wrong-arm shipped
-write would still parse 34,995 FO4 vanilla NIFs to "100%" but produce
-wrong material values downstream. Verifying against real-game data
-across Skyrim SE, FO4, FO76, and Starfield (each with their own
-`BYROREDUX_*_DATA` env vars) takes a full session that this batch
-didn't have remaining budget for. Recommended next-session approach:
-
-1. Add a per-variant `BsLightingShaderRaw::parse_skyrim`,
-   `parse_fo4`, `parse_fo76_plus` returning the same `BsLightingShaderRaw`
-   shape.
-2. Top-level `BSLightingShaderProperty::parse` dispatches on
-   `NifVariant` (with the same Unknown-low-bsver caveat as Task 5).
-3. Each per-variant parser is bit-for-bit equivalent to the
-   corresponding slice of the current monolith — no logic change.
-4. Verify against `cargo test -p byroredux-nif --test parse_real_nifs --
-   --ignored` (the per-game parse-rate suite). All four BSLSP-shipping
-   games must still pass 100% recoverable.
-5. Bonus: the new harness from Task 8 will surface any unintended
-   change in `m_kind%` / `metO%` fill-rates at the per-game granularity.
+**LANDED** (correction 2026-08-30, #3795; this row previously read "deferred
+to a dedicated session" long after the fact). `BSLightingShaderProperty`
+now dispatches to `parse_skyrim` (`shader.rs:903`), `parse_fo4` (`:1009`),
+and `parse_fo76_plus` (`:1159`), plus dedicated `parse_shader_type_data_fo4`
+/ `_fo76` helpers — the 12+-BSVER-comparison monolith this row used to
+describe as future work no longer exists in that shape.
 
 Branch state: 7 commits on `feat/nif-translation-layer-epic` for the
 task work, plus 4 earlier commits for the FogVolume + tooling +
