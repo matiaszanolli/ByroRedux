@@ -186,8 +186,11 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   updating this test is the regression pattern. (Correct chain:
   `Early → Update → PostUpdate → Physics → Late`.)
 - **Regression guard**: `byroredux/src/boot.rs` (`install_runtime_registries`)
-  runs `debug_assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
-  after building the schedule (#1394) — this is the boot guard, NOT a log line.
+  runs a release-level `assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
+  after building the schedule (#1394) — this is the boot guard, NOT a log line,
+  and NOT `debug_assert_eq!`: #2690's own comment states *"Keep these as
+  release assertions … a release-only divergence must not ship without the
+  proof."* Do not flag it as debug-only.
   #1602 added two sibling asserts on the same snapshot: `known_conflict_count()`
   and `unknown_pair_count()` must also be 0 (the old undeclared-only guard let a
   declared WriteWrite conflict through — #1601).
@@ -375,10 +378,13 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   (escalate — wrong `GlobalTransform` is a correctness bug, not just perf).
 - **`animation_system` scratch hoisting** (#828): `events` / `seen_labels`
   scratches are hoisted out of the per-entity loop and use `clone` (not
-  `mem::take`) so capacity persists; helpers `ensure_subtree_cache` /
-  `write_root_motion` / `apply_bool_channels` + the `write_lazy!` macro
-  (5 color-target arms) were factored out by `2bdbc36` — DRY-undo drift there is
-  a finding.
+  `mem::take`) so capacity persists; `write_root_motion` / `apply_bool_channels`
+  survive from the `2bdbc36` factoring — DRY-undo drift there is a finding.
+  `ensure_subtree_cache` and the `write_lazy!` macro do **not** survive:
+  both were removed by #2399 (`f46fcfd8`, content-determined lock order in
+  animation channel apply) — the macro was the *cause* of a lock-order
+  defect, so its removal was deliberate. Only historical comments in this
+  file still mention them; do not flag their absence as DRY-undo drift.
 - **`footstep_system` scratch** (#932): `byroredux/src/systems/audio.rs` writes a
   `FootstepScratch: Resource` via `mem::take` + restore to preserve Vec capacity;
   per-frame `Vec::new` is the regression. (Registered

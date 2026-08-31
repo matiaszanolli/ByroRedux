@@ -217,13 +217,13 @@ gone. Data-Loss Class = silent-drop.
   2026-08-24, `Globals` — MQ101's startup fragment writes `GameHour` before
   advancing to stage 10, so GLOB values are mutable game state, not a
   from-ESM constant — and `ReferenceEnableState` — the fragment `Disable()`
-  effect's FormId-keyed enable/disable ledger; note it round-trips correctly
-  but has **no consumer anywhere in cell_loader/streaming yet** (`is_enabled`
-  is called only from its own test module), so a save/reload today correctly
-  carries the flag without it having any observable effect live or on
-  reload — a scripting-domain completeness gap, not a save-domain one; don't
-  raise it as a save finding, but don't claim `Disable()` persists visibly
-  either). For EACH persistent
+  effect's FormId-keyed enable/disable ledger; **wired since `265f0c9b`
+  (Fix #3256, Fix #3278)** — `byroredux/src/cell_loader/spawn.rs` gates REFR
+  spawn on `state.is_enabled(local)` (plus a log line), with a dedicated
+  regression file `reference_enable_gate_tests.rs`. Verify the spawn gate
+  still reads the ledger correctly after a load-apply — don't re-file "no
+  consumer", but don't claim `Disable()` persists visibly
+  either. For EACH persistent
   component type in the codebase that carries player-mutable state, confirm it
   is either registered OR documented as reconstruct-on-load (derived data:
   `GlobalTransform`, `WorldBound`; GPU handles: `MeshHandle`, `TextureHandle`,

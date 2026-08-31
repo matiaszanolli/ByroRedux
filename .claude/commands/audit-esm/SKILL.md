@@ -337,10 +337,11 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
   `depth + 1` into their `_inner` recursion, so a file nesting CELL/WRLD
   groups past `MAX_GRUP_NESTING_DEPTH` (64) is skipped rather than
   stack-overflowed. `parse_refr_group` (same file, also an entry point above)
-  was **not** updated alongside them — it still recurses on
-  `reader.group_content_end(&sub)` with no depth counter. Verify whether that
-  gap is still open; if so it is the live regression case for this bullet,
-  not a hypothetical.
+  was brought into line too, closed by `fa511bbf` (Fix #3503, 2026-08-29): it
+  now splits into `parse_refr_group` → `parse_refr_group_inner(..., 0)`,
+  routes `sub_end` through `reader.bounded_group_content_end(&sub, depth,
+  "parse_refr_group")`, and threads `depth + 1`. Verify this coverage holds
+  (all three walkers depth-bounded) rather than re-deriving the gap.
 - Lighting-template inheritance is **per-field**, not all-or-nothing. Verify the
   inherit flags are applied field-by-field and that "absent" and "authored zero"
   stay distinguishable.

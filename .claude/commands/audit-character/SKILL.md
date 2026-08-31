@@ -306,10 +306,6 @@ resource lookup); `byroredux/src/commands/actor_value.rs`;
   Starfield. Verify every caller handles `None` as "no CHARAL for this game" and
   degrades gracefully — not as "use the default ruleset", which would apply
   Fallout formulas to a TES actor.
-- `GameKind::Fallout3NV` resolves to the **FNV** ruleset for both FO3 and FNV,
-  justified because the actor-general derived stats are identical. Verify that
-  justification against both capture documents — if any actor-general coefficient
-  differs, the collapse is wrong and every FO3 NPC is mis-statted.
 - `resolve` is `index.actor_value_form_id(editor_id)`: an EditorID→FormID lookup.
   Verify an unresolved EditorID skips its formula (the `push_derived`
   resolve-or-skip form) rather than registering a formula keyed on `0`.

@@ -234,9 +234,16 @@ ls crates/nif/src/blocks/*.rs crates/plugin/src/esm/records/**/*.rs crates/rende
 - The same image-layout barrier sequence repeated per render pass.
 - `vk::WriteDescriptorSet` builder boilerplate.
 - ESM sub-record parse loops repeated across `crates/plugin/src/esm/records/`.
-- Z-up → Y-up coordinate flips reimplemented outside the canonical homes
-  (`crates/nif/src/import/coord.rs`, `crates/nif/src/anim/coord.rs`) — any other
-  call site is a leak.
+- ~~Z-up → Y-up coordinate flips reimplemented outside the canonical homes
+  (`crates/nif/src/import/coord.rs`, `crates/nif/src/anim/coord.rs`)~~ —
+  **stale since #1044/TD3-002**. `crates/core/src/math/coord.rs`
+  (`zup_to_yup_pos`/`zup_to_yup_quat_wxyz`) is the single source of truth
+  today; both named files converged onto it — `anim/coord.rs` is now a
+  14-line `pub use` re-export whose own header says so. Do not flag the
+  ~15 call sites that use the re-exports as leaks; that is the exact
+  inversion of the truth on a fully-converged consolidation. If a genuine
+  reimplementation is found, it must live somewhere *other* than these
+  two named files.
 
 ### Dimension 3: Stale Documentation & Comments
 Doc rot is high-impact debt because it misleads the *next* reader and the *next*

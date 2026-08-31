@@ -103,11 +103,15 @@ gate) — that's intentional, not a drop.
    SPT-D4-01/02/03/04, SPT-D5-01/02, SPT-D2-01, SPT-D3-01, SPT-D1-01 are all
    **closed** (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002). Of the later
    SPT-NEW batch, SPT-NEW-01 (dead-code `detect_variant`, #1820) and
-   SPT-NEW-06 (format-notes byte-align, #1821) are also **closed** — only
+   SPT-NEW-06 (format-notes byte-align, #1821) are also **closed**, and so is
    SPT-NEW-07 (`MaybeStringElseBare` misparse risk on a bare tag-13005
-   immediately before the geometry tail, #1822) remains open. Treat closed
-   findings as **regression guards**, not open items; only re-flag if a guard
-   has actually broken.
+   immediately before the geometry tail, #1822 — fixed by `19813460`, Fix
+   #3531, which rejects a zero-length 13005 candidate rather than taking it
+   as a String; see the Dim 3 clamp bullet below). Verify open-item status
+   against `gh issue view` before treating this list as current, not by
+   trusting it — do not start Phase 1 orientation from a false open-item
+   list. Treat closed findings as **regression guards**, not open items;
+   only re-flag if a guard has actually broken.
 4. `deep` only — corpus + recon harness:
    - corpus location: `Fallout - Meshes.bsa` (FNV/FO3), `Oblivion - Meshes.bsa`.
    - acceptance run: `BYROREDUX_FNV_DATA=… cargo test -p byroredux-spt --release --test parse_real_spt -- --ignored --nocapture` (and `_FO3_DATA` / `_OBL_DATA`).
@@ -166,11 +170,17 @@ dictionary desyncs every subsequent read.
   `leaf_texture_override_wins_over_spt_tag`,
   `empty_texture_leaves_path_unset_for_renderer_placeholder`.
 - Billboard sizing precedence in `compute_billboard_size`: **OBND →
-  BNAM → MODB → 256×512 default**, every path clamped to `[16, 8192]`
-  (#1001/#1002). OBND beats BNAM intentionally (BNAM clamps tall trees,
-  e.g. WhiteOak01 OBND 802×1567 vs BNAM 768×768). Vanilla Oblivion ships
-  MODB-only / no OBND, so an OBND-first-or-default path would render
-  Cyrodiil pines at half scale. Guard the ordering.
+  BNAM → MODB → 256×512 default**. Every path is clamped via
+  `clamp_billboard_extent`'s `Option`-returning `[16, 8192]` band, **not**
+  `f32::clamp` directly — see the Dim 5 regression-guard bullet for why
+  that distinction matters (a bare `clamp` is NaN-transparent and would
+  reinstate #3529's regression); defer to Dim 5 for that half. OBND beats
+  BNAM intentionally (BNAM clamps tall trees, e.g. WhiteOak01 OBND
+  802×1567 vs BNAM 768×768). Vanilla Oblivion ships **no OBND but BNAM on
+  142/142 vanilla TREE records** (corpus-measured 2026-08-30; the
+  "MODB-only" premise here was false) — so BNAM, not MODB, wins for every
+  vanilla Oblivion tree; the MODB tier is reached by 0 vanilla records in
+  any game. Guard the ordering.
 - Normal / winding convention (#1000): front-face normal is `-Z`, indices
   `[0, 3, 2, 2, 1, 0]`. The billboard system rotates via
   `Quat::from_rotation_arc(-Z, look_dir)`, so object `-Z` ends up facing

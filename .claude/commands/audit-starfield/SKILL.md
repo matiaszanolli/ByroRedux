@@ -288,8 +288,13 @@ follow-up (left scoped out) — note frequency, don't re-file as new.
 Starfield row + `docs/engine/game-compatibility.md`) via
 `BYROREDUX_*_DATA=... cargo test -p byroredux-nif --test parse_real_nifs parse_rate_starfield_all_meshes -- --ignored`
 (walks all 5 vanilla mesh archives; `parse_rate_starfield` covers Meshes01 only).
-The residual truncation tail in Meshes01/MeshesPatch is tracked at #746/#747 —
-confirm it has not grown. Verify Starfield texture archives matching
+The residual truncation tail in Meshes01/MeshesPatch is tracked at #2105/#3524
+(`BSWeakReferenceNode`'s residual, characterised at 19 files at the
+2026-08-30 measurement) — **not #746/#747**, both CLOSED and unrelated
+(they were the version-gating `bsver == 155` defects whose fix *reduced*
+the tail, not truncation trackers themselves; already flagged once as
+stale by #2365). Confirm the residual count has not grown. Verify
+Starfield texture archives matching
 `Starfield - *Textures*.ba2` extract cleanly (compat matrix records 100% extract
 recover, post-#754). Pick 5 representative meshes — a clutter item, a ship hull,
 a character body, a weapon, a landscape feature — and trace each through
@@ -365,7 +370,7 @@ the classification feeding it happens at the single `translate_material` boundar
      vocabulary are **solved** as of 2026-08-29, so what is left is the indexed
      reader that avoids the 9.19 GB parse peak, plus the *XMCOLOR* field-offset
      fix), exterior worldspace tiles,
-     space-cell / planet / GBFM records, and the #746/#747 NIF truncation tail.
+     space-cell / planet / GBFM records, and the #2105/#3524 NIF truncation tail.
      Do NOT frame this as a "BGSM parser first / ESM very far" chain — both have
      shipped.
 3. Remove cross-dimension duplicates.

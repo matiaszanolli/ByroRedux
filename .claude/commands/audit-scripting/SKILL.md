@@ -84,7 +84,7 @@ those here.
   builder spawns invisible `TriggerVolume` REFRs from `XPRM` primitives.
 - `crates/plugin/src/esm/records/index.rs` — `base_record_script_instance`
   accessor (VMAD retained on ACTI/CONT/NPC/CREA base records, plus the item
-  family per #2189 — see Dim 7).
+  family per #2189 and the statics/terminal families per #2663 — see Dim 7).
 - `crates/plugin/src/esm/records/script_instance.rs` — `ScriptInstanceData` /
   `ScriptInstance` (decoded VMAD).
 - `byroredux/src/asset_provider/script.rs` — `build_script_provider` parses the
@@ -187,11 +187,15 @@ of the "shipped slice" fix around it.
   bound to a bare, alias-bound `ObjectReference Property` now resolves live
   through `SceneActorBindings` (Dim 5's `ObjectRef` hole-binding bullet)
   instead of declining, so some of the previously-dormant fragments may now
-  dispatch. What did NOT change: `receiver_object` still declines a
-  *local-variable* receiver copy (`ObjectReference k =
-  SomeAlias.GetActorRef()`) via `bind_local`'s existing discipline (#1907) —
-  that specific decline (method-call-derived locals) is unaffected by the
-  alias runtime and remains correct. `docs/engine/m47-3-quest-alias-design.md`'s
+  dispatch. **This is also stale**: `object_expr_ref` (`effects.rs`) resolves
+  `alias.GetRef()`/`alias.GetActorRef()` method-call locals through
+  `Binding::Object` into `scope.object_locals` too (the same map §Dim 5's
+  `receiver_object` bullet above describes), so
+  `ObjectReference k = SomeAlias.GetActorRef(); k.AddItem(...)` now resolves
+  live rather than declining. Verify against the current three-map
+  (`quest_locals`/`object_locals`/`decl_locals`) behavior, not the
+  "method-call-derived locals still decline" claim this bullet used to make.
+  `docs/engine/m47-3-quest-alias-design.md`'s
   own Phase 2 checklist still marks "live-corpus re-measurement of
   `fragment_coverage`'s `AddItem`/`MoveTo` yield shows a real (non-zero) hit
   rate" **unchecked** — a fresh `fragment_coverage` run belongs in this
@@ -808,10 +812,14 @@ refresh; not otherwise covered by this dimension's checklist below).
   bare `Self` identifier (does NOT rely on no VMAD property ever being named
   "self" — verify the explicit `key == "self"` guard is still there); (b)
   decline any local-variable receiver, including a side-effect-free ident
-  copy (`ObjectReference k = SomeProperty; k.AddItem(...)`) — this increment
-  deliberately doesn't trace a local back to the property it aliases, so a
-  local receiver must decline via `scope.quest_locals`/`scope.decl_locals`,
-  not silently resolve. At *dispatch* time, `fragment.rs::resolve_object`
+  copy (`ObjectReference k = SomeProperty; k.AddItem(...)`) — **except this
+  is now stale**: `effects.rs` carries a third map, `object_locals:
+  HashMap<String, ObjectRef>` (introduced by `0ff8612b`, MQ101 cinematic
+  effects), populated from `Binding::Object(via)` and consulted first in
+  `receiver_object`, so an object-typed local **does** resolve today. Verify
+  against the live three-map behavior (`scope.quest_locals` /
+  `scope.decl_locals` / `scope.object_locals`), not the two-map "always
+  declines" claim this bullet used to make. At *dispatch* time, `fragment.rs::resolve_object`
   (M47.3 Phase 2, updated 2026-08-07) branches on the VMAD
   `PropertyValue::Object`: `alias == -1` still resolves via
   `resolve_entity_by_global_form_id` (the same M42.5–8/M47.1 resolver,
@@ -1244,13 +1252,16 @@ dimensions covers it.
   branch is a `continue`/`return false`, not an `unwrap`/`expect`. Untrusted-Input:
   Yes (the `.pex` bytes come from a possibly-modded archive).
 - **VMAD retention + accessor (`index.rs::base_record_script_instance`)**: checks
-  ACTI/CONT/NPC/CREA base records in order, then (#2189) the item family —
-  WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE, via `self.items.get(base_form_id)
-  .and_then(|r| r.common.script_instance.as_ref())` — returning the first hit.
-  Verify the record types covered match the VMAD-bearing set (a scripted base
-  type not in the chain → its scripts never attach) — the item family was
-  absent until `CommonItemFields` gained a decoded `script_instance` (#2189;
-  before that every scripted item silently declined to attach). Confirm the
+  **seven** arms in order — ACTI/CONT/NPC/CREA, then (#2189) the item family
+  (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE, via `self.items.get(base_form_id)
+  .and_then(|r| r.common.script_instance.as_ref())`), then (#2663) the
+  MODL-only statics family (`self.cells.statics` —
+  STAT/MSTT/FURN/DOOR/LIGH/FLOR/IDLM/BNDS/ADDN/TACT), then (#2663)
+  `self.terminals` (FO4 ships 207 VMAD-bearing TERM records) — returning the
+  first hit. Both #2663 additions have their own guards
+  (`base_record_script_instance_resolves_a_statics_familys_vmad`,
+  `…_resolves_a_terminals_vmad`); verifying "covered == VMAD-bearing set"
+  against only the first five arms re-derives #2663 as a false gap. Confirm the
   accessor is keyed by `base_form_id` (the REFR's base, not the REFR's own form
   id) and that a REFR's *own* VMAD (Skyrim+ supports per-REFR scripts) is also
   resolved — flag if only base-record VMAD is consulted (per-REFR override
