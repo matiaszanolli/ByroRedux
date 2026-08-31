@@ -340,14 +340,33 @@ fn apply_texturing_property(
         // dropped and every NiTexturingProperty texture rendered
         // with REPEAT/REPEAT — visible as edge bleed on decals,
         // Oblivion architecture trim, and pre-shader skybox seams.
-        // Only update when no earlier shader path supplied a
-        // non-default clamp_mode (e.g. BSEffectShader's dedicated
-        // field) so the more-specific source still wins. Default
-        // is `3 = WRAP_S_WRAP_T` per nif.xml — the legacy
-        // REPEAT/REPEAT.
-        if info.texture_clamp_mode == 3 {
+        // Only update when no earlier shader path supplied a clamp mode
+        // (e.g. BSEffectShader's dedicated field) so the more-specific
+        // source still wins. Default is `3 = WRAP_S_WRAP_T` per nif.xml —
+        // the legacy REPEAT/REPEAT.
+        //
+        // #3517 / OBL-2026-08-27-02 — gate on `texture_clamp_mode_consumed`,
+        // not on the value shape (`== 3`). This was the only clamp writer
+        // in this file that neither read nor set the latch #2328 added,
+        // and the asymmetry broke #208 precedence in both directions:
+        //
+        //   * a shape-level `NiTexturingProperty` wrote without latching,
+        //     so an *inherited* `BSShader*` later in the same walk saw
+        //     `!consumed` and overwrote it;
+        //   * a shape-level `BSShader*` authoring clamp mode 3 set the
+        //     latch, but the `== 3` gate never consulted it, so an
+        //     *inherited* `NiTexturingProperty` overwrote it anyway.
+        //
+        // Identical to the value-shape-vs-latch bug #1201 already fixed
+        // for `NiAlphaProperty`. Latent on Oblivion (zero `BSShader*`
+        // blocks, so only one writer can ever run) — the exposure is
+        // FO3/FNV meshes mixing the two families across the
+        // shape/parent-node boundary (FNV ships 58,706
+        // `BSShaderPPLightingProperty` and 3,018 `NiTexturingProperty`).
+        if !info.texture_clamp_mode_consumed {
             if let Some(base) = tex_prop.base_texture.as_ref() {
                 info.texture_clamp_mode = base.clamp_mode;
+                info.texture_clamp_mode_consumed = true;
             }
         }
         if !info.has_uv_transform {
@@ -525,7 +544,25 @@ fn apply_pp_lighting_property(
         // / `FIRE_REFRACTION` (bits 15/16) share both position and
         // semantic with `skyrim_slsf1` per nif.xml — see
         // `shader_flags.rs`'s `fo3nv_shares_fire_refraction_bits_with_skyrim`.
-        info.refraction_strength = shader.refraction_strength;
+        //
+        // #3514 / FO3-2026-08-27-D1-01 — `_consumed` gate, the remainder
+        // of #2328. This write was the one scalar in this function still
+        // using a bare `=` inside `apply_legacy_property_chain`'s
+        // `direct_properties.chain(inherited_props)` loop, i.e.
+        // last-writer-wins, i.e. inherited-parent-wins — the exact
+        // inversion #2328 fixed for `texture_clamp_mode` and
+        // `env_map_scale` two statements above. Unreachable on vanilla
+        // FO3 (measured: 0 of 17,172 NIFs bind a `BSShaderPPLighting`/
+        // `NoLighting` property on a `NiNode`, so no chain ever holds
+        // two), so this is consistency for modded content plus one less
+        // policy for the next reader to re-derive.
+        if !info.refraction_strength_consumed {
+            info.refraction_strength = shader.refraction_strength;
+            info.refraction_strength_consumed = true;
+        }
+        // The fire-refraction promotion below is deliberately NOT gated:
+        // it is a monotone latch (flags-set → promote, never demote), so
+        // an inherited property can only ever confirm it.
         let fire_refraction_flags = crate::shader_flags::fo3nv_f1::REFRACTION
             | crate::shader_flags::fo3nv_f1::FIRE_REFRACTION;
         if shader.shader_flags_1() & fire_refraction_flags == fire_refraction_flags {

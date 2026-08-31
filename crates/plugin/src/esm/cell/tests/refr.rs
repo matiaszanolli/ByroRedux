@@ -1091,6 +1091,130 @@ fn parse_refr_group_collects_navm_records() {
     assert_eq!(navm.version, 12);
 }
 
+// ── #3542 — the placed-record family (PGRE / PHZD / PMIS) ────────
+//
+// The walker accepted only REFR / ACHR / ACRE; everything else fell
+// through to the terminal `skip_record`, silently dropping every placed
+// grenade/mine, hazard and missile on every title from FO3 forward.
+// Header-validated census of the vanilla masters (2026-08-30):
+// FO3 350 PGRE · FNV 174 PGRE · Fallout4.esm 395 PGRE + 981 PHZD + 1
+// PMIS (2,928 across all seven FO4 masters) · Starfield 1,268 PGRE +
+// 375 PHZD. The dominant class inverts between titles, which is why
+// these are tested as a family rather than one type.
+
+/// Build a placement record of an arbitrary type with the minimum
+/// sub-record set the walker needs: `NAME` + the 24-byte `DATA` block
+/// REFR / ACHR / ACRE / PGRE / PHZD / PMIS all share.
+fn build_placement(record_type: &[u8; 4], form_id: u32, base_form_id: u32) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    sub_data.extend_from_slice(b"NAME");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&base_form_id.to_le_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&24u16.to_le_bytes());
+    // pos (12) + rot (12): x = 128.0, everything else zero.
+    let mut data = [0u8; 24];
+    data[0..4].copy_from_slice(&128.0f32.to_le_bytes());
+    sub_data.extend_from_slice(&data);
+
+    let mut record = Vec::new();
+    record.extend_from_slice(record_type);
+    record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes());
+    record.extend_from_slice(&form_id.to_le_bytes());
+    record.extend_from_slice(&[0u8; 8]);
+    record.extend_from_slice(&sub_data);
+    record
+}
+
+fn parse_placements(record: &[u8]) -> Vec<PlacedRef> {
+    let mut reader = EsmReader::new(record);
+    let end = record.len();
+    let mut refs = Vec::new();
+    let mut land = None;
+    let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut pathgrids,
+        &mut deleted,
+    )
+    .unwrap();
+    refs
+}
+
+#[test]
+fn placed_grenade_hazard_and_missile_records_are_kept() {
+    for (record_type, form_id, base) in [
+        (b"PGRE", 0x0003_5A01u32, 0x0002_D001u32),
+        (b"PHZD", 0x0003_5A02, 0x0002_D002),
+        (b"PMIS", 0x0003_5A03, 0x0002_D003),
+    ] {
+        let refs = parse_placements(&build_placement(record_type, form_id, base));
+        let ty = std::str::from_utf8(record_type).unwrap();
+        assert_eq!(
+            refs.len(),
+            1,
+            "{ty} must produce a placement, not fall through to skip_record (#3542)"
+        );
+        assert_eq!(refs[0].form_id, form_id, "{ty} placement identity");
+        assert_eq!(refs[0].base_form_id, base, "{ty} NAME → base record");
+        assert_eq!(refs[0].position[0], 128.0, "{ty} shares REFR's DATA layout");
+    }
+}
+
+/// The family rides the same arm as REFR, so it inherits the
+/// Deleted-tombstone rule (SKY-D4-01) rather than spawning a placement a
+/// plugin meant to remove.
+#[test]
+fn deleted_placed_records_are_tombstoned_not_spawned() {
+    let mut record = build_placement(b"PGRE", 0x0003_5A04, 0x0002_D004);
+    // Record-header flags live at bytes 8..12; set Deleted (0x20).
+    record[8..12].copy_from_slice(&0x0000_0020u32.to_le_bytes());
+
+    let mut reader = EsmReader::new(&record);
+    let end = record.len();
+    let mut refs = Vec::new();
+    let mut land = None;
+    let mut navmeshes = Vec::new();
+    let mut pathgrids = Vec::new();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut pathgrids,
+        &mut deleted,
+    )
+    .unwrap();
+
+    assert!(refs.is_empty(), "a deleted PGRE must not spawn");
+    assert_eq!(deleted, vec![0x0003_5A04], "…and must record its tombstone");
+}
+
+/// The other Creation-Engine placed types are measured at zero records
+/// across every vanilla master this engine loads, so they stay on the
+/// terminal skip. Pinned so a future arm is added with a corpus behind
+/// it rather than by lineage — the premise-rot this fix's own audit
+/// trail is full of.
+#[test]
+fn unmeasured_placed_types_still_fall_through_to_skip() {
+    for record_type in [b"PARW", b"PBAR", b"PBEA", b"PCON", b"PFLA"] {
+        assert!(
+            parse_placements(&build_placement(record_type, 0x0003_5A05, 0x0002_D005)).is_empty(),
+            "{} has no vanilla corpus; adding an arm needs evidence first",
+            std::str::from_utf8(record_type).unwrap()
+        );
+    }
+}
+
 // ── M46.0 / #561 EsmCellIndex::merge_from regression guards ───────
 //
 // Cell-side last-write-wins semantics on every map, with the

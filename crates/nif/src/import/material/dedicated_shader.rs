@@ -394,7 +394,12 @@ fn apply_bs_lighting_shader(
         // out-of-band BSVERs leave the parser-side defaults
         // (matching MaterialInfo's own defaults), so the copy
         // is a literal forward in every era.
+        // #3514 — latch it: this runs before the legacy NiProperty chain
+        // (`extract_material_info_from_refs`), and a mesh binding BOTH a
+        // dedicated `BSLightingShaderProperty` and a legacy chain must
+        // keep the dedicated (more specific) value.
         info.refraction_strength = shader.refraction_strength;
+        info.refraction_strength_consumed = true;
         info.lighting_effect_1 = shader.lighting_effect_1;
         info.lighting_effect_2 = shader.lighting_effect_2;
         info.subsurface_rolloff = shader.subsurface_rolloff;
@@ -591,7 +596,12 @@ fn apply_bs_effect_shader(
         // glow edges, scope reticles, fire planes) are heavy
         // CLAMP authors so this path is the dominant fix path
         // on Skyrim+ content.
+        // #3517 — latch it for the same reason. This is what the
+        // `NiTexturingProperty` writer's old `info.texture_clamp_mode == 3`
+        // value gate was standing in for; with the latch it is expressed
+        // once, in the same mechanism every other writer uses.
         info.texture_clamp_mode = effect.texture_clamp_mode;
+        info.texture_clamp_mode_consumed = true;
         info.effect_shader = Some(effect);
         // #706 / FX-1 — flag the material as effect-shader for the
         // renderer's `material_kind` dispatch. Routes through the

@@ -98,7 +98,14 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // IMOD — item mods (FNV-CORE: weapon attachments)
         // ARMA — armor addons (race-specific biped variants)
         // BPTD — body part data (NPC dismemberment routing)
-        b"PROJ" => extract_records(reader, end, b"PROJ", &mut |fid, subs| {
+        // #3542 — `extract_records_with_modl`, not `extract_records`: PROJ
+        // is the base record every `PGRE` placement points at, and until
+        // the walker started keeping those placements nothing needed the
+        // model. FO3's 350 placed mines resolve to 4 PROJ bases whose
+        // `Weapons\1handMineDrop\Mine*.NIF` meshes ship in
+        // `Fallout - Meshes.bsa`; without the `statics` half they would
+        // parse into `index.projectiles` and still render nothing.
+        b"PROJ" => extract_records_with_modl(reader, end, b"PROJ", statics, &mut |fid, subs| {
             index.projectiles.insert(fid, parse_proj(fid, subs));
         })?,
         b"EFSH" => extract_records(reader, end, b"EFSH", &mut |fid, subs| {

@@ -590,6 +590,20 @@ pub(super) struct MaterialInfo {
     /// `env_map_scale` for this mesh. Same rationale and fix as
     /// [`Self::texture_clamp_mode_consumed`] (#2328 / FO3-D1-06).
     pub env_map_scale_consumed: bool,
+    /// True once any shader property has written `refraction_strength`
+    /// for this mesh. Same rationale and fix as
+    /// [`Self::texture_clamp_mode_consumed`] — #3514 is #2328's
+    /// remainder: `apply_pp_lighting_property` converted its
+    /// `texture_clamp_mode` and `env_map_scale` writes to consumption
+    /// gates and left the `refraction_strength` write two statements
+    /// below them a bare `=`, so an inherited parent-NiNode property
+    /// still overwrote the shape's own value.
+    ///
+    /// Also set by the Skyrim+ `BSLightingShaderProperty` writer, which
+    /// runs *before* the legacy chain (`extract_material_info_from_refs`)
+    /// — the same "more specific source wins" ordering
+    /// [`Self::texture_clamp_mode_consumed`] enforces.
+    pub refraction_strength_consumed: bool,
     pub two_sided: bool,
     pub is_decal: bool,
     /// Object/model-space normal map (vs the default tangent-space). Set
@@ -1137,6 +1151,7 @@ impl Default for MaterialInfo {
             alpha_property_consumed: false,
             texture_clamp_mode_consumed: false,
             env_map_scale_consumed: false,
+            refraction_strength_consumed: false,
             two_sided: false,
             is_decal: false,
             model_space_normals: false,

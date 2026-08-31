@@ -717,9 +717,31 @@ fn parse_refr_group_inner(
         // folded creature placements into ACHR; ACRE's wire layout
         // matches ACHR byte-for-byte on Oblivion (NAME/DATA/XSCL/XESP),
         // so it routes through the same handler.
+        //
+        // #3542 — PGRE (placed grenade/mine), PHZD (placed hazard) and
+        // PMIS (placed missile) join them for the same reason: they are
+        // placements with the identical NAME + 24-byte DATA layout, and
+        // the terminal `skip_record` below was dropping every one of them
+        // on every title from FO3 forward. Header-validated census of the
+        // vanilla masters (2026-08-30):
+        //
+        //     FO3  PGRE 350                 FNV  PGRE 174
+        //     FO4  PGRE 395 + PHZD 981 + PMIS 1   (Fallout4.esm alone;
+        //          2,928 across all seven FO4 masters — PHZD-dominant)
+        //     SF   PGRE 1,268 + PHZD 375    (PGRE-dominant)
+        //
+        // Note the dominant class inverts between titles, which is why
+        // this is one arm for the whole family rather than a PGRE fix.
+        // Oblivion ships none of the three. `PlacedRef` carries no record
+        // type of its own — downstream discriminates on the *base*
+        // record (`index.statics` / NPC_ / CREA), so a PGRE pointing at a
+        // PROJ resolves exactly like a REFR pointing at a STAT.
         if &header.record_type == b"REFR"
             || &header.record_type == b"ACHR"
             || &header.record_type == b"ACRE"
+            || &header.record_type == b"PGRE"
+            || &header.record_type == b"PHZD"
+            || &header.record_type == b"PMIS"
         {
             let subs = reader.read_sub_records(&header)?;
             // SKY-D4-01 / EX-09/17 item 7 — a REFR/ACHR/ACRE with the
@@ -1083,7 +1105,13 @@ fn parse_refr_group_inner(
             let remap = reader.get_form_id_remap();
             navmeshes.push(parse_navm(header.form_id, &subs, &remap));
         } else {
-            // Skip other record types (PGRE, PMIS, etc.)
+            // Skip everything else. The placed-record family (PGRE / PHZD
+            // / PMIS) used to land here — see #3542 and the arm above; the
+            // remaining placed types the Creation Engine defines (PARW /
+            // PBAR / PBEA / PCON / PFLA) are measured at **zero** records
+            // across every vanilla master this engine loads, so they are
+            // deliberately not enumerated: an arm with no corpus behind it
+            // is a premise waiting to rot.
             reader.skip_record(&header);
         }
     }
