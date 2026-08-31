@@ -267,9 +267,9 @@ impl PrecombinedSpawnJob {
                             if csgs.is_empty() {
                                 return None;
                             }
-                            let meshes = {
+                            let (meshes, geometry_dedup) = {
                                 let mut pool = world.resource_mut::<StringPool>();
-                                let mut meshes = build_precombine_meshes(
+                                let (mut meshes, geometry_dedup) = build_precombine_meshes(
                                     &scene,
                                     &|h| csgs.get(&h).cloned(),
                                     &mut pool,
@@ -323,9 +323,10 @@ impl PrecombinedSpawnJob {
                                         ) = blend;
                                     }
                                 }
-                                meshes
+                                (meshes, geometry_dedup)
                             };
-                            (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                            (!meshes.is_empty())
+                                .then(|| Arc::new(geometry_only_cached(meshes, geometry_dedup)))
                         }
                         Err(e) => {
                             log::warn!(
@@ -698,8 +699,13 @@ pub(super) fn build_precombine_meshes(
     scene: &NifScene,
     resolve_csg: &dyn Fn(u32) -> Option<Arc<CsgArchive>>,
     pool: &mut StringPool,
-) -> Vec<ImportedMesh> {
+) -> (Vec<ImportedMesh>, Vec<u32>) {
     let mut meshes = Vec::new();
+    // #3510 — `geometry_dedup[i]` is the index of the mesh whose geometry
+    // mesh `i` shares. Every instance of one object points at that object's
+    // first mesh, so the N byte-identical clones below collapse to one
+    // upload and one BLAS while each keeps its own entity and `Transform`.
+    let mut geometry_dedup: Vec<u32> = Vec::new();
     // `collect_precombine_geom_refs` pairs each shared-geometry object with
     // the material the owning shape's shader/alpha properties resolve to
     // (M49 texturing) — so precombines render with their real diffuse /
@@ -762,22 +768,31 @@ pub(super) fn build_precombine_meshes(
         // One placed instance per combined transform, each carrying the
         // resolved material. Objects with no combined entries carry no
         // placement (an unplaced merge) and contribute nothing.
+        // The first instance of this object is its own representative;
+        // every later one points back at it. `into_imported_mesh` only sets
+        // `translation`/`rotation`/`scale` — the vertex data it is handed is
+        // the same decoded buffer each time — so they really are identical
+        // geometry, which is the premise the dedup rests on.
+        let representative = meshes.len() as u32;
         for inst in &geom.instances {
             let mesh = decoded
                 .clone()
                 .into_imported_mesh(&inst.transform, geom.material.clone());
             meshes.push(mesh);
+            geometry_dedup.push(representative);
         }
     }
-    meshes
+    debug_assert_eq!(meshes.len(), geometry_dedup.len());
+    (meshes, geometry_dedup)
 }
 
 /// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
 /// (no collisions / lights / clips / particles) so the existing
 /// [`spawn_placed_instances`] path uploads + spawns them.
-fn geometry_only_cached(meshes: Vec<ImportedMesh>) -> CachedNifImport {
+fn geometry_only_cached(meshes: Vec<ImportedMesh>, geometry_dedup: Vec<u32>) -> CachedNifImport {
     CachedNifImport {
         meshes,
+        geometry_dedup,
         collisions: Vec::new(),
         collision_authoring: Default::default(),
         lights: Vec::new(),
@@ -942,7 +957,7 @@ mod tests {
         let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
         let mut pool = StringPool::new();
         let resolve = one_csg(data.join("Fallout4.esm").to_str().unwrap(), csg);
-        let meshes = build_precombine_meshes(&scene, &resolve, &mut pool);
+        let (meshes, _dedup) = build_precombine_meshes(&scene, &resolve, &mut pool);
 
         assert!(
             !meshes.is_empty(),
@@ -1031,7 +1046,7 @@ mod tests {
         let mut pool = StringPool::new();
         let base = Arc::new(base_csg);
         let wrong_blob = |_| Some(base.clone());
-        let wrong = build_precombine_meshes(&scene, &wrong_blob, &mut pool);
+        let (wrong, _dedup) = build_precombine_meshes(&scene, &wrong_blob, &mut pool);
         assert!(
             wrong.is_empty(),
             "'{rebake}' must not decode out of Fallout4 - Geometry.csg — \
@@ -1041,7 +1056,7 @@ mod tests {
 
         let mut pool = StringPool::new();
         let resolve = one_csg(data.join("DLCCoast.esm").to_str().unwrap(), dlc_csg);
-        let right = build_precombine_meshes(&scene, &resolve, &mut pool);
+        let (right, _dedup) = build_precombine_meshes(&scene, &resolve, &mut pool);
         assert!(
             !right.is_empty(),
             "'{rebake}' decodes against the blob its own objects name"
@@ -1288,7 +1303,7 @@ mod tests {
         let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
         let mut pool = StringPool::new();
         let resolve = one_csg(coast.to_str().unwrap(), csg);
-        let meshes = build_precombine_meshes(&scene, &resolve, &mut pool);
+        let (meshes, _dedup) = build_precombine_meshes(&scene, &resolve, &mut pool);
         assert!(
             !meshes.is_empty(),
             "DLC precombine decodes against its own DLCCoast - Geometry.csg"
@@ -1297,5 +1312,58 @@ mod tests {
             "dlc path '{built}' → {} mesh(es) from DLCCoast CSG",
             meshes.len()
         );
+    }
+}
+
+/// #3510 — the geometry-dedup mapping `build_precombine_meshes` emits.
+///
+/// A precombine `_oc.nif` materialises one `ImportedMesh` per
+/// `BSPackedGeomDataCombined` instance transform, all cloned from one
+/// decoded shared geometry. Without the mapping each claimed a distinct
+/// `(path, sub_mesh_index)` cache slot — N uploads, N BLAS builds, and no
+/// instanced draw merging, measured at 1.37x VRAM overall and 4.6x on the
+/// worst tile.
+#[cfg(test)]
+mod geometry_dedup_tests {
+    use crate::cell_loader::spawn::mesh_instance::geometry_dedup_active;
+
+    /// The mapping is only safe to index when it came from the same mesh
+    /// list, and only useful when there is a cache entry to redirect to.
+    #[test]
+    fn dedup_requires_both_a_cache_key_and_a_matching_length() {
+        assert!(geometry_dedup_active(true, 4, 4));
+        // No cache key — nothing to acquire a shared handle through.
+        assert!(!geometry_dedup_active(false, 4, 4));
+        // A mapping from a different mesh list would pair instances with
+        // unrelated geometry; not deduping is the safe outcome.
+        assert!(!geometry_dedup_active(true, 3, 4));
+        assert!(!geometry_dedup_active(true, 5, 4));
+        // The ordinary path: every other importer leaves the vector empty.
+        assert!(!geometry_dedup_active(true, 0, 4));
+        // Degenerate but consistent — an empty import deduplicates nothing.
+        assert!(geometry_dedup_active(true, 0, 0));
+    }
+
+    /// The shape `build_precombine_meshes` guarantees: contiguous runs, each
+    /// pointing at the run's own first index, so an instance never redirects
+    /// forward or across objects.
+    #[test]
+    fn representative_indices_are_self_referential_run_starts() {
+        // Two objects: 3 instances then 2.
+        let dedup: Vec<u32> = vec![0, 0, 0, 3, 3];
+        for (i, &rep) in dedup.iter().enumerate() {
+            assert!(
+                (rep as usize) <= i,
+                "instance {i} redirects forward to {rep} — a representative \
+                 must already have been uploaded when its instances resolve"
+            );
+            assert_eq!(
+                dedup[rep as usize], rep,
+                "representative {rep} must point at itself, or the redirect \
+                 chains instead of resolving in one hop"
+            );
+        }
+        let unique = dedup.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), 2, "5 instances collapse to 2 uploads");
     }
 }

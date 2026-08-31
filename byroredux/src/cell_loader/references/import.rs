@@ -181,6 +181,7 @@ pub(super) fn parse_and_import_nif(
 
     Some(Arc::new(CachedNifImport {
         meshes,
+        geometry_dedup: Vec::new(),
         collisions,
         collision_authoring,
         lights,
@@ -549,6 +550,7 @@ pub(super) fn parse_and_import_spt(
 
     Some(Arc::new(CachedNifImport {
         meshes: imported.meshes,
+        geometry_dedup: Vec::new(),
         // No collisions / lights / particles / animation clips on
         // the placeholder. Real branch geometry might emit a sphere
         // collision (tree-trunk collider) once the geometry tail is

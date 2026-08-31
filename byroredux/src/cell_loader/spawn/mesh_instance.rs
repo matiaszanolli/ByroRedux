@@ -349,6 +349,10 @@ pub(super) struct PlacementCtx<'a> {
     pub(super) ref_scale: f32,
     pub(super) base_layer: byroredux_core::ecs::components::RenderLayer,
     pub(super) mesh_cache_key: Option<&'a str>,
+    /// #3510 — per-mesh geometry representative (see
+    /// [`crate::cell_loader::nif_import_registry::CachedNifImport`]). Empty
+    /// means the identity mapping, which is every path but FO4 precombines.
+    pub(super) geometry_dedup: &'a [u32],
     pub(super) refr_overlay: Option<&'a RefrTextureOverlay>,
     pub(super) light_data: Option<&'a esm::cell::LightData>,
     pub(super) light_animation_flags: u32,
@@ -468,10 +472,27 @@ pub(super) fn prepare_mesh_uploads(
 ) -> Vec<PreparedMeshUpload> {
     let mut prepared = vec![PreparedMeshUpload::Failed; imported.len()];
     let mut fresh = Vec::new();
+    // #3510 — indices whose geometry belongs to an earlier mesh. They are
+    // resolved after the batch upload below, by acquiring the
+    // representative's cache entry, so N instances of one FO4 precombine
+    // object share one upload, one BLAS and (because the draw batcher keys
+    // on mesh handle) one instanced draw. Deduping is only possible with a
+    // cache key to acquire through; without one the mapping is ignored and
+    // behaviour is exactly as before.
+    let dedup_active = geometry_dedup_active(
+        pc.mesh_cache_key.is_some(),
+        pc.geometry_dedup.len(),
+        imported.len(),
+    );
+    let mut shared: Vec<usize> = Vec::new();
 
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
         if let Some(fog_volume) = prepare_fog_mesh_instance(pc, mesh, &paths[sub_mesh_index]) {
             prepared[sub_mesh_index] = PreparedMeshUpload::Fog(fog_volume);
+            continue;
+        }
+        if dedup_active && pc.geometry_dedup[sub_mesh_index] as usize != sub_mesh_index {
+            shared.push(sub_mesh_index);
             continue;
         }
         let sub_mesh_index_u32 = sub_mesh_index as u32;
@@ -497,6 +518,7 @@ pub(super) fn prepare_mesh_uploads(
     }
 
     if fresh.is_empty() {
+        resolve_shared_geometry(ctx, pc, &shared, &mut prepared);
         return prepared;
     }
 
@@ -585,7 +607,68 @@ pub(super) fn prepare_mesh_uploads(
         }
     }
 
+    resolve_shared_geometry(ctx, pc, &shared, &mut prepared);
     prepared
+}
+
+/// #3510 — whether the geometry-dedup mapping can be applied to this
+/// placement.
+///
+/// Both conditions are load-bearing. Without a `mesh_cache_key` there is no
+/// cache entry to acquire a shared handle through, so the mapping has
+/// nothing to redirect to. A length mismatch means the mapping did not come
+/// from this mesh list — indexing it would silently pair an instance with an
+/// unrelated geometry, which is worse than not deduping.
+pub(crate) fn geometry_dedup_active(
+    has_cache_key: bool,
+    dedup_len: usize,
+    mesh_count: usize,
+) -> bool {
+    has_cache_key && dedup_len == mesh_count
+}
+
+/// #3510 — hand every deduped instance its representative's mesh handle.
+///
+/// Goes through `acquire_cached` rather than copying the handle directly
+/// because the refcount has to rise once per holder: each instance spawns
+/// its own entity carrying a `MeshHandle`, and cell unload calls
+/// `drop_mesh` once per entity. Copying the handle would under-count and
+/// free the shared geometry while the remaining instances still reference
+/// it. A representative that failed to upload leaves its instances
+/// `Failed`, exactly as the un-deduped path would have.
+fn resolve_shared_geometry(
+    ctx: &mut VulkanContext,
+    pc: &PlacementCtx,
+    shared: &[usize],
+    prepared: &mut [PreparedMeshUpload],
+) {
+    if shared.is_empty() {
+        return;
+    }
+    let Some(key) = pc.mesh_cache_key else {
+        return;
+    };
+    for &index in shared {
+        let representative = pc.geometry_dedup[index] as u32;
+        match ctx.mesh_registry.acquire_cached(key, representative) {
+            // `fresh_for_rt: false` — the representative already queued its
+            // BLAS build this placement; a second request for the same mesh
+            // handle would be redundant work against the acceleration
+            // manager's reserve floors, which is half of what #3510 is about.
+            Some(handle) => {
+                prepared[index] = PreparedMeshUpload::Ready {
+                    handle,
+                    fresh_for_rt: false,
+                }
+            }
+            None => {
+                log::debug!(
+                    "precombine dedup: representative sub-mesh {representative} of '{key}' is \
+                     not cached, so instance {index} has no geometry to share"
+                );
+            }
+        }
+    }
 }
 
 /// Spawn the render entity (+ optional physics ghost + ESM light
@@ -608,6 +691,9 @@ pub(super) fn spawn_mesh_instance(
 ) -> bool {
     use byroredux_core::ecs::{Name, Parent};
     let PlacementCtx {
+        // #3510 — consumed in `prepare_mesh_uploads`, which runs before this
+        // per-instance spawn; nothing here needs it.
+        geometry_dedup: _,
         tex_provider,
         ref_pos,
         ref_rot,

@@ -699,6 +699,7 @@ pub(super) fn spawn_placed_instances(
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     let pc = PlacementCtx {
         tex_provider,
+        geometry_dedup: &cached.geometry_dedup,
         ref_pos,
         ref_rot,
         ref_scale,
@@ -1234,7 +1235,7 @@ fn spawn_collision_shapes(
 }
 
 // Per-sub-mesh instance spawn (#2410 / TD1-007).
-mod mesh_instance;
+pub(super) mod mesh_instance;
 use mesh_instance::{prepare_mesh_uploads, resolve_mesh_paths, spawn_mesh_instance, PlacementCtx};
 
 #[cfg(test)]

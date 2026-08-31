@@ -19,6 +19,7 @@ use crate::parsed_nif_cache::ParsedNifCache;
 fn dummy_cached() -> Arc<CachedNifImport> {
     Arc::new(CachedNifImport {
         meshes: Vec::new(),
+        geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: Default::default(),
         lights: Vec::new(),

@@ -422,6 +422,7 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
     );
     let cached = CachedNifImport {
         meshes: vec![mesh],
+        geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: CollisionAuthoringSummary {
             new_physics: 1,

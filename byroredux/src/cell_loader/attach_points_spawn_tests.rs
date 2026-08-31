@@ -21,6 +21,7 @@ fn cached_with_attach(
 ) -> CachedNifImport {
     CachedNifImport {
         meshes: Vec::new(),
+        geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: Default::default(),
         lights: Vec::new(),

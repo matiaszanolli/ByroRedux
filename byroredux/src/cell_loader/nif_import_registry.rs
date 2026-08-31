@@ -119,6 +119,26 @@ mod canonical_key_tests {
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,
+    /// #3510 — per-mesh geometry representative, parallel to `meshes`.
+    ///
+    /// `geometry_dedup[i]` names the index whose *geometry* mesh `i` shares.
+    /// The identity mapping (and the empty vector, which means the same
+    /// thing) is the normal case: one entry per distinct sub-mesh.
+    ///
+    /// FO4 precombines are the exception. `build_precombine_meshes`
+    /// materialises one `ImportedMesh` per `BSPackedGeomDataCombined`
+    /// instance transform, all cloned from one decoded shared geometry and
+    /// differing only in `translation`/`rotation`/`scale` — so N byte-
+    /// identical meshes claim N distinct `(path, sub_mesh_index)` cache
+    /// slots, N vertex/index uploads and N BLAS builds, and the draw
+    /// batcher (which batches on mesh handle) cannot merge them. Measured
+    /// over 4 000 `_oc.nif` files: 1.37x VRAM overall, 4.6x on the worst
+    /// tile, where 2 257 meshes carry ~500 distinct geometries.
+    ///
+    /// Pointing every instance at its object's first mesh collapses the
+    /// uploads and the BLASes while each instance keeps its own entity and
+    /// `Transform`, which is where the placement actually belongs.
+    pub(super) geometry_dedup: Vec<u32>,
     pub(super) collisions: Vec<byroredux_nif::import::ImportedCollision>,
     /// Collision-object subclasses retained independently of decoded shapes.
     /// An empty `collisions` vector plus `new_physics > 0` means FO4+ packed
