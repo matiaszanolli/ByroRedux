@@ -32,3 +32,6 @@ This is intentionally an initial SDK surface, not a stability promise for the
 entire engine. New inspectors, gizmos, asset browsers, undo/redo, serialization,
 and plugin bindings should extend the typed document/command boundary instead
 of coupling to the executable or egui callbacks.
+
+The proposed path from this prototype to a supported v0.1 contract is tracked
+in the [SDK v0.1 development plan](../../docs/engine/sdk-v0.1-development-plan.md).
