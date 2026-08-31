@@ -111,6 +111,17 @@ pub(super) fn reemit_water_planes(
     let Some(wq) = world.query::<WaterPlane>() else {
         return;
     };
+    // #3678 — `World::query` returning `Some` only means the storage was
+    // ever created, and once an exterior or a water interior has been
+    // visited it exists for the rest of the process. Without this check
+    // every frame of a dry interior after a door transition, and every
+    // frame after a streaming unload emptied the resident water set, still
+    // paid one hash insert per draw command (3,949 on the FO4
+    // InstituteBioScience baseline) to build an index the loop below then
+    // iterated zero times against.
+    if wq.is_empty() {
+        return;
+    }
     let mut scratch = world.try_resource_mut::<WaterDrawIndexScratch>();
     let mut fallback = FxHashMap::default();
     let draw_indices = scratch
