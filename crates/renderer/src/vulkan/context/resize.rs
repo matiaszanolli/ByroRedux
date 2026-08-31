@@ -297,8 +297,10 @@ impl VulkanContext {
         // every attachment format the render pass binds is constant
         // across resizes. See PIPE-2 / #576.
         if format_changed {
-            // Main render pass: 7 color (HDR + G-buffer + raw_indirect
-            // + albedo + reservoir) + depth.
+            // Main render pass: 8 color (HDR + G-buffer + raw_indirect
+            // + albedo + fsr_reactive + fsr_transparency) + depth. (The
+            // ReSTIR reservoir attachment this used to name was removed
+            // under #1583.)
             self.render_pass = create_render_pass(
                 &self.device,
                 GBufferFormats {

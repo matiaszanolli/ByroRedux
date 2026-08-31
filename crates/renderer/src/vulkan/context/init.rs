@@ -302,8 +302,11 @@ impl VulkanContext {
             )?;
         let depth_history_sampler = create_depth_history_sampler(&device)?;
 
-        // 10. Main render pass: 7 color attachments (HDR + G-buffer +
-        // raw_indirect + albedo + reservoir) + depth.
+        // 10. Main render pass: 8 color attachments (HDR + G-buffer +
+        // raw_indirect + albedo + fsr_reactive + fsr_transparency) + depth.
+        // (The ReSTIR reservoir attachment this used to name was removed
+        // under #1583; slots 6/7 are now the FSR reactive and
+        // transparency-and-composition masks.)
         let render_pass = create_render_pass(
             &device,
             helpers::GBufferFormats {

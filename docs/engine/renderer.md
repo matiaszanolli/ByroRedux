@@ -22,8 +22,8 @@ Source: `crates/renderer/src/vulkan/`
 
 - **Full Vulkan init chain** with validation layers in debug builds
 - **RT acceleration structures**: BLAS per mesh + per-skinned-entity BLAS
-  refit + TLAS rebuilt per frame in `DEVICE_LOCAL` memory with HOST→AS_BUILD
-  memory barriers, LRU eviction (budget = `device_local / 3`, floored at
+  refit + TLAS rebuilt per frame in `DEVICE_LOCAL` memory, gated by an
+  `AS_BUILD → ray-query-consumer` memory barrier, LRU eviction (budget = `device_local / 3`, floored at
   256 MB), `ALLOW_COMPACTION` + async occupancy query + compacted copy
   (M36: 20–50% BLAS memory reduction), batched build submission
 - **Multi-light SSBO**: up to `MAX_LIGHTS = 1023` point / spot / directional
@@ -294,8 +294,14 @@ the allocator fires after the logical device has already been destroyed.
    `COMPUTE_WRITE → AS_BUILD_INPUT_READ`, then `AS_BUILD_WRITE → AS_BUILD_INPUT_READ`.
 10. Rebuild/refit the TLAS over visible BLASes — `build_tlas` overrides the
     per-mesh BLAS lookup with `skinned_blas[entity_id]` whenever
-    `DrawCommand.bone_offset != 0`. HOST→AS_BUILD memory barrier before the
-    ray-query consumers.
+    `DrawCommand.bone_offset != 0`. `ACCELERATION_STRUCTURE_BUILD_KHR |
+    ACCELERATION_STRUCTURE_WRITE_KHR → FRAGMENT_SHADER | COMPUTE_SHADER |
+    ACCELERATION_STRUCTURE_READ_KHR` memory barrier gates the ray-query
+    consumers — the frame's only AS_WRITE→AS_READ barrier, publishing both
+    the skinned BLAS refits and the TLAS build (#2931). There is no
+    HOST-source barrier on this path; the TLAS instance staging buffer's
+    `HOST_WRITE → TRANSFER_READ` barrier is a separate, earlier step that
+    orders the host write against its own staging→device-local copy.
 11. Dispatch `cluster_cull.comp` to assign lights to froxel clusters.
 12. Clear the `water_caustic_accum` image **before** the main render pass
     (so `water.frag`'s in-pass `imageAtomicAdd` accumulates) with a
@@ -791,10 +797,12 @@ recorded on a separate command buffer with a separate fence. `draw_frame`
 waits on both this slot's fence **and** the previous slot's, because the
 shared scratch buffer and persistent SSBOs are touched across slots.
 
-For the Havok / RT path there's an additional **HOST→AS_BUILD** memory
-barrier that fences staging-buffer uploads before the BLAS build, and the
-skinned-refit barrier chain (`COMPUTE → AS_BUILD → AS_BUILD → FRAGMENT`)
-described in the per-frame draw section.
+For the Havok / RT path there's an additional **`HOST_WRITE → TRANSFER_READ`**
+memory barrier that fences the TLAS instance staging buffer's host write
+before its staging→device-local copy (not a HOST→AS_BUILD stage pair — no
+such barrier exists), and the skinned-refit barrier chain
+(`COMPUTE → AS_BUILD → AS_BUILD → FRAGMENT`) described in the per-frame
+draw section.
 
 ## Backface culling and winding order
 
