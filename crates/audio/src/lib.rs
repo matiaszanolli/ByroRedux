@@ -626,9 +626,14 @@ impl AudioWorld {
         self.music = None;
     }
 
-    /// True when music is currently playing or fading out. Useful
-    /// for menu-toggle / cell-load gameplay logic that wants to
-    /// avoid stacking music calls.
+    /// True while a music handle is installed and its state has not
+    /// yet reached `Stopped`. **Not** true for the whole fade-out
+    /// window: `stop_music` clears the slot immediately after issuing
+    /// `handle.stop(fade)`, so this reports `false` from the moment
+    /// `stop_music` returns even though kira keeps rendering the fade
+    /// tail (`fade_out_secs`, e.g. `REGN_AMBIENT_CROSSFADE_SECS` =
+    /// 3.0 s) internally. A caller that needs to know "is the slot
+    /// still audibly occupied" cannot use this alone.
     pub fn is_music_active(&self) -> bool {
         self.music
             .as_ref()

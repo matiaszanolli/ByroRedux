@@ -858,11 +858,12 @@ fn spawn_placement_root(
     // root would be invisible to ray-cast picking, culling, and any
     // future RT-budget-by-bounding-sphere consumer. See bounds.rs:161.
     world.insert(placement_root, WorldBound::ZERO);
-    // #994 — SpeedTree placeholders (and any future NiBillboardNode-
-    // rooted scene) flag a billboard mode on the cache entry. Attaching
-    // the `Billboard` component on the placement root makes
-    // `billboard_system` yaw-track the spawned entity each frame.
-    // Without this insertion `.spt` REFRs render as static quads.
+    // #994 — seam for a future NiBillboardNode-rooted NIF producer that
+    // flags a billboard mode on the cache entry instead of on the mesh.
+    // No producer sets `placement_root_billboard` today — #3076 moved
+    // the SpeedTree billboard onto the renderable mesh itself
+    // (`mesh_instance.rs` attaches `Billboard` alongside the mesh), so
+    // this branch is currently unreachable.
     if let Some(mode) = cached.placement_root_billboard {
         world.insert(placement_root, Billboard::new(mode));
     }

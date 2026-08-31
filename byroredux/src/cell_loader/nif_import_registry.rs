@@ -165,13 +165,17 @@ pub(crate) struct CachedNifImport {
     /// yet attach `Name` components or parent meshes under a placement
     /// root).
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
-    /// Billboard mode to attach to the spawned placement root entity.
-    /// `None` for ordinary meshes; `Some` for `NiBillboardNode`-rooted
-    /// content and for SpeedTree `.spt` placeholders, which need the
-    /// placement root to yaw-track the camera. Populated by the SPT
-    /// importer from `ImportedNode { billboard_mode }`; the NIF path
-    /// currently leaves this `None` (see #994 — NIF cell-loader has
-    /// the same gap, deferred).
+    /// Billboard mode to attach to the spawned placement root entity —
+    /// a seam for a future `NiBillboardNode`-rooted NIF producer, not a
+    /// live path today. #3076 moved the SpeedTree billboard from the
+    /// placement root onto the renderable mesh itself
+    /// (`mesh_instance.rs` attaches `Billboard` alongside the mesh), so
+    /// `import_spt_scene` now builds its root with
+    /// `placeholder_root_node(/* billboard */ false)` and this field is
+    /// structurally `None` at every construction site in the tree — its
+    /// consumer in `spawn.rs` is currently unreachable. Kept as the seam
+    /// for a NIF path that would root-billboard instead of mesh-billboard;
+    /// no such producer exists yet (see #994).
     pub(super) placement_root_billboard: Option<BillboardMode>,
     /// Neutral runtime response/stiffness constant (`(1.0, 0.0)`) for
     /// SpeedTree sway, set by the SPT importer. `TreeRecord.canopy_params`

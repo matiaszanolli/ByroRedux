@@ -23,12 +23,13 @@
 //! - `SNAM` — array of u32 leaf indices flagging which leaves animate
 //!   under wind. Empty / absent on Skyrim+ TREE records.
 //! - `CNAM` — canopy shadow / wind parameters as a contiguous f32 array.
-//!   Field count varies per game (5 floats Oblivion, 8 floats FO3/FNV);
-//!   semantics not pinned down here — we surface the raw values for the
-//!   future SpeedTree runtime to interpret.
-//! - `BNAM` — billboard width/height (two f32) on FO3/FNV; absent on
-//!   Skyrim+. Captured as `(width, height)` when shaped like that, else
-//!   left as `None`.
+//!   8 floats on all three games (142/142 Oblivion, 9/9 FO3, 3/3 FNV
+//!   measured — no split by game); semantics not pinned down here — we
+//!   surface the raw values for the future SpeedTree runtime to interpret.
+//! - `BNAM` — billboard width/height (two f32). Present on 100% of
+//!   vanilla Oblivion/FO3/FNV `.spt`-bearing records (Oblivion ships it
+//!   too, unlike an earlier claim here); absent on Skyrim+. Captured as
+//!   `(width, height)` when shaped like that, else left as `None`.
 //! - `FULL` — display name (lstring on localised plugins, else z-string).
 //! - `PFIG` — harvest base form (u32 form ID, ALCH or INGR usually).
 //! - `PFPC` — per-season harvest probability (skipped — gameplay only).
@@ -89,13 +90,14 @@ pub struct TreeRecord {
     /// Currently the importer returns a placeholder billboard
     /// (`crates/spt/src/import/mod.rs:116-180`).
     pub leaf_indices: Vec<u32>,
-    /// CNAM — canopy / wind parameters as raw f32. Field count varies
-    /// across games (5 on Oblivion, 8 on FO3/FNV); semantics aren't
-    /// pinned down here. It remains parse-but-don't-consume data until a
+    /// CNAM — canopy / wind parameters as raw f32. 8 floats on all three
+    /// games (Oblivion, FO3, FNV — no split); semantics aren't pinned
+    /// down here. It remains parse-but-don't-consume data until a
     /// citable layout or real branch/leaf animation decoder lands (#3190).
     pub canopy_params: Vec<f32>,
-    /// BNAM — billboard width / height on FO3/FNV. `None` on Oblivion
-    /// (BNAM absent there) and Skyrim+ (TREE records dropped the field).
+    /// BNAM — billboard width / height. Present on vanilla Oblivion too
+    /// (100% of `.spt`-bearing records across all three games); `None`
+    /// only on Skyrim+ (TREE records dropped the field).
     pub billboard_size: Option<(f32, f32)>,
     /// PFIG — harvest base form (ALCH on Oblivion, INGR on FO3/FNV).
     /// Empty / `None` on non-harvestable trees and on every Skyrim+
@@ -157,8 +159,8 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         })
         .unwrap_or_default();
 
-    // CNAM is 5 × f32 on Oblivion, 8 × f32 on FO3/FNV. Read every full
-    // f32 — semantics deferred to the SpeedTree runtime.
+    // CNAM is 8 × f32 on all three games (Oblivion, FO3, FNV — no split).
+    // Read every full f32 — semantics deferred to the SpeedTree runtime.
     let canopy_params: Vec<f32> = find_sub(subs, b"CNAM")
         .map(|data| {
             let mut r = SubReader::new(data);
@@ -170,9 +172,10 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         })
         .unwrap_or_default();
 
-    // BNAM is 2 × f32 (billboard width, billboard height) on FO3/FNV.
-    // Oblivion ships TREE records without BNAM. Skyrim+ TREE records
-    // also drop BNAM (no SpeedTree binary so no leaf billboards).
+    // BNAM is 2 × f32 (billboard width, billboard height), present on
+    // 100% of vanilla `.spt`-bearing records across Oblivion/FO3/FNV
+    // (Oblivion ships it too). Skyrim+ TREE records drop BNAM (no
+    // SpeedTree binary so no leaf billboards).
     let billboard_size = find_sub(subs, b"BNAM").and_then(|data| {
         if data.len() < 8 {
             return None;
@@ -274,25 +277,28 @@ mod tests {
         assert!(tree.has_speedtree_binary());
     }
 
-    /// Oblivion TREE: CNAM is 5 floats (not 8), no BNAM, no PFIG on
-    /// non-harvestable trees, MODL still points at a `.spt`. The parser
-    /// must shape-tolerate the shorter CNAM rather than dropping the
-    /// whole record.
+    /// Oblivion TREE: CNAM is 8 floats (same as FO3/FNV, no split), BNAM
+    /// is present (100% of vanilla Oblivion `.spt`-bearing records), no
+    /// PFIG on non-harvestable trees, no OBND (Oblivion TREE often omits
+    /// it), MODB present, MODL still points at a `.spt`.
     #[test]
-    fn parse_oblivion_short_cnam_no_bnam_no_pfig() {
+    fn parse_oblivion_real_shape_no_obnd_no_pfig() {
         let subs = vec![
             sub(b"EDID", b"TreePine01\0"),
             sub(b"MODL", b"trees\\pine01.spt\0"),
+            sub(b"MODB", &1.2f32.to_le_bytes()),
             sub(b"ICON", b"trees\\pine_leaf.tga\0"),
-            sub(b"CNAM", &cnam_bytes(&[0.4, 0.9, 0.6, 1.8, 1.0])),
+            sub(b"CNAM", &cnam_bytes(&[0.4, 0.9, 0.6, 1.8, 1.0, 0.3, 0.2, 1.0])),
+            sub(b"BNAM", &cnam_bytes(&[96.0, 192.0])),
         ];
         let tree = parse_tree(0x00000042, &subs, &None);
         assert_eq!(tree.editor_id, "TreePine01");
         assert!(tree.has_speedtree_binary());
-        assert_eq!(tree.canopy_params.len(), 5, "Oblivion CNAM is 5 × f32");
-        assert!(
-            tree.billboard_size.is_none(),
-            "Oblivion TREE records ship no BNAM"
+        assert_eq!(tree.canopy_params.len(), 8, "CNAM is 8 × f32 on all three games");
+        assert_eq!(
+            tree.billboard_size,
+            Some((96.0, 192.0)),
+            "Oblivion TREE records ship BNAM too"
         );
         assert!(tree.harvest_form.is_none());
         assert!(tree.bounds.is_none(), "Oblivion TREE often omits OBND");

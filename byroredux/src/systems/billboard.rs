@@ -130,8 +130,11 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 return;
             };
             for (entity, tree_wind) in swq.iter() {
-                // A `SpeedTreeWind` without `Billboard` has no orientation
-                // this system owns — the placement root is exactly that.
+                // Defensive: every production `SpeedTreeWind` insert site
+                // (mesh_instance.rs, nif_loader.rs) attaches `Billboard` in
+                // the same statement group, so this should never miss in
+                // practice. Guard kept in case a future producer attaches
+                // `SpeedTreeWind` to an entity without `Billboard`.
                 let Some(billboard) = bq.get(entity) else {
                     continue;
                 };
@@ -507,10 +510,10 @@ mod tests {
         assert!(dirty.contains(&tree));
     }
 
-    /// #3192 — the parked-camera pass iterates `SpeedTreeWind`, so a
-    /// placement root (marked, but carrying no `Billboard`) is now reached by
-    /// that walk for the first time. It has no orientation this system owns:
-    /// it must be skipped, not given a camera-facing rotation it never had.
+    /// #3192 — the parked-camera pass iterates `SpeedTreeWind`, so any
+    /// entity carrying it without a `Billboard` (no production insert site
+    /// builds one today, per #3533) is defensively skipped rather than given
+    /// a camera-facing rotation it never had.
     #[test]
     fn parked_camera_wind_pass_skips_a_marked_entity_without_billboard() {
         let mut world = World::new();
@@ -520,7 +523,8 @@ mod tests {
         world.insert(camera, Camera::default());
         world.insert_resource(ActiveCamera(camera));
 
-        // The placement root: SpeedTreeWind without Billboard.
+        // Synthetic: SpeedTreeWind without Billboard (no production entity
+        // is in this configuration; the guard is defensive).
         let root = world.spawn();
         let root_gt = GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0);
         world.insert(root, root_gt);

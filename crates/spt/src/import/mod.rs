@@ -75,11 +75,11 @@ pub struct SptImportParams<'a> {
     /// spawned SpeedTree billboard to modulate its response to the shared
     /// weather `WindField`; the atmospheric direction and gust phase remain
     /// shared with water. `TreeRecord.canopy_params` (the TREE record's
-    /// `CNAM`, 5 × f32 on Oblivion / 8 × f32 on FO3/FNV) is parsed but not
-    /// consumed here — its field semantics aren't pinned to a citable layout
-    /// yet (#3190). **Not** sourced from `BNAM` — per UESP + the TREE parser,
-    /// BNAM is FO3/FNV billboard width/height, which flows into
-    /// `billboard_size` instead (see #1002).
+    /// `CNAM`, 8 × f32 on all three games — Oblivion, FO3, FNV, no split)
+    /// is parsed but not consumed here — its field semantics aren't pinned
+    /// to a citable layout yet (#3190). **Not** sourced from `BNAM` — per
+    /// UESP + the TREE parser, BNAM is billboard width/height, which flows
+    /// into `billboard_size` instead (see #1002).
     pub wind: Option<(f32, f32)>,
     /// FormID of the source TREE record. Useful when downstream code
     /// wants to seed per-tree variation (sway phase, leaf-tint
@@ -93,9 +93,18 @@ pub struct SptImportParams<'a> {
     /// (corpus stats 2026-05-13). Resolving to a billboard size:
     /// width ≈ R, height ≈ 2R (matches the existing default's 1:2
     /// ratio; verified against the Oblivion MODB range 157–3621).
+    /// **This tier is reached by 0 vanilla records in any game** (audit
+    /// 2026-08-30): Oblivion also ships BNAM on 100 % of `.spt`-bearing
+    /// TREE records, and BNAM sits above MODB in `compute_billboard_size`'s
+    /// precedence, so BNAM wins every vanilla Oblivion tree. Whether
+    /// Oblivion *should* size from BNAM or MODB is an open format
+    /// question (BNAM-chosen height is ~41% of the MODB-derived height on
+    /// the measured corpus) — not resolved by this comment; see #3740.
     pub bound_radius: Option<f32>,
-    /// BNAM billboard width/height (FO3/FNV only). Used as a fallback
-    /// below OBND but above MODB. **Not** preferred over OBND despite
+    /// BNAM billboard width/height. Present on 100% of vanilla
+    /// `.spt`-bearing TREE records across Oblivion, FO3 and FNV — not
+    /// FO3/FNV-only, an earlier claim here was wrong (audit 2026-08-30).
+    /// Used as a fallback below OBND but above MODB. **Not** preferred over OBND despite
     /// being authored "for the billboard specifically": corpus check
     /// on FNV/FO3 (#1002, 2026-05-13) showed BNAM encodes a
     /// distance-imposter quad size that *clamps* tall trees — e.g.
@@ -248,15 +257,19 @@ pub fn import_spt_scene(
 /// 1. **OBND** (`params.bounds`) — width is the X extent, height the
 ///    Z extent (Bethesda Z-up). FO3/FNV TREE records ship this on
 ///    100 % of vanilla content.
-/// 2. **BNAM** (`params.billboard_size`) — FO3/FNV billboard
-///    width × height pair. Only reached when OBND is absent (#1002,
-///    corpus verification showed BNAM clamps tall trees so OBND
-///    wins for our whole-tree placeholder).
+/// 2. **BNAM** (`params.billboard_size`) — billboard width × height
+///    pair, present on 100% of vanilla `.spt`-bearing TREE records
+///    across Oblivion, FO3 and FNV (not FO3/FNV-only). Only reached
+///    when OBND is absent (#1002, corpus verification showed BNAM
+///    clamps tall trees so OBND wins for our whole-tree placeholder) —
+///    which on the measured corpus means every vanilla Oblivion tree,
+///    since Oblivion ships no OBND.
 /// 3. **MODB** (`params.bound_radius`) — sphere radius converted as
-///    `(width, height) = (R, 2R)`. Oblivion ships MODB on 100 % of
-///    vanilla TREE records and OBND on none (corpus stats
-///    2026-05-13), so this is the Oblivion path. Matches the
-///    existing 256×512 default's 1:2 ratio.
+///    `(width, height) = (R, 2R)`. **Reached by 0 vanilla records in
+///    any game** (audit 2026-08-30): Oblivion ships MODB on 100 % of
+///    TREE records but also BNAM on 100 %, and tier 2 wins first. Matches
+///    the existing 256×512 default's 1:2 ratio; kept for mod content
+///    that authors MODB without BNAM.
 /// 4. **Default** — 256 × 512. Only reaches mod content with no
 ///    fields authored.
 ///

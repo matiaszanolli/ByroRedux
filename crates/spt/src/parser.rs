@@ -39,11 +39,15 @@ pub const TAG_MAX: u32 = 13_999;
 
 /// Parse a `.spt` byte stream into an [`SptScene`].
 ///
-/// Returns `Err(io::Error)` only on truly fatal conditions —
-/// magic-header mismatch or stream underflow during a partially-read
-/// payload. In-range-but-unknown tags surface non-fatally via
-/// `SptScene::unknown_tags`; the walker stops cleanly at the offset
-/// where it bailed.
+/// Returns `Err(io::Error)` (`InvalidData`) on five fatal conditions:
+/// magic-header mismatch, stream underflow during a partially-read
+/// payload, `read_string_lp`'s > 64 KiB length-prefix cap, `read_payload`'s
+/// `count × stride` > 64 KiB array-size cap, and an unrecognized
+/// context-sensitive-kind arm. All five discard the whole `SptScene`,
+/// including every `TagEntry` already decoded — unlike an in-range but
+/// unknown tag, which surfaces non-fatally via `SptScene::unknown_tags`
+/// and returns everything decoded so far, with the walker stopping
+/// cleanly at the offset where it bailed.
 pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
     if !bytes.starts_with(MAGIC_HEAD) {
         return Err(io::Error::new(
