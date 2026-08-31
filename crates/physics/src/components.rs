@@ -213,6 +213,33 @@ impl Component for CharacterController {
 /// entities (which the skinned mesh already reads). `joints` is retained
 /// only for teardown bookkeeping; removal cascades through
 /// [`crate::world::PhysicsWorld::remove_ragdoll`].
+/// Per-body buoyancy inputs for one ragdoll body, parallel to
+/// [`Ragdoll::bodies`] (#3492).
+///
+/// WATAL's target scan (`crate::water::apply_buoyancy`) selects on
+/// `RapierHandles` + `RigidBodyData`, and a ragdoll body has **neither**:
+/// `build_ragdoll` stores its handles only on [`Ragdoll`], and
+/// `activate_ragdoll`'s #1772 teardown deletes the bone entities' own rows
+/// of both components so the keyframed followers stop fighting the
+/// multibody. That leaves this the only surviving record of the two things
+/// the buoyancy loop needs per body.
+#[derive(Debug, Clone, Copy)]
+pub struct RagdollBuoyancy {
+    /// The body's first attached collider — what the submerged-fraction
+    /// test measures with `compute_aabb`. A limb built from a compound
+    /// shape has several; the first is the representative one, matching
+    /// the single-collider assumption `RapierHandles` already encodes for
+    /// every other dynamic body in the engine.
+    pub collider: ColliderHandle,
+    /// The damping `build_ragdoll` actually gave the body — the value
+    /// buoyancy must restore when the body leaves the water. Angular is
+    /// the **effective** figure (authored + `ContactConfig::
+    /// ragdoll_extra_angular_damping`), not the raw spec value, or exiting
+    /// water would silently strip the "less floppy than Havok" lever.
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Ragdoll {
     /// `(bone entity, rapier body, seed-time bone scale)` for every ragdoll
@@ -224,6 +251,9 @@ pub struct Ragdoll {
     pub bodies: Vec<(EntityId, RigidBodyHandle, f32)>,
     /// Multibody joint handles created for this ragdoll.
     pub joints: Vec<MultibodyJointHandle>,
+    /// Per-body buoyancy inputs, parallel to `bodies` (#3492). See
+    /// [`RagdollBuoyancy`] for why this cannot be recovered from the ECS.
+    pub buoyancy: Vec<RagdollBuoyancy>,
 }
 
 impl Component for Ragdoll {

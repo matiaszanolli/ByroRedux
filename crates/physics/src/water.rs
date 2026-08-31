@@ -47,7 +47,7 @@ use byroredux_core::ecs::world::World;
 use byroredux_core::math::Vec3;
 use rapier3d::prelude::RigidBodyType;
 
-use crate::components::RapierHandles;
+use crate::components::{Ragdoll, RapierHandles};
 use crate::world::PhysicsWorld;
 
 /// Engine-canonical water-physics tunables. One instance, game-invariant
@@ -262,7 +262,10 @@ pub fn wind_force(
 /// reach the buoyancy equilibrium (`density_ratio · fraction == 1`). For a
 /// symmetric shape (sphere / box) it is exact; for an irregular ragdoll
 /// bone it slightly over/under-estimates near the surface, which only
-/// shifts the rest height by a few BU — imperceptible.
+/// shifts the rest height by a few BU — imperceptible. (Ragdoll bones
+/// really do reach this path as of #3492; before that the scan had no
+/// `Ragdoll` arm and this sentence described a case the code could not
+/// produce.)
 ///
 /// - `aabb_min_y` / `aabb_max_y` — the body collider AABB's world-space
 ///   vertical extent (`aabb_max_y >= aabb_min_y`).
@@ -473,6 +476,33 @@ fn clear_stale_water_contacts(world: &World) {
         };
         if body.motion_type == MotionType::Dynamic {
             restore.push((entity, handles, body.linear_damping, body.angular_damping));
+        }
+    }
+    // #3492 — ragdoll bones reach the buoyancy sink through the `Ragdoll`
+    // pass in `apply_buoyancy_with_scratch`, so they can hold a live
+    // `WaterContact` here; but they have no `RapierHandles` / `RigidBodyData`
+    // row, so the loop above cannot see them. Without this arm a corpse whose
+    // water plane streamed out kept submerged damping and a latched contact
+    // for the rest of its life — the very state this helper exists to clear.
+    if let Some(ragdoll_q) = world.query::<Ragdoll>() {
+        for (_, ragdoll) in ragdoll_q.iter() {
+            for ((bone, body, _), buoyancy) in ragdoll.bodies.iter().zip(&ragdoll.buoyancy) {
+                let submerged = contact_q
+                    .get(*bone)
+                    .is_some_and(|contact| contact.submerged_fraction > 0.0);
+                if !submerged {
+                    continue;
+                }
+                restore.push((
+                    *bone,
+                    RapierHandles {
+                        body: *body,
+                        collider: buoyancy.collider,
+                    },
+                    buoyancy.linear_damping,
+                    buoyancy.angular_damping,
+                ));
+            }
         }
     }
     drop(contact_q);
@@ -700,6 +730,41 @@ fn apply_buoyancy_with_scratch(
             prior_depth: prior_contact.map(|contact| contact.depth).unwrap_or(0.0),
         });
     }
+    // #3492 — second source: ragdoll bodies. They are structurally invisible
+    // to the pass above — `build_ragdoll` stores their handles only on the
+    // `Ragdoll` component (no `RapierHandles` row is ever written for them),
+    // and `activate_ragdoll`'s #1772 teardown deletes the bone entities' own
+    // `RapierHandles` + `RigidBodyData` rows so the keyframed followers stop
+    // fighting the multibody. Both halves of that are correct for their own
+    // purposes; the gap was that this scan keys off exactly those two
+    // components and had no `Ragdoll` arm, so a corpse in water sank at full
+    // gravity with air damping and emitted no `WaterContact` for the splash /
+    // audio / FX consumers downstream. The release path has had a `Ragdoll`
+    // arm since #1531 — this mirrors it.
+    //
+    // Gated on the storage existing and being non-empty so scenes with no
+    // actors pay nothing.
+    if let Some(ragdoll_q) = world.query::<Ragdoll>() {
+        for (_, ragdoll) in ragdoll_q.iter() {
+            for ((bone, body, _), buoyancy) in ragdoll.bodies.iter().zip(&ragdoll.buoyancy) {
+                let prior_contact = contact_q.as_ref().and_then(|cq| cq.get(*bone)).copied();
+                targets.push(BuoyancyTarget {
+                    entity: *bone,
+                    handles: RapierHandles {
+                        body: *body,
+                        collider: buoyancy.collider,
+                    },
+                    authored_lin: buoyancy.linear_damping,
+                    authored_ang: buoyancy.angular_damping,
+                    prior_wet: prior_contact
+                        .map(|contact| contact.submerged_fraction > 0.0)
+                        .unwrap_or(false),
+                    prior_depth: prior_contact.map(|contact| contact.depth).unwrap_or(0.0),
+                });
+            }
+        }
+    }
+
     drop(handles_q);
     drop(body_q);
     drop(contact_q);
@@ -2177,6 +2242,209 @@ mod tests {
             final_vx <= 8.0 * 1.05 && final_vx > 8.0 * 0.9,
             "body settled at {final_vx} BU/s against an authored current of 8.0 \
              — overshoot or undershoot means the response is not proportional"
+        );
+    }
+}
+
+/// #3492 — ragdoll bodies must reach the buoyancy sink.
+///
+/// They are invisible to the `RapierHandles` + `RigidBodyData` scan by
+/// construction: `build_ragdoll` records their handles only on the
+/// `Ragdoll` component, and `activate_ragdoll`'s #1772 teardown deletes the
+/// bone entities' own rows of both selectors. Before the second pass, a
+/// corpse in water sank at full gravity with air damping and emitted no
+/// `WaterContact` at all.
+#[cfg(test)]
+pub(crate) mod ragdoll_buoyancy_tests {
+    use super::*;
+    use crate::config::ContactConfig;
+    use crate::ragdoll::{build_ragdoll, RagdollBodySpec, RagdollSpec};
+    use byroredux_core::ecs::components::collision::CollisionShape;
+    use byroredux_core::ecs::components::water::{
+        WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+    };
+    use byroredux_core::math::{Quat, Vec3};
+
+    /// A world whose only dynamic body is one ragdoll limb, seeded below a
+    /// water surface at y=0. Deliberately registers `RapierHandles` and
+    /// `RigidBodyData` but writes **no rows** for the bone — exactly the
+    /// state `activate_ragdoll` leaves behind (#1772).
+    pub(crate) fn submerged_ragdoll_world(start_y: f32) -> (World, EntityId) {
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.register::<RapierHandles>();
+        world.register::<RigidBodyData>();
+        world.register::<WaterContact>();
+        world.register::<Ragdoll>();
+
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, 0.0, 500.0],
+            },
+        );
+
+        let bone = world.spawn();
+        let spec = RagdollSpec {
+            bodies: vec![RagdollBodySpec {
+                entity: bone,
+                translation: Vec3::new(0.0, start_y, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+                shape: CollisionShape::Ball { radius: 5.0 },
+                mass: 4.0,
+                linear_damping: 0.05,
+                angular_damping: 0.05,
+                friction: 0.5,
+                restitution: 0.0,
+            }],
+            constraints: Vec::new(),
+        };
+        let ragdoll = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+        };
+        let actor = world.spawn();
+        world.insert(actor, ragdoll);
+        (world, bone)
+    }
+
+    #[test]
+    fn ragdoll_bone_with_no_rapier_handles_row_still_gets_water_contact() {
+        let (world, bone) = submerged_ragdoll_world(-40.0);
+
+        // Precondition: the bone really is invisible to the first pass.
+        assert!(
+            world.get::<RapierHandles>(bone).is_none(),
+            "fixture must mirror activate_ragdoll's #1772 teardown",
+        );
+        assert!(world.get::<RigidBodyData>(bone).is_none());
+
+        apply_buoyancy(&world, true);
+
+        let contact = world
+            .get::<WaterContact>(bone)
+            .map(|contact| *contact)
+            .expect(
+                "a submerged ragdoll bone must emit WaterContact — without \
+                 the Ragdoll pass it is structurally invisible to the scan, \
+                 so splash/ripple, underwater audio and the FX transition \
+                 edge all see nothing for a corpse in water (#3492)",
+            );
+        assert!(
+            contact.submerged_fraction > 0.0,
+            "bone seeded 40 BU under the surface must read as submerged, \
+             got {contact:?}",
+        );
+    }
+
+    /// The authored damping the pass restores on exit is the **effective**
+    /// figure `build_ragdoll` used, not the raw spec value — otherwise
+    /// leaving the water would strip `ragdoll_extra_angular_damping`.
+    #[test]
+    fn recorded_damping_is_the_effective_value_build_ragdoll_applied() {
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        let bone = world.spawn();
+        let spec = RagdollSpec {
+            bodies: vec![RagdollBodySpec {
+                entity: bone,
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+                shape: CollisionShape::Ball { radius: 5.0 },
+                mass: 4.0,
+                linear_damping: 0.05,
+                angular_damping: 0.05,
+                friction: 0.5,
+                restitution: 0.0,
+            }],
+            constraints: Vec::new(),
+        };
+        let mut cfg = ContactConfig::DEFAULT;
+        cfg.ragdoll_extra_angular_damping = 0.25;
+
+        let ragdoll = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            build_ragdoll(&mut pw, &spec, &cfg)
+        };
+        let recorded = ragdoll.buoyancy.first().expect("one body recorded");
+        assert_eq!(recorded.linear_damping, 0.05);
+        assert!(
+            (recorded.angular_damping - 0.30).abs() < 1e-6,
+            "expected authored 0.05 + extra 0.25, got {}",
+            recorded.angular_damping,
+        );
+
+        let pw = world.resource::<PhysicsWorld>();
+        let body = pw.bodies.get(ragdoll.bodies[0].1).expect("body");
+        assert!(
+            (body.angular_damping() - recorded.angular_damping).abs() < 1e-6,
+            "the recorded value must be what the live body runs with",
+        );
+    }
+}
+
+/// #3492 SIBLING — `clear_stale_water_contacts` selects on the same two
+/// components the buoyancy scan does, so giving the scan a `Ragdoll` arm
+/// without giving the cleanup one would leave a corpse holding submerged
+/// damping and a latched `WaterContact` forever once its water plane
+/// streamed out.
+#[cfg(test)]
+mod ragdoll_stale_contact_tests {
+    use super::ragdoll_buoyancy_tests::*;
+    use super::*;
+    use byroredux_core::ecs::components::water::{WaterContact, WaterPlane, WaterVolume};
+
+    #[test]
+    fn ragdoll_contact_clears_when_its_water_plane_streams_out() {
+        let (world, bone) = submerged_ragdoll_world(-40.0);
+        apply_buoyancy(&world, true);
+        assert!(
+            world
+                .get::<WaterContact>(bone)
+                .is_some_and(|contact| contact.submerged_fraction > 0.0),
+            "precondition: the bone is wet",
+        );
+
+        // Stream the only water surface out, exactly as an unload would.
+        let water = world
+            .query::<WaterPlane>()
+            .expect("water storage")
+            .iter()
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("one water entity");
+        if let Some(mut q) = world.query_mut::<WaterPlane>() {
+            q.remove(water);
+        }
+        if let Some(mut q) = world.query_mut::<WaterVolume>() {
+            q.remove(water);
+        }
+
+        apply_buoyancy(&world, true);
+
+        let contact = world
+            .get::<WaterContact>(bone)
+            .map(|contact| *contact)
+            .expect("contact component still present");
+        assert_eq!(
+            contact.submerged_fraction, 0.0,
+            "a ragdoll bone whose water plane streamed out must have its \
+             contact cleared and its authored damping restored — the \
+             cleanup pass keys off RapierHandles/RigidBodyData, which a \
+             ragdoll bone does not have (#3492)",
         );
     }
 }

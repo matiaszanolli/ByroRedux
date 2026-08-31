@@ -224,16 +224,26 @@ fn ragdoll_dynamic_shape(shape: &CollisionShape) -> CollisionShape {
 pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactConfig) -> Ragdoll {
     // 1. Rigid bodies + colliders.
     let mut handles: Vec<RigidBodyHandle> = Vec::with_capacity(spec.bodies.len());
+    // #3492 — the buoyancy scan cannot recover either of these from the ECS:
+    // ragdoll bodies never get a `RapierHandles` row, and `activate_ragdoll`
+    // deletes the bone entities' `RigidBodyData` under #1772. Record them
+    // here, where both are in hand.
+    let mut buoyancy: Vec<crate::components::RagdollBuoyancy> =
+        Vec::with_capacity(spec.bodies.len());
     for b in &spec.bodies {
+        // Effective, not authored: the extra angular damping below is part
+        // of what the body actually runs with, so it is also what buoyancy
+        // must restore on exit (#3492).
+        let effective_linear_damping = b.linear_damping.max(0.0);
+        let effective_angular_damping =
+            b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0);
         let body = RigidBodyBuilder::dynamic()
             .position(iso_from_trs(b.translation, b.rotation))
-            .linear_damping(b.linear_damping.max(0.0))
+            .linear_damping(effective_linear_damping)
             // "less floppy than Havok" lever — extra angular damping on top
             // of the authored value (inert at the 0.0 default). See
             // ContactConfig::ragdoll_extra_angular_damping.
-            .angular_damping(
-                b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0),
-            )
+            .angular_damping(effective_angular_damping)
             .build();
         let h = pw.bodies.insert(body);
 
@@ -262,6 +272,7 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             ref mut colliders,
             ..
         } = *pw;
+        let mut first_collider = None;
         for (iso, shape) in parts {
             let col = ColliderBuilder::new(shape)
                 .position(iso)
@@ -270,7 +281,18 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .build();
-            colliders.insert_with_parent(col, h, bodies);
+            let ch = colliders.insert_with_parent(col, h, bodies);
+            first_collider.get_or_insert(ch);
+        }
+        // `collision_shape_to_parts` never yields zero parts (see #3067 and
+        // its own `out.is_empty()` fallback), so this is the first of at
+        // least one.
+        if let Some(collider) = first_collider {
+            buoyancy.push(crate::components::RagdollBuoyancy {
+                collider,
+                linear_damping: effective_linear_damping,
+                angular_damping: effective_angular_damping,
+            });
         }
         handles.push(h);
     }
@@ -359,6 +381,7 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             .map(|(b, h)| (b.entity, h, b.scale))
             .collect(),
         joints,
+        buoyancy,
     }
 }
 

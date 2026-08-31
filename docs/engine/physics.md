@@ -138,6 +138,20 @@ Archimedes lift and submerged damping to every dynamic body inside a
 `WaterVolume` (the WATAL physics sink — see
 [watal.md](watal.md) for the model itself).
 
+The target set has **two** sources, not one. The first walks
+`RapierHandles` and keeps rows whose `RigidBodyData` says `Dynamic`. That
+misses every ragdoll body: `build_ragdoll` records their handles only on
+the `Ragdoll` component and never writes a `RapierHandles` row, and
+`activate_ragdoll`'s #1772 teardown deletes the bone entities' own
+`RapierHandles` + `RigidBodyData` rows so the keyframed followers stop
+fighting the multibody. So a second pass walks `Ragdoll` and takes each
+body's collider and authored damping from `RagdollBuoyancy` (#3492).
+Until that pass existed, a corpse that fell into water sank at full
+gravity with its air damping and emitted no `WaterContact` — so the
+splash / ripple, underwater-audio and FX consumers saw nothing for it
+either. Anything that adds a new way to create a dynamic body must ask
+which of the two passes will find it.
+
 **Its position in the sequence is the correctness property.** These are
 *forces*, so they have to land before the step that integrates them: run
 after Phase 3 and every float lags a frame, which reads as a water bug
