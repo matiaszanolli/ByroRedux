@@ -995,7 +995,7 @@ pub mod presets {
     }
 }
 
-/// Canonical material hash — FxHash (#1368) over the 92 live scalar
+/// Canonical material hash — FxHash (#1368) over the 108 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
 /// 432-byte struct.

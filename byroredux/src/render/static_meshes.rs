@@ -557,9 +557,11 @@ pub(super) fn collect_static_mesh_draws(
                 // whose shader branch reads it. Pre-#619 every chain
                 // ran on every draw — wasted work on the vast majority
                 // of materials (every non-Skyrim mesh + every Skyrim
-                // static, ~99% of a typical cell). `GpuInstance::default`
-                // already zeroes the slots so non-active kinds emit
-                // neutral output identical to pre-fix.
+                // static, ~99% of a typical cell). These slots live on
+                // `GpuMaterial` (skin_tint_*/hair_tint_*/sparkle_*/eye_*/
+                // multi_layer_*, R1 Phase 6), and `GpuMaterial::default`
+                // already zeroes them so non-active kinds emit neutral
+                // output identical to pre-fix.
                 //
                 // Variant ↔ field mapping (must mirror the
                 // `materialKind == N` ladder in triangle.frag:769-796):
@@ -597,7 +599,8 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     // Non-HairTint kinds never reach the shader's
                     // `materialKind == 6u` branch, so the slot stays zeroed
-                    // exactly as `GpuInstance::default` leaves it.
+                    // exactly as `GpuMaterial::default` leaves it (`hair_tint_*`
+                    // is a `GpuMaterial` field, not `GpuInstance`).
                     [0.0; 3]
                 };
                 let sparkle_rgba = if material_kind == 14 {
@@ -909,7 +912,7 @@ pub(super) fn collect_static_mesh_draws(
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
-                // `to_gpu_material()` 364-byte construction on the
+                // `to_gpu_material()` 432-byte construction on the
                 // dedup-hit path (~97% of calls on Prospector).
                 cmd.material_id =
                     material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
