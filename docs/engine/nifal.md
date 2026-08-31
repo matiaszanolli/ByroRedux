@@ -519,6 +519,7 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
+| `glass_roughness_scratch` / `glass_dirt_overlay` | `BGEM` (v21+/v22) | decoded correctly (`crates/bgsm/src/bgem.rs`) alongside four glass scalars, but **not** routed into `MaterialTextureSet<T>` — no 19th/20th named role exists for them the way `tint`/`inner_layer`/`reflectance` were added in a prior texture-role unification (`byroredux/src/asset_provider/material.rs` carries an honest deferred comment at the short-circuit site, #2109) | a renderer glass-overlay consumer; reachability on real (mod-added FO76/Starfield-era) content is low/unmeasured |
 
 **In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
 (node-level Z-depth LOD) is **content-absent** across all target games; the parser +
