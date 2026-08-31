@@ -200,6 +200,13 @@ cargo run -- --esm Skyrim.esm --cell <editor_id> \
 # footprint containing both carts and every start marker.
 cargo run --release -- --game skyrim_se --new-game
 
+# Load a sandboxed executable extension. Manifests are repeatable and resolve
+# as one atomic dependency set. Capability requests are denied unless granted
+# explicitly; `=*` grants every capability requested by this manifest.
+cargo run --release -- --game skyrim_se \
+             --extension path/to/extension.toml \
+             --extension-grant org.example.my-mod=*
+
 # What can I load? Headless catalogue of every interior cell (--cell) and
 # worldspace (--wrld) in the plugin set — no window, no Vulkan. The optional
 # trailing word filters case-insensitively on editor ID and display name.

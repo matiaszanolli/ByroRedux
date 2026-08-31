@@ -1,12 +1,72 @@
 //! ECS host adapter for the renderer-independent `byroredux-sdk` Studio API.
 
-use byroredux_core::ecs::{ActiveCamera, GlobalTransform, Material, Transform, World, WorldBound};
+use std::collections::BTreeMap;
+
+use byroredux_core::ecs::{
+    ActiveCamera, EntityId, GlobalTransform, Material, Resource, Transform, World, WorldBound,
+};
 use byroredux_core::math::{EulerRot, Quat, Vec3};
 use byroredux_core::string::StringPool;
+use byroredux_sdk::identity::ObjectId;
 use byroredux_sdk::studio::{
-    pick_spheres, BoundSphere, MaterialValue, ObjectSnapshot, StudioCommand, StudioSession,
+    pick_spheres, AssetSource, BoundSphere, MaterialValue, ObjectSnapshot, StudioCommand,
     StudioSnapshot, TransformValue,
 };
+
+#[derive(Debug, Clone, Copy)]
+struct StudioObjectBinding {
+    id: ObjectId,
+    entity: EntityId,
+}
+
+/// ECS-owned state behind the public renderer-independent Studio contract.
+/// Raw entity IDs remain private to this adapter.
+#[derive(Debug, Clone)]
+pub(crate) struct StudioSession {
+    source: AssetSource,
+    objects: Vec<StudioObjectBinding>,
+    selected: Option<ObjectId>,
+    revision: u64,
+    original_transforms: BTreeMap<ObjectId, TransformValue>,
+}
+
+impl Resource for StudioSession {}
+
+/// Install a Studio document and assign stable IDs from canonical import order.
+pub(crate) fn install_session(world: &mut World, source: AssetSource, entities: Vec<EntityId>) {
+    let objects: Vec<_> = entities
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, entity)| StudioObjectBinding {
+            id: ObjectId::from_import_ordinal(ordinal)
+                .expect("Studio object count exceeds the ObjectId range"),
+            entity,
+        })
+        .collect();
+    let original_transforms = objects
+        .iter()
+        .filter_map(|binding| {
+            world.get::<Transform>(binding.entity).map(|transform| {
+                let (x, y, z) = transform.rotation.to_euler(EulerRot::XYZ);
+                (
+                    binding.id,
+                    TransformValue {
+                        translation: transform.translation.to_array(),
+                        rotation_degrees: [x.to_degrees(), y.to_degrees(), z.to_degrees()],
+                        scale: transform.scale,
+                    },
+                )
+            })
+        })
+        .collect();
+    world.insert_resource(StudioSession {
+        source,
+        selected: objects.first().map(|binding| binding.id),
+        objects,
+        revision: 0,
+        original_transforms,
+    });
+}
 
 pub(crate) fn snapshot(world: &World) -> Option<StudioSnapshot> {
     let session = world.try_resource::<StudioSession>()?.clone();
@@ -14,23 +74,25 @@ pub(crate) fn snapshot(world: &World) -> Option<StudioSnapshot> {
     let objects = session
         .objects
         .iter()
-        .filter_map(|&entity| {
-            let transform = world.get::<Transform>(entity)?;
+        .filter_map(|binding| {
+            let transform = world.get::<Transform>(binding.entity)?;
             let (x, y, z) = transform.rotation.to_euler(EulerRot::XYZ);
             let name = world
-                .get::<byroredux_core::ecs::Name>(entity)
+                .get::<byroredux_core::ecs::Name>(binding.entity)
                 .and_then(|name| pool.as_ref().and_then(|pool| pool.resolve(name.0)))
                 .unwrap_or("")
                 .to_owned();
-            let material = world.get::<Material>(entity).map(|material| MaterialValue {
-                diffuse_color: material.diffuse_color,
-                metalness: material.metalness,
-                roughness: material.roughness,
-                alpha: material.alpha,
-                ior: material.ior,
-            });
+            let material = world
+                .get::<Material>(binding.entity)
+                .map(|material| MaterialValue {
+                    diffuse_color: material.diffuse_color,
+                    metalness: material.metalness,
+                    roughness: material.roughness,
+                    alpha: material.alpha,
+                    ior: material.ior,
+                });
             Some(ObjectSnapshot {
-                entity,
+                id: binding.id,
                 name,
                 transform: TransformValue {
                     translation: transform.translation.to_array(),
@@ -54,16 +116,18 @@ pub(crate) fn apply_command(world: &mut World, command: StudioCommand) {
         return;
     }
     match command {
-        StudioCommand::Select(entity) => {
-            let allowed = entity
-                .is_none_or(|entity| world.resource::<StudioSession>().objects.contains(&entity));
+        StudioCommand::Select(object) => {
+            let allowed = object.is_none_or(|object| entity_for(world, object).is_some());
             if allowed {
-                world.resource_mut::<StudioSession>().selected = entity;
+                world.resource_mut::<StudioSession>().selected = object;
             }
         }
         StudioCommand::PickFromView => pick_from_view(world),
-        StudioCommand::SetTransform { entity, value } => {
-            if !is_object(world, entity) || !valid_transform(value) {
+        StudioCommand::SetTransform { object, value } => {
+            let Some(entity) = entity_for(world, object) else {
+                return;
+            };
+            if !valid_transform(value) {
                 return;
             }
             if let Some(transform) = world.get_mut::<Transform>(entity) {
@@ -75,18 +139,21 @@ pub(crate) fn apply_command(world: &mut World, command: StudioCommand) {
                 bump_revision(world);
             }
         }
-        StudioCommand::ResetTransform(entity) => {
+        StudioCommand::ResetTransform(object) => {
             let original = world
                 .resource::<StudioSession>()
                 .original_transforms
-                .get(&entity)
+                .get(&object)
                 .copied();
             if let Some(value) = original {
-                apply_command(world, StudioCommand::SetTransform { entity, value });
+                apply_command(world, StudioCommand::SetTransform { object, value });
             }
         }
-        StudioCommand::SetMaterial { entity, value } => {
-            if !is_object(world, entity) || !valid_material(value) {
+        StudioCommand::SetMaterial { object, value } => {
+            let Some(entity) = entity_for(world, object) else {
+                return;
+            };
+            if !valid_material(value) {
                 return;
             }
             if let Some(material) = world.get_mut::<Material>(entity) {
@@ -98,12 +165,16 @@ pub(crate) fn apply_command(world: &mut World, command: StudioCommand) {
                 bump_revision(world);
             }
         }
-        StudioCommand::FrameSelection(entity) => frame_selection(world, entity),
+        StudioCommand::FrameSelection(object) => frame_selection(world, object),
     }
 }
 
-fn is_object(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
-    world.resource::<StudioSession>().objects.contains(&entity)
+fn entity_for(world: &World, object: ObjectId) -> Option<EntityId> {
+    world
+        .resource::<StudioSession>()
+        .objects
+        .iter()
+        .find_map(|binding| (binding.id == object).then_some(binding.entity))
 }
 
 fn bump_revision(world: &World) {
@@ -116,10 +187,10 @@ fn pick_from_view(world: &World) {
         return;
     };
     let objects = world.resource::<StudioSession>().objects.clone();
-    let spheres = objects.into_iter().filter_map(|entity| {
-        let bound = world.get::<WorldBound>(entity)?;
+    let spheres = objects.into_iter().filter_map(|binding| {
+        let bound = world.get::<WorldBound>(binding.entity)?;
         Some((
-            entity,
+            binding.id,
             BoundSphere {
                 center: bound.center.to_array(),
                 radius: bound.radius,
@@ -130,10 +201,10 @@ fn pick_from_view(world: &World) {
     world.resource_mut::<StudioSession>().selected = selected;
 }
 
-fn frame_selection(world: &mut World, entity: byroredux_core::ecs::EntityId) {
-    if !is_object(world, entity) {
+fn frame_selection(world: &mut World, object: ObjectId) {
+    let Some(entity) = entity_for(world, object) else {
         return;
-    }
+    };
     let (center, radius) = world
         .get::<WorldBound>(entity)
         .map(|bound| (bound.center, bound.radius.max(0.5)))
@@ -178,23 +249,7 @@ fn valid_material(value: MaterialValue) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
-    use byroredux_sdk::studio::{AssetSource, CornellFit};
-
-    fn fit() -> CornellFit {
-        CornellFit {
-            center: [0.0; 3],
-            half_width: 2.0,
-            half_depth: 2.0,
-            floor_y: -1.0,
-            height: 3.0,
-            wall_thickness: 0.05,
-            camera_position: [0.0, 0.0, 5.0],
-            camera_target: [0.0; 3],
-        }
-    }
 
     #[test]
     fn typed_transform_command_mutates_only_document_objects() {
@@ -203,23 +258,15 @@ mod tests {
         let outsider = world.spawn();
         world.insert(object, Transform::IDENTITY);
         world.insert(outsider, Transform::IDENTITY);
-        world.insert_resource(StudioSession {
-            source: AssetSource {
+        install_session(
+            &mut world,
+            AssetSource {
                 label: "fixture.nif".to_owned(),
             },
-            objects: vec![object],
-            selected: Some(object),
-            fit: fit(),
-            revision: 0,
-            original_transforms: BTreeMap::from([(
-                object,
-                TransformValue {
-                    translation: [0.0; 3],
-                    rotation_degrees: [0.0; 3],
-                    scale: 1.0,
-                },
-            )]),
-        });
+            vec![object],
+        );
+        let object_id = ObjectId::new(1).unwrap();
+        let outsider_id = ObjectId::new(2).unwrap();
         let value = TransformValue {
             translation: [1.0, 2.0, 3.0],
             rotation_degrees: [0.0, 90.0, 0.0],
@@ -228,14 +275,14 @@ mod tests {
         apply_command(
             &mut world,
             StudioCommand::SetTransform {
-                entity: object,
+                object: object_id,
                 value,
             },
         );
         apply_command(
             &mut world,
             StudioCommand::SetTransform {
-                entity: outsider,
+                object: outsider_id,
                 value,
             },
         );
@@ -248,5 +295,27 @@ mod tests {
             Vec3::ZERO
         );
         assert_eq!(world.resource::<StudioSession>().revision, 1);
+    }
+
+    #[test]
+    fn snapshot_exposes_document_ids_not_ecs_entity_ids() {
+        let mut world = World::new();
+        for _ in 0..8 {
+            world.spawn();
+        }
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        install_session(
+            &mut world,
+            AssetSource {
+                label: "fixture.nif".to_owned(),
+            },
+            vec![entity],
+        );
+
+        let snapshot = snapshot(&world).unwrap();
+        assert_ne!(entity as u64, snapshot.objects[0].id.get());
+        assert_eq!(snapshot.objects[0].id, ObjectId::new(1).unwrap());
+        assert_eq!(snapshot.selected, Some(snapshot.objects[0].id));
     }
 }

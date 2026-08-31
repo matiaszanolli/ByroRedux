@@ -24,9 +24,7 @@ use crate::components::{InputState, Spinning};
 #[cfg(test)]
 use crate::components::CellLightingRes;
 use crate::streaming::WorldStreamingState;
-use byroredux_sdk::studio::{
-    AssetBounds, AssetSource, BoundSphere, CornellFit, StudioSession, TransformValue,
-};
+use byroredux_sdk::studio::{AssetBounds, AssetSource, BoundSphere, CornellFit};
 
 // Test child modules (procedural_fallback_tests, cloud_tile_scale_tests)
 // reach for these via `use super::*;` — keep them in scope under
@@ -939,7 +937,7 @@ pub(crate) fn setup_scene(
             let mut propagate_bounds = crate::systems::make_world_bound_propagation_system();
             propagate_bounds(world, 0.0);
 
-            let objects: Vec<EntityId> = world
+            let mut objects: Vec<EntityId> = world
                 .query::<byroredux_core::ecs::LocalBound>()
                 .map(|query| {
                     query
@@ -951,6 +949,10 @@ pub(crate) fn setup_scene(
                         .collect()
                 })
                 .unwrap_or_default();
+            // Canonicalize the import order before assigning SDK ObjectIds.
+            // Entity allocation follows the deterministic NIF/SPT traversal,
+            // while storage iteration order is an implementation detail.
+            objects.sort_unstable();
             let bounds = AssetBounds::from_spheres(objects.iter().filter_map(|&entity| {
                 world
                     .get::<byroredux_core::ecs::WorldBound>(entity)
@@ -967,34 +969,13 @@ pub(crate) fn setup_scene(
             let (camera, target) = crate::cornell::setup_studio_room(world, ctx, fit);
             harness_cam = Some((camera, target));
             cam_center = target;
-            let original_transforms = objects
-                .iter()
-                .filter_map(|&entity| {
-                    world.get::<Transform>(entity).map(|transform| {
-                        let (x, y, z) = transform
-                            .rotation
-                            .to_euler(byroredux_core::math::EulerRot::XYZ);
-                        (
-                            entity,
-                            TransformValue {
-                                translation: transform.translation.to_array(),
-                                rotation_degrees: [x.to_degrees(), y.to_degrees(), z.to_degrees()],
-                                scale: transform.scale,
-                            },
-                        )
-                    })
-                })
-                .collect();
-            world.insert_resource(StudioSession {
-                source: AssetSource {
+            crate::studio_host::install_session(
+                world,
+                AssetSource {
                     label: studio_source_label(&args),
                 },
-                selected: objects.first().copied(),
                 objects,
-                fit,
-                revision: 0,
-                original_transforms,
-            });
+            );
         }
     }
 

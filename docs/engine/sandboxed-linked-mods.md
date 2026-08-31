@@ -1,6 +1,6 @@
 # Sandboxed Linked Mods — Requirements and Architecture
 
-**Status:** Requirements baseline; Phase 1 runtime foundation implemented
+**Status:** Requirements baseline; first live runtime/manifest lifecycle slice implemented
 
 **Scope:** Executable community mods linked to ByroRedux and to each other
 without sharing native address space
@@ -170,12 +170,12 @@ This design extends existing registry-oriented patterns rather than exposing
   currently finds external PEX bytes, translates them, and mutates the ECS in
   one operation. It identifies the seam between artifacts and attachments.
 
-No WebAssembly runtime dependency exists in the workspace at the time of this
-draft. The first implementation now lives in
+The workspace did not contain a WebAssembly runtime when this design was first
+drafted. The first implementation now lives in
 [`crates/mod-runtime`](../../crates/mod-runtime/) and uses Wasmtime behind the
 engine-owned `SandboxRuntime` abstraction.
 
-### 6.1 Implemented foundation (2026-08-05)
+### 6.1 Implemented foundation (updated 2026-08-31)
 
 The first vertical slice implements the narrow `byro:mod-host@0.1.0` WIT
 world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
@@ -185,19 +185,47 @@ world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
 - stable validated principal and capability identifiers;
 - explicit, capability-gated, principal-attributed logging;
 - read-only principal ID and effective-capability discovery;
+- opaque generational entity references and manifest-ordered typed schemas;
+- bounded callback-local entity projections with separately gated
+  name/form-identity and world-transform visibility;
+- canonical activation delivery gated by both declaration and capability;
+- bounded own-component commands queued during callbacks and returned only
+  after successful guest completion;
+- principal-isolated dynamic rows with atomic batch application;
 - component byte, per-memory, memory-count, table, instance, stack, fuel, and
   retained-log ceilings;
 - `ready -> active -> stopped` lifecycle transitions and fault quarantine;
 - no linked WASI implementation or ambient operating-system imports;
 - a headless test harness covering allowed and denied calls, instance fault
-  isolation, fuel exhaustion, memory rejection, log bounds, and absent WASI.
+  isolation, fuel exhaustion, memory rejection, log/command bounds, absent
+  WASI, principal state isolation, and activation rollback after a trap.
 
-This is an execution foundation, not yet a complete mod loader. Package
-manifests, immutable artifact loading, profile resolution, compilation cache,
-ECS query/command barriers, linked mod services, persistence, C/C++ examples,
-and high-count scheduling remain in the later phases below. In particular,
-the current `StoreLimits` memory ceiling applies to each linear memory; the
-separate memory-count ceiling also bounds how many a component may create.
+This remains an early mod loader, not a complete extension platform. The SDK now
+defines and validates the executable-extension subset of the package manifest,
+and the plugin crate resolves those manifests through the same dependency graph
+primitive used by record plugins. The runtime checks SDK compatibility before
+compilation, checks requested/effective capabilities before instantiation, and
+publishes version discovery through WIT. The executable now owns a live host:
+repeatable `--extension` manifests resolve dependency-first, explicitly granted
+capabilities are applied, the complete profile stages before one atomic swap,
+live activation markers are delivered outside ECS guards, component state is
+applied atomically, faults remain isolated, world replacement invalidates
+transient handles, and orderly shutdown runs in reverse publication order.
+The adapter snapshots disclosed entities before guest entry, and the
+`byro.world` service rejects undisclosed or stale handles without exposing ECS
+storage. Entity-attached extension rows and principal-private storage are
+embedded in the checksummed engine save,
+keyed by stable form identity rather than ECS IDs. Load preflight rejects
+unsupported formats or active-schema mismatches before teardown; missing
+packages and temporarily absent forms remain opaque and are written back
+unchanged, while returning forms rebind before event delivery.
+Immutable artifact hashing, compilation cache, broader read-only ECS
+projections, linked community services, schema migration, status tooling,
+C/C++ examples, and high-count scheduling remain in the later phases below. In
+particular, the
+current `StoreLimits` memory ceiling
+applies to each linear memory; the separate memory-count ceiling also bounds
+how many a component may create.
 
 ## 7. Architectural boundaries
 

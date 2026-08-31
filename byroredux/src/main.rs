@@ -25,6 +25,7 @@ mod components;
 mod cornell;
 mod debug_load;
 mod env_translate;
+mod extensions;
 mod fog;
 mod game_profiles;
 mod groundcover_translate;
@@ -556,6 +557,12 @@ impl App {
     fn new(debug_mode: bool, args: &[String], mut renderer_config: RendererConfig) -> Self {
         // Three-phase construction (#1670) — see the helpers in `boot`.
         let mut world = boot::build_world(debug_mode, args);
+        if let Err(error) = extensions::load_requested_extensions(&world, args) {
+            // Executable components are an optional attachment. Reject the
+            // requested code profile atomically while leaving the base engine
+            // and content path available for diagnostics or recovery.
+            log::error!("executable extension profile was not activated: {error:#}");
+        }
         let mut scheduler = boot::build_scheduler();
 
         // Start debug server (feature-gated, zero cost when disabled).

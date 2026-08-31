@@ -787,7 +787,7 @@ impl ConsoleCommand for SaveCommand {
         let Some(registry) = world.try_resource::<SaveRegistry>() else {
             return CommandOutput::error("save registry not installed");
         };
-        let Some(mut state) = world.try_resource_mut::<SaveState>() else {
+        let Some(state) = world.try_resource::<SaveState>() else {
             return CommandOutput::error("save directory not installed");
         };
 
@@ -833,41 +833,52 @@ impl ConsoleCommand for SaveCommand {
             return CommandOutput::lines(lines);
         }
 
-        // Validation passed and the write is about to proceed — now it's
-        // safe to actually consume the ring rotation.
-        if is_quicksave {
-            state.ring.advance();
-        }
-        // Nothing past this point needs mutable (or any) access to
+        // Nothing past this point needs access to
         // `SaveState` — only the directory, cheaply copied — so drop the
         // guard now rather than holding it across `save_world`'s ~30-storage
         // snapshot walk (SAVE-D3-02 / #2154).
         let dir = state.dir.clone();
         drop(state);
 
-        let snapshot = match save_world(world, &registry) {
+        let mut snapshot = match save_world(world, &registry) {
             Ok(s) => s,
             Err(e) => return CommandOutput::error(format!("snapshot failed: {e}")),
+        };
+        let extension_rows = match crate::extensions::capture_extension_state(world, &mut snapshot)
+        {
+            Ok(count) => count,
+            Err(error) => {
+                return CommandOutput::error(format!("extension-state snapshot failed: {error:#}"));
+            }
         };
         let bytes = match encode(&snapshot, registry.schema_fingerprint()) {
             Ok(b) => b,
             Err(e) => return CommandOutput::error(format!("encode failed: {e}")),
         };
         match disk::write_slot(&dir, slot, &bytes) {
-            Ok(path) => CommandOutput::lines(vec![
-                format!("saved slot {slot} → {}", path.display()),
-                format!(
-                    "  {} entities-worth of rows across {} component columns, {} resource(s)",
-                    snapshot.row_count(),
-                    snapshot.components.len(),
-                    snapshot.resources.len()
-                ),
-                format!(
-                    "  {} bytes (next_entity={})",
-                    bytes.len(),
-                    snapshot.next_entity
-                ),
-            ]),
+            Ok(path) => {
+                // Consume quicksave rotation only after every validation,
+                // snapshot/extension-state encode, and disk commit succeeds.
+                // A rejected transient extension row must not skip a slot.
+                if is_quicksave {
+                    world.resource_mut::<SaveState>().ring.advance();
+                }
+                CommandOutput::lines(vec![
+                    format!("saved slot {slot} → {}", path.display()),
+                    format!(
+                        "  {} entities-worth of rows across {} component columns, {} resource(s); \
+                     {extension_rows} extension row(s)",
+                        snapshot.row_count(),
+                        snapshot.components.len(),
+                        snapshot.resources.len()
+                    ),
+                    format!(
+                        "  {} bytes (next_entity={})",
+                        bytes.len(),
+                        snapshot.next_entity
+                    ),
+                ])
+            }
             Err(e) => CommandOutput::error(format!("write failed: {e}")),
         }
     }
@@ -1443,6 +1454,15 @@ pub fn execute_pending_save_loads(
         notify_player(world, message);
         return;
     }
+    if let Err(error) = crate::extensions::preflight_extension_state(world, &snapshot) {
+        let message = format!(
+            "save load ABORTED — extension state failed preflight; keeping the current session: \
+             {error:#}"
+        );
+        log::error!("{message}");
+        notify_player(world, message);
+        return;
+    }
 
     // Build asset providers from the boot CLI args (same BSAs the engine
     // is running with) — matches the cell-transition path. #2039 /
@@ -1508,6 +1528,18 @@ pub fn execute_pending_save_loads(
     else {
         return;
     };
+
+    // The cell/session replacement invalidates every transient SDK entity
+    // handle even when the restored population happens to reuse the same raw
+    // EntityId. Rebind extension rows only through stable FormRef identity;
+    // unavailable packages/forms stay retained verbatim for a later load/save.
+    if let Err(error) = crate::extensions::restore_extension_state(world, &snapshot) {
+        let message =
+            format!("save load: extension-state restore failed after preflight: {error:#}");
+        log::error!("{message}");
+        notify_player(world, message);
+        return;
+    }
 
     // Re-assert saved resources over anything the reload rebuilt
     // (`CurrentCellContext`, `PlayerPose`), so inventory instance ids

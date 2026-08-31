@@ -713,34 +713,32 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
             .show(&mut columns[0], |ui| {
                 for object in &snapshot.objects {
                     let label = if object.name.is_empty() {
-                        format!("Entity {}", object.entity)
+                        format!("Object {}", object.id)
                     } else {
-                        format!("{}  #{}", object.name, object.entity)
+                        format!("{}  #{}", object.name, object.id)
                     };
                     if ui
-                        .selectable_label(snapshot.selected == Some(object.entity), label)
+                        .selectable_label(snapshot.selected == Some(object.id), label)
                         .clicked()
                     {
                         outputs
                             .studio_commands
-                            .push(StudioCommand::Select(Some(object.entity)));
+                            .push(StudioCommand::Select(Some(object.id)));
                     }
                 }
             });
 
-        let Some(selected) = snapshot.selected.and_then(|entity| {
-            snapshot
-                .objects
-                .iter()
-                .find(|object| object.entity == entity)
-        }) else {
+        let Some(selected) = snapshot
+            .selected
+            .and_then(|id| snapshot.objects.iter().find(|object| object.id == id))
+        else {
             columns[1].heading("Inspector");
             columns[1].label("Select an object from the list or use the crosshair picker.");
             return;
         };
 
         columns[1].heading(if selected.name.is_empty() {
-            format!("Entity {}", selected.entity)
+            format!("Object {}", selected.id)
         } else {
             selected.name.clone()
         });
@@ -767,7 +765,7 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
                     .inner;
         if transform_changed {
             outputs.studio_commands.push(StudioCommand::SetTransform {
-                entity: selected.entity,
+                object: selected.id,
                 value: sanitize_transform(transform),
             });
         }
@@ -775,12 +773,12 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
             if ui.button("Reset transform").clicked() {
                 outputs
                     .studio_commands
-                    .push(StudioCommand::ResetTransform(selected.entity));
+                    .push(StudioCommand::ResetTransform(selected.id));
             }
             if ui.button("Frame selection").clicked() {
                 outputs
                     .studio_commands
-                    .push(StudioCommand::FrameSelection(selected.entity));
+                    .push(StudioCommand::FrameSelection(selected.id));
             }
         });
 
@@ -810,7 +808,7 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
             changed |= edit_scalar(&mut columns[1], "IOR", &mut material.ior, 1.0..=3.0);
             if changed {
                 outputs.studio_commands.push(StudioCommand::SetMaterial {
-                    entity: selected.entity,
+                    object: selected.id,
                     value: sanitize_material(material),
                 });
             }

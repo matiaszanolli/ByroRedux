@@ -709,6 +709,16 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     );
     world.insert_resource(script_registry);
 
+    // SDK Phase 3 — engine-owned executable-extension host. A missing or
+    // rejected runtime disables code extensions without preventing content or
+    // the base engine from starting; the slot retains the attributed reason
+    // for future debug/UI reporting.
+    let extension_host = crate::extensions::ExtensionHostSlot::initialize_default();
+    if let Some(error) = extension_host.init_error() {
+        log::error!("executable extension host is disabled: {error}");
+    }
+    world.insert_resource(extension_host);
+
     world
 }
 
@@ -1637,6 +1647,26 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
             .writes_resource::<MetricsState>()
             .writes_resource::<MetricsSnapshot>(),
+    );
+    // SDK Phase 3 — deliver activation only after every built-in consumer has
+    // run and immediately before the transient marker is drained. The adapter
+    // snapshots `ActivateEvent` and the cloneable host slot, drops both ECS
+    // guards, then enters untrusted code and atomically commits own-state
+    // commands. `writes_resource` describes the logical mutation behind the
+    // slot's Arc<Mutex<_>>, even though no ECS resource guard spans the call.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_activation_dispatch_system,
+        Access::new()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::components::Name>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .reads::<byroredux_core::ecs::components::Transform>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .reads_resource::<byroredux_core::string::StringPool>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 

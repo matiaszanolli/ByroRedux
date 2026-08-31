@@ -258,6 +258,29 @@ wrong ledger (#3789). Future destructive
 domain operations still need an explicit saved fact plus reconciler rather
 than teaching the generic `apply_deltas` driver domain semantics.
 
+## Engine-native extension state
+
+Sandboxed extension component rows and principal-private key/value storage use
+the normal `BYRSAVE` container rather than a script-extender cosave.
+`SaveCommand` asks the executable-owned `ExtensionHost` for a bounded,
+format-version-2 `ByroExtensionState` resource before encoding the snapshot.
+Live `EntityRef` handles are never serialized: each materialized row must
+resolve to a stable SDK `FormRef`, derived from the same load-order-neutral
+`FormIdPair` used by the core save remapper. A row on a transient entity without
+stable form identity aborts the save rather than being dropped silently.
+
+Live load decodes and validates this payload before cell/streaming teardown.
+The current format requires exact active component and principal-storage schema
+versions; migrations remain a later Phase 4 deliverable. After the destination
+world is rebuilt, rows bind to fresh opaque handles and principal storage is
+restored before the next callback. State owned by an unavailable extension or
+attached to a form outside the loaded world remains opaque in the host and is
+emitted again on the next save. If that form later participates in an event,
+its retained row is rebound before guest delivery, so the callback observes and
+advances the saved value. Component and storage commands from one callback are
+staged and commit together. The outer save CRC covers the extension payload
+alongside the ordinary ECS snapshot.
+
 Full original-engine cosave compatibility is explicitly out of scope
 ("speculative and not a priority," ROADMAP design-decisions table).
 There's no versioned migrator chain for save-schema changes — a

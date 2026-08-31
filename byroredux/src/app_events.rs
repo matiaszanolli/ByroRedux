@@ -39,6 +39,7 @@ impl App {
     /// pause menu's Quit action.
     pub(crate) fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Shutdown requested");
+        crate::extensions::shutdown_extension_host(&self.world);
         if let (Some(ref mut state), Some(ref mut ctx)) =
             (self.streaming.as_mut(), self.renderer.as_mut())
         {
@@ -184,7 +185,7 @@ impl ApplicationHandler for App {
                 self.setup_scene();
                 if self
                     .world
-                    .try_resource::<byroredux_sdk::studio::StudioSession>()
+                    .try_resource::<crate::studio_host::StudioSession>()
                     .is_some()
                 {
                     if let Some(ui) = self.debug_ui.as_mut() {
