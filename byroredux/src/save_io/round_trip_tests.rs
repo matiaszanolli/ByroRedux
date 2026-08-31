@@ -804,6 +804,8 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         // registration-site comment in `save_io.rs` for why it's still
         // excluded from `MUTABLE_DELTA_COLUMNS`.
         "ActorVitals",
+        // #3762 — CREA.DATA.Damage, stamped by `stamp_creature_attack`.
+        "CreatureAttack",
         "FactionRanks",
         "CharacterLevel",
         "Background",
@@ -828,6 +830,7 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // still unregistered, so the exemption fails loudly rather than
     // silently discarding progress.
     const REDERIVED_NOT_SAVED: &[&str] = &[
+        "CreatureAttack",
         "FactionRanks",
         "CharacterLevel",
         "Background",

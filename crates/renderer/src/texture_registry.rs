@@ -174,8 +174,10 @@ pub struct TextureRegistry {
     ///   1 = CLAMP_S_WRAP_T
     ///   2 = WRAP_S_CLAMP_T
     ///   3 = WRAP_S_WRAP_T    (default — the legacy REPEAT/REPEAT)
-    /// Decoded from the lower 4 bits of `TexDesc.flags` in the parser
-    /// (`crates/nif/src/blocks/properties.rs:464`) and from
+    /// Decoded at NIF parse time into `TexDesc::clamp_mode`
+    /// (`crates/nif/src/blocks/properties.rs`), which since #3516 picks
+    /// between the two on-disk encodings by file version rather than
+    /// masking a fixed nibble here, and from
     /// `BSEffectShaderProperty.texture_clamp_mode` directly. Pre-#610
     /// the renderer hardcoded REPEAT for every texture and CLAMP-
     /// authored decals / Oblivion architecture trim rendered with
@@ -608,8 +610,16 @@ impl TextureRegistry {
     /// semantics as [`Self::load_dds`]; the only behavioural difference
     /// is the sampler bound to the bindless descriptor entry.
     ///
-    /// `clamp_mode` values outside `0..=3` are clamped to `0` (REPEAT)
-    /// — defensive default for upstream parser garbage.
+    /// `clamp_mode` values outside `0..=3` are clamped **up** to `3`
+    /// (`WRAP_S_WRAP_T` = REPEAT/REPEAT, nif.xml's own default) — a
+    /// defensive default for upstream parser garbage that lands on the
+    /// legacy behaviour rather than on `0`, which is `CLAMP_S_CLAMP_T`.
+    /// Pinned by `out_of_range_clamp_mode_falls_back_to_3`.
+    ///
+    /// #3757 — this used to read "clamped to `0` (REPEAT)", wrong twice
+    /// over: wrong about which index is REPEAT (it is 3; see the
+    /// `samplers` field's own table) and wrong about the direction
+    /// (`clamp_mode.min(3)` clamps up, not to zero).
     ///
     /// Cache key includes `clamp_mode`: the same `path` requested with
     /// two different clamp modes produces two distinct entries (the
@@ -1137,8 +1147,10 @@ impl TextureRegistry {
     /// for `(path, clamp_mode)`. Pre-#610 the cache was keyed by path
     /// alone; today the same path with two different clamp modes
     /// produces two distinct entries so the descriptor write picks the
-    /// right `VkSamplerAddressMode`. Defaults (`clamp_mode == 0` =
-    /// REPEAT) preserve the legacy single-key shape.
+    /// right `VkSamplerAddressMode`. The legacy single-key shape is the
+    /// `clamp_mode == 3` (`WRAP_S_WRAP_T` = REPEAT/REPEAT) entry — the
+    /// mode `get_by_path` passes and the one nif.xml defaults to; `0` is
+    /// `CLAMP_S_CLAMP_T` (#3757).
     pub fn get_by_path_with_clamp(&self, path: &str, clamp_mode: u8) -> Option<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
         self.path_map
@@ -1161,9 +1173,10 @@ impl TextureRegistry {
 
     /// `acquire_by_path`'s clamp-aware variant. Same refcount semantics
     /// as the legacy entry point; the cache lookup includes
-    /// `clamp_mode` so a non-zero clamp request resolves to its own
-    /// entry instead of accidentally adopting the REPEAT-bound
-    /// descriptor. See #610 / D4-NEW-02.
+    /// `clamp_mode` so a clamping request resolves to its own entry
+    /// instead of accidentally adopting the REPEAT-bound descriptor —
+    /// which is the `clamp_mode == 3` entry, not `0` (#3757). See
+    /// #610 / D4-NEW-02.
     pub fn acquire_by_path_with_clamp(
         &mut self,
         path: &str,
@@ -1918,10 +1931,10 @@ fn normalize_path(path: &str) -> String {
 /// clamp-mode byte so the same texture path requested with different
 /// `TexClampMode` values lands in separate entries — the underlying
 /// GPU image is uploaded twice in that case but the descriptor binds
-/// the right `VkSamplerAddressMode` pair. The default-REPEAT path
-/// (`clamp_mode = 0`) keeps the legacy single-entry shape so existing
-/// `acquire_by_path` / `get_by_path` (which look up the no-clamp key
-/// implicitly) still hit.
+/// the right `VkSamplerAddressMode` pair. The default-REPEAT path is
+/// `clamp_mode = 3` (`WRAP_S_WRAP_T`), which is what `acquire_by_path` /
+/// `get_by_path` pass implicitly, so the legacy single-entry shape still
+/// hits. `0` is `CLAMP_S_CLAMP_T`, the opposite end of the table (#3757).
 #[cfg(test)]
 fn clamp_keyed_path(path: &str, clamp_mode: u8) -> String {
     texture_keyed_path(path, clamp_mode, TextureViewKind::D2)

@@ -338,8 +338,18 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // registered column. See `FORMAT_MAJOR`'s doc for why the bump was taken
     // even though `false` happens to be the correct value for every pre-v10
     // snapshot — the blanket rule is the point.
+    // #3762 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, and this is
+    // the #3332 case again: `crates/core/src/ecs/components/creature_attack.rs`
+    // is swept into this file-scoped scan because it carries a
+    // `cfg_attr(feature = "inspect", ...)` derive, but `CreatureAttack` is NOT
+    // registered in `build_save_registry` — it is on
+    // `registry_completeness_tests`' NOT_SAVED_BY_DESIGN list (write-once at
+    // NPC spawn from the CREA record's `DATA.Damage`, re-derived on reload,
+    // the `FactionRanks` class). No on-disk column gained, lost or changed a
+    // field, so no existing save is invalidated and there is nothing for a
+    // major bump to protect.
     const BASELINE_MAJOR: u16 = 10;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9b75_ff99_1abb_bf91;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc39f_7251_ef48_023d;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

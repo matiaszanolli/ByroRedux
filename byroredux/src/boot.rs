@@ -577,6 +577,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_physics::ActorColliderOwner>();
     world.register::<byroredux_core::ecs::components::ActorVitals>();
     world.register::<byroredux_core::ecs::components::EquippedWeapon>();
+    // #3762 — a creature's authored `CREA.DATA.Damage`, read by
+    // `combat::attack_damage`'s no-weapon arm. Registered beside
+    // `EquippedWeapon` because they answer the same question.
+    world.register::<byroredux_core::ecs::components::CreatureAttack>();
     // MQ101 scene CTDAs read actor death and authored CELL identity through
     // shared sparse components. Register them before any scene/cell exists so
     // condition evaluation safely sees the default alive/unowned state.

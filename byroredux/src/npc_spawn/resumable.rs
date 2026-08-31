@@ -1349,6 +1349,7 @@ fn spawn_placement_root(
     }
     stamp_faction_ranks(world, placement_root, npc);
     stamp_actor_values(world, placement_root, npc, index);
+    stamp_creature_attack(world, placement_root, npc);
     stamp_character_components(world, placement_root, npc, index);
     placement_root
 }

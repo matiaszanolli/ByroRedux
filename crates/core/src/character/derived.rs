@@ -164,8 +164,22 @@ pub struct DerivedStatFormula {
     /// absent or genuinely `0` would otherwise evaluate outside the sourced
     /// attribute domain (a negative resistance percentage).
     pub floor: f32,
-    /// Upper clamp (`f32::INFINITY` = uncapped). FO3 AP 85, FNV AP 95,
-    /// Critical Chance 0.10, FO4 VATS 0.95.
+    /// Upper clamp (`f32::INFINITY` = uncapped). Shipped caps: FO3 AP
+    /// `85`, FNV AP `95`, Critical Chance `10`, FO3/FNV resistances `85`
+    /// ([`super::resistance::Affliction::resist_cap`]).
+    ///
+    /// #3766 — the examples here used to read "Critical Chance 0.10, FO4
+    /// VATS 0.95". Both were wrong, and wrong in the way that matters:
+    /// `0.10` is precisely the fractional value #2936 removed when it moved
+    /// every percentage row onto the 0–100 convention (`fallout.rs` ships
+    /// `capped(10.0)`), and this doc is the nearest reference an
+    /// implementer of a new percentage row reads — the module docstring
+    /// above says in as many words that the convention has **no type-level
+    /// enforcement** and must be written on the 0–100 scale by hand, so
+    /// demonstrating the opposite with a concrete number is the 100×-off
+    /// footgun #2936 existed to close. `FO4 VATS 0.95` named no shipped row
+    /// at all: `fallout4_ruleset` registers exactly three (Health / AP /
+    /// Carry Weight), which `ROSTER_CASES`' `derived_rows: Some(3)` pins.
     pub cap: f32,
     /// Rounding before the clamp.
     pub round: RoundMode,

@@ -8,7 +8,9 @@
 
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::character::{CharacterLevel, CharacterRuleset, MeleeDamageConfig};
-use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, EquippedWeapon};
+use byroredux_core::ecs::components::{
+    ActorValues, ActorVitals, CreatureAttack, Dead, EquippedWeapon,
+};
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, World};
 
@@ -316,6 +318,26 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
 }
 
 fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
+    // #3762 — a creature's authored `CREA.DATA.Damage`, stamped at spawn as
+    // `CreatureAttack`. Checked before the weapon arm only in the sense of
+    // the fallback it replaces: a creature carrying an equipped weapon
+    // (rare, but authored — brahmin-drovers' pack items aside, a few FNV
+    // creatures do equip) still resolves through the weapon arm, because an
+    // equipped weapon is the more specific statement about what the actor
+    // is swinging. What this arm replaces is the flat `UNARMED_DAMAGE`
+    // fallback, which was making every FO3/FNV creature hit for 8.
+    //
+    // The CHARAL `MeleeDamage` bonus is deliberately NOT added here: the
+    // capture document scopes `STR × 0.5` to *Melee Weapon* damage, and a
+    // creature's `DATA.Damage` is already its whole authored attack, not a
+    // weapon's base to be modified.
+    if world.get::<EquippedWeapon>(aggressor).is_none() {
+        if let Some(attack) = world.get::<CreatureAttack>(aggressor) {
+            if attack.damage.is_finite() && attack.damage > 0.0 {
+                return attack.damage;
+            }
+        }
+    }
     match world.get::<EquippedWeapon>(aggressor) {
         // The capture document is explicit that Melee Damage is "an
         // additive bonus to Melee Weapon damage" and that "Unarmed has its
@@ -606,6 +628,90 @@ mod tests {
 
         // 18.0 weapon damage + (10.0 STR × 0.5) = 23.0, not 18.0.
         assert_eq!(attack_damage(&world, aggressor), 23.0);
+    }
+
+    /// Regression for #3762. A `CREA` actor with an authored
+    /// `DATA.Damage` and no weapon must attack for that damage, not the
+    /// flat `UNARMED_DAMAGE` baseline.
+    ///
+    /// #3390 gave creatures SPECIAL + Health, which made them melee
+    /// participants; nothing read the one number defining their attack, so
+    /// all 692 FNV / 186 FO3 weaponless damage-authoring creatures hit for
+    /// 8 — a Deathclaw's authored 125 included, a 15.6x shortfall.
+    #[test]
+    fn creature_attack_damage_beats_the_unarmed_baseline() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        world.register::<CreatureAttack>();
+
+        let deathclaw = world.spawn();
+        world.insert(deathclaw, CreatureAttack { damage: 125.0 });
+
+        assert_eq!(attack_damage(&world, deathclaw), 125.0);
+        assert_ne!(attack_damage(&world, deathclaw), UNARMED_DAMAGE);
+    }
+
+    /// An actor with no `CreatureAttack` keeps the pre-#3762 baseline
+    /// exactly — the new arm fills a gap, it does not move the floor.
+    #[test]
+    fn actors_without_a_creature_attack_keep_the_unarmed_baseline() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        world.register::<CreatureAttack>();
+
+        let human = world.spawn();
+        assert_eq!(attack_damage(&world, human), UNARMED_DAMAGE);
+    }
+
+    /// An equipped weapon is the more specific statement about what the
+    /// actor is swinging, so it still wins — and still takes the CHARAL
+    /// bonus, which a natural attack does not (a creature's authored damage
+    /// is its whole attack, not a weapon base to modify).
+    #[test]
+    fn an_equipped_weapon_still_outranks_a_natural_attack() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        world.register::<CreatureAttack>();
+
+        let actor = world.spawn();
+        world.insert(actor, CreatureAttack { damage: 125.0 });
+        world.insert(
+            actor,
+            EquippedWeapon {
+                inventory_index: byroredux_core::ecs::components::InventoryIndex(0),
+                base_form_id: 0x1CB64,
+                damage: 18.0,
+                reach: 0.0,
+                speed: 0.0,
+            },
+        );
+
+        // No MeleeDamageConfig resource here, so the CHARAL bonus is 0.0.
+        assert_eq!(attack_damage(&world, actor), 18.0);
+    }
+
+    /// A non-finite or non-positive authored damage must not reach the
+    /// damage pipeline. The spawn stamp already drops those, so this pins
+    /// the second gate rather than a reachable state — cheap, and it keeps
+    /// a future non-ESM producer of this component honest.
+    #[test]
+    fn a_degenerate_creature_attack_falls_back_to_the_baseline() {
+        for damage in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+            let mut world = World::new();
+            world.register::<ActorValues>();
+            world.register::<EquippedWeapon>();
+            world.register::<CreatureAttack>();
+            let actor = world.spawn();
+            world.insert(actor, CreatureAttack { damage });
+            assert_eq!(
+                attack_damage(&world, actor),
+                UNARMED_DAMAGE,
+                "damage {damage} must not reach the pipeline"
+            );
+        }
     }
 
     /// Companion to the above: no `MeleeDamageConfig` resource at all (FO4,

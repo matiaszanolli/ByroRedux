@@ -112,6 +112,37 @@ fn stamp_actor_values(
     }
 }
 
+/// Stamp a [`CreatureAttack`] on the placement root from the `CREA`
+/// record's authored `DATA.Damage` (#3762).
+///
+/// `CreatureStats::damage` reached the parser and stopped there. #3390 gave
+/// creatures SPECIAL + Health, which made them melee participants under the
+/// shipped `combat_damage_system` — all of them swinging for
+/// `combat.rs`'s flat `UNARMED_DAMAGE`, because the one number that defines
+/// a creature's attack had no reader. Measured on the vanilla masters: 692
+/// FNV and 186 FO3 creatures author a non-zero damage AND carry no
+/// inventory `WEAP`, so they resolved through the no-weapon arm — a
+/// Deathclaw hitting for 8 instead of 125.
+///
+/// No-op for `NPC_` (no `creature_stats`) and for a creature whose `DATA`
+/// leaves damage at zero or negative: absence means "no authored attack",
+/// which keeps the existing `UNARMED_DAMAGE` baseline the answer rather
+/// than materialising an actor that attacks for nothing.
+fn stamp_creature_attack(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
+    let Some(stats) = npc.creature_stats else {
+        return;
+    };
+    if stats.damage <= 0 {
+        return;
+    }
+    world.insert(
+        placement_root,
+        byroredux_core::ecs::components::CreatureAttack {
+            damage: f32::from(stats.damage),
+        },
+    );
+}
+
 /// The actor's effective level for anything that treats level as a number —
 /// re-exported from the plugin crate, where it lives beside the `NPC_` record
 /// whose overloaded `level` field it decodes.

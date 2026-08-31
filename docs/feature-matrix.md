@@ -250,6 +250,7 @@ scheduler registration), not just present as a buildable function.
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ~ built, unwired | ✓ | ✗ | ✗ |
 | NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ~ Health only | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
+| Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | Pool regen tick (Health/Magicka/Stamina) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
@@ -262,6 +263,16 @@ ever reaches a live actor. FO76/Starfield have data captures
 (`charal-fo76-ruleset.md`, `charal-starfield-ruleset.md`) but no ruleset
 builder at all; Starfield's is additionally blocked on its XP/level curve and
 category-spend thresholds being unpublished research (charal.md §9).
+
+`CREA` records get their own stat model (`NpcStatModel::CreatureData`,
+#3390): the 7 SPECIAL and Health straight off the record's own `DATA`, for
+1,578 FNV and 533 FO3 creatures. It deliberately omits `DATA`'s three
+aggregate skills (Combat / Magic / Stealth) because FO3/FNV publish no `AVIF`
+they map onto and inventing one would be a guess. `DATA.Damage` is likewise
+not an actor value — it reaches the spawned entity as the dedicated
+`CreatureAttack` component instead, which `combat::attack_damage` reads in
+place of its flat unarmed baseline (#3762; before that fix every creature in
+both games attacked for 8).
 
 Skyrim's NPC population derives Health only (`race.starting_health +
 NPC_.ACBS.health_offset`) — no skills or other actor values. FO4/FO76/
