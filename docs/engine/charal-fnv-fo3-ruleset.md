@@ -235,11 +235,71 @@ DetectorSkill = (10 + 8·Perception) × DetectorState           # 0.8 / 1.2 / 1 
 Attenuation = ((MaxDist − distance) / MaxDist)²                # MaxDist 2500 in / 5000 out
 ```
 
-`Detection < −20` = undetected, `−20..0` = suspicious, `> 0` = detected. `Sound` and
-`Visual` fold in movement/weapon-noise level, light level + night-eye, and armor
-class (heavy/medium/light); `TargetSkill` is FNV's addition over FO3 — it's the first
-confirmed instance of a Bethesda formula reading **both actors' levels**, not just the
-subject's SPECIAL/skills.
+`Detection < −20` = undetected, `−20..0` = suspicious, `> 0` = detected.
+`TargetSkill` is FNV's addition over FO3 — it's the first confirmed instance of a
+Bethesda formula reading **both actors' levels**, not just the subject's
+SPECIAL/skills.
+
+**Sound and Visual sub-expressions** — captured 2026-08-30 (#3482). Until this pass
+the section said only that `Sound` and `Visual` "fold in movement/weapon-noise level,
+light level + night-eye, and armor class", which left the ~dozen coefficients
+`crates/core/src/stealth.rs` transcribes with **no line in this document to be checked
+against**. They are all on the same source page, in the same `<math>` block as the
+four expressions above:
+
+```
+SoundMultiplier   = 1.6   if Detector has LOS to Target
+                    0.16  otherwise
+Sound             = SoundMultiplier × (MovementSound + 2 × ActionSound)
+MovementMultiplier= 0     if Target is stationary or has Silent Running
+                    1.5   if Target is running
+                    1     otherwise
+MovementSound     = (12 + EquippedWeight/2) × MovementMultiplier
+
+Visual            = 0                             if Detector has no LOS,
+                                                  or Target is Invisible/Chameleon
+                    Light × (1 + VisualMovement)  otherwise
+nighteye          = 3     if Detector has Night Eye, else 1
+Light             = 1.4 × min(100, LightLevel × nighteye)
+VisualMovement    = 0     if Target is not moving
+                    0.01  if Target is moving but not running
+                    0.21  if Target is running
+```
+
+| ActionSound | value |
+|---|---|
+| Loud | 100 |
+| Normal | 50 |
+| Silent | 10 |
+| No action performed | 0 |
+
+| Armor | penalty |
+|---|---|
+| Heavy | 20 |
+| Medium | 10 |
+| Otherwise (light) | 0 |
+
+Notes carried over verbatim from the source page, because both are easy to get wrong
+from the formula alone:
+
+* *Action Sound* is the **Weapon Sound Detection Level** — the sound a weapon makes
+  when fired / swung / thrown / detonated, not an ambient property of the actor.
+  FNV's silent weapons are "undetectable in terms of their action sound".
+* The **Armor penalty is for armor, not for helmets**.
+* Light levels "are not well-understood" and are documented on the page only "to give
+  a sense of how stealth works" — the `1.4` / `min(100, …)` shape is sourced, the
+  *units* of `LightLevel` are not.
+
+**One modelling choice this document owns, not the source** (disclosed rather than
+guessed, per [[feedback_no_guessing]]): the source treats Silent Running as a special
+case of the **sound** branch only (`MovementMultiplier = 0` for "stationary **or** has
+Silent Running") and never mentions it in `VisualMovement`, which discriminates on
+motion alone. `stealth.rs`'s `MovementState` enum collapses "movement state" and "has
+the Silent Running perk" into one value, so it has to pick a `VisualMovement` for
+`SilentRunning`; it picks `0.01` ("moving but not running"). A target sprinting with
+the perk is arguably `0.21` under the source's own wording. Resolving it needs the
+perk split out of the movement enum, which needs the perk/AI layer that does not
+exist yet — recorded here so the choice is visible instead of looking sourced.
 
 **Why this stays out of CHARAL**: it's governed by the Sneak **skill** (which CHARAL
 already produces), but consumes ~10 non-AV, non-CHARAL inputs (distance, indoor/
@@ -250,13 +310,26 @@ later expecting a CHARAL-shaped answer — it's real and sourced, just one layer
 downstream of what CHARAL owns (same boundary as V.A.T.S. accuracy / persuasion /
 barter, just with far more non-CHARAL inputs).
 
+**Verification status (corrected 2026-08-30, #3482)**: every coefficient above was
+re-read against the source page on 2026-08-30 and matches `crates/core/src/stealth.rs`
+exactly. Before that pass the file's "verified" status was an **attribution chain with
+nothing at the end of it** — the 2026-08-20 and 2026-08-24 audit reports both deferred
+to "the 2026-08-16 sweep verified it", and the 2026-08-16 report mentions `stealth.rs`
+only as an ownership reference, verifying nothing in it; the 2026-08-15 report says in
+so many words that its 26 verified Dimension-2 constants "are not these". The gap was
+never in the transcription (it is correct) but in this document: it recorded the four
+top-level expressions and *prose* for the rest, so the sub-coefficients were
+unfalsifiable from the repository. `stealth.rs`'s tests now pin each captured constant
+to an exact value (`*_matches_the_source_table` / `*_matches_the_captured_*`), on top
+of the original monotonicity checks.
+
 **Math BUILT 2026-07-03** (`crates/core/src/stealth.rs`, new top-level `stealth`
 module — deliberately a sibling of `character`, not inside it, per the boundary
 above): `DetectionInputs` + `detection_score()` is a direct, tested transcription of
-the formula (16 tests — structural/monotonicity checks, since the source gives no
-worked numeric example for the full formula, unlike most CHARAL rows). **Math only,
-no ECS wiring** — no ROADMAP milestone exists yet to consume it (M42 "AI packages",
-the natural consumer for an alert-state tick system, is Tier 7 and blocked on `PACK`
+the formula (structural/monotonicity checks plus the #3482 exact-coefficient pins,
+since the source gives no worked numeric example for the *full* formula, unlike most
+CHARAL rows). **Math only, no ECS wiring** — no ROADMAP milestone exists yet to
+consume it (M42 "AI packages", the natural consumer for an alert-state tick system, is Tier 7 and blocked on `PACK`
 record parsing, #446; no line-of-sight/vision system, sneak/crouch flag, or AI
 alert-state component exist in the engine today). Mirrors how the CHARAL affliction
 mechanism (`crates/core/src/character/affliction.rs`) was built ahead of its

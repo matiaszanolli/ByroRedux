@@ -27,8 +27,12 @@
 #      --menu-archive <ba2|bsa> --bench-frames N --bench-hold`, so the bench
 #      summary lands and the debug server stays reachable afterwards.
 #   2. Wait for the `bench-hold:` notice on stderr.
-#   3. Assert the route's success token (`ui.menu: loaded`) is present and that
-#      none of the route's five failure arms logged.
+#   3. Assert the route's success token (`ui.menu: loaded`) is present, that
+#      none of the route's five `scene.rs` failure arms logged, and (#3430)
+#      that the UI crate itself reported neither an unresolved `ImportAssets`
+#      dependency nor a stalled archive preload -- both are non-fatal by
+#      design (#2720), so without these the gate passed a menu that loaded
+#      with every dependency substituted by a placeholder movie.
 #   4. Attach `byro-dbg` and confirm the engine is live and serving, so a
 #      launch that logged success and then died is not scored a PASS.
 #   5. SIGTERM the engine.
@@ -124,6 +128,42 @@ run_menu () {
             fail "$label: $arm"
         fi
     done
+
+    # #3430 — the five arms above are the only ones `scene.rs` owns, and none
+    # of them can fire for a menu whose dependency graph is missing. By design
+    # (#2720) a dependency that cannot be fetched is NOT fatal: the navigator
+    # answers it with `placeholder_movie()` and records the failure
+    # (`navigator.rs::record_degraded`), and an archive preload that never
+    # settles is advanced anyway after the stall grace period
+    # (`player.rs::load_from_resource_provider`). Both are already on stderr at
+    # `error`/`warn` — a menu whose entire font and symbol graph resolved to
+    # placeholders therefore printed `ui.menu: loaded`, drew an empty stage,
+    # and passed this gate. These greps are the missing half: the gate now
+    # checks the outcome of the preload loop it exercises, not just that the
+    # route reached the end of it.
+    #
+    # Substring-matched against the *stable* part of each message, since they
+    # interpolate a path / pass count / cap:
+    #   "Scaleform resource {path:?} was not found in the configured archive"
+    #   "Scaleform archive preload for {path:?} did not settle after N passes"
+    #   "Scaleform resource failures hit the N-entry cap"
+    # The third exists because the recorded failures are deduplicated and
+    # bounded (`player.rs::record_resource_errors`): past the cap, further
+    # distinct failures are neither recorded nor logged, so the cap notice is
+    # the only remaining evidence of them.
+    local ui_arm ui_desc
+    while IFS='|' read -r ui_arm ui_desc; do
+        if grep -Fq "$ui_arm" "$engine_log.stderr"; then
+            eval "$kill_engine"
+            echo "--- engine stderr ---" >&2
+            grep -F "$ui_arm" "$engine_log.stderr" >&2
+            fail "$label: $ui_desc"
+        fi
+    done <<'UI_ARMS'
+was not found in the configured archive|menu loaded with unresolved ImportAssets dependencies (placeholder movies substituted)
+did not settle after|menu loaded on a stalled archive preload (advanced past the grace period)
+Scaleform resource failures hit the|so many distinct resource failures that recording was capped
+UI_ARMS
 
     # A launch that logged success and then died is not a pass. Attaching
     # byro-dbg proves the process is still serving after the bench window.

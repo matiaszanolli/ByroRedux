@@ -2016,6 +2016,17 @@ mod canonical_completeness_harness {
     /// `crates/core`).
     fn kitchen_sink_source() -> ImportedMaterial {
         ImportedMaterial {
+            // #3462 — the NIFAL↔WATAL seam marker. `is_water_shader` is the
+            // sole gate both spawn sites read to decide whether to call
+            // `attach_mesh_water` (`scene/nif_loader.rs`,
+            // `cell_loader/spawn/mesh_instance.rs`), so a copy silently
+            // changed to `false` deletes every mesh-authored water plane in
+            // every game. It is a plain copy at *this* boundary (nothing in
+            // `translate_material` or `classify_glass_into_material` branches
+            // on it), which is why setting it here does not disturb the
+            // no-op-classifier property the rest of the fixture depends on.
+            water_shader_flags: 0x5A,
+            is_water_shader: true,
             emissive_color: [0.11, 0.22, 0.33],
             emissive_mult: 1.5,
             emissive_source: EmissiveSource::Lighting,
@@ -2061,6 +2072,9 @@ mod canonical_completeness_harness {
             texture_clamp_mode: 1, // CLAMP_S_WRAP_T
             src_blend_mode: 2,     // SRC_COLOR
             dst_blend_mode: 3,     // INV_SRC_COLOR
+            // #3462 — `true` because the struct default is `false`, so the
+            // assertion below cannot false-pass against the default.
+            parallax_height_in_alpha: true,
             no_lighting_falloff: Some(NoLightingFalloff {
                 start_angle: 0.1,
                 stop_angle: 0.9,
@@ -2094,14 +2108,31 @@ mod canonical_completeness_harness {
     /// The core regression: every canonical-tier field the boundary is
     /// documented to copy must carry its source value through unchanged.
     /// Deliberately reverting any single `source.X` → `material.X` line in
-    /// `translate_material` fails exactly the corresponding assertion
+    /// `translate_material` to a constant fails the corresponding assertion
     /// below — this is the "fails on a deliberately reintroduced boundary
     /// drop" contract #2214 asked for.
+    ///
+    /// #3462 — that contract used to be a claim rather than a fact: five
+    /// copies had no assertion here at all (`water_shader_flags`,
+    /// `is_water_shader`, `ior`, `parallax_height_in_alpha`, and two of
+    /// `effect_shader_flags`' three contributors), the first two of which
+    /// gate the NIFAL↔WATAL seam. The assertions are below now, and
+    /// [`every_source_derived_material_field_is_pinned_by_a_test`] derives
+    /// the list from the literal itself so the next added copy cannot slip
+    /// through the same way. `ior` and the flag union are pinned by
+    /// dedicated siblings, because reaching their interesting arms requires
+    /// a fixture this one deliberately is not.
     #[test]
     fn translate_material_copies_every_canonical_field() {
         let source = kitchen_sink_source();
         let material = translate_material(&source, Some("TestMesh"), kitchen_sink_paths(), 0);
 
+        // #3462 — the NIFAL↔WATAL seam. Asserted first because it is the
+        // one copy in this literal whose silent loss is invisible in every
+        // other test in the repository: `is_water_shader == false` simply
+        // means no `attach_mesh_water` call, i.e. no water, no error.
+        assert_eq!(material.water_shader_flags, 0x5A);
+        assert!(material.is_water_shader);
         assert_eq!(material.emissive_color, [0.11, 0.22, 0.33]);
         assert_eq!(material.emissive_mult, 1.5);
         assert_eq!(material.emissive_source, EmissiveSource::Lighting);
@@ -2152,6 +2183,17 @@ mod canonical_completeness_harness {
         assert_eq!(material.texture_clamp_mode, 1);
         assert_eq!(material.src_blend_mode, 2);
         assert_eq!(material.dst_blend_mode, 3);
+        assert!(material.parallax_height_in_alpha, "#3462");
+        // The ordinary-dielectric arm of `material_optical_scalar`: this
+        // fixture is `material_kind = 0`, so `ior` must be the shared
+        // dielectric constant. The discriminated fire-refraction arm — the
+        // half that actually carries a source value — is pinned by
+        // `translate_material_copies_the_fire_refraction_distortion_into_ior`.
+        assert_eq!(
+            material.ior,
+            byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR,
+            "#3462"
+        );
 
         // Texture handles.
         assert_eq!(
@@ -2197,6 +2239,207 @@ mod canonical_completeness_harness {
             .shader_type_fields
             .expect("non-empty ShaderTypeFields must translate to Some");
         assert_eq!(stf.eye_cubemap_scale, Some(1.23));
+    }
+
+    /// #3462 — `ior` is the one field in the literal whose value is a
+    /// *function* of two source fields rather than a copy
+    /// (`material_optical_scalar(material_kind, refraction_strength)`), and
+    /// the kitchen-sink fixture can only reach its constant arm. This pins
+    /// the discriminated arm: for `MATERIAL_KIND_FIRE_REFRACTION` the slot
+    /// carries the authored distortion strength, not an index of refraction.
+    ///
+    /// `material_kind = 103` is `>= 100` and not `MATERIAL_KIND_GLASS`, so
+    /// `classify_glass_into_material` returns early and the value survives —
+    /// which is the behaviour under test, not an accident of the fixture.
+    #[test]
+    fn translate_material_copies_the_fire_refraction_distortion_into_ior() {
+        let source = ImportedMaterial {
+            material_kind: byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+            refraction_strength: 0.63,
+            ..ImportedMaterial::default()
+        };
+        let material = translate_material(&source, None, kitchen_sink_paths(), 0);
+        assert_eq!(material.material_kind, 103);
+        assert_eq!(
+            material.ior, 0.63,
+            "the fire-refraction arm must carry `refraction_strength` through"
+        );
+
+        // …and the discrimination itself: the same strength on any other
+        // kind must NOT reach `ior`, or an ordinary surface would be shaded
+        // with a bogus index of refraction.
+        let ordinary = translate_material(
+            &ImportedMaterial {
+                material_kind: 0,
+                refraction_strength: 0.63,
+                metalness_override: Some(0.42),
+                ..ImportedMaterial::default()
+            },
+            None,
+            kitchen_sink_paths(),
+            0,
+        );
+        assert_eq!(
+            ordinary.ior,
+            byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR
+        );
+    }
+
+    /// #3462 — `effect_shader_flags` is a three-way OR, and the harness
+    /// above only ever exercises the middle contributor
+    /// (`pack_imported_material_flags`, via the fixture's soft/rim/back
+    /// lighting bools) with `extra_material_flags = 0` and no
+    /// `effect_shader`. A copy reduced to any single contributor keeps that
+    /// assertion green. Pin all three at once.
+    #[test]
+    fn translate_material_unions_all_three_effect_shader_flag_contributors() {
+        use byroredux_renderer::vulkan::material::material_flag::{
+            EFFECT_SOFT, MODEL_SPACE_NORMALS, SOFT_LIGHTING,
+        };
+        let source = ImportedMaterial {
+            // Contributor 1 — `pack_effect_shader_flags(source.effect_shader)`.
+            effect_shader: Some(BsEffectShaderData {
+                effect_soft: true,
+                ..BsEffectShaderData::default()
+            }),
+            // Contributor 2 — `pack_imported_material_flags(source)`.
+            soft_lighting: true,
+            metalness_override: Some(0.42),
+            ..ImportedMaterial::default()
+        };
+        // Contributor 3 — the caller's extra bits (the cell loader's REFR
+        // overlay model-space-normals bit; `0` for loose-NIF loads).
+        let material = translate_material(&source, None, kitchen_sink_paths(), MODEL_SPACE_NORMALS);
+
+        for (bit, who) in [
+            (EFFECT_SOFT, "pack_effect_shader_flags"),
+            (SOFT_LIGHTING, "pack_imported_material_flags"),
+            (MODEL_SPACE_NORMALS, "extra_material_flags"),
+        ] {
+            assert_ne!(
+                material.effect_shader_flags & bit,
+                0,
+                "{who}'s contribution is missing from the union (#3462)"
+            );
+        }
+    }
+
+    /// #3462 (NIFAL-2026-08-27-04) — the mechanised completeness check that
+    /// makes the harness's contract above *true* rather than asserted.
+    ///
+    /// `translate_material_copies_every_canonical_field` claims that
+    /// "deliberately reverting any single `source.X` → `material.X` line
+    /// fails exactly the corresponding assertion below". That claim was
+    /// false for five copies (`water_shader_flags`, `is_water_shader`,
+    /// `ior`, `parallax_height_in_alpha`, and the two unexercised
+    /// `effect_shader_flags` contributors) — and it was false in the only
+    /// way that matters, silently: the `Material` literal has no
+    /// `..Default::default()` tail, so a *deleted* line is a compile error
+    /// and the reachable regression is a line *changed* to a constant, which
+    /// is exactly what a missing assertion cannot see.
+    ///
+    /// Re-deriving the field list from the source text is the same
+    /// instrument `anisotropic_rationale_matches_what_the_source_formats_carry`
+    /// (this file), `crates/renderer/src/shader_constants.rs` and
+    /// `crates/renderer/src/vulkan/context/skinned_blas_refit.rs` already
+    /// use, and it is the half a hand-written list can never provide: a
+    /// field added to the literal without an assertion is added by the same
+    /// omission that skips the assertion (the sibling defect
+    /// `#3438` raises for `sanitize_finite`).
+    ///
+    /// Alphabet, stated precisely: every top-level entry of the
+    /// `let mut material = Material {` literal whose value mentions
+    /// `source.` — i.e. every value the *source material* can influence.
+    /// Entries fed by `paths`/`textures` (already covered by the harness's
+    /// texture-handle block) and the four Disney-BSDF constants
+    /// (`subsurface`/`sheen`/`sheen_tint`/`anisotropic`, which have no
+    /// source at all — see the rationale beside them) are outside it. The
+    /// check is that *some* test reads the field off the canonical
+    /// `Material` inside an asserting statement; it does not verify what
+    /// that assertion claims.
+    #[test]
+    fn every_source_derived_material_field_is_pinned_by_a_test() {
+        let src = include_str!("material_translate.rs");
+        let (prod, tests) = src
+            .split_once("#[cfg(test)]")
+            .expect("material_translate.rs must have a test module");
+
+        let start = prod
+            .find("let mut material = Material {")
+            .expect("translate_material's canonical `Material` literal moved");
+        let literal = &prod[start..];
+        let literal = &literal[..literal
+            .find("\n    };")
+            .expect("no terminator for the `Material` literal")];
+
+        // Split the literal into top-level `field: value` entries. Brace /
+        // bracket / paren depth is tracked because several values span
+        // multiple lines (`shader_type_fields`'s `if`, `effect_falloff`'s
+        // `map`/`or_else` chain, `effect_shader_flags`' three-way OR).
+        let mut fields: Vec<String> = Vec::new();
+        let mut depth = 0i32;
+        let mut name: Option<String> = None;
+        let mut value = String::new();
+        for line in literal.lines().skip(1) {
+            let trimmed = line.trim();
+            if depth == 0 && name.is_none() {
+                // Between entries: comments and blank lines only.
+                let Some((n, rest)) = trimmed.split_once(':') else {
+                    continue;
+                };
+                if n.is_empty() || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                    continue;
+                }
+                name = Some(n.to_string());
+                value.clear();
+                value.push_str(rest);
+            } else {
+                value.push_str(trimmed);
+            }
+            depth += trimmed.bytes().filter(|b| b"([{".contains(b)).count() as i32;
+            depth -= trimmed.bytes().filter(|b| b")]}".contains(b)).count() as i32;
+            if depth <= 0 && trimmed.ends_with(',') {
+                let field = name.take().expect("entry closed without a name");
+                if value.contains("source.") {
+                    fields.push(field);
+                }
+                value.clear();
+                depth = 0;
+            }
+        }
+
+        assert!(
+            fields.len() >= 40,
+            "the literal scan found only {} source-derived fields — the \
+             `Material` literal or its formatting moved and this guard is no \
+             longer guarding anything: {fields:?}",
+            fields.len()
+        );
+
+        // A field counts as pinned when some `;`-terminated statement in the
+        // file's test code both reads it off `material` and can fail:
+        // `assert*!` or a panicking `.expect(` (the shape the `Option`
+        // fields — `effect_falloff`, `shader_type_fields` — are read with).
+        let pinned = |field: &str| {
+            let needle = format!("material.{field}");
+            tests.split(';').any(|stmt| {
+                stmt.match_indices(&needle).any(|(i, _)| {
+                    let after = stmt[i + needle.len()..].bytes().next();
+                    // Word boundary, so `material.alpha` is not satisfied by
+                    // an assertion on `material.alpha_threshold`.
+                    !matches!(after, Some(b) if b.is_ascii_alphanumeric() || b == b'_')
+                }) && (stmt.contains("assert") || stmt.contains(".expect("))
+            })
+        };
+
+        let unpinned: Vec<&String> = fields.iter().filter(|f| !pinned(f)).collect();
+        assert!(
+            unpinned.is_empty(),
+            "`translate_material` copies {unpinned:?} out of `ImportedMaterial`, but no \
+             test asserts on `material.<field>` — reverting those copies to a constant \
+             leaves the whole suite green, which is exactly the contract \
+             `translate_material_copies_every_canonical_field` claims to hold (#3462)"
+        );
     }
 
     /// A `BsEffectShaderData` falloff must win over `no_lighting_falloff`

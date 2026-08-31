@@ -44,10 +44,18 @@
 //! Unlike most CHARAL formulas, the source page gives **no worked numeric
 //! example** for the full `Detection` formula (only for its sub-terms, e.g.
 //! Action Points elsewhere). [`detection_score`] is a direct algebraic
-//! transcription of the cited formula, not a guess — but it is verified here
-//! by structural/monotonicity tests (distance, sound, armor, etc. each move
-//! the score the direction the source's prose says), not a "matches wiki
-//! example" test like the rest of CHARAL.
+//! transcription of the cited formula, not a guess — so there is no
+//! "matches wiki example" test for the whole formula like the rest of
+//! CHARAL has. What there is instead, since #3482: the source's `Sound` and
+//! `Visual` sub-expressions are now captured *verbatim* in
+//! `docs/engine/charal-fnv-fo3-ruleset.md` (they previously survived only as
+//! prose there, which made every coefficient below unfalsifiable from the
+//! repository), and the `*_matches_the_source_table` /
+//! `*_matches_the_captured_*` tests pin each one to its exact captured value
+//! on top of the original monotonicity checks.
+//!
+//! One coefficient is a **disclosed modelling choice, not a transcription**:
+//! see [`MovementState::SilentRunning`].
 
 /// Whether the detection roll happens indoors or outdoors — sets the maximum
 /// detection distance (2500 / 5000 game units).
@@ -70,6 +78,20 @@ impl Locale {
 /// The target's current movement state — drives both the sound and visual
 /// terms. `SilentRunning` is the perk-driven exception that zeroes movement
 /// sound entirely (not just reduces it).
+///
+/// #3482 — this enum collapses two independent things the source keeps
+/// apart: how the target is moving, and whether it has the Silent Running
+/// perk. The source special-cases the perk in the **sound** branch only
+/// ("stationary *or* has Silent Running" ⇒ `MovementMultiplier = 0`) and
+/// never mentions it in `VisualMovement`, which discriminates on motion
+/// alone (`0` / `0.01` / `0.21` for not moving / moving / running). So this
+/// variant has to *choose* a visual coefficient, and it takes `0.01`
+/// ("moving but not running"); a target sprinting with the perk is arguably
+/// `0.21` under the source's own wording. That is the one number here the
+/// capture document owns rather than the source — recorded in
+/// `docs/engine/charal-fnv-fo3-ruleset.md` so it is visible instead of
+/// looking sourced. Splitting the perk out of this enum is an M42-era
+/// change (nothing consumes it today).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementState {
     Stationary,
@@ -491,5 +513,295 @@ mod tests {
             (capped - at_cap).abs() < 1e-4,
             "both saturate the same min(100, ...) term"
         );
+    }
+
+    // ── #3482 (CHAR-2026-08-27b-D2-01) — exact per-coefficient pins.
+    //
+    //   The monotonicity tests above check that each input moves the score
+    //   the direction the source's prose says. They cannot tell 1.6 from
+    //   2.6, 0.21 from 0.12, or 12 + w/2 from 12 + w — which is what made
+    //   the whole `Sound`/`Visual` coefficient set unfalsifiable while the
+    //   capture document recorded only prose for it. Each test below asserts
+    //   an exact value against the table now captured in
+    //   `docs/engine/charal-fnv-fo3-ruleset.md` § Sneak Detection (FNV).
+
+    /// Inputs that zero **every** term of `Detection` except the one under
+    /// test, so a probe's score minus [`ISOLATED_BASE`] is that term alone:
+    ///
+    /// * `distance = 0` ⇒ `Attenuation = ((5000−0)/5000)² = 1`
+    /// * stationary, no action, zero equipped weight ⇒ `Sound = 0`
+    /// * `light_level = 0` ⇒ `Light = 0` ⇒ `Visual = 0`
+    /// * `detector_perception = 0`, `Normal` state ⇒ `DetectorSkill = 10`
+    /// * not sneaking ⇒ `TargetSkill = 0`
+    ///
+    /// leaving `1·(0 + 0 + 10/2) − 0/2 − 35 = −30`.
+    fn isolated() -> DetectionInputs {
+        DetectionInputs {
+            distance: 0.0,
+            locale: Locale::Outdoor,
+            detector_has_los: true,
+            detector_perception: 0.0,
+            detector_state: DetectorState::Normal,
+            detector_level: 1,
+            detector_has_night_eye: false,
+            target_is_sneaking: false,
+            target_is_invisible: false,
+            target_sneak_skill: 0.0,
+            target_level: 1,
+            target_armor: ArmorClass::Light,
+            target_equipped_weight: 0.0,
+            target_movement: MovementState::Stationary,
+            target_action_sound: ActionSound::None,
+            light_level: 0.0,
+        }
+    }
+
+    const ISOLATED_BASE: f32 = -30.0;
+
+    /// `Detection`'s own constants, and the premise every probe below rests
+    /// on. `−35` is the flat term; `10 + 8·Perception` is `DetectorSkill`'s
+    /// base; both are halved/subtracted exactly as the source writes them.
+    #[test]
+    fn isolated_baseline_is_the_documented_constant_term() {
+        approx(detection_score(&isolated()), ISOLATED_BASE, "1·(10/2) − 35");
+    }
+
+    fn approx(actual: f32, expected: f32, what: &str) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{what}: expected {expected}, got {actual}"
+        );
+    }
+
+    /// The term the probe under test contributes, isolated.
+    fn term(inputs: &DetectionInputs) -> f32 {
+        detection_score(inputs) - ISOLATED_BASE
+    }
+
+    /// `SoundMultiplier = 1.6 with LOS, 0.16 otherwise`. Probed through a
+    /// walking target at zero equipped weight, whose `MovementSound` is the
+    /// bare `12`, so the multiplier is the only unknown. Losing LOS also
+    /// zeroes `Visual`, which is already zero here.
+    #[test]
+    fn sound_multiplier_matches_the_source_table() {
+        let walking = DetectionInputs {
+            target_movement: MovementState::Walking,
+            ..isolated()
+        };
+        approx(term(&walking), 1.6 * 12.0, "1.6 × MovementSound with LOS");
+        approx(
+            term(&DetectionInputs {
+                detector_has_los: false,
+                ..walking
+            }),
+            0.16 * 12.0,
+            "0.16 × MovementSound without LOS",
+        );
+    }
+
+    /// `MovementSound = (12 + EquippedWeight/2) × MovementMultiplier`, with
+    /// the multiplier `0 / 1.5 / 1` for stationary-or-silent-running /
+    /// running / otherwise. 100 lb of equipment must add exactly 50, not 100.
+    #[test]
+    fn movement_sound_matches_the_source_table() {
+        let heavy = DetectionInputs {
+            target_equipped_weight: 100.0,
+            ..isolated()
+        };
+        for (movement, multiplier) in [
+            (MovementState::Stationary, 0.0),
+            (MovementState::Walking, 1.0),
+            (MovementState::Running, 1.5),
+            (MovementState::SilentRunning, 0.0),
+        ] {
+            approx(
+                term(&DetectionInputs {
+                    target_movement: movement,
+                    ..heavy
+                }),
+                1.6 * ((12.0 + 100.0 / 2.0) * multiplier),
+                "MovementSound",
+            );
+        }
+    }
+
+    /// `ActionSound` is `100 / 50 / 10 / 0` for loud / normal / silent / no
+    /// action, and enters `Sound` **doubled**.
+    #[test]
+    fn action_sound_matches_the_source_table() {
+        for (action, value) in [
+            (ActionSound::Loud, 100.0),
+            (ActionSound::Normal, 50.0),
+            (ActionSound::Silent, 10.0),
+            (ActionSound::None, 0.0),
+        ] {
+            assert_eq!(action.value(), value, "{action:?}");
+            approx(
+                term(&DetectionInputs {
+                    target_action_sound: action,
+                    ..isolated()
+                }),
+                1.6 * (2.0 * value),
+                "2 × ActionSound",
+            );
+        }
+    }
+
+    /// `Light = 1.4 × min(100, LightLevel × nighteye)`, `nighteye = 3` with
+    /// the effect and `1` without. Stationary, so `VisualMovement = 0` and
+    /// `Visual` is `Light` exactly.
+    #[test]
+    fn light_and_night_eye_match_the_source_table() {
+        for (light_level, night_eye, expected) in [
+            (50.0, false, 1.4 * 50.0),
+            (50.0, true, 1.4 * 100.0), // 150 → capped to 100
+            (30.0, true, 1.4 * 90.0),  // 90 → under the cap, so ×3 shows
+            (100.0, false, 1.4 * 100.0),
+        ] {
+            approx(
+                term(&DetectionInputs {
+                    light_level,
+                    detector_has_night_eye: night_eye,
+                    ..isolated()
+                }),
+                expected,
+                "1.4 × min(100, light × nighteye)",
+            );
+        }
+    }
+
+    /// `VisualMovement = 0 / 0.01 / 0.21` for not moving / moving but not
+    /// running / running, applied as `Light × (1 + VisualMovement)`. The
+    /// expected value carries the movement's `Sound` contribution too, since
+    /// the two cannot be varied independently.
+    #[test]
+    fn visual_movement_matches_the_source_table() {
+        // Light = 1.4 × min(100, 50) = 70.
+        let lit = DetectionInputs {
+            light_level: 50.0,
+            ..isolated()
+        };
+        for (movement, sound_multiplier, visual_movement) in [
+            (MovementState::Stationary, 0.0, 0.0),
+            (MovementState::Walking, 1.0, 0.01),
+            (MovementState::Running, 1.5, 0.21),
+            // The disclosed choice, not the source — see `MovementState`'s
+            // docs and the capture document. Pinned so a future perk/movement
+            // split is a deliberate edit here rather than a silent drift.
+            (MovementState::SilentRunning, 0.0, 0.01),
+        ] {
+            approx(
+                term(&DetectionInputs {
+                    target_movement: movement,
+                    ..lit
+                }),
+                1.6 * (12.0 * sound_multiplier) + 70.0 * (1.0 + visual_movement),
+                "Light × (1 + VisualMovement)",
+            );
+        }
+    }
+
+    /// `Armor = 20 / 10 / 0` for heavy / medium / otherwise, subtracted from
+    /// `TargetSkill` — which is itself halved, so heavy armor costs the
+    /// target exactly 10 points of `Detection`. (Source note: the penalty is
+    /// for armor, not for helmets.)
+    #[test]
+    fn armor_penalty_matches_the_source_table() {
+        // Sneak skill 0 and equal levels ⇒ TargetSkill = max(50 − 10·1, 0)
+        // − Armor = 40 − Armor.
+        let sneaking = DetectionInputs {
+            target_is_sneaking: true,
+            target_level: 5,
+            detector_level: 5, // 5·(5−5) = 0
+            ..isolated()
+        };
+        for (armor, penalty) in [
+            (ArmorClass::Heavy, 20.0),
+            (ArmorClass::Medium, 10.0),
+            (ArmorClass::Light, 0.0),
+        ] {
+            assert_eq!(armor.penalty(), penalty, "{armor:?}");
+            // max(50 − 10·5, 0) = 0, so TargetSkill is exactly −penalty.
+            approx(
+                term(&DetectionInputs {
+                    target_armor: armor,
+                    ..sneaking
+                }),
+                penalty / 2.0,
+                "−TargetSkill/2",
+            );
+        }
+    }
+
+    /// `DetectorSkill = (10 + 8·Perception) × DetectorState`, the state
+    /// multiplier being `0.8` (sleeping / already fighting this target),
+    /// `1.2` (alert, lost, or fighting someone else) or `1`.
+    #[test]
+    fn detector_skill_and_state_match_the_source_table() {
+        for (state, multiplier) in [
+            (DetectorState::SleepingOrFightingThisTarget, 0.8),
+            (DetectorState::AlertLostOrFightingOther, 1.2),
+            (DetectorState::Normal, 1.0),
+        ] {
+            assert_eq!(state.multiplier(), multiplier, "{state:?}");
+            // Perception 10 ⇒ base 90, entering Detection as 90·mult/2.
+            approx(
+                detection_score(&DetectionInputs {
+                    detector_perception: 10.0,
+                    detector_state: state,
+                    ..isolated()
+                }),
+                (10.0 + 8.0 * 10.0) * multiplier / 2.0 - 35.0,
+                "DetectorSkill/2 − 35",
+            );
+        }
+    }
+
+    /// `Attenuation = ((MaxDist − distance)/MaxDist)²`, `MaxDist` 2500
+    /// indoors / 5000 outdoors — squared, so half the maximum distance
+    /// leaves a quarter of the term, not a half.
+    #[test]
+    fn attenuation_matches_the_captured_expression() {
+        for (locale, max_distance) in [(Locale::Indoor, 2500.0), (Locale::Outdoor, 5000.0)] {
+            for fraction in [0.0f32, 0.5, 1.0] {
+                let inputs = DetectionInputs {
+                    locale,
+                    distance: max_distance * fraction,
+                    // Something for the attenuation to bite on: a loud
+                    // action at 1.6 × 2 × 100 = 320 of Sound, plus the
+                    // constant 10/2 of DetectorSkill.
+                    target_action_sound: ActionSound::Loud,
+                    ..isolated()
+                };
+                let expected = (1.0 - fraction).powi(2) * (1.6 * 2.0 * 100.0 + 5.0) - 35.0;
+                approx(detection_score(&inputs), expected, "Attenuation");
+            }
+        }
+    }
+
+    /// `TargetSkill = SneakSkill + 5·(TargetLevel − DetectorLevel)
+    /// + max(50 − 10·TargetLevel, 0) − Armor`, and `0` when not sneaking.
+    /// The `max(…, 0)` low-level bonus and the both-actors level term are
+    /// FNV's addition over FO3.
+    #[test]
+    fn target_skill_matches_the_captured_expression() {
+        for (sneak_skill, target_level, detector_level) in
+            [(0.0, 1, 1), (75.0, 3, 8), (25.0, 10, 2), (100.0, 6, 6)]
+        {
+            let expected_target_skill = sneak_skill
+                + 5.0 * (f32::from(target_level) - f32::from(detector_level))
+                + (50.0 - 10.0 * f32::from(target_level)).max(0.0);
+            approx(
+                term(&DetectionInputs {
+                    target_is_sneaking: true,
+                    target_sneak_skill: sneak_skill,
+                    target_level,
+                    detector_level,
+                    ..isolated()
+                }),
+                -expected_target_skill / 2.0,
+                "−TargetSkill/2",
+            );
+        }
     }
 }

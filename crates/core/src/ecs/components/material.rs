@@ -2079,11 +2079,15 @@ mod tests {
     }
 
     /// The whole-struct pin: poison **every** float field at once and require
-    /// the material to come back finite. This is the guard that catches the
-    /// #3373 defect *class* — a float field added to `Material` without a
-    /// matching `fix_scalar!`/`fix_vec!` line — rather than only the four
-    /// fields that were missing this time. Extend the literal below whenever
-    /// `Material` gains a float.
+    /// the material to come back finite.
+    ///
+    /// This is the *behavioural* half of the #3373 guard — it proves the
+    /// listed fields are actually repaired, which a source scan cannot. The
+    /// *completeness* half is
+    /// [`every_material_float_field_is_covered_by_sanitize_finite`], which
+    /// derives the field list from the source instead of transcribing it, so
+    /// a `Material` float added without a `fix_scalar!`/`fix_vec!` line fails
+    /// even if nobody extends the literal below (#3438).
     #[test]
     fn sanitize_finite_leaves_no_non_finite_float_anywhere() {
         let n = f32::NAN;
@@ -2178,6 +2182,119 @@ mod tests {
                 "{name} left non-finite by sanitize_finite"
             );
         }
+    }
+
+    /// #3438 (SAFE-2026-08-27b-03) — the completeness half of the #3373
+    /// guard, and the one that needs no maintenance.
+    ///
+    /// The sibling test above poisons a hand-written list of field
+    /// initialisers and re-reads a hand-written list of accessors. That
+    /// catches a field whose `fix_scalar!` line was *deleted*, but not the
+    /// defect that actually happened: #3373 was four floats added to
+    /// `Material` on 2026-08-25 with `sanitize_finite` never extended — and
+    /// a field added without a `fix_scalar!` line is added without a test
+    /// line by the identical omission. A literal transcription of the list
+    /// it is meant to police cannot close that loop.
+    ///
+    /// So derive both sides from the source text instead, the same
+    /// instrument `crates/renderer/src/shader_constants.rs` and
+    /// `crates/renderer/src/vulkan/context/skinned_blas_refit.rs` already use
+    /// for Rust-side structural invariants that ordinary unit tests cannot
+    /// see. `include_str!` of this very file is not a cycle — it embeds the
+    /// bytes on disk, it does not re-expand the module.
+    ///
+    /// Alphabet, stated precisely so this doc-comment does not repeat the
+    /// overclaim it exists to correct: the scan covers **directly declared**
+    /// `f32` / `[f32; N]` fields of `struct Material`. Floats reached through
+    /// another type — `shader_type_fields: Option<Box<ShaderTypeFields>>` and
+    /// `effect_falloff: Option<EffectFalloff>` — are outside it, because
+    /// `sanitize_finite` does not descend into them either; adding a float to
+    /// one of *those* structs is a different (still open) hole that this test
+    /// makes no claim about.
+    #[test]
+    fn every_material_float_field_is_covered_by_sanitize_finite() {
+        let src = include_str!("material.rs");
+
+        /// Byte range of the block opened by the first `needle` occurrence,
+        /// ending at the first line that is exactly `close` at column zero.
+        fn block<'a>(src: &'a str, needle: &str, close: &str) -> &'a str {
+            let start = src
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` not found in material.rs"));
+            let rest = &src[start..];
+            let end = rest
+                .find(close)
+                .unwrap_or_else(|| panic!("no terminator for `{needle}`"));
+            &rest[..end]
+        }
+
+        // `pub struct Material {` .. the first column-zero `}`.
+        let struct_block = block(src, "pub struct Material {", "\n}\n");
+        let mut declared: Vec<&str> = Vec::new();
+        for line in struct_block.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("pub ") else {
+                continue;
+            };
+            let Some((name, ty)) = rest.split_once(": ") else {
+                continue;
+            };
+            let ty = ty.trim_end_matches(',');
+            // Direct floats only — see the alphabet note above.
+            if ty == "f32" || (ty.starts_with("[f32; ") && ty.ends_with(']')) {
+                declared.push(name);
+            }
+        }
+
+        // `pub fn sanitize_finite(&mut self) -> bool {` .. its column-4 `}`.
+        let fn_block = block(src, "pub fn sanitize_finite(", "\n    }\n");
+        let mut covered: Vec<&str> = Vec::new();
+        for line in fn_block.lines() {
+            let line = line.trim();
+            for macro_name in ["fix_scalar!(", "fix_vec!("] {
+                if let Some(rest) = line.strip_prefix(macro_name) {
+                    covered.push(rest.trim_end_matches(");"));
+                }
+            }
+        }
+        // `metalness` / `roughness` are repaired by the `resolve_pbr()` call
+        // at the top of `sanitize_finite` rather than by a `fix_*!` line —
+        // deliberately, so the keyword classifier and the renderer-range
+        // clamp run instead of a blind default (see the method docs, and
+        // `sanitize_finite_repairs_metalness_and_roughness_via_resolve_pbr`
+        // for the behavioural proof).
+        assert!(
+            fn_block.contains("self.resolve_pbr();"),
+            "sanitize_finite no longer calls resolve_pbr — metalness/roughness \
+             are exempted below on the assumption that it does"
+        );
+        covered.push("metalness");
+        covered.push("roughness");
+
+        // Sanity: the scan must not be silently matching nothing.
+        assert!(
+            declared.len() >= 30,
+            "the struct scan found only {} float fields — the `pub struct \
+             Material {{` block or its field syntax moved, and this guard is \
+             no longer guarding anything",
+            declared.len()
+        );
+
+        let missing: Vec<&&str> = declared.iter().filter(|f| !covered.contains(f)).collect();
+        assert!(
+            missing.is_empty(),
+            "`Material` float field(s) {missing:?} are not repaired by \
+             `sanitize_finite` — a poisoned save carries NaN/Inf through both \
+             save-path gates into `GpuMaterial` (#3373/#3438). Add a \
+             `fix_scalar!`/`fix_vec!` line for each."
+        );
+
+        let stale: Vec<&&str> = covered.iter().filter(|f| !declared.contains(f)).collect();
+        assert!(
+            stale.is_empty(),
+            "`sanitize_finite` repairs {stale:?}, which are no longer directly \
+             declared `f32`/`[f32; N]` fields of `Material`"
+        );
     }
 
     /// #3335 — every path here is transcribed from a live listing of the
