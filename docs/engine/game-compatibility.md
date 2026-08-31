@@ -260,7 +260,9 @@ cargo run -- --esm Starfield.esm \
 
 #### Oblivion
 
-- **NIF parser**: 8,032 / 8,032 (100% clean, 100% recoverable) — the
+- **NIF parser**: 9,612 / 9,612 (100% clean, 100% recoverable, 0
+  truncations — re-measured 2026-08-30, up from the pre-#3041/#3466/#3369
+  corpus-widening figure of 8,032) — the
   pre-Gamebryo NetImmerse marker placeholders below no longer truncate as of
   the 2026-08-19 baseline regen (#3082)
 - **Archive**: BSA v103 ✓ (147 629 / 147 629 vanilla files extract cleanly
@@ -285,7 +287,13 @@ cargo run -- --esm Starfield.esm \
 
 #### Fallout 76
 
-- **NIF parser**: 58,469 / 58,469 (100% clean, 100% recoverable)
+- **NIF parser**: **98.18% clean (165,164 / 168,220), 100% recoverable**
+  (re-measured 2026-08-30 after the #3041/#3466/#3369 corpus widening from
+  the previous 58,469-file figure, which predated the `GeneratedMeshes`
+  archives being gated at all). `SeventySix - GeneratedMeshes01.ba2` is
+  95.03% clean and `GeneratedMeshes02.ba2` is **0.00% clean** — a
+  known-open, deliberately un-baselined gap pending #3461. Do not read
+  this row as 100%.
 - **Archive**: BA2 BTDX v1 GNRL + DX10 ✓
 - **NIF support**: BSVER 155+ shader stopcond — non-empty Name = BGSM file
   path, rest of the block absent. CRC32-hashed shader flag arrays

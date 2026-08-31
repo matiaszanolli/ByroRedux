@@ -21,7 +21,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 | Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
-| Cumulative NIFs swept | 184,886 (full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md)) |
+| Cumulative NIFs swept | 624,702 (full mesh-archive sweeps post-#3041/#3466/#3369 widening, 2026-08-30; per-game counts in [Game Compatibility](game-compatibility.md)) |
 | BGSM / BGEM references | Surfaced as `ImportedMesh.material.material_path` when the NiNet name is a material file (BSVER ≥ 155); BGSM/BGEM sidecars surfaced on the lighting/effect shader data |
 | Starfield `.mesh`     | `BSGeometry` carries external `.mesh` filenames; resolved via the `geometries\<hash>.mesh` canonical path (#1292), not `meshes\…` |
 | Import cache          | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
@@ -660,17 +660,20 @@ Starfield coverage work below.
 ## Per-game NIF coverage (Oblivion → Starfield)
 
 Live numbers in [Game Compatibility](game-compatibility.md); summary
-refreshed 2026-07-11 (#1900 / NIF-D3-02):
+refreshed 2026-08-30 (the 2026-07-11 / NIF-D3-02 figures below predated the
+#3041/#3466/#3369 corpus widening and under-counted every row — two of
+them, Oblivion and FO76, were wrong in *direction*, not just stale):
 
 | Game | NIF clean rate | Recoverable | Notes |
 |------|----------------|-------------|-------|
-| Oblivion | 99.93% (8 026 / 8 032) | 100% | `block_sizes`-less; remaining 6 v3.3.0.13 NetImmerse-era marker files (#687 / #688 / #698 closed) |
-| Fallout 3 | 100% (10 989) | 100% | shared FNV parser |
-| Fallout NV | 100% (14 881) | 100% | reference title |
-| Skyrim SE | 100% (18 862) | 100% | BSTriShape packed-vertex format |
-| Fallout 4 | 100% (34 995 + 124 871 MeshesExtra) | 100% | FaceGen truncation tail resolved (#1457) |
-| Fallout 76 | 100% (58 469) | 100% | CRC32 shader flag arrays |
-| Starfield | 99.64% aggregate (5 archives) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); MeshesPatch truncation tail is residual drift (#746/#747) |
+| Oblivion | **100% (9 612 / 9 612), 0 truncations** | 100% | the #687/#688/#698 marker files now parse whole — the previously-documented "6 residual v3.3.0.13" no longer exist |
+| Fallout 3 | 100% (17 172) | 100% | shared FNV parser |
+| Fallout NV | 100% (20 746) | 100% | reference title |
+| Skyrim SE | 100% (33 468) | 100% | BSTriShape packed-vertex format |
+| Fallout 4 | 100% vanilla (254 648 incl. third-party) | 100% | FaceGen truncation tail resolved (#1457) |
+| Fallout 76 | **98.18% clean (165 164 / 168 220)** | 100% | `SeventySix - GeneratedMeshes01.ba2` 95.03% clean, `GeneratedMeshes02.ba2` **0.00% clean** — CRC32 shader flag arrays parse, but the `GeneratedMeshes` tail is a known-open, deliberately un-baselined gap pending #3461. Do not read this row as 100%. |
+| Starfield | 99.98% clean (120 836) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); residual truncation tail tracked at #2105/#3524 |
+| **Cumulative swept** | **624 702** (was 184 886 pre-widening) | — | full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md) |
 
 The two big bring-ups since the N26 era were:
 
