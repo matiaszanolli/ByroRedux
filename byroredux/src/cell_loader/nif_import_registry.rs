@@ -116,6 +116,46 @@ mod canonical_key_tests {
     }
 }
 
+/// [`NifImportRegistry`] cache key for a `.spt` SpeedTree import.
+///
+/// #3750 — unlike a NIF, whose parse depends only on the file,
+/// `parse_and_import_spt` bakes per-TREE-record metadata (ICON / OBND /
+/// MODB / BNAM) into the returned [`CachedNifImport`]. Keying purely on
+/// `canonical_model_path_key(model_path)` — as every NIF import does —
+/// would collapse every TREE record that points at one shared `.spt` onto
+/// whichever record was imported first, silently handing its texture and
+/// billboard size to the rest. Suffixing the canonical path key with the
+/// TREE record's own form id gives every distinct record its own entry
+/// while identical records (same path, same form id revisited across
+/// cells) still share one parse.
+pub(crate) fn spt_cache_key(model_path: &str, tree_form_id: u32) -> String {
+    format!("{}#{tree_form_id:08x}", canonical_model_path_key(model_path))
+}
+
+#[cfg(test)]
+mod spt_cache_key_tests {
+    use super::spt_cache_key;
+
+    /// #3750's regression case: two TREE records sharing one `.spt`
+    /// MODL value must land in distinct cache entries.
+    #[test]
+    fn distinct_tree_records_sharing_one_spt_get_distinct_keys() {
+        let a = spt_cache_key("\\ShrubVineMapleSU.spt", 0x0002_32db);
+        let b = spt_cache_key("\\ShrubVineMapleSU.spt", 0x0001_7fc);
+        assert_ne!(a, b);
+    }
+
+    /// The same TREE record revisited (e.g. a second placement, or the
+    /// same cell reloaded) must still converge on one key so the cache
+    /// actually caches.
+    #[test]
+    fn same_tree_record_converges_on_one_key() {
+        let once = spt_cache_key("\\ShrubVineMapleSU.spt", 0x0002_32db);
+        let twice = spt_cache_key("\\shrubvinemaplesu.spt", 0x0002_32db);
+        assert_eq!(once, twice);
+    }
+}
+
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,

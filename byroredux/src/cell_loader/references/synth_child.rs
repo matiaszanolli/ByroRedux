@@ -478,8 +478,23 @@ pub(super) fn spawn_synth_child(
     // builds the same key from the same `canonical_model_path_key` call
     // against the raw `stat.model_path`; two independent inline
     // normalisations (this one used to prefix before lowercasing, the
-    // streaming one didn't) produced two keys for one asset.
-    let cache_key = canonical_model_path_key(&stat.model_path);
+    // streaming one didn't) produced two keys for one asset. `streaming.rs`
+    // never builds a key for `.spt` paths (#3735 — it skips them entirely
+    // and leaves the whole resolution to this loader), so the `.spt`
+    // suffix below cannot desync against that sibling.
+    //
+    // #3750 — `.spt` imports bake per-TREE-record metadata (ICON / OBND /
+    // MODB / BNAM, see `parse_and_import_spt`) into the cached
+    // `CachedNifImport`, unlike NIFs where the parse depends only on the
+    // file. Keying purely on model path collapsed every TREE record that
+    // shares one `.spt` onto whichever record was imported first. Suffix
+    // the key with the TREE form id for the `.spt` branch only — NIFs keep
+    // sharing one entry per unique path, `.spt` gets one per (path, record).
+    let cache_key = if is_spt {
+        super::super::nif_import_registry::spt_cache_key(&stat.model_path, child_form_id)
+    } else {
+        canonical_model_path_key(&stat.model_path)
+    };
     let cached = if let Some(entry) = accum.pending_new.get(&cache_key).cloned() {
         accum.this_call_hits += 1;
         entry

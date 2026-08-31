@@ -83,8 +83,17 @@ impl App {
         // placement as the climate override immediately above, and for
         // the same reason: a session that starts inside a region-tagged
         // cell must get its ambient directive on frame 0, not only on
-        // the first subsequent boundary crossing.
-        crate::scene::apply_cell_region_ambient(&mut self.world, &state.wctx, player_grid);
+        // the first subsequent boundary crossing. Unlike the climate call,
+        // its own per-grid-cell cache (`applied_region_ambient`, #3679) is
+        // what keeps the common frame cheap — `RegionAmbientRes::resolve`
+        // itself allocates and sorts a `Vec`, so it must not run
+        // unconditionally the way the climate override's map lookup does.
+        crate::scene::apply_cell_region_ambient(
+            &mut self.world,
+            &state.wctx,
+            player_grid,
+            &mut state.applied_region_ambient,
+        );
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
             let dispatch_started = Instant::now();
@@ -136,6 +145,10 @@ impl App {
                 .collect::<Vec<_>>();
             let unloaded_count = unloads.len();
             let unloaded_any = !unloads.is_empty();
+            if unloaded_any {
+                // #3688 — invalidates `reconcile_lod_rings`' diagnostics gate.
+                state.loaded_residency_changed = true;
+            }
             let unload_timings = if unloaded_any {
                 let roots = unloads.iter().map(|(_, root)| *root).collect::<Vec<_>>();
                 let timings = cell_loader::unload_cells(&mut self.world, ctx, &roots);

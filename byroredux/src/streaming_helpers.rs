@@ -53,6 +53,29 @@ pub(crate) fn lod_reconcile_budget_for_frame(
     }
 }
 
+/// Whether `update_lod_coverage` needs recomputing this call (#3688). It
+/// reads `state.lod_blocks` / `object_lod_blocks` / `loaded` / the VWD REFR
+/// query — any of them changing invalidates the last sample, and the first
+/// call ever (`!coverage_sampled`) always needs one regardless.
+pub(crate) fn should_resample_lod_diagnostics(
+    lod_ring_changed: bool,
+    loaded_residency_changed: bool,
+    coverage_sampled: bool,
+) -> bool {
+    lod_ring_changed || loaded_residency_changed || !coverage_sampled
+}
+
+/// Whether `update_terrain_seam_stats` needs recomputing this call (#3688).
+/// Its only input is `state.loaded`'s key set — a boundary crossing that
+/// changed the LOD rings but not the full-detail cell set leaves every
+/// adjacent-pair verdict exactly as it was.
+pub(crate) fn should_resample_terrain_seam(
+    loaded_residency_changed: bool,
+    seam_sampled: bool,
+) -> bool {
+    loaded_residency_changed || !seam_sampled
+}
+
 /// Reconcile terrain, baked-object, and placement-object LOD through one
 /// shared policy boundary. Each provider gets its own allowance so a large
 /// terrain ring cannot starve the active game-specific object scheme.
@@ -126,8 +149,36 @@ pub(crate) fn reconcile_lod_rings(
     }
 
     let complete = terrain_complete && object_complete && placement_complete;
-    update_lod_coverage(world, state, complete);
-    update_terrain_seam_stats(world, state);
+    // #3688 — `update_lod_coverage` and `update_terrain_seam_stats` recompute
+    // from scratch (two O(n²) rect scans between them) even on frames where
+    // nothing they read changed; their only two console-command readers
+    // can't tell the difference. Gate both on whether anything that could
+    // change their answer actually moved this call — see
+    // `should_resample_lod_diagnostics` / `should_resample_terrain_seam`.
+    let lod_ring_changed = attempted > 0;
+    let coverage_sampled = world
+        .resource::<byroredux_core::ecs::LodCoverageStats>()
+        .sampled;
+    if should_resample_lod_diagnostics(
+        lod_ring_changed,
+        state.loaded_residency_changed,
+        coverage_sampled,
+    ) {
+        update_lod_coverage(world, state, complete);
+    } else {
+        // `settled` still needs the per-frame write — it tracks whether
+        // *this* reconcile call left outstanding work, independent of
+        // whether residency changed.
+        let mut coverage = world.resource_mut::<byroredux_core::ecs::LodCoverageStats>();
+        coverage.settled = complete;
+    }
+    let seam_sampled = world
+        .resource::<byroredux_core::ecs::TerrainSeamStats>()
+        .sampled;
+    if should_resample_terrain_seam(state.loaded_residency_changed, seam_sampled) {
+        update_terrain_seam_stats(world, state);
+    }
+    state.loaded_residency_changed = false;
 
     LodReconcileProgress {
         complete,
@@ -136,12 +187,15 @@ pub(crate) fn reconcile_lod_rings(
 }
 
 /// Refresh [`byroredux_core::ecs::LodCoverageStats`] from this reconcile's
-/// post-state (EX-10/11 / #2371, #2371 VWD follow-up). Runs on every call —
-/// including zero-budget reconciles — since the checks are cheap key-set
-/// diffs/pair scans over residency counts the ring radius already bounds to
-/// the tens, not a rescan of the world (the one exception, the VWD REFR
-/// query below, is likewise bounded — VWD-flagged placements are a sparse
-/// minority and only resident ones are visited).
+/// post-state (EX-10/11 / #2371, #2371 VWD follow-up). The checks are cheap
+/// key-set diffs/pair scans over residency counts the ring radius already
+/// bounds to the tens, not a rescan of the world (the one exception, the VWD
+/// REFR query below, is likewise bounded — VWD-flagged placements are a
+/// sparse minority and only resident ones are visited) — but two of them are
+/// still O(n²) rect scans, so `reconcile_lod_rings` (#3688) skips this call
+/// entirely on frames where neither the LOD rings nor `state.loaded` changed
+/// since the last sample; only `settled` gets a per-frame write on those
+/// skipped frames.
 ///
 /// Placement LOD (Oblivion's per-cell `_far.nif` scheme) is deliberately
 /// excluded from the overlap/churn checks: it has no quad-footprint concept
@@ -222,9 +276,11 @@ fn update_lod_coverage(
 /// `O(33)` `check_seam` call per actually-adjacent pair — same "cheap
 /// key-set/pair scan over residency counts the ring radius already bounds
 /// to the tens" cost class `update_lod_coverage` above documents for
-/// itself. Runs on every reconcile, settled or not, for the same reason:
-/// `state.loaded`'s key set (not LOD ring state) is the only input, so
-/// there's no in-flight-vs-settled distinction to make.
+/// itself. `state.loaded`'s key set (not LOD ring state) is the only input
+/// — a pair's verdict cannot change until the resident set does — so
+/// `reconcile_lod_rings` (#3688) only calls this on a `loaded_residency_changed`
+/// frame, settled or not; the LOD-only frames `update_lod_coverage` still
+/// recomputes for have nothing here that could have moved.
 fn update_terrain_seam_stats(
     world: &mut byroredux_core::ecs::World,
     state: &streaming::WorldStreamingState,
@@ -714,6 +770,8 @@ pub(crate) fn advance_streaming_apply(
                                 cell_root: info.cell_root,
                             },
                         );
+                        // #3688 — invalidates `reconcile_lod_rings`' diagnostics gate.
+                        state.loaded_residency_changed = true;
                         ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
                     }
                 }
@@ -791,6 +849,8 @@ pub fn consume_streaming_payload(
                     cell_root: info.cell_root,
                 },
             );
+            // #3688 — invalidates `reconcile_lod_rings`' diagnostics gate.
+            state.loaded_residency_changed = true;
             // Newly-spawned instances mean a TLAS rebuild + fresh
             // pixels with no history. Bump the SVGF/TAA recovery
             // window so the ghosting transient on the just-streamed
@@ -929,6 +989,41 @@ mod tests {
             None,
             "a settled ring does no steady-state work"
         );
+    }
+
+    // ── #3688: LOD-coverage / terrain-seam diagnostics resample gate ────
+
+    /// Neither signal moved and the resource has already been sampled once
+    /// — the idle-frame case the audit flagged, both diagnostics skip.
+    #[test]
+    fn diagnostics_skip_when_nothing_changed_and_already_sampled() {
+        assert!(!should_resample_lod_diagnostics(false, false, true));
+        assert!(!should_resample_terrain_seam(false, true));
+    }
+
+    /// A LOD-ring attempt (terrain/object/placement block work) invalidates
+    /// coverage but not the seam stats — seam verdicts depend only on
+    /// `state.loaded`, which didn't move.
+    #[test]
+    fn lod_ring_work_resamples_coverage_only() {
+        assert!(should_resample_lod_diagnostics(true, false, true));
+        assert!(!should_resample_terrain_seam(false, true));
+    }
+
+    /// A full-detail cell load/unload invalidates both — it's the one input
+    /// the seam stats actually read.
+    #[test]
+    fn loaded_residency_change_resamples_both() {
+        assert!(should_resample_lod_diagnostics(false, true, true));
+        assert!(should_resample_terrain_seam(true, true));
+    }
+
+    /// The first-ever call (`sampled == false`) always resamples, even with
+    /// both change signals false — the bootstrap escape hatch.
+    #[test]
+    fn unsampled_resource_always_resamples() {
+        assert!(should_resample_lod_diagnostics(false, false, false));
+        assert!(should_resample_terrain_seam(false, false));
     }
 
     /// Empty rings drain to empty vecs — the common interior→interior or

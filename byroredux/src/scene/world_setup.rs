@@ -495,32 +495,48 @@ pub(crate) fn apply_cell_climate_override(
 /// #2372's `RegionAmbientRes`) for the exterior tile the player is
 /// currently in, and dispatch background-music playback for it.
 ///
-/// Unlike [`apply_cell_climate_override`], resolution itself is
-/// unconditional every call — a `HashMap` lookup plus a handful of field
-/// copies, cheap enough that gating the *resolve* isn't worth the extra
-/// state. The `RegionAmbientRes` *write* (and the music dispatch it can
-/// trigger) is still change-guarded so a player standing still doesn't
-/// churn the resource, let alone restart the ambient track, every frame.
-/// Called outside the grid-changed guard in `step_streaming`, mirroring
-/// the climate override's own placement — a session that starts (or a
-/// save that loads) inside a region-tagged cell must get its ambient
-/// directive and music applied immediately, not only on the first
-/// subsequent crossing.
+/// #3679 — `RegionAmbientRes::resolve` bottoms out in
+/// `select_active_region_sound`, which collects and sorts a fresh `Vec`;
+/// unlike [`apply_cell_climate_override`] it is NOT cheap enough to run
+/// unconditionally every frame. `applied_region_ambient` (owned by the
+/// caller's `WorldStreamingState`, same shape as `applied_climate_form`)
+/// caches the resolved value against the `player_grid` it was resolved
+/// for; `resolve()` only runs again once the player has actually left that
+/// grid cell — the answer is otherwise identical, since `wctx`'s REGN/XCLR
+/// data doesn't change within a `WorldStreamingState`'s lifetime (see the
+/// field's own doc). The `RegionAmbientRes` *write* to the `World` (and the
+/// music dispatch it can trigger) is still separately change-guarded below
+/// so a cache-refresh that resolves to the same directive doesn't churn the
+/// resource or restart the ambient track. Called outside the grid-changed
+/// guard in `step_streaming`, mirroring the climate override's own
+/// placement — a session that starts (or a save that loads) inside a
+/// region-tagged cell must get its ambient directive and music applied
+/// immediately, not only on the first subsequent crossing.
 pub(crate) fn apply_cell_region_ambient(
     world: &mut World,
     wctx: &cell_loader::ExteriorWorldContext,
     player_grid: (i32, i32),
+    applied_region_ambient: &mut Option<((i32, i32), crate::components::RegionAmbientRes)>,
 ) {
-    let region_form_ids: &[u32] = wctx
-        .record_index
-        .cells
-        .exterior_cells
-        .get(&wctx.worldspace_key)
-        .and_then(|cells| cells.get(&player_grid))
-        .map(|cell| cell.regions.as_slice())
-        .unwrap_or(&[]);
-    let ambient =
-        crate::components::RegionAmbientRes::resolve(region_form_ids, &wctx.record_index.regions);
+    let ambient = match applied_region_ambient {
+        Some((cached_grid, cached)) if *cached_grid == player_grid => *cached,
+        _ => {
+            let region_form_ids: &[u32] = wctx
+                .record_index
+                .cells
+                .exterior_cells
+                .get(&wctx.worldspace_key)
+                .and_then(|cells| cells.get(&player_grid))
+                .map(|cell| cell.regions.as_slice())
+                .unwrap_or(&[]);
+            let resolved = crate::components::RegionAmbientRes::resolve(
+                region_form_ids,
+                &wctx.record_index.regions,
+            );
+            *applied_region_ambient = Some((player_grid, resolved));
+            resolved
+        }
+    };
     let previous = world
         .try_resource::<crate::components::RegionAmbientRes>()
         .map(|existing| *existing);
@@ -959,6 +975,13 @@ pub(crate) fn assemble_exterior_streaming(
     state.last_player_grid = Some(grid);
     state.spawn_lod_water(world, ctx);
     let cam_center = stream_initial_radius(world, ctx, &mut state, grid.0, grid.1, bootstrap_mode);
+    // #3536 — deliberately scoped to Skyrim's vanilla MQ101 ("Unbound") quest
+    // + SCEN, a M47.2 scripting demo slice (`docs/engine/m47-2-design.md`),
+    // not a general per-game hook. The two literals are that quest's and
+    // scene's FormIDs; no other title gets forced quest-alias stubs here.
+    // See `LC-2026-08-27-D5-02` before broadening this into a per-game
+    // table (`terrain_lod_layout` / `ObjectLodScheme` are the shape to copy
+    // if a second scoped scene needs a second arm).
     if state.wctx.record_index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
         crate::asset_provider::materialize_scene_actor_alias_stubs(
             world,
@@ -1342,5 +1365,151 @@ mod tests {
             wd.fog[1], 60000.0,
             "an untouched WeatherDataRes must be left as-is"
         );
+    }
+
+    // ── apply_cell_region_ambient (#3679: per-grid-cell resolve cache) ──
+
+    use crate::cell_loader::ExteriorWorldContext;
+    use byroredux_plugin::esm::cell::CellData;
+    use byroredux_plugin::esm::records::{
+        EsmIndex, RegionDataEntry, RegionDataKind, RegionDataPayload, RegnRecord,
+    };
+    use std::sync::Arc;
+
+    fn empty_cell(grid: (i32, i32), regions: Vec<u32>) -> CellData {
+        CellData {
+            form_id: 0,
+            editor_id: String::new(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: false,
+            grid: Some(grid),
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            water_velocity: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            regions,
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_refs: std::collections::HashSet::new(),
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        }
+    }
+
+    /// One exterior worldspace, one tagged cell at `grid`, with a single
+    /// `Sound`-kind REGN entry carrying `incidental`. `music` stays `None`
+    /// throughout this test module so the resolve path never reaches
+    /// `dispatch_region_ambient_music` (which needs an `AudioWorld`
+    /// resource these tests don't set up).
+    fn region_wctx(grid: (i32, i32), region_form: u32, incidental: u32) -> ExteriorWorldContext {
+        let mut index = EsmIndex::default();
+        index.cells.exterior_cells.entry("test".into()).or_default().insert(
+            grid,
+            empty_cell(grid, vec![region_form]),
+        );
+        index.regions.insert(
+            region_form,
+            RegnRecord {
+                entries: vec![RegionDataEntry {
+                    kind: RegionDataKind::Sound,
+                    flags: 0,
+                    priority: 50,
+                    payload: RegionDataPayload::Sound {
+                        music: None,
+                        incidental: Some(incidental),
+                        sounds: Vec::new(),
+                    },
+                }],
+                ..Default::default()
+            },
+        );
+        ExteriorWorldContext {
+            record_index: Arc::new(index),
+            load_order: Arc::new(Default::default()),
+            plugin_path: String::new(),
+            plugin_paths: Vec::new(),
+            worldspace_key: "test".into(),
+            climate: None,
+            default_weather: None,
+            default_water_height: None,
+            default_water_type_form: None,
+        }
+    }
+
+    /// First call resolves and caches against `player_grid`; the resolved
+    /// directive lands on the `RegionAmbientRes` world resource.
+    #[test]
+    fn first_call_resolves_and_caches() {
+        let mut world = World::new();
+        let wctx = region_wctx((0, 0), 0x10, 0xBBBB);
+        let mut cache = None;
+        apply_cell_region_ambient(&mut world, &wctx, (0, 0), &mut cache);
+
+        assert_eq!(
+            world
+                .try_resource::<crate::components::RegionAmbientRes>()
+                .map(|r| r.incidental_form),
+            Some(Some(0xBBBB))
+        );
+        assert_eq!(cache, Some(((0, 0), *world.resource::<crate::components::RegionAmbientRes>())));
+    }
+
+    /// A second call for the SAME grid cell, against a `wctx` whose region
+    /// data resolves to a *different* answer, must still read the cached
+    /// value — proving `resolve()` (and its `Vec` alloc + sort, #3679)
+    /// didn't run again. If the cache were bypassed, the resource would
+    /// flip to `0xCCCC`.
+    #[test]
+    fn same_grid_reuses_cached_directive_even_if_wctx_data_changed() {
+        let mut world = World::new();
+        let wctx_a = region_wctx((0, 0), 0x10, 0xBBBB);
+        let mut cache = None;
+        apply_cell_region_ambient(&mut world, &wctx_a, (0, 0), &mut cache);
+
+        let wctx_b = region_wctx((0, 0), 0x20, 0xCCCC);
+        apply_cell_region_ambient(&mut world, &wctx_b, (0, 0), &mut cache);
+
+        assert_eq!(
+            world
+                .try_resource::<crate::components::RegionAmbientRes>()
+                .map(|r| r.incidental_form),
+            Some(Some(0xBBBB)),
+            "cache hit must keep the first grid cell's directive, not re-resolve wctx_b's"
+        );
+    }
+
+    /// Moving to a different grid cell invalidates the cache and resolves
+    /// fresh — the cache must not stick forever.
+    #[test]
+    fn different_grid_invalidates_the_cache() {
+        let mut world = World::new();
+        let wctx = region_wctx((0, 0), 0x10, 0xBBBB);
+        let mut cache = None;
+        apply_cell_region_ambient(&mut world, &wctx, (0, 0), &mut cache);
+
+        // Same wctx, but the player is now in an untagged cell — no REGN
+        // entry there, so the fresh resolve must clear the directive.
+        apply_cell_region_ambient(&mut world, &wctx, (1, 1), &mut cache);
+
+        assert_eq!(
+            world
+                .try_resource::<crate::components::RegionAmbientRes>()
+                .map(|r| r.incidental_form),
+            Some(None),
+            "leaving the tagged cell must re-resolve to no directive"
+        );
+        assert_eq!(cache.map(|(grid, _)| grid), Some((1, 1)));
     }
 }

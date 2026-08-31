@@ -704,10 +704,29 @@ pub struct WorldStreamingState {
     /// against to know whether re-applying is needed. See
     /// `scene::apply_cell_climate_override` (#2451 / EXAL-03).
     pub applied_climate_form: Option<u32>,
+    /// `(player_grid, resolved RegionAmbientRes)` the region ambient
+    /// directive was last resolved for (#3679). `wctx` — and therefore the
+    /// REGN/XCLR data `RegionAmbientRes::resolve` reads — never changes
+    /// across a `WorldStreamingState`'s lifetime (it's a once-per-session
+    /// `Arc` set at construction, see its own doc), so `player_grid` alone
+    /// is a sufficient cache key: the same grid cell always resolves to the
+    /// same ambient directive for as long as this state lives.
+    /// `apply_cell_region_ambient` (`scene/world_setup.rs`) skips the
+    /// `resolve()` call — which allocates and sorts a `Vec` — when the
+    /// player is still in the cached grid cell.
+    pub(crate) applied_region_ambient: Option<((i32, i32), crate::components::RegionAmbientRes)>,
     /// Whether the three distant-LOD rings still have deferred reconcile
     /// work. Foreground-first bootstrap and cell-boundary movement set this;
     /// idle frames clear it progressively through the shared LOD budget.
     pub lod_reconcile_pending: bool,
+    /// Set whenever `loaded` gains or loses an entry since the diagnostics
+    /// in `reconcile_lod_rings` last sampled it — a boundary-crossing unload
+    /// (`app_step.rs`) or a full-detail cell finishing its apply
+    /// (`advance_streaming_apply`'s `loaded.insert` sites). `reconcile_lod_rings`
+    /// consumes and clears it each call; `update_terrain_seam_stats` only
+    /// needs recomputing when this is set, since its only input is
+    /// `loaded`'s key set (#3688).
+    pub(crate) loaded_residency_changed: bool,
     /// Boundary-to-ready and apply-slice aggregates. Read by the benchmark
     /// summary; otherwise passive, bounded runtime diagnostics.
     pub telemetry: StreamingTelemetry,
@@ -796,7 +815,9 @@ impl WorldStreamingState {
             radius_unload: radius_load + 1,
             last_player_grid: None,
             applied_climate_form: wctx_climate_form,
+            applied_region_ambient: None,
             lod_reconcile_pending: false,
+            loaded_residency_changed: false,
             telemetry: StreamingTelemetry::default(),
             worker: Some(worker),
             request_tx: Some(request_tx),
