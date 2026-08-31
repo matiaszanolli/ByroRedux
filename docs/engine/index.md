@@ -55,6 +55,7 @@ a working checkout and want to understand or change engine internals.
 | [String Interning](string-interning.md) | core | `FixedString`, `StringPool`, `Name` component |
 | [C++ Interop](cxx-interop.md) | cxx-bridge | `cxx` crate bridge, FFI boundary |
 | [Platform](platform.md) | platform | winit windowing, raw handles |
+| [Launcher](launcher.md) | boot-request, game-detect, byro-launcher (all planned); core, bsa, plugin | PROPOSED. The public-facing front end: separate `eframe`/glow process (must render when Vulkan init fails), an intent-shaped `BootRequest` contract instead of a GUI over argv, Steam/GOG install detection + pre-launch archive validation, shared `SettingsRegistry` model with the in-game menu, save-slot sidecar metadata, per-game compatibility tiers |
 | [Game Compatibility](game-compatibility.md) | all | Per-game parse rate matrix and known gaps |
 | [FO4 CSG Format](fo4-csg-format.md) | bsa | `BSPackedGeomObject` TLV spec for FO4 precombined geometry |
 | [Geometry Defect Triage](geometry-defect-triage-workflow.md) | nif, byroredux | Workflow for diagnosing and fixing mesh import artefacts |
