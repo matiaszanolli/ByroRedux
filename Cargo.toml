@@ -28,6 +28,7 @@ members = [
     "crates/debug-ui",
     "crates/sdk",
     "tools/byro-detect",
+    "tools/byro-launcher",
     "tools/byro-dbg",
     "tools/texture-upscale",
     "byroredux",
@@ -215,6 +216,11 @@ crossterm = "0.28"
 # `gpu-allocator` feature lets egui-ash-renderer share our
 # `SharedAllocator` instead of standing up a parallel allocator.
 egui = "0.33"
+# Launcher only. `glow` (OpenGL) rather than the wgpu backend: it must run
+# where Vulkan init fails, and the tree already carries wgpu 27 via Ruffle.
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+# Launcher only. `xdg-portal` avoids a GTK build dependency on Linux.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 egui-winit = { version = "0.33", default-features = false, features = ["links", "wayland", "x11"] }
 egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }
 

@@ -7,9 +7,12 @@ contract, 16 tests), the `expand_boot_request` seam in
 against the documented CLI), [`crates/game-detect/`](../../crates/game-detect/)
 (Steam discovery + validation + `[roots]` write-back, 38 tests), and
 [`tools/byro-detect/`](../../tools/byro-detect/). Verified against six real
-installs. **Not** implemented: the Windows-registry and GOG probes of §3.1 —
-those need APIs that cannot be exercised on the dev box, so they are still
-design only rather than untested code. P2 onward is design only.
+installs. **P2 landed too**: [`tools/byro-launcher/`](../../tools/byro-launcher/)
+opens on eframe/glow with the Library, Play, and Details screens and supervises
+the engine (16 tests; window verified rendering all six detected games under a
+virtual display). **Not** implemented: the Windows-registry and GOG probes of
+§3.1 — those need APIs that cannot be exercised on the dev box, so they are
+still design only rather than untested code. P3 onward is design only.
 
 The **launcher** is the first thing a non-developer sees. Today the engine's
 only entry point is a ~60-flag argv surface driven from a terminal, backed by a
@@ -65,7 +68,22 @@ requirement does not hold, which is precisely where it must open to say *why*.
 without a second `egui` in the tree
 ([`Cargo.toml:206-214`](../../Cargo.toml)). `eframe 0.33` on the wgpu backend
 would pull a *third* GPU stack at a different wgpu major. `eframe 0.33` on
-`glow` shares the `egui 0.33` pin, adds no wgpu, and links no Vulkan.
+`glow` shares the `egui 0.33` pin, adds no wgpu, and links no Vulkan. Confirmed
+after the fact: with the launcher in the workspace, the lockfile still holds one
+`egui` (0.33.3) and one `wgpu` (27.0.1), and `cargo tree -p byro-launcher -i
+wgpu` finds nothing.
+
+**One cost this did not avoid, found by building it.** eframe hard-codes
+`egui-winit`'s `clipboard` feature with no way to opt out, and Cargo unifies
+features across a workspace build. `clipboard` pulls `smithay-clipboard`, whose
+`Clipboard` holds a non-`Sync` `Receiver` — which broke `impl Resource for
+DebugUiState` in a file that had not changed, because the workspace's own
+`egui-winit` deliberately disables that feature. The fix was to wrap
+`DebugUiState`'s `egui_winit::State` in a `Mutex` for `Sync` alone (every access
+already holds `&mut self`, so `get_mut` takes no lock), plus a static assertion
+naming the reason. That removes a latent fragility rather than working around
+one: before this, any dependency anywhere in the workspace enabling an
+egui-winit feature could break the engine build.
 
 ### 0.3 It matches what the audience already knows
 
@@ -553,12 +571,24 @@ window exists.
 
 ### P2 — The launcher window
 
-1. `tools/byro-launcher`, eframe/glow, Library + Play + Details screens.
-2. Detection on first run, with Browse fallback.
-3. Launch by spawning `byroredux --boot <path>`; stay resident; tail the log
-   and surface a non-zero exit.
+1. ~~`tools/byro-launcher`, eframe/glow, Library + Play + Details screens.~~
+   **Landed.** `eframe 0.33` on `glow` shares the pinned `egui 0.33` and pulls
+   no wgpu — verified with `cargo tree`, one `egui` and one `wgpu` in the
+   lockfile.
+2. ~~Detection on first run, with Browse fallback.~~ **Landed** (`rfd` on
+   `xdg-portal`, so no GTK build dependency on Linux).
+3. ~~Launch by spawning `byroredux --boot <path>`; stay resident; tail the log
+   and surface a non-zero exit.~~ **Landed**, with the argv shape, exit
+   classification, and bounded log tail tested against a stub engine.
 
 **Gate**: a clean machine, no terminal, double-click to a walkable Whiterun.
+*Partially met.* The window, detection, validation, request-writing, and the
+`--boot` handoff are each verified — the last end-to-end through the real engine
+against FNV — but not yet as one GUI-driven click, which needs input injection
+the test rig does not have. Play offers each profile's authored start points
+(new-game placement where one exists, plus sample cells); **Starfield ships
+none**, so its card correctly reads "no start points configured" — a profile
+data gap, not a launcher one.
 
 ### P3 — Settings and pre-flight
 

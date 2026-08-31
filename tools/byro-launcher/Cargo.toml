@@ -1,0 +1,27 @@
+[package]
+name = "byro-launcher"
+version.workspace = true
+edition.workspace = true
+
+# The public-facing front end.
+#
+# Renders through eframe's **glow** (OpenGL) backend, not wgpu. Two reasons,
+# both load-bearing: it opens on machines where the engine's Vulkan 1.3 +
+# ray-query requirement does not hold — which is precisely where a launcher
+# must open, to say why — and it shares the workspace's pinned `egui 0.33`
+# without dragging in a second wgpu beside the one Ruffle already brings.
+#
+# UI only. Detection, validation, and the boot contract live in library crates
+# so every decision this binary makes is unit-testable without a window.
+[dependencies]
+byroredux-boot-request = { workspace = true }
+byroredux-game-detect = { workspace = true }
+byroredux-core = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+rfd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

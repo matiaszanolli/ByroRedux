@@ -140,7 +140,21 @@ pub struct DebugUiState {
     pub egui_ctx: egui::Context,
     /// egui-winit's input translator. Owns the OS-clipboard
     /// interface plus the per-window viewport state.
-    egui_winit: egui_winit::State,
+    ///
+    /// Wrapped in a `Mutex` **for `Sync`, not for locking**. `DebugUiState` is
+    /// an ECS `Resource`, which requires `Sync`, and `egui_winit::State` is
+    /// only `Sync` while egui-winit's `clipboard` feature is off: that feature
+    /// pulls `smithay-clipboard`, whose `Clipboard` holds a non-`Sync`
+    /// `Receiver`. The workspace's own dependency deliberately disables it —
+    /// but feature unification means *any* crate in the workspace that enables
+    /// it turns this resource into a compile error in a file that never
+    /// changed. `byro-launcher` is the first such crate (eframe hard-codes
+    /// `egui-winit/clipboard` with no feature to opt out), and it will not be
+    /// the last.
+    ///
+    /// Every access below holds `&mut self`, so they all go through
+    /// `get_mut()` and no lock is ever taken at runtime.
+    egui_winit: std::sync::Mutex<egui_winit::State>,
     /// The most recent `FullOutput` produced by [`Self::run`]. The
     /// renderer consumes this in `draw_frame` and clears it back
     /// to `None` so a hypothetical missed render doesn't replay
@@ -202,7 +216,7 @@ impl DebugUiState {
         Self {
             visible: false,
             egui_ctx,
-            egui_winit,
+            egui_winit: std::sync::Mutex::new(egui_winit),
             last_output: None,
             panels: PanelState::default(),
             game_menu: GameMenuState::default(),
@@ -247,6 +261,15 @@ impl DebugUiState {
         }
     }
 
+    /// The egui-winit translator. `get_mut` rather than `lock`: the `Mutex` is
+    /// there to keep this resource `Sync` regardless of egui-winit's enabled
+    /// features (see the field), and every caller already has exclusive access.
+    fn winit(&mut self) -> &mut egui_winit::State {
+        self.egui_winit
+            .get_mut()
+            .expect("egui-winit state mutex is never locked, so it cannot be poisoned")
+    }
+
     /// Forward a `WindowEvent` to egui. Returns the response so the
     /// App can short-circuit camera input when egui consumed the
     /// event.
@@ -255,7 +278,7 @@ impl DebugUiState {
         window: &Window,
         event: &WindowEvent,
     ) -> egui_winit::EventResponse {
-        self.egui_winit.on_window_event(window, event)
+        self.winit().on_window_event(window, event)
     }
 
     /// Toggle the overlay. Idempotent.
@@ -355,10 +378,10 @@ impl DebugUiState {
             // the bookkeeping stays current and only the event backlog — which
             // no one will ever consume — is discarded. Without it the first F3
             // press replays the entire accumulated backlog in one `RawInput`.
-            let _ = self.egui_winit.take_egui_input(window);
+            let _ = self.winit().take_egui_input(window);
             return PanelOutputs::default();
         }
-        let raw_input = self.egui_winit.take_egui_input(window);
+        let raw_input = self.winit().take_egui_input(window);
         // begin_pass / end_pass split so the panel draw can capture
         // `&mut self.panels` without the `Context::run`'s FnMut
         // sugar fighting the borrow.
@@ -380,7 +403,7 @@ impl DebugUiState {
         // Hand the platform output back to egui-winit so OS-level
         // cursor / clipboard changes get applied. Done here (not
         // in the renderer) so the renderer stays a pure-GPU layer.
-        self.egui_winit
+        self.winit()
             .handle_platform_output(window, output.platform_output.clone());
         self.last_output = Some(output);
         outputs
@@ -475,4 +498,24 @@ mod hidden_overlay_drain_tests {
             "on_window_event must not gate on visibility — drain in `run` instead (#2831)"
         );
     }
+}
+
+#[cfg(test)]
+mod sync_guard {
+    //! `impl Resource for DebugUiState` already requires `Sync`, but it fails
+    //! in `resource.rs`'s trait bound with no hint as to why. This names the
+    //! reason at the point of failure.
+
+    use super::DebugUiState;
+
+    /// `DebugUiState` must stay `Sync` no matter which egui-winit features any
+    /// other workspace crate turns on. If this stops compiling, something began
+    /// enabling `egui-winit/clipboard` (which pulls `smithay-clipboard`, whose
+    /// `Clipboard` holds a non-`Sync` `Receiver`) *and* the `Mutex` around
+    /// `egui_winit` was removed or bypassed. Keep the `Mutex`; it costs
+    /// nothing, since every access holds `&mut self`.
+    const _: fn() = || {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<DebugUiState>();
+    };
 }
