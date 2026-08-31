@@ -936,6 +936,14 @@ impl ConsoleCommand for PickCommand {
 /// across frames. With mouse capture active the camera still moves
 /// relative to WASD input, so this command sets the *anchor* for that
 /// frame's worth of input rather than locking the camera in place.
+///
+/// #3800 — that reasoning covers `PlayerMode::FlyCam` only. In
+/// `Character` mode the camera is not its own owner:
+/// `camera_follow_system` rewrites its `Transform` and `GlobalTransform`
+/// from the player body every Late-stage tick, so a camera-only write
+/// here never survived to a rendered frame while this command still
+/// reported success. The teleport therefore carries the player body too
+/// — see [`carry_player_body_to_camera`].
 pub(crate) struct CamPosCommand;
 impl ConsoleCommand for CamPosCommand {
     fn name(&self) -> &str {
@@ -961,14 +969,26 @@ impl ConsoleCommand for CamPosCommand {
         };
         let cam_entity = active.0;
         drop(active);
-        let Some(mut tq) = world.query_mut::<Transform>() else {
-            return CommandOutput::line("Transform storage not present");
-        };
-        let Some(transform) = tq.get_mut(cam_entity) else {
-            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
-        };
-        transform.translation = Vec3::new(x, y, z);
-        CommandOutput::line(format!("Camera teleported to ({x:.2}, {y:.2}, {z:.2})"))
+        // Scoped so the Transform write guard is released before
+        // `carry_player_body_to_camera` takes its own read + write guards
+        // on the same storage.
+        {
+            let Some(mut tq) = world.query_mut::<Transform>() else {
+                return CommandOutput::line("Transform storage not present");
+            };
+            let Some(transform) = tq.get_mut(cam_entity) else {
+                return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
+            };
+            transform.translation = Vec3::new(x, y, z);
+        }
+        if crate::systems::carry_player_body_to_camera(world) {
+            CommandOutput::line(format!(
+                "Camera + player body teleported to ({x:.2}, {y:.2}, {z:.2}) \
+                 (Character mode — the body falls to the floor beneath it)"
+            ))
+        } else {
+            CommandOutput::line(format!("Camera teleported to ({x:.2}, {y:.2}, {z:.2})"))
+        }
     }
 }
 /// `cam.tp <entity_id>` — teleport the active camera to look at the
@@ -978,7 +998,11 @@ impl ConsoleCommand for CamPosCommand {
 ///
 /// Both `Transform.rotation` and `InputState.{yaw, pitch}` are
 /// updated so the orientation survives the next `fly_camera_system`
-/// tick even when the mouse is captured.
+/// tick even when the mouse is captured. The look direction already
+/// survived `PlayerMode::Character` for the same reason —
+/// `camera_follow_system` derives the camera's rotation from
+/// `InputState` — but its *position* did not (#3800), so the teleport
+/// carries the player body when the camera is pinned to it.
 ///
 /// The natural usage with `skin.coverage`: spawn a multi-NPC cell with
 /// `--bench-hold`, `cam.tp <npc_entity_id>` to frame the actor, then
@@ -1058,6 +1082,10 @@ impl ConsoleCommand for CamTpCommand {
             input.yaw = yaw;
             input.pitch = pitch;
         }
+        // #3800 — in Character mode the camera pose is owned by the player
+        // body; carry the body so the framing this command just computed
+        // survives `camera_follow_system`'s next tick.
+        let carried_body = crate::systems::carry_player_body_to_camera(world);
         CommandOutput::lines(vec![
             format!(
                 "Camera teleported to look at entity {target_id} at \
@@ -1065,12 +1093,17 @@ impl ConsoleCommand for CamTpCommand {
                 target_pos.x, target_pos.y, target_pos.z,
             ),
             format!(
-                "  camera now at ({:.2}, {:.2}, {:.2}) yaw {:.1}° pitch {:.1}°",
+                "  camera now at ({:.2}, {:.2}, {:.2}) yaw {:.1}° pitch {:.1}°{}",
                 camera_pos.x,
                 camera_pos.y,
                 camera_pos.z,
                 yaw.to_degrees(),
                 pitch.to_degrees(),
+                if carried_body {
+                    "  (player body carried along; it falls to the floor beneath)"
+                } else {
+                    ""
+                },
             ),
         ])
     }

@@ -332,6 +332,12 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         .map(|r| r.kcc_offset_bu)
         .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+    // #3799 — the probe below is the only query in this system that can see
+    // the floor a *resting* capsule is standing on; remember its answer so
+    // the post-move ground-contact resolve can use it. See
+    // [`resolve_ground_contact`] for why the KCC's own verdict is not
+    // sufficient on its own.
+    let mut probe_found_support = false;
     let desired_vertical = if swim.is_none() && controller.is_grounded && !jump_fired {
         // Probe down for the surface the capsule is standing on. The player's
         // own body must be excluded or the sweep instantly self-hits (#2859).
@@ -344,6 +350,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         );
         match support_y {
             Some(surface_y) => {
+                probe_found_support = true;
                 // Move exactly to resting contact — `offset` above the
                 // support — and no further. Signed on purpose: correcting
                 // a capsule that has crept slightly BELOW the contact band
@@ -387,6 +394,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
 
     let new_pos = current_pos + result.translation;
 
+    // #3799 — the frame's authoritative ground-contact bit. NOT
+    // `result.grounded` on its own: see [`resolve_ground_contact`].
+    let (grounded, resolved_vertical_velocity) =
+        resolve_ground_contact(result.grounded, probe_found_support, vertical_velocity);
+
     // Diagnostic for M28.5 smoke-testing — log body state for the
     // first 5 frames + when grounded transitions + every 60 frames
     // if airborne. Surfaces "I fell into the void" / "I'm stuck in a
@@ -396,9 +408,9 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     static FRAME: AtomicU32 = AtomicU32::new(0);
     static WAS_GROUNDED: AtomicBool = AtomicBool::new(false);
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-    let prev_grounded = WAS_GROUNDED.swap(result.grounded, Ordering::Relaxed);
-    let grounded_transition = prev_grounded != result.grounded;
-    if frame < 5 || grounded_transition || (!result.grounded && frame.is_multiple_of(60)) {
+    let prev_grounded = WAS_GROUNDED.swap(grounded, Ordering::Relaxed);
+    let grounded_transition = prev_grounded != grounded;
+    if frame < 5 || grounded_transition || (!grounded && frame.is_multiple_of(60)) {
         let pw = world.resource::<byroredux_physics::PhysicsWorld>();
         let body_count = pw.body_count();
         // Dump the AABB of all static colliders ONCE (frame 0) so the
@@ -437,7 +449,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
             new_pos.y,
             result.translation.y,
             vertical_velocity,
-            result.grounded,
+            grounded,
             body_count,
             if grounded_transition { " [TRANSITION]" } else { "" },
         );
@@ -464,13 +476,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         if let Some(c) = cq.get_mut(player_entity) {
             // If we just landed (was airborne, now grounded), zero
             // out the residual downward velocity so the next
-            // frame's gravity integration starts fresh.
-            if result.grounded && vertical_velocity < 0.0 {
-                c.vertical_velocity = 0.0;
-            } else {
-                c.vertical_velocity = vertical_velocity;
-            }
-            c.is_grounded = result.grounded;
+            // frame's gravity integration starts fresh. Both halves
+            // are decided by [`resolve_ground_contact`] so the state
+            // machine has exactly one definition of "grounded".
+            c.vertical_velocity = resolved_vertical_velocity;
+            c.is_grounded = grounded;
             // Re-arm the jump latch: holding Space keeps `wants_jump`
             // true so a single keypress doesn't fire repeatedly; release
             // clears it.
@@ -657,7 +667,13 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
 /// player body to snap — safe to call unconditionally; the caller
 /// doesn't need to gate on `PlayerMode` itself, since a fly-cam-only
 /// boot (no `PlayerEntity`) just no-ops here.
-pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> bool {
+///
+/// Takes `&World`, not `&mut World`: every write here goes through the
+/// interior-mutability query/resource API (architecture invariant 3), and
+/// the console command path that reaches it via
+/// [`carry_player_body_to_camera`] only ever holds a `&World`. `&mut`
+/// callers coerce automatically, so this is source-compatible for them.
+pub fn snap_character_body_to_camera(world: &byroredux_core::ecs::World) -> bool {
     let player_entity = world.try_resource::<PlayerEntity>().and_then(|r| r.0);
     let Some(player) = player_entity else {
         log::warn!(
@@ -721,6 +737,33 @@ pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> 
     // correct position rather than the pre-snap frozen one.
     byroredux_physics::set_kinematic_translation(world, player, body_pos);
     true
+}
+
+/// Carry the player capsule to wherever the active camera was just moved —
+/// when, and only when, the camera is pinned to that capsule.
+///
+/// #3800 — `camera_follow_system` rewrites the active camera's `Transform`
+/// *and* `GlobalTransform` from `body_pos + eye_height` on every Late-stage
+/// tick while [`PlayerMode::Character`] is active. A console camera teleport
+/// (`cam.pos`, `cam.tp`) writes only the camera's `Transform`, so it was
+/// overwritten before anything rendered while the command still reported
+/// success — two teleports 500 BU apart produced identical screenshots, and
+/// `cam.where` afterwards read back a third, unrelated position.
+///
+/// Moving the body is what the operator meant by "put the camera there", and
+/// it is the same "land wherever the camera was" semantics
+/// [`toggle_player_mode`] already gives the Fly → Character direction. The
+/// body keeps its physics contract: momentum cleared, `is_grounded` false, so
+/// gravity settles it onto the floor beneath the requested pose on the next
+/// controller tick rather than leaving a capsule parked in mid-air.
+///
+/// Returns `true` when the body was carried, `false` when the camera owns its
+/// own pose and the caller's write already stands — `PlayerMode::FlyCam`, or a
+/// body-less `--mesh` / `--fly` boot with no `PlayerEntity` at all.
+pub fn carry_player_body_to_camera(world: &byroredux_core::ecs::World) -> bool {
+    let character_mode =
+        world.try_resource::<PlayerMode>().map(|r| *r) == Some(PlayerMode::Character);
+    character_mode && snap_character_body_to_camera(world)
 }
 
 /// Ground the character capsule at a **floor-level** destination — the arrival
@@ -1110,6 +1153,46 @@ pub(crate) fn integrate_vertical(
         v = jump_velocity;
     }
     v
+}
+
+/// Resolve one controller tick's ground-contact bit, and the vertical
+/// velocity that follows from it.
+///
+/// #3799 — `result.grounded` alone is not a usable answer for a capsule
+/// that is already at rest. The grounded branch of
+/// [`character_controller_system`] asks the KCC for the *exact* gap to the
+/// support surface (#2857, so a convex floor can't be tunnelled), and a
+/// capsule already sitting at resting contact makes that gap ~0. A
+/// zero-length sweep is precisely the input for which Rapier's KCC cannot
+/// observe contact, so it answers `grounded = false` — gravity unlocks, the
+/// next frame requests a real ~0.9 BU descent, that sweep *does* hit the
+/// floor, and the writeback re-grounds. The result was a two-frame limit
+/// cycle on a body that never moved: `is_grounded` alternating every frame
+/// forever, `vertical_velocity` sawtoothing between ~-25 and ~-60, jump
+/// input (which gates on `is_grounded`) silently dropped on half of all
+/// frames, and the M28.5 diagnostic firing on 58% of them.
+///
+/// The fix is to stop discarding an answer already paid for: when the
+/// grounded branch's `cast_capsule_down` found a support surface within
+/// `step_height + offset`, the capsule *is* standing on something, whatever
+/// a degenerate sweep reports. `probe_found_support` is false whenever that
+/// probe didn't run (airborne, swimming, or the frame a jump fires), so
+/// this can neither keep a falling character grounded nor re-ground a jump
+/// on its launch frame.
+pub(crate) fn resolve_ground_contact(
+    kcc_grounded: bool,
+    probe_found_support: bool,
+    vertical_velocity: f32,
+) -> (bool, f32) {
+    let grounded = kcc_grounded || probe_found_support;
+    // Landing zeroes residual downward momentum so the next frame's
+    // gravity integration starts fresh.
+    let next_velocity = if grounded && vertical_velocity < 0.0 {
+        0.0
+    } else {
+        vertical_velocity
+    };
+    (grounded, next_velocity)
 }
 
 #[cfg(test)]
@@ -1635,5 +1718,161 @@ mod tests {
 
         assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 0.0);
         assert!(world.get::<Dead>(player).is_some());
+    }
+
+    /// #3799 — a capsule standing still must stay grounded. Models the
+    /// production two-frame cycle exactly: while `is_grounded` holds, the
+    /// controller asks the KCC for the (~zero) gap to the support surface
+    /// that #2857 clamped it to, and the KCC cannot observe contact on a
+    /// degenerate sweep — so its verdict is `false` on every grounded
+    /// frame, forever. Pre-fix the writeback took that verdict at face
+    /// value and the state alternated every frame; the support probe's own
+    /// answer has to carry it.
+    ///
+    /// The constants come from the preset rather than literals — #2886.
+    #[test]
+    fn stationary_capsule_stays_grounded_instead_of_flickering() {
+        let human = byroredux_physics::CharacterController::HUMAN;
+        let dt = 1.0 / 60.0;
+        let mut grounded = true;
+        let mut stored_velocity = 0.0_f32;
+
+        for frame in 0..240 {
+            let vertical_velocity = integrate_vertical(
+                stored_velocity,
+                human.gravity,
+                human.terminal_velocity,
+                dt,
+                human.jump_velocity,
+                false,
+            );
+            // The grounded branch runs (and finds the floor) exactly while
+            // the controller believes it is grounded; the KCC only registers
+            // contact on the frames where a real descent was requested.
+            let probe_found_support = grounded;
+            let kcc_grounded = !grounded;
+
+            let (next_grounded, next_velocity) =
+                resolve_ground_contact(kcc_grounded, probe_found_support, vertical_velocity);
+
+            assert!(
+                next_grounded,
+                "frame {frame}: a capsule resting on a probed support surface \
+                 must stay grounded even though the KCC saw no contact"
+            );
+            assert_eq!(
+                next_velocity, 0.0,
+                "frame {frame}: grounded state must not accumulate downward \
+                 velocity on a body that never moves"
+            );
+            grounded = next_grounded;
+            stored_velocity = next_velocity;
+        }
+    }
+
+    /// The #3799 fix must not invent ground contact. The probe is only
+    /// consulted when it actually ran — walking off a ledge (probe misses,
+    /// KCC sees nothing) has to stay airborne, momentum intact.
+    #[test]
+    fn no_support_probe_and_no_kcc_contact_stays_airborne() {
+        let (grounded, velocity) = resolve_ground_contact(false, false, -48.0);
+        assert!(!grounded);
+        assert_eq!(velocity, -48.0, "free-fall momentum must survive");
+    }
+
+    /// Landing zeroes residual descent; an upward impulse survives. The
+    /// jump frame suppresses the probe upstream (`!jump_fired`), so the
+    /// launch cannot be re-grounded out from under itself.
+    #[test]
+    fn landing_zeroes_descent_but_a_launch_keeps_its_impulse() {
+        let human = byroredux_physics::CharacterController::HUMAN;
+        assert_eq!(resolve_ground_contact(true, false, -60.0), (true, 0.0));
+        assert_eq!(
+            resolve_ground_contact(true, false, human.jump_velocity),
+            (true, human.jump_velocity),
+            "upward velocity is not residual descent — it must not be cleared"
+        );
+    }
+
+    /// #3800 — a console camera teleport has to survive
+    /// `camera_follow_system`'s Late-stage re-pin. Pre-fix the command wrote
+    /// only the camera's `Transform` and the follow system overwrote it from
+    /// the (unmoved) body on the very next tick, so the teleport never
+    /// reached a rendered frame while the command reported success.
+    #[test]
+    fn camera_teleport_carried_by_the_body_survives_the_follow_pin() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let camera = world.spawn();
+        world.insert_resource(PlayerMode::Character);
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(InputState::default());
+        world.insert(player, Transform::default());
+        world.insert(player, GlobalTransform::default());
+        world.insert(player, byroredux_physics::CharacterController::HUMAN);
+        world.insert(camera, Transform::default());
+        world.insert(camera, GlobalTransform::default());
+
+        // Exactly what `cam.pos x y z` does: write the camera Transform…
+        let destination = Vec3::new(1561.0, -130.0, -1950.0);
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(camera).unwrap().translation = destination;
+        }
+        // …then carry the body under it.
+        assert!(
+            carry_player_body_to_camera(&world),
+            "Character mode must report that it carried the body"
+        );
+
+        let eye_height = byroredux_physics::CharacterController::HUMAN.eye_height;
+        let body = world.get::<Transform>(player).unwrap().translation;
+        assert!(
+            (body.y - (destination.y - eye_height)).abs() < 1e-3,
+            "body centre must sit one eye-height below the requested camera pose; got {body:?}"
+        );
+
+        // `camera_follow_system` reads the body's GlobalTransform; mirror the
+        // propagation pass that would have run between the two.
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(player).unwrap().translation = body;
+        }
+        camera_follow_system(&world, 1.0 / 60.0);
+
+        let camera_pos = world.get::<Transform>(camera).unwrap().translation;
+        assert!(
+            (camera_pos - destination).length() < 1e-3,
+            "the follow pin must land back on the requested pose, not revert it; \
+             wanted {destination:?}, got {camera_pos:?}"
+        );
+    }
+
+    /// The #3800 fix is scoped to the mode that actually pins the camera.
+    /// In FlyCam the camera owns its own pose, so the teleport already
+    /// stands and the player body must not be dragged around behind it.
+    #[test]
+    fn flycam_camera_teleport_leaves_the_player_body_alone() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let camera = world.spawn();
+        world.insert_resource(PlayerMode::FlyCam);
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(player, Transform::default());
+        world.insert(player, byroredux_physics::CharacterController::HUMAN);
+        world.insert(camera, Transform::default());
+
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(camera).unwrap().translation = Vec3::new(1561.0, -130.0, -1950.0);
+        }
+        assert!(!carry_player_body_to_camera(&world));
+        assert_eq!(
+            world.get::<Transform>(player).unwrap().translation,
+            Vec3::ZERO,
+            "the frozen fly-mode body must stay where it was"
+        );
     }
 }
