@@ -336,12 +336,6 @@ pub fn collect_stack_text_events(
     events
 }
 
-/// Sample a blended transform from all layers in a stack for a given node.
-///
-/// Layers with higher priority override lower. Within the same priority,
-/// weighted average is used. Returns None if no layer has data for this node.
-///
-/// Zero-allocation: uses inline iteration instead of collecting into Vecs.
 /// Does this channel carry any transform keys at all?
 ///
 /// #3471 — hoisted out of [`sample_blended_transform`]'s weight pass so its
@@ -365,6 +359,12 @@ fn channel_has_keys(channel: &TransformChannel) -> bool {
         && channel.scale_keys.is_empty())
 }
 
+/// Sample a blended transform from all layers in a stack for a given node.
+///
+/// Layers with higher priority override lower. Within the same priority,
+/// weighted average is used. Returns None if no layer has data for this node.
+///
+/// Zero-allocation: uses inline iteration instead of collecting into Vecs.
 pub fn sample_blended_transform(
     stack: &AnimationStack,
     registry: &AnimationClipRegistry,

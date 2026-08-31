@@ -621,6 +621,15 @@ impl DeferredFragmentEffects {
     }
 }
 
+/// Read one entity's [`Transform`] as an owned copy, holding no guard on
+/// return (#3250).
+fn copied_transform(world: &World, entity: EntityId) -> Option<Transform> {
+    // #3250 — `World::get` returns an owning read guard. Copy the component
+    // before another Transform lookup so a queued writer can never strand a
+    // recursive read behind the first guard.
+    world.get::<Transform>(entity).map(|transform| *transform)
+}
+
 /// Apply one effect to the canonical stage/objective state (or, for the
 /// object-targeting variants, to the live ECS world). Returns a
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
@@ -655,13 +664,6 @@ impl DeferredFragmentEffects {
 /// Every production caller constructs the batch before taking quest
 /// resource guards and applies it only after those guards have dropped
 /// (#2269, #2539, #2660).
-fn copied_transform(world: &World, entity: EntityId) -> Option<Transform> {
-    // #3250 — `World::get` returns an owning read guard. Copy the component
-    // before another Transform lookup so a queued writer can never strand a
-    // recursive read behind the first guard.
-    world.get::<Transform>(entity).map(|transform| *transform)
-}
-
 fn apply_effect(
     effect: &Effect,
     context: QuestFormId,

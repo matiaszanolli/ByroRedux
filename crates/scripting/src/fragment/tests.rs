@@ -2410,3 +2410,30 @@ fn scene_phase_fragment_advances_its_owning_quest() {
     assert_eq!(batch.0[0].quest, Q);
     assert_eq!(batch.0[0].new_stage, 14);
 }
+
+/// #3493 — `1d9a5041` (the #3250 fix) inserted `copied_transform` between
+/// `apply_effect`'s nested-lock-safety doc block and `fn apply_effect`, so
+/// Rust attached the whole lock contract to the three-line helper and left
+/// `apply_effect` bare. Pin the adjacency: the residual-list block must be
+/// the doc comment of the function it describes, with nothing between them.
+#[test]
+fn nested_lock_contract_documents_apply_effect_itself() {
+    const FRAGMENT_RS: &str = include_str!("../fragment.rs");
+
+    let contract = FRAGMENT_RS
+        .find("**Nested-lock safety depends on exclusive scheduling.**")
+        .expect("apply_effect's nested-lock residual list");
+    let tail = &FRAGMENT_RS[contract..];
+    let next_item = tail
+        .find("\nfn ")
+        .expect("a `fn` item follows the nested-lock doc block");
+    assert!(
+        tail[next_item..].starts_with("\nfn apply_effect("),
+        "the nested-lock contract is attached to `{}`, not `apply_effect` — \
+         a helper was inserted between the doc block and its item (#3493)",
+        tail[next_item + 1..]
+            .split('(')
+            .next()
+            .unwrap_or("<unknown>"),
+    );
+}
