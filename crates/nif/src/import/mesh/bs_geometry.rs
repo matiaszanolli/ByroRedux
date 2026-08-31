@@ -27,9 +27,14 @@ use byroredux_core::string::StringPool;
 /// both describe the field as holding *either* a bare stem *or* a full path.
 /// A name already carrying `geometries\` and/or `.mesh` composed into
 /// `geometries\geometries\x.mesh.mesh` — a guaranteed miss, and a silent one
-/// until #2357 gave the resolve-miss path a log. Vanilla is unaffected (every
-/// sampled `.mesh` name is a bare 20-hex stem); this is authoring-tool output
-/// and mods that use readable paths.
+/// until #2357 gave the resolve-miss path a log. **Not vanilla-safe**: a full
+/// scan of every `BSGeometry` external mesh name across all five vanilla mesh
+/// archives (2026-08-27) found 13,713 already-fully-composed names, 100% of
+/// `Starfield - FaceMeshes.ba2`'s external names, whose `.mesh` files really
+/// do live at the composed path in the same archive. This function's
+/// head/tail detection is what keeps those names from double-composing —
+/// it is load-bearing on retail data, not just a mod/authoring-tool
+/// safeguard.
 ///
 /// Head and tail are tested independently — a name may carry either without
 /// the other — and both are case- and separator-insensitive, matching

@@ -411,6 +411,14 @@ bytes flags?). Likely leaf billboard descriptors.
 - `6017`, `10002` — string-prefix tags with wide length distributions.
 - `13008` — modal 11-byte payload; probably small fixed struct.
 - `13013` — modal 7-byte payload (unusual width — 4-byte u32 + u16 + u8?).
+- `12002` (16 B), `12003` (20 B) — sized as `FixedBytes` in `tag.rs`, but
+  unlike every other entry in this section, **no corpus observation is
+  recorded for either**: no histogram, no confidence figure, no sample
+  offset. `12000`/`12001` appear among the bare markers above; `12002`/
+  `12003` have never been run through the same census. An earlier
+  revision of `tag.rs`'s comment glossed 12002 as "4 × f32 = matrix row?"
+  — that was an unsupported interpretation riding along with the
+  load-bearing size and has since been removed pending real evidence.
 
 ### False-tag confounders
 

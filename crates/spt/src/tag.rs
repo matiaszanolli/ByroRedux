@@ -125,9 +125,14 @@ pub fn dispatch_tag(tag: u32) -> SptTagKind {
         13008 => SptTagKind::FixedBytes(11),
         // 7 bytes — tag 13013 ships a 7-byte struct (likely u32 + u16 + u8).
         13013 => SptTagKind::FixedBytes(7),
-        // 16 bytes — tag 12002 (4 × f32 = matrix row?).
+        // 16 bytes — tag 12002. Size only; unlike the other FixedBytes
+        // entries above, no corpus histogram/confidence is recorded for
+        // this one in format-notes.md (see its "Recovered tag" table).
+        // The "(4 × f32 = matrix row?)" gloss from an earlier revision of
+        // this comment was an unsupported guess and has been removed.
         12002 => SptTagKind::FixedBytes(16),
-        // 20 bytes — tag 12003.
+        // 20 bytes — tag 12003. Same caveat as 12002: size only, no
+        // recorded corpus evidence.
         12003 => SptTagKind::FixedBytes(20),
 
         // ── String payload (u32 length + body) ────────────────────

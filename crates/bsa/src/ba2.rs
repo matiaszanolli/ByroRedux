@@ -1700,15 +1700,6 @@ mod tests {
         }
     }
 
-    /// #2097 / LZ4-01 — pins that the LZ4 arm still routes through
-    /// `catch_unwind`.
-    ///
-    /// The behavioural guard above cannot fail on `lz4_flex 0.11.6`, because
-    /// that version simply does not panic on the inputs its own docs warn
-    /// about. So the thing worth guarding is not the behaviour but the
-    /// *defence*: delete the `catch_unwind` and this test fails, which is the
-    /// only way this fix can be kept from silently regressing on a future
-    /// dependency bump — exactly the scenario the issue was filed about.
     /// #3393 — take at most `max_bytes` of `s`, backing up to the nearest
     /// char boundary.
     ///
@@ -1782,6 +1773,15 @@ mod tests {
         assert_eq!(prefix_up_to("—", 1), "");
     }
 
+    /// #2097 / LZ4-01 — pins that the LZ4 arm still routes through
+    /// `catch_unwind`.
+    ///
+    /// The behavioural guard above cannot fail on `lz4_flex 0.11.6`, because
+    /// that version simply does not panic on the inputs its own docs warn
+    /// about. So the thing worth guarding is not the behaviour but the
+    /// *defence*: delete the `catch_unwind` and this test fails, which is the
+    /// only way this fix can be kept from silently regressing on a future
+    /// dependency bump — exactly the scenario the issue was filed about.
     #[test]
     fn lz4_decompress_is_panic_guarded() {
         const SRC: &str = include_str!("ba2.rs");
