@@ -649,15 +649,27 @@ pub(super) struct MaterialInfo {
     /// captured here so the silent drop at the importer boundary is
     /// closed. See #1241 / NIF-DIM4-NEW-01.
     pub refraction_strength: f32,
-    /// `BSLightingShaderProperty.lighting_effect_1` — Skyrim subsurface
-    /// scattering scalar (BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
-    /// Drives the per-material SSS rolloff on skin / soft-cloth / wax
-    /// surfaces. Default 0.0 = no SSS contribution. See #1241.
+    /// `BSLightingShaderProperty.lighting_effect_1` — Skyrim soft-lighting /
+    /// subsurface-width scalar (BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
+    /// `nifly` names the same wire field `softlighting`
+    /// (`Shaders.cpp:468-471`, same version gate — `User() <= 12 &&
+    /// Stream() < 130` — decoding the same two floats in the same order, so
+    /// the mapping is 1:1); nif.xml agrees on the format default **0.3**
+    /// (range 0..10), not 0.0 — `parse_skyrim` always reads the wire value
+    /// for BSLSP materials, so 0.0 is only reached by non-BSLSP content
+    /// whose `SOFT_LIGHTING` bit is clear anyway. Drives the per-material
+    /// SSS rolloff on skin / soft-cloth / wax surfaces. See #1241.
     pub lighting_effect_1: f32,
-    /// `BSLightingShaderProperty.lighting_effect_2` — Skyrim backlight
-    /// scalar (BSVER < FO4, gated by `SLSF2_Back_Lighting`). Drives the
-    /// back-lit translucency term on hair / foliage / fabric edges.
-    /// Default 0.0 = no backlight. See #1241.
+    /// `BSLightingShaderProperty.lighting_effect_2` — Skyrim **rim-light
+    /// power** (BSVER < FO4, gated by `SLSF2_Rim_Lighting`), **not** a
+    /// backlight strength — Skyrim authors no backlight strength at all.
+    /// `nifly` names the same wire field `rimlightPower`
+    /// (`Shaders.cpp:468-471`); nif.xml agrees on the format default
+    /// **2.0** (range 0..1000). `lighting.glsl`'s `bethesdaRimFactor`
+    /// already reads this correctly as the Skyrim fallback for FO4's
+    /// `rimlight_power` field; `bethesdaBackFactor` deliberately does NOT
+    /// read this field, since there is no separate Skyrim back-light
+    /// strength scalar to read. See #1241.
     pub lighting_effect_2: f32,
     /// `BSLightingShaderProperty.subsurface_rolloff` — FO4 BSVER 130–139.
     /// Per-material SSS rolloff envelope. Default 0.0. See #1241.

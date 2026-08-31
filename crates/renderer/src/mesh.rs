@@ -1366,7 +1366,8 @@ impl MeshRegistry {
 
         // Only meaningful once there's an old generation to duplicate
         // alongside — a first build has nothing to keep serving draws, so
-        // it always goes straight through the chunked path below.
+        // it skips the chunked path below entirely and builds synchronously
+        // in `rebuild_geometry_ssbo_atomic_fallback`.
         //
         // #3443 — and only while duplicating that generation is *safe*.
         // `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` exists precisely because
