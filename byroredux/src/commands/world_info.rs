@@ -1,6 +1,7 @@
 //! Engine / world / memory introspection commands.
 //!
-//! `help`, `stats`, `entities`, `systems`, `sys.accesses`, `mem.frag`, `ctx.scratch`.
+//! `help`, `stats`, `entities`, `systems`, `sys.accesses`, `mem.frag`,
+//! `ctx.scratch`, `lod.coverage`, `terrain.seams`, `cell.owners`.
 
 use super::shared::*;
 
@@ -516,6 +517,159 @@ impl ConsoleCommand for TerrainSeamsCommand {
     }
 }
 
+/// Resolve the grid cell `cell.owners` reports on: `args` (`"<gx> <gy>"`)
+/// when given, else `current` (the player's own cell). Pure so the parsing
+/// itself is unit-testable without a `World`.
+fn parse_cell_owners_target(
+    args: &str,
+    current: Option<(i32, i32)>,
+) -> Result<(i32, i32), String> {
+    match args.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [] => current.ok_or_else(|| {
+            "no active exterior session — pass `<gx> <gy>` explicitly".to_string()
+        }),
+        [gx, gy] => {
+            let parse_axis = |value: &str, axis: &str| {
+                value
+                    .parse::<i32>()
+                    .map_err(|_| format!("{axis} must be an integer, got '{value}'"))
+            };
+            Ok((parse_axis(gx, "gx")?, parse_axis(gy, "gy")?))
+        }
+        _ => Err("expected `cell.owners` or `cell.owners <gx> <gy>`".to_string()),
+    }
+}
+
+fn format_form_id(form_id: Option<u32>) -> String {
+    form_id.map_or_else(|| "none".to_string(), |f| format!("0x{f:08X}"))
+}
+
+/// `cell.owners [gx gy]` — REGN/NAVM/audio/AI ownership report for one
+/// resident exterior cell (EX-16 acceptance criterion 5 / #2372, split
+/// into #3805).
+///
+/// With no arguments, reports the player's current cell
+/// ([`crate::cell_loader::CurrentExteriorContext::grid`]). With
+/// `<gx> <gy>`, reports that grid cell instead — useful for auditing a
+/// neighboring resident cell without walking there.
+///
+/// Scope, stated rather than glossed over — this reports what the engine
+/// actually tracks *today*:
+/// - **REGN**: [`crate::components::RegionAmbientRes`] only ever holds the
+///   directive resolved for the player's OWN current cell (its per-grid-
+///   cell cache, #3679) — a non-current target cell reports "not resolved
+///   for this cell" instead of a fabricated answer.
+/// - **NAVM**: counted directly from resident
+///   [`crate::components::NavmeshTile`] entities whose `grid` matches the
+///   target — accurate for any resident exterior cell, not only the
+///   current one. Reads 0 tiles on Oblivion, which authors no NAVM at all
+///   (`docs/engine/navmesh-pathfinding.md`) — that's the correct answer,
+///   not a bug in this command.
+/// - **Audio**: only the single global REGN music channel exists today
+///   (#3804 is the open per-region-emitter follow-up); attributed to the
+///   target cell only when it's also the player's current cell,
+///   best-effort.
+/// - **AI**: every resident actor with an
+///   [`crate::components::AmbientPackageRuntime`] whose `GlobalTransform`
+///   resolves (via [`crate::streaming::world_pos_to_grid`]) to the target
+///   cell.
+pub(crate) struct CellOwnersCommand;
+impl ConsoleCommand for CellOwnersCommand {
+    fn name(&self) -> &str {
+        "cell.owners"
+    }
+
+    fn description(&self) -> &str {
+        "REGN/NAVM/audio/AI ownership report for one resident exterior cell: cell.owners [gx gy] (#2372/#3805)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let current_grid = world
+            .try_resource::<crate::cell_loader::CurrentExteriorContext>()
+            .map(|ctx| ctx.grid);
+        let target = match parse_cell_owners_target(args, current_grid) {
+            Ok(target) => target,
+            Err(e) => return CommandOutput::error(e),
+        };
+
+        let mut lines = vec![format!("cell.owners ({}, {})", target.0, target.1)];
+
+        // REGN — only ever resolved for the player's own current cell.
+        if Some(target) == current_grid {
+            match world.try_resource::<crate::components::RegionAmbientRes>() {
+                Some(ambient) => lines.push(format!(
+                    "  REGN: music={} incidental={}",
+                    format_form_id(ambient.music_form),
+                    format_form_id(ambient.incidental_form),
+                )),
+                None => lines.push("  REGN: RegionAmbientRes resource not present".to_string()),
+            }
+        } else {
+            lines.push(
+                "  REGN: not resolved for this cell (only the player's current cell is cached)"
+                    .to_string(),
+            );
+        }
+
+        // NAVM — counted directly, accurate for any resident exterior cell.
+        let (mut navm_tiles, mut navm_vertices, mut navm_triangles) = (0u32, 0usize, 0usize);
+        if let Some(q) = world.query::<crate::components::NavmeshTile>() {
+            for (_, tile) in q.iter() {
+                if tile.0.grid == Some(target) {
+                    navm_tiles += 1;
+                    navm_vertices += tile.0.vertices.len();
+                    navm_triangles += tile.0.triangles.len();
+                }
+            }
+        }
+        lines.push(format!(
+            "  NAVM: {navm_tiles} tile(s), {navm_vertices} vertices, {navm_triangles} triangles"
+        ));
+
+        // Audio — one global channel today; attributed only to the current cell.
+        let music_active = world
+            .try_resource::<byroredux_audio::AudioWorld>()
+            .map(|audio| audio.is_music_active())
+            .unwrap_or(false);
+        lines.push(match (music_active, Some(target) == current_grid) {
+            (true, true) => "  Audio: 1 active channel (global REGN music, this cell)".to_string(),
+            (true, false) => {
+                "  Audio: 1 active channel (global REGN music, elsewhere)".to_string()
+            }
+            (false, _) => "  Audio: no active channel".to_string(),
+        });
+
+        // AI — actors whose live position resolves to the target grid cell.
+        let mut owners: Vec<(u32, Option<u32>)> = Vec::new();
+        if let (Some(q_pkg), Some(q_gt)) = (
+            world.query::<crate::components::AmbientPackageRuntime>(),
+            world.query::<GlobalTransform>(),
+        ) {
+            for (entity, runtime) in q_pkg.iter() {
+                let Some(transform) = q_gt.get(entity) else {
+                    continue;
+                };
+                let grid = crate::streaming::world_pos_to_grid(
+                    transform.translation.x,
+                    transform.translation.z,
+                );
+                if grid == target {
+                    owners.push((runtime.actor_form_id, runtime.active_package_form_id));
+                }
+            }
+        }
+        lines.push(format!("  AI: {} package owner(s)", owners.len()));
+        for (actor_form, package_form) in owners {
+            lines.push(format!(
+                "    actor=0x{actor_form:08X} package={}",
+                format_form_id(package_form)
+            ));
+        }
+
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `render.debug <mode> [x y]` — select a named correctness view and
 /// optionally queue one bounded selected-light visibility-ray capture.
 pub(crate) struct RenderDebugCommand;
@@ -793,5 +947,147 @@ impl ConsoleCommand for MemFragCommand {
         CommandOutput::lines(
             byroredux_renderer::vulkan::allocator::fragmentation_report_lines(&frags),
         )
+    }
+}
+
+#[cfg(test)]
+mod cell_owners_tests {
+    use super::*;
+    use crate::cell_loader::CurrentExteriorContext;
+    use crate::components::{spawn_navmesh_tiles, AmbientPackageRuntime, RegionAmbientRes};
+    use byroredux_plugin::esm::records::NavmRecord;
+
+    // ── parse_cell_owners_target (pure) ──────────────────────────────
+
+    #[test]
+    fn no_args_falls_back_to_current_grid() {
+        assert_eq!(parse_cell_owners_target("", Some((3, -2))), Ok((3, -2)));
+    }
+
+    #[test]
+    fn no_args_and_no_current_grid_is_rejected() {
+        assert!(parse_cell_owners_target("", None).is_err());
+    }
+
+    #[test]
+    fn explicit_args_override_current_grid() {
+        assert_eq!(
+            parse_cell_owners_target("5 -7", Some((0, 0))),
+            Ok((5, -7))
+        );
+    }
+
+    #[test]
+    fn malformed_or_wrong_arity_args_are_rejected() {
+        assert!(parse_cell_owners_target("notanumber 1", Some((0, 0))).is_err());
+        assert!(parse_cell_owners_target("1", Some((0, 0))).is_err());
+        assert!(parse_cell_owners_target("1 2 3", Some((0, 0))).is_err());
+    }
+
+    // ── CellOwnersCommand (integration) ──────────────────────────────
+
+    fn navm(grid: (i32, i32), vertices: usize, triangles: usize) -> NavmRecord {
+        NavmRecord {
+            grid: Some(grid),
+            vertices: vec![[0.0, 0.0, 0.0]; vertices],
+            triangles: vec![
+                byroredux_plugin::esm::records::NavmTriangle {
+                    vertices: [0, 0, 0],
+                    edge_neighbours: [None, None, None],
+                    flags: 0,
+                };
+                triangles
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn spawn_actor(world: &mut World, grid: (i32, i32), actor_form: u32, package: Option<u32>) {
+        let entity = world.spawn();
+        // #3679 world_pos_to_grid: gx = floor(x/4096), gy = floor(-z/4096) —
+        // cell-center offsets so a fractional 4096 boundary never rounds
+        // into the neighbor.
+        let x = grid.0 as f32 * 4096.0 + 100.0;
+        let z = -(grid.1 as f32 * 4096.0 + 100.0);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::new(x, 0.0, z), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            entity,
+            AmbientPackageRuntime {
+                package_candidates: Vec::new(),
+                active_package_form_id: package,
+                actor_form_id: actor_form,
+                last_evaluated_game_minute: None,
+            },
+        );
+    }
+
+    /// The common case: no args, player's own cell, with a resolved REGN
+    /// directive, one resident NAVM tile, and one AI package owner.
+    #[test]
+    fn reports_current_cell_by_default() {
+        let mut world = World::new();
+        world.insert_resource(CurrentExteriorContext {
+            grid: (0, 0),
+            ..Default::default()
+        });
+        world.insert_resource(RegionAmbientRes {
+            music_form: Some(0x10),
+            incidental_form: None,
+        });
+        spawn_navmesh_tiles(&mut world, &[navm((0, 0), 3, 1), navm((1, 1), 3, 1)]);
+        spawn_actor(&mut world, (0, 0), 0x1001, Some(0x2001));
+        spawn_actor(&mut world, (1, 1), 0x1002, None);
+
+        let out = CellOwnersCommand.execute(&world, "");
+        let joined = out.lines.join("\n");
+        assert!(joined.contains("cell.owners (0, 0)"), "{joined}");
+        assert!(joined.contains("music=0x00000010"), "{joined}");
+        assert!(joined.contains("NAVM: 1 tile(s), 3 vertices, 1 triangles"), "{joined}");
+        assert!(joined.contains("AI: 1 package owner(s)"), "{joined}");
+        assert!(joined.contains("actor=0x00001001 package=0x00002001"), "{joined}");
+    }
+
+    /// An explicit non-current target: NAVM and AI still resolve correctly
+    /// (their data isn't scoped to the player's cell), but REGN correctly
+    /// declines to fabricate an answer it doesn't have.
+    #[test]
+    fn reports_explicit_non_current_cell_without_fabricating_regn() {
+        let mut world = World::new();
+        world.insert_resource(CurrentExteriorContext {
+            grid: (0, 0),
+            ..Default::default()
+        });
+        world.insert_resource(RegionAmbientRes {
+            music_form: Some(0x10),
+            incidental_form: None,
+        });
+        spawn_navmesh_tiles(&mut world, &[navm((0, 0), 3, 1), navm((1, 1), 6, 2)]);
+        spawn_actor(&mut world, (1, 1), 0x1002, Some(0x2002));
+
+        let out = CellOwnersCommand.execute(&world, "1 1");
+        let joined = out.lines.join("\n");
+        assert!(joined.contains("cell.owners (1, 1)"), "{joined}");
+        assert!(joined.contains("not resolved for this cell"), "{joined}");
+        assert!(joined.contains("NAVM: 1 tile(s), 6 vertices, 2 triangles"), "{joined}");
+        assert!(joined.contains("actor=0x00001002 package=0x00002002"), "{joined}");
+    }
+
+    /// Oblivion authors zero NAVM records at all
+    /// (`docs/engine/navmesh-pathfinding.md`) — a cell with no resident
+    /// tiles must report a clean 0, not error.
+    #[test]
+    fn zero_navm_tiles_reports_cleanly() {
+        let mut world = World::new();
+        world.insert_resource(CurrentExteriorContext {
+            grid: (0, 0),
+            ..Default::default()
+        });
+        let out = CellOwnersCommand.execute(&world, "");
+        let joined = out.lines.join("\n");
+        assert!(joined.contains("NAVM: 0 tile(s), 0 vertices, 0 triangles"), "{joined}");
+        assert!(joined.contains("AI: 0 package owner(s)"), "{joined}");
     }
 }
