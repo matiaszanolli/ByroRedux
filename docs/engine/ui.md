@@ -72,13 +72,17 @@ crates/ui/src/
 ├── host.rs      ScaleformHostBridge — ExternalInterface call queue (bounded,
 │                drained per frame by the main loop), callback discovery,
 │                typed values, diagnostics/responses
+├── host/        `host.rs`'s own test module
 ├── input.rs     Platform-neutral keyboard, pointer, text, IME, and focus events
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
-│                visibility/input-focus/viewport state, load/tick/render/close
+│                visibility/input-focus/viewport state, load/tick/render
+│                (no `close` — deleted under #2723)
 ├── navigator.rs Archive-backed relative URL resolution, resource diagnostics,
 │                Ruffle future executor, and ImportAssets preload compatibility
 ├── player.rs    SwfPlayer — Ruffle wrapper, own wgpu/Vulkan device,
 │                offscreen TextureTarget, capture_frame() → cached RGBA buffer
+├── prepare.rs   prepare_movie — one decompress + at most one tag walk shared
+│                by every load stage instead of each redoing it (#2968)
 └── profile.rs   Skyrim AVM1 / Fallout 4 AVM2 host profiles and detection
 ```
 
@@ -90,6 +94,11 @@ defined directly in `lib.rs`.
 
 ```
 SWF file bytes
+        │
+        ▼  prepare::prepare_movie — one decompress + at most one tag walk (#2968),
+        ▼  shared by profile detection, host-object injection, ImportAssets
+        ▼  extraction, and the from_data call below (each used to redo this)
+PreparedMovie
         │
         ▼  ruffle_core::tag_utils::SwfMovie::from_data
 parsed SwfMovie
@@ -236,6 +245,12 @@ pub struct UiManager {
 impl UiManager {
     pub fn new(width: u32, height: u32) -> Self;
     pub fn load_swf(&mut self, swf_data: &[u8], name: &str) -> anyhow::Result<()>;
+    pub fn load_swf_with_profile(
+        &mut self,
+        swf_data: &[u8],
+        name: &str,
+        profile: ScaleformProfile,
+    ) -> anyhow::Result<()>;
     pub fn load_swf_from_resource_provider(
         &mut self,
         provider: Arc<dyn ScaleformResourceProvider>,
@@ -245,13 +260,24 @@ impl UiManager {
     ) -> anyhow::Result<()>;
     pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
     pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
+    pub fn host_bridge(&self) -> Option<ScaleformHostBridge>;
+    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall>;   // engine-consumed ActionScript calls, once/frame beside tick (#2714)
+    pub fn dropped_host_calls(&self) -> u64;     // latches per active menu — a decrease means a menu change (#2969)
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue>;
     pub fn has_input_focus(&self) -> bool;
     pub fn set_input_focus(&mut self, focused: bool) -> bool;
     pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool;
-    pub fn close(&mut self);                      // drops the player, clears state
 }
 ```
+
+**No `close()` method** — deleted under #2723. There is no way to
+explicitly unload a menu today short of loading a different one or
+dropping the `UiManager` (or its `Option<UiManager>` slot) entirely.
 
 `UiManager` is **deliberately not** an ECS `World` resource — Ruffle's
 `Player` owns non-`Send`/`Sync` backends (video, audio), so the manager
@@ -551,10 +577,13 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **53 default tests plus 2 ignored** installed-corpus smokes
-(measured 2026-08-26 with `cargo test -p byroredux-ui -- --list` and
+The UI crate has **59 default tests plus 2 ignored** installed-corpus smokes
+(measured 2026-08-31 with `cargo test -p byroredux-ui -- --list` and
 `cargo test -p byroredux-ui -- --list --ignored`; re-measure rather than
-trusting this line — it has drifted four times). The executable adds
+trusting this line — it has drifted five times now: `prepare::tests` ×4,
+`lib::tests::the_frame_driver_reads_the_drop_counter_beside_the_drain`, and
+one `host::tests` addition account for the growth since the last count).
+The executable adds
 winit-translation tests in `byroredux/src/ui_input.rs`. The synthetic
 non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 
