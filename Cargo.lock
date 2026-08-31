@@ -431,6 +431,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "byro-detect"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "byroredux-game-detect",
+ "toml",
+]
+
+[[package]]
 name = "byro-texture-upscale"
 version = "0.1.0"
 dependencies = [
@@ -460,6 +469,7 @@ dependencies = [
  "byroredux-debug-server",
  "byroredux-debug-ui",
  "byroredux-facegen",
+ "byroredux-game-detect",
  "byroredux-hkx",
  "byroredux-nif",
  "byroredux-physics",
@@ -598,6 +608,19 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "cc",
+]
+
+[[package]]
+name = "byroredux-game-detect"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "byroredux-core",
+ "log",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

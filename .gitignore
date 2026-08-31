@@ -6,6 +6,7 @@
 # Third-party dev tools (cloned locally, not tracked) — except our workspace tools
 /tools/*
 !/tools/byro-dbg/
+!/tools/byro-detect/
 !/tools/texture-upscale/
 pipeline_cache.bin
 GEMINI.md

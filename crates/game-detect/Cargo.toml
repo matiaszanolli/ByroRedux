@@ -1,0 +1,22 @@
+[package]
+name = "byroredux-game-detect"
+version.workspace = true
+edition.workspace = true
+
+# Install detection + pre-launch validation for the launcher.
+#
+# Links the *real* readers (`byroredux-bsa` for archive headers and the
+# numeric-sibling naming rule) rather than sniffing files itself: a validator
+# that disagrees with the engine about whether an archive can be opened is
+# worse than no validator. Deliberately renderer-free so the launcher can run
+# these checks on a machine where Vulkan initialisation fails.
+[dependencies]
+byroredux-bsa = { workspace = true }
+byroredux-core = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

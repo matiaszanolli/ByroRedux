@@ -2,6 +2,7 @@
 members = [
     "crates/core",
     "crates/boot-request",
+    "crates/game-detect",
     "crates/save",
     "crates/nif",
     "crates/hkx",
@@ -26,6 +27,7 @@ members = [
     "crates/debug-server",
     "crates/debug-ui",
     "crates/sdk",
+    "tools/byro-detect",
     "tools/byro-dbg",
     "tools/texture-upscale",
     "byroredux",
@@ -41,6 +43,7 @@ license = "MIT"
 # Engine crates
 byroredux-core = { path = "crates/core" }
 byroredux-boot-request = { path = "crates/boot-request" }
+byroredux-game-detect = { path = "crates/game-detect" }
 byroredux-save = { path = "crates/save" }
 byroredux-renderer = { path = "crates/renderer" }
 byroredux-fsr3-sys = { path = "crates/fsr3-sys" }

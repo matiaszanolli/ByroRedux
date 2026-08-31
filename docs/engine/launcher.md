@@ -1,10 +1,15 @@
 # ByroRedux Launcher — public-facing front end
 
-**Status**: PROPOSED (2026-08-30); **P1 items 1-2 landed the same day** —
-[`crates/boot-request/`](../../crates/boot-request/) (the contract, 16 tests) and
-the `expand_boot_request` seam in [`boot.rs`](../../byroredux/src/boot.rs)
-(7 tests, including argv equivalence against the documented CLI). Everything
-from P1 item 3 (install detection) onward is still design only.
+**Status**: PROPOSED (2026-08-30); **P1 landed the same day, minus the
+non-Steam probes** — [`crates/boot-request/`](../../crates/boot-request/) (the
+contract, 16 tests), the `expand_boot_request` seam in
+[`boot.rs`](../../byroredux/src/boot.rs) (7 tests, including argv equivalence
+against the documented CLI), [`crates/game-detect/`](../../crates/game-detect/)
+(Steam discovery + validation + `[roots]` write-back, 38 tests), and
+[`tools/byro-detect/`](../../tools/byro-detect/). Verified against six real
+installs. **Not** implemented: the Windows-registry and GOG probes of §3.1 —
+those need APIs that cannot be exercised on the dev box, so they are still
+design only rather than untested code. P2 onward is design only.
 
 The **launcher** is the first thing a non-developer sees. Today the engine's
 only entry point is a ~60-flag argv surface driven from a terminal, backed by a
@@ -218,12 +223,34 @@ Detection produces *candidates*; the user confirms. Never silently pick.
 | **GOG** | Windows registry `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games\<id>\path`. Linux: Heroic/Lutris config JSON. |
 | **Bethesda registry keys** | Windows `HKLM\SOFTWARE\WOW6432Node\Bethesda Softworks\<Game>\Installed Path` — still present for older titles. |
 | **Manual** | A "Browse…" button (`rfd` native dialog). Always available, never a fallback-only path. |
+
+**Landed**: Steam, and reading back what is already configured. **Not landed**: the GOG, Bethesda-registry, and Windows Steam-registry rows — each needs a Windows API that cannot be exercised from the dev box, and untested registry code is worse than an honest gap. A non-Steam install is reachable today by hand-writing a `[roots]` entry, which `byro-detect` prints instructions for when it finds nothing.
 | **Existing config** | `~/.byroredux/profiles.toml` and `BYROREDUX_GAMES_ROOT` are read first and treated as authoritative, so a developer's box keeps working unchanged. |
 
-Detection results are written back into `~/.byroredux/profiles.toml` as `root`
-overrides, which means **detection makes the existing `--game <key>` CLI path
-work correctly for the first time on a machine that is not the dev box.** That
-is a standalone win, deliverable in P1, independent of any GUI.
+Detection results are written back into `~/.byroredux/profiles.toml`, which
+means **detection makes the existing `--game <key>` CLI path work correctly for
+the first time on a machine that is not the dev box.** That is a standalone win,
+deliverable in P1, independent of any GUI.
+
+**How the write-back is shaped, and why it is not a profile block.** The obvious
+form — emit a full `[profiles.<key>]` block with the detected `root` — is wrong.
+`merge_from` merges by *whole-entry replacement*, so a user block shadows the
+shipped one entirely; a write-back carrying a copy of today's archive lists
+would silently freeze them, and a later engine update that adds an archive to a
+shipped profile would have no effect on any machine detection had ever touched.
+
+So detection writes a narrower thing, a `[roots]` table applied over the merged
+registry and touching only `root`:
+
+```toml
+[roots]
+fnv = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data"
+```
+
+It cannot clobber curated profile data, which is also what makes it safe to
+write without asking (§12 Q3). `apply_root_overrides` in
+[`profiles.rs`](../../crates/game-detect/src/profiles.rs) is the whole rule, and
+is unit-tested against a registry whose archive lists must survive.
 
 `DEFAULT_GAMES_ROOT` should stop being a Linux-Steam-specific literal and
 become a last-resort after detection fails — the constant stays for
@@ -472,9 +499,12 @@ Rules:
 crates/boot-request/        NEW — BootRequest types + TOML (de)serialisation.
                                  Serde only; no GPU, no engine deps.
                                  Linked by both launcher and byroredux.
-crates/game-detect/         NEW — Steam/GOG/registry probing + ValidationReport.
-                                 Links byroredux-bsa + byroredux-plugin for
-                                 header-only checks (§3.3). No GPU.
+crates/game-detect/         NEW — Steam probing + ValidationReport + the
+                                 `[roots]` override format + the game-profile
+                                 loader (moved out of the binary, §12 Q6).
+                                 Links byroredux-bsa for header-only checks
+                                 and for the numeric-sibling naming rule
+                                 (§3.3). No GPU.
 tools/byro-launcher/        NEW — the eframe/glow binary. UI only; all logic
                                  lives in the two crates above so it is testable
                                  without a window.
@@ -507,9 +537,13 @@ Each phase ends at a gate that is demonstrable to someone who is not us.
 2. ~~`expand_boot_request` in `boot.rs`, ahead of `expand_game_profile_args`;
    argv precedence per §2.4.~~ **Landed.** Argv without `--boot` passes through
    byte-for-byte, so the seam is inert for every existing invocation.
-3. `crates/game-detect`: Steam VDF/ACF walk, GOG and registry probes, the
-   `ValidationReport`, and profile write-back to `~/.byroredux/profiles.toml`.
-4. A `byro-dbg`-style CLI front end (`byro-detect`) that prints the report.
+3. ~~`crates/game-detect`: Steam VDF/ACF walk, GOG and registry probes, the
+   `ValidationReport`, and profile write-back to
+   `~/.byroredux/profiles.toml`.~~ **Landed, except the GOG and registry
+   probes** (see §3.1). The profile loader moved here from the binary so the
+   launcher reads the same registry the engine launches from (§12 Q6).
+4. ~~A `byro-dbg`-style CLI front end (`byro-detect`) that prints the
+   report.~~ **Landed.** `--write` records the `[roots]` table.
 
 **Gate**: on a machine with no `BYROREDUX_GAMES_ROOT` and no hand-edited
 profile, `byro-detect` finds every installed target title and
@@ -570,10 +604,10 @@ Per §7, after the load-order design lands.
 |---|---|---|---|
 | Q1 | Does the launcher stay resident, or exec-and-exit? | Resident gives crash reporting (§8); exec-and-exit is simpler and frees ~40 MB. | **Resident.** The crash-visibility argument is the same one that produced §0.1. |
 | Q2 | Where does `~/.byroredux/` live on Windows? | Config path portability. | **Half answered already**: `settings_io::discover_settings_path` resolves `%APPDATA%` / `~/Library/Application Support` / `$XDG_CONFIG_HOME` / `~/.config` today. Only `profiles.toml` still hard-codes `~/.byroredux`. Move it onto the same resolver, keeping `~/.byroredux` as an honoured legacy path so no dev box breaks. |
-| Q3 | Should detection auto-write profile overrides, or ask? | Silent writes to a file a developer hand-edits are hostile. | Ask on first detection; never overwrite an existing non-empty `root` without confirmation. |
+| Q3 | Should detection auto-write profile overrides, or ask? | Silent writes to a file a developer hand-edits are hostile. | **Answered by the `[roots]` design** (§3.1): the write cannot touch a `[profiles.*]` block or `[defaults]`, and previously-remembered roots survive a run that finds fewer games, so it is safe without asking. `byro-detect` still requires an explicit `--write`. |
 | Q4 | One `settings.toml` for all games, or per-profile? | Different games plausibly want different presets. | Start global (matches today). Add a per-profile overlay only when a concrete need appears. |
 | Q5 | Can `ash` enumerate adapters when `vkCreateDevice` would fail? | The §4.3 pre-flight depends on it. | Believed yes — instance + `vkEnumeratePhysicalDevices` + property queries need no logical device — but **verify on a machine without ray-query before building the screen on it.** |
-| Q6 | Does the shipped `debug_profiles.toml` become the launcher's catalogue, or does the launcher get its own? | Two catalogues would drift. | One file. The launcher reads the same registry; the "debug" name should be retired. |
+| Q6 | Does the shipped `debug_profiles.toml` become the launcher's catalogue, or does the launcher get its own? | Two catalogues would drift. | **Settled: one file.** The loader moved out of the binary into `game-detect::profiles`, and `catalog_matches_shipped_profiles` pins each Steam `installdir` against its profile's `subdir` so detection and `--game <key>` cannot resolve to different folders. The "debug" name should still be retired. |
 
 ---
 

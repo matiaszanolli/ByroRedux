@@ -1,0 +1,13 @@
+[package]
+name = "byro-detect"
+version.workspace = true
+edition.workspace = true
+
+# P1's front end: the launcher's detection + validation logic, printed to a
+# terminal. Exists so the whole install-discovery path can be exercised and
+# demonstrated before any window is written — and so a user on a machine where
+# the launcher will not start still has a way to find out why.
+[dependencies]
+byroredux-game-detect = { workspace = true }
+byroredux-core = { workspace = true }
+toml = { workspace = true }
