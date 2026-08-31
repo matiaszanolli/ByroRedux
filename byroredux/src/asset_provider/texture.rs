@@ -314,6 +314,38 @@ pub(crate) fn derive_normal_map_path(diffuse: &str) -> String {
     }
 }
 
+/// The `<base>_n.dds` sibling of `diffuse`, but only when it is actually
+/// present in the loaded texture archives (#3551).
+///
+/// The derive used to fire on every game. FO4 and Skyrim author normals
+/// explicitly (BGSM, `BSLightingShaderProperty`) and have no `_n.dds`
+/// load-time convention at all, so an empty normal slot there is a mesh that
+/// genuinely has no normal map — every fabricated path was an archive lookup
+/// that could only miss, plus a phantom `src=derived-normal` row in
+/// `tex.missing` that drowned the real misses (measured: 13/16 of FO4's,
+/// 8/10 of Skyrim's).
+///
+/// This gates on presence rather than on [`GameKind`], which is both cheaper
+/// and does not need a per-game answer — the convention's exact reach across
+/// FNV was the open question a game gate would have had to settle. A mesh on
+/// any title that really does ship the sibling still gets it.
+///
+/// Canonicalises with [`canonical_texture_key`] — the SAME key
+/// `resolve_texture_view_with_clamp` derives before its own lookup. Probing
+/// the raw path instead would reintroduce the #3334 key drift here as a
+/// silently dropped normal map: an authored `Data\Textures\…` diffuse
+/// normalises to `textures\data\textures\…`, which is present in no
+/// archive, so a present sibling would test absent.
+pub(crate) fn derive_present_normal_map_path(
+    provider: &TextureProvider,
+    diffuse: &str,
+) -> Option<String> {
+    let derived = derive_normal_map_path(diffuse);
+    provider
+        .has_texture(&canonical_texture_key(&derived))
+        .then_some(derived)
+}
+
 /// Uses Gamebryo's default `WRAP_S_WRAP_T` clamp mode (`3` per
 /// nif.xml's `TexClampMode`). Call [`resolve_texture_with_clamp`] when
 /// the source material's `texture_clamp_mode` is non-default — decals

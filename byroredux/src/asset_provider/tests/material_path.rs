@@ -474,3 +474,52 @@ fn normalize_short_string_gets_prefixed() {
     let out = normalize_texture_path("a");
     assert_eq!(out.as_ref(), "textures\\a");
 }
+
+// ── `derive_present_normal_map_path` — #3551. The derive above used to
+//   fire on every game; FO4 / Skyrim author normals explicitly and have no
+//   `_n.dds` convention, so those probes could only miss.
+#[test]
+fn present_normal_derive_yields_nothing_when_the_sibling_is_absent() {
+    let provider = TextureProvider::new();
+    // An empty provider answers "absent" for everything — the FO4 / Skyrim
+    // case, where the mesh left the slot empty because there is no normal
+    // map, not because one is waiting under a conventional name.
+    assert_eq!(
+        derive_present_normal_map_path(&provider, r"textures\clutter\bottle01.dds"),
+        None,
+        "an absent sibling must not be fabricated — it costs an archive \
+         lookup per shape and lands in `tex.missing` as a phantom \
+         `src=derived-normal` row (#3551)",
+    );
+    // Including the shapes the string transform special-cases, so the gate
+    // is not accidentally bypassed for any of them.
+    assert_eq!(derive_present_normal_map_path(&provider, "Foo.DDS"), None);
+    assert_eq!(derive_present_normal_map_path(&provider, "bar"), None);
+}
+
+/// #3551 / #3334 — the presence probe must use the same canonical key
+/// `resolve_texture_view_with_clamp` derives before its own lookup.
+///
+/// Probing the raw path would reintroduce the #3334 key drift here as a
+/// silently dropped normal map: an authored `Data\Textures\…` diffuse
+/// normalises to `textures\data\textures\…`, present in no archive, so a
+/// sibling that really is there would test absent and the mesh would lose a
+/// normal map it previously got. There is no synthetic archive fixture in
+/// this crate to assert the positive case against, so pin the call instead.
+#[test]
+fn present_normal_derive_canonicalises_before_probing() {
+    const TEXTURE_RS: &str = include_str!("../texture.rs");
+
+    let body = TEXTURE_RS
+        .split_once("pub(crate) fn derive_present_normal_map_path(")
+        .expect("derive_present_normal_map_path")
+        .1;
+    let end = body.find("\n}\n").unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        body.contains("canonical_texture_key(&derived)"),
+        "the presence probe must canonicalise the derived path the same way \
+         `resolve_texture_view_with_clamp` does, or a present sibling under \
+         an authored `Data\\Textures\\…` path tests absent (#3551 / #3334)",
+    );
+}

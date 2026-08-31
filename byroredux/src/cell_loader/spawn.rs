@@ -20,8 +20,9 @@ use byroredux_renderer::{MorphSlot, SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
-    derive_normal_map_path, resolve_material_texture_handles_with_clamp, resolve_texture,
-    resolve_texture_with_clamp, MaterialProvider, TextureProvider,
+    derive_normal_map_path, derive_present_normal_map_path,
+    resolve_material_texture_handles_with_clamp, resolve_texture, resolve_texture_with_clamp,
+    MaterialProvider, TextureProvider,
 };
 use crate::components::{
     texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, Locked, MaterialTextureDebugInfo,
@@ -688,7 +689,13 @@ pub(super) fn spawn_placed_instances(
             base_layer,
         );
 
-    let resolved_paths = resolve_mesh_paths(world, imported, refr_overlay, mat_provider);
+    let resolved_paths = resolve_mesh_paths(
+        world,
+        imported,
+        refr_overlay,
+        mat_provider,
+        Some(tex_provider),
+    );
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     let pc = PlacementCtx {
         tex_provider,

@@ -42,6 +42,7 @@ pub(super) fn resolve_mesh_paths(
     imported: &[byroredux_nif::import::ImportedMesh],
     refr_overlay: Option<&RefrTextureOverlay>,
     mut mat_provider: Option<&mut MaterialProvider>,
+    tex_provider: Option<&crate::asset_provider::TextureProvider>,
 ) -> Vec<ResolvedMeshPaths> {
     let ov = refr_overlay;
     let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
@@ -152,12 +153,35 @@ pub(super) fn resolve_mesh_paths(
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
             // load-time convention, not an explicit NIF slot. When the
             // mesh left both normal/bump slots empty, derive the sibling
-            // from the (effective) diffuse path; it resolves like any
-            // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
+            // from the (effective) diffuse path (#1303 / OBL-D4-NEW-01).
+            //
+            // #3551 — but only when the sibling actually exists. The derive
+            // used to fire on every game, and FO4 / Skyrim author normals
+            // explicitly (BGSM, `BSLightingShaderProperty`) with no `_n.dds`
+            // convention at all, so an empty normal slot there is a mesh
+            // that genuinely has no normal map. Every fabricated path was a
+            // wasted archive lookup per shape and a phantom `src=derived-
+            // normal` row in `tex.missing`, where it drowned the real
+            // misses (measured: 13/16 of FO4's misses, 8/10 of Skyrim's).
+            //
+            // `has_texture` is the same archive index lookup `resolve_texture`
+            // would have done before failing, so the existence check is
+            // strictly cheaper than the probe it replaces — and it needs no
+            // per-game answer, which is what a `GameKind` gate would have
+            // required for FNV. A mesh on any game that really does ship the
+            // sibling still gets it.
             (textures.normal, sources.normal) =
                 resolve_effective(ov.and_then(|o| o.normal), mesh.material.textures.normal);
             if textures.normal.is_none() {
-                textures.normal = textures.base_color.as_deref().map(derive_normal_map_path);
+                textures.normal = textures.base_color.as_deref().and_then(|base| {
+                    match tex_provider {
+                        Some(provider) => derive_present_normal_map_path(provider, base),
+                        // No provider is the bare-`World` unit-test path,
+                        // which has no archives to answer with; keep deriving
+                        // there so the string transform stays exercised.
+                        None => Some(derive_normal_map_path(base)),
+                    }
+                });
                 if textures.normal.is_some() {
                     sources.normal = MaterialTextureSource::DerivedNormal;
                 }
@@ -1216,7 +1240,7 @@ mod tests {
         mesh.material.textures.base_color = Some(diffuse);
         mesh.material.parallax_height_in_alpha = true;
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None, None);
         assert_eq!(
             resolved[0].textures.normal.as_deref(),
             Some(r"textures\dungeons\caves\crm01_n.dds"),
@@ -1247,7 +1271,7 @@ mod tests {
         let mut mesh = empty_mesh();
         mesh.material.textures.base_color = Some(diffuse);
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None, None);
         assert_eq!(
             resolved[0].textures.normal.as_deref(),
             Some(r"textures\clutter\barrel01_n.dds")
@@ -1275,7 +1299,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].textures.inner_layer.as_deref(),
             Some(r"textures\ice\override_inner.dds"),
@@ -1303,7 +1327,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].textures.greyscale_lut.as_deref(),
             Some(r"textures\fo4\palette_lgrad.dds")
@@ -1330,7 +1354,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].textures.specular.as_deref(),
             Some(r"textures\fo76\surface_s.dds")
@@ -1361,7 +1385,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].textures.lighting.as_deref(),
             Some(r"textures\fo4\surface_lighting.dds")
@@ -1395,7 +1419,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].textures.smooth_spec.as_deref(),
             Some(r"textures\fo4\surface_smoothspec.dds")
@@ -1422,7 +1446,7 @@ mod tests {
         let mut mesh = empty_mesh();
         mesh.material.textures.lighting = Some(lighting);
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None, None);
         assert_eq!(
             resolved[0].textures.lighting.as_deref(),
             Some(r"textures\mesh\lighting.dds")
@@ -1476,7 +1500,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[body, arm], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[body, arm], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
             Some(r"materials\armor\raider\body01_variant04.bgsm"),
@@ -1526,7 +1550,8 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None);
+        let resolved =
+            resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
             Some(r"materials\armor\raider\body01_variant04.bgsm"),

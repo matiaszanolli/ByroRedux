@@ -23,7 +23,7 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
-    build_material_provider, build_texture_provider, derive_normal_map_path,
+    build_material_provider, build_texture_provider, derive_present_normal_map_path,
     merge_external_material, resolve_material_texture_handles_with_clamp, resolve_texture,
     resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
@@ -911,14 +911,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 
         // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
         // convention, not an explicit NIF slot. When the mesh authored no
-        // normal/bump slot, derive the sibling from the diffuse path; it
-        // resolves like any texture below and fails soft if absent
+        // normal/bump slot, derive the sibling from the diffuse path
         // (#1303 / OBL-D4-NEW-01).
+        //
+        // #3551 SIBLING — gated on the sibling existing, exactly as
+        // `cell_loader::spawn::mesh_instance::resolve_mesh_paths` is. This
+        // is the loose-NIF half of the same derive and had the same
+        // ungated shape.
         if owned_textures.normal.is_none() {
             owned_textures.normal = owned_textures
                 .base_color
                 .as_deref()
-                .map(derive_normal_map_path);
+                .and_then(|base| derive_present_normal_map_path(tex_provider, base));
             if owned_textures.normal.is_some() {
                 texture_sources.normal = MaterialTextureSource::DerivedNormal;
             }
