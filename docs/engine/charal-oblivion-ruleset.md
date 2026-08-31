@@ -4,7 +4,10 @@ Living capture of **Oblivion** gameplay-system formulas that sit downstream
 of the already-complete core ruleset (`AttributeSet::OBLIVION`,
 `SkillSet::OBLIVION`, `LevelingModel::OBLIVION`, `oblivion_attribute_bonus`,
 `oblivion_health_formula` — all shipped, see `crates/core/src/character/
-tes.rs` and `charal.md` §5, which calls Oblivion "CHARAL-complete"). This doc
+tes.rs` and `charal.md` §5, which describes the Oblivion ruleset **builder**
+as complete but unwired — `CharacterRulesProfile::OBLIVION` is
+`RulesetBuilder::None`, and `Oblivion.esm` authors no `AVIF` records at all,
+so wiring needs a legacy actor-value resolver first). This doc
 exists for the same reason `charal-skyrim-ruleset.md` does even though
 Skyrim's core is also done: real, sourced, downstream gameplay math that
 isn't a core derived stat but is still worth capturing precisely. LOCKED

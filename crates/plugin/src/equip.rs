@@ -305,9 +305,15 @@ pub fn resolve_armor_meshes<'a>(
 /// inventories through the same helper.
 pub const LVLI_MAX_DEPTH: u32 = 8;
 
-/// FNV / FO3 `NpcRecord::template_flags` bits. Sourced from xEdit
+/// `NpcRecord::template_flags` bits. Bit numbering sourced from xEdit
 /// `wbDefinitionsFNV.pas` (commit `dev-4.1.6`), the same authority the
-/// surrounding biped-slot helpers use. `NpcRecord::template_flags`'s own doc
+/// surrounding biped-slot helpers use — but since `7445506c` these same
+/// three constants gate `derive_npc_actor_values` for **every** game
+/// `NpcRecord` parses, not just FNV/FO3: the bits are read at a different
+/// ACBS byte offset per game family (FO4 offset 14, Skyrim offset 18,
+/// FNV/FO3 offset 22 — see the three ACBS parse arms in
+/// `esm/records/actor/mod.rs`), but the bit *meanings* are the same three-
+/// bit subset across all of them. `NpcRecord::template_flags`'s own doc
 /// comment enumerates all twelve; these three are the ones this crate
 /// currently resolves against real data (#2956) — the rest are parsed and
 /// stored for the dispatcher but have no consumer yet.

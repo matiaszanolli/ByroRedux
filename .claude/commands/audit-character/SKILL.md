@@ -187,7 +187,10 @@ policy row the doctrine check depends on; `crates/core/src/character/mod.rs`
   Health/AP divergence is deferred *because* of this split — verify the scope
   tagging is correct so the deferral stays contained to player stats.
 - `eval` is documented as allocation-free and ~5 FMAs. Verify no branch on game
-  identity crept in, and that `DerivedStatFormula` is still `Copy` + 32 B.
+  identity crept in, and that `DerivedStatFormula` is still `Copy` + 36 B
+  (grew from 32 B when `clamped_below`'s `floor: f32` and the `base_reads: u8`
+  bitfield landed under #2939; pinned by `formula_is_thirty_six_bytes_and_copy`,
+  `crates/core/src/character/derived.rs:340-345`).
 - **CHARAL-adjacent siblings** (CHAR-D6-05 / #2962): verify
   `crates/core/src/combat.rs`'s `modified_skill` (the `0.4` Luck coefficient),
   `oblivion_weapon_damage_multiplier` (four coefficients), and

@@ -419,8 +419,13 @@ pub struct NpcRecord {
     /// from a base record. Sentinel `0` = no template (the common
     /// case for unique named NPCs).
     pub template_form_id: u32,
-    /// FNV / FO3 template-inheritance bitmask from `ACBS` (u16 at
-    /// offset 22). Each bit gates whether one category of fields is
+    /// Template-inheritance bitmask from `ACBS`. Sourced from xEdit's
+    /// `wbDefinitionsFNV.pas` for the FNV/FO3 offset and bit meanings, but
+    /// since `7445506c` these same three constants (`equip.rs`'s
+    /// `TEMPLATE_FLAG_*`) gate `derive_npc_actor_values` for **every**
+    /// game, at three different ACBS offsets: FO4 `u16 @ 14`, Skyrim
+    /// `u16 @ 18`, FNV/FO3 `u16 @ 22` (see the three ACBS parse arms below).
+    /// Each bit gates whether one category of fields is
     /// pulled from [`template_form_id`] at runtime:
     ///
     ///   * `0x0100` — **Use Inventory** (CNTO list). Empty on the

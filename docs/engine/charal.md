@@ -340,7 +340,13 @@ like the Fallout builders. The level-up leveling-efficiency mechanics are shippe
 `oblivion_health_gain_per_level(endurance)` = 10 % of Endurance accrued (and stored) each
 level (path-dependent, so a per-level event, not a stateless formula). **Classic Oblivion
 (2006 Gamebryo) only** — the live UESP *Oblivion:Health* page now documents the 2024 UE5
-*Remastered* formula, which is out of scope. **Oblivion is now CHARAL-complete** end-to-end.
+*Remastered* formula, which is out of scope. **The Oblivion ruleset builder is complete —
+it is unwired.** `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuilder::None`
+(`crates/core/src/character/profile.rs:82-87`), so `build_ruleset` never constructs an
+Oblivion `CharacterRuleset` at load, and more fundamentally `Oblivion.esm` authors no `AVIF`
+records at all (the record type postdates Oblivion) — so a legacy actor-value index resolver
+is needed before wiring can even start, not just a `RulesetBuilder` arm (`docs/feature-matrix.md`'s
+"~ built, unwired" is the accurate summary; see #3170 for Skyrim's parallel unwired-ruleset gap).
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

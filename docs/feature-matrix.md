@@ -249,7 +249,7 @@ scheduler registration), not just present as a buildable function.
 | Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ~ built, unwired | ✓ | ✗ | ✗ |
-| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ~ Health only | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
+| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ Health+Magicka+Stamina | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | Pool regen tick (Health/Magicka/Stamina) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
@@ -274,8 +274,10 @@ not an actor value — it reaches the spawned entity as the dedicated
 place of its flat unarmed baseline (#3762; before that fix every creature in
 both games attacked for 8).
 
-Skyrim's NPC population derives Health only (`race.starting_health +
-NPC_.ACBS.health_offset`) — no skills or other actor values. FO4/FO76/
+Skyrim's NPC population derives Health, Magicka and Stamina, each
+independently from its own `RACE.DATA` starting value plus its own signed
+`ACBS` offset (`derive_skyrim_actor_values`, landed `1d0c5d4b` 2026-08-24,
+verified against `Skyrim.esm`) — no other actor values or skills. FO4/FO76/
 Starfield share one "stored" mechanism (`NPC_` `PRPS` property pairs
 pass through verbatim, plus baked `DNAM` Health/Action Points); FO4 is
 exercised against real content, FO76/Starfield inherit the same decoder "by
