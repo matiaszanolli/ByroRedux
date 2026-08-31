@@ -5,6 +5,5 @@
 //! keeps `crate::game_profiles::…` working for every existing call site.
 
 pub use byroredux_game_detect::profiles::{
-    load_default, load_launch_defaults, resolve_games_root, resolve_profile_root, LaunchDefaults,
-    DEFAULT_GAMES_ROOT, DEFAULT_PROFILES_PATH,
+    load_default, load_launch_defaults, resolve_games_root, resolve_profile_root,
 };

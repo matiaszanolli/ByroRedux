@@ -161,6 +161,26 @@ mod tests {
     mod supervision {
         use super::super::*;
         use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Mutex, MutexGuard};
+
+        /// Serialises "write an executable, then spawn it".
+        ///
+        /// `Command::spawn` is fork+exec, and a fork inherits every open file
+        /// descriptor — including another thread's *write* handle to the stub
+        /// it is still creating. The inherited handle keeps that file
+        /// write-open until the child execs, so a second test's `exec` of its
+        /// own stub fails with `ETXTBSY` ("Text file busy"). It reproduced
+        /// about one run in three.
+        ///
+        /// Serialising both halves means no fork ever happens while a write
+        /// handle to any stub is open. Cheap: four tests, milliseconds each.
+        static STUB_LOCK: Mutex<()> = Mutex::new(());
+
+        fn serialised() -> MutexGuard<'static, ()> {
+            STUB_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
 
         /// Write an executable stub in place of the engine.
         fn stub(dir: &Path, body: &str) -> PathBuf {
@@ -190,6 +210,7 @@ mod tests {
         /// own tests.
         #[test]
         fn the_engine_is_invoked_with_the_boot_request_path() {
+            let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let seen = dir.path().join("argv.txt");
             let engine = stub(
@@ -209,6 +230,7 @@ mod tests {
         /// A clean exit is not a failure and must not open the crash screen.
         #[test]
         fn a_clean_exit_is_reported_as_finished() {
+            let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let engine = stub(dir.path(), "exit 0");
             let mut process = EngineProcess::spawn(&engine, &dir.path().join("boot.toml")).unwrap();
@@ -220,6 +242,7 @@ mod tests {
         /// come back with the exit status.
         #[test]
         fn a_crash_carries_its_code_and_the_last_thing_the_engine_said() {
+            let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let engine = stub(
                 dir.path(),
@@ -243,6 +266,7 @@ mod tests {
         /// failure is.
         #[test]
         fn the_log_tail_is_bounded_and_keeps_the_most_recent_lines() {
+            let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let total = LOG_TAIL_LINES + 50;
             let engine = stub(

@@ -10,6 +10,7 @@ use byroredux_boot_request::Action;
 use byroredux_game_detect::validate::Severity;
 
 use crate::engine::{EngineProcess, EngineStatus};
+use crate::settings_screen::{self, SettingsState};
 use crate::state::LauncherState;
 
 /// Which screen is showing.
@@ -24,6 +25,8 @@ enum Screen {
         code: Option<i32>,
         tail: Vec<String>,
     },
+    /// Graphics, controls, and the GPU pre-flight.
+    Settings,
 }
 
 pub struct LauncherApp {
@@ -34,6 +37,11 @@ pub struct LauncherApp {
     status: String,
     /// Which entry's play menu is expanded, if any.
     play_menu: Option<usize>,
+    /// The shared settings registry, the shipped presets, and what this
+    /// machine's GPU can do. Built at startup rather than on first use: a GPU
+    /// that cannot run the engine is something to say *before* Play is pressed,
+    /// not after.
+    settings: SettingsState,
 }
 
 impl LauncherApp {
@@ -54,6 +62,7 @@ impl LauncherApp {
             screen: Screen::Library,
             status,
             play_menu: None,
+            settings: SettingsState::load(),
         }
     }
 
@@ -155,6 +164,9 @@ impl eframe::App for LauncherApp {
                     if ui.button("Add game folder…").clicked() {
                         self.browse();
                     }
+                    if ui.button("Settings").clicked() {
+                        self.screen = Screen::Settings;
+                    }
                 });
             });
         });
@@ -163,6 +175,11 @@ impl eframe::App for LauncherApp {
             Screen::Library => self.draw_library(ui),
             Screen::Details(index) => self.draw_details(ui, index),
             Screen::Failure { code, tail } => self.draw_failure(ui, code, &tail),
+            Screen::Settings => {
+                if settings_screen::draw(ui, &mut self.settings) {
+                    self.screen = Screen::Library;
+                }
+            }
         });
     }
 }
@@ -171,6 +188,21 @@ impl LauncherApp {
     fn draw_library(&mut self, ui: &mut egui::Ui) {
         ui.heading("ByroRedux");
         ui.add_space(4.0);
+
+        // Surfaced here, not only in Settings: someone whose card cannot run
+        // the engine should learn that before pressing Play, and this window
+        // renders on OpenGL precisely so it can tell them.
+        if let Some(blocker) = self.blocker() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xe0, 0x5c, 0x50),
+                    "This computer may not be able to run the engine.",
+                );
+                ui.label(blocker);
+            });
+            ui.add_space(6.0);
+        }
 
         if self.running.is_some() {
             ui.label("The game is running.");
@@ -191,6 +223,14 @@ impl LauncherApp {
                 ui.add_space(6.0);
             }
         });
+    }
+
+    /// Why the engine will not start here, if it will not.
+    fn blocker(&self) -> Option<String> {
+        match &self.settings.gpu {
+            Ok(caps) => caps.verdict().err().map(|blocker| blocker.explain()),
+            Err(blocker) => Some(blocker.explain()),
+        }
     }
 
     fn draw_card(&mut self, ui: &mut egui::Ui, index: usize) {

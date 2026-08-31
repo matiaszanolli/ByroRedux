@@ -27,6 +27,7 @@ byroredux-debug-ui = { workspace = true }
 byroredux-sdk = { workspace = true }
 byroredux-boot-request = { workspace = true }
 byroredux-game-detect = { workspace = true }
+byroredux-settings-io = { workspace = true }
 byroredux-core = { workspace = true }
 byroredux-save = { workspace = true }
 byroredux-renderer = { workspace = true }

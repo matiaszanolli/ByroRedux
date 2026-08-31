@@ -1,10 +1,16 @@
 //! Game-independent runtime settings registry.
 //!
+//! [`builtin`] holds the entries the engine always registers; it lives here,
+//! not in a UI crate, so the launcher can build the same registry without
+//! linking a renderer. Persistence lives in `byroredux-settings-io`.
+//!
 //! The registry owns setting metadata and current values, while presentation
 //! layers (the on-screen debug UI today, native game menus later) render a
 //! cloned snapshot and submit [`SettingChange`] values back to it. Keeping the
 //! model in `core` prevents renderer, input, audio, and gameplay settings from
 //! depending on a particular menu implementation.
+
+pub mod builtin;
 
 use crate::ecs::Resource;
 use std::collections::{BTreeMap, BTreeSet};

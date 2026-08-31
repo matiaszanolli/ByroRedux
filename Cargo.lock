@@ -637,9 +637,11 @@ dependencies = [
 name = "byro-launcher"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "byroredux-boot-request",
  "byroredux-core",
  "byroredux-game-detect",
+ "byroredux-settings-io",
  "eframe",
  "egui",
  "env_logger",
@@ -688,6 +690,7 @@ dependencies = [
  "byroredux-save",
  "byroredux-scripting",
  "byroredux-sdk",
+ "byroredux-settings-io",
  "byroredux-sfmaterial",
  "byroredux-spt",
  "byroredux-ui",
@@ -970,6 +973,17 @@ name = "byroredux-sdk"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+]
+
+[[package]]
+name = "byroredux-settings-io"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "log",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

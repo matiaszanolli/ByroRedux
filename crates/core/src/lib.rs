@@ -21,6 +21,7 @@ pub mod form_id;
 pub mod lighting;
 pub mod math;
 pub mod radiometry;
+pub mod atomic_file;
 pub mod settings;
 pub mod stealth;
 pub mod string;

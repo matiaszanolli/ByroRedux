@@ -1,0 +1,19 @@
+[package]
+name = "byroredux-settings-io"
+version.workspace = true
+edition.workspace = true
+
+# Persistence for the universal settings registry.
+#
+# A crate of its own rather than a module in `core` so `core` — which every
+# other crate depends on — does not gain a `toml` dependency for something only
+# two front ends need. Renderer-free, so the launcher writes the same file the
+# engine reads before `VulkanContext` is created.
+[dependencies]
+byroredux-core = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -9,10 +9,13 @@ against the documented CLI), [`crates/game-detect/`](../../crates/game-detect/)
 [`tools/byro-detect/`](../../tools/byro-detect/). Verified against six real
 installs. **P2 landed too**: [`tools/byro-launcher/`](../../tools/byro-launcher/)
 opens on eframe/glow with the Library, Play, and Details screens and supervises
-the engine (16 tests; window verified rendering all six detected games under a
-virtual display). **Not** implemented: the Windows-registry and GOG probes of
-§3.1 — those need APIs that cannot be exercised on the dev box, so they are
-still design only rather than untested code. P3 onward is design only.
+the engine (window verified rendering all six detected games under a virtual
+display). **P3 landed**: the settings model moved into `core`, persistence into
+[`crates/settings-io/`](../../crates/settings-io/), and the launcher now has a
+Settings screen with presets and a GPU pre-flight (24 launcher tests, 8 in
+settings-io). **Not** implemented: the Windows-registry and GOG probes of §3.1 —
+those need APIs that cannot be exercised on the dev box, so they are still
+design only rather than untested code. P4 onward is design only.
 
 The **launcher** is the first thing a non-developer sees. Today the engine's
 only entry point is a ~60-flag argv surface driven from a terminal, backed by a
@@ -337,16 +340,29 @@ The obstacle: settings are registered by *engine* code
 `interaction::register_input_settings`) that the launcher must not link, since
 `debug-ui` pulls `egui-ash-renderer` and therefore Vulkan.
 
-Resolution — move registration down, not up:
+Resolution — move registration down, not up. All three steps landed:
 
-1. Extract the built-in registrations into a renderer-free module
-   (`crates/core/src/settings/builtin.rs`, or a thin `byroredux-settings`
-   crate). They are pure `SettingEntry` constructions; nothing about them needs
-   `egui`. `debug-ui` keeps its ID constants and re-exports.
-2. The launcher builds the same registry, overlays the persisted file via the
-   same `settings_io` load path, renders it, and writes it back.
+1. The built-in registrations are now
+   [`core::settings::builtin`](../../crates/core/src/settings/builtin.rs) —
+   pure `SettingEntry` constructions, nothing about them needed `egui`.
+   `debug-ui` re-exports the names it used to own.
+2. Persistence became [`crates/settings-io/`](../../crates/settings-io/) rather
+   than a module in `core`: it needs `toml`, and `core` is depended on by
+   everything. That required moving `atomic_write` from `save::disk` into
+   [`core::atomic_file`](../../crates/core/src/atomic_file.rs) — it is plain
+   `std` file IO with no save-format knowledge, and three writers now share the
+   durability contract #3472 established for two.
 3. The engine, unchanged, reads that file before `VulkanContext::new`
    ([`main.rs:520`](../../byroredux/src/main.rs)).
+
+**A data-loss bug this exposed.** The two front ends do not register the same
+settings: the engine registers the built-ins *and* the input bindings, the
+launcher only the built-ins (key rebinding is not a launcher feature). Saving
+replaced the file wholesale, so opening the launcher once would have silently
+erased every key the player had rebound. `save_to_path` now merges over the
+stored keys it does not recognise, which protects the engine from itself too — a
+subsystem that has not registered yet at save time no longer costs the user its
+values.
 
 The `restart_required` flag on `SettingEntry` becomes meaningful for the first
 time: in the launcher, *nothing* is restart-required, because the process has
@@ -358,10 +374,20 @@ grey out.
 Two additions that are launcher-specific and do not belong in the registry:
 
 **Presets.** `Low` / `Medium` / `High` / `Ultra` / `Custom` as named bundles of
-`(id, value)` pairs shipped in `assets/graphics_presets.toml`. Selecting a
+`(id, value)` pairs shipped in
+[`assets/graphics_presets.toml`](../../assets/graphics_presets.toml). Selecting a
 preset applies its pairs through `SettingsRegistry::set`, so preset values are
-validated by the same bounds as manual edits. Editing any control afterwards
-switches the label to `Custom` without discarding values.
+validated by the same bounds as manual edits — a preset cannot smuggle an
+out-of-range slider past the registry. Editing any control afterwards switches
+the label to `Custom` without discarding values.
+
+**Honest scope**: a preset can only move settings that are *registered*, and the
+registry holds exactly one graphics-quality knob today (`render.upscaler`). So
+the shipped presets vary the upscaler and nothing else. The mechanism is general
+— adding a shadow-distance or texture-quality setting extends the presets by
+editing the TOML, no code change — but this is not yet a quality ladder, and a
+test fails the build if a preset names a setting the registry refuses or does
+not have.
 
 **Pre-flight.** Query the GPU before offering presets. The launcher links
 `ash` (already a workspace dep, and enumerating adapters does not require a
@@ -381,7 +407,17 @@ say so, rather than let the user pick Ultra and meet a device loss:
 
 A machine that fails the API/extension check gets an explicit, non-fatal
 screen naming the missing capability — the §0.1 scenario, and the reason the
-launcher renders on OpenGL.
+launcher renders on OpenGL. The blocker is also surfaced on the Library screen,
+since it should be read *before* Play is pressed.
+
+**A selection bug the first real probe caught.** Choosing the adapter with the
+most device-local memory picked Mesa's **llvmpipe** over an RTX 4070 Ti and
+reported "30.0 GB", because a software rasterizer maps all of system RAM as
+device-local — and then recommended a preset off that fiction. Selection now
+ranks by device *class* first (`Discrete > Integrated > Virtual > Other > Cpu`)
+and only then by memory, and a CPU-type adapter is reported as its own blocker:
+the engine would run, far too slowly to play. Q5 below is answered by the same
+run — instance-level enumeration works with no logical device.
 
 ---
 
@@ -529,6 +565,11 @@ tools/byro-launcher/        NEW — the eframe/glow binary. UI only; all logic
 crates/core/src/settings/   MOVED — built-in SettingEntry registrations, out of
                                  debug-ui, so the launcher can build the same
                                  registry without linking Vulkan (§4.2).
+crates/core/src/atomic_file.rs  MOVED — durable file replace, out of save::disk,
+                                 now shared by the save ring, the settings
+                                 registry, and the launcher.
+crates/settings-io/         NEW — settings persistence + graphics presets. Its
+                                 own crate so `core` does not gain `toml`.
 ```
 
 New dependencies: `eframe 0.33` (`glow` feature, `default-features = false`),
@@ -592,14 +633,24 @@ data gap, not a launcher one.
 
 ### P3 — Settings and pre-flight
 
-1. Extract built-in settings registration out of `debug-ui` (§4.2).
-2. Settings screen driven by the shared registry; write through `settings_io`.
-3. `assets/graphics_presets.toml` + preset application.
-4. `ash` adapter enumeration, VRAM/extension pre-flight, recommended preset.
+1. ~~Extract built-in settings registration out of `debug-ui` (§4.2).~~
+   **Landed**, along with the persistence crate and the unknown-key
+   preservation fix that the two-registry split made necessary.
+2. ~~Settings screen driven by the shared registry; write through
+   `settings_io`.~~ **Landed.**
+3. ~~`assets/graphics_presets.toml` + preset application.~~ **Landed**, with the
+   scope caveat in §4.3.
+4. ~~`ash` adapter enumeration, VRAM/extension pre-flight, recommended
+   preset.~~ **Landed**, after fixing the llvmpipe selection bug in §4.3.
 
 **Gate**: changing a graphics setting in the launcher measurably changes the
 next launch, with no engine code aware the launcher exists. A machine without
-ray-query gets a clear explanation instead of a failed launch.
+ray-query gets a clear explanation instead of a failed launch. *Structurally
+met, not yet demonstrated end-to-end*: the launcher writes through the same
+persistence the engine reads before `VulkanContext::new`, and the pre-flight
+reports the real adapter (verified: `NVIDIA GeForce RTX 4070 Ti · 12.0 GB ·
+Vulkan 1.4 · ray query`) — but no run has yet changed a setting in the launcher
+and observed the engine come up differently.
 
 ### P4 — Continue and compatibility
 
@@ -636,7 +687,7 @@ Per §7, after the load-order design lands.
 | Q2 | Where does `~/.byroredux/` live on Windows? | Config path portability. | **Half answered already**: `settings_io::discover_settings_path` resolves `%APPDATA%` / `~/Library/Application Support` / `$XDG_CONFIG_HOME` / `~/.config` today. Only `profiles.toml` still hard-codes `~/.byroredux`. Move it onto the same resolver, keeping `~/.byroredux` as an honoured legacy path so no dev box breaks. |
 | Q3 | Should detection auto-write profile overrides, or ask? | Silent writes to a file a developer hand-edits are hostile. | **Answered by the `[roots]` design** (§3.1): the write cannot touch a `[profiles.*]` block or `[defaults]`, and previously-remembered roots survive a run that finds fewer games, so it is safe without asking. `byro-detect` still requires an explicit `--write`. |
 | Q4 | One `settings.toml` for all games, or per-profile? | Different games plausibly want different presets. | Start global (matches today). Add a per-profile overlay only when a concrete need appears. |
-| Q5 | Can `ash` enumerate adapters when `vkCreateDevice` would fail? | The §4.3 pre-flight depends on it. | Believed yes — instance + `vkEnumeratePhysicalDevices` + property queries need no logical device — but **verify on a machine without ray-query before building the screen on it.** |
+| Q5 | Can `ash` enumerate adapters when `vkCreateDevice` would fail? | The §4.3 pre-flight depends on it. | **Yes, verified.** `probe_describes_this_machine` (ignored by default; needs a driver) enumerates and reads properties, memory heaps, and extensions with no logical device. Still unverified on a machine that genuinely lacks ray-query — the blocker *decision* is unit-tested, the driver behaviour there is not. |
 | Q6 | Does the shipped `debug_profiles.toml` become the launcher's catalogue, or does the launcher get its own? | Two catalogues would drift. | **Settled: one file.** The loader moved out of the binary into `game-detect::profiles`, and `catalog_matches_shipped_profiles` pins each Steam `installdir` against its profile's `subdir` so detection and `--game <key>` cannot resolve to different folders. The "debug" name should still be retired. |
 
 ---

@@ -3,6 +3,7 @@ members = [
     "crates/core",
     "crates/boot-request",
     "crates/game-detect",
+    "crates/settings-io",
     "crates/save",
     "crates/nif",
     "crates/hkx",
@@ -45,6 +46,7 @@ license = "MIT"
 byroredux-core = { path = "crates/core" }
 byroredux-boot-request = { path = "crates/boot-request" }
 byroredux-game-detect = { path = "crates/game-detect" }
+byroredux-settings-io = { path = "crates/settings-io" }
 byroredux-save = { path = "crates/save" }
 byroredux-renderer = { path = "crates/renderer" }
 byroredux-fsr3-sys = { path = "crates/fsr3-sys" }

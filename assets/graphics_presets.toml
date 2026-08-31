@@ -1,0 +1,44 @@
+# Graphics presets — named bundles of setting values for the launcher.
+#
+# HONEST SCOPE: a preset can only move settings that are actually registered,
+# and the registry holds exactly one graphics-quality knob today
+# (`render.upscaler`, in `crates/core/src/settings/builtin.rs`). So these
+# presets vary the upscaler and nothing else. The mechanism is general — add a
+# shadow-distance or texture-quality setting to the registry and it can be
+# listed here with no code change — but this is not yet a full quality ladder,
+# and calling it one would be a lie the frame rate would expose.
+#
+# Values are applied through `SettingsRegistry::set`, so anything invalid here
+# is refused exactly as a hand edit would be, and
+# `the_shipped_presets_apply_cleanly_to_the_real_builtin_registry` fails the
+# build rather than letting a typo ship as a silently empty preset.
+#
+# Schema:
+#   name         Display name.
+#   description  One sentence on the trade being made.
+#   rank         Sort order, ascending.
+#   values       `setting id = value` pairs.
+
+[presets.low]
+name = "Low"
+description = "Renders at roughly half resolution and reconstructs. Highest frame rate; softest image."
+rank = 0
+values = { "render.upscaler" = "fsr3/performance" }
+
+[presets.medium]
+name = "Medium"
+description = "Balances reconstruction against sharpness. A good default below 8 GB of video memory."
+rank = 1
+values = { "render.upscaler" = "fsr3/balanced" }
+
+[presets.high]
+name = "High"
+description = "The engine default. Renders below output resolution and reconstructs at high quality."
+rank = 2
+values = { "render.upscaler" = "fsr3/quality" }
+
+[presets.ultra]
+name = "Ultra"
+description = "Renders at native resolution with temporal anti-aliasing. Sharpest image; most demanding."
+rank = 3
+values = { "render.upscaler" = "taa" }
