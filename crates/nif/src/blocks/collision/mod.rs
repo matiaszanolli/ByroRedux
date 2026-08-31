@@ -18,6 +18,7 @@
 //! - [`compressed_mesh`] — Skyrim+ `BhkCompressedMeshShape` + data
 //! - [`constraints`] — `BhkConstraint`, `BhkBreakableConstraint`
 //! - [`phantom_action`] — phantoms + LiquidAction + OrientHingedBodyAction
+//! - [`havok_packfile`] — FO4+ `BhkSystemBinary` outer container decode (#3809)
 //!
 //! Every block type is `pub use`-d at this module's root so external
 //! callers (`crate::blocks::collision::TypeName`) keep working
@@ -26,6 +27,7 @@
 mod collision_object;
 mod compressed_mesh;
 mod constraints;
+mod havok_packfile;
 mod phantom_action;
 mod ragdoll;
 mod rigid_body;
@@ -36,6 +38,10 @@ mod shape_primitive;
 pub use collision_object::{
     BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkSystemBinary,
     NiCollisionObjectBase,
+};
+pub use havok_packfile::{
+    parse_havok_packfile, HavokPackfile, HavokPackfileHeader, PackfileSection,
+    HAVOK_PACKFILE_MAGIC,
 };
 pub use compressed_mesh::{
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, CmsBigTri, CmsChunk, CmsTransform,

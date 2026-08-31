@@ -31,9 +31,11 @@ mod ba2;
 mod csg;
 mod naming;
 mod safety;
+mod uvd;
 
 pub use archive::BsaArchive;
 pub use ba2::{Ba2Archive, Ba2Variant};
 pub use csg::{bscrc32, csg_name_hash, CsgArchive, CSG_CHUNK_SIZE};
 pub use naming::numeric_sibling_paths;
 pub use safety::{MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};
+pub use uvd::{parse_uvd_header, UvdHeader, UVD_MAGIC};

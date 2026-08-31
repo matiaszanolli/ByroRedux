@@ -26,19 +26,33 @@
 //! - Collision — the sibling file is `<cell_formid:08x>_physics.nif`
 //!   (verified against real `Fallout4 - MeshesExtra.ba2` data, 2026-08-23 —
 //!   NOT `_precomb.nif`, which appears nowhere in the archive). Every
-//!   sampled instance (16/16) decodes to exactly `NiNode` + `NiExtraData` +
-//!   `bhkNPCollisionObject` + `bhkPhysicsSystem`, and `bhkPhysicsSystem` is
-//!   a raw undecoded Havok-serialised (HKX-like) blob
-//!   (`BhkSystemBinary`, `crates/nif/src/blocks/collision/
-//!   collision_object.rs:121-151`) — the same blocker that already blocks
+//!   sampled instance decodes to exactly `NiNode` + `NiExtraData` +
+//!   `bhkNPCollisionObject` + `bhkPhysicsSystem`, and `bhkPhysicsSystem`'s
+//!   raw blob (`BhkSystemBinary`, `crates/nif/src/blocks/collision/
+//!   collision_object.rs`) is a Havok classic-packfile container. As of
+//!   #3809 (2026-08-31) the container itself — header, section table,
+//!   `__classnames__` list — is decoded
+//!   (`crates/nif/src/blocks/collision/havok_packfile.rs`), confirming FO4
+//!   physics uses the `hknp` (Havok Next-gen Physics) class family. The
+//!   `__types__` section is empty in every sampled blob though, so the
+//!   `__data__` payload (an `hknpCompressedMeshShapeData` instance) isn't
+//!   self-describing — decoding it still needs Havok's own proprietary
+//!   bit-packed mesh-shape layout, the same blocker that already blocks
 //!   general FO4+ physics/ragdoll work. There is no authored convex-hull
-//!   data extractable with `crates/nif`'s *existing* parsers; a Havok
-//!   NP-physics binary decoder is greenfield format work, not a small
-//!   addition. FO4 architecture today gets synthesized trimesh colliders
-//!   via fallback in `spawn.rs`, spawned as separate MeshHandle-free ghost
-//!   entities so they stay out of BLAS/TLAS. See EX-14/15 item C4 (#2369).
-//! - Visibility / `.uvd` occlusion data — previs PVS keyed to visibility groups.
-//!   Currently no occlusion-volume or CPU coarse-cull system exists.
+//!   data extractable yet; that inner decode remains greenfield format
+//!   work. FO4 architecture today gets synthesized trimesh colliders via
+//!   fallback in `spawn.rs`, spawned as separate MeshHandle-free ghost
+//!   entities so they stay out of BLAS/TLAS. See EX-14/15 item C4 (#3809,
+//!   split from #2369).
+//! - Visibility / `.uvd` occlusion data — previs PVS keyed to visibility
+//!   groups. As of #3810 (2026-08-31) the outer envelope is decoded
+//!   (`byroredux_bsa::parse_uvd_header`): magic, tile size, a likely
+//!   world-space bounding volume, and a `table_offset` field confirmed
+//!   byte-identical (`336`) across every sampled file regardless of size.
+//!   The visibility-set payload itself (from `table_offset` onward) is
+//!   high-entropy, evidently bit-packed data — still uncracked. No
+//!   occlusion-volume or CPU coarse-cull consumer exists yet either way.
+//!   See EX-14/15 item C3 (#3810, split from #2369).
 
 use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::{PrecombinedMesh, RenderLayer};
