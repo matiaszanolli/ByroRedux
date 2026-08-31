@@ -493,15 +493,22 @@ threshold*: it cannot reach the `VERTEX_POOL_HARD_CAP` +
 atomic path instead. Any budget arithmetic that doubles the hard caps is
 therefore wrong post-#3443.
 
-**Plus one session-retained staging buffer.** The rebuild lazily constructs
-its own `StagingPool` at `DEFAULT_STAGING_BUDGET_BYTES` (128 MiB) and each
-chunk acquires exactly `GEOMETRY_REBUILD_CHUNK_BYTES` (64 MiB). Because
-64 MiB sits *inside* the 128 MiB retained budget, `release` keeps it rather
-than evicting it, and nothing calls `trim_to` on this pool — so it stays
-resident for the process lifetime after the first rebuild. This is new
-steady-state residency, not pre-existing: the pre-#3298 atomic path
-acquired one staging buffer the size of the whole pool, which normally
-*exceeded* the budget and was evicted on release.
+**Plus a second, distinct retained staging pool — the mesh side.** This is
+separate from `TextureRegistry::staging_pool` (the "Staging pool cap" row in
+the [Texture Registry](#texture-registry) section above); `MeshRegistry`
+builds its own `geometry_staging_pool`, also at `DEFAULT_STAGING_BUDGET_BYTES`
+(128 MiB), via the same `StagingPool::new`. A chunked rebuild acquires
+`GEOMETRY_REBUILD_CHUNK_BYTES` (64 MiB) once for the vertex chunk and once
+for the index chunk — up to 128 MiB total, i.e. the *entire* budget, not
+just one chunk. Because both entries sit inside the retained budget,
+`release` keeps them rather than evicting them, and there is no production
+`trim_to(0)` caller anywhere in the workspace for either staging pool — so
+this stays resident for the process lifetime after the first chunked
+rebuild. This is new steady-state residency, not pre-existing: the
+pre-#3298 atomic path staged the *whole* vertex/index buffer in one
+`acquire` (commonly 600+ MiB for a large scene), which immediately blew
+the 128 MiB budget and was evicted largest-first, leaving the pool near
+empty — #3298 changed the mesh pool's steady state, not its cap.
 
 Source of truth for the doubling is `GeometryRebuildInProgress`'s own doc
 comment (`crates/renderer/src/mesh.rs`); this row exists so a budget
@@ -630,7 +637,7 @@ authoritative rather than re-derived.
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
-| Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + 64 MiB retained staging |
+| Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
