@@ -1,11 +1,11 @@
 # FSR 3.1 upscaler integration plan
 
 Status: **All seven execution phases complete (2026-07-24). FSR 3.1.4 Quality is
-the engine default; `--upscaler taa` is the supported fallback.** Four items are
+the engine default; `--upscaler taa` is the supported fallback.** Three items are
 carried as known scope rather than done: the FP32 shader permutation is
-unexercised for want of a device that lacks `shaderFloat16`, the two phase-4
-items below (transparency split, UI composited after upscale) remain open, and
-bloom still runs pre-upscale rather than post-upscale as § 1.2 item 6 targets
+unexercised for want of a device that lacks `shaderFloat16`, phase-4 item 4.1
+(transparency split) below remains open, and bloom still runs pre-upscale
+rather than post-upscale as § 1.2 item 6 targets
 (`record_bloom_pass` in `crates/renderer/src/vulkan/context/post_passes.rs`
 runs before `record_upscale_pass`) — no runtime hazard, since the blur
 pyramid is mip-relative and its output-relative halo radius is preserved
@@ -27,11 +27,14 @@ and the `DBG_VIZ_MOTION` / `DBG_VIZ_FSR_TEMPORAL` (jitter + reset-bit) debug vie
 
 Phase 4 landed the output-resolution split: a render-resolution scene-composition
 pass, an explicit reconstruction slot in the frame graph, and an
-output-resolution presentation pass that owns exposure + ACES. Two of its five
-items are **not** done and are carried as known scope below: transparency is
-still recorded inside the main render pass rather than split out of it (4.1),
-and the Scaleform/Ruffle overlay + reticle are still composited before upscale
-rather than after (4.5).
+output-resolution presentation pass that owns exposure + ACES. One of its five
+items is **not** done and is carried as known scope below: transparency is
+still recorded inside the main render pass rather than split out of it (4.1).
+Item 4.5 (Scaleform/Ruffle overlay + reticle composited after upscale) is
+**done** (#3426, 2026-08-29): the overlay moved into
+`PresentationPipeline::dispatch` and the reticle (the only crosshair in the
+tree, `debug-ui/src/panels.rs::show_crosshair`) was already drawn by the egui
+pass after presentation.
 
 Phase 5 landed the dispatch itself: engine images wrapped as FFX Vulkan
 resources with explicit boundary barriers, every required input fed (including
@@ -638,7 +641,7 @@ theoretical pixel-count reduction for actual ReSTIR+SVGF recovery.
 | TAA and FSR both filter | Excessive blur and conflicting history rejection | Mutually exclusive runtime branches; FSR never allocates/dispatches TAA history |
 | SVGF plus FSR are two temporal filters | Indirect lag or oversmoothing | SVGF history stays render-sized; do not alter its validation; motion/disocclusion goldens at every preset |
 | History invalidation is lost | Long ghost after cuts/resizes | Shared reset state machine; consume only after successful submit; tests for every discontinuity caller |
-| UI/reticle enters FSR | UI ghosting and blur | Move Scaleform/Ruffle and reticle after upscale/tonemap; egui remains last |
+| UI/reticle enters FSR | UI ghosting and blur | Move Scaleform/Ruffle and reticle after upscale/tonemap; egui remains last — **done, #3426** |
 | Exposure differs between FSR and tonemap | Pumping/brightness mismatch | One 1x1 exposure producer shared by FSR and tonemap; begin at existing 0.85 |
 | Depth aspect/format mapping | Bad disocclusion or validation errors | Vulkan resource-wrap smoke test; use explicit R32F copy only if required |
 | FP16 feature assumptions | Device loss/build failure or slow fallback | Probe `shaderFloat16` and required 16-bit storage features; select supported SDK permutation; retain FP32 path and test both |
@@ -732,10 +735,10 @@ Quality (853×480) against 0.012 ms for the native blit, with 31.8 MB of SDK
 working memory; Performance (640×360) reserves 25.3 MB.
 
 Deferred out of this phase, deliberately: goldens/SSIM are phase 6's item 1 (now done),
-and the two carried phase-4 items above (transparency split, UI after upscale)
-remain open. Until the UI moves, the Scaleform overlay is temporally
-reconstructed along with the scene and writes no mask — marking it reactive
-would paper over that rather than fix it.
+and the carried phase-4 item above (transparency split) remains open. The
+UI-after-upscale item is **done** (#3426) — the Scaleform overlay now
+composites after presentation's tone-map, at output resolution, and is never
+temporally reconstructed.
 
 #### Execution phase 6 — image-quality stabilization — **COMPLETE (2026-07-24)**, with one item deferred for want of hardware
 

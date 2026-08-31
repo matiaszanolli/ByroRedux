@@ -364,6 +364,22 @@ impl PresentationPipeline {
         // both cost more than the measurement justifies. Revisit only with
         // an actual sync-val hazard or a driver-observed artifact; a repeat
         // of the static reading alone is not new evidence.
+        //
+        // **Scope note (2026-08-31, REN-2026-08-30-D23-05, observation
+        // only — no barrier change proposed):** this measurement's date
+        // (2026-08-14) predates #3426 (2026-08-29), which added a second
+        // draw into this same subpass — `record_overlay`'s Scaleform/UI
+        // quad, reading a vertex buffer, an index buffer, and the scene
+        // instance SSBO in the vertex stage. Neither `VERTEX_INPUT` nor
+        // `VERTEX_SHADER` is in this dependency's dst scope. No live hazard
+        // is claimed (the UI quad's buffers are written by a separate
+        // fenced one-time submit, not this command buffer; the instance
+        // SSBO is a host-mapped write made visible by the submit's
+        // implicit host-write dependency) — but the 300-frame measurement
+        // above no longer covers this pass's current contents. Re-run it
+        // with the overlay actually drawing (`--menu` route,
+        // `docs/smoke-tests/m48-menu-load.sh`) before treating this
+        // dependency's scope as re-verified.
         // #2143 / CONC-D1-2026-07-25-01 — declaring this dependency at all
         // *replaces* Vulkan's implicit end-of-pass dependency, so a
         // `dst_stage_mask` of NONE left the pass's COLOR_ATTACHMENT_WRITE with

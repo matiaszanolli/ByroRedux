@@ -298,7 +298,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
         ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
         ("CellRootRefIndex", "lazily-rebuilt FormId->Entity cache scoped to a caller-named ordinary CellRoot (EX-14/15/#2369, EX-16/#2372), repopulated on demand by cell_loader::cell_root_ref_index — sibling of PersistentRefIndex, same posture"),
-        ("CloudSimState", "cloud-scroll accumulator, freshly seeded at [0,0] by every apply_worldspace_weather call (see its own #803 doc)"),
+        ("CloudSimState", "cloud-scroll accumulator, seeded at [0,0] only when absent — both apply_worldspace_weather branches use an is_none() guard so the accumulator survives interior visits and only a fresh session (or save/load round-trip, which does not snapshot it) resets it to [0,0] (see its own #803 doc)"),
         ("CombatState", "session-local attack timing and smoke telemetry; canonical Health/Dead/EquippedWeapon state is saved separately"),
         ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
         ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),

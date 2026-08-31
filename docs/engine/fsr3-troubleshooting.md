@@ -74,12 +74,14 @@ opaque geometry masks its writes off entirely.
 Things that legitimately write no mask, and so are expected to ghost until the
 carried phase-4 work lands:
 
-- **The Scaleform/Ruffle UI overlay.** It is still composited *before* the
-  upscale, so it goes through temporal reconstruction. Marking it reactive
-  would paper over that; the fix is moving it after upscale.
 - **Anything alpha-tested.** Cutouts have coherent depth and motion, so they
   are correctly reconstructed from those — a reactive mask would only throw
   away history they can legitimately use.
+
+(The Scaleform/Ruffle UI overlay used to be listed here — #3426 moved it out
+of the geometry pass into `PresentationPipeline::dispatch`, after tone-map
+and after upscale, so it is composited at output resolution and never
+temporally reconstructed. It is no longer a ghosting candidate.)
 
 If a specific *alpha-blended* material ghosts, check that its draw actually
 reaches the blend pipeline (`INSTANCE_FLAG_ALPHA_BLEND`), since the mask write

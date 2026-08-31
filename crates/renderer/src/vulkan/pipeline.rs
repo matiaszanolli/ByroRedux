@@ -838,12 +838,15 @@ pub fn create_blend_pipeline(
 }
 
 /// Dynamic states declared by the UI pipeline. Cross-referenced by
-/// the overlay call site in `vulkan/context/draw.rs` so a future
-/// addition to this list trips a `const_assert` and forces the
-/// author to add the matching `cmd_set_*` defensive call. Depth /
-/// cull / depth-bias state on `pipeline_ui` is intentionally STATIC
-/// (off / off / NONE / off) — pipeline bind applies those values
-/// automatically, no per-bind cmd_set needed. See #663.
+/// the overlay call site in `presentation.rs::record_overlay` (moved
+/// there from `vulkan/context/draw.rs`'s `pipeline_ui` by #3426 — that
+/// symbol no longer exists anywhere in the tree) so a future addition
+/// to this list trips the `_UI_OVERLAY_DEFENSIVE_STATE_INVARIANT`
+/// const-assert in `record_overlay` and forces the author to add the
+/// matching `cmd_set_*` defensive call. Depth / cull / depth-bias state
+/// on the UI overlay pipeline is intentionally STATIC (off / off / NONE /
+/// off) — pipeline bind applies those values automatically, no per-bind
+/// cmd_set needed. See #663.
 pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
     &[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
@@ -861,7 +864,10 @@ pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
 /// the overlay composites onto the tone-mapped, upscaled swapchain image, so
 /// the pipeline is built for that pass's single colour attachment and is
 /// owned by `PresentationPipeline` (which is what a swapchain recreate
-/// rebuilds). `extent` is therefore the output extent.
+/// rebuilds). `extent` is unused (`let _ = extent;` below) — viewport/scissor
+/// have been dynamic since #578, so this pipeline is not extent-bound and a
+/// resize can rebuild it safely; the parameter is retained only for
+/// signature symmetry with the other `create_*_pipeline` functions.
 pub fn create_ui_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -959,15 +965,16 @@ pub fn create_ui_pipeline(
 
     // No DEPTH_BIAS — UI pipeline has depth_bias_enable(false).
     //
-    // **Contract** (#663). The UI overlay path in
-    // `vulkan/context/draw.rs` (post-`cmd_bind_pipeline(pipeline_ui)`)
-    // defensively re-sets every state in this list, then relies on
-    // pipeline_ui's STATIC depth/cull state to take effect on bind.
+    // **Contract** (#663). The UI overlay call site,
+    // `presentation.rs::record_overlay` (moved there from
+    // `vulkan/context/draw.rs`'s retired `pipeline_ui` by #3426),
+    // defensively re-sets every state in this list, then relies on the
+    // UI pipeline's STATIC depth/cull state to take effect on bind.
     // If you add a state here, you MUST also extend the overlay path
     // to `cmd_set_*` it — otherwise the new dynamic state will inherit
     // whatever the last main-batch pipeline left set, which is a hard-
-    // to-reproduce visual bug. The `_UI_PIPELINE_DYNAMIC_STATES_LEN`
-    // const_assert at the call site fires at compile time when this
+    // to-reproduce visual bug. The `_UI_OVERLAY_DEFENSIVE_STATE_INVARIANT`
+    // const_assert in `record_overlay` fires at compile time when this
     // list grows, forcing you to come read the contract.
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(UI_PIPELINE_DYNAMIC_STATES);
