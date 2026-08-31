@@ -315,8 +315,6 @@ impl Camera {
     /// [`DepthFieldStats::cleared`] and excluded from the bands — they are
     /// background, not geometry, and would otherwise swamp the last decade.
     pub fn analyze_depth_field(&self, encoded: &[f32]) -> DepthFieldStats {
-        use std::collections::HashSet;
-
         let mut stats = DepthFieldStats {
             total: encoded.len() as u32,
             ..Default::default()
@@ -334,7 +332,16 @@ impl Camera {
         }
         edges.push(self.far);
 
-        let mut codes: Vec<HashSet<u32>> = vec![HashSet::new(); edges.len() - 1];
+        // #3626 — a per-band `Vec<u32>` sorted and deduped at the end, not a
+        // `HashSet<u32>`. This walks one sample per pixel of a
+        // full-resolution capture (2.07 M at 1080p, 8.29 M at 4K) on the
+        // thread that owns the frame — `depth.stats` dispatches through
+        // `DebugDrainSystem`, a Late-stage exclusive — so the hash per
+        // sample landed directly in the `CpuFrameTimings` the operator is
+        // reading next to it. `distinct_codes` is identical either way, and
+        // the flat vector costs 4 bytes/sample instead of a hash table's
+        // load-factor overhead.
+        let mut codes: Vec<Vec<u32>> = vec![Vec::new(); edges.len() - 1];
         let mut counts = vec![0u32; edges.len() - 1];
         let (mut nearest, mut farthest) = (f32::INFINITY, 0.0f32);
 
@@ -371,7 +378,11 @@ impl Camera {
                 .position(|w| d >= w[0] && d < w[1])
                 .unwrap_or(0);
             counts[band] += 1;
-            codes[band].insert(z.to_bits());
+            codes[band].push(z.to_bits());
+        }
+        for band in &mut codes {
+            band.sort_unstable();
+            band.dedup();
         }
 
         stats.nearest = if nearest.is_finite() { nearest } else { 0.0 };
@@ -595,6 +606,40 @@ mod tests {
         // reads: conventional coarse, reversed fine.
         assert!(far.analytic_resolution > 100.0);
         assert!(far.analytic_resolution_reversed < 1.0);
+    }
+
+    /// #3626 — `distinct_codes` counts each depth code once no matter how
+    /// many samples carry it. That was a `HashSet<u32>` insert per sample,
+    /// built on the thread that owns the frame; it is now a per-band `Vec`
+    /// sorted and deduped once at the end. This pins the counting semantics
+    /// the swap has to preserve: heavy duplication, out-of-order arrival,
+    /// and a code repeated after other codes have intervened.
+    #[test]
+    fn distinct_codes_dedupes_regardless_of_sample_order() {
+        let cam = Camera::for_content_scale(true);
+        let a = encode(&cam, 300.0);
+        let b = encode(&cam, 320.0);
+
+        // Interleaved so a naive `dedup()` without the sort would miss the
+        // repeats, and heavily duplicated so the count cannot be `len()`.
+        let mut field = Vec::new();
+        for _ in 0..50 {
+            field.push(a);
+            field.push(b);
+        }
+        let stats = cam.analyze_depth_field(&field);
+
+        let band = stats
+            .bands
+            .iter()
+            .find(|band| band.samples > 0)
+            .expect("both distances land in one band");
+        assert_eq!(band.samples, 100, "every sample is counted");
+        let expected = if a == b { 1 } else { 2 };
+        assert_eq!(
+            band.distinct_codes, expected,
+            "100 samples carrying {expected} distinct code(s) must report              {expected} — duplicates collapse and order is irrelevant",
+        );
     }
 
     /// A degenerate camera must report nothing rather than divide by zero or
