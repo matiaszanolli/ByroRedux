@@ -817,12 +817,13 @@ pub(crate) fn build_render_data(
     //
     // PERF-D2-03 / #2691 — the old prose here claimed "typical Bethesda cell
     // counts sit in 400–1500 … so serial remains the common path either way".
-    // The repo's own checked-in runtime baselines contradict that: see the
-    // `bench_draws_cmds` column of `.claude/audit-baselines/runtime/*.tsv`,
-    // where exactly one of five cells falls in that band, three sit in the
-    // 1800–2600 range, and the FO4 baseline is *above* this gate and takes the
-    // parallel path. Cited rather than transcribed, per the audit's
-    // cite-don't-copy rule — a number copied here is a number that rots.
+    // The repo's own checked-in runtime baselines contradict that: no cell in
+    // `.claude/audit-baselines/runtime/*.tsv`'s `bench_draws_cmds` column
+    // sits in the 400–1500 band, and the FO4 baseline is *above* this gate
+    // and takes the parallel path. Read the TSVs directly rather than
+    // transcribing counts here, per the audit's cite-don't-copy rule — a
+    // number copied here is a number that rots (this note's own counts did,
+    // one day after it landed: #3681).
     //
     // The constant is unaffected: the crossover table above is what places it,
     // and it still holds. This note exists so the next person tuning it does

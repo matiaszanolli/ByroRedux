@@ -257,11 +257,16 @@ impl AccelerationManager {
     ///
     /// Two cases:
     ///
-    /// 1. `tlas[slot_index]` is `None` (slot was destroyed by
-    ///    [`Self::shrink_tlas_to_fit`]) — drop the scratch entirely.
-    ///    The next [`Self::build_tlas`] call sees `tlas[i].is_none()`,
-    ///    re-runs the size query, and allocates a correctly-sized
-    ///    scratch via [`scratch_needs_growth`]'s `None` arm.
+    /// 1. `tlas[slot_index]` is `None` — a fresh slot at startup, or a
+    ///    slot never (re)built after a failed [`Self::ensure_tlas_state`].
+    ///    **Not** produced by [`Self::shrink_tlas_to_fit`] since #2929: that
+    ///    function no longer destroys the slot, it sets
+    ///    `tlas_shrink_pending[slot_index] = true` and lets
+    ///    `ensure_tlas_state` fold the shrink into its allocate-then-swap
+    ///    path — the slot stays `Some` throughout. Drop the scratch
+    ///    entirely here. The next [`Self::build_tlas`] call sees
+    ///    `tlas[i].is_none()`, re-runs the size query, and allocates a
+    ///    correctly-sized scratch via [`scratch_needs_growth`]'s `None` arm.
     /// 2. `tlas[slot_index]` is live — compare the scratch capacity
     ///    against `tlas_scratch_peak_bytes[slot_index]` (recorded at
     ///    last fresh build). If hysteresis fires, reallocate at peak

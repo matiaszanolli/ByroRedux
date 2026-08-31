@@ -18,8 +18,8 @@
 //! | 9    | TLAS build / refit — end               |
 //! | 10   | cluster light culling dispatch — start |
 //! | 11   | cluster light culling dispatch — end   |
-//! | 12   | SVGF temporal dispatch — start         |
-//! | 13   | SVGF temporal dispatch — end           |
+//! | 12   | SVGF temporal + à-trous dispatches — start |
+//! | 13   | SVGF temporal + à-trous dispatches — end   |
 //! | 14   | composite pass — start                 |
 //! | 15   | composite pass — end                   |
 //! | 16   | SSAO compute dispatch — start          |
@@ -147,8 +147,15 @@ pub struct GpuTimerSnapshot {
     /// Cluster light culling compute dispatch — frustum-vs-light
     /// intersection across the 16×9×24 cluster grid.
     pub cluster_cull_ms: f32,
-    /// SVGF temporal accumulation compute dispatch — motion-vector
-    /// reprojection of last frame's denoised indirect.
+    /// SVGF temporal + à-trous dispatches — the full `SvgfPipeline::dispatch`
+    /// call: one temporal-accumulation dispatch (motion-vector reprojection
+    /// of last frame's denoised indirect) plus `ATROUS_ITERATIONS` (3)
+    /// spatial à-trous dispatches, each a full-screen `width.div_ceil(8) ×
+    /// height.div_ceil(8)` pass. Three of the four dispatches under this
+    /// number are the spatial filter, not temporal reprojection — see
+    /// `docs/engine/shader-pipeline.md`'s pipeline listing
+    /// (`svgf_atrous.comp` ×3) for the breakdown this single timer cannot
+    /// give you.
     pub svgf_ms: f32,
     /// Composite pass — fullscreen fragment shader combining HDR +
     /// SVGF indirect + albedo + bloom + caustic + volumetrics into

@@ -4049,11 +4049,14 @@ impl VulkanContext {
                     // #682 / MEM-2-7 — TLAS build scratch shrink. Same
                     // safety justification as `shrink_tlas_to_fit`
                     // above (the slot's previous use completed before
-                    // this frame's recording began). Order matters:
-                    // run AFTER `shrink_tlas_to_fit` so a destroyed
-                    // slot lets the scratch shrink hit its
-                    // "tlas[slot] is None → drop scratch entirely"
-                    // arm in one tick.
+                    // this frame's recording began). Since #2929,
+                    // `shrink_tlas_to_fit` no longer destroys the slot (it
+                    // sets a pending-shrink flag folded in by
+                    // `ensure_tlas_state`), so this call's ordering relative
+                    // to it is no longer load-bearing — the "tlas[slot] is
+                    // None" arm this used to chase in one tick is reached
+                    // only by a fresh/never-rebuilt slot now, independent of
+                    // call order.
                     accel.shrink_tlas_scratch_to_fit(slot_to_shrink, &self.device, allocator);
                 }
             }
