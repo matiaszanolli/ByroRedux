@@ -4,7 +4,10 @@ use crate::bindings::byro::mod_host::{
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, UpdateEvent};
+use byroredux_sdk::event::{
+    ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
+    InputPhase, UpdateEvent,
+};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
 };
@@ -14,9 +17,10 @@ use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
     EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
-    HIT_EVENT, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
-    WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
+    PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
+    WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand};
 use semver::Version;
@@ -52,6 +56,7 @@ pub enum LifecyclePhase {
     CellLoad,
     Hit,
     Equipment,
+    Input,
     Update,
     Shutdown,
 }
@@ -64,6 +69,7 @@ impl fmt::Display for LifecyclePhase {
             Self::CellLoad => "on-cell-load",
             Self::Hit => "on-hit",
             Self::Equipment => "on-equipment-change",
+            Self::Input => "on-input-action",
             Self::Update => "on-update",
             Self::Shutdown => "shutdown",
         })
@@ -187,6 +193,10 @@ impl SandboxRuntime {
             (
                 EVENTS_SUBSCRIBE_CAPABILITY,
                 "Receive declared canonical engine events",
+            ),
+            (
+                INPUT_ACTIONS_SUBSCRIBE_CAPABILITY,
+                "Observe normalized player input actions after rebinding",
             ),
             (
                 STORAGE_READ_OWN_CAPABILITY,
@@ -391,6 +401,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == EQUIPMENT_EVENT),
+            subscribed_to_input: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == INPUT_ACTION_EVENT),
             subscribed_to_update: manifest
                 .subscriptions
                 .iter()
@@ -648,6 +662,58 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    pub fn on_input_action(&mut self, event: InputActionEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::Input,
+                status: self.status.clone(),
+            });
+        }
+        let event_id = EventId::new(INPUT_ACTION_EVENT)
+            .expect("the engine's canonical input action event id is valid");
+        if !self.store.data().subscribed_to_input {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+            || !self
+                .store
+                .data()
+                .grants
+                .contains(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        let action = match event.action {
+            InputAction::MoveForward => state::InputAction::MoveForward,
+            InputAction::MoveBackward => state::InputAction::MoveBackward,
+            InputAction::StrafeLeft => state::InputAction::StrafeLeft,
+            InputAction::StrafeRight => state::InputAction::StrafeRight,
+            InputAction::Jump => state::InputAction::Jump,
+            InputAction::Sprint => state::InputAction::Sprint,
+            InputAction::Activate => state::InputAction::Activate,
+            InputAction::Attack => state::InputAction::Attack,
+            InputAction::Block => state::InputAction::Block,
+            InputAction::Inventory => state::InputAction::Inventory,
+            InputAction::Quicksave => state::InputAction::Quicksave,
+            InputAction::Quickload => state::InputAction::Quickload,
+            InputAction::Pause => state::InputAction::Pause,
+        };
+        let phase = match event.phase {
+            InputPhase::Pressed => state::InputPhase::Pressed,
+            InputPhase::Released => state::InputPhase::Released,
+        };
+        let result = self.enter(LifecyclePhase::Input, true, |bindings, store| {
+            bindings.call_on_input_action(store, action, phase)
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Deliver one bounded recurring callback and return deferred commands.
     pub fn on_update(&mut self, event: UpdateEvent) -> Result<Vec<HostCommand>> {
         if self.status != InstanceStatus::Active {
@@ -813,6 +879,7 @@ struct HostState {
     subscribed_to_cell_load: bool,
     subscribed_to_hit: bool,
     subscribed_to_equipment: bool,
+    subscribed_to_input: bool,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,

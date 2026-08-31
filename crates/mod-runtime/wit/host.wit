@@ -41,6 +41,27 @@ interface state {
         blocked: bool,
     }
 
+    enum input-action {
+        move-forward,
+        move-backward,
+        strafe-left,
+        strafe-right,
+        jump,
+        sprint,
+        activate,
+        attack,
+        block,
+        inventory,
+        quicksave,
+        quickload,
+        pause,
+    }
+
+    enum input-phase {
+        pressed,
+        released,
+    }
+
     /// Queue one checked increment. Schema and field indices refer to the
     /// ordered tables in the authenticated package manifest.
     queue-increment-own-i64: func(
@@ -110,7 +131,7 @@ world extension {
     import storage;
     import world-state;
 
-    use state.{entity-ref, form-ref, hit-details};
+    use state.{entity-ref, form-ref, hit-details, input-action, input-phase};
 
     export initialize: func();
     export on-activate: func(subject: entity-ref, activator: option<entity-ref>);
@@ -127,6 +148,7 @@ world extension {
         item: form-ref,
         equipped: bool,
     );
+    export on-input-action: func(action: input-action, phase: input-phase);
     export on-update: func(elapsed-seconds: f32);
     export shutdown: func();
 }

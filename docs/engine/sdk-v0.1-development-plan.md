@@ -25,9 +25,9 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load/combat-hit/equipment/recurring-update payloads, and
+store, canonical activation/cell-load/combat-hit/equipment/input/recurring-update payloads, and
 atomic deferred command batches. The WIT world exposes `on-activate`,
-`on-cell-load`, `on-hit`, `on-equipment-change`, `on-update`, immutable name/form/world-transform
+`on-cell-load`, `on-hit`, `on-equipment-change`, `on-input-action`, `on-update`, immutable name/form/world-transform
 reads, and a compact own-state increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
@@ -38,7 +38,8 @@ set from repeatable `--extension` arguments, applies only explicit
 `--extension-grant` authority, commits the profile atomically, adapts live
 `ActivateEvent`, `OnCellLoadEvent`, producer-resolved `HitEvent`, and ordered
 `EquipmentEventBatch`
-markers after releasing ECS guards, and shuts components down in reverse
+markers plus rebinding-independent `ActionState` press/release edges after
+releasing ECS guards, and shuts components down in reverse
 order. Extension component rows now live inside the checksummed
 ByroRedux save container: transient handles translate to load-order-independent
 `FormRef` values, payloads are bounded and preflighted before world teardown,
@@ -362,7 +363,7 @@ belongs to the host, not `byroredux-sdk`.
 | SKSE/F4SE messaging interfaces | Typed event bus with principal attribution and bounded payloads |
 | `StorageUtil` / JContainers-style state | Namespaced extension components and persistent collections |
 | Cosave serialization callbacks | Transactional extension columns in the engine save format |
-| Input hooks and key registration | Action/control subscription service after input normalization |
+| Input hooks and key registration | Capability-gated normalized action subscriptions with manifest filters |
 | Scaleform injection | Versioned UI/menu contribution service with isolated data/actions |
 | Console command registration | Namespaced command descriptors and typed command dispatch |
 | Form/plugin/load-order inspection | Stable form resolver and plugin dependency/catalog service |
@@ -558,7 +559,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
 
 - Custom/mod events and filtered subscriptions.
 - Persistent maps, arrays, sets, and entity-attached extension components.
-- Input action/control registration after user rebinding.
+- Input action/control subscriptions after user rebinding. **Implemented for
+  the engine's normalized action catalog with press/release edges and validated
+  action filters; custom action registration remains.**
 - Namespaced console commands and settings.
 - Plugin/form/dependency introspection.
 - Save/load/new-game lifecycle events.

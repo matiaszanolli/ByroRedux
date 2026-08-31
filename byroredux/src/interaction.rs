@@ -62,11 +62,28 @@ pub(crate) enum InputAction {
     Inventory,
     Quicksave,
     Quickload,
-    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
+    #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
 }
 
 impl InputAction {
+    /// Actions with a live normalized input producer. `Pause` joins this list
+    /// when its first physical binding is added.
+    pub(crate) const OBSERVABLE: [Self; 12] = [
+        Self::MoveForward,
+        Self::MoveBackward,
+        Self::StrafeLeft,
+        Self::StrafeRight,
+        Self::Jump,
+        Self::Sprint,
+        Self::Activate,
+        Self::Attack,
+        Self::Block,
+        Self::Inventory,
+        Self::Quicksave,
+        Self::Quickload,
+    ];
+
     const fn bit(self) -> u16 {
         1_u16 << self as u8
     }

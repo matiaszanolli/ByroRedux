@@ -4,6 +4,89 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::{EntityRef, FormRef};
 
+/// Canonical gameplay actions exposed after physical input rebinding.
+///
+/// Extensions observe these semantic intents, never platform key codes or
+/// device-specific button numbers.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputAction {
+    MoveForward,
+    MoveBackward,
+    StrafeLeft,
+    StrafeRight,
+    Jump,
+    Sprint,
+    Activate,
+    Attack,
+    Block,
+    Inventory,
+    Quicksave,
+    Quickload,
+    Pause,
+}
+
+impl InputAction {
+    /// Stable manifest spelling used by `byro.input.action` filters.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MoveForward => "move-forward",
+            Self::MoveBackward => "move-backward",
+            Self::StrafeLeft => "strafe-left",
+            Self::StrafeRight => "strafe-right",
+            Self::Jump => "jump",
+            Self::Sprint => "sprint",
+            Self::Activate => "activate",
+            Self::Attack => "attack",
+            Self::Block => "block",
+            Self::Inventory => "inventory",
+            Self::Quicksave => "quicksave",
+            Self::Quickload => "quickload",
+            Self::Pause => "pause",
+        }
+    }
+
+    /// Parse a stable manifest filter value.
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "move-forward" => Self::MoveForward,
+            "move-backward" => Self::MoveBackward,
+            "strafe-left" => Self::StrafeLeft,
+            "strafe-right" => Self::StrafeRight,
+            "jump" => Self::Jump,
+            "sprint" => Self::Sprint,
+            "activate" => Self::Activate,
+            "attack" => Self::Attack,
+            "block" => Self::Block,
+            "inventory" => Self::Inventory,
+            "quicksave" => Self::Quicksave,
+            "quickload" => Self::Quickload,
+            "pause" => Self::Pause,
+            _ => return None,
+        })
+    }
+}
+
+/// Edge of one normalized input action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputPhase {
+    Pressed,
+    Released,
+}
+
+/// Payload of `byro.events.input-action`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InputActionEvent {
+    pub action: InputAction,
+    pub phase: InputPhase,
+}
+
+/// Canonical normalized input-action event identifier.
+pub const INPUT_ACTION_EVENT: &str = "byro.events.input-action";
+/// Manifest filter field selecting one or more normalized actions.
+pub const INPUT_ACTION_FILTER_FIELD: &str = "byro.input.action";
+
 /// Payload of `byro.events.activate`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActivationEvent {

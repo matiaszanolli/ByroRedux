@@ -9,12 +9,16 @@ use thiserror::Error;
 use crate::identity::{CapabilityId, CapabilitySet, ServiceId};
 use crate::manifest::{ExtensionManifest, ManifestError};
 
+pub use crate::event::{INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD};
+
 /// Capability required to emit an attributed host diagnostic.
 pub const LOG_WRITE_CAPABILITY: &str = "byro.log.write";
 /// Capability required to enqueue mutations to the caller's own components.
 pub const COMPONENTS_WRITE_OWN_CAPABILITY: &str = "byro.components.write-own";
 /// Capability required for delivery of declared canonical event subscriptions.
 pub const EVENTS_SUBSCRIBE_CAPABILITY: &str = "byro.events.subscribe";
+/// Additional authority required to observe normalized player input actions.
+pub const INPUT_ACTIONS_SUBSCRIBE_CAPABILITY: &str = "byro.input.actions.subscribe";
 /// Capability required to read the caller's private persistent storage.
 pub const STORAGE_READ_OWN_CAPABILITY: &str = "byro.storage.read-own";
 /// Capability required to mutate the caller's private persistent storage.

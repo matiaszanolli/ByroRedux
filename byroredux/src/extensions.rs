@@ -23,7 +23,10 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, UpdateEvent};
+use byroredux_sdk::event::{
+    ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
+    InputActionEvent, InputPhase, UpdateEvent,
+};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
@@ -31,7 +34,7 @@ use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
-    UPDATE_EVENT,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, UPDATE_EVENT,
 };
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
@@ -167,6 +170,8 @@ struct HostedComponent {
     receives_activate: bool,
     receives_cell_load: bool,
     receives_equipment: bool,
+    receives_input: bool,
+    input_actions: BTreeSet<SdkInputAction>,
     receives_hit: bool,
     recurring_update: Option<RecurringCadence>,
     instance: ModInstance,
@@ -314,6 +319,16 @@ impl ExtensionHost {
             .subscriptions
             .iter()
             .any(|subscription| subscription.event.as_str() == EQUIPMENT_EVENT);
+        let input_subscription = manifest
+            .subscriptions
+            .iter()
+            .find(|subscription| subscription.event.as_str() == INPUT_ACTION_EVENT);
+        let receives_input = input_subscription.is_some();
+        let input_actions = input_subscription
+            .into_iter()
+            .flat_map(|subscription| &subscription.filters)
+            .filter_map(|filter| SdkInputAction::parse(&filter.equals))
+            .collect::<BTreeSet<_>>();
         let recurring_update = manifest
             .subscriptions
             .iter()
@@ -340,6 +355,8 @@ impl ExtensionHost {
                 receives_activate,
                 receives_cell_load,
                 receives_equipment,
+                receives_input,
+                input_actions: input_actions.clone(),
                 receives_hit,
                 recurring_update,
                 instance,
@@ -655,6 +672,71 @@ impl ExtensionHost {
                     hosted,
                     result,
                     LifecyclePhase::Equipment,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    #[cfg(test)]
+    pub fn dispatch_input_actions(
+        &mut self,
+        events: impl IntoIterator<Item = InputActionEvent>,
+    ) -> ExtensionDispatchStats {
+        self.dispatch_input_actions_inner(events)
+    }
+
+    fn dispatch_input_actions_inner(
+        &mut self,
+        events: impl IntoIterator<Item = InputActionEvent>,
+    ) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        for event in events {
+            stats.events += 1;
+            for hosted in &mut self.components {
+                if !hosted.receives_input
+                    || (!hosted.input_actions.is_empty()
+                        && !hosted.input_actions.contains(&event.action))
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                let result = hosted.instance.on_input_action(event);
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
+                            extension: hosted.extension.clone(),
+                            component: hosted.component.clone(),
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    LifecyclePhase::Input,
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
@@ -1521,6 +1603,59 @@ pub(crate) fn extension_equipment_dispatch_system(world: &World, _dt: f32) {
     }
 }
 
+/// Late-stage adapter from rebinding-independent gameplay action edges.
+pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
+    let events = {
+        let Some(state) = world.try_resource::<crate::interaction::ActionState>() else {
+            return;
+        };
+        crate::interaction::InputAction::OBSERVABLE
+            .into_iter()
+            .filter_map(|action| {
+                let phase = if state.was_pressed(action) {
+                    InputPhase::Pressed
+                } else if state.was_released(action) {
+                    InputPhase::Released
+                } else {
+                    return None;
+                };
+                Some(InputActionEvent {
+                    action: sdk_input_action(action),
+                    phase,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    if events.is_empty() {
+        return;
+    }
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_input_actions_inner(events);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension input dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
 /// Late-stage adapter from combat hit markers to sandbox callbacks.
 pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
     let raw_hits = {
@@ -1805,6 +1940,24 @@ fn form_ref(pair: FormIdPair) -> FormRef {
     FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
 }
 
+fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
+    match action {
+        crate::interaction::InputAction::MoveForward => SdkInputAction::MoveForward,
+        crate::interaction::InputAction::MoveBackward => SdkInputAction::MoveBackward,
+        crate::interaction::InputAction::StrafeLeft => SdkInputAction::StrafeLeft,
+        crate::interaction::InputAction::StrafeRight => SdkInputAction::StrafeRight,
+        crate::interaction::InputAction::Jump => SdkInputAction::Jump,
+        crate::interaction::InputAction::Sprint => SdkInputAction::Sprint,
+        crate::interaction::InputAction::Activate => SdkInputAction::Activate,
+        crate::interaction::InputAction::Attack => SdkInputAction::Attack,
+        crate::interaction::InputAction::Block => SdkInputAction::Block,
+        crate::interaction::InputAction::Inventory => SdkInputAction::Inventory,
+        crate::interaction::InputAction::Quicksave => SdkInputAction::Quicksave,
+        crate::interaction::InputAction::Quickload => SdkInputAction::Quickload,
+        crate::interaction::InputAction::Pause => SdkInputAction::Pause,
+    }
+}
+
 fn forms_by_entity(world: &World) -> BTreeMap<EntityId, FormRef> {
     match (
         world.query::<FormIdComponent>(),
@@ -2023,8 +2176,8 @@ mod tests {
         CapabilityId, ComponentFieldId, ComponentSchemaId, EventId, ServiceId, StorageKey,
     };
     use byroredux_sdk::manifest::{
-        CapabilityRequest, ComponentSchemaDeclaration, EventSubscription, ExecutableComponent,
-        EXTENSION_MANIFEST_VERSION,
+        CapabilityRequest, ComponentSchemaDeclaration, EventFilter, EventSubscription,
+        ExecutableComponent, EXTENSION_MANIFEST_VERSION,
     };
     use byroredux_sdk::service::{
         COMPONENTS_WRITE_OWN_CAPABILITY, EXTENSION_WORLD_SERVICE, STORAGE_READ_OWN_CAPABILITY,
@@ -2051,6 +2204,13 @@ mod tests {
       (field "bash-attack" bool)
       (field "blocked" bool)))
     (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
+    (type $input-action-shape (enum
+      "move-forward" "move-backward" "strafe-left" "strafe-right"
+      "jump" "sprint" "activate" "attack" "block" "inventory"
+      "quicksave" "quickload" "pause"))
+    (export "input-action" (type $input-action-in (eq $input-action-shape)))
+    (type $input-phase-shape (enum "pressed" "released"))
+    (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
     (export "queue-increment-own-i64" (func
       (param "entity" $entity-ref-in)
       (param "schema-index" u32)
@@ -2060,6 +2220,8 @@ mod tests {
   (alias export $state "entity-ref" (type $entity-ref))
   (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
+  (alias export $state "input-action" (type $input-action))
+  (alias export $state "input-phase" (type $input-phase))
   (alias export $state "queue-increment-own-i64" (func $increment))
   (core func $increment-lower (canon lower (func $increment)))
   (core module $guest
@@ -2100,6 +2262,7 @@ mod tests {
       i32.const 0
       i64.const 1
       call $increment)
+    (func (export "on-input-action") (param i32 i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2126,6 +2289,10 @@ mod tests {
     (param "item" $form-ref)
     (param "equipped" bool)
     (canon lift (core func $guest-instance "on-equipment-change")))
+  (func (export "on-input-action")
+    (param "action" $input-action)
+    (param "phase" $input-phase)
+    (canon lift (core func $guest-instance "on-input-action")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2151,6 +2318,13 @@ mod tests {
       (field "bash-attack" bool)
       (field "blocked" bool)))
     (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
+    (type $input-action-shape (enum
+      "move-forward" "move-backward" "strafe-left" "strafe-right"
+      "jump" "sprint" "activate" "attack" "block" "inventory"
+      "quicksave" "quickload" "pause"))
+    (export "input-action" (type $input-action-in (eq $input-action-shape)))
+    (type $input-phase-shape (enum "pressed" "released"))
+    (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
   ))
   (import "byro:mod-host/storage@0.1.0" (instance $storage
     (export "queue-increment-i64" (func
@@ -2160,6 +2334,8 @@ mod tests {
   (alias export $state "entity-ref" (type $entity-ref))
   (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
+  (alias export $state "input-action" (type $input-action))
+  (alias export $state "input-phase" (type $input-phase))
   (alias export $storage "queue-increment-i64" (func $increment))
   (core module $libc
     (memory (export "memory") 1)
@@ -2190,6 +2366,18 @@ mod tests {
       (param f32 i32 i32 i32 i32))
     (func (export "on-equipment-change")
       (param i64 i64 i64 i64 i32 i32)
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
+    (func (export "on-input-action")
+      (param $action i32) (param $phase i32)
+      local.get $action
+      i32.const 6
+      i32.ne
+      if
+        unreachable
+      end
       i32.const 0
       i32.const 16
       i64.const 1
@@ -2225,6 +2413,10 @@ mod tests {
     (param "item" $form-ref)
     (param "equipped" bool)
     (canon lift (core func $guest-instance "on-equipment-change")))
+  (func (export "on-input-action")
+    (param "action" $input-action)
+    (param "phase" $input-phase)
+    (canon lift (core func $guest-instance "on-input-action")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2250,6 +2442,13 @@ mod tests {
       (field "bash-attack" bool)
       (field "blocked" bool)))
     (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
+    (type $input-action-shape (enum
+      "move-forward" "move-backward" "strafe-left" "strafe-right"
+      "jump" "sprint" "activate" "attack" "block" "inventory"
+      "quicksave" "quickload" "pause"))
+    (export "input-action" (type $input-action-in (eq $input-action-shape)))
+    (type $input-phase-shape (enum "pressed" "released"))
+    (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
   ))
   (import "byro:mod-host/world-state@0.1.0" (instance $world
     (export "entity-ref" (type $entity-ref-world (eq $entity-ref-shape)))
@@ -2260,6 +2459,8 @@ mod tests {
   (alias export $state "entity-ref" (type $entity-ref))
   (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
+  (alias export $state "input-action" (type $input-action))
+  (alias export $state "input-phase" (type $input-phase))
   (alias export $world "contains-entity" (func $contains))
   (core func $contains-lower (canon lower (func $contains)))
   (core module $guest
@@ -2290,6 +2491,7 @@ mod tests {
       if
         unreachable
       end)
+    (func (export "on-input-action") (param i32 i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2316,6 +2518,10 @@ mod tests {
     (param "item" $form-ref)
     (param "equipped" bool)
     (canon lift (core func $guest-instance "on-equipment-change")))
+  (func (export "on-input-action")
+    (param "action" $input-action)
+    (param "phase" $input-phase)
+    (canon lift (core func $guest-instance "on-input-action")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2395,6 +2601,23 @@ mod tests {
         manifest.subscriptions = vec![EventSubscription {
             event: EventId::new(EQUIPMENT_EVENT).unwrap(),
             filters: Vec::new(),
+            interval_millis: None,
+        }];
+        manifest
+    }
+
+    fn input_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.capabilities.push(CapabilityRequest {
+            id: CapabilityId::new(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY).unwrap(),
+            required: true,
+        });
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(INPUT_ACTION_EVENT).unwrap(),
+            filters: vec![EventFilter {
+                field: ServiceId::new(byroredux_sdk::service::INPUT_ACTION_FILTER_FIELD).unwrap(),
+                equals: "activate".to_owned(),
+            }],
             interval_millis: None,
         }];
         manifest
@@ -2516,6 +2739,21 @@ mod tests {
 
     fn host_with_equipment_package(id: &str) -> ExtensionHost {
         host_with_manifest(equipment_manifest(id))
+    }
+
+    fn host_with_input_package(id: &str) -> ExtensionHost {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        let mut grants = storage_grants();
+        grants.grant(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY).unwrap();
+        host.install_package(&input_manifest(id), &artifacts, grants)
+            .unwrap();
+        host
     }
 
     fn host_with_manifest(manifest: ExtensionManifest) -> ExtensionHost {
@@ -2710,6 +2948,37 @@ mod tests {
                 events: 1,
                 ..ExtensionDispatchStats::default()
             }
+        );
+    }
+
+    #[test]
+    fn live_host_applies_normalized_input_action_filters_before_guest_delivery() {
+        let principal = PrincipalId::new("org.example.live-input").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_input_package(principal.as_str());
+        let stats = host.dispatch_input_actions([
+            InputActionEvent {
+                action: SdkInputAction::Inventory,
+                phase: InputPhase::Pressed,
+            },
+            InputActionEvent {
+                action: SdkInputAction::Activate,
+                phase: InputPhase::Pressed,
+            },
+            InputActionEvent {
+                action: SdkInputAction::Activate,
+                phase: InputPhase::Released,
+            },
+        ]);
+        assert_eq!(stats.events, 3);
+        assert_eq!(stats.deliveries, 2);
+        assert_eq!(stats.commands_applied, 2);
+        assert_eq!(stats.faults, 0);
+        assert_eq!(
+            host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(2))
         );
     }
 
@@ -3023,6 +3292,43 @@ mod tests {
             Some(&ExtensionValue::I64(2))
         );
         assert!(world.has::<byroredux_scripting::EquipmentEventBatch>(wearer));
+    }
+
+    #[test]
+    fn input_adapter_observes_rebound_action_press_and_release_edges() {
+        use winit::keyboard::KeyCode;
+
+        let principal = PrincipalId::new("org.example.input-adapter").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut input = crate::components::InputState::default();
+        input.keys_held.insert(KeyCode::KeyQ);
+        let mut bindings = crate::interaction::ActionBindings::default();
+        bindings.bind_key(KeyCode::KeyQ, crate::interaction::InputAction::Activate);
+        let mut world = World::new();
+        world.insert_resource(input);
+        world.insert_resource(bindings);
+        world.insert_resource(crate::interaction::ActionState::default());
+        let slot = ExtensionHostSlot::from_host(host_with_input_package(principal.as_str()));
+        let host = slot.host().unwrap();
+        world.insert_resource(slot);
+
+        crate::interaction::refresh_action_state(&world);
+        extension_input_dispatch_system(&world, 0.0);
+        world
+            .resource_mut::<crate::components::InputState>()
+            .keys_held
+            .clear();
+        crate::interaction::refresh_action_state(&world);
+        extension_input_dispatch_system(&world, 0.0);
+
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(2))
+        );
     }
 
     #[test]

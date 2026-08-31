@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::component::ComponentFieldDeclaration;
+use crate::event::{InputAction, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD};
 use crate::identity::{
     CapabilityId, ComponentId, ComponentSchemaId, EventId, ExtensionId, ServiceId,
 };
@@ -192,6 +193,15 @@ pub enum ManifestError {
         minimum: u32,
         maximum: u32,
     },
+    /// A normalized-input subscription named an unsupported filter field.
+    #[error("input event filter field {0} is unsupported")]
+    InvalidInputFilterField(ServiceId),
+    /// A normalized-input subscription named an unknown semantic action.
+    #[error("unknown normalized input action {0:?}")]
+    InvalidInputAction(String),
+    /// The same normalized action was selected more than once.
+    #[error("duplicate normalized input action filter {0}")]
+    DuplicateInputAction(String),
 }
 
 impl ExtensionManifest {
@@ -255,6 +265,21 @@ impl ExtensionManifest {
                     filter.equals.len(),
                     MAX_FILTER_VALUE_BYTES,
                 )?;
+            }
+            if subscription.event.as_str() == INPUT_ACTION_EVENT {
+                let mut actions = BTreeSet::new();
+                for filter in &subscription.filters {
+                    if filter.field.as_str() != INPUT_ACTION_FILTER_FIELD {
+                        return Err(ManifestError::InvalidInputFilterField(filter.field.clone()));
+                    }
+                    let action = InputAction::parse(&filter.equals)
+                        .ok_or_else(|| ManifestError::InvalidInputAction(filter.equals.clone()))?;
+                    if !actions.insert(action) {
+                        return Err(ManifestError::DuplicateInputAction(
+                            action.as_str().to_owned(),
+                        ));
+                    }
+                }
             }
             match (
                 subscription.event.as_str() == UPDATE_EVENT_ID,
@@ -491,6 +516,50 @@ mod tests {
         assert_eq!(
             misplaced.validate(),
             Err(ManifestError::UnexpectedRecurringInterval(activate))
+        );
+    }
+
+    #[test]
+    fn normalized_input_filters_are_semantic_bounded_and_unique() {
+        let input = EventId::new(INPUT_ACTION_EVENT).unwrap();
+        let action_field = ServiceId::new(INPUT_ACTION_FILTER_FIELD).unwrap();
+        let mut valid = manifest();
+        valid.subscriptions.push(EventSubscription {
+            event: input.clone(),
+            filters: vec![
+                EventFilter {
+                    field: action_field.clone(),
+                    equals: "activate".to_owned(),
+                },
+                EventFilter {
+                    field: action_field.clone(),
+                    equals: "inventory".to_owned(),
+                },
+            ],
+            interval_millis: None,
+        });
+        valid.validate().unwrap();
+
+        let mut unknown_action = valid.clone();
+        unknown_action.subscriptions[0].filters[0].equals = "raw-key-f13".to_owned();
+        assert_eq!(
+            unknown_action.validate(),
+            Err(ManifestError::InvalidInputAction("raw-key-f13".to_owned()))
+        );
+
+        let mut wrong_field = valid.clone();
+        let raw_field = ServiceId::new("byro.input.raw-key").unwrap();
+        wrong_field.subscriptions[0].filters[0].field = raw_field.clone();
+        assert_eq!(
+            wrong_field.validate(),
+            Err(ManifestError::InvalidInputFilterField(raw_field))
+        );
+
+        let mut duplicate = valid;
+        duplicate.subscriptions[0].filters[1].equals = "activate".to_owned();
+        assert_eq!(
+            duplicate.validate(),
+            Err(ManifestError::DuplicateInputAction("activate".to_owned()))
         );
     }
 }
