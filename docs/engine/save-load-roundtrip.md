@@ -200,17 +200,30 @@ step_cell_transition`. Sequence:
    `AnimationStack` are deliberately excluded — their values embed
    session-local entity/registry-handle fields a key-based remap can't
    fix.
-7. **Reconcile derived removals**: `combat::reconcile_dead_actor_runtime_state`
-   (`byroredux/src/save_io.rs`, called immediately after step 6, both on
-   success and on an apply failure). `apply_deltas` can only insert/update
-   a row, never remove one, so a runtime removal that's a *consequence* of
-   overlaid state has to be rebuilt explicitly afterward. Death is the one
-   case wired today: `Dead` is overlaid as a normal delta, then this call
-   removes the respawned AI/animation state and reactivates ragdoll —
-   `reconcile_dead_actor` is the same reconciler the live combat-kill path
-   uses, so save/load and in-session death can't drift apart (#3022). See
-   "What's not covered" below for why this is a pattern, not blanket
-   removal support.
+7. **Reconcile derived removals**: two reconcilers now, both called
+   immediately after step 6.
+   - `combat::reconcile_dead_actor_runtime_state` (`byroredux/src/save_io.rs`)
+     runs on **both** the success arm and the apply-failure arm.
+     `apply_deltas` can only insert/update a row, never remove one, so a
+     runtime removal that's a *consequence* of overlaid state has to be
+     rebuilt explicitly afterward. `Dead` is overlaid as a normal delta,
+     then this call removes the respawned AI/animation state and
+     reactivates ragdoll — `reconcile_dead_actor` is the same reconciler
+     the live combat-kill path uses, so save/load and in-session death
+     can't drift apart (#3022).
+   - `inventory::reconcile_player_equipped_weapon` (#3488) runs on the
+     **success arm only** — a deliberate asymmetry, not an oversight: the
+     failure arm aborts on an admittedly partial overlay, so re-deriving
+     equipment state from it would reconcile against data already known
+     to be incomplete. The overlay is additive-only, so a saved *absence*
+     (unarmed) cannot clear a live `EquippedWeapon` off the
+     process-lifetime player body, which survives the cell reload
+     untouched; this re-derives it from the `EquipmentSlots` + `Inventory`
+     rows just overlaid, using the same reconciler the runtime
+     equip/unequip path uses.
+
+   Two instances of the same marker-plus-reconciler pattern now — see
+   "What's not covered" below for what it does and doesn't cover.
 8. **Player pose**: `apply_player_pose` (`save_io.rs:493`), last. Backed
    by a `PlayerPose` resource refreshed every frame post-scheduler by
    `capture_player_pose` (`save_io.rs:447`) — position plus yaw/pitch
@@ -227,13 +240,16 @@ Delta application is still structurally **additive-only**
 (`crates/save/src/driver.rs`, `apply_deltas`'s doc comment) — it can
 insert or update a row, never remove one. That was an unqualified latent
 gap as of the 2026-08-18 pass ("an entity despawned mid-session and then
-loaded-over just comes back"); it no longer is, for the one case that
+loaded-over just comes back"); it no longer is, for the two cases that
 started depending on removal semantics. §6 step 7 above is the general
-shape the fix established: persist a marker fact via the normal additive
-overlay (`Dead`), then run the *same* reconciler the live-session path
-already uses to rebuild whatever runtime state that fact implies removing
-(`combat::reconcile_dead_actor`, shared between the in-session kill branch
-and this load path — see #3022). There is still no generic delete persistence
+shape the fix established, and it now has **two instances**: persist a
+marker fact via the normal additive overlay (`Dead`, or the overlaid
+`EquipmentSlots`/`Inventory` rows), then run the *same* reconciler the
+live-session path already uses to rebuild whatever runtime state that
+fact implies removing — `combat::reconcile_dead_actor`, shared between
+the in-session kill branch and this load path (#3022), and
+`inventory::reconcile_player_equipped_weapon`, shared with the runtime
+equip/unequip path (#3488). There is still no generic delete persistence
 mechanism. Reference visibility is no longer part of that gap: scripted
 `Disable()` records the stable FormID in the saved `ReferenceEnableState`
 resource, and reload/spawn/render consumers reapply it — which requires the
