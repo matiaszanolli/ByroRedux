@@ -141,14 +141,22 @@ impl VulkanContext {
     /// If a screenshot was requested, record copy commands from the swapchain
     /// image to a staging buffer.
     ///
-    /// Called in `draw_frame()` after composite dispatch, before `end_command_buffer`.
-    /// The swapchain image is in `PRESENT_SRC_KHR` layout after the composite pass.
+    /// Called in `draw_frame()` at the tail of the `unsafe` block, after both
+    /// the presentation pass and (when the debug overlay is active) `EguiPass`
+    /// have written the swapchain, before `end_command_buffer`. Composite no
+    /// longer writes the swapchain — since the FSR tail landed it writes a
+    /// render-resolution HDR intermediate; the swapchain writer is
+    /// `PresentationPipeline` (`UNDEFINED → PRESENT_SRC_KHR`), or `EguiPass`
+    /// (`LOAD`, `PRESENT_SRC_KHR → PRESENT_SRC_KHR`) when the overlay is
+    /// active. The swapchain image is in `PRESENT_SRC_KHR` layout after
+    /// whichever of those ran last.
     ///
     /// # Safety
     ///
     /// `cmd` must be recording outside a render pass. `swapchain_image` must
-    /// currently be in `PRESENT_SRC_KHR` layout (this frame's composite pass
-    /// output) and must remain live through submission — this function
+    /// currently be in `PRESENT_SRC_KHR` layout (this frame's presentation —
+    /// or, with the debug overlay active, `EguiPass` — output) and must
+    /// remain live through submission — this function
     /// leaves it back in `PRESENT_SRC_KHR` before returning, so the caller's
     /// subsequent present call sees the layout it expects either way.
     pub(super) unsafe fn screenshot_record_copy(
