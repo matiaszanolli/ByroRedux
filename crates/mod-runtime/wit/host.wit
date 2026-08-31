@@ -27,6 +27,14 @@ interface state {
         object: u64,
     }
 
+    record hit-details {
+        damage: f32,
+        power-attack: bool,
+        sneak-attack: bool,
+        bash-attack: bool,
+        blocked: bool,
+    }
+
     /// Queue one checked increment. Schema and field indices refer to the
     /// ordered tables in the authenticated package manifest.
     queue-increment-own-i64: func(
@@ -102,10 +110,17 @@ world extension {
     import storage;
     import world-state;
 
-    use state.{entity-ref};
+    use state.{entity-ref, hit-details};
 
     export initialize: func();
     export on-activate: func(subject: entity-ref, activator: option<entity-ref>);
     export on-cell-load: func(subject: entity-ref);
+    export on-hit: func(
+        subject: entity-ref,
+        aggressor: option<entity-ref>,
+        source: option<entity-ref>,
+        projectile: option<entity-ref>,
+        details: hit-details,
+    );
     export shutdown: func();
 }

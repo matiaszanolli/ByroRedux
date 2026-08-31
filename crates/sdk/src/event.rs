@@ -19,3 +19,21 @@ pub struct CellLoadEvent {
     /// Newly loaded script-bearing entity.
     pub subject: EntityRef,
 }
+
+/// Payload of `byro.events.hit`.
+///
+/// Damage is the producer-resolved value before the target's defenses. Source
+/// and projectile handles are absent when the combat producer has no live ECS
+/// entity for them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HitEvent {
+    pub subject: EntityRef,
+    pub aggressor: Option<EntityRef>,
+    pub source: Option<EntityRef>,
+    pub projectile: Option<EntityRef>,
+    pub damage: f32,
+    pub power_attack: bool,
+    pub sneak_attack: bool,
+    pub bash_attack: bool,
+    pub blocked: bool,
+}

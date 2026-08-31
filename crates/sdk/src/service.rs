@@ -41,6 +41,8 @@ pub const EXTENSION_WORLD_SERVICE: &str = "byro.mod-host.extension";
 pub const ACTIVATE_EVENT: &str = "byro.events.activate";
 /// Canonical script-bearing entity load event identifier.
 pub const CELL_LOAD_EVENT: &str = "byro.events.cell-load";
+/// Canonical combat hit event identifier.
+pub const HIT_EVENT: &str = "byro.events.hit";
 
 /// Semantic version of the SDK contract defined by this crate build.
 pub fn current_sdk_version() -> Version {

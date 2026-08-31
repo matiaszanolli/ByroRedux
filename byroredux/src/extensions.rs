@@ -15,21 +15,23 @@ use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::string::StringPool;
 use byroredux_mod_runtime::{
-    CapabilitySet, InstanceStatus, LogEntry, LogLevel, ModInstance, SandboxConfig, SandboxError,
-    SandboxRuntime,
+    CapabilitySet, InstanceStatus, LifecyclePhase, LogEntry, LogLevel, ModInstance, SandboxConfig,
+    SandboxError, SandboxRuntime,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
-use byroredux_sdk::service::{ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY};
+use byroredux_sdk::service::{
+    ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
+};
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
     PrincipalStorageStore,
@@ -62,6 +64,8 @@ pub(crate) enum ExtensionHostError {
     HandleSpaceExhausted,
     #[error("world generation space is exhausted")]
     GenerationExhausted,
+    #[error("hit damage must be finite and non-negative, got {0}")]
+    InvalidHitDamage(f32),
     #[error("component-store command budget is smaller than the sandbox entry budget")]
     IncompatibleCommandBudgets,
     #[error("extension-state format {actual} is unsupported; this engine supports {expected}")]
@@ -161,6 +165,7 @@ struct HostedComponent {
     component: ComponentId,
     receives_activate: bool,
     receives_cell_load: bool,
+    receives_hit: bool,
     instance: ModInstance,
 }
 
@@ -270,6 +275,10 @@ impl ExtensionHost {
             .subscriptions
             .iter()
             .any(|subscription| subscription.event.as_str() == CELL_LOAD_EVENT);
+        let receives_hit = manifest
+            .subscriptions
+            .iter()
+            .any(|subscription| subscription.event.as_str() == HIT_EVENT);
         let mut staged_components = Vec::with_capacity(compiled.len());
         let mut staged_diagnostics = Vec::new();
         for (component_id, compiled) in compiled {
@@ -289,6 +298,7 @@ impl ExtensionHost {
                 component: component_id,
                 receives_activate,
                 receives_cell_load,
+                receives_hit,
                 instance,
             });
         }
@@ -342,6 +352,16 @@ impl ExtensionHost {
         self.state = staged_state;
         self.retained_rows = retained;
         Ok(handle)
+    }
+
+    fn bind_optional_entity(
+        &mut self,
+        entity: Option<EntityId>,
+        form: Option<FormRef>,
+    ) -> Result<Option<EntityRef>, ExtensionHostError> {
+        entity
+            .map(|entity| self.bind_entity(entity, form))
+            .transpose()
     }
 
     /// Deliver already-snapshotted engine activations in deterministic order.
@@ -431,6 +451,7 @@ impl ExtensionHost {
                 apply_delivery_result(
                     hosted,
                     result,
+                    LifecyclePhase::Activate,
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
@@ -508,6 +529,140 @@ impl ExtensionHost {
                 apply_delivery_result(
                     hosted,
                     result,
+                    LifecyclePhase::CellLoad,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    /// Deliver already-snapshotted combat hit markers in deterministic order.
+    #[cfg(test)]
+    pub fn dispatch_hits(
+        &mut self,
+        hits: impl IntoIterator<Item = RawHit>,
+    ) -> ExtensionDispatchStats {
+        self.dispatch_hits_with_projections(hits, &BTreeMap::new())
+    }
+
+    fn dispatch_hits_with_projections(
+        &mut self,
+        hits: impl IntoIterator<Item = RawHit>,
+        raw_projections: &BTreeMap<EntityId, RawEntityProjection>,
+    ) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        for hit in hits {
+            stats.events += 1;
+            if !hit.damage.is_finite() || hit.damage < 0.0 {
+                self.record_host_fault(
+                    ExtensionHostError::InvalidHitDamage(hit.damage).to_string(),
+                );
+                stats.faults += 1;
+                continue;
+            }
+            let subject = match self.bind_entity(hit.subject, hit.subject_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let aggressor = match self.bind_optional_entity(hit.aggressor, hit.aggressor_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let source = match self.bind_optional_entity(hit.source, hit.source_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let projectile = match self.bind_optional_entity(hit.projectile, hit.projectile_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let entities = [
+                Some((hit.subject, subject, hit.subject_form)),
+                hit.aggressor
+                    .zip(aggressor)
+                    .map(|(entity, handle)| (entity, handle, hit.aggressor_form)),
+                hit.source
+                    .zip(source)
+                    .map(|(entity, handle)| (entity, handle, hit.source_form)),
+                hit.projectile
+                    .zip(projectile)
+                    .map(|(entity, handle)| (entity, handle, hit.projectile_form)),
+            ];
+            let entity_projections = entities
+                .into_iter()
+                .flatten()
+                .map(|(entity, handle, form)| {
+                    entity_projection(handle, form, raw_projections.get(&entity))
+                })
+                .collect::<Vec<_>>();
+
+            for hosted in &mut self.components {
+                if !hosted.receives_hit
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                hosted
+                    .instance
+                    .set_entity_projections(entity_projections.clone());
+                let result = hosted.instance.on_hit(HitEvent {
+                    subject,
+                    aggressor,
+                    source,
+                    projectile,
+                    damage: hit.damage,
+                    power_attack: hit.power_attack,
+                    sneak_attack: hit.sneak_attack,
+                    bash_attack: hit.bash_attack,
+                    blocked: hit.blocked,
+                });
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
+                            extension: hosted.extension.clone(),
+                            component: hosted.component.clone(),
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    LifecyclePhase::Hit,
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
@@ -806,6 +961,7 @@ impl ExtensionHost {
 fn apply_delivery_result(
     hosted: &mut HostedComponent,
     result: Result<Vec<HostCommand>, SandboxError>,
+    phase: LifecyclePhase,
     principal: &PrincipalId,
     state: &mut ExtensionComponentStore,
     principal_storage: &mut PrincipalStorageStore,
@@ -849,7 +1005,9 @@ fn apply_delivery_result(
         });
     if let Err(error) = apply_result {
         let message = format!("deferred command batch rejected: {error}");
-        hosted.instance.reject_deferred_commands(message.clone());
+        hosted
+            .instance
+            .reject_deferred_commands(phase, message.clone());
         diagnostics.push(ExtensionDiagnostic::Fault {
             extension: hosted.extension.clone(),
             component: hosted.component.clone(),
@@ -877,6 +1035,24 @@ pub(crate) struct RawActivation {
 pub(crate) struct RawCellLoad {
     pub subject: EntityId,
     pub subject_form: Option<FormRef>,
+}
+
+/// Raw combat event captured before entering untrusted code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RawHit {
+    pub subject: EntityId,
+    pub subject_form: Option<FormRef>,
+    pub aggressor: Option<EntityId>,
+    pub aggressor_form: Option<FormRef>,
+    pub source: Option<EntityId>,
+    pub source_form: Option<FormRef>,
+    pub projectile: Option<EntityId>,
+    pub projectile_form: Option<FormRef>,
+    pub damage: f32,
+    pub power_attack: bool,
+    pub sneak_attack: bool,
+    pub bash_attack: bool,
+    pub blocked: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1058,6 +1234,105 @@ pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
     if stats.faults > 0 {
         log::warn!(
             "extension cell-load dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
+/// Late-stage adapter from combat hit markers to sandbox callbacks.
+pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
+    let raw_hits = {
+        let Some(events) = world.query::<byroredux_scripting::HitEvent>() else {
+            return;
+        };
+        events
+            .iter()
+            .map(|(subject, event)| {
+                (
+                    subject,
+                    event.aggressor,
+                    event.source,
+                    event.projectile,
+                    event.damage,
+                    event.power_attack,
+                    event.sneak_attack,
+                    event.bash_attack,
+                    event.blocked,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    if raw_hits.is_empty() {
+        return;
+    }
+    let form_bindings = forms_by_entity(world);
+    let disclosed_entities = raw_hits
+        .iter()
+        .flat_map(|hit| {
+            [
+                Some(hit.0),
+                Some(hit.1),
+                Some(hit.2),
+                (hit.3 != 0).then_some(hit.3),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let projections = capture_entity_projections(world, &disclosed_entities);
+    let hits = raw_hits.into_iter().map(
+        |(
+            subject,
+            aggressor,
+            source,
+            projectile,
+            damage,
+            power_attack,
+            sneak_attack,
+            bash_attack,
+            blocked,
+        )| {
+            let projectile = (projectile != 0).then_some(projectile);
+            RawHit {
+                subject,
+                subject_form: form_bindings.get(&subject).copied(),
+                aggressor: Some(aggressor),
+                aggressor_form: form_bindings.get(&aggressor).copied(),
+                source: Some(source),
+                source_form: form_bindings.get(&source).copied(),
+                projectile,
+                projectile_form: projectile.and_then(|entity| form_bindings.get(&entity).copied()),
+                damage,
+                power_attack,
+                sneak_attack,
+                bash_attack,
+                blocked,
+            }
+        },
+    );
+
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_hits_with_projections(hits, &projections);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension hit dispatch: events={} deliveries={} commands={} faults={}",
             stats.events,
             stats.deliveries,
             stats.commands_applied,
@@ -1456,6 +1731,13 @@ mod tests {
       (field "world-generation" u64)
       (field "object" u64)))
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $hit-details-shape (record
+      (field "damage" f32)
+      (field "power-attack" bool)
+      (field "sneak-attack" bool)
+      (field "bash-attack" bool)
+      (field "blocked" bool)))
+    (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
     (export "queue-increment-own-i64" (func
       (param "entity" $entity-ref-in)
       (param "schema-index" u32)
@@ -1463,6 +1745,7 @@ mod tests {
       (param "delta" s64)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "hit-details" (type $hit-details))
   (alias export $state "queue-increment-own-i64" (func $increment))
   (core func $increment-lower (canon lower (func $increment)))
   (core module $guest
@@ -1484,6 +1767,16 @@ mod tests {
       i32.const 0
       i64.const 1
       call $increment)
+    (func (export "on-hit")
+      (param $world i64) (param $object i64)
+      (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
+      (param f32 i32 i32 i32 i32)
+      local.get $world
+      local.get $object
+      i32.const 0
+      i32.const 0
+      i64.const 1
+      call $increment)
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -1497,6 +1790,13 @@ mod tests {
   (func (export "on-cell-load")
     (param "subject" $entity-ref)
     (canon lift (core func $guest-instance "on-cell-load")))
+  (func (export "on-hit")
+    (param "subject" $entity-ref)
+    (param "aggressor" (option $entity-ref))
+    (param "source" (option $entity-ref))
+    (param "projectile" (option $entity-ref))
+    (param "details" $hit-details)
+    (canon lift (core func $guest-instance "on-hit")))
 )
 "#;
 
@@ -1507,6 +1807,13 @@ mod tests {
       (field "world-generation" u64)
       (field "object" u64)))
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $hit-details-shape (record
+      (field "damage" f32)
+      (field "power-attack" bool)
+      (field "sneak-attack" bool)
+      (field "bash-attack" bool)
+      (field "blocked" bool)))
+    (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
   ))
   (import "byro:mod-host/storage@0.1.0" (instance $storage
     (export "queue-increment-i64" (func
@@ -1514,6 +1821,7 @@ mod tests {
       (param "delta" s64)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "hit-details" (type $hit-details))
   (alias export $storage "queue-increment-i64" (func $increment))
   (core module $libc
     (memory (export "memory") 1)
@@ -1538,6 +1846,10 @@ mod tests {
       i64.const 1
       call $increment)
     (func (export "on-cell-load") (param i64 i64))
+    (func (export "on-hit")
+      (param i64 i64)
+      (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
+      (param f32 i32 i32 i32 i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "libc" (instance $libc))
@@ -1552,6 +1864,13 @@ mod tests {
   (func (export "on-cell-load")
     (param "subject" $entity-ref)
     (canon lift (core func $guest-instance "on-cell-load")))
+  (func (export "on-hit")
+    (param "subject" $entity-ref)
+    (param "aggressor" (option $entity-ref))
+    (param "source" (option $entity-ref))
+    (param "projectile" (option $entity-ref))
+    (param "details" $hit-details)
+    (canon lift (core func $guest-instance "on-hit")))
 )
 "#;
 
@@ -1562,6 +1881,13 @@ mod tests {
     (field "object" u64)))
   (import "byro:mod-host/state@0.1.0" (instance $state
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $hit-details-shape (record
+      (field "damage" f32)
+      (field "power-attack" bool)
+      (field "sneak-attack" bool)
+      (field "bash-attack" bool)
+      (field "blocked" bool)))
+    (export "hit-details" (type $hit-details-in (eq $hit-details-shape)))
   ))
   (import "byro:mod-host/world-state@0.1.0" (instance $world
     (export "entity-ref" (type $entity-ref-world (eq $entity-ref-shape)))
@@ -1570,6 +1896,7 @@ mod tests {
       (result bool)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "hit-details" (type $hit-details))
   (alias export $world "contains-entity" (func $contains))
   (core func $contains-lower (canon lower (func $contains)))
   (core module $guest
@@ -1586,6 +1913,10 @@ mod tests {
         unreachable
       end)
     (func (export "on-cell-load") (param i64 i64))
+    (func (export "on-hit")
+      (param i64 i64)
+      (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
+      (param f32 i32 i32 i32 i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "contains" (func $contains-lower))))
@@ -1599,6 +1930,13 @@ mod tests {
   (func (export "on-cell-load")
     (param "subject" $entity-ref)
     (canon lift (core func $guest-instance "on-cell-load")))
+  (func (export "on-hit")
+    (param "subject" $entity-ref)
+    (param "aggressor" (option $entity-ref))
+    (param "source" (option $entity-ref))
+    (param "projectile" (option $entity-ref))
+    (param "details" $hit-details)
+    (canon lift (core func $guest-instance "on-hit")))
 )
 "#;
 
@@ -1653,6 +1991,15 @@ mod tests {
         let mut manifest = manifest(id);
         manifest.subscriptions = vec![EventSubscription {
             event: EventId::new(CELL_LOAD_EVENT).unwrap(),
+            filters: Vec::new(),
+        }];
+        manifest
+    }
+
+    fn hit_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(HIT_EVENT).unwrap(),
             filters: Vec::new(),
         }];
         manifest
@@ -1743,6 +2090,10 @@ mod tests {
 
     fn host_with_cell_load_package(id: &str) -> ExtensionHost {
         host_with_manifest(cell_load_manifest(id))
+    }
+
+    fn host_with_hit_package(id: &str) -> ExtensionHost {
+        host_with_manifest(hit_manifest(id))
     }
 
     fn host_with_manifest(manifest: ExtensionManifest) -> ExtensionHost {
@@ -1855,6 +2206,72 @@ mod tests {
                 events: 1,
                 ..ExtensionDispatchStats::default()
             }
+        );
+    }
+
+    #[test]
+    fn live_host_delivers_hit_payload_to_declared_subscriber() {
+        let mut host = host_with_hit_package("org.example.live-hit");
+        let stats = host.dispatch_hits([RawHit {
+            subject: 41,
+            subject_form: None,
+            aggressor: Some(7),
+            aggressor_form: None,
+            source: Some(7),
+            source_form: None,
+            projectile: None,
+            projectile_form: None,
+            damage: 12.5,
+            power_attack: true,
+            sneak_attack: false,
+            bash_attack: true,
+            blocked: false,
+        }]);
+        assert_eq!(
+            stats,
+            ExtensionDispatchStats {
+                events: 1,
+                deliveries: 1,
+                commands_applied: 1,
+                faults: 0,
+            }
+        );
+        let subject = host.handles.by_entity[&41];
+        let owner = PrincipalId::new("org.example.live-hit").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, subject)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn invalid_hit_damage_is_rejected_before_guest_delivery() {
+        let mut host = host_with_hit_package("org.example.invalid-hit");
+        let stats = host.dispatch_hits([RawHit {
+            subject: 41,
+            subject_form: None,
+            aggressor: Some(7),
+            aggressor_form: None,
+            source: None,
+            source_form: None,
+            projectile: None,
+            projectile_form: None,
+            damage: f32::NAN,
+            power_attack: false,
+            sneak_attack: false,
+            bash_attack: false,
+            blocked: false,
+        }]);
+        assert_eq!(stats.events, 1);
+        assert_eq!(stats.deliveries, 0);
+        assert_eq!(stats.commands_applied, 0);
+        assert_eq!(stats.faults, 1);
+        assert_eq!(
+            host.components[0].instance.status(),
+            &InstanceStatus::Active
         );
     }
 
@@ -1980,6 +2397,44 @@ mod tests {
             Some(&ExtensionValue::I64(1))
         );
         assert!(world.has::<byroredux_scripting::OnCellLoadEvent>(subject_entity));
+    }
+
+    #[test]
+    fn hit_adapter_delivers_live_combat_marker_before_cleanup() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let subject = world.spawn();
+        let aggressor = world.spawn();
+        world.insert(
+            subject,
+            byroredux_scripting::HitEvent {
+                aggressor,
+                source: aggressor,
+                projectile: 0,
+                damage: 12.5,
+                power_attack: true,
+                sneak_attack: false,
+                bash_attack: true,
+                blocked: false,
+            },
+        );
+        let slot = ExtensionHostSlot::from_host(host_with_hit_package("org.example.hit-adapter"));
+        let host = slot.host().unwrap();
+        world.insert_resource(slot);
+
+        extension_hit_dispatch_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        let subject_handle = host.handles.by_entity[&subject];
+        let owner = PrincipalId::new("org.example.hit-adapter").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, subject_handle)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(1))
+        );
+        assert!(world.has::<byroredux_scripting::HitEvent>(subject));
     }
 
     #[test]

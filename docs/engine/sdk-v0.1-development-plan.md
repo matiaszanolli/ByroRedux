@@ -25,9 +25,10 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load payloads, and atomic deferred command
-batches. The WIT world exposes `on-activate`, `on-cell-load`, immutable
-name/form/world-transform reads, and a compact own-state increment command.
+store, canonical activation/cell-load/combat-hit payloads, and atomic deferred
+command batches. The WIT world exposes `on-activate`, `on-cell-load`,
+`on-hit`, immutable name/form/world-transform reads, and a compact own-state
+increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
 entity-read, transform-read, and own-state-write capabilities, discards queued
@@ -35,9 +36,9 @@ commands on traps, and enforces a per-entry command budget. The executable owns
 the live host, loads a dependency-resolved
 set from repeatable `--extension` arguments, applies only explicit
 `--extension-grant` authority, commits the profile atomically, adapts live
-`ActivateEvent` and `OnCellLoadEvent` markers after releasing ECS guards,
-and shuts components down in reverse order. Extension component rows now live
-inside the checksummed
+`ActivateEvent`, `OnCellLoadEvent`, and producer-resolved `HitEvent`
+markers after releasing ECS guards, and shuts components down in reverse
+order. Extension component rows now live inside the checksummed
 ByroRedux save container: transient handles translate to load-order-independent
 `FormRef` values, payloads are bounded and preflighted before world teardown,
 fresh handles are assigned after reload, and rows for missing packages or
@@ -413,9 +414,9 @@ Exit gate:
 
 ### Phase 2 — extension state and event vertical slice
 
-Status: **Activation and cell-load paths, live ECS adapters, principal storage,
-and the first immutable entity projection implemented; additional projection
-families and equip/recurring event adapters pending.**
+Status: **Activation, cell-load, and combat-hit paths, live ECS adapters,
+principal storage, and the first immutable entity projection implemented;
+additional projection families and equip/recurring event adapters pending.**
 
 Deliverables:
 

@@ -787,8 +787,9 @@ tests cover all of the following:
 ### Phase 2 — ECS attachment
 
 - Add game-feature discovery, events, immutable queries, typed handles,
-  batched commands, and scheduler barriers. Activation and cell-load delivery
-  are implemented; equip and recurring-update adapters remain.
+  batched commands, and scheduler barriers. Activation, cell-load, and
+  producer-resolved combat-hit delivery are implemented; equip and
+  recurring-update adapters remain.
 - Connect component activation to `ResolvedModSet` generation commits.
 - Prove the same component on two game definitions.
 

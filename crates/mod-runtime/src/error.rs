@@ -30,6 +30,9 @@ pub enum SandboxError {
     #[error("extension lacks capability required to receive event {0}")]
     EventDeliveryDenied(EventId),
 
+    #[error("invalid payload for event {event}: {message}")]
+    InvalidEventPayload { event: EventId, message: String },
+
     #[error("component is {actual} bytes, exceeding the {maximum}-byte limit")]
     ComponentTooLarge { actual: usize, maximum: usize },
 

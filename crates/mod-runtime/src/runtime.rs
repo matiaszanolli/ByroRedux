@@ -4,18 +4,19 @@ use crate::bindings::byro::mod_host::{
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent};
 use byroredux_sdk::identity::{
-    CapabilityId, ComponentId, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
+    CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
 };
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
-    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, LOGGING_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
-    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
+    LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
+    WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand};
 use semver::Version;
@@ -49,6 +50,7 @@ pub enum LifecyclePhase {
     Initialize,
     Activate,
     CellLoad,
+    Hit,
     Shutdown,
 }
 
@@ -58,6 +60,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Initialize => "initialize",
             Self::Activate => "on-activate",
             Self::CellLoad => "on-cell-load",
+            Self::Hit => "on-hit",
             Self::Shutdown => "shutdown",
         })
     }
@@ -376,6 +379,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == CELL_LOAD_EVENT),
+            subscribed_to_hit: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == HIT_EVENT),
             pending_commands: Vec::new(),
             max_commands_per_entry: self.config.max_commands_per_entry,
             accepting_commands: false,
@@ -540,6 +547,61 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one canonical combat hit and return deferred commands.
+    pub fn on_hit(&mut self, event: HitEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::Hit,
+                status: self.status.clone(),
+            });
+        }
+        let event_id =
+            EventId::new(HIT_EVENT).expect("the engine's canonical hit event id is valid");
+        if !self.store.data().subscribed_to_hit {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        if !event.damage.is_finite() || event.damage < 0.0 {
+            return Err(SandboxError::InvalidEventPayload {
+                event: event_id,
+                message: format!(
+                    "damage must be finite and non-negative, got {}",
+                    event.damage
+                ),
+            });
+        }
+        let entity = |entity: EntityRef| state::EntityRef {
+            world_generation: entity.world_generation(),
+            object: entity.object(),
+        };
+        let result = self.enter(LifecyclePhase::Hit, true, |bindings, store| {
+            bindings.call_on_hit(
+                store,
+                entity(event.subject),
+                event.aggressor.map(entity),
+                event.source.map(entity),
+                event.projectile.map(entity),
+                state::HitDetails {
+                    damage: event.damage,
+                    power_attack: event.power_attack,
+                    sneak_attack: event.sneak_attack,
+                    bash_attack: event.bash_attack,
+                    blocked: event.blocked,
+                },
+            )
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Replace the read-only principal storage snapshot visible to callbacks.
     pub fn set_principal_storage_snapshot(&mut self, values: BTreeMap<StorageKey, ExtensionValue>) {
         self.store.data_mut().principal_storage = values;
@@ -564,8 +626,11 @@ impl ModInstance {
     /// checked counter overflows or a principal exhausts its row budget. The
     /// engine owner calls this method before reporting that rejection so the
     /// component cannot repeatedly submit the same invalid batch.
-    pub fn reject_deferred_commands(&mut self, message: impl Into<String>) -> SandboxError {
-        let phase = LifecyclePhase::Activate;
+    pub fn reject_deferred_commands(
+        &mut self,
+        phase: LifecyclePhase,
+        message: impl Into<String>,
+    ) -> SandboxError {
         let message = message.into();
         self.store.data_mut().accepting_commands = false;
         self.store.data_mut().pending_commands.clear();
@@ -662,6 +727,7 @@ struct HostState {
     schemas: Vec<ComponentSchemaDeclaration>,
     subscribed_to_activate: bool,
     subscribed_to_cell_load: bool,
+    subscribed_to_hit: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
