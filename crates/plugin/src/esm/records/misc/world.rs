@@ -1289,12 +1289,16 @@ pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
 /// identity + model + SCRI cross-ref so dangling references resolve
 /// at lookup time. See #521.
 ///
-/// **Runtime consumer gap (M47.0):** the captured `script_form_id` /
-/// `sound_form_id` / `radio_form_id` cross-refs ride through unused
-/// today; the trigger / event-hook runtime planned for M47.0 will
-/// dispatch ActivateEvent to the SCRI-linked script and play the
-/// SNAM/RNAM sound on `OnActivate`. Until then the stub closes the
-/// parser-side silent drop so the M47.0 work has one grep target.
+/// **`script_form_id` is live since M47.0**: `ActiRecord` is the first arm
+/// of `EsmIndex::base_record_script` (`records/index.rs`), which
+/// `byroredux/src/cell_loader/references/attach.rs` calls to resolve
+/// `index.scripts.get(&script_form_id)` and dispatch `ActivateEvent` to the
+/// SCRI-linked script (the attach path logs with an `"M47.0: "` prefix).
+///
+/// **Runtime consumer gap, still open:** `sound_form_id` / `radio_form_id`
+/// cross-refs ride through unused today — no reader outside `records/`
+/// plays the SNAM/RNAM sound on `OnActivate` yet. The stub closes the
+/// parser-side silent drop so that work has a grep target.
 #[derive(Debug, Clone, Default)]
 pub struct ActiRecord {
     pub form_id: u32,
@@ -1305,7 +1309,9 @@ pub struct ActiRecord {
     /// map is internally consistent.
     pub model_path: String,
     /// SCRI — script form ID attached to this activator. `0` = no
-    /// script. Referenced by trigger-system dispatch once it lands.
+    /// script. Live since M47.0 via `EsmIndex::base_record_script` +
+    /// `cell_loader::references::attach`, which dispatches `ActivateEvent`
+    /// to the resolved script.
     pub script_form_id: u32,
     /// SNAM — sound form ID played on activation (optional).
     pub sound_form_id: u32,
@@ -1359,13 +1365,17 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 /// into `menu_items` so a future terminal-interaction system can
 /// walk the options without re-parsing. See #521.
 ///
-/// **Runtime consumer gap (M47.0):** the menu tree, password, and
-/// SCRI cross-ref ride through unused — terminal interaction needs
-/// the event-hook runtime planned for M47.0 (NNAM target dispatch +
-/// CTDA option-gate evaluation, plus a UI overlay for the
-/// `body_size`-driven screen). The stub captures the surface so
-/// the M47.0 work has one grep target and the labels don't have to
-/// be re-walked from the ESM.
+/// **SCRI is live since M47.0**: `TermRecord` is one of the
+/// `EsmIndex::base_record_script` arms (`records/index.rs`), so
+/// `cell_loader::references::attach` resolves and dispatches a hacked
+/// terminal's script the same generic way it does for `ACTI`.
+///
+/// **Runtime consumer gap, still open:** the menu tree and password ride
+/// through unused — terminal interaction needs the event-hook runtime for
+/// NNAM target dispatch + CTDA option-gate evaluation, plus a UI overlay
+/// for the `body_size`-driven screen. The stub captures the surface so
+/// that work has one grep target and the labels don't have to be
+/// re-walked from the ESM.
 #[derive(Debug, Clone, Default)]
 pub struct TermRecord {
     pub form_id: u32,
@@ -1373,7 +1383,8 @@ pub struct TermRecord {
     pub full_name: String,
     pub model_path: String,
     /// SCRI — script form ID (some terminals trigger quest advance
-    /// scripts on successful hack).
+    /// scripts on successful hack). Live since M47.0 via
+    /// `EsmIndex::base_record_script` + `cell_loader::references::attach`.
     pub script_form_id: u32,
     /// ANAM — password string (may be empty for unlocked terminals).
     pub password: String,
