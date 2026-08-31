@@ -612,6 +612,19 @@ them is not. `character_controller_system` establishes the physics prelude,
 (`byroredux/src/commands/shared.rs`) the `Name → StringPool` tail, and
 `ragdoll_writeback_system` walks the longest span of it.
 
+`StringPool` is the tail for a reason: it is a **sink**. Every site that needs
+it acquires it *last* and takes nothing beneath it, so the order's tail has no
+outgoing edges at all — which is what makes the tail cheap to reason about.
+Resolving an interned name is the final step of a read, never the first, so the
+property costs nothing to keep: a site that takes the pool *before* a component
+storage records an edge out of the sink and forfeits that guarantee for
+everyone. `cinematic_animation_event_system` did exactly that until #3446
+(pool, then the `AnimationTextKeyEvents` query); `resolve_entity_name`
+(`byroredux/src/commands/shared.rs`), `byroredux/src/commands/assets.rs` and the
+four sites in `crates/debug-server/src/evaluator.rs` are the correctly-ordered
+precedent. `studio_host::snapshot` still holds the pool across `Transform` /
+`Name` / `Material` and is tracked separately.
+
 The physics prelude is also the worked example for guards that do not need to
 overlap. `character_controller_system` snapshots `CharacterController`, then
 scopes its `Transform` read so that guard is dropped before it acquires

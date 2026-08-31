@@ -144,10 +144,18 @@ pub(crate) fn cinematic_root_motion_system(world: &World, _dt: f32) {
 /// before transient text-key events are drained in `Late`.
 pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
     let deliveries: Vec<(EntityId, CinematicAnimationEvent)> = {
-        let Some(pool) = world.try_resource::<StringPool>() else {
+        // #3446 — `AnimationTextKeyEvents` BEFORE `StringPool`, not after.
+        // `StringPool` is the tail of `docs/engine/ecs.md`'s canonical
+        // acquisition order precisely because nothing is ever acquired
+        // beneath it; taking the pool first would record a
+        // `StringPool -> AnimationTextKeyEvents` edge and demote the sink
+        // to a mid-graph node, which is what makes the tail cheap to
+        // reason about. Both are reads and nothing here needs the pool
+        // before the query, so the sink property costs nothing to keep.
+        let Some(event_query) = world.query::<AnimationTextKeyEvents>() else {
             return;
         };
-        let Some(event_query) = world.query::<AnimationTextKeyEvents>() else {
+        let Some(pool) = world.try_resource::<StringPool>() else {
             return;
         };
         let mut deliveries = Vec::new();
@@ -1362,6 +1370,36 @@ mod tests {
             world.get::<Transform>(next_actor).unwrap().translation,
             Vec3::new(50.0, 0.0, 0.0),
             "a running quest must approach only its globally next ready trigger between scenes"
+        );
+    }
+
+    /// #3446 — `StringPool` is the sink at the tail of
+    /// `docs/engine/ecs.md`'s canonical acquisition order: nothing is ever
+    /// acquired beneath it. This system used to take the pool *before* its
+    /// `AnimationTextKeyEvents` query, recording an edge out of the sink
+    /// and demoting it to a mid-graph node. Which order the two guards are
+    /// taken in is only visible in source (both are reads, so no runtime
+    /// signal distinguishes them until a reverse edge appears elsewhere and
+    /// `BYRO_LOCK_ORDER_CHECK=1` aborts), so pin it here.
+    #[test]
+    fn text_key_query_is_acquired_before_the_string_pool() {
+        const CINEMATIC_RS: &str = include_str!("cinematic.rs");
+
+        let body = CINEMATIC_RS
+            .split_once("pub(crate) fn cinematic_animation_event_system")
+            .expect("cinematic_animation_event_system definition")
+            .1;
+        let query = body
+            .find("world.query::<AnimationTextKeyEvents>()")
+            .expect("the AnimationTextKeyEvents query acquisition");
+        let pool = body
+            .find("world.try_resource::<StringPool>()")
+            .expect("the StringPool acquisition");
+        assert!(
+            query < pool,
+            "cinematic_animation_event_system acquires StringPool before its \
+             AnimationTextKeyEvents query — that records an edge out of the \
+             canonical order's sink (#3446); see docs/engine/ecs.md",
         );
     }
 }
