@@ -74,9 +74,9 @@ impl Resource for PlayerMode {}
 /// — the inner systems keep their identities + unit-testability and
 /// run exactly as before, just through one indirection.
 ///
-/// Access (declared at registration in `byroredux/src/main.rs`) is the
-/// union of the two inner systems' accesses. The `PlayerMode` read
-/// here is itself part of that union.
+/// Access (declared at registration in `byroredux/src/boot.rs`'s
+/// `build_scheduler`) is the union of the two inner systems' accesses.
+/// The `PlayerMode` read here is itself part of that union.
 pub(crate) fn player_controller_system(world: &World, dt: f32) {
     crate::interaction::refresh_action_state(world);
 
@@ -623,7 +623,7 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
 /// Toggle [`PlayerMode`] between `Character` and `FlyCam` with
 /// position-snap semantics modelled on Bethesda's `tcl` (toggle
 /// collision) console command. Called from the keyboard handler in
-/// `main.rs` when F is tapped (edge-triggered, no key-repeat).
+/// `app_events.rs` when F is tapped (edge-triggered, no key-repeat).
 ///
 /// **Fly → Character**: snap the character body to the camera's
 /// current position (minus `eye_height` so the eyes end up where the

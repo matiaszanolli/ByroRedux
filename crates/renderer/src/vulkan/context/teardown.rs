@@ -9,7 +9,25 @@ use super::*;
 /// Teardown helper split out of `Drop` (#2406 / TD1-003).
 impl VulkanContext {
     /// Destroy every subsystem whose resources are owned by the GPU
-    /// allocator, in reverse-creation order.
+    /// allocator.
+    ///
+    /// **Not reverse-creation order** (corrected 2026-08-30,
+    /// CONC-D6-2026-08-30-02) — an earlier revision of this doc claimed it
+    /// was; the sequence actually starts with `texture_registry`, the
+    /// *first*-created subsystem. After the `device_wait_idle` this
+    /// function's contract requires, Vulkan imposes no cross-subsystem
+    /// destroy ordering (a descriptor set may name a destroyed image view
+    /// as long as it is never used again, and every parent/child pair is
+    /// contained inside one subsystem's own `destroy`) — only four
+    /// orderings below are load-bearing, each commented at its own site:
+    /// `skin_slots` before `skin_compute`; placeholders after the passes
+    /// whose descriptors name them; `frame_upscaler::destroy_allocations`
+    /// after `destroy_device_objects`; and `exposure` before the
+    /// `Arc::try_unwrap`. **Do not "restore" reverse-creation order** — that
+    /// would reshuffle those four local constraints, and moving
+    /// `skin_compute`'s pipeline/pool destroy ahead of its per-slot
+    /// `free_descriptor_sets` is a real
+    /// `VUID-vkFreeDescriptorSets-descriptorPool-parameter` violation.
     ///
     /// Extracted verbatim from `Drop` as one contiguous block — the densest
     /// branch cluster in the teardown (~25 `Option` arms, each paired with
@@ -170,8 +188,11 @@ impl VulkanContext {
 impl Drop for VulkanContext {
     fn drop(&mut self) {
         // SAFETY: device_wait_idle ensures all GPU work is complete before
-        // destroying resources. Destruction follows reverse-creation order
-        // to satisfy Vulkan object lifetime requirements.
+        // destroying resources. Destruction does NOT follow reverse-creation
+        // order (see `destroy_allocator_owned_resources`'s doc, corrected
+        // 2026-08-30) — Vulkan imposes no cross-subsystem ordering once the
+        // device is idle; only four local orderings (documented at their own
+        // sites) are load-bearing.
         unsafe {
             let _ = self.device.device_wait_idle();
 
@@ -192,10 +213,14 @@ impl Drop for VulkanContext {
             // pools, compute/graphics pipelines, descriptor pools +
             // layouts) — no gpu-allocator memory. They were previously
             // nested inside the `Some(allocator)` guard further down, so
-            // on the allocator-`None` Drop path (#1426 early-return, or
-            // any future allocator-taken-early path) their handles leaked
-            // and the validation layer flagged "destroyed device with
-            // live objects". Hoisting them here — alongside
+            // on an allocator-`None` Drop path (#1426 early-return, or
+            // any future allocator-taken-early path — **hypothetical at
+            // HEAD**: `VulkanContext::allocator` is never set to `None`
+            // except this function's own final `take()`, verified
+            // 2026-08-30) their handles would leak and the validation
+            // layer would flag "destroyed device with live objects".
+            // Hoisting them here is still worth keeping as
+            // defence-in-depth — alongside
             // `egui_pass.destroy()` above — runs them on EVERY Drop path,
             // and still before the `VkDevice` is destroyed at the bottom.
             // The pipelines reference `self.render_pass`, destroyed far
@@ -230,9 +255,10 @@ impl Drop for VulkanContext {
             // SDK-side pipelines, descriptor pools, and `VkDeviceMemory`
             // allocated outside gpu-allocator's view. Left inside the
             // `Some(allocator)` guard below it would be skipped entirely on an
-            // allocator-`None` Drop path, dropping (or never dropping) SDK
+            // allocator-`None` Drop path (hypothetical at HEAD — see #1483's
+            // note above), dropping (or never dropping) SDK
             // objects relative to `vkDestroyDevice` — exactly the #1483 failure
-            // mode. Its per-FIF output images DO need the allocator and stay in
+            // mode this hoist defends against. Its per-FIF output images DO need the allocator and stay in
             // the guard, run after this so the context has already let go of
             // them. Ordered after `presentation.destroy()` above, which is what
             // the guard-side comment required.
@@ -259,7 +285,8 @@ impl Drop for VulkanContext {
             self.device.destroy_command_pool(self.command_pool, None);
             destroy_main_framebuffers(&self.device, &mut self.framebuffers);
             // Destroy texture registry, scene buffers, and acceleration structures.
-            // Allocator-owned subsystems, reverse-creation order (#2406).
+            // Allocator-owned subsystems (#2406) — NOT reverse-creation order,
+            // see `destroy_allocator_owned_resources`'s doc.
             // `alloc` is cloned rather than borrowed out of `self` so the
             // helper can take `&mut self`; `SharedAllocator` is an `Arc`,
             // so this is a refcount bump, not a copy of the allocator.
