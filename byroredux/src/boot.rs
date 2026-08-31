@@ -861,12 +861,88 @@ pub(crate) fn build_scheduler() -> Scheduler {
     }
     // Canonical player interaction runs before every OnActivate consumer so
     // a fresh E-key edge is visible to scripts in the same frame.
-    scheduler.add_exclusive(Stage::Update, crate::interaction::interaction_system);
+    //
+    // #3473 — the three P2 gameplay exclusives below were added after #2391
+    // and inherited plain `add_exclusive`, so the newest and least-reviewed
+    // subsystem reported blank `sys.accesses` rows while carrying the
+    // deepest hold stack in the schedule (`combat_input_system`'s
+    // `EquippedWeapon` -> CHARAL chain, since flattened in `combat.rs`).
+    // Same rationale as `pool_regen_tick_system` below: the analyzer never
+    // pairs exclusives, so these declarations surface no conflict row —
+    // their job is to put the disputed types on the report instead of a
+    // blank row, and to give `BYRO_LOCK_ORDER_CHECK`'s recorded edges a
+    // declaration to be compared against if either system is ever promoted
+    // to a parallel lane.
+    //
+    // Scope: each declaration covers the system body and the helpers it
+    // calls directly (including `queue_door_transition`'s cell-index /
+    // plugin-set / transition-slot triple). It deliberately stops at
+    // `reconcile_dead_actor`'s ragdoll activation, whose own physics
+    // surface is declared by `ragdoll_writeback_system`.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::interaction::interaction_system,
+        Access::new()
+            .reads_resource::<ActionState>()
+            .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
+            .reads_resource::<crate::cell_loader::LoadedPluginSet>()
+            .writes_resource::<InteractionState>()
+            .writes_resource::<InteractionTrace>()
+            .writes_resource::<InteractionCandidateScratch>()
+            .writes_resource::<crate::cell_loader::PendingCellTransitionSlot>()
+            .reads::<Transform>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_core::ecs::WorldBound>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .reads::<crate::components::DoorTeleport>()
+            .reads::<crate::components::Locked>()
+            .reads::<byroredux_scripting::TwoStateActivator>()
+            .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
+            .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
+            .reads::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>()
+            .writes::<byroredux_scripting::ActivateEvent>(),
+    );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves
     // before script consumers and Late-stage transient cleanup.
-    scheduler.add_exclusive(Stage::Update, crate::combat::combat_input_system);
-    scheduler.add_exclusive(Stage::Update, crate::combat::combat_damage_system);
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::combat::combat_input_system,
+        Access::new()
+            .reads_resource::<ActionState>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes_resource::<crate::combat::CombatState>()
+            .reads::<Transform>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .reads::<byroredux_physics::ActorColliderOwner>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .reads::<byroredux_core::character::CharacterLevel>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_scripting::HitEvent>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::combat::combat_damage_system,
+        Access::new()
+            .writes_resource::<crate::combat::CombatState>()
+            .reads::<byroredux_scripting::HitEvent>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<crate::components::HavokAnimationTarget>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_core::animation::AnimationPlayer>(),
+    );
     // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
     // than inserting `ActivateEvent` directly, because
     // `quest_fragment_dispatch` runs *after* three of the four consumers

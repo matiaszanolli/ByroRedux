@@ -579,3 +579,81 @@ fn submersion_runs_after_camera_follow_and_before_water_audio() {
         );
     }
 }
+
+/// #3473 — the three P2 gameplay exclusives (`interaction_system`,
+/// `combat_input_system`, `combat_damage_system`) were registered after
+/// #2391 with a plain `add_exclusive`, so `sys.accesses` showed a blank row
+/// for the subsystem carrying the schedule's deepest hold stack. They now
+/// declare, like `pool_regen_tick_system`.
+///
+/// Asserts both halves: a declaration exists *and* it is non-empty (an empty
+/// `Access` is a real claim — "I touch no ECS state" — which would be false
+/// here), plus the specific types the finding disputes.
+#[test]
+fn p2_gameplay_exclusives_declare_non_empty_access() {
+    use byroredux_core::ecs::Access;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let row_for = |needle: &str| -> Access {
+        let mut matching = report
+            .stages
+            .iter()
+            .flat_map(|stage| stage.systems.iter())
+            .filter(|row| row.is_exclusive && row.name.contains(needle));
+        let row = matching
+            .next()
+            .unwrap_or_else(|| panic!("no exclusive system named `{needle}` (#3473)"));
+        assert!(
+            matching.next().is_none(),
+            "`{needle}` matches more than one exclusive row",
+        );
+        row.declared.clone().unwrap_or_else(|| {
+            panic!(
+                "`{needle}` still reports a blank access row — register it via \
+                 add_exclusive_with_access so its hold stack is visible in \
+                 `sys.accesses` (#3473 / #2391)",
+            )
+        })
+    };
+
+    // `::`-anchored: a bare `interaction_system` also matches
+    // `make_water_interaction_system`'s synthesised `{{closure}}` path.
+    for needle in [
+        "::interaction_system",
+        "::combat_input_system",
+        "::combat_damage_system",
+    ] {
+        assert!(
+            !row_for(needle).is_empty(),
+            "`{needle}` declares an empty access set — an empty `Access` \
+             claims the system touches no ECS state, which is false (#3473)",
+        );
+    }
+
+    // The five-deep `EquippedWeapon` -> `MeleeDamageConfig` ->
+    // `CharacterRuleset` -> `ActorValues` -> `CharacterLevel` stack is the
+    // reason this declaration exists; each link must be on the report.
+    let input = row_for("::combat_input_system");
+    let named: Vec<&str> = input
+        .components_read
+        .iter()
+        .chain(input.components_write.iter())
+        .chain(input.resources_read.iter())
+        .chain(input.resources_write.iter())
+        .map(|entry| entry.type_name)
+        .collect();
+    for ty in [
+        "EquippedWeapon",
+        "MeleeDamageConfig",
+        "CharacterRuleset",
+        "ActorValues",
+        "CharacterLevel",
+    ] {
+        assert!(
+            named.iter().any(|name| name.ends_with(ty)),
+            "combat_input_system's declaration omits `{ty}` — it is a link in \
+             the hold stack `attack_damage`/`melee_damage_charal_bonus` build \
+             (#3473); declared: {named:?}",
+        );
+    }
+}

@@ -331,14 +331,27 @@ fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
     // capture document scopes `STR × 0.5` to *Melee Weapon* damage, and a
     // creature's `DATA.Damage` is already its whole authored attack, not a
     // weapon's base to be modified.
-    if world.get::<EquippedWeapon>(aggressor).is_none() {
+    //
+    // #3473 — the weapon's damage is snapshotted here, once, so the
+    // `EquippedWeapon` read guard dies at the end of this statement.
+    // Matching on the `ComponentRef` directly bound it for the whole arm,
+    // and the arm calls `melee_damage_charal_bonus`, which nests
+    // `MeleeDamageConfig` -> `CharacterRuleset` -> `ActorValues` ->
+    // `CharacterLevel` beneath it: a five-deep hold stack established
+    // across a helper call, which is exactly what `world.rs`'s "snapshot
+    // before you iterate" house rule (#2270) exists to prohibit. It also
+    // collapses what used to be two separate `EquippedWeapon` lookups.
+    let weapon_damage = world
+        .get::<EquippedWeapon>(aggressor)
+        .map(|weapon| weapon.damage);
+    if weapon_damage.is_none() {
         if let Some(attack) = world.get::<CreatureAttack>(aggressor) {
             if attack.damage.is_finite() && attack.damage > 0.0 {
                 return attack.damage;
             }
         }
     }
-    match world.get::<EquippedWeapon>(aggressor) {
+    match weapon_damage {
         // The capture document is explicit that Melee Damage is "an
         // additive bonus to Melee Weapon damage" and that "Unarmed has its
         // own stat" (Unarmed Damage, a different AVIF-governed formula) —
@@ -347,7 +360,7 @@ fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
         // itself is a separate, deferred gap (#3092's own suggested fix only
         // names Melee Damage); UNARMED_DAMAGE stays the flat engine baseline
         // it always was for the no-weapon case.
-        Some(weapon) => weapon.damage.max(0.0) + melee_damage_charal_bonus(world, aggressor),
+        Some(damage) => damage.max(0.0) + melee_damage_charal_bonus(world, aggressor),
         None => UNARMED_DAMAGE,
     }
 }
@@ -368,10 +381,21 @@ fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
 /// it through yet; that gap stays open and undocumented-as-solved rather
 /// than papered over with an invented lookup.
 fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
-    let Some(config) = world.try_resource::<MeleeDamageConfig>() else {
+    // #3473 — scoped, not shadowed. `let config = *config;` copied the value
+    // but left the original binding (and therefore the `MeleeDamageConfig`
+    // read guard) live to the end of the function, so the guard sat under
+    // every acquisition below it. The block ends the borrow at the copy.
+    let Some(melee_damage_avif) = world
+        .try_resource::<MeleeDamageConfig>()
+        .map(|config| config.melee_damage_avif)
+    else {
         return 0.0;
     };
-    let config = *config;
+    // `CharacterRuleset` -> `ActorValues` is the direction settled by #3441
+    // (see `docs/engine/ecs.md`'s canonical order): the resource is the
+    // outer lock, and `condition.rs`'s `GetActorValue` arm — the only site
+    // that reads the component first — clones and drops before touching the
+    // ruleset. Do not invert these two.
     let Some(ruleset) = world.try_resource::<CharacterRuleset>() else {
         return 0.0;
     };
@@ -382,7 +406,7 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
         .get::<CharacterLevel>(aggressor)
         .map_or(1, |level| level.level);
     ruleset
-        .derived_value(config.melee_damage_avif, &avs, level)
+        .derived_value(melee_damage_avif, &avs, level)
         .unwrap_or(0.0)
 }
 
