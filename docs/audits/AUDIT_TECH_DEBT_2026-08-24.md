@@ -47,7 +47,7 @@ Per-dimension yield:
 | 6 | Stub & Placeholder Implementations | **0 — CLEAN** |
 | 7 | Magic Numbers & Hardcoded Constants | **0 — CLEAN** (folded into the Dim 3 finding above; no standalone hit) |
 | 8 | Dead Code & Backwards-Compat Cruft | **0 — CLEAN** (count grew 60→69 but every new site is the known `#[cfg_attr(not(debug_assertions))]`/`quest.rs` pattern) |
-| 9 | Test Hygiene | **0 — CLEAN** (`#[ignore]` grew 154→171, all data/GPU-gated; recipe-scan bug reconfirmed, already tracked) |
+| 9 | Test Hygiene | **0 — CLEAN** (`#[ignore]` count is 121 at this report's HEAD — CORRECTED 2026-08-27, the originally-published 171/was-154 pair was unreproducible; all data/GPU-gated; recipe-scan bug reconfirmed, already tracked) |
 
 **Headline**: `GpuInstance` grew **128 → 160 bytes** on `5f4dea46`/`d0322785`
 (2026-08-23, #3231, GPU morph-target blending) and `GpuMaterial` grew
@@ -124,8 +124,14 @@ TODO/FIXME/HACK/XXX:        20   (0 real — all protocol / upstream-ref / prose
 allow(dead_code):            69  (was 60; +9, dominated by quest.rs's ALIAS_FLAG_* cluster +1 and
                                    the documented cfg_attr(not(debug_assertions)) release-build pattern)
 unimplemented!/todo!():       0  (unchanged)
-#[ignore] tests (*.rs only): 171  (was 154; the bare "." recipe over the whole tree reads 503 —
-                                   313 are docs/markdown false hits, see Existing #2262)
+#[ignore] tests (*.rs only): 121  (CORRECTED 2026-08-27, TD4-2026-08-27-03 — this cell
+                                   originally read 171/was-154, which is unreproducible by
+                                   any variant of the SKILL's own recipe at this report's
+                                   HEAD 07a029ea; 121 is what the prescribed recipe
+                                   (`git grep -h -E '^[[:space:]]*#\[ignore\]' -- '*.rs'`)
+                                   actually returns there. The bare "." recipe over the
+                                   whole tree reads 503 — 313 are docs/markdown false hits,
+                                   see Existing #2262)
 files >2000 production LOC:   4  (unchanged membership — see below; #1749 fixed, #2977 fixed,
                                    but both member sets stayed at 4 by different files re-crossing)
 files >2000 total LOC:       19  (was 16 in the 08-20 snapshot's methodology; membership churned —
@@ -525,7 +531,7 @@ Recorded so the next sweep does not re-derive them.
   FLAG_* family — 20/25 unreachable, not a new distinct cluster).
   `env_translate.rs`'s one site (`INHERIT_MAP`, offset 278) is the same
   documented parsed-but-unconsumed protocol bit from every prior sweep.
-- **Dim 9 — `#[ignore]`, 171 (rust-only; was 154).** Sampled growth is
+- **Dim 9 — `#[ignore]`, 121 (rust-only; CORRECTED 2026-08-27, originally published as 171/was-154 — unreproducible).** Sampled growth is
   concentrated in water-test buildout, consistent with the WATAL-heavy
   delta; none inspected guards a closed CRITICAL/HIGH fix. The bare-recipe
   503-count false alarm (Existing #2262) is called out above so it is not
