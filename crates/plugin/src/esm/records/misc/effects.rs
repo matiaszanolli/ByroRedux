@@ -119,6 +119,15 @@ pub struct ProjRecord {
     pub flags: u32,
     /// `DATA` offset 8..12 — muzzle speed in game units / second.
     pub muzzle_speed: f32,
+    /// `MODL` — the projectile's world mesh. #3753: `CommonNamedFields`
+    /// has always read this and `parse_proj` discarded it, so a consumer
+    /// holding a `ProjRecord` had no way to draw one. The cell-side sink
+    /// is `cells.statics` (the `PROJ` dispatch runs through
+    /// `extract_records_with_modl` since #3542); this is the same path on
+    /// the typed record, for consumers that resolve through
+    /// `index.projectiles` instead. All 52 `Fallout3.esm` PROJ records
+    /// author one.
+    pub model_path: String,
 }
 
 pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
@@ -133,6 +142,7 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
+    out.model_path = common.model_path;
     for sub in subs {
         match &sub.sub_type {
             b"DATA" if sub.data.len() >= 12 => {

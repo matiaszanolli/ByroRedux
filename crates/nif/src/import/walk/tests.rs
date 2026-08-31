@@ -1216,6 +1216,181 @@ mod emitter_rate_tests {
             "an alpha channel is not a birth rate (#3329)"
         );
     }
+
+    // ── #3754 — authored ramp-up / burst curves ──────────────────────
+    //
+    // `sane()` rejects a `0.0` first key by design (#1771), and on this
+    // shape the interpolator's own `value` is the `-FLT_MAX` "use the keyed
+    // data" sentinel, which it also rejects — so the authored curve, already
+    // in hand, was discarded whole and the emitter ran on
+    // `fog.rs::particle_preset`'s name guess (35 /s by default). 10 of the
+    // 162 emitter-bearing meshes in `Fallout - Meshes.bsa` are this shape
+    // (20 of 294 across all six FO3 archives).
+    //
+    // The curves below are transcribed from the real files, dumped through
+    // `NiFloatInterpolator -> NiFloatData` on 2026-08-30.
+
+    fn key(time: f32, value: f32) -> FloatKey {
+        FloatKey {
+            time,
+            value,
+            tangent_forward: 0.0,
+            tangent_backward: 0.0,
+            tbc: None,
+        }
+    }
+
+    /// Emitter controller → `NiFloatInterpolator` carrying the `-FLT_MAX`
+    /// sentinel and `keys` as its authored curve.
+    fn scene_with_rate_curve(keys: Vec<FloatKey>) -> NifScene {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys,
+            },
+        })); // [0]
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            // The real value on every affected file: "read the keys".
+            value: -f32::MAX,
+            data_ref: BlockRef(0u32),
+        })); // [1]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(1u32),
+        })); // [2]
+        scene
+    }
+
+    fn approx(actual: Option<f32>, expected: f32, what: &str) {
+        let got = actual.unwrap_or_else(|| panic!("{what}: expected ~{expected}, got None"));
+        assert!(
+            (got - expected).abs() < 0.05,
+            "{what}: expected ~{expected}, got {got}"
+        );
+    }
+
+    /// `meshes\\effects\\ambient\\fxbubblestall01.nif`, sequence `Idle` —
+    /// the ramp-to-plateau shape. Zero for 2.8 s, ramps to 30 /s, holds it
+    /// for the remaining 11.8 s of a 16.7 s clip.
+    #[test]
+    fn ramp_to_plateau_curve_resolves_near_its_plateau() {
+        let scene = scene_with_rate_curve(vec![
+            key(0.0, 0.0),
+            key(2.7666667, 0.0),
+            key(4.8333335, 30.0),
+            key(16.666666, 30.0),
+        ]);
+        approx(extract_emitter_rate(&scene), 23.16, "fxbubblestall01 Idle");
+    }
+
+    /// `meshes\\architecture\\urban\\tenpengate01.nif` — the shape the
+    /// report assumed was also a plateau. It is not: 600 /s for 0.13 s of a
+    /// 2 s clip. Taking the curve's *peak* would run Tenpenny's gate at
+    /// 600 /s forever, 30× the authored average and further from the file
+    /// than the 35 /s preset it replaces — which is why this resolves to the
+    /// time-weighted mean instead.
+    #[test]
+    fn burst_curve_resolves_to_its_mean_not_its_peak() {
+        let scene = scene_with_rate_curve(vec![
+            key(0.0, 0.0),
+            key(1.7, 0.0),
+            key(1.7333333, 600.0),
+            key(1.8333333, 0.0),
+            key(2.0, 0.0),
+        ]);
+        let rate = extract_emitter_rate(&scene);
+        approx(rate, 20.0, "tenpengate01 Close");
+        assert_ne!(rate, Some(600.0), "the peak is not a steady-state rate");
+        assert_ne!(rate, None, "…and the curve must not be discarded (#3754)");
+    }
+
+    /// The curve tier is a **last resort**: it runs as a whole second pass
+    /// over the tier chain, only after the first pass finds nothing. Here
+    /// tier (c) — the blend interpolator's own constant — resolves, so the
+    /// dominant item's ramp curve must not pre-empt it.
+    ///
+    /// Measured reason: run inline instead, and 5 meshes in
+    /// `Fallout - Meshes.bsa` that already had a rate change one
+    /// (`ppurityfxtankfog01` 7.5 → 86.5 /s) because an earlier controller
+    /// starts resolving. Re-ranking a mesh's emitters is #1402's business.
+    #[test]
+    fn curve_tier_cannot_outrank_an_already_resolvable_tier() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![key(0.0, 0.0), key(1.0, 90.0), key(2.0, 90.0)],
+            },
+        })); // [0]
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: -f32::MAX,
+            data_ref: BlockRef(0u32),
+        })); // [1]
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 0,
+                array_size: 1,
+                weight_threshold: 0.0,
+                manager_controlled: false,
+                interp_count: 1,
+                single_index: 0,
+                items: vec![blend_item(1, 1.0)],
+            },
+            value: 12.0,
+        })); // [2]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(2u32),
+        })); // [3]
+
+        assert_eq!(
+            extract_emitter_rate(&scene),
+            Some(12.0),
+            "the blend's own constant resolves on the first pass; the curve \
+             mean is a second-pass fallback, not a competitor (#3754)"
+        );
+    }
+
+    /// A sentinel inside the curve poisons the average, so the pass bails to
+    /// the existing fallbacks rather than averaging garbage in.
+    #[test]
+    fn sentinel_key_inside_a_curve_is_not_averaged() {
+        let scene = scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, f32::MAX), key(2.0, 0.0)]);
+        assert_eq!(extract_emitter_rate(&scene), None);
+    }
+
+    /// A curve that spans no time has no average to take. (The two keys at
+    /// an identical timestamp are real — `fxbubblestall01` ends on a pair
+    /// 2 µs apart — so this is the degenerate form of a shape that occurs.)
+    #[test]
+    fn zero_span_curve_is_rejected() {
+        let scene = scene_with_rate_curve(vec![key(1.0, 0.0), key(1.0, 30.0)]);
+        assert_eq!(extract_emitter_rate(&scene), None);
+    }
+
+    /// An all-zero curve is a genuinely silent emitter, not a ramp — it must
+    /// still fall through to the preset rather than resolving to `0.0` and
+    /// tripping the spawn guard (#1771's invariant, re-pinned for the new
+    /// tier).
+    #[test]
+    fn all_zero_curve_still_falls_back_to_the_preset() {
+        let scene = scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, 0.0), key(2.0, 0.0)]);
+        assert_eq!(extract_emitter_rate(&scene), None);
+    }
+
+    /// Negative key values are clamped to zero rather than subtracting area:
+    /// a negative spawn rate is meaningless, and letting one cancel real
+    /// emission would silently mute the emitter.
+    #[test]
+    fn negative_keys_clamp_rather_than_cancel_emission() {
+        let scene = scene_with_rate_curve(vec![
+            key(0.0, 0.0),
+            key(1.0, -100.0),
+            key(2.0, 60.0),
+            key(3.0, 60.0),
+        ]);
+        // Clamped: segments are 0, 0, 30, 60 → area 90 over 3 s.
+        approx(extract_emitter_rate(&scene), 30.0, "clamped negative");
+    }
 }
 
 #[cfg(test)]

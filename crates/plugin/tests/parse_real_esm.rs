@@ -44,22 +44,31 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
 /// FNV: 60,000 records floor — covers the 13,684 M24 Phase 1 baseline
 /// plus the 7 categories added in #446/#447 (PACK 4163, QUST 436,
 /// DIAL 18215, MESG 1144, PERK 176, SPEL 270, MGEF 289 = +24,693).
-/// Observed 2026-04: 62,219. Floor sits a few percent below to absorb
-/// DLC patch drift without masking regressions.
-const FNV_TOTAL_FLOOR: usize = 60_000;
+/// **Re-measured 2026-08-30 on FalloutNV.esm: 77,923** — the old 62,219
+/// figure (and the 60 K floor reasoned from it) predate several category
+/// additions, so the gate would have passed after losing a fifth of the
+/// index (#3756's sibling check). Floor sits a few percent below the
+/// measurement to absorb DLC patch drift without masking regressions.
+const FNV_TOTAL_FLOOR: usize = 76_000;
 
-/// FO3: 30,000 records floor — covers the original 18,007 baseline +
-/// the 7 categories added in #446/#447. Observed 2026-04: 31,101.
-const FO3_TOTAL_FLOOR: usize = 30_000;
+/// FO3: index-sum floor. **Re-measured 2026-08-30 on the GOTY master:
+/// 44,718** (44,666 before #3753 put the 52 `PROJ` bases into
+/// `cells.statics`). The old "Observed 2026-04: 31,101" is 43 % below
+/// today's value, so the 30 K floor it justified would still have passed
+/// after losing a third of the index (#3756).
+const FO3_TOTAL_FLOOR: usize = 44_000;
 
 /// FO4: 70,000 records floor — observed 2026-05-04 on vanilla
 /// Fallout4.esm: 76,468 (with #817 categories landed: cells 964 +
 /// statics 31,989 + scols 2,617 + packins 872 + material_swaps 2,537 +
 /// texture_sets 379 + items 4,076 + NPCs 3,015 + game_settings 2,039,
 /// along with globals 1,346 + LVLI 2,098 + factions 699 + weathers 71
-/// and many smaller categories). Floor at 70 K absorbs DLC/patch drift without
-/// masking a category-wipe regression.
-const FO4_TOTAL_FLOOR: usize = 70_000;
+/// and many smaller categories). **Re-measured 2026-08-30 on vanilla
+/// Fallout4.esm: 125,855** — 65 % above the 2026-05-04 figure below, the
+/// worst drift of the three floors (#3756's sibling check). Floor a few
+/// percent under the measurement absorbs DLC/patch drift without masking a
+/// category-wipe regression.
+const FO4_TOTAL_FLOOR: usize = 122_000;
 
 /// #2904 — Far Harbor ships HEDR 0.95 (overlapping the old FO3/FNV band)
 /// but uses FO4's TES5+ record-header version 131.
@@ -1472,20 +1481,94 @@ fn parse_rate_fo3_esm() {
         index.trees.len(),
     );
 
-    // `index.total()` sums the ~95 typed category maps (index.rs::total),
-    // a subset of the file's structured records — NOT the raw record count.
-    // Observed 2026-04 on the GOTY master: 31,101; FO3_TOTAL_FLOOR (30,000)
-    // sits just below it to absorb patch drift without masking regressions.
-    // (The stale "18,007 records" from AUDIT_FO3_2026-04-19 predates the
-    // #446/#447 category additions — see the FO3_TOTAL_FLOOR const doc.)
-    // Distinct from the *file* baseline re-verified 2026-05-26: 44,657 total
-    // = 37,459 structured + 7,198 NAVM.
+    // `index.total()` sums the ~95 typed category maps (index.rs::total).
+    // It is an **index sum, not a record count**, and it double-counts by
+    // design — `cells.statics` overlaps `items` / `activators` / … , which
+    // `EsmIndex::categories()`'s own doc states. Measured 2026-08-30 on the
+    // GOTY master: 44,718.
+    //
+    // #3756 — this comment used to claim 31,101 (43 % low, so the 30 K floor
+    // "sitting just below it" would have passed after losing a third of the
+    // index) and to call 44,657 a *file* baseline "distinct from" this
+    // metric. It is not distinct: 44,657 is this same index sum measured on
+    // 2026-05-26. The file holds **718,952 records** — validated against the
+    // TES4 header's `HEDR.numrec` of 808,699 (records + GRUPs = 808,700; the
+    // delta of 1 is the TES4 header itself). Anything quoting 44,657 as
+    // "the FO3 ESM record count" understates the file by 16×.
     assert!(
         index.total() >= FO3_TOTAL_FLOOR,
         "FO3 total {} < audit baseline {}",
         index.total(),
         FO3_TOTAL_FLOOR,
     );
+
+    // #3756 — the cell tier, which `index.total()` cannot see at all: of the
+    // ~663 K records under CELL/WRLD only NAVM enters a typed category, so a
+    // regression anywhere in REFR / ACHR / ACRE / PGRE / LAND is invisible to
+    // the floor above. That is precisely the tier the #3542 (`PGRE` dropped)
+    // and #3753 (`PROJ` model-less) defects lived in.
+    //
+    // Measured 2026-08-30, and independently reproduced by a header-validated
+    // raw scan of Fallout3.esm:
+    //   REFR 568,107 + ACHR 2,154 + ACRE 3,349 + PGRE 350 = 573,960
+    // (the PGRE term is #3542's; the ACRE term is the one #3755's comment
+    // used to deny FO3 authors at all). `PlacedRef` carries no record type,
+    // so an ACRE-specific floor is not expressible — but it does not need to
+    // be: dropping ACRE alone lands at 570,611, under the floor. That is the
+    // machine check #3755 asked for.
+    let interior_refs: usize = index.cells.cells.values().map(|c| c.references.len()).sum();
+    let exterior_refs: usize = index
+        .cells
+        .exterior_cells
+        .values()
+        .flat_map(|grid| grid.values())
+        .map(|c| c.references.len())
+        .sum();
+    let persistent_refs: usize = index
+        .cells
+        .worldspace_persistent_cells
+        .values()
+        .map(|c| c.references.len())
+        .sum();
+    let placed_refs = interior_refs + exterior_refs + persistent_refs;
+    assert!(
+        placed_refs >= 573_000,
+        "FO3 placed refs {placed_refs} < 573,000 — the cell tier regressed \
+         (interior {interior_refs} + exterior {exterior_refs} + persistent \
+         {persistent_refs}); #3756"
+    );
+    let exterior_cells: usize = index.cells.exterior_cells.values().map(|g| g.len()).sum();
+    assert!(
+        exterior_cells >= 41_900,
+        "FO3 exterior cells {exterior_cells} < 41,900 (measured 41,958); #3756"
+    );
+
+    // #3753 — every `PGRE` placement resolves to one of four `PROJ` bases,
+    // and those bases are only drawable because `PROJ` dispatches through
+    // `extract_records_with_modl`. A regression to `extract_records` leaves
+    // the placements decoded and model-less, which renders as nothing.
+    for (form_id, editor_id) in [
+        (0x0000_43FAu32, "MineFragProjectile"),
+        (0x0004_03D8, "MinePlasmaProjectile"),
+        (0x0003_3C4B, "MinePulseProjectile"),
+        (0x0005_9449, "MineBottleCapProjectile"),
+    ] {
+        let stat = index.cells.statics.get(&form_id).unwrap_or_else(|| {
+            panic!("PROJ base {form_id:#08X} ({editor_id}) missing from cells.statics (#3753)")
+        });
+        assert!(
+            !stat.model_path.is_empty(),
+            "PROJ base {form_id:#08X} ({editor_id}) has no model path (#3753)"
+        );
+        let proj = index
+            .projectiles
+            .get(&form_id)
+            .unwrap_or_else(|| panic!("PROJ {form_id:#08X} missing from index.projectiles"));
+        assert!(
+            !proj.model_path.is_empty(),
+            "ProjRecord {form_id:#08X} dropped its MODL (#3753)"
+        );
+    }
 
     // FO3-specific record categories — CREA + LVLC + SCPT resolve
     // regressions around the FO3 audit fixes (#442, #443, #448).

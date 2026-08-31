@@ -933,19 +933,91 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     // NiFloatInterpolator → (keyed data | constant). Shared by the direct
     // case below and the NiBlendFloatInterpolator sub-interpolator case
     // (#2548), so the two chains can't silently diverge.
-    fn float_interpolator_rate(scene: &NifScene, interp_idx: usize) -> Option<f32> {
+    fn float_interpolator_rate(
+        scene: &NifScene,
+        interp_idx: usize,
+        curves: CurveTier,
+    ) -> Option<f32> {
         let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
         if let Some(data_idx) = interp.data_ref.index() {
-            if let Some(first) = scene
-                .get_as::<NiFloatData>(data_idx)
-                .and_then(|d| d.keys.keys.first())
-            {
-                if let Some(r) = sane(first.value) {
+            if let Some(keys) = scene.get_as::<NiFloatData>(data_idx).map(|d| &d.keys.keys) {
+                if let Some(r) = keys.first().and_then(|k| sane(k.value)) {
                     return Some(r);
+                }
+                // #3754 — the first key was rejected (a `0.0` ramp-up start,
+                // per `sane`'s note), but the rest of the curve is right
+                // here and used to be discarded whole: the interpolator's
+                // own `value` on this shape is the `-FLT_MAX` "use the keyed
+                // data" sentinel, which `sane` also rejects, so the emitter
+                // fell all the way through to `fog.rs::particle_preset`'s
+                // name-heuristic guess.
+                if curves == CurveTier::Allowed {
+                    if let Some(r) = curve_mean_rate(keys) {
+                        return Some(r);
+                    }
                 }
             }
         }
         sane(interp.value)
+    }
+
+    /// The constant spawn rate that reproduces an authored rate curve's
+    /// particle count — its **time-weighted mean**, by trapezoid over the
+    /// authored keys (#3754).
+    ///
+    /// Why the mean and not the peak: `ParticleEmitter::rate` is particles
+    /// *per second*, applied continuously and forever, so the faithful
+    /// scalar reduction of a curve is the one that emits the same number of
+    /// particles per clip cycle. The curves this reaches are not the
+    /// ramp-to-plateau shape they were assumed to be — measured off the
+    /// three meshes the report cites:
+    ///
+    /// ```text
+    /// tenpengate01     `Close` 2 s  : 0,0,600,0,0     — a 0.13 s spike
+    /// fxfallingrocks01 `Idle` 20 s  : two 300 spikes + two 120 spikes
+    /// fxbubblestall01  `Idle` 16.7 s: ramp to a 30 plateau, then holds
+    /// ```
+    ///
+    /// Only the third is a plateau. Taking each curve's maximum would run
+    /// Tenpenny's gate at 600 /s forever against an authored average of
+    /// ~20 /s, and the falling-rock ambient at 300 /s against ~19 /s — 30×
+    /// and 16× overshoots, i.e. *further* from the file than the 35 /s
+    /// preset this replaces. The mean is within a factor of two on all
+    /// three.
+    ///
+    /// Sampling the curve over time is still the fuller fix (#1402); this is
+    /// the best constant the file supports until an emitter can hold one.
+    ///
+    /// Returns `None` — leaving the existing fallbacks intact — when the
+    /// curve carries no positive area, spans no time, or contains a
+    /// non-finite / sentinel key. Negative key values are clamped to zero
+    /// rather than subtracting area: a negative spawn rate has no meaning,
+    /// and letting one cancel real emission would silently mute the emitter.
+    fn curve_mean_rate(keys: &[crate::blocks::interpolator::FloatKey]) -> Option<f32> {
+        let mut area = 0.0f64;
+        let mut span = 0.0f64;
+        for w in keys.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            // A sentinel or garbage key poisons the whole average, so bail
+            // to the caller's fallbacks rather than averaging it in.
+            if !a.value.is_finite()
+                || !b.value.is_finite()
+                || a.value.abs() >= 3.0e38
+                || b.value.abs() >= 3.0e38
+            {
+                return None;
+            }
+            let dt = f64::from(b.time) - f64::from(a.time);
+            if !dt.is_finite() || dt <= 0.0 {
+                continue;
+            }
+            area += 0.5 * (f64::from(a.value.max(0.0)) + f64::from(b.value.max(0.0))) * dt;
+            span += dt;
+        }
+        if span <= 0.0 {
+            return None;
+        }
+        sane((area / span) as f32)
     }
 
     /// #3329 tier (d) — recover the authored rate from the scene's embedded
@@ -962,7 +1034,7 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     /// *different* rates: an ignition ramp or a one-shot burst is not the
     /// density the emitter runs at while the player is looking at it. Names
     /// are ranked, and a tie falls back to block order.
-    fn sequence_emitter_rate(scene: &NifScene) -> Option<f32> {
+    fn sequence_emitter_rate(scene: &NifScene, curves: CurveTier) -> Option<f32> {
         use crate::anim::{resolve_cb_string, CbString};
         use crate::blocks::controller::NiControllerSequence;
 
@@ -999,7 +1071,7 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
                 let Some(idx) = cb.interpolator_ref.index() else {
                     continue;
                 };
-                if let Some(r) = float_interpolator_rate(scene, idx) {
+                if let Some(r) = float_interpolator_rate(scene, idx, curves) {
                     best = Some((rank, r));
                     break;
                 }
@@ -1008,73 +1080,96 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
         best.map(|(_, r)| r)
     }
 
-    // Modern: controller → interpolator → (keyed data | constant).
-    if let Some(ctlr) = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
-    {
-        if let Some(interp_idx) = ctlr.interpolator_ref.index() {
-            if let Some(r) = float_interpolator_rate(scene, interp_idx) {
-                return Some(r);
-            }
-            // #2548 — 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref
-            // targets are NiBlendFloatInterpolator (most of FO3's fire/
-            // explosion/dust/blood/gore VFX library), a weighted-array
-            // wrapper this branch never followed at all — only the bare
-            // NiFloatInterpolator case above, on 22% of real targets.
-            // `resolve_blend_interpolator_target` (#334 / AR-08, already
-            // used by the KF channel-extraction path) picks the highest-
-            // `normalized_weight` sub-interpolator; `None` for the
-            // manager-controlled case (no items to pick from — those are
-            // driven externally and don't apply to a particle emitter
-            // rate anyway). Fall back to the blend interpolator's own
-            // constant `value` if no item resolves.
-            if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx) {
-                if let Some(r) = float_interpolator_rate(scene, sub_idx) {
+    /// Whether this pass may fall back to a rate curve's time-weighted mean
+    /// (#3754). The whole tier chain runs once with [`Self::Rejected`] and,
+    /// only if that finds nothing at all, again with [`Self::Allowed`].
+    ///
+    /// Two passes rather than one because the tiers resolve on the *first*
+    /// emitter controller that yields a rate, so enabling the curve tier
+    /// inline does not merely fill gaps — it lets an earlier controller win
+    /// a mesh that already resolved. Measured over `Fallout - Meshes.bsa`:
+    /// inline, 10 meshes gained a rate but 5 that already had one changed
+    /// (`fxharoldfire` 90 → 41 /s, `ppurityfxtankfog01` 7.5 → 86.5 /s).
+    /// Those five are not the defect being fixed, and re-ranking a mesh's
+    /// emitters is #1402's business, not this fix's. Split into passes, the
+    /// change is exactly additive: same 10 gained, zero changed.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CurveTier {
+        Rejected,
+        Allowed,
+    }
+
+    fn resolve(scene: &NifScene, curves: CurveTier) -> Option<f32> {
+        // Modern: controller → interpolator → (keyed data | constant).
+        if let Some(ctlr) = scene
+            .blocks
+            .iter()
+            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
+        {
+            if let Some(interp_idx) = ctlr.interpolator_ref.index() {
+                if let Some(r) = float_interpolator_rate(scene, interp_idx, curves) {
                     return Some(r);
                 }
-            }
-            if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
-                if let Some(r) = sane(blend.value) {
-                    return Some(r);
+                // #2548 — 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref
+                // targets are NiBlendFloatInterpolator (most of FO3's fire/
+                // explosion/dust/blood/gore VFX library), a weighted-array
+                // wrapper this branch never followed at all — only the bare
+                // NiFloatInterpolator case above, on 22% of real targets.
+                // `resolve_blend_interpolator_target` (#334 / AR-08, already
+                // used by the KF channel-extraction path) picks the highest-
+                // `normalized_weight` sub-interpolator; `None` for the
+                // manager-controlled case (no items to pick from — those are
+                // driven externally and don't apply to a particle emitter
+                // rate anyway). Fall back to the blend interpolator's own
+                // constant `value` if no item resolves.
+                if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx) {
+                    if let Some(r) = float_interpolator_rate(scene, sub_idx, curves) {
+                        return Some(r);
+                    }
                 }
-            }
-            // #3329 — the manager-controlled residual #2548 left behind. When
-            // the controller's interpolator is a `NiBlendFloatInterpolator`
-            // with an EMPTY `items` array, tier (b) above cannot resolve a
-            // sub-interpolator (`resolve_blend_interpolator_target` returns
-            // `None` by design for that shape — those blends are driven
-            // externally by a `NiControllerManager`, not from their own array)
-            // and tier (c) reads a non-positive `value`. On vanilla FNV that
-            // is 168 of the 307 emitter-bearing meshes: every single affected
-            // file's blend has `items.len() == 0`.
-            //
-            // The authored rate is still in the file — it lives on the
-            // sibling `NiControllerSequence`'s controlled block for the same
-            // emitter controller. Scanning those recovers 155 of the 168
-            // (`fxambdust*` 25/s, snowglobes 6/s, Lucky 38 reactor, the Strip
-            // fountain, Helios steam, `dlc04fxcrashthroughfloor` 510/s).
-            // Without it `apply_emitter_overlays` leaves the density at
-            // `fog.rs::particle_preset`'s name-heuristic guess — off by ~6×
-            // for snowglobes and ~15× for the DLC04 crash FX.
-            if scene
-                .get_as::<NiBlendFloatInterpolator>(interp_idx)
-                .is_some()
-            {
-                if let Some(r) = sequence_emitter_rate(scene) {
-                    return Some(r);
+                if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
+                    if let Some(r) = sane(blend.value) {
+                        return Some(r);
+                    }
+                }
+                // #3329 — the manager-controlled residual #2548 left behind. When
+                // the controller's interpolator is a `NiBlendFloatInterpolator`
+                // with an EMPTY `items` array, tier (b) above cannot resolve a
+                // sub-interpolator (`resolve_blend_interpolator_target` returns
+                // `None` by design for that shape — those blends are driven
+                // externally by a `NiControllerManager`, not from their own array)
+                // and tier (c) reads a non-positive `value`. On vanilla FNV that
+                // is 168 of the 307 emitter-bearing meshes: every single affected
+                // file's blend has `items.len() == 0`.
+                //
+                // The authored rate is still in the file — it lives on the
+                // sibling `NiControllerSequence`'s controlled block for the same
+                // emitter controller. Scanning those recovers 155 of the 168
+                // (`fxambdust*` 25/s, snowglobes 6/s, Lucky 38 reactor, the Strip
+                // fountain, Helios steam, `dlc04fxcrashthroughfloor` 510/s).
+                // Without it `apply_emitter_overlays` leaves the density at
+                // `fog.rs::particle_preset`'s name-heuristic guess — off by ~6×
+                // for snowglobes and ~15× for the DLC04 crash FX.
+                if scene
+                    .get_as::<NiBlendFloatInterpolator>(interp_idx)
+                    .is_some()
+                {
+                    if let Some(r) = sequence_emitter_rate(scene, curves) {
+                        return Some(r);
+                    }
                 }
             }
         }
+        // Legacy: NiPSysEmitterCtlrData first birth-rate key.
+        scene
+            .blocks
+            .iter()
+            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlrData>())
+            .and_then(|d| d.birth_rate_first)
+            .and_then(sane)
     }
-    // Legacy: NiPSysEmitterCtlrData first birth-rate key.
-    scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlrData>())
-        .and_then(|d| d.birth_rate_first)
-        .and_then(sane)
+
+    resolve(scene, CurveTier::Rejected).or_else(|| resolve(scene, CurveTier::Allowed))
 }
 
 /// Long-lived context threaded through [`walk_node_flat`]'s recursion:

@@ -713,10 +713,22 @@ fn parse_refr_group_inner(
         }
 
         let header = reader.read_record_header()?;
-        // ACRE — Oblivion-only placed-creature reference (#396). FO3+
-        // folded creature placements into ACHR; ACRE's wire layout
-        // matches ACHR byte-for-byte on Oblivion (NAME/DATA/XSCL/XESP),
-        // so it routes through the same handler.
+        // ACRE — placed-creature reference (#396). Oblivion, FO3 and FNV
+        // all author it: FO3 ships **3,349 ACRE against 2,154 ACHR**, i.e.
+        // more creature placements than actor ones, splitting CREA→ACRE and
+        // NPC_→ACHR exactly the way Oblivion does. The wire layout matches
+        // ACHR byte-for-byte (NAME/DATA/XSCL/XESP), so it routes through the
+        // same handler.
+        //
+        // #3755 — this comment used to read "Oblivion-only … FO3+ folded
+        // creature placements into ACHR", which is false and load-bearing:
+        // the arm is ungated by game, so a reader trusting the premise would
+        // gate it on `GameKind::Oblivion` and silently delete 3,349 FO3
+        // placements (super mutants, radroaches, brahmin, mirelurks) plus
+        // FNV's equivalent. #1538 is the same class of premise-driven gate,
+        // already paid for once. The Dimension-3 reconciliation only closes
+        // *because* ACRE is accepted:
+        // 568,107 REFR + 2,154 ACHR + 3,349 ACRE = 573,610 placed refs.
         //
         // #3542 — PGRE (placed grenade/mine), PHZD (placed hazard) and
         // PMIS (placed missile) join them for the same reason: they are

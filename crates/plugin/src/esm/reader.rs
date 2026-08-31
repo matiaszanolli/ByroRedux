@@ -134,7 +134,10 @@ impl EsmVariant {
 pub enum GameKind {
     /// Oblivion (TES4, HEDR 1.0).
     Oblivion,
-    /// Fallout 3 (HEDR 0.85) and Fallout: New Vegas (HEDR 1.34). These two
+    /// Fallout 3 (HEDR 0.94 on the GOTY master, 0.85 pre-GOTY — the
+    /// discriminating table in `from_hedr` below has this right; this line
+    /// used to name only the pre-GOTY value, #3756) and Fallout: New Vegas
+    /// (HEDR 1.34). These two
     /// share their DATA/DNAM layouts everywhere the current parser cares
     /// about, so they collapse to one game kind.
     #[default]

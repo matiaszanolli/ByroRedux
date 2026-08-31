@@ -305,27 +305,66 @@ fn parse_rate_starfield_all_meshes() {
     run_all_meshes_gate(
         Game::Starfield,
         &[
-            ArchiveSpec { name: "Starfield - Meshes01.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "Starfield - Meshes02.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "Starfield - MeshesPatch.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "Starfield - LODMeshes.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "Starfield - FaceMeshes.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "Starfield - Meshes01.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "Starfield - Meshes02.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "Starfield - MeshesPatch.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "Starfield - LODMeshes.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "Starfield - FaceMeshes.ba2",
+                min_clean: 0.995,
+            },
             // #3466 additions.
-            ArchiveSpec { name: "Starfield - LODMeshesPatch.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "ShatteredSpace - Main01.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "Starfield - LODMeshesPatch.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "ShatteredSpace - Main01.ba2",
+                min_clean: 0.995,
+            },
             // `ShatteredSpace - Main02.ba2` is deliberately absent: measured
             // 2026-08-29 it holds 14,934 files and **zero** NIF entries
             // (14,799 `.ffxanim`, plus `.btd` terrain and strings). Listing
             // it would trip this gate's own "is this a mesh-bearing archive?"
             // assertion, which is what surfaced the fact.
-            ArchiveSpec { name: "SFBGS003 - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SFBGS004 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "SFBGS003 - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SFBGS004 - Main.ba2",
+                min_clean: 0.995,
+            },
             // SFBGS006 / SFBGS007 are omitted: measured 2026-08-29 they hold
             // 27 and 29 files respectively and zero NIF entries.
-            ArchiveSpec { name: "SFBGS008 - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SFBGS00D - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SFBGS047 - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SFBGS050 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "SFBGS008 - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SFBGS00D - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SFBGS047 - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SFBGS050 - Main.ba2",
+                min_clean: 0.995,
+            },
         ],
     );
 }
@@ -358,15 +397,39 @@ fn parse_rate_fo4_all_meshes() {
         Game::Fallout4,
         &[
             // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin.
-            ArchiveSpec { name: "Fallout4 - Meshes.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "Fallout4 - MeshesExtra.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "Fallout4 - Meshes.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "Fallout4 - MeshesExtra.ba2",
+                min_clean: 0.995,
+            },
             // #3466 additions.
-            ArchiveSpec { name: "DLCCoast - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "DLCNukaWorld - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "DLCRobot - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "DLCworkshop01 - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "DLCworkshop02 - Main.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "DLCworkshop03 - Main.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "DLCCoast - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "DLCNukaWorld - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "DLCRobot - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "DLCworkshop01 - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "DLCworkshop02 - Main.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "DLCworkshop03 - Main.ba2",
+                min_clean: 0.995,
+            },
         ],
     );
 }
@@ -403,39 +466,99 @@ fn parse_rate_fo76_all_meshes() {
     run_all_meshes_gate(
         Game::Fallout76,
         &[
-            ArchiveSpec { name: "SeventySix - Meshes.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "SeventySix - Meshes.ba2",
+                min_clean: 0.995,
+            },
             // `SeventySix - MeshesExtra.ba2` is deliberately absent despite the
             // name: measured 2026-08-29 it is 2,219 files, all `.tome`, and
             // zero NIF entries. The issue's suggested list included it.
-            ArchiveSpec { name: "SeventySix - StaticMeshes.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "SeventySix - StaticMeshes.ba2",
+                min_clean: 0.995,
+            },
             // 95.03% clean measured 2026-08-29 (19,238/20,245; 1,007 truncated,
             // 100% recoverable). Floor is measured−0.5% per the convention, so
             // it gates a REGRESSION from today's state — it is not an
             // endorsement of the tail. See the module note below.
-            ArchiveSpec { name: "SeventySix - GeneratedMeshes01.ba2", min_clean: 0.945 },
+            ArchiveSpec {
+                name: "SeventySix - GeneratedMeshes01.ba2",
+                min_clean: 0.945,
+            },
             // 0.00% clean measured 2026-08-29 — every one of its 2,049 NIFs
             // truncates (100% recoverable, so no hard failure). A clean floor
             // cannot gate anything below 0, so this entry is carried by the
             // `recoverable >= 100%` assertion alone; the 0.0 is honest
             // bookkeeping, not a threshold. Raise it the moment the tail is
             // fixed, or the fix has nothing pinning it.
-            ArchiveSpec { name: "SeventySix - GeneratedMeshes02.ba2", min_clean: 0.0 },
-            ArchiveSpec { name: "SeventySix - 00UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 01UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 02UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 03UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 04UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 05UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 06UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 07UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 08UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 09UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 10UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 11UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 12UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 13UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 14UpdateMain.ba2", min_clean: 0.995 },
-            ArchiveSpec { name: "SeventySix - 15UpdateMain.ba2", min_clean: 0.995 },
+            ArchiveSpec {
+                name: "SeventySix - GeneratedMeshes02.ba2",
+                min_clean: 0.0,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 00UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 01UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 02UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 03UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 04UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 05UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 06UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 07UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 08UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 09UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 10UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 11UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 12UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 13UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 14UpdateMain.ba2",
+                min_clean: 0.995,
+            },
+            ArchiveSpec {
+                name: "SeventySix - 15UpdateMain.ba2",
+                min_clean: 0.995,
+            },
         ],
     );
 }
@@ -644,11 +767,30 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
     //
     // `params` and `budget` are near-universal on real content: essentially
     // every authored emitter carries a `NiPSysEmitter` base block and a
-    // `NiPSysData` budget. `rate` is genuinely sparser — it needs a
-    // `NiPSysEmitterCtlr` chain, and legacy / constant-rate emitters have
-    // none — so it only has to be non-zero somewhere in the corpus.
+    // `NiPSysData` budget.
+    //
+    // #3754 — `rate` now carries a per-game floor too. It used to be pinned
+    // only by `total_rate > 0` further down, i.e. "some emitter in some
+    // installed archive decoded a rate" — which cannot see a regression that
+    // takes out one game, or most of one. That is exactly the shape of the
+    // defect this floor was added for: authored ramp-up curves were being
+    // discarded whole on 20 of FO3's 294 emitter meshes and the suite stayed
+    // green, because the files legitimately reported `None` and nothing
+    // counted the ratio.
+    //
+    // Measured 2026-08-30 over this test's own sampled population, which is
+    // richer than the whole archive (it draws only from `fire`/`fx`/`smoke`/
+    // `magic`/`effects`, the folders that author rates):
+    //
+    //     FNV 236/237 (99.6%) · FO3 111/115 (96.5%)
+    //     Oblivion 272/272 · Skyrim SE 138/138 (100%)
+    //
+    // Same 50% floor as its siblings, for the same reason: the sample is a
+    // non-deterministic 200 files, so the floor has to tolerate a different
+    // draw while still catching a chain that stops decoding.
     const MIN_PARAMS_FRACTION: f64 = 0.50;
     const MIN_BUDGET_FRACTION: f64 = 0.50;
+    const MIN_RATE_FRACTION: f64 = 0.50;
     let mut magnitude_failures: Vec<String> = Vec::new();
     let mut total_rate = 0usize;
     for (game, emitters, params, rate, budget) in &magnitudes {
@@ -672,6 +814,17 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
                 MIN_BUDGET_FRACTION * 100.0,
             ));
         }
+        if (*rate as f64) < n * MIN_RATE_FRACTION {
+            magnitude_failures.push(format!(
+                "{}: only {}/{} emitters decoded a finite positive birth rate \
+                 (floor {:.0}%) — the NiPSysEmitterCtlr -> interpolator chain \
+                 regressed for this game (#3754)",
+                game.label(),
+                rate,
+                emitters,
+                MIN_RATE_FRACTION * 100.0,
+            ));
+        }
     }
     assert!(
         magnitude_failures.is_empty(),
@@ -679,6 +832,9 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
          found but their decoded values are not usable: {:?}",
         magnitude_failures,
     );
+    // Retained below the per-game floor as the cross-corpus backstop it has
+    // always been: it fires even if every game somehow reported zero
+    // emitters, where the per-game ratio has nothing to divide.
     assert!(
         total_rate > 0,
         "no emitter in any swept archive decoded a finite positive birth rate — \
