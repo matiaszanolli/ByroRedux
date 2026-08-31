@@ -522,8 +522,10 @@ impl Resource for CellLightingRes {}
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
 /// carries FormIDs, not decoded audio; `asset_provider::audio`'s
 /// `resolve_sound_path`/`sound_archive_path` resolve them to archive
-/// paths, and a consumer (item 5's REGN-keyed `AudioEmitter`, not yet
-/// built) dispatches actual playback. Mirrors `CellLightingRes`'s shape
+/// paths, and a consumer — `dispatch_region_ambient_music`
+/// (`byroredux/src/asset_provider/audio.rs`), shipped 2026-08-23 (`ede48ffb`/
+/// `3ef05d1b`) — dispatches actual playback via `AudioWorld::play_music`.
+/// Mirrors `CellLightingRes`'s shape
 /// and lifecycle: computed once at cell-apply time from data already
 /// parsed into `EsmIndex`, not recomputed per-frame.
 ///

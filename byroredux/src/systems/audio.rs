@@ -52,9 +52,10 @@ fn strongest_ready_ripple(
 ///   - `AudioWorld` resource isn't registered (engine started without
 ///     audio wiring).
 ///
-/// Runs in `Stage::Late` alongside `audio_system` (registered first
-/// in main.rs so the level is in place before any new spatial track
-/// gets constructed this frame).
+/// Runs in `Stage::Late` alongside `audio_system` — registered earlier
+/// in `boot.rs::build_scheduler` (systems within a stage run in
+/// registration order) so the send level is in place before any new
+/// spatial track gets constructed this frame.
 pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
     /// Subtle interior wet — matches `set_reverb_send_db` doc.
     /// `-6 dB` is more pronounced; `-12 dB` is the audit's call.
