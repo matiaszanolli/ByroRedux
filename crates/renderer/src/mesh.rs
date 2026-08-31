@@ -3162,3 +3162,63 @@ mod upload_geometry_guard_tests {
         );
     }
 }
+
+/// #3463 — the "Global geometry SSBO rebuild" row in
+/// `docs/engine/memory-budget.md` is derived from the two constants below,
+/// and the page is cited as authoritative by `/audit-performance`,
+/// `/audit-renderer` and `/audit-safety` rather than re-derived. Pin the
+/// pair so a constant change cannot silently invalidate a published budget
+/// figure — the same drift class as #3117 and the SVGF row (#2679).
+#[cfg(test)]
+mod memory_budget_doc_pin_tests {
+    use super::{GEOMETRY_REBUILD_CHUNK_BYTES, GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES};
+
+    const BUDGET_MD: &str = include_str!("../../../docs/engine/memory-budget.md");
+
+    #[test]
+    fn geometry_rebuild_row_matches_the_constants() {
+        assert_eq!(
+            GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES,
+            256 * 1024 * 1024,
+            "the documented resumable/atomic gate is 256 MiB",
+        );
+        assert_eq!(
+            GEOMETRY_REBUILD_CHUNK_BYTES,
+            64 * 1024 * 1024,
+            "the documented retained staging buffer is 64 MiB",
+        );
+
+        let section = BUDGET_MD
+            .split_once("### Global geometry SSBO rebuild")
+            .expect(
+                "memory-budget.md must carry a geometry-rebuild row — the resumable path                  holds TWO full generations and the page's pool rows are single-generation                  figures (#3463)",
+            )
+            .1;
+        let section = section
+            .split_once("\n---")
+            .map(|(head, _)| head)
+            .unwrap_or(section);
+
+        for needle in [
+            "GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES",
+            "256 MiB",
+            "GEOMETRY_REBUILD_CHUNK_BYTES",
+            "64 MiB",
+        ] {
+            assert!(
+                section.contains(needle),
+                "the geometry-rebuild budget row must name `{needle}` — it is what bounds \
+                 the doubling and the retained staging (#3463)",
+            );
+        }
+
+        // #3443 landed the idle gate, so the doubling cannot reach the hard
+        // caps. A page that doubles those is arithmetic against a path the
+        // code no longer takes.
+        assert!(
+            section.contains("#3443"),
+            "the row must record that #3443's idle gate bounds the doubling below the \
+             256 MiB threshold, or a reader will double the hard caps (#3463)",
+        );
+    }
+}

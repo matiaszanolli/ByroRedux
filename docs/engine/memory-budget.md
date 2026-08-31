@@ -472,6 +472,41 @@ to a 2 048-entry LRU cap (configurable via `BYRO_NIF_CACHE_MAX=N`; `=0`
 disables the LRU). Before this guard, unbounded cell loads could silently
 exhaust the `MAX_MESH_SLOTS` table.
 
+### Global geometry SSBO rebuild (#3298 / #3463)
+
+The pool rows above are **single-generation** figures. Growing the global
+geometry SSBO takes one of two paths, and one of them is transiently
+double-buffered:
+
+| Path | Gate | Resident generations | Extra peak |
+|---|---|---|---|
+| Resumable (`GeometryRebuildInProgress`) | projected < `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` (256 MiB) | 2 | up to ~512 MiB total, i.e. 2× the projected size |
+| Atomic idle-reclaim | projected ≥ 256 MiB, existing buffers present | 1 | — (old released before new is allocated) |
+
+The resumable path allocates the full-size replacement **while the old
+generation is still bound and serving draws**, and swaps only when both
+targets are fully copied — an accepted trade (#3298) that turns a
+multi-hundred-ms atomic stall into bounded per-frame chunks. `#3443`
+restored the idle gate, so this doubling is *bounded by the 256 MiB
+threshold*: it cannot reach the `VERTEX_POOL_HARD_CAP` +
+`INDEX_POOL_HARD_CAP` figures, because a rebuild that large takes the
+atomic path instead. Any budget arithmetic that doubles the hard caps is
+therefore wrong post-#3443.
+
+**Plus one session-retained staging buffer.** The rebuild lazily constructs
+its own `StagingPool` at `DEFAULT_STAGING_BUDGET_BYTES` (128 MiB) and each
+chunk acquires exactly `GEOMETRY_REBUILD_CHUNK_BYTES` (64 MiB). Because
+64 MiB sits *inside* the 128 MiB retained budget, `release` keeps it rather
+than evicting it, and nothing calls `trim_to` on this pool — so it stays
+resident for the process lifetime after the first rebuild. This is new
+steady-state residency, not pre-existing: the pre-#3298 atomic path
+acquired one staging buffer the size of the whole pool, which normally
+*exceeded* the budget and was evicted on release.
+
+Source of truth for the doubling is `GeometryRebuildInProgress`'s own doc
+comment (`crates/renderer/src/mesh.rs`); this row exists so a budget
+decision made from this page does not silently assume one generation.
+
 ---
 
 ## NIF Import Cache
@@ -531,6 +566,55 @@ the fence slot is complete before the tick runs (#418).
 
 ---
 
+## Scaleform UI (Ruffle / wgpu) — #3431
+
+[`crates/ui/src/player.rs`](../../crates/ui/src/player.rs)
+
+The SWF menu layer runs Ruffle on its **own wgpu device**, separate from the
+engine's `VulkanContext`. That is a second `VkInstance` / `VkDevice` /
+`VkQueue` plus every Ruffle pipeline object, and it is **process-lifetime**:
+`shared_descriptors()` parks the `Arc<Descriptors>` in a `static OnceLock`
+(#2733), which is never dropped, so it is released by the OS at exit rather
+than by wgpu. The singleton's own doc comment says "one idle logical device
+is retained after the last menu's player is dropped"; in practice the
+`OnceLock` never releases it at all.
+
+| Allocation | Owner | 1920×1080 |
+|---|---|---|
+| `TextureTarget` render texture (`Rgba8Unorm`) | Ruffle wgpu device | ~8.3 MB |
+| `TextureTarget` `MAP_READ` readback buffer (`padded_bytes_per_row × height`) | Ruffle wgpu device | ~8.3 MB |
+| `SwfPlayer::pixel_buffer` | host RAM, not VRAM | ~8.3 MB |
+| Engine-side UI `VkImage` + view | `TextureRegistry` | ~8.3 MB |
+| Deferred-destroy copies of that image (up to `MAX_FRAMES_IN_FLIGHT`) | deferred-destroy ring | ~8.3–16.6 MB |
+
+≈25–42 MB per live menu, **plus one whole extra logical device**. The first
+four rows are per `SwfPlayer`; the device is shared across all of them.
+
+The deferred-destroy copies are not a leak — the ring drains — but they are
+resident because `TextureRegistry::update_rgba` recreates the image rather
+than updating it in place, so an animating HUD cycles a fresh full-viewport
+`VkImage` every frame (#3429).
+
+### Not yet ledgered
+
+A grep of this page for the owning subsystem name is the cheapest way to
+find a gap in it. Two are known and unquantified:
+
+- **Per-entity morph slots** (`crates/renderer/src/vulkan/morph_compute.rs`)
+  — each `MorphSlot` holds a device-local `delta_buffer` plus a mapped
+  `weight_buffer`, allocated per morph-target entity. No row here, and the
+  count scales with the number of FaceGen/morph actors resident, so it is
+  not a fixed figure that can be written down without measuring a real cell.
+- **`StagingPool` retained capacity** beyond the geometry rebuild's 64 MiB
+  above. The pool's budget is a *retention* bound (128 MiB default), not an
+  in-flight bound, and texture uploads share it.
+
+Both are listed rather than estimated on purpose: a fabricated number on
+this page is worse than an acknowledged hole, because the page is cited as
+authoritative rather than re-derived.
+
+---
+
 ## VRAM Rough Budget (RTX 4070 Ti, typical FNV interior)
 
 | Subsystem | Typical | Peak |
@@ -546,6 +630,8 @@ the fence slot is complete before the tick runs (#418).
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
+| Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + 64 MiB retained staging |
+| Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
