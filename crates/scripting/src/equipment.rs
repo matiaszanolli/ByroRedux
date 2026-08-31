@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 
+use crate::events::{EquipmentChange, EquipmentEventBatch};
+
 #[derive(Debug, Clone, Default)]
 pub struct EquipItemCatalog {
     biped_slot_masks: HashMap<u32, u32>,
@@ -43,6 +45,26 @@ pub fn install_equip_item_catalog(
     let count = catalog.len();
     world.insert_resource(catalog);
     count
+}
+
+/// Append ordered equipment transitions to the wearer's one-frame batch.
+pub fn emit_equipment_changes(
+    world: &World,
+    wearer: byroredux_core::ecs::EntityId,
+    changes: impl IntoIterator<Item = EquipmentChange>,
+) {
+    let changes = changes.into_iter().collect::<Vec<_>>();
+    if changes.is_empty() {
+        return;
+    }
+    let Some(mut events) = world.query_mut::<EquipmentEventBatch>() else {
+        return;
+    };
+    if let Some(batch) = events.get_mut(wearer) {
+        batch.0.extend(changes);
+    } else {
+        events.insert(wearer, EquipmentEventBatch(changes));
+    }
 }
 
 pub(crate) fn register(world: &mut World) {

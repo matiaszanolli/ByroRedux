@@ -56,7 +56,7 @@
 //! to `event_cleanup_system` below.
 
 use crate::events::{
-    ActivateEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent, OnEquipEvent,
+    ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
@@ -100,12 +100,12 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     // M47.0 Phase 5 canonical markers — all one-frame transients. Each
     // has (or will have) an engine emit site: OnTriggerEnterEvent from
     // `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
-    // loader's `attach_script_for_refr`, OnEquipEvent from the M41 equip
+    // loader's `attach_script_for_refr`, EquipmentEventBatch from equip
     // pipeline. Without draining, a re-evaluating consumer (e.g.
     // `quest_advance_system`) re-fires every frame.
     drain_component::<OnTriggerEnterEvent>(world);
     drain_component::<OnCellLoadEvent>(world);
-    drain_component::<OnEquipEvent>(world);
+    drain_component::<EquipmentEventBatch>(world);
 }
 
 /// Regression for #2672. The module doc's two-pattern contract is only
@@ -233,8 +233,8 @@ fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
 mod tests {
     use super::*;
     use crate::events::{
-        ActivateEvent, HitEvent, OnCellLoadEvent, OnEquipEvent, OnTriggerEnterEvent, RippleEvent,
-        SplashEvent, TimerExpired,
+        ActivateEvent, EquipmentChange, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
+        OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
     };
     use crate::scene::{
         SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
@@ -283,7 +283,13 @@ mod tests {
             },
         );
         world.insert(e, OnCellLoadEvent);
-        world.insert(f, OnEquipEvent { wearer: a });
+        world.insert(
+            f,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0x1234,
+                equipped: true,
+            }]),
+        );
         let g = world.spawn();
         world.insert(
             g,
@@ -319,7 +325,7 @@ mod tests {
         assert!(!world.has::<TimerExpired>(c));
         assert!(!world.has::<OnTriggerEnterEvent>(d));
         assert!(!world.has::<OnCellLoadEvent>(e));
-        assert!(!world.has::<OnEquipEvent>(f));
+        assert!(!world.has::<EquipmentEventBatch>(f));
         assert!(!world.has::<SplashEvent>(g));
         assert!(!world.has::<RippleEvent>(g));
         assert!(!world.has::<SceneEventBatch>(g));

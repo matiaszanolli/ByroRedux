@@ -407,6 +407,15 @@ pub(crate) fn apply_action(
         return MutationResult::Unavailable;
     };
     let inventory_index = InventoryIndex(index);
+    let Some(inventory_form_ids) = world.get::<Inventory>(player).map(|inventory| {
+        inventory
+            .items
+            .iter()
+            .map(|stack| stack.base_form_id)
+            .collect::<Vec<_>>()
+    }) else {
+        return MutationResult::Unavailable;
+    };
     let Some(form_id) = world
         .get::<Inventory>(player)
         .and_then(|inventory| inventory.get(inventory_index).copied())
@@ -436,18 +445,36 @@ pub(crate) fn apply_action(
     // #3112 — release/equip through the whole-entry helpers so a toggle
     // reaches both destinations, and route the equip through the variant the
     // catalog recorded rather than a slot mask that could address either.
+    let mut changes = Vec::new();
     let mutation = if equipment.release(inventory_index) {
+        changes.push(byroredux_scripting::EquipmentChange {
+            item_form_id: form_id,
+            equipped: false,
+        });
         log::info!("inventory: player unequipped {form_id:08X}");
         MutationResult::Unequipped
     } else {
-        match equip_target {
-            EquipTarget::BipedSlots(mask) => {
-                equipment.equip(mask, inventory_index);
-            }
-            EquipTarget::Weapon => {
-                equipment.equip_weapon(inventory_index);
+        let displaced = match equip_target {
+            EquipTarget::BipedSlots(mask) => equipment.equip(mask, inventory_index),
+            EquipTarget::Weapon => equipment
+                .equip_weapon(inventory_index)
+                .into_iter()
+                .collect(),
+        };
+        for displaced in displaced {
+            if !equipment.is_equipped(displaced) {
+                if let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
+                    changes.push(byroredux_scripting::EquipmentChange {
+                        item_form_id,
+                        equipped: false,
+                    });
+                }
             }
         }
+        changes.push(byroredux_scripting::EquipmentChange {
+            item_form_id: form_id,
+            equipped: true,
+        });
         log::info!("inventory: player equipped {form_id:08X}");
         MutationResult::Equipped
     };
@@ -461,6 +488,7 @@ pub(crate) fn apply_action(
     if weapon_changed {
         reconcile_equipped_weapon(world, player, equipped_weapon);
     }
+    byroredux_scripting::emit_equipment_changes(world, player, changes);
     mutation
 }
 
@@ -541,6 +569,7 @@ mod tests {
         world.register::<Inventory>();
         world.register::<EquipmentSlots>();
         world.register::<EquippedWeapon>();
+        world.register::<byroredux_scripting::EquipmentEventBatch>();
         let player = world.spawn();
         let mut inventory = Inventory::new();
         inventory.push(ItemStack::new(0x1234, 1));
@@ -735,6 +764,30 @@ mod tests {
             MutationResult::Unequipped
         );
         assert!(world.get::<EquippedWeapon>(player).is_none());
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::EquipmentEventBatch>(player)
+                .unwrap()
+                .0,
+            vec![
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x1234,
+                    equipped: true,
+                },
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x1234,
+                    equipped: false,
+                },
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x9ABC,
+                    equipped: true,
+                },
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x9ABC,
+                    equipped: false,
+                },
+            ]
+        );
     }
 
     #[test]

@@ -27,6 +27,12 @@ interface state {
         object: u64,
     }
 
+    record form-ref {
+        source-high: u64,
+        source-low: u64,
+        local: u32,
+    }
+
     record hit-details {
         damage: f32,
         power-attack: bool,
@@ -64,13 +70,7 @@ interface storage {
 
 /// Immutable facts about live entities already disclosed to this callback.
 interface world-state {
-    use state.{entity-ref};
-
-    record form-ref {
-        source-high: u64,
-        source-low: u64,
-        local: u32,
-    }
+    use state.{entity-ref, form-ref};
 
     record vec3 {
         x: f32,
@@ -110,7 +110,7 @@ world extension {
     import storage;
     import world-state;
 
-    use state.{entity-ref, hit-details};
+    use state.{entity-ref, form-ref, hit-details};
 
     export initialize: func();
     export on-activate: func(subject: entity-ref, activator: option<entity-ref>);
@@ -121,6 +121,11 @@ world extension {
         source: option<entity-ref>,
         projectile: option<entity-ref>,
         details: hit-details,
+    );
+    export on-equipment-change: func(
+        wearer: entity-ref,
+        item: form-ref,
+        equipped: bool,
     );
     export on-update: func(elapsed-seconds: f32);
     export shutdown: func();

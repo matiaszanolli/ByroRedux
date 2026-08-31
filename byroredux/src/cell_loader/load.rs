@@ -676,6 +676,9 @@ pub fn load_cell_with_masters(
     // deep-cloning the cell maps — see `LoadedCellIndex`'s own doc. This is
     // a move, not a clone, so the interior cost is unchanged.
     world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
+    world.insert_resource(super::load_order::GlobalFormIdResolver::from_load_order(
+        &load_order,
+    ));
 
     // M40 Phase 2 Stage 3 — record the just-spawned cell root so the
     // transition orchestrator can unload it on the next swap. Cleared

@@ -10,6 +10,8 @@
 //! See M46.0 / #561 / #445 for the multi-plugin landing.
 
 use crate::asset_provider::Archive;
+use byroredux_core::ecs::Resource;
+use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_plugin::esm;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -80,6 +82,50 @@ impl std::ops::Deref for LoadOrder {
         &self.names
     }
 }
+
+/// Active load-order mapping from remapped global FormIDs to portable source
+/// identity. This is the bridge used by SDK events whose payload names an
+/// authored record that has no ECS entity, such as an inventory stack item.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GlobalFormIdResolver {
+    owners: Vec<(esm::reader::GlobalSlot, PluginId)>,
+}
+
+impl GlobalFormIdResolver {
+    pub(crate) fn from_load_order(load_order: &LoadOrder) -> Self {
+        Self {
+            owners: load_order
+                .slots
+                .iter()
+                .copied()
+                .zip(
+                    load_order
+                        .names
+                        .iter()
+                        .map(|name| PluginId::from_filename(name)),
+                )
+                .collect(),
+        }
+    }
+
+    pub(crate) fn resolve(&self, form_id: u32) -> Option<FormIdPair> {
+        let slot = global_slot_of(form_id);
+        let plugin = self
+            .owners
+            .iter()
+            .find_map(|(owner, plugin)| (*owner == slot).then_some(*plugin))?;
+        let local = match slot {
+            esm::reader::GlobalSlot::Regular(_) => form_id & 0x00FF_FFFF,
+            esm::reader::GlobalSlot::Light(_) => form_id & 0x0000_0FFF,
+        };
+        Some(FormIdPair {
+            plugin,
+            local: LocalFormId(local),
+        })
+    }
+}
+
+impl Resource for GlobalFormIdResolver {}
 
 /// Resolve a global FormID to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
@@ -415,6 +461,41 @@ fn allocate_global_slot(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn global_form_resolver_preserves_regular_plugin_identity() {
+        let order = LoadOrder::new(
+            vec!["Skyrim.esm".into(), "Update.esm".into()],
+            vec![
+                esm::reader::GlobalSlot::Regular(0),
+                esm::reader::GlobalSlot::Regular(1),
+            ],
+        );
+
+        assert_eq!(
+            GlobalFormIdResolver::from_load_order(&order).resolve(0x0112_3456),
+            Some(FormIdPair {
+                plugin: PluginId::from_filename("Update.esm"),
+                local: LocalFormId(0x0012_3456),
+            })
+        );
+    }
+
+    #[test]
+    fn global_form_resolver_preserves_light_plugin_identity() {
+        let order = LoadOrder::new(
+            vec!["Creation.esl".into()],
+            vec![esm::reader::GlobalSlot::Light(5)],
+        );
+
+        assert_eq!(
+            GlobalFormIdResolver::from_load_order(&order).resolve(0xFE00_5ABC),
+            Some(FormIdPair {
+                plugin: PluginId::from_filename("Creation.esl"),
+                local: LocalFormId(0xABC),
+            })
+        );
+    }
 
     /// FO3+/TES5 24-byte-header record: `type + size + flags + form_id +
     /// 8-byte trailer`, then `[subtype, u16 len, data]` sub-records.

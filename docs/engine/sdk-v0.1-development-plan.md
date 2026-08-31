@@ -25,9 +25,9 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load/combat-hit/recurring-update payloads, and
+store, canonical activation/cell-load/combat-hit/equipment/recurring-update payloads, and
 atomic deferred command batches. The WIT world exposes `on-activate`,
-`on-cell-load`, `on-hit`, `on-update`, immutable name/form/world-transform
+`on-cell-load`, `on-hit`, `on-equipment-change`, `on-update`, immutable name/form/world-transform
 reads, and a compact own-state increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
@@ -36,7 +36,8 @@ commands on traps, and enforces a per-entry command budget. The executable owns
 the live host, loads a dependency-resolved
 set from repeatable `--extension` arguments, applies only explicit
 `--extension-grant` authority, commits the profile atomically, adapts live
-`ActivateEvent`, `OnCellLoadEvent`, and producer-resolved `HitEvent`
+`ActivateEvent`, `OnCellLoadEvent`, producer-resolved `HitEvent`, and ordered
+`EquipmentEventBatch`
 markers after releasing ECS guards, and shuts components down in reverse
 order. Extension component rows now live inside the checksummed
 ByroRedux save container: transient handles translate to load-order-independent
@@ -414,9 +415,9 @@ Exit gate:
 
 ### Phase 2 — extension state and event vertical slice
 
-Status: **Activation, cell-load, combat-hit, and bounded recurring-update paths,
-live ECS adapters, principal storage, and the first immutable entity projection
-implemented; additional projection families and the equip event adapter remain
+Status: **Activation, cell-load, combat-hit, equipment-change, and bounded
+recurring-update paths, live ECS adapters, principal storage, and the first
+immutable entity projection implemented; additional projection families remain
 pending.**
 
 Deliverables:

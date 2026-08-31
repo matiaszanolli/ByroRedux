@@ -6,8 +6,8 @@ use byroredux_sdk::component::{
     ComponentFieldDeclaration, ComponentSchema, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionValue, ExtensionValueType,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
-use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, ServiceId};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, UpdateEvent};
+use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, FormRef, ServiceId};
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
     CapabilityRequest, ComponentSchemaDeclaration, EventSubscription, ExecutableComponent,
@@ -16,8 +16,9 @@ use byroredux_sdk::manifest::{
 use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
-    EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, LOGGING_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, LOGGING_SERVICE,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
 use semver::{Version, VersionReq};
@@ -37,6 +38,11 @@ const IMPORTS: &str = r#"
             (field "world-generation" u64)
             (field "object" u64)))
         (export "entity-ref" (type $entity-ref (eq $entity-ref-shape)))
+        (type $form-ref-shape (record
+            (field "source-high" u64)
+            (field "source-low" u64)
+            (field "local" u32)))
+        (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
         (type $hit-details-shape (record
             (field "damage" f32)
             (field "power-attack" bool)
@@ -51,6 +57,7 @@ const IMPORTS: &str = r#"
             (param "delta" s64)))
     ))
     (alias export $state "entity-ref" (type $entity-ref))
+    (alias export $state "form-ref" (type $form-ref))
     (alias export $state "hit-details" (type $hit-details))
 "#;
 
@@ -94,6 +101,19 @@ const ON_HIT_LIFT: &str = r#"
                 (param "projectile" (option $entity-ref))
                 (param "details" $hit-details)
                 (canon lift (core func $guest-instance "on-hit")))
+"#;
+
+const ON_EQUIPMENT_CORE: &str = r#"
+                (func (export "on-equipment-change")
+                    (param i64 i64 i64 i64 i32 i32))
+"#;
+
+const ON_EQUIPMENT_LIFT: &str = r#"
+            (func (export "on-equipment-change")
+                (param "wearer" $entity-ref)
+                (param "item" $form-ref)
+                (param "equipped" bool)
+                (canon lift (core func $guest-instance "on-equipment-change")))
 "#;
 
 const ON_UPDATE_CORE: &str = r#"
@@ -192,6 +212,16 @@ fn update_manifest() -> ExtensionManifest {
     manifest
 }
 
+fn equipment_manifest() -> ExtensionManifest {
+    let mut manifest = principal_storage_manifest();
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(EQUIPMENT_EVENT).unwrap(),
+        filters: Vec::new(),
+        interval_millis: None,
+    }];
+    manifest
+}
+
 fn principal_storage_manifest() -> ExtensionManifest {
     let mut manifest = manifest();
     manifest.capabilities = vec![
@@ -224,6 +254,11 @@ fn principal_storage_increment_component() -> String {
                     (field "world-generation" u64)
                     (field "object" u64)))
                 (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+                (type $form-ref-shape (record
+                    (field "source-high" u64)
+                    (field "source-low" u64)
+                    (field "local" u32)))
+                (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
                 (type $hit-details-shape (record
                     (field "damage" f32)
                     (field "power-attack" bool)
@@ -238,6 +273,7 @@ fn principal_storage_increment_component() -> String {
                     (param "delta" s64)))
             ))
             (alias export $state "entity-ref" (type $entity-ref))
+            (alias export $state "form-ref" (type $form-ref))
             (alias export $state "hit-details" (type $hit-details))
             (alias export $storage "queue-increment-i64" (func $increment))
             (core module $libc
@@ -259,6 +295,32 @@ fn principal_storage_increment_component() -> String {
                 (func (export "shutdown"))
                 (func (export "on-cell-load") (param i64 i64))
                 {ON_HIT_CORE}
+                (func (export "on-equipment-change")
+                    (param i64 i64)
+                    (param $source-high i64) (param $source-low i64)
+                    (param $local i32) (param $equipped i32)
+                    local.get $source-high
+                    i64.const 72623859790382856
+                    i64.ne
+                    local.get $source-low
+                    i64.const 651345242494996240
+                    i64.ne
+                    i32.or
+                    local.get $local
+                    i32.const 4660
+                    i32.ne
+                    i32.or
+                    local.get $equipped
+                    i32.const 1
+                    i32.ne
+                    i32.or
+                    if
+                        unreachable
+                    end
+                    i32.const 0
+                    i32.const 16
+                    i64.const 1
+                    call $increment)
                 (func (export "on-update") (param f32)
                     i32.const 0
                     i32.const 16
@@ -283,6 +345,7 @@ fn principal_storage_increment_component() -> String {
                 (param "subject" $entity-ref)
                 (canon lift (core func $guest-instance "on-cell-load")))
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -291,6 +354,8 @@ fn principal_storage_increment_component() -> String {
         )"#
     .replace("{ON_HIT_CORE}", ON_HIT_CORE)
     .replace("{ON_HIT_LIFT}", ON_HIT_LIFT)
+    .replace("{ON_EQUIPMENT_CORE}", ON_EQUIPMENT_CORE)
+    .replace("{ON_EQUIPMENT_LIFT}", ON_EQUIPMENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -302,6 +367,11 @@ fn entity_projection_component() -> String {
                 (field "object" u64)))
             (import "byro:mod-host/state@0.1.0" (instance $state
                 (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+                (type $form-ref-shape (record
+                    (field "source-high" u64)
+                    (field "source-low" u64)
+                    (field "local" u32)))
+                (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
                 (type $hit-details-shape (record
                     (field "damage" f32)
                     (field "power-attack" bool)
@@ -317,6 +387,7 @@ fn entity_projection_component() -> String {
                     (result bool)))
             ))
             (alias export $state "entity-ref" (type $entity-ref))
+            (alias export $state "form-ref" (type $form-ref))
             (alias export $state "hit-details" (type $hit-details))
             (alias export $world "contains-entity" (func $contains))
             (core func $contains-lower (canon lower (func $contains)))
@@ -326,6 +397,7 @@ fn entity_projection_component() -> String {
                 (func (export "shutdown"))
                 (func (export "on-cell-load") (param i64 i64))
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
@@ -348,6 +420,7 @@ fn entity_projection_component() -> String {
                 (param "subject" $entity-ref)
                 (canon lift (core func $guest-instance "on-cell-load")))
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -356,6 +429,8 @@ fn entity_projection_component() -> String {
         )"#
     .replace("{ON_HIT_CORE}", ON_HIT_CORE)
     .replace("{ON_HIT_LIFT}", ON_HIT_LIFT)
+    .replace("{ON_EQUIPMENT_CORE}", ON_EQUIPMENT_CORE)
+    .replace("{ON_EQUIPMENT_LIFT}", ON_EQUIPMENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -438,6 +513,7 @@ fn logging_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -451,6 +527,7 @@ fn logging_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -470,6 +547,7 @@ fn looping_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -480,6 +558,7 @@ fn looping_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -496,6 +575,7 @@ fn oversized_memory_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -506,6 +586,7 @@ fn oversized_memory_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -524,6 +605,7 @@ fn component_with_wasi_import() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -534,6 +616,7 @@ fn component_with_wasi_import() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -562,6 +645,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                 (func (export "shutdown"))
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
@@ -580,6 +664,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -598,6 +683,7 @@ fn cell_load_counter_component() -> String {
                 (func (export "shutdown"))
                 {ON_ACTIVATE_CORE}
                 {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-cell-load")
                     (param $world i64) (param $object i64)
@@ -619,6 +705,7 @@ fn cell_load_counter_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -685,6 +772,7 @@ fn hit_counter_component() -> String {
                     i32.const 0
                     i64.const 1
                     call $increment)
+                {ON_EQUIPMENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -698,6 +786,7 @@ fn hit_counter_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -866,6 +955,61 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
             elapsed_seconds: f32::NAN,
         }),
         Err(SandboxError::InvalidEventPayload { .. })
+    ));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn canonical_equipment_change_preserves_portable_item_identity() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = equipment_manifest();
+    let compiled = compile_wat_for(
+        &runtime,
+        &manifest,
+        &principal_storage_increment_component(),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let commands = instance
+        .on_equipment_change(EquipmentEvent {
+            wearer: EntityRef::new(7, 42).unwrap(),
+            item: FormRef::new(
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+                0x1234,
+            ),
+            equipped: true,
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let mut unsubscribed = equipment_manifest();
+    unsubscribed.subscriptions.clear();
+    let compiled = compile_wat_for(
+        &runtime,
+        &unsubscribed,
+        &principal_storage_increment_component(),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime
+        .instantiate(&compiled, &unsubscribed, grants)
+        .unwrap();
+    instance.initialize().unwrap();
+    assert!(matches!(
+        instance.on_equipment_change(EquipmentEvent {
+            wearer: EntityRef::new(7, 42).unwrap(),
+            item: FormRef::new([0; 16], 1),
+            equipped: false,
+        }),
+        Err(SandboxError::EventNotSubscribed(_))
     ));
     assert_eq!(instance.status(), &InstanceStatus::Active);
 }

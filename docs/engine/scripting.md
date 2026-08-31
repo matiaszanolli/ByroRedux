@@ -465,7 +465,7 @@ process it and remove it. Covers ~50 events.
 | `OnActivate(akActionRef)` | `ActivateEvent { activator: EntityId }` ✓ shipped | Activation system / console (M47.0) |
 | `OnHit(...)` | `HitEvent { aggressor, source, projectile, … }` ✓ shipped (no emit yet) | Combat system |
 | `OnTriggerEnter(akRef)` / `OnTriggerLeave` | `OnTriggerEnterEvent { triggerer }` ✓ shipped (no emit yet) | Physics / Rapier sensor |
-| `OnEquipped` / `OnUnequipped` | `OnEquipEvent { wearer }` ✓ shipped (no emit yet) | Inventory / equip system |
+| `OnEquipped` / `OnUnequipped` | wearer-owned `EquipmentEventBatch` with stable item FormIDs ✓ shipped | Inventory / equip system and translated `EquipItem` fragments |
 | `OnItemAdded` / `OnItemRemoved` | `InventoryEvent { item, count, source }` (planned) | Container system |
 | `OnContainerChanged` | `ContainerChangeEvent { ... }` (planned) | Container system |
 | `OnGrab` / `OnRelease` | `GrabEvent { grabbed: bool }` (planned) | Interaction system |

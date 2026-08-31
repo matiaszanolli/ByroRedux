@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::EntityRef;
+use crate::identity::{EntityRef, FormRef};
 
 /// Payload of `byro.events.activate`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -36,6 +36,18 @@ pub struct HitEvent {
     pub sneak_attack: bool,
     pub bash_attack: bool,
     pub blocked: bool,
+}
+
+/// Payload of `byro.events.equipment-change`.
+///
+/// Items are identified by their load-order-independent authored form rather
+/// than by a fabricated ECS entity. `equipped` is false for explicit
+/// unequips and for items fully displaced by another equip operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EquipmentEvent {
+    pub wearer: EntityRef,
+    pub item: FormRef,
+    pub equipped: bool,
 }
 
 /// Payload of one bounded `byro.events.update` callback.

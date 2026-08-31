@@ -483,13 +483,13 @@ a current feature-gap list.
   subsystem exists. The consumer contract (`HitEvent`) is in place for
   that day.
 
-- **OnEquip emit site (item 4) — blocked on runtime equip dispatch.**
-  78 scripts define `OnEquip(ped)`. `OnEquipEvent` exists; the only equip
-  code today is the M41 *spawn-time* NPC outfit application
-  (`byroredux/src/npc_spawn.rs`), not a runtime equip *action* that a
-  script would observe. A faithful emit site needs the runtime
-  inventory/equip-action path (and the equipped item's VMAD script
-  binding) — deferred with the contract in place.
+- **OnEquip emit site (item 4) — runtime mutation side implemented.**
+  Runtime inventory toggles and translated `EquipItem` fragments now append
+  ordered equip/unequip transitions to the wearer's `EquipmentEventBatch`.
+  The engine-native SDK adapter exposes the wearer as an opaque `EntityRef`
+  and the authored item as a load-order-independent `FormRef`. Item-attached
+  legacy VMAD dispatch remains separate work; sandboxed extensions can consume
+  the canonical event directly.
 
 - **136-event dispatch (item 5) — demand-driven, not built ahead.** The
   event-frequency table above is the priority order; build a marker +

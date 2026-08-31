@@ -45,10 +45,11 @@ pub use dialogue::{
     ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch, DialoguePlayback,
     DialoguePresentationEvent, DialoguePresentationEventBatch, DialogueRegistry,
 };
-pub use equipment::{install_equip_item_catalog, EquipItemCatalog};
+pub use equipment::{emit_equipment_changes, install_equip_item_catalog, EquipItemCatalog};
 pub use events::{
-    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
-    OnEquipEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
+    EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent,
+    TimerExpired,
 };
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
@@ -108,18 +109,18 @@ pub fn register(world: &mut World) {
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();
     // M47.0 Phase 5 — canonical event markers. OnCellLoadEvent +
-    // OnTriggerEnterEvent + OnEquipEvent join the existing
+    // OnTriggerEnterEvent + EquipmentEventBatch join the existing
     // ActivateEvent / HitEvent / TimerExpired in the script-event
     // catalog. Emit sites land per-phase:
     //   * OnCellLoadEvent — emitted by the cell loader's
     //     `attach_script_for_refr` (Phase 5).
     //   * OnTriggerEnterEvent — emitted by `trigger_detection_system`
     //     on player entry (M47.2).
-    //   * OnEquipEvent — deferred to M41 equip pipeline integration.
+    //   * EquipmentEventBatch — emitted by player and scripted equip paths.
     // All three are one-frame transients drained by `event_cleanup_system`.
     world.register::<OnCellLoadEvent>();
     world.register::<OnTriggerEnterEvent>();
-    world.register::<OnEquipEvent>();
+    world.register::<EquipmentEventBatch>();
     // M47.2 — trigger-volume storage. The cell loader attaches a
     // `TriggerVolume` to each invisible trigger REFR; `trigger_detection_system`
     // emits `OnTriggerEnterEvent` on player entry, which the quest-advance

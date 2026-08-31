@@ -759,10 +759,32 @@ fn apply_effect(
             if equipment.get_mut(actor).is_none() {
                 equipment.insert(actor, EquipmentSlots::new());
             }
-            equipment
+            let slots = equipment
                 .get_mut(actor)
-                .expect("just present or inserted above")
-                .equip(slot_mask, index);
+                .expect("just present or inserted above");
+            if slots.is_equipped(index) {
+                return None;
+            }
+            let displaced = slots.equip(slot_mask, index);
+            let mut changes = displaced
+                .into_iter()
+                .filter(|displaced| !slots.is_equipped(*displaced))
+                .filter_map(|displaced| {
+                    inventory
+                        .get(displaced)
+                        .map(|stack| crate::EquipmentChange {
+                            item_form_id: stack.base_form_id,
+                            equipped: false,
+                        })
+                })
+                .collect::<Vec<_>>();
+            changes.push(crate::EquipmentChange {
+                item_form_id,
+                equipped: true,
+            });
+            drop(inventories);
+            drop(equipment);
+            crate::emit_equipment_changes(world, actor, changes);
             None
         }
         Effect::MoveTo { moved, destination } => {

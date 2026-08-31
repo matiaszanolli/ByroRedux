@@ -462,19 +462,14 @@ fn on_cell_load_event_storage_registered_and_insertable() {
 }
 
 #[test]
-fn on_trigger_enter_event_and_on_equip_event_storages_registered() {
-    // Phase 5 contract: OnTriggerEnterEvent + OnEquipEvent storages are
-    // registered and the markers are insertable. `OnTriggerEnterEvent` now
-    // HAS an emit site — `trigger_detection_system` fires it on player entry
-    // into a `TriggerVolume` (M47.2), so the old "deferred to Rapier sensors"
-    // note is stale (SCR-D6-03); `OnEquipEvent`'s emit site still lands with
-    // the M41 equip pipeline. This test only asserts the storage/marker
-    // contract; the trigger emit path is covered by the `trigger` module.
+fn trigger_and_equipment_event_storages_are_registered() {
+    // Both canonical marker storages are registered and accept their real
+    // payload shapes. Producer behavior is covered by the trigger, fragment,
+    // and executable inventory tests.
     let mut world = World::new();
     crate::register(&mut world);
     let trigger_volume = world.spawn();
     let player = world.spawn();
-    let item = world.spawn();
     let npc = world.spawn();
 
     {
@@ -489,8 +484,14 @@ fn on_trigger_enter_event_and_on_equip_event_storages_registered() {
     assert!(world.has::<crate::OnTriggerEnterEvent>(trigger_volume));
 
     {
-        let mut q = world.query_mut::<crate::OnEquipEvent>().unwrap();
-        q.insert(item, crate::OnEquipEvent { wearer: npc });
+        let mut q = world.query_mut::<crate::EquipmentEventBatch>().unwrap();
+        q.insert(
+            npc,
+            crate::EquipmentEventBatch(vec![crate::EquipmentChange {
+                item_form_id: 0x1234,
+                equipped: true,
+            }]),
+        );
     }
-    assert!(world.has::<crate::OnEquipEvent>(item));
+    assert!(world.has::<crate::EquipmentEventBatch>(npc));
 }

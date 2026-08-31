@@ -43,6 +43,8 @@ pub const ACTIVATE_EVENT: &str = "byro.events.activate";
 pub const CELL_LOAD_EVENT: &str = "byro.events.cell-load";
 /// Canonical combat hit event identifier.
 pub const HIT_EVENT: &str = "byro.events.hit";
+/// Canonical item equip/unequip transition identifier.
+pub const EQUIPMENT_EVENT: &str = "byro.events.equipment-change";
 /// Canonical engine-owned recurring callback identifier.
 pub const UPDATE_EVENT: &str = "byro.events.update";
 

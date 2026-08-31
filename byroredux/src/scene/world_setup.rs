@@ -961,6 +961,9 @@ pub(crate) fn assemble_exterior_streaming(
     world.insert_resource(cell_loader::LoadedCellIndex(std::sync::Arc::clone(
         &wctx.record_index,
     )));
+    world.insert_resource(
+        cell_loader::load_order::GlobalFormIdResolver::from_load_order(&wctx.load_order),
+    );
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);

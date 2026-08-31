@@ -236,7 +236,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
         ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),
         ("OnCellLoadEvent", "one-shot event marker drained every frame by event_cleanup_system"),
-        ("OnEquipEvent", "one-shot event marker drained every frame by event_cleanup_system; no live emit site yet either (M41 equip hook pending)"),
+        ("EquipmentEventBatch", "one-shot equipment transition batch drained every frame by event_cleanup_system"),
         ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("PendingFragmentActivations", "one-frame handoff queue (#2654) drained every frame by fragment_activation_flush_system; deliberately transient for the same reason ActivateEvent above is — it holds raw EntityIds, which a live in-session reload churns (the SAVE-D6-01 / #1696 / #2380 hazard class), and persisting a queue whose only output marker is itself unsaved would be incoherent. Worst case is one queued scripted activation lost if a save lands in the single frame between fragment dispatch and the next frame's flush"),

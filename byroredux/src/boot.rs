@@ -1683,6 +1683,20 @@ pub(crate) fn build_scheduler() -> Scheduler {
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
+        crate::extensions::extension_equipment_dispatch_system,
+        Access::new()
+            .reads::<byroredux_scripting::EquipmentEventBatch>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::components::Name>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .reads::<byroredux_core::ecs::components::Transform>()
+            .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .reads_resource::<byroredux_core::string::StringPool>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
         crate::extensions::extension_hit_dispatch_system,
         Access::new()
             .reads::<byroredux_scripting::HitEvent>()
@@ -2232,11 +2246,16 @@ mod fragment_activation_order_tests {
 
         let activation = pos("crate::extensions::extension_activation_dispatch_system");
         let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
+        let equipment = pos("crate::extensions::extension_equipment_dispatch_system");
         let hit = pos("crate::extensions::extension_hit_dispatch_system");
         let update = pos("crate::extensions::extension_update_dispatch_system");
         let cleanup = pos("byroredux_scripting::event_cleanup_system");
         assert!(
-            activation < cleanup && cell_load < cleanup && hit < cleanup && update < cleanup,
+            activation < cleanup
+                && cell_load < cleanup
+                && equipment < cleanup
+                && hit < cleanup
+                && update < cleanup,
             "extension callbacks must run before transient marker cleanup"
         );
     }

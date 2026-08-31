@@ -47,7 +47,8 @@ pub enum CanonicalEvent {
     CellLoad,
     /// `OnTriggerEnter` → [`crate::events::OnTriggerEnterEvent`].
     TriggerEnter,
-    /// `OnEquip` → [`crate::events::OnEquipEvent`].
+    /// `OnEquip` → [`crate::events::EquipmentEventBatch`] entries whose
+    /// `equipped` flag is true.
     Equip,
     /// `OnTimer` → [`crate::events::TimerExpired`].
     Timer,

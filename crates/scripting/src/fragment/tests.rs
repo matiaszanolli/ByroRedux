@@ -2204,6 +2204,13 @@ fn dispatch_tethers_cart_and_equips_carried_armor() {
         world.get::<EquipmentSlots>(rider).unwrap().at(12),
         Some(InventoryIndex(1))
     );
+    assert_eq!(
+        world.get::<crate::EquipmentEventBatch>(rider).unwrap().0,
+        vec![crate::EquipmentChange {
+            item_form_id: GAG,
+            equipped: true,
+        }]
+    );
 }
 
 #[test]

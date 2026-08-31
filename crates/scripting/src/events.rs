@@ -172,29 +172,25 @@ impl Component for OnCellLoadEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// M47.0 Phase 5 — fired when an actor equips an item. Replaces
-/// Papyrus `OnEquip` (Skyrim+) / `OnEquipped` (FO3/FNV).
+/// One real equipment-state transition on a wearer.
 ///
-/// Lands on the EQUIPPED ITEM entity (when items are instance
-/// entities — M41 Phase 2's ItemInstance path) or on the WEARER
-/// (when the wearer-side hook is preferred — common Papyrus idiom).
-/// The Bethesda Papyrus contract attaches the script to the item
-/// extends; mirror that here by emitting on the item.
-///
-/// **Emit site status (Phase 5)**: defined here; the M41 equip
-/// pipeline emit site lands in a follow-up commit (touches
-/// `byroredux/src/cell_loader.rs::build_npc_equip_state` + the
-/// per-NPC outfit-resolve walk). The marker is structurally
-/// queryable now; scripts can declare the storage and the engine
-/// will start firing it once the M41 hook lands.
-#[derive(Debug, Clone, Copy)]
-pub struct OnEquipEvent {
-    /// The wearer that just equipped this item — Papyrus's
-    /// `akActor` parameter. Typically the NPC actor; the player on
-    /// first-person equips.
-    pub wearer: EntityId,
+/// Inventory items are stack rows keyed by authored FormID, not fabricated ECS
+/// entities. `equipped=false` covers explicit unequips and a prior item that
+/// was fully displaced by a new equip.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct EquipmentChange {
+    pub item_form_id: u32,
+    pub equipped: bool,
 }
 
-impl Component for OnEquipEvent {
+/// One-frame ordered batch of equipment transitions on the wearer entity.
+///
+/// Batching prevents multiple changes in one frame—such as an old weapon
+/// unequip followed by a new weapon equip—from overwriting one another in a
+/// sparse component slot.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct EquipmentEventBatch(pub Vec<EquipmentChange>);
+
+impl Component for EquipmentEventBatch {
     type Storage = SparseSetStorage<Self>;
 }

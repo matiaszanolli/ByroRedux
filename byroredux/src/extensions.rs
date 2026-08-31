@@ -23,14 +23,15 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, UpdateEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
-    ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, UPDATE_EVENT,
+    ACTIVATE_EVENT, CELL_LOAD_EVENT, EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
+    UPDATE_EVENT,
 };
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
@@ -165,6 +166,7 @@ struct HostedComponent {
     component: ComponentId,
     receives_activate: bool,
     receives_cell_load: bool,
+    receives_equipment: bool,
     receives_hit: bool,
     recurring_update: Option<RecurringCadence>,
     instance: ModInstance,
@@ -308,6 +310,10 @@ impl ExtensionHost {
             .subscriptions
             .iter()
             .any(|subscription| subscription.event.as_str() == HIT_EVENT);
+        let receives_equipment = manifest
+            .subscriptions
+            .iter()
+            .any(|subscription| subscription.event.as_str() == EQUIPMENT_EVENT);
         let recurring_update = manifest
             .subscriptions
             .iter()
@@ -333,6 +339,7 @@ impl ExtensionHost {
                 component: component_id,
                 receives_activate,
                 receives_cell_load,
+                receives_equipment,
                 receives_hit,
                 recurring_update,
                 instance,
@@ -566,6 +573,88 @@ impl ExtensionHost {
                     hosted,
                     result,
                     LifecyclePhase::CellLoad,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    /// Deliver already-snapshotted equipment changes in mutation order.
+    #[cfg(test)]
+    pub fn dispatch_equipment_changes(
+        &mut self,
+        changes: impl IntoIterator<Item = RawEquipmentChange>,
+    ) -> ExtensionDispatchStats {
+        self.dispatch_equipment_changes_with_projections(changes, &BTreeMap::new())
+    }
+
+    fn dispatch_equipment_changes_with_projections(
+        &mut self,
+        changes: impl IntoIterator<Item = RawEquipmentChange>,
+        raw_projections: &BTreeMap<EntityId, RawEntityProjection>,
+    ) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        for change in changes {
+            stats.events += 1;
+            let wearer = match self.bind_entity(change.wearer, change.wearer_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let entity_projections = vec![entity_projection(
+                wearer,
+                change.wearer_form,
+                raw_projections.get(&change.wearer),
+            )];
+
+            for hosted in &mut self.components {
+                if !hosted.receives_equipment
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                hosted
+                    .instance
+                    .set_entity_projections(entity_projections.clone());
+                let result = hosted.instance.on_equipment_change(EquipmentEvent {
+                    wearer,
+                    item: change.item,
+                    equipped: change.equipped,
+                });
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
+                            extension: hosted.extension.clone(),
+                            component: hosted.component.clone(),
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    LifecyclePhase::Equipment,
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
@@ -1140,6 +1229,15 @@ pub(crate) struct RawCellLoad {
     pub subject_form: Option<FormRef>,
 }
 
+/// Raw equipment change captured before entering untrusted code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RawEquipmentChange {
+    pub wearer: EntityId,
+    pub wearer_form: Option<FormRef>,
+    pub item: FormRef,
+    pub equipped: bool,
+}
+
 /// Raw combat event captured before entering untrusted code.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RawHit {
@@ -1337,6 +1435,84 @@ pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
     if stats.faults > 0 {
         log::warn!(
             "extension cell-load dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
+/// Late-stage adapter from ordered equipment mutation batches to sandbox callbacks.
+pub(crate) fn extension_equipment_dispatch_system(world: &World, _dt: f32) {
+    let raw_changes = {
+        let Some(events) = world.query::<byroredux_scripting::EquipmentEventBatch>() else {
+            return;
+        };
+        events
+            .iter()
+            .flat_map(|(wearer, batch)| batch.0.iter().copied().map(move |change| (wearer, change)))
+            .collect::<Vec<_>>()
+    };
+    if raw_changes.is_empty() {
+        return;
+    }
+
+    let form_bindings = forms_by_entity(world);
+    let disclosed_entities = raw_changes
+        .iter()
+        .map(|(wearer, _)| *wearer)
+        .collect::<BTreeSet<_>>();
+    let projections = capture_entity_projections(world, &disclosed_entities);
+    let changes = {
+        let Some(resolver) =
+            world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+        else {
+            log::warn!("extension equipment dispatch skipped: load-order resolver is unavailable");
+            return;
+        };
+        raw_changes
+            .into_iter()
+            .filter_map(|(wearer, change)| {
+                let Some(item) = resolver.resolve(change.item_form_id).map(form_ref) else {
+                    log::warn!(
+                        "extension equipment dispatch skipped unresolved item form {:#010X}",
+                        change.item_form_id
+                    );
+                    return None;
+                };
+                Some(RawEquipmentChange {
+                    wearer,
+                    wearer_form: form_bindings.get(&wearer).copied(),
+                    item,
+                    equipped: change.equipped,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    if changes.is_empty() {
+        return;
+    }
+
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_equipment_changes_with_projections(changes, &projections);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension equipment dispatch: events={} deliveries={} commands={} faults={}",
             stats.events,
             stats.deliveries,
             stats.commands_applied,
@@ -1863,6 +2039,11 @@ mod tests {
       (field "world-generation" u64)
       (field "object" u64)))
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $form-ref-shape (record
+      (field "source-high" u64)
+      (field "source-low" u64)
+      (field "local" u32)))
+    (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
     (type $hit-details-shape (record
       (field "damage" f32)
       (field "power-attack" bool)
@@ -1877,6 +2058,7 @@ mod tests {
       (param "delta" s64)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
   (alias export $state "queue-increment-own-i64" (func $increment))
   (core func $increment-lower (canon lower (func $increment)))
@@ -1909,6 +2091,15 @@ mod tests {
       i32.const 0
       i64.const 1
       call $increment)
+    (func (export "on-equipment-change")
+      (param $world i64) (param $object i64)
+      (param i64 i64 i32 i32)
+      local.get $world
+      local.get $object
+      i32.const 0
+      i32.const 0
+      i64.const 1
+      call $increment)
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -1930,6 +2121,11 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-equipment-change")
+    (param "wearer" $entity-ref)
+    (param "item" $form-ref)
+    (param "equipped" bool)
+    (canon lift (core func $guest-instance "on-equipment-change")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -1943,6 +2139,11 @@ mod tests {
       (field "world-generation" u64)
       (field "object" u64)))
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $form-ref-shape (record
+      (field "source-high" u64)
+      (field "source-low" u64)
+      (field "local" u32)))
+    (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
     (type $hit-details-shape (record
       (field "damage" f32)
       (field "power-attack" bool)
@@ -1957,6 +2158,7 @@ mod tests {
       (param "delta" s64)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
   (alias export $storage "queue-increment-i64" (func $increment))
   (core module $libc
@@ -1986,6 +2188,12 @@ mod tests {
       (param i64 i64)
       (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
       (param f32 i32 i32 i32 i32))
+    (func (export "on-equipment-change")
+      (param i64 i64 i64 i64 i32 i32)
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
     (func (export "on-update") (param f32)
       i32.const 0
       i32.const 16
@@ -2012,6 +2220,11 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-equipment-change")
+    (param "wearer" $entity-ref)
+    (param "item" $form-ref)
+    (param "equipped" bool)
+    (canon lift (core func $guest-instance "on-equipment-change")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2025,6 +2238,11 @@ mod tests {
     (field "object" u64)))
   (import "byro:mod-host/state@0.1.0" (instance $state
     (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+    (type $form-ref-shape (record
+      (field "source-high" u64)
+      (field "source-low" u64)
+      (field "local" u32)))
+    (export "form-ref" (type $form-ref-in (eq $form-ref-shape)))
     (type $hit-details-shape (record
       (field "damage" f32)
       (field "power-attack" bool)
@@ -2040,6 +2258,7 @@ mod tests {
       (result bool)))
   ))
   (alias export $state "entity-ref" (type $entity-ref))
+  (alias export $state "form-ref" (type $form-ref))
   (alias export $state "hit-details" (type $hit-details))
   (alias export $world "contains-entity" (func $contains))
   (core func $contains-lower (canon lower (func $contains)))
@@ -2061,6 +2280,16 @@ mod tests {
       (param i64 i64)
       (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
       (param f32 i32 i32 i32 i32))
+    (func (export "on-equipment-change")
+      (param $world i64) (param $object i64)
+      (param i64 i64 i32 i32)
+      local.get $world
+      local.get $object
+      call $contains
+      i32.eqz
+      if
+        unreachable
+      end)
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2082,6 +2311,11 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-equipment-change")
+    (param "wearer" $entity-ref)
+    (param "item" $form-ref)
+    (param "equipped" bool)
+    (canon lift (core func $guest-instance "on-equipment-change")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2150,6 +2384,16 @@ mod tests {
         let mut manifest = manifest(id);
         manifest.subscriptions = vec![EventSubscription {
             event: EventId::new(HIT_EVENT).unwrap(),
+            filters: Vec::new(),
+            interval_millis: None,
+        }];
+        manifest
+    }
+
+    fn equipment_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(EQUIPMENT_EVENT).unwrap(),
             filters: Vec::new(),
             interval_millis: None,
         }];
@@ -2268,6 +2512,10 @@ mod tests {
 
     fn host_with_hit_package(id: &str) -> ExtensionHost {
         host_with_manifest(hit_manifest(id))
+    }
+
+    fn host_with_equipment_package(id: &str) -> ExtensionHost {
+        host_with_manifest(equipment_manifest(id))
     }
 
     fn host_with_manifest(manifest: ExtensionManifest) -> ExtensionHost {
@@ -2418,6 +2666,50 @@ mod tests {
                 .row(&owner, &schema, subject)
                 .and_then(|row| row.get("count")),
             Some(&ExtensionValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn live_host_delivers_equipment_changes_only_to_declared_subscriber() {
+        let mut host = host_with_equipment_package("org.example.live-equipment");
+        let item = FormRef::new([0x5A; 16], 0x1234);
+        let stats = host.dispatch_equipment_changes([RawEquipmentChange {
+            wearer: 41,
+            wearer_form: None,
+            item,
+            equipped: true,
+        }]);
+        assert_eq!(
+            stats,
+            ExtensionDispatchStats {
+                events: 1,
+                deliveries: 1,
+                commands_applied: 1,
+                faults: 0,
+            }
+        );
+        let wearer = host.handles.by_entity[&41];
+        let owner = PrincipalId::new("org.example.live-equipment").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, wearer)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(1))
+        );
+
+        let mut unsubscribed = host_with_package("org.example.no-equipment");
+        assert_eq!(
+            unsubscribed.dispatch_equipment_changes([RawEquipmentChange {
+                wearer: 41,
+                wearer_form: None,
+                item,
+                equipped: false,
+            }]),
+            ExtensionDispatchStats {
+                events: 1,
+                ..ExtensionDispatchStats::default()
+            }
         );
     }
 
@@ -2681,6 +2973,56 @@ mod tests {
             Some(&ExtensionValue::I64(1))
         );
         assert!(world.has::<byroredux_scripting::HitEvent>(subject));
+    }
+
+    #[test]
+    fn equipment_adapter_resolves_items_and_preserves_batch_order_before_cleanup() {
+        use crate::cell_loader::load_order::{GlobalFormIdResolver, LoadOrder};
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            byroredux_scripting::EquipmentEventBatch(vec![
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x0112_3456,
+                    equipped: false,
+                },
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0xFE00_5ABC,
+                    equipped: true,
+                },
+            ]),
+        );
+        let order = LoadOrder::new(
+            vec!["Base.esm".into(), "Gear.esp".into(), "Creation.esl".into()],
+            vec![
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(1),
+                byroredux_plugin::esm::reader::GlobalSlot::Light(5),
+            ],
+        );
+        world.insert_resource(GlobalFormIdResolver::from_load_order(&order));
+        let slot = ExtensionHostSlot::from_host(host_with_equipment_package(
+            "org.example.equipment-adapter",
+        ));
+        let host = slot.host().unwrap();
+        world.insert_resource(slot);
+
+        extension_equipment_dispatch_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        let wearer_handle = host.handles.by_entity[&wearer];
+        let owner = PrincipalId::new("org.example.equipment-adapter").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, wearer_handle)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(2))
+        );
+        assert!(world.has::<byroredux_scripting::EquipmentEventBatch>(wearer));
     }
 
     #[test]

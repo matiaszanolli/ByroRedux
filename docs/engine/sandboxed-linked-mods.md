@@ -188,8 +188,8 @@ world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
 - opaque generational entity references and manifest-ordered typed schemas;
 - bounded callback-local entity projections with separately gated
   name/form-identity and world-transform visibility;
-- canonical activation, cell-load, combat-hit, and recurring-update delivery
-  gated by both declaration and capability;
+- canonical activation, cell-load, combat-hit, equipment-change, and
+  recurring-update delivery gated by both declaration and capability;
 - bounded own-component commands queued during callbacks and returned only
   after successful guest completion;
 - principal-isolated dynamic rows with atomic batch application;
@@ -790,8 +790,8 @@ tests cover all of the following:
 
 - Add game-feature discovery, events, immutable queries, typed handles,
   batched commands, and scheduler barriers. Activation, cell-load,
-  producer-resolved combat-hit, and bounded recurring-update delivery are
-  implemented; the equip adapter remains.
+  producer-resolved combat-hit, ordered equipment-change, and bounded
+  recurring-update delivery are implemented.
 - Connect component activation to `ResolvedModSet` generation commits.
 - Prove the same component on two game definitions.
 

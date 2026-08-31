@@ -4,7 +4,7 @@ use crate::bindings::byro::mod_host::{
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, UpdateEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
 };
@@ -13,8 +13,8 @@ use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
-    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
-    LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY,
+    EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
+    HIT_EVENT, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
@@ -51,6 +51,7 @@ pub enum LifecyclePhase {
     Activate,
     CellLoad,
     Hit,
+    Equipment,
     Update,
     Shutdown,
 }
@@ -62,6 +63,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Activate => "on-activate",
             Self::CellLoad => "on-cell-load",
             Self::Hit => "on-hit",
+            Self::Equipment => "on-equipment-change",
             Self::Update => "on-update",
             Self::Shutdown => "shutdown",
         })
@@ -385,6 +387,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == HIT_EVENT),
+            subscribed_to_equipment: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == EQUIPMENT_EVENT),
             subscribed_to_update: manifest
                 .subscriptions
                 .iter()
@@ -608,6 +614,40 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one canonical equipment transition and return deferred commands.
+    pub fn on_equipment_change(&mut self, event: EquipmentEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::Equipment,
+                status: self.status.clone(),
+            });
+        }
+        let event_id = EventId::new(EQUIPMENT_EVENT)
+            .expect("the engine's canonical equipment event id is valid");
+        if !self.store.data().subscribed_to_equipment {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        let wearer = state::EntityRef {
+            world_generation: event.wearer.world_generation(),
+            object: event.wearer.object(),
+        };
+        let item = wit_form_ref(event.item);
+        let result = self.enter(LifecyclePhase::Equipment, true, |bindings, store| {
+            bindings.call_on_equipment_change(store, wearer, item, event.equipped)
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Deliver one bounded recurring callback and return deferred commands.
     pub fn on_update(&mut self, event: UpdateEvent) -> Result<Vec<HostCommand>> {
         if self.status != InstanceStatus::Active {
@@ -772,6 +812,7 @@ struct HostState {
     subscribed_to_activate: bool,
     subscribed_to_cell_load: bool,
     subscribed_to_hit: bool,
+    subscribed_to_equipment: bool,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,
@@ -924,16 +965,7 @@ fn wit_entity_projection(
     include_transform: bool,
 ) -> world_state::EntityProjection {
     let entity = projection.entity();
-    let form = projection.form().map(|form| {
-        let source = form.source();
-        world_state::FormRef {
-            source_high: u64::from_be_bytes(
-                source[..8].try_into().expect("eight-byte source half"),
-            ),
-            source_low: u64::from_be_bytes(source[8..].try_into().expect("eight-byte source half")),
-            local: form.local(),
-        }
-    });
+    let form = projection.form().map(wit_form_ref);
     let world_transform = include_transform
         .then(|| projection.world_transform())
         .flatten()
@@ -959,6 +991,15 @@ fn wit_entity_projection(
         form,
         name: projection.name().map(str::to_owned),
         world_transform,
+    }
+}
+
+fn wit_form_ref(form: byroredux_sdk::identity::FormRef) -> state::FormRef {
+    let source = form.source();
+    state::FormRef {
+        source_high: u64::from_be_bytes(source[..8].try_into().expect("eight-byte source half")),
+        source_low: u64::from_be_bytes(source[8..].try_into().expect("eight-byte source half")),
+        local: form.local(),
     }
 }
 
