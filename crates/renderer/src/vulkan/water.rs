@@ -18,9 +18,16 @@
 //! - a growable per-frame [`GpuWaterParams`] SSBO carrying the full authored material
 //!   payload, selected by a compact 16-byte [`WaterPush`] draw index;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
-//!   attachments 1..6 (normal, motion, mesh_id, raw_indirect, albedo,
-//!   reservoir) are masked off (`color_write_mask = 0`) so water never pollutes
-//!   the G-buffer feeding SVGF / motion-vector reprojection;
+//!   attachments 1..=5 (normal, motion, mesh_id, raw_indirect, albedo) are
+//!   masked off (`color_write_mask = 0`) so water never pollutes the
+//!   G-buffer feeding SVGF / motion-vector reprojection, while attachments
+//!   6 and 7 — the FSR reactive and transparency-and-composition masks —
+//!   ARE written, MAX-blended at full strength: water's surface colour
+//!   comes from reflection and refraction that neither depth nor motion
+//!   describes, so the upscaler has to be told. The blend table in
+//!   `create_water_pipeline` is the authority here, and
+//!   `attachment_doc_pin_tests` holds this list to it — before #3604 the
+//!   two disagreed and this one claimed water wrote no FSR mask at all;
 //! - depth test on, depth write **off** (transparent surface);
 //! - cull NONE (water seen from both above + below).
 //!
@@ -1683,5 +1690,73 @@ mod absorption_ramp_tests {
                 assert!((0.0..=1.0).contains(&t), "t must stay in 0..=1");
             }
         }
+    }
+}
+
+/// #3604 — the module doc and `create_water_pipeline`'s blend table must
+/// agree about which color attachments water writes.
+///
+/// The doc said "attachments 1..6 (… reservoir) are masked off", i.e. that
+/// water writes no FSR mask — the opposite of the transparency-and-
+/// composition contract the builder implements, and it named a slot removed
+/// under #1583. Extending the file's existing `include_str!` scan convention
+/// so the pair cannot drift apart again silently.
+#[cfg(test)]
+mod attachment_doc_pin_tests {
+    const WATER_RS: &str = include_str!("water.rs");
+
+    /// The 8-entry array literal `create_water_pipeline` hands to
+    /// `PipelineColorBlendStateCreateInfo`, with whitespace collapsed.
+    fn blend_table() -> String {
+        let start = WATER_RS
+            .find("let attachments = [")
+            .expect("create_water_pipeline's blend table");
+        let rest = &WATER_RS[start..];
+        let end = rest.find("];").expect("blend table terminator") + 2;
+        rest[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The `//!` block at the top of the file.
+    fn module_doc() -> String {
+        WATER_RS
+            .lines()
+            .take_while(|line| line.starts_with("//!") || line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn module_doc_matches_the_blend_table() {
+        let table = blend_table();
+        assert_eq!(
+            table,
+            "let attachments = [ hdr_blend, masked_off, masked_off, masked_off, \
+             masked_off, masked_off, fsr_mask_max, fsr_mask_max, ];",
+            "the water blend table changed — update the module doc's \
+             attachment list in the same edit (#3604)",
+        );
+
+        let doc = module_doc();
+        assert!(
+            doc.contains("1..=5"),
+            "the module doc must name the write-masked range as 1..=5, \
+             matching the five `masked_off` entries in the blend table \
+             (#3604)",
+        );
+        assert!(
+            !doc.contains("1..6"),
+            "the module doc still claims attachments 1..6 are masked off — \
+             the table masks 1..=5 and WRITES 6 and 7 (#3604)",
+        );
+        assert!(
+            !doc.contains("reservoir"),
+            "the module doc still names the reservoir attachment, removed \
+             under #1583 (#3604)",
+        );
+        assert!(
+            doc.contains("FSR"),
+            "the module doc must state that attachments 6 and 7 (the FSR \
+             masks) are written, not masked off (#3604)",
+        );
     }
 }
