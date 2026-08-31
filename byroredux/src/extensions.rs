@@ -23,14 +23,14 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
-    ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
+    ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, UPDATE_EVENT,
 };
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
@@ -166,7 +166,36 @@ struct HostedComponent {
     receives_activate: bool,
     receives_cell_load: bool,
     receives_hit: bool,
+    recurring_update: Option<RecurringCadence>,
     instance: ModInstance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RecurringCadence {
+    interval_seconds: f32,
+    seconds_until_next: f32,
+    elapsed_seconds: f32,
+}
+
+impl RecurringCadence {
+    fn from_millis(interval_millis: u32) -> Self {
+        let interval_seconds = interval_millis as f32 / 1_000.0;
+        Self {
+            interval_seconds,
+            seconds_until_next: interval_seconds,
+            elapsed_seconds: 0.0,
+        }
+    }
+
+    fn advance(&mut self, dt: f32) -> Option<f32> {
+        self.seconds_until_next -= dt;
+        self.elapsed_seconds += dt;
+        if self.seconds_until_next > 0.0 {
+            return None;
+        }
+        self.seconds_until_next += self.interval_seconds;
+        Some(std::mem::take(&mut self.elapsed_seconds))
+    }
 }
 
 /// Main-thread owner of executable packages and their dynamic component state.
@@ -279,6 +308,12 @@ impl ExtensionHost {
             .subscriptions
             .iter()
             .any(|subscription| subscription.event.as_str() == HIT_EVENT);
+        let recurring_update = manifest
+            .subscriptions
+            .iter()
+            .find(|subscription| subscription.event.as_str() == UPDATE_EVENT)
+            .and_then(|subscription| subscription.interval_millis)
+            .map(RecurringCadence::from_millis);
         let mut staged_components = Vec::with_capacity(compiled.len());
         let mut staged_diagnostics = Vec::new();
         for (component_id, compiled) in compiled {
@@ -299,6 +334,7 @@ impl ExtensionHost {
                 receives_activate,
                 receives_cell_load,
                 receives_hit,
+                recurring_update,
                 instance,
             });
         }
@@ -670,6 +706,73 @@ impl ExtensionHost {
                     &mut stats,
                 );
             }
+        }
+        stats
+    }
+
+    /// Advance engine-owned recurring schedules and deliver callbacks that
+    /// became due. Overshoot is retained while each component receives at
+    /// most one callback per frame.
+    #[cfg(test)]
+    pub fn dispatch_updates(&mut self, dt: f32) -> ExtensionDispatchStats {
+        self.dispatch_recurring_updates(dt)
+    }
+
+    fn dispatch_recurring_updates(&mut self, dt: f32) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        if !dt.is_finite() || dt < 0.0 {
+            self.record_host_fault(format!(
+                "recurring update delta must be finite and non-negative, got {dt}"
+            ));
+            stats.faults = 1;
+            return stats;
+        }
+        for hosted in &mut self.components {
+            if !hosted
+                .instance
+                .grants()
+                .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                || hosted.instance.status() != &InstanceStatus::Active
+            {
+                continue;
+            }
+            let Some(elapsed_seconds) = hosted
+                .recurring_update
+                .as_mut()
+                .and_then(|cadence| cadence.advance(dt))
+            else {
+                continue;
+            };
+            stats.events += 1;
+            stats.deliveries += 1;
+            let principal = hosted.instance.principal().id().clone();
+            let storage_snapshot = self
+                .principal_storage
+                .values(&principal)
+                .cloned()
+                .unwrap_or_default();
+            hosted
+                .instance
+                .set_principal_storage_snapshot(storage_snapshot);
+            let result = hosted.instance.on_update(UpdateEvent { elapsed_seconds });
+            self.diagnostics
+                .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                    ExtensionDiagnostic::Log {
+                        extension: hosted.extension.clone(),
+                        component: hosted.component.clone(),
+                        entry,
+                    }
+                }));
+            apply_delivery_result(
+                hosted,
+                result,
+                LifecyclePhase::Update,
+                &principal,
+                &mut self.state,
+                &mut self.principal_storage,
+                &mut self.diagnostics,
+                &mut stats,
+            );
         }
         stats
     }
@@ -1341,6 +1444,35 @@ pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
     }
 }
 
+/// Late-stage owner of manifest-declared recurring extension callbacks.
+pub(crate) fn extension_update_dispatch_system(world: &World, dt: f32) {
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_recurring_updates(dt);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension update dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
 fn emit_diagnostics(diagnostics: Vec<ExtensionDiagnostic>) {
     for diagnostic in diagnostics {
         match diagnostic {
@@ -1777,6 +1909,7 @@ mod tests {
       i32.const 0
       i64.const 1
       call $increment)
+    (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -1797,6 +1930,9 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-update")
+    (param "elapsed-seconds" f32)
+    (canon lift (core func $guest-instance "on-update")))
 )
 "#;
 
@@ -1850,6 +1986,11 @@ mod tests {
       (param i64 i64)
       (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
       (param f32 i32 i32 i32 i32))
+    (func (export "on-update") (param f32)
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
   )
   (core instance $guest-instance (instantiate $guest
     (with "libc" (instance $libc))
@@ -1871,6 +2012,9 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-update")
+    (param "elapsed-seconds" f32)
+    (canon lift (core func $guest-instance "on-update")))
 )
 "#;
 
@@ -1917,6 +2061,7 @@ mod tests {
       (param i64 i64)
       (param i32 i64 i64) (param i32 i64 i64) (param i32 i64 i64)
       (param f32 i32 i32 i32 i32))
+    (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "contains" (func $contains-lower))))
@@ -1937,6 +2082,9 @@ mod tests {
     (param "projectile" (option $entity-ref))
     (param "details" $hit-details)
     (canon lift (core func $guest-instance "on-hit")))
+  (func (export "on-update")
+    (param "elapsed-seconds" f32)
+    (canon lift (core func $guest-instance "on-update")))
 )
 "#;
 
@@ -1967,6 +2115,7 @@ mod tests {
             subscriptions: vec![EventSubscription {
                 event: EventId::new(ACTIVATE_EVENT).unwrap(),
                 filters: Vec::new(),
+                interval_millis: None,
             }],
             component_schemas: vec![ComponentSchemaDeclaration {
                 id: ComponentSchemaId::new("example.activation-count").unwrap(),
@@ -1992,6 +2141,7 @@ mod tests {
         manifest.subscriptions = vec![EventSubscription {
             event: EventId::new(CELL_LOAD_EVENT).unwrap(),
             filters: Vec::new(),
+            interval_millis: None,
         }];
         manifest
     }
@@ -2001,6 +2151,7 @@ mod tests {
         manifest.subscriptions = vec![EventSubscription {
             event: EventId::new(HIT_EVENT).unwrap(),
             filters: Vec::new(),
+            interval_millis: None,
         }];
         manifest
     }
@@ -2023,6 +2174,16 @@ mod tests {
                 required: true,
             },
         ];
+        manifest
+    }
+
+    fn update_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(UPDATE_EVENT).unwrap(),
+            filters: Vec::new(),
+            interval_millis: Some(100),
+        }];
         manifest
     }
 
@@ -2049,6 +2210,19 @@ mod tests {
         let mut host =
             ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
         install_storage_package(&mut host, id);
+        host
+    }
+
+    fn host_with_update_package(id: &str) -> ExtensionHost {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        host.install_package(&update_manifest(id), &artifacts, storage_grants())
+            .unwrap();
         host
     }
 
@@ -2272,6 +2446,78 @@ mod tests {
         assert_eq!(
             host.components[0].instance.status(),
             &InstanceStatus::Active
+        );
+    }
+
+    #[test]
+    fn recurring_update_waits_full_interval_and_retains_overshoot() {
+        let principal = PrincipalId::new("org.example.update").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_update_package(principal.as_str());
+
+        assert_eq!(
+            host.dispatch_updates(0.04),
+            ExtensionDispatchStats::default()
+        );
+        assert_eq!(
+            host.dispatch_updates(0.04),
+            ExtensionDispatchStats::default()
+        );
+        assert_eq!(host.dispatch_updates(0.04).commands_applied, 1);
+        assert_eq!(
+            host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(1))
+        );
+
+        assert_eq!(host.dispatch_updates(0.35).deliveries, 1);
+        assert_eq!(host.dispatch_updates(0.0).deliveries, 1);
+        assert_eq!(
+            host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(3))
+        );
+    }
+
+    #[test]
+    fn invalid_update_delta_is_a_host_fault_without_guest_quarantine() {
+        let mut host = host_with_update_package("org.example.invalid-update");
+        let stats = host.dispatch_updates(f32::NAN);
+
+        assert_eq!(stats.faults, 1);
+        assert_eq!(stats.deliveries, 0);
+        assert_eq!(
+            host.components[0].instance.status(),
+            &InstanceStatus::Active
+        );
+        assert!(matches!(
+            host.take_diagnostics().as_slice(),
+            [ExtensionDiagnostic::Fault { extension, .. }]
+                if extension.as_str() == "byro.engine"
+        ));
+    }
+
+    #[test]
+    fn scheduler_update_adapter_advances_engine_owned_cadence() {
+        let principal = PrincipalId::new("org.example.update-adapter").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let slot = ExtensionHostSlot::from_host(host_with_update_package(principal.as_str()));
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(slot);
+
+        extension_update_dispatch_system(&world, 0.05);
+        extension_update_dispatch_system(&world, 0.05);
+
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(1))
         );
     }
 

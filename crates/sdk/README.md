@@ -31,9 +31,10 @@ The current public surface includes:
 - `ExtensionStateSnapshot` and `PersistedComponentRow` define the versioned,
   schema-tagged entity and principal-storage payload embedded by the engine in
   its normal save container.
-- `ActivationEvent`, `CellLoadEvent`, `HitEvent`, and `ExtensionCommand`
-  form the first canonical event-to-deferred-mutation contracts used by
-  sandboxed components.
+- `ActivationEvent`, `CellLoadEvent`, `HitEvent`, `UpdateEvent`, and
+  `ExtensionCommand` form the first canonical event-to-deferred-mutation
+  contracts used by sandboxed components. Recurring update subscriptions carry
+  a validated 16 ms–1 hour interval; the engine owns their cadence.
 - `AssetBounds`, `BoundSphere`, and `CornellFit` provide deterministic,
   testable scene fitting.
 - `StudioSnapshot` and `ObjectSnapshot` are immutable projections for any UI.
@@ -50,7 +51,8 @@ sees that mapping or mutates the world directly.
 The binary also owns the first executable-extension adapter. It resolves an
 explicit manifest set, applies explicit capability grants, initializes
 sandboxed components, snapshots activation, cell-load, and combat-hit events
-outside ECS guards, commits deferred state atomically, invalidates transient
+outside ECS guards, advances manifest-declared recurring callbacks in the
+late-stage scheduler, commits deferred state atomically, invalidates transient
 handles on world replacement,
 persists form-backed extension rows in normal ByroRedux saves, retains rows for
 missing packages/forms, persists private principal storage, and performs

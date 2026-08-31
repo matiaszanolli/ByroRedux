@@ -4,7 +4,7 @@ use crate::bindings::byro::mod_host::{
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
 };
@@ -15,8 +15,8 @@ use byroredux_sdk::service::{
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
     LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
-    WORLD_TRANSFORM_READ_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand};
 use semver::Version;
@@ -51,6 +51,7 @@ pub enum LifecyclePhase {
     Activate,
     CellLoad,
     Hit,
+    Update,
     Shutdown,
 }
 
@@ -61,6 +62,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Activate => "on-activate",
             Self::CellLoad => "on-cell-load",
             Self::Hit => "on-hit",
+            Self::Update => "on-update",
             Self::Shutdown => "shutdown",
         })
     }
@@ -383,6 +385,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == HIT_EVENT),
+            subscribed_to_update: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == UPDATE_EVENT),
             pending_commands: Vec::new(),
             max_commands_per_entry: self.config.max_commands_per_entry,
             accepting_commands: false,
@@ -602,6 +608,44 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one bounded recurring callback and return deferred commands.
+    pub fn on_update(&mut self, event: UpdateEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::Update,
+                status: self.status.clone(),
+            });
+        }
+        let event_id =
+            EventId::new(UPDATE_EVENT).expect("the engine's canonical update event id is valid");
+        if !self.store.data().subscribed_to_update {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        if !event.elapsed_seconds.is_finite() || event.elapsed_seconds < 0.0 {
+            return Err(SandboxError::InvalidEventPayload {
+                event: event_id,
+                message: format!(
+                    "elapsed_seconds must be finite and non-negative, got {}",
+                    event.elapsed_seconds
+                ),
+            });
+        }
+        let result = self.enter(LifecyclePhase::Update, true, |bindings, store| {
+            bindings.call_on_update(store, event.elapsed_seconds)
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Replace the read-only principal storage snapshot visible to callbacks.
     pub fn set_principal_storage_snapshot(&mut self, values: BTreeMap<StorageKey, ExtensionValue>) {
         self.store.data_mut().principal_storage = values;
@@ -728,6 +772,7 @@ struct HostState {
     subscribed_to_activate: bool,
     subscribed_to_cell_load: bool,
     subscribed_to_hit: bool,
+    subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,

@@ -122,5 +122,6 @@ world extension {
         projectile: option<entity-ref>,
         details: hit-details,
     );
+    export on-update: func(elapsed-seconds: f32);
     export shutdown: func();
 }

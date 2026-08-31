@@ -6,7 +6,7 @@ use byroredux_sdk::component::{
     ComponentFieldDeclaration, ComponentSchema, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionValue, ExtensionValueType,
 };
-use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent};
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent, HitEvent, UpdateEvent};
 use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, ServiceId};
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
@@ -17,7 +17,7 @@ use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, LOGGING_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
 use semver::{Version, VersionReq};
@@ -96,6 +96,16 @@ const ON_HIT_LIFT: &str = r#"
                 (canon lift (core func $guest-instance "on-hit")))
 "#;
 
+const ON_UPDATE_CORE: &str = r#"
+                (func (export "on-update") (param f32))
+"#;
+
+const ON_UPDATE_LIFT: &str = r#"
+            (func (export "on-update")
+                (param "elapsed-seconds" f32)
+                (canon lift (core func $guest-instance "on-update")))
+"#;
+
 fn manifest_with_log(required: bool) -> ExtensionManifest {
     ExtensionManifest {
         manifest_version: EXTENSION_MANIFEST_VERSION,
@@ -139,6 +149,7 @@ fn activation_manifest() -> ExtensionManifest {
     manifest.subscriptions = vec![EventSubscription {
         event: byroredux_sdk::identity::EventId::new(ACTIVATE_EVENT).unwrap(),
         filters: Vec::new(),
+        interval_millis: None,
     }];
     manifest.component_schemas = vec![ComponentSchemaDeclaration {
         id: ComponentSchemaId::new("org.byroredux.tests.activation-count").unwrap(),
@@ -156,6 +167,7 @@ fn cell_load_manifest() -> ExtensionManifest {
     manifest.subscriptions = vec![EventSubscription {
         event: byroredux_sdk::identity::EventId::new(CELL_LOAD_EVENT).unwrap(),
         filters: Vec::new(),
+        interval_millis: None,
     }];
     manifest
 }
@@ -165,6 +177,17 @@ fn hit_manifest() -> ExtensionManifest {
     manifest.subscriptions = vec![EventSubscription {
         event: byroredux_sdk::identity::EventId::new(HIT_EVENT).unwrap(),
         filters: Vec::new(),
+        interval_millis: None,
+    }];
+    manifest
+}
+
+fn update_manifest() -> ExtensionManifest {
+    let mut manifest = principal_storage_manifest();
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(UPDATE_EVENT).unwrap(),
+        filters: Vec::new(),
+        interval_millis: Some(100),
     }];
     manifest
 }
@@ -188,6 +211,7 @@ fn principal_storage_manifest() -> ExtensionManifest {
     manifest.subscriptions = vec![EventSubscription {
         event: byroredux_sdk::identity::EventId::new(ACTIVATE_EVENT).unwrap(),
         filters: Vec::new(),
+        interval_millis: None,
     }];
     manifest.principal_storage_schema = Some(1);
     manifest
@@ -235,6 +259,11 @@ fn principal_storage_increment_component() -> String {
                 (func (export "shutdown"))
                 (func (export "on-cell-load") (param i64 i64))
                 {ON_HIT_CORE}
+                (func (export "on-update") (param f32)
+                    i32.const 0
+                    i32.const 16
+                    i64.const 1
+                    call $increment)
                 (func (export "on-activate")
                     (param i64 i64 i32 i64 i64)
                     i32.const 0
@@ -254,6 +283,7 @@ fn principal_storage_increment_component() -> String {
                 (param "subject" $entity-ref)
                 (canon lift (core func $guest-instance "on-cell-load")))
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -261,6 +291,8 @@ fn principal_storage_increment_component() -> String {
         )"#
     .replace("{ON_HIT_CORE}", ON_HIT_CORE)
     .replace("{ON_HIT_LIFT}", ON_HIT_LIFT)
+    .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
+    .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
 
 fn entity_projection_component() -> String {
@@ -294,6 +326,7 @@ fn entity_projection_component() -> String {
                 (func (export "shutdown"))
                 (func (export "on-cell-load") (param i64 i64))
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
                     local.get $world
@@ -315,6 +348,7 @@ fn entity_projection_component() -> String {
                 (param "subject" $entity-ref)
                 (canon lift (core func $guest-instance "on-cell-load")))
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -322,6 +356,8 @@ fn entity_projection_component() -> String {
         )"#
     .replace("{ON_HIT_CORE}", ON_HIT_CORE)
     .replace("{ON_HIT_LIFT}", ON_HIT_LIFT)
+    .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
+    .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
 
 fn entity_projection_manifest(required: bool) -> ExtensionManifest {
@@ -402,6 +438,7 @@ fn logging_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -414,6 +451,7 @@ fn logging_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -432,6 +470,7 @@ fn looping_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -441,6 +480,7 @@ fn looping_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -456,6 +496,7 @@ fn oversized_memory_component() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -465,6 +506,7 @@ fn oversized_memory_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -482,6 +524,7 @@ fn component_with_wasi_import() -> String {
                 {ON_ACTIVATE_CORE}
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -491,6 +534,7 @@ fn component_with_wasi_import() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -518,6 +562,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                 (func (export "shutdown"))
                 {ON_CELL_LOAD_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
                     (param i32 i64 i64)
@@ -535,6 +580,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -552,6 +598,7 @@ fn cell_load_counter_component() -> String {
                 (func (export "shutdown"))
                 {ON_ACTIVATE_CORE}
                 {ON_HIT_CORE}
+                {ON_UPDATE_CORE}
                 (func (export "on-cell-load")
                     (param $world i64) (param $object i64)
                     local.get $world
@@ -572,6 +619,7 @@ fn cell_load_counter_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -637,6 +685,7 @@ fn hit_counter_component() -> String {
                     i32.const 0
                     i64.const 1
                     call $increment)
+                {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "host" (instance
@@ -649,6 +698,7 @@ fn hit_counter_component() -> String {
             {ON_ACTIVATE_LIFT}
             {ON_CELL_LOAD_LIFT}
             {ON_HIT_LIFT}
+            {ON_UPDATE_LIFT}
         )"#
     )
 }
@@ -767,6 +817,53 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+        }),
+        Err(SandboxError::InvalidEventPayload { .. })
+    ));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = update_manifest();
+    let compiled = compile_wat_for(
+        &runtime,
+        &manifest,
+        &principal_storage_increment_component(),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let commands = instance
+        .on_update(UpdateEvent {
+            elapsed_seconds: 0.12,
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 1);
+    let principal = PrincipalId::from(&manifest.id);
+    let mut storage = PrincipalStorageStore::new(PrincipalStorageLimits::default()).unwrap();
+    storage.register_schema(principal.clone(), 1).unwrap();
+    let storage_commands = commands
+        .into_iter()
+        .map(|command| match command {
+            HostCommand::PrincipalStorage(command) => command,
+            HostCommand::Component(_) => panic!("unexpected component command"),
+        })
+        .collect::<Vec<_>>();
+    storage.apply_batch(&principal, &storage_commands).unwrap();
+    assert_eq!(
+        storage.values(&principal).and_then(|values| values
+            .get(&byroredux_sdk::identity::StorageKey::new("activation-count").unwrap())),
+        Some(&ExtensionValue::I64(1))
+    );
+    assert!(matches!(
+        instance.on_update(UpdateEvent {
+            elapsed_seconds: f32::NAN,
         }),
         Err(SandboxError::InvalidEventPayload { .. })
     ));
@@ -1127,12 +1224,13 @@ fn compile_rejects_hostile_input_without_panicking() {
             rejected += 1;
         }
     }
-    // A bare 8-byte component header is a *valid empty component*, so a
-    // handful of short prefixes legitimately compile — it is `instantiate`
-    // that rejects them for exporting no lifecycle functions. Everything
-    // that cuts into real content must be refused.
+    // A bare 8-byte component header and prefixes ending exactly at component
+    // section boundaries are valid smaller components. `instantiate` rejects
+    // them for missing lifecycle exports; arbitrary cuts into a section must
+    // still be refused. Keep the allowance above the fixture's section count
+    // so adding one canonical callback does not make this fuzz smoke brittle.
     assert!(
-        rejected > valid.len() - 32,
+        rejected > valid.len() - 64,
         "only {rejected} of {} truncations were rejected",
         valid.len()
     );

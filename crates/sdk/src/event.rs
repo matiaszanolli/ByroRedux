@@ -37,3 +37,10 @@ pub struct HitEvent {
     pub bash_attack: bool,
     pub blocked: bool,
 }
+
+/// Payload of one bounded `byro.events.update` callback.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UpdateEvent {
+    /// Actual engine time accumulated since this subscriber's previous fire.
+    pub elapsed_seconds: f32,
+}

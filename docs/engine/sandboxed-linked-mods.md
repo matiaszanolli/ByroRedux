@@ -188,7 +188,8 @@ world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
 - opaque generational entity references and manifest-ordered typed schemas;
 - bounded callback-local entity projections with separately gated
   name/form-identity and world-transform visibility;
-- canonical activation delivery gated by both declaration and capability;
+- canonical activation, cell-load, combat-hit, and recurring-update delivery
+  gated by both declaration and capability;
 - bounded own-component commands queued during callbacks and returned only
   after successful guest completion;
 - principal-isolated dynamic rows with atomic batch application;
@@ -208,7 +209,8 @@ compilation, checks requested/effective capabilities before instantiation, and
 publishes version discovery through WIT. The executable now owns a live host:
 repeatable `--extension` manifests resolve dependency-first, explicitly granted
 capabilities are applied, the complete profile stages before one atomic swap,
-live activation markers are delivered outside ECS guards, component state is
+live event markers are delivered outside ECS guards, manifest-declared update
+cadences are advanced by a late-stage engine scheduler, component state is
 applied atomically, faults remain isolated, world replacement invalidates
 transient handles, and orderly shutdown runs in reverse publication order.
 The adapter snapshots disclosed entities before guest entry, and the
@@ -787,9 +789,9 @@ tests cover all of the following:
 ### Phase 2 — ECS attachment
 
 - Add game-feature discovery, events, immutable queries, typed handles,
-  batched commands, and scheduler barriers. Activation, cell-load, and
-  producer-resolved combat-hit delivery are implemented; equip and
-  recurring-update adapters remain.
+  batched commands, and scheduler barriers. Activation, cell-load,
+  producer-resolved combat-hit, and bounded recurring-update delivery are
+  implemented; the equip adapter remains.
 - Connect component activation to `ResolvedModSet` generation commits.
 - Prove the same component on two game definitions.
 

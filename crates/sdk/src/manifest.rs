@@ -23,6 +23,11 @@ const MAX_SCHEMAS: usize = 256;
 const MAX_SCHEMA_FIELDS: usize = 128;
 const MAX_PACKAGE_PATH_BYTES: usize = 512;
 const MAX_FILTER_VALUE_BYTES: usize = 512;
+/// Smallest supported recurring callback cadence.
+pub const MIN_RECURRING_UPDATE_INTERVAL_MS: u32 = 16;
+/// Largest supported recurring callback cadence.
+pub const MAX_RECURRING_UPDATE_INTERVAL_MS: u32 = 3_600_000;
+const UPDATE_EVENT_ID: &str = "byro.events.update";
 
 /// Versioned package contract for sandboxed executable extensions.
 ///
@@ -112,6 +117,10 @@ pub struct EventSubscription {
     /// Bounded equality filters interpreted by the event service.
     #[serde(default)]
     pub filters: Vec<EventFilter>,
+    /// Recurring cadence for `byro.events.update`; absent for immediate
+    /// engine events.
+    #[serde(default)]
+    pub interval_millis: Option<u32>,
 }
 
 /// One bounded equality predicate attached to an event subscription.
@@ -169,6 +178,20 @@ pub enum ManifestError {
     /// Dynamic schemas must declare at least one typed field.
     #[error("component schema {0} must declare at least one field")]
     EmptyComponentSchema(ComponentSchemaId),
+    /// Recurring updates require an explicit bounded cadence.
+    #[error("event {0} requires interval_millis")]
+    MissingRecurringInterval(EventId),
+    /// Immediate events cannot carry a recurring cadence.
+    #[error("event {0} does not accept interval_millis")]
+    UnexpectedRecurringInterval(EventId),
+    /// A recurring cadence was outside the engine's supported range.
+    #[error("event {event} interval {actual}ms is outside {minimum}..={maximum}ms")]
+    InvalidRecurringInterval {
+        event: EventId,
+        actual: u32,
+        minimum: u32,
+        maximum: u32,
+    },
 }
 
 impl ExtensionManifest {
@@ -232,6 +255,33 @@ impl ExtensionManifest {
                     filter.equals.len(),
                     MAX_FILTER_VALUE_BYTES,
                 )?;
+            }
+            match (
+                subscription.event.as_str() == UPDATE_EVENT_ID,
+                subscription.interval_millis,
+            ) {
+                (true, None) => {
+                    return Err(ManifestError::MissingRecurringInterval(
+                        subscription.event.clone(),
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(ManifestError::UnexpectedRecurringInterval(
+                        subscription.event.clone(),
+                    ));
+                }
+                (true, Some(actual))
+                    if !(MIN_RECURRING_UPDATE_INTERVAL_MS..=MAX_RECURRING_UPDATE_INTERVAL_MS)
+                        .contains(&actual) =>
+                {
+                    return Err(ManifestError::InvalidRecurringInterval {
+                        event: subscription.event.clone(),
+                        actual,
+                        minimum: MIN_RECURRING_UPDATE_INTERVAL_MS,
+                        maximum: MAX_RECURRING_UPDATE_INTERVAL_MS,
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -381,5 +431,66 @@ mod tests {
         let mut spoofed = manifest();
         spoofed.name = "Trusted engine\u{1b}[31m".to_owned();
         assert_eq!(spoofed.validate(), Err(ManifestError::UnsafeName));
+    }
+
+    #[test]
+    fn recurring_update_subscriptions_require_a_bounded_interval() {
+        let update = EventId::new(UPDATE_EVENT_ID).unwrap();
+        let activate = EventId::new("byro.events.activate").unwrap();
+
+        let mut valid = manifest();
+        valid.subscriptions.push(EventSubscription {
+            event: update.clone(),
+            filters: Vec::new(),
+            interval_millis: Some(100),
+        });
+        valid.validate().unwrap();
+
+        let mut missing = manifest();
+        missing.subscriptions.push(EventSubscription {
+            event: update.clone(),
+            filters: Vec::new(),
+            interval_millis: None,
+        });
+        assert_eq!(
+            missing.validate(),
+            Err(ManifestError::MissingRecurringInterval(update.clone()))
+        );
+
+        let mut too_fast = manifest();
+        too_fast.subscriptions.push(EventSubscription {
+            event: update.clone(),
+            filters: Vec::new(),
+            interval_millis: Some(MIN_RECURRING_UPDATE_INTERVAL_MS - 1),
+        });
+        assert!(matches!(
+            too_fast.validate(),
+            Err(ManifestError::InvalidRecurringInterval { actual: 15, .. })
+        ));
+
+        let mut too_slow = manifest();
+        too_slow.subscriptions.push(EventSubscription {
+            event: update,
+            filters: Vec::new(),
+            interval_millis: Some(MAX_RECURRING_UPDATE_INTERVAL_MS + 1),
+        });
+        assert!(matches!(
+            too_slow.validate(),
+            Err(ManifestError::InvalidRecurringInterval {
+                actual: 3_600_001,
+                ..
+            })
+        ));
+
+        let mut misplaced = manifest();
+        misplaced.subscriptions.push(EventSubscription {
+            event: activate.clone(),
+            filters: Vec::new(),
+            interval_millis: Some(100),
+        });
+        assert_eq!(
+            misplaced.validate(),
+            Err(ManifestError::UnexpectedRecurringInterval(activate))
+        );
     }
 }

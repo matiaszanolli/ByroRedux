@@ -25,10 +25,10 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load/combat-hit payloads, and atomic deferred
-command batches. The WIT world exposes `on-activate`, `on-cell-load`,
-`on-hit`, immutable name/form/world-transform reads, and a compact own-state
-increment command.
+store, canonical activation/cell-load/combat-hit/recurring-update payloads, and
+atomic deferred command batches. The WIT world exposes `on-activate`,
+`on-cell-load`, `on-hit`, `on-update`, immutable name/form/world-transform
+reads, and a compact own-state increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
 entity-read, transform-read, and own-state-write capabilities, discards queued
@@ -414,9 +414,10 @@ Exit gate:
 
 ### Phase 2 — extension state and event vertical slice
 
-Status: **Activation, cell-load, and combat-hit paths, live ECS adapters,
-principal storage, and the first immutable entity projection implemented;
-additional projection families and equip/recurring event adapters pending.**
+Status: **Activation, cell-load, combat-hit, and bounded recurring-update paths,
+live ECS adapters, principal storage, and the first immutable entity projection
+implemented; additional projection families and the equip event adapter remain
+pending.**
 
 Deliverables:
 
@@ -431,6 +432,8 @@ Deliverables:
 Exit gate:
 
 - A fixture guest increments entity-attached state on activation.
+- A recurring fixture waits one full declared interval, receives bounded
+  elapsed time, retains overshoot, and runs at most once per frame.
 - A denied write is rejected and quarantines or faults only that guest according
   to documented policy.
 - No guest executes while an ECS storage/resource guard is held.
