@@ -226,6 +226,19 @@ impl AccelerationManager {
             // "fix" this site by copying the deferred-destroy pattern —
             // it would just add a needless one-frame delay to a
             // genuinely safe immediate free.
+            //
+            // #3643 — the slot-local half of that argument is NOT what
+            // makes this safe on its own: the OTHER frame-in-flight
+            // slot's recording captures the same scratch device address.
+            // The actual guarantee is that `draw_frame`'s wait is a
+            // *both-slots* `wait_for_fences` (`context/draw.rs`, #282),
+            // which at MAX_FRAMES_IN_FLIGHT == 2 is equivalent to
+            // device-idle for every prior frame. At 3+ slots it would
+            // cover only 2 of N and this immediate free would become a
+            // use-after-free against a still-executing AS build, while
+            // the slot-local sentence above kept reading correct. See
+            // `sync.rs`'s #870 block: this site is item 1 on the list of
+            // resources a `MAX_FRAMES_IN_FLIGHT` bump has to address.
             if let Some(mut old) = self.blas_scratch_buffer.take() {
                 old.destroy(device, allocator);
             }

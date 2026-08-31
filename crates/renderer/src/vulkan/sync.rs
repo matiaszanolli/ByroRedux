@@ -36,16 +36,51 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // Bumping this constant requires either:
 //   (a) making the depth image per-frame-in-flight
 //       (`Vec<vk::Image>` indexed by frame_index, mirroring the
-//       G-buffer pattern at `gbuffer.rs:52`), OR
+//       G-buffer pattern at `gbuffer.rs:52`), AND THEN STILL (b), OR
 //   (b) extending the fence wait to cover all in-flight slots
 //       (currently 2; would become MAX_FRAMES_IN_FLIGHT - 1 fences).
+//
+// #3643 — read that as written: **(a) alone is NOT sufficient.** The
+// depth image is the resource this assert is named after, not the only
+// one riding on the both-slots wait. Per-FIF-ing depth would let the
+// assert be deleted while these five other non-per-FIF resources
+// silently lose their only guarantee:
+//
+//   1. `acceleration/blas_skinned.rs`'s `blas_scratch_buffer` —
+//      destroyed IMMEDIATELY (deliberately, and correctly today) on
+//      growth, mid-`draw_frame`, while the *other* slot's recorded
+//      `cmd_build_acceleration_structures` still holds its device
+//      address. See that site's SAFETY comment.
+//   2. `context/depth_capture.rs`'s `depth_capture_staging` —
+//      destroyed and reallocated during frame recording, with a SAFETY
+//      comment asserting no command buffer can still reference it.
+//   3. `scene_buffer/upload.rs`'s `terrain_tile_buffer` — one shared
+//      DEVICE_LOCAL buffer overwritten by a blocking staged copy from
+//      inside `draw_frame`.
+//   4. `context/screenshot.rs`'s `screenshot_staging` and
+//      `depth_capture.rs`'s `depth_capture_pending_readback` —
+//      single-slot host readbacks gated purely on the top-of-frame wait.
+//   5. `morph_compute.rs`'s mapped `weight_buffer`, host-written by
+//      `flush_pending_morph_weights` (#3244); its own regression test
+//      pins "flush after the wait", and the wait it finds is this one.
+//
+// `sync.rs:105-110`'s `images_in_flight` carries its own version of the
+// warning and is the sixth. So option (b) — or per-FIF-ing every one of
+// them — is mandatory on any bump; (a) on its own only removes the
+// tripwire. Treat this list the same way the depth-consumer list above
+// asks to be treated: load-bearing, and re-derived rather than trusted
+// as exhaustive.
 //
 // The const_assert below fails the workspace build if anyone
 // raises the value without addressing the depth-image hazard.
 const _: () = assert!(
     MAX_FRAMES_IN_FLIGHT == 2,
     "shared depth image at context/mod.rs:580 requires \
-     MAX_FRAMES_IN_FLIGHT == 2; see #870 for the safety contract"
+     MAX_FRAMES_IN_FLIGHT == 2; see #870 for the safety contract. \
+     Per-FIF-ing the depth image is NOT enough to delete this assert: \
+     the skinned BLAS scratch free, the depth-capture/screenshot \
+     staging destroys, the terrain tile buffer and the mapped morph \
+     weight buffer all rest on the same both-slots wait (#3643)"
 );
 
 /// Per-frame synchronization objects.
@@ -529,5 +564,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #3643 — the #870 const-assert is the project's designated tripwire
+    /// for the both-slots-wait class, but its remediation list named only
+    /// the shared depth image. Anyone who follows option (a), per-FIF-es
+    /// depth and deletes the assert would silently break five other
+    /// non-per-FIF resources that rest on the same identity.
+    ///
+    /// Pin the enumeration to the resources themselves: each name below is
+    /// grepped straight out of the code it refers to, so deleting or
+    /// renaming one of those sites without revisiting this block fails the
+    /// build rather than leaving a comment that reads correct and is not.
+    #[test]
+    fn frames_in_flight_contract_names_every_dependent_resource() {
+        const SYNC_RS: &str = include_str!("sync.rs");
+
+        let block = SYNC_RS
+            .split_once("// Bumping this constant requires either:")
+            .expect("the #870 remediation block")
+            .1
+            .split_once("const _: () = assert!(")
+            .expect("the #870 const-assert");
+        let (prose, assert_message) = block;
+
+        for (resource, owner) in [
+            (
+                "blas_scratch_buffer",
+                include_str!("acceleration/blas_skinned.rs"),
+            ),
+            (
+                "depth_capture_staging",
+                include_str!("context/depth_capture.rs"),
+            ),
+            (
+                "depth_capture_pending_readback",
+                include_str!("context/depth_capture.rs"),
+            ),
+            (
+                "terrain_tile_buffer",
+                include_str!("scene_buffer/upload.rs"),
+            ),
+            ("screenshot_staging", include_str!("context/screenshot.rs")),
+            ("weight_buffer", include_str!("morph_compute.rs")),
+        ] {
+            assert!(
+                owner.contains(resource),
+                "`{resource}` no longer exists at the site the #870 block \
+                 points at — re-derive the list rather than deleting the \
+                 entry (#3643)",
+            );
+            assert!(
+                prose.contains(resource),
+                "the #870 remediation block does not name `{resource}`, a \
+                 non-per-frame-in-flight resource whose safety rests on the \
+                 both-slots wait (#3643)",
+            );
+        }
+
+        assert!(
+            assert_message.contains("NOT enough"),
+            "the #870 const-assert message must say that per-FIF-ing the \
+             depth image alone is not enough to delete it (#3643)",
+        );
+        assert!(
+            include_str!("acceleration/blas_skinned.rs").contains("*both-slots*"),
+            "blas_skinned's immediate scratch free must name draw_frame's \
+             BOTH-slots wait as its guarantee — the slot-local argument \
+             alone is insufficient and would keep reading correct at 3+ \
+             slots (#3643)",
+        );
     }
 }
