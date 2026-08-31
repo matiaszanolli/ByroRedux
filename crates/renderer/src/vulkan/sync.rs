@@ -5,8 +5,8 @@ use ash::vk;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-// Issue #870 (REN-D4-NEW-01): the depth image at
-// `context/mod.rs:580-582` is a single VkImage shared across all
+// Issue #870 (REN-D4-NEW-01): `VulkanContext::depth_image`
+// (`vulkan::context`) is a single VkImage shared across all
 // frames-in-flight (NOT per-frame like the G-buffer / TAA / SVGF /
 // caustic / SSAO attachments). Frame N+1's main-render-pass
 // LOAD_OP_CLEAR on depth would race against frame N's consumers of
@@ -25,7 +25,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // review must not read a short list as exhaustive. The safety
 // argument itself is unchanged — the both-slots fence wait covers
 // every consumer at 2 slots. The double-fence
-// wait at `context/draw.rs:108-120` (#282) guarantees this *only*
+// wait in `VulkanContext::draw_frame` (#282) guarantees this *only*
 // while waiting on both `in_flight[frame]` and `in_flight[(frame+1)
 // % MAX_FRAMES_IN_FLIGHT]` is equivalent to device-idle for prior
 // frames — which is true at MAX_FRAMES_IN_FLIGHT == 2 because two
@@ -35,8 +35,8 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //
 // Bumping this constant requires either:
 //   (a) making the depth image per-frame-in-flight
-//       (`Vec<vk::Image>` indexed by frame_index, mirroring the
-//       G-buffer pattern at `gbuffer.rs:52`), AND THEN STILL (b), OR
+//       (`Vec<vk::Image>` indexed by frame_index, mirroring
+//       `GBuffer`'s own per-frame `images` vec), AND THEN STILL (b), OR
 //   (b) extending the fence wait to cover all in-flight slots
 //       (currently 2; would become MAX_FRAMES_IN_FLIGHT - 1 fences).
 //
@@ -64,7 +64,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      `flush_pending_morph_weights` (#3244); its own regression test
 //      pins "flush after the wait", and the wait it finds is this one.
 //
-// `sync.rs:105-110`'s `images_in_flight` carries its own version of the
+// `FrameSync::images_in_flight` (below) carries its own version of the
 // warning and is the sixth. So option (b) — or per-FIF-ing every one of
 // them — is mandatory on any bump; (a) on its own only removes the
 // tripwire. Treat this list the same way the depth-consumer list above
@@ -75,7 +75,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // raises the value without addressing the depth-image hazard.
 const _: () = assert!(
     MAX_FRAMES_IN_FLIGHT == 2,
-    "shared depth image at context/mod.rs:580 requires \
+    "the shared VulkanContext::depth_image requires \
      MAX_FRAMES_IN_FLIGHT == 2; see #870 for the safety contract. \
      Per-FIF-ing the depth image is NOT enough to delete this assert: \
      the skinned BLAS scratch free, the depth-capture/screenshot \
@@ -127,17 +127,23 @@ pub struct FrameSync {
     /// # Invariant (#953 / REN-D1-NEW-05)
     ///
     /// Any handle stored here is guaranteed SIGNALED (or `vk::Fence::null()`)
-    /// by the time `draw_frame` next reads it at `context/draw.rs:179-186`.
-    /// This is upheld upstream by the *both-slots* `wait_for_fences` at
-    /// `context/draw.rs:144-156`, which blocks on BOTH frame-in-flight
-    /// fences before any image-fence read — so by the time we reach the
-    /// guard, every fence in this vec is either null (image never used)
-    /// or matches one of the two frame slots we just waited on.
+    /// by the time `draw_frame` next reads it (the post-acquire
+    /// image-fence wait). This is upheld upstream by the *both-slots*
+    /// `wait_for_fences` at the top of `draw_frame`, which blocks on BOTH
+    /// frame-in-flight fences before any image-fence read — so by the time
+    /// we reach the guard, every fence in this vec is either null (image
+    /// never used) or matches one of the two frame slots we just waited on.
     ///
-    /// The aliasing guard `image_fence != in_flight[frame]` at draw.rs:180
-    /// then prevents waiting on the just-reset fence belonging to the
-    /// current frame slot. Reusing the slot's own fence would block on
-    /// an UNSIGNALED handle (it's reset at draw.rs:191) and deadlock.
+    /// The aliasing guard `image_fence != in_flight[frame]` then skips the
+    /// case where this vec already holds the current slot's own fence.
+    /// That is a **redundant-wait skip, not a deadlock preventer** (#3645):
+    /// since #952 moved `reset_fences` to immediately before
+    /// `queue_submit`, `in_flight[frame]` is still SIGNALED here — the
+    /// top-of-frame wait signalled it and nothing has reset it yet — so
+    /// waiting on it would simply return immediately. Do not read this
+    /// guard as what makes the early reset safe; #952 established the
+    /// opposite direction (the reset is late *because* an early one
+    /// stranded the fence across ~2,000 lines of fallible work).
     ///
     /// **If `draw_frame` ever drops to a single-slot fence wait** at the
     /// top of frame (e.g. as a perf optimization), this invariant breaks
@@ -354,7 +360,7 @@ impl FrameSync {
     /// UNSIGNALED with no pending submit. If `vkQueueSubmit` then fails,
     /// the fence stays stuck — there is no `vkSignalFence` to flip it
     /// back. The next frame's both-slots `wait_for_fences(..., u64::MAX)`
-    /// at `draw.rs:174-183` would block forever.
+    /// at the top of `draw_frame` would block forever.
     ///
     /// Recreating destroys the unsignaled fence and replaces it with a
     /// fresh `SIGNALED`-flagged one, mirroring the
