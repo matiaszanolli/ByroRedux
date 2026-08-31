@@ -209,9 +209,15 @@ table, §5 LOD, §7 rollout status).
   dropped" is a premise error, not a parse gap.
   Per `exal.md` §5.4: runtime LOD is asset-driven — neither NIF LOD nodes nor STAT `MNAM`
   unblock it. The **VWD / "Has Distant LOD" record-header flag** is now parsed and exposed
-  (`RecordHeader::is_visible_when_distant()`, #1731) but has zero consumers — wiring it
-  into the object-LOD spawn path to actually cull full models is the remaining gap, not
-  the parse itself. Findings here are real coverage gaps, not premise errors.
+  (`RecordHeader::is_visible_when_distant()`, #1731) and **does have consumers** — do not
+  re-file "zero consumers". It is captured onto placements
+  (`crates/plugin/src/esm/cell/support.rs`), stamped as an ECS row by
+  `stamp_visible_when_distant` (`byroredux/src/cell_loader/references/synth_child.rs`), and
+  read by the LOD reconcile loop (`resident_vwd_refr_cells`,
+  `byroredux/src/streaming_helpers.rs`, cited by **#3142 OPEN**). What remains open is
+  narrower: *full-model culling* driven off the flag, tracked as **#3307 OPEN**
+  ("EX-10/11 item 8: active VWD full-model culling") — not the absence of any consumer at
+  all. Findings here are real coverage gaps, not premise errors.
 - **Sun model (regression guard)**: the canonical sun inputs are `tod_hours` +
   `weather::SUN_SOUTH_TILT` (engine-defined; `exal.md` §9 Q1 verified **no** authored
   latitude field exists in CLMT/WRLD — `#1019`'s "read a latitude field" premise is false).
