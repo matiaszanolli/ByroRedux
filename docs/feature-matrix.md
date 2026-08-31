@@ -51,7 +51,8 @@ closed by #699.)
 | **Disney BSDF** | ✓ FO4/Starfield/BGSM | `MAT_FLAG_PBR_BSDF`; subsurface/sheen/anisotropic |
 | **Glass RT refraction** | ✓ All games | `MATERIAL_KIND_GLASS` triggers RT refraction ray budget |
 | **Fire refraction** | ~ Partial | `MATERIAL_KIND_FIRE_REFRACTION` (103, Session 62) — normal-driven heat-haze distortion proxy; the three consistency gaps found this audit cycle (shadow masking #2224, G-buffer normal overwrite #2236, composition sort order #2237) are all fixed |
-| **Terrain LOD (M35)** | ~ Partial | `.btr` (Skyrim+/FO4) + `.bto` + `_far.nif` (Oblivion/FO3/FNV) shipped; distance-based multi-band selection + `.btr` normal maps deferred |
+| **Distant terrain LOD (M35)** | ~ Partial | Per-family schemes, all shipped: `.btr` quads (Skyrim SE/FO4), `meshes\landscape\lod\<world>\` quads (FO3/FNV), synthesized heightmap ring (Oblivion — no baked-quad ladder is wired for it; `LodBandLadder::for_terrain_game` returns `None`). `.btr` normal maps deferred |
+| **Distant object LOD** | ~ Partial | `.bto` quads (Skyrim SE/FO4), `landscape\lod\<world>\blocks\` quads (FO3/FNV, #3321), `DistantLOD\*.lod` + `_far.nif` placement lists (**Oblivion only** — `placement_lod_supported` gates on `GameKind::Oblivion`; FO3 ships 2 `_far.nif` and zero `distantlod\`, FNV zero of both). Distance-based multi-band selection shipped for every quad-based scheme (#2371, four-level ladder); FO76/Starfield unexercised |
 
 ### FO4 Precombined Geometry (M49 — closed 2026-06-02)
 
@@ -304,7 +305,7 @@ is not registered in the scheduler at all.
 | Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
 | Havok `.hkx` loader (FO4 / Starfield layouts) | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
 | General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
-| Terrain LOD multi-band selection | distance-based 8/16/32 LOD-band selection + `.btr` normal maps (the `.btr`/`.bto`/`_far.nif` parsers ship) | M35 |
+| `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
 | Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |

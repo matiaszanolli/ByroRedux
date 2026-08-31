@@ -147,6 +147,12 @@ pub(crate) fn stream_object_lod_blocks(
         grid_origin: input.lod_grid_origin,
         exclude_within: input.max_full_cell_radius,
         world_bounds: worldspace_cell_bounds(wctx),
+        // #3502 — the object ring's only fallback for a missing quad is the
+        // `ObjectLodBlock::empty()` sentinel below, so subdividing into an
+        // unbaked level draws nothing. FO3 bakes 93 of its 422 object quads
+        // at level 8 with no level-4 sibling; without this those
+        // worldspaces lose every distant building in the middle band.
+        coarsen_to_available: true,
     };
     let mut desired = lod_bands::select_lod_quads(
         &selection,
@@ -542,6 +548,20 @@ pub(crate) enum ObjectLodScheme {
 /// 295 level-4 quads covering a whole worldspace is systematic by any
 /// definition. Note also that the "2 `_far.nif`" figure `exal.md` attributed
 /// to FNV is **FO3's** — FNV ships zero.
+///
+/// #3502 — the FO3 "level4 and level8" line above hides a per-worldspace
+/// split that matters to the descent. Seven of FO3's fifteen bake objects at
+/// level 8 with **no level-4 sibling at all** — 93 of its 422 object quads:
+///
+/// ```text
+/// dcworld01 {8: 3}   dcworld03 {8: 4}   dcworld06 {8: 6}   dcworld12 {8: 8}
+/// dcworld17 {8: 6}   paradisefalls {8: 1}   washmontop {8: 65}
+/// ```
+///
+/// FNV has no such worldspace, which is why the descent's
+/// subdivide-on-missing-asset rule went unchallenged until FO3: subdividing
+/// a level-8 quad on these worldspaces lands on absent level-4 assets and
+/// draws nothing. See [`LodBandSelection::coarsen_to_available`].
 pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
     match game {
         GameKind::Skyrim | GameKind::Fallout4 => Some(ObjectLodScheme::BakedBto),
@@ -678,6 +698,9 @@ mod tests {
             grid_origin: (0, 0),
             exclude_within,
             world_bounds: None,
+            // The object ring's production policy (#3502); inert here since
+            // every quad is available.
+            coarsen_to_available: true,
         };
         lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true)
     }
@@ -774,6 +797,7 @@ mod tests {
             grid_origin: origin,
             exclude_within: 0,
             world_bounds: None,
+            coarsen_to_available: true,
         };
         let quads = lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true);
         assert!(!quads.is_empty());
@@ -885,6 +909,7 @@ mod tests {
             grid_origin: (0, 0),
             exclude_within: 6,
             world_bounds: None,
+            coarsen_to_available: true,
         };
         let quads = lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true);
         assert!(quads.iter().all(|&(level, _, _)| level <= 16));

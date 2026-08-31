@@ -115,7 +115,11 @@ fn parse_wrld_captures_oblivion_root_worldspace_fields() {
             (b"ZNAM", 0x0009_0908_u32.to_le_bytes().to_vec()),
             (b"NAM0", nam0),
             (b"NAM9", nam9),
-            (b"DATA", vec![0x40]), // no-grass bit
+            // #3506 — 0x40 is *unnamed* in the TES4 column this
+            // Oblivion fixture belongs to; it is "Fixed Dimensions" only
+            // under TES5. The old "no-grass bit" label came from the
+            // shifted list this finding corrected.
+            (b"DATA", vec![0x40]),
         ],
     );
     let buf = build_wrld_group(&[wrld]);
@@ -136,7 +140,10 @@ fn parse_wrld_captures_oblivion_root_worldspace_fields() {
     assert_eq!(tam.water_form, Some(0x0000_BABE));
     assert_eq!(tam.default_music, Some(0x0009_0908));
     assert_eq!(tam.map_texture, "textures/menus80/tamriel.dds");
-    assert_eq!(tam.flags, 0x40);
+    assert_eq!(
+        tam.flags, 0x40,
+        "the DATA byte is carried verbatim; naming its bits needs the game (#3506)"
+    );
     // CNAM still mirrors into the legacy climate lookup the cell
     // loader reads from.
     assert_eq!(climates.get("tamriel"), Some(&0xDEAD_BEEF));
@@ -632,4 +639,55 @@ fn remapped_wrld_subrecord_form_ids() {
         climates.values().any(|c| *c == global(0x201)),
         "CNAM climate must be remapped before it is indexed; got {climates:?}"
     );
+}
+
+/// #3506 (FO3-2026-08-27-D3-01) — the `DATA` byte's two bit layouts.
+///
+/// The docblock on `WorldspaceRecord` used to carry the TES5 *names* at
+/// positions one bit below their TES5 values, which was wrong for both
+/// families at once. `worldspace_flags::{tes4, tes5}` is now the map;
+/// this pins the part of it that actually bit on real data, so a
+/// "simplification" back to one flat list fails here rather than in a
+/// renderer months later.
+#[test]
+fn worldspace_data_flag_layouts_differ_between_tes4_and_tes5() {
+    use super::super::worldspace_flags::{tes4, tes5};
+
+    // The only two bits the families agree on.
+    assert_eq!(tes4::SMALL_WORLD, tes5::SMALL_WORLD);
+    assert_eq!(tes4::NO_FAST_TRAVEL, tes5::NO_FAST_TRAVEL);
+
+    // …and the one that made the old list wrong: `No LOD Water` sits at
+    // 0x10 on TES4 and 0x08 on TES5, where TES4 has nothing named.
+    assert_ne!(tes4::NO_LOD_WATER, tes5::NO_LOD_WATER);
+    assert_eq!(tes4::NO_LOD_WATER, tes5::NO_LANDSCAPE);
+
+    // Live `Fallout3.esm` census bytes (FO3 is TES4-layout). MegatonWorld
+    // is the one that falsifies the old reading: 0x51 decoded with the
+    // TES5 names would claim "no sky" for an exterior that renders one.
+    let megaton = 0x51u8;
+    assert_ne!(megaton & tes4::SMALL_WORLD, 0);
+    assert_ne!(
+        megaton & tes4::NO_LOD_WATER,
+        0,
+        "0x10 is No LOD Water on FO3 — a crater settlement with no distant water plane"
+    );
+    assert_eq!(
+        megaton & tes5::NO_SKY,
+        0,
+        "0x20 (TES5 No Sky) is not set at all; the old docblock reached it by shifting"
+    );
+
+    // The rest of the census: 0x11 on CitadelWorld / MonumentWorld /
+    // WashMonTop / tLandscape, 0x13 on ParadiseFalls / TranquilityLane,
+    // 0x03 on StatesmanRoofWorld, 0x00 on Wasteland. Every one of them
+    // reads as Small World (+ No LOD Water, + Can't Fast Travel) under
+    // TES4; none of them sets a TES5-only high bit.
+    for flags in [0x11u8, 0x13, 0x03, 0x00] {
+        assert_eq!(
+            flags & (tes5::FIXED_DIMENSIONS | tes5::NO_GRASS),
+            0,
+            "no FO3 worldspace sets the TES5-only high bits"
+        );
+    }
 }

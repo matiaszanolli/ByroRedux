@@ -115,7 +115,10 @@ const ULTRA_MAX_DISTANCE_BU: f32 = 250_000.0;
 // quadtree boundaries. Its archives author level-4/8/16/32 quads through
 // +/-64 cells, which is the availability-clamped outer extent. FNV shares the
 // same format and `GameKind`; missing quads subdivide through the common
-// availability predicate.
+// availability predicate — except on the object ring, where a quad whose
+// whole subtree is unbaked coarsens instead (#3502). FNV bakes every
+// worldspace's `blocks\` quads at level 4 and never needs that; FO3 bakes 93
+// of 422 at level 8 only.
 const FALLOUT_LEGACY_REFINE_BU: &[f32] = &[50_000.0, 75_000.0, 112_500.0];
 const FALLOUT_LEGACY_MAX_CELLS: i32 = 64;
 
@@ -252,6 +255,30 @@ pub(crate) struct LodBandSelection<'a> {
     /// subdivide-on-missing-asset rule below would recurse open ocean all
     /// the way down to level 4 and burn a lookup per empty quad.
     pub(crate) world_bounds: Option<((i32, i32), (i32, i32))>,
+    /// Whether a quad may **coarsen** rather than subdivide when no finer
+    /// asset exists anywhere beneath it (#3502).
+    ///
+    /// The two callers differ in what happens at the bottom of the descent,
+    /// and that difference is the whole reason this flag exists:
+    ///
+    /// * **Terrain** (`false`): its availability predicate reports the
+    ///   finest level available unconditionally, because heightmap synthesis
+    ///   can cover any footprint. The descent therefore always terminates on
+    ///   a quad that can draw, and subdividing into a missing asset is the
+    ///   *right* answer — it buys a synthesized quad at higher detail.
+    /// * **Objects** (`true`): the fallback for a missing quad is
+    ///   `ObjectLodBlock::empty()`, a "nothing here" sentinel. Subdividing
+    ///   into an absent asset draws nothing at all, so a quad whose subtree
+    ///   is entirely unbaked must emit *itself* while it still can.
+    ///
+    /// FNV never exposed the difference — every FNV worldspace bakes its
+    /// `blocks\` quads at level 4, the finest, which always emits. FO3 bakes
+    /// 93 of its 422 object quads at level 8 with no level-4 sibling
+    /// (`WashMonTop`'s 65, `ParadiseFalls`, five `DCworld*`), and those
+    /// worldspaces lost every distant building in the ~5..15-cell band
+    /// whenever the streaming radius put `exclude_within` below
+    /// `cells_from_bu(FALLOUT_LEGACY_REFINE_BU[0])` = 12.
+    pub(crate) coarsen_to_available: bool,
 }
 
 /// Select the quads to stream this reconcile, as `(level, qx, qy)`.
@@ -269,6 +296,11 @@ pub(crate) struct LodBandSelection<'a> {
 ///     case descending is what keeps a hole out of the horizon — the finest
 ///     level always emits, where the caller's own fallback (synthesized
 ///     terrain, or an empty sentinel for objects) takes over.
+///
+/// …with one exception, [`LodBandSelection::coarsen_to_available`] (#3502):
+/// a node that *can* draw and whose entire subtree cannot must emit itself
+/// instead, because for the object ring "descend" and "draw nothing" are the
+/// same instruction.
 ///
 /// `resident` reports whether `(level, qx, qy)` was emitted at that level by
 /// the previous reconcile; it supplies the hysteresis direction. A quad
@@ -323,12 +355,32 @@ pub(crate) fn select_lod_quads(
                 .refine_threshold(level)
                 .is_some_and(|t| dc <= 2 * (t + sticky));
             if too_near || !available(level, qx, qy) {
-                let half = level / 2;
-                stack.push((half, qx, qy));
-                stack.push((half, qx + half, qy));
-                stack.push((half, qx, qy + half));
-                stack.push((half, qx + half, qy + half));
-                continue;
+                // #3502 — the coarsen escape. Only reachable when this quad
+                // is itself available (an unavailable parent has nothing to
+                // fall back *to*, so it descends as before and lets the
+                // caller's bottom-of-descent fallback answer), and only
+                // after proving no finer asset exists anywhere beneath it.
+                // The subtree probe rides the same memo as the descent's own
+                // `available` calls, so a quad costs its probes once for the
+                // life of the streaming state, not once per reconcile.
+                let coarsen = sel.coarsen_to_available
+                    && available(level, qx, qy)
+                    && !any_available_below(
+                        level,
+                        qx,
+                        qy,
+                        finest,
+                        sel.world_bounds,
+                        &mut available,
+                    );
+                if !coarsen {
+                    let half = level / 2;
+                    stack.push((half, qx, qy));
+                    stack.push((half, qx + half, qy));
+                    stack.push((half, qx, qy + half));
+                    stack.push((half, qx + half, qy + half));
+                    continue;
+                }
             }
         }
 
@@ -340,6 +392,44 @@ pub(crate) fn select_lod_quads(
     }
 
     out
+}
+
+/// Whether any quad **strictly finer** than `level` inside the level-`level`
+/// quad at `(qx, qy)` has a baked asset (#3502).
+///
+/// Answers the only question the coarsen escape needs: is there anything to
+/// be gained by descending? A single-level child probe would be cheaper but
+/// wrong for a ladder that skips a level — a worldspace baking 16 and 4 but
+/// not 8 must still descend past the empty 8 band, which is exactly the case
+/// a "no available children ⇒ coarsen" rule would break.
+///
+/// Off-worldspace children are skipped rather than probed, mirroring the
+/// descent's own pruning, so a coastal quad does not pay for open ocean.
+fn any_available_below(
+    level: i32,
+    qx: i32,
+    qy: i32,
+    finest: i32,
+    bounds: Option<((i32, i32), (i32, i32))>,
+    available: &mut impl FnMut(i32, i32, i32) -> bool,
+) -> bool {
+    let mut stack = vec![(level, qx, qy)];
+    while let Some((l, x, y)) = stack.pop() {
+        if l <= finest {
+            continue;
+        }
+        let half = l / 2;
+        for (cx, cy) in [(x, y), (x + half, y), (x, y + half), (x + half, y + half)] {
+            if !quad_intersects_bounds(cx, cy, half, bounds) {
+                continue;
+            }
+            if available(half, cx, cy) {
+                return true;
+            }
+            stack.push((half, cx, cy));
+        }
+    }
+    false
 }
 
 /// Whether the level-`level` quad at `(qx, qy)` touches the worldspace's
@@ -378,6 +468,7 @@ mod tests {
             grid_origin: (0, 0),
             exclude_within: 0,
             world_bounds: None,
+            coarsen_to_available: false,
         }
     }
 
@@ -785,6 +876,7 @@ mod tests {
             grid_origin: (0, 0),
             exclude_within: 0,
             world_bounds: Some(bounds),
+            coarsen_to_available: false,
         };
         let quads = select_lod_quads(&sel, |_, _, _| false, |level, _, _| level == 4);
         assert!(!quads.is_empty());
@@ -808,6 +900,7 @@ mod tests {
             grid_origin: origin,
             exclude_within: 0,
             world_bounds: None,
+            coarsen_to_available: false,
         };
         for (level, qx, qy) in plain(&sel) {
             assert_eq!((qx - origin.0).rem_euclid(level), 0);
@@ -833,5 +926,183 @@ mod tests {
         // One cell east of the quad's east edge.
         assert_eq!(quad_min_chebyshev(0, 0, 4, (4, 0)), 1);
         assert_eq!(quad_min_chebyshev(0, 0, 4, (-1, 0)), 1);
+    }
+
+    // ── #3502 (FO3-2026-08-27-D4-01) — the object ring's coarsen escape.
+
+    fn fallout_legacy_ladder() -> LodBandLadder {
+        LodBandLadder::for_object_game(GameKind::Fallout3NV)
+            .expect("FO3/FNV ship the landscape\\lod quadtree")
+    }
+
+    /// A worldspace shaped like `WashMonTop`: object quads baked at level 8
+    /// only, no level-4 sibling anywhere.
+    fn level_8_only(sel: &LodBandSelection<'_>) -> Vec<(i32, i32, i32)> {
+        select_lod_quads(sel, |_, _, _| false, |level, _, _| level == 8)
+    }
+
+    /// The bug: with objects' "missing quad ⇒ empty sentinel" fallback, the
+    /// descent asked for level-4 quads that cannot exist on 7 of FO3's 15
+    /// worldspaces, and the band they were meant to fill drew nothing.
+    ///
+    /// `exclude_within = 4` is `--radius 3`, the radius the exterior smoke
+    /// and bench recipes use. The pre-fix selection here was 55 level-4
+    /// requests spanning cells 5..15, every one of them absent.
+    #[test]
+    fn object_ring_coarsens_instead_of_asking_for_unbaked_finer_quads() {
+        let ladder = fallout_legacy_ladder();
+        let sel = LodBandSelection {
+            ladder: &ladder,
+            player: (0, 0),
+            grid_origin: (0, 0),
+            exclude_within: 4,
+            world_bounds: None,
+            coarsen_to_available: true,
+        };
+        let quads = level_8_only(&sel);
+
+        assert!(
+            quads.iter().all(|&(level, _, _)| level != 4),
+            "a level-8-only worldspace must never be asked for a level-4 quad: {:?}",
+            quads
+                .iter()
+                .filter(|&&(l, _, _)| l == 4)
+                .collect::<Vec<_>>()
+        );
+        // …and the band it used to hollow out now draws. Pre-fix the
+        // nearest quad that could actually emit geometry was the level-8
+        // one at 16 cells: every level-8 quad closer than
+        // `refine_threshold(8)` = 12 subdivided into absent level-4
+        // children. Post-fix those quads emit themselves, so coverage
+        // starts at the first level-8 quad that clears `exclude_within`.
+        //
+        // 8, not 5: the quad the player stands in spans cells 0..7 and is
+        // dropped whole by the #1866 / #1871 containment rule, which is
+        // cross-game and deliberate — this fix closes the 8..15 hole, not
+        // that one.
+        let nearest = quads
+            .iter()
+            .map(|&(level, qx, qy)| quad_min_chebyshev(qx, qy, level, sel.player))
+            .min()
+            .expect("the ring must not be empty");
+        assert_eq!(
+            nearest, 8,
+            "the 8..15-cell band is still hollow — nearest drawable quad is {nearest} cells out"
+        );
+        assert!(
+            quads
+                .iter()
+                .any(|&(level, qx, qy)| level == 8
+                    && quad_min_chebyshev(qx, qy, level, sel.player) < 16),
+            "no level-8 quad inside the old 16-cell floor"
+        );
+    }
+
+    /// The terrain arm must keep subdividing: its availability predicate
+    /// reports the finest level available unconditionally, so descending is
+    /// how it buys a synthesized quad at higher detail. Same inputs, other
+    /// policy, opposite answer — this is the difference the flag encodes,
+    /// and it is what makes the fix object-only rather than a global change
+    /// to the descent.
+    #[test]
+    fn the_terrain_policy_still_descends_into_unbaked_levels() {
+        let ladder = fallout_legacy_ladder();
+        let sel = LodBandSelection {
+            ladder: &ladder,
+            player: (0, 0),
+            grid_origin: (0, 0),
+            exclude_within: 4,
+            world_bounds: None,
+            coarsen_to_available: false,
+        };
+        assert!(
+            level_8_only(&sel).iter().any(|&(level, _, _)| level == 4),
+            "the terrain policy must still reach level 4 (heightmap synthesis covers it)"
+        );
+    }
+
+    /// The coarsen escape is a fallback, not a preference: where a finer
+    /// asset exists, the descent must still reach it. Pinned because the
+    /// cheap version of this fix ("no available children ⇒ coarsen") gets
+    /// this case wrong for a ladder that skips a level.
+    #[test]
+    fn coarsening_never_shadows_a_finer_asset_that_exists() {
+        let ladder = fallout_legacy_ladder();
+        let sel = LodBandSelection {
+            ladder: &ladder,
+            player: (0, 0),
+            grid_origin: (0, 0),
+            exclude_within: 4,
+            world_bounds: None,
+            coarsen_to_available: true,
+        };
+        // Everything baked: identical to the pre-#3502 selection.
+        assert_eq!(
+            plain(&sel),
+            select_lod_quads(&sel, |_, _, _| false, |_, _, _| true)
+        );
+        assert!(plain(&sel).iter().any(|&(level, _, _)| level == 4));
+
+        // A worldspace that bakes 16 and 4 but skips 8 — the level-16 quad
+        // has no available child, yet a level-4 grandchild exists, so it
+        // must descend past the empty band rather than coarsen onto it.
+        let split = select_lod_quads(&sel, |_, _, _| false, |level, _, _| level != 8);
+        assert!(
+            split.iter().any(|&(level, _, _)| level == 4),
+            "a skipped intermediate band must not stop the descent"
+        );
+    }
+
+    /// The escape must not smuggle a quad past `exclude_within`: a coarse
+    /// quad that reaches inside the full-detail ring is still dropped
+    /// whole, per #1866 / #1871.
+    #[test]
+    fn coarsened_quads_still_respect_the_full_detail_boundary() {
+        let ladder = fallout_legacy_ladder();
+        for exclude_within in [0, 4, 6, 13] {
+            let sel = LodBandSelection {
+                ladder: &ladder,
+                player: (0, 0),
+                grid_origin: (0, 0),
+                exclude_within,
+                world_bounds: None,
+                coarsen_to_available: true,
+            };
+            for (level, qx, qy) in level_8_only(&sel) {
+                assert!(
+                    quad_min_chebyshev(qx, qy, level, sel.player) > exclude_within,
+                    "level-{level} quad ({qx}, {qy}) reaches inside exclude_within \
+                     {exclude_within}"
+                );
+            }
+        }
+    }
+
+    /// The escape stays inside the partition contract: emitting the parent
+    /// covers exactly the footprint its four children would have, so no two
+    /// emitted quads overlap.
+    #[test]
+    fn coarsened_selection_is_still_a_partition() {
+        let ladder = fallout_legacy_ladder();
+        let sel = LodBandSelection {
+            ladder: &ladder,
+            player: (0, 0),
+            grid_origin: (0, 0),
+            exclude_within: 4,
+            world_bounds: None,
+            coarsen_to_available: true,
+        };
+        let mut covered: HashSet<(i32, i32)> = HashSet::new();
+        for (level, qx, qy) in level_8_only(&sel) {
+            for y in qy..qy + level {
+                for x in qx..qx + level {
+                    assert!(
+                        covered.insert((x, y)),
+                        "cell ({x}, {y}) is covered twice — level-{level} quad \
+                         ({qx}, {qy}) overlaps an earlier one"
+                    );
+                }
+            }
+        }
     }
 }

@@ -45,11 +45,25 @@ use crate::esm::sub_reader::SubReader;
 ///     `wbStruct(XCLL,'Lighting')`, byte-verified against Starfield.esm.
 ///     The ~11 985 vanilla Starfield.esm cells all ship at exactly 108.
 const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
-// FO3 ships 36 bytes (dir_fade + fog_clip, NO fog_power); FNV adds the
-// 4-byte Fog Power tail for 40. Both share `GameKind::Fallout3NV`, so the
+// FO3 authors BOTH shapes; FNV authors only 40. Raw sub-record census over
+// every CELL in each master (re-measured 2026-08-30, #3509):
+//
+//     FO3  XCLL: 40 B -> 404,  36 B -> 17
+//     FNV  XCLL: 40 B -> 388,  36 B ->  0
+//
+// 40 = shared body + the 12-byte dir_fade / fog_clip / fog_power tail; 36 is
+// the TES4 shape (dir_fade + fog_clip, NO fog_power), a 17-record minority on
+// FO3 rather than its norm. Both share `GameKind::Fallout3NV`, so the
 // canonical set carries both — the size dispatch already parses 36 fine
 // (per-field gating below), 36 was just missing here and tripped a spurious
-// "lighting may be mis-computed" warn on every FO3 interior (D3-FO3-01).
+// "lighting may be mis-computed" warn on the FO3 interiors that use it
+// (D3-FO3-01).
+//
+// #3509 — this comment used to read "FO3 ships 36; FNV adds the tail for 40",
+// which inverts the corpus. It is the stated justification for this table, so
+// a future "simplification" gating 36 -> FO3 and 40 -> FNV on the strength of
+// it would mis-parse 404 FO3 interiors' lighting — the same failure the
+// comment exists to prevent.
 const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 36, 40];
 const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
 const XCLL_SIZES_FALLOUT4: &[usize] = &[28, 92, 128, 136];
@@ -1198,12 +1212,20 @@ mod xcll_gate_tests {
 
     #[test]
     fn fo3_fnv_xcll_sizes_pinned() {
-        // FO3 ships 36 (no Fog Power); FNV ships 40 (with it) — both under
-        // `Fallout3NV`, so both sizes are canonical (D3-FO3-01). FO4/FO76 used
-        // to be bucketed here too, but they are Creation-Engine descendants
-        // with a 92-byte+ body (split out below — see the render-bug
-        // investigation for HalluciGen01). Starfield left in #1291 (108-byte).
+        // Both sizes are canonical because FO3 authors both (40 -> 404,
+        // 36 -> 17) while FNV authors 40 only (40 -> 388, 36 -> 0) — census
+        // over each master, #3509. The per-game split the old wording
+        // implied ("36 is FO3, 40 is FNV") does not exist and must not be
+        // reintroduced as an optimisation: 40 is FO3's dominant shape.
+        // FO4/FO76 used to be bucketed here too, but they are
+        // Creation-Engine descendants with a 92-byte+ body (split out below
+        // — see the render-bug investigation for HalluciGen01). Starfield
+        // left in #1291 (108-byte).
         assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 36, 40]);
+        assert!(
+            xcll_canonical_sizes(GameKind::Fallout3NV).contains(&40),
+            "40 is FO3's majority shape as well as FNV's only one (#3509)"
+        );
     }
 
     /// FO4 ships the Skyrim 92-byte body + an optional height-fog tail.

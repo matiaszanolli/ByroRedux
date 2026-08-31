@@ -917,9 +917,42 @@ pub struct TextureSet {
 ///   LTEX/WATR on Oblivion).
 /// - `ICON` — map texture path (zstring), the worldspace pause-menu
 ///   map background.
-/// - `DATA` — worldspace flags byte (u8): 0x01 small-world, 0x02
-///   can't fast travel, 0x04 no LOD water, 0x08 no landscape, 0x10
-///   no sky, 0x20 fixed dimensions, 0x40 no grass.
+/// - `DATA` — worldspace flags byte (u8). **Two layouts**, and the
+///   names do not line up between them — per OpenMW
+///   `components/esm4/loadwrld.hpp:46-56`, transcribed verbatim
+///   (a blank cell means that family names no flag at that bit):
+///
+///   | bit | TES4 — Oblivion / FO3 / FNV | TES5 — Skyrim+ / FO4+ |
+///   |---|---|---|
+///   | 0x01 | Small World | Small World |
+///   | 0x02 | Can't Fast Travel | Can't Fast Travel |
+///   | 0x04 | Oblivion worldspace | |
+///   | 0x08 | | No LOD Water |
+///   | 0x10 | No LOD Water | No Landscape |
+///   | 0x20 | | No Sky |
+///   | 0x40 | | Fixed Dimensions |
+///   | 0x80 | | No Grass |
+///
+///   #3506 — this docblock previously carried the TES5 *names* at
+///   TES4-shaped *positions* (every entry from "no LOD water" up
+///   shifted one bit down), which was wrong for both families. On
+///   Gamebryo-era data the error is semantic, not just positional:
+///   FO3's `0x04` is *Oblivion worldspace* and its `0x10` is *No LOD
+///   Water*, not "no sky". Live census of `Fallout3.esm` (32
+///   worldspaces): `MegatonWorld` = 0x51, i.e. bit 6 + No LOD Water +
+///   Small World under TES4 — which matches a crater settlement with
+///   no distant water plane, where the old reading ("no sky") is
+///   falsified by the fact that Megaton's exterior renders one.
+///   `CitadelWorld` / `MonumentWorld` / `WashMonTop` / `tLandscape` =
+///   0x11, `ParadiseFalls` / `TranquilityLane` = 0x13,
+///   `StatesmanRoofWorld` = 0x03, `Wasteland` = 0x00.
+///
+///   **No engine code reads [`Self::flags`] yet** — only the parser
+///   writes it and the tests assert it. The first consumer (an EXAL
+///   sky / landscape / LOD-water gate is the obvious candidate, and
+///   `0x10` is exactly the bit such a gate would reach for) must
+///   branch on the plugin's game before interpreting any bit above
+///   `0x02`.
 /// - `ZNAM` — default music FormID (u32, MUSC record).
 /// - `DNAM` — default land/water height (2 × f32); only the second
 ///   (water) is kept, as [`default_water_height`](Self::default_water_height).
@@ -943,6 +976,40 @@ pub struct TextureSet {
 /// process lifetime (the sub-record runs to 177 KB on FalloutNV.esm),
 /// plus a parsed field that read as a live capability. Dropped by
 /// #2454 / EXAL-08; restore it alongside a real consumer, not ahead of
+/// The two [`WorldspaceRecord::flags`] bit layouts (#3506).
+///
+/// Split into two modules rather than one flat list precisely because the
+/// names do not line up: everything from "no LOD water" upward sits at a
+/// different bit in each family, so a single `NO_LOD_WATER` constant would
+/// be wrong for one of them no matter which value it took. Transcribed from
+/// OpenMW `components/esm4/loadwrld.hpp:46-56`; bits neither column names
+/// are simply absent here rather than guessed at.
+///
+/// Nothing in the engine reads these yet — they exist so the first consumer
+/// picks a column deliberately instead of inheriting the docblock's old,
+/// wrong single list.
+pub mod worldspace_flags {
+    /// Oblivion / FO3 / FNV. `0x08`, `0x20`, `0x40` and `0x80` are unnamed
+    /// in the reference for this family.
+    pub mod tes4 {
+        pub const SMALL_WORLD: u8 = 0x01;
+        pub const NO_FAST_TRAVEL: u8 = 0x02;
+        pub const OBLIVION_WORLDSPACE: u8 = 0x04;
+        pub const NO_LOD_WATER: u8 = 0x10;
+    }
+
+    /// Skyrim+ / FO4+. `0x04` is unnamed in the reference for this family.
+    pub mod tes5 {
+        pub const SMALL_WORLD: u8 = 0x01;
+        pub const NO_FAST_TRAVEL: u8 = 0x02;
+        pub const NO_LOD_WATER: u8 = 0x08;
+        pub const NO_LANDSCAPE: u8 = 0x10;
+        pub const NO_SKY: u8 = 0x20;
+        pub const FIXED_DIMENSIONS: u8 = 0x40;
+        pub const NO_GRASS: u8 = 0x80;
+    }
+}
+
 /// one. See exal.md §5.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldspaceRecord {
@@ -983,7 +1050,11 @@ pub struct WorldspaceRecord {
     pub default_water_height: Option<f32>,
     /// Worldspace map-texture path (ICON). Empty when not authored.
     pub map_texture: String,
-    /// Worldspace flags byte (DATA). See struct docs for bit layout.
+    /// Worldspace flags byte (DATA). See the struct docs for the bit
+    /// layout — it differs between the TES4 (Oblivion / FO3 / FNV) and
+    /// TES5 (Skyrim+ / FO4+) families and the two name sets are offset
+    /// from one another, so this byte is **not** interpretable without
+    /// knowing the plugin's game (#3506). No consumer exists yet.
     pub flags: u8,
     /// LOD water type FormID (NAM3, WATR record) — the water material
     /// the *distant* LOD ring uses. Genuinely independent of the

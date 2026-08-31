@@ -299,6 +299,11 @@ fn desired_lod_quads(
                 grid_origin,
                 exclude_within: max_full_cell_radius,
                 world_bounds,
+                // Terrain has no use for the #3502 coarsen escape: the
+                // predicate below reports the finest level available
+                // unconditionally, so the descent always lands on a quad
+                // that draws (baked or synthesized).
+                coarsen_to_available: false,
             };
             lod_bands::select_lod_quads(&selection, resident, |level, qx, qy| {
                 level == k || has_btr(level, qx, qy)
