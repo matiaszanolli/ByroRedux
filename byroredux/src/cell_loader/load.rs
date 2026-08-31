@@ -7,6 +7,8 @@
 //! helper. `CellLoadResult` is the shape returned to the engine
 //! caller.
 
+use std::time::{Duration, Instant};
+
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{CellFormId, CellRoot, World};
 use byroredux_core::math::Vec3;
@@ -21,6 +23,73 @@ use super::references::load_references;
 use super::water;
 
 /// Result of loading a cell.
+/// Where the wall clock of one interior cell load went, by phase.
+///
+/// #3559 — measured per-frame tails show a single blocking first frame of
+/// 29 s on FNV and 10 s on FO3 (p95s of 16.8 / 19.9 ms, so it is one frame,
+/// not a distribution). Interior cell load runs on the render thread, and
+/// under a windowed run that is a hung window rather than merely a slow
+/// frame. The finding's own suggested fix names instrumenting *which* phase
+/// owns it as the necessary first step, because the existing telemetry only
+/// bounds the total.
+///
+/// Mirrors [`super::UnloadPhaseTimings`], which the exterior streaming path
+/// already reports — the same phase-attribution shape, on the load side.
+/// This does **not** move the work off the render thread or chunk it against
+/// `STREAMING_APPLY_BUDGET`; it makes the next step decidable against a
+/// measurement instead of a guess.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CellLoadPhaseTimings {
+    /// `parse_record_indexes_in_load_order` — full-record parse of the
+    /// master chain. Its own comment already budgets "~1 s extra to parse
+    /// the surrounding categories on FNV / Skyrim", so it is the first
+    /// suspect for the FNV number.
+    pub esm_parse: Duration,
+    /// FO4+ precombined-mesh spawn (`spawn_precombined_meshes`). Zero on
+    /// every pre-FO4 title.
+    pub precombined: Duration,
+    /// `load_references` — the REFR walk: NIF import, texture resolve,
+    /// collider build, BLAS build.
+    pub references: Duration,
+    /// Lighting resolution, region ambient, cell-root stamping, and the
+    /// resource writes that close the load.
+    pub finalization: Duration,
+}
+
+/// Stored on the world by every interior-load call site so the phase split
+/// of the most recent load is readable after the fact (#3559).
+impl byroredux_core::ecs::Resource for CellLoadPhaseTimings {}
+
+impl CellLoadPhaseTimings {
+    /// Total measured wall clock. Not necessarily the whole call: only the
+    /// bracketed phases are counted, so a gap between this and an outer
+    /// measurement is itself the signal that a phase is missing here.
+    pub fn total(&self) -> Duration {
+        self.esm_parse
+            .saturating_add(self.precombined)
+            .saturating_add(self.references)
+            .saturating_add(self.finalization)
+    }
+
+    /// The single largest phase and its share of [`Self::total`], as
+    /// `(name, fraction)`. `None` when nothing was measured.
+    pub fn dominant(&self) -> Option<(&'static str, f32)> {
+        let total = self.total().as_secs_f32();
+        if total <= 0.0 {
+            return None;
+        }
+        [
+            ("esm_parse", self.esm_parse),
+            ("precombined", self.precombined),
+            ("references", self.references),
+            ("finalization", self.finalization),
+        ]
+        .into_iter()
+        .max_by_key(|(_, d)| *d)
+        .map(|(name, d)| (name, d.as_secs_f32() / total))
+    }
+}
+
 pub struct CellLoadResult {
     pub cell_name: String,
     pub entity_count: usize,
@@ -38,6 +107,8 @@ pub struct CellLoadResult {
     /// `Default` (both fields `None`) when the cell has no `XCLR` regions
     /// or none of them author a `Sound` RDAT.
     pub region_ambient: crate::components::RegionAmbientRes,
+    /// #3559 — per-phase wall clock for this load.
+    pub phases: CellLoadPhaseTimings,
 }
 
 /// Ambient-only "no authored data" interior default — installed by
@@ -330,7 +401,10 @@ pub fn load_cell_with_masters(
     // the XCLL-absent fallback. The cost is bounded: ~1 s extra to
     // parse the surrounding categories on FNV / Skyrim, paid once per
     // cell load.
+    let mut phases = CellLoadPhaseTimings::default();
+    let phase_started = Instant::now();
     let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+    phases.esm_parse = phase_started.elapsed();
 
     // 2. Find the cell.
     let cell_key = cell_editor_id.to_ascii_lowercase();
@@ -408,6 +482,7 @@ pub fn load_cell_with_masters(
     // architecture (which is flagged XPRI). Empty on non-FO4 cells
     // or when CSG resolution fails — fallback via the conditional
     // gate in load_cell_with_masters.
+    let phase_started = Instant::now();
     let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
         cell,
         // Interior cells: cell origin IS the world origin, so the
@@ -423,6 +498,7 @@ pub fn load_cell_with_masters(
         esm_path,
         &plugin_paths,
     );
+    phases.precombined = phase_started.elapsed();
 
     // 3a. Interior water plane from XCLW / XCWT — flooded ruins,
     // sewers, named indoor pools. The cell parser captured the
@@ -504,6 +580,7 @@ pub fn load_cell_with_masters(
     // `cell.absorbed_refs` only when the precombine actually spawned)
     // lives in the shared helper so interior + exterior can't drift.
     let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
+    let phase_started = Instant::now();
     let result = load_references(
         &cell.references,
         &index.cells,
@@ -518,6 +595,8 @@ pub fn load_cell_with_masters(
         &load_order,
         absorbed,
     );
+    phases.references = phase_started.elapsed();
+    let phase_started = Instant::now();
 
     // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla
     // Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
@@ -631,12 +710,32 @@ pub fn load_cell_with_masters(
          call has moved below load_references' flush (#3320)"
     );
 
+    phases.finalization = phase_started.elapsed();
+    // #3559 — logged at info so the blocking first frame is attributable
+    // from any ordinary run, not only a `--features tracing-tracy` build.
+    // The dominant-phase share is the number that decides what to chunk or
+    // move off-thread first.
+    log::info!(
+        "Cell load phases: esm_parse={:.3}s precombined={:.3}s references={:.3}s \
+         finalization={:.3}s total={:.3}s dominant={}",
+        phases.esm_parse.as_secs_f32(),
+        phases.precombined.as_secs_f32(),
+        phases.references.as_secs_f32(),
+        phases.finalization.as_secs_f32(),
+        phases.total().as_secs_f32(),
+        phases
+            .dominant()
+            .map(|(name, share)| format!("{name} ({:.0}%)", share * 100.0))
+            .unwrap_or_else(|| "none".to_string()),
+    );
+
     Ok(CellLoadResult {
         cell_name,
         entity_count,
         center,
         lighting: resolved_lighting,
         region_ambient,
+        phases,
     })
 }
 

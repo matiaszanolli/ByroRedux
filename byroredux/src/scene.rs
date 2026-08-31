@@ -846,6 +846,10 @@ pub(crate) fn setup_scene(
                     // correct value for a cell with no ambient directive,
                     // not an absent resource.
                     world.insert_resource(result.region_ambient);
+                    // #3559 — keep the phase split readable after the load
+                    // returns, so the blocking-first-frame work has a
+                    // measurement to target rather than a guess.
+                    world.insert_resource(result.phases);
                     log::info!(
                         "Cell '{}' ready: {} entities",
                         result.cell_name,

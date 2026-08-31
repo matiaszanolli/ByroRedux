@@ -459,6 +459,9 @@ pub fn load_interior_cell(
         mat_provider,
     )
     .map_err(|e| format!("{e:#}"))?;
+    // #3559 — a door-walk load blocks the render thread exactly as the
+    // startup load does, so record its phase split too.
+    world.insert_resource(result.phases);
 
     // #1340 — apply the loaded interior's lighting (the startup `--cell`
     // path does this too, via the same helper). Without it the door-walked

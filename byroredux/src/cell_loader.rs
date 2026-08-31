@@ -129,7 +129,9 @@ pub(crate) use load::apply_interior_cell_lighting;
 #[allow(unused_imports)]
 pub(crate) use load::resolve_cell_lighting;
 #[allow(unused_imports)]
-pub use load::{load_cell_with_masters, validate_cell_loadable, CellLoadResult};
+pub use load::{
+    load_cell_with_masters, validate_cell_loadable, CellLoadPhaseTimings, CellLoadResult,
+};
 // Re-exported for the headless `--list-cells` catalogue, which needs the
 // same masters-first merged index the cell loader builds but stops after
 // the parse phase.
