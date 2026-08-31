@@ -445,8 +445,8 @@ impl TextureRegistry {
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
         // SAFETY: `device` is live; `pool_info` sizes cover exactly
-        // `MAX_FRAMES_IN_FLIGHT` sets of `max_textures` samplers each,
-        // matching the allocation below.
+        // `MAX_FRAMES_IN_FLIGHT` sets of two `max_textures`-sized bindings
+        // each, matching the allocation below.
         partial.descriptor_pool = match unsafe { device.create_descriptor_pool(&pool_info, None) }
             .context("Failed to create bindless texture descriptor pool")
         {

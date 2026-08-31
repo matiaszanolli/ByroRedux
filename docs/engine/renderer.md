@@ -130,8 +130,9 @@ Source: `crates/renderer/src/vulkan/`
 - **Material-table R1 refactor** (#785, post-Session-12): the per-material
   fields that previously lived on every per-instance struct were collapsed
   into a deduped per-frame `MaterialTable` SSBO indexed by
-  `material_id: u32`. `GpuInstance` shrank to 112 bytes at R1 (128 bytes
-  today, as of #2219); `GpuMaterial` was 300 bytes at R1 (432 bytes today,
+  `material_id: u32`. `GpuInstance` shrank to 112 bytes at R1 (160 bytes
+  today — 128 B as of #2219, then 160 B as of #3231's morph-target fields);
+  `GpuMaterial` was 300 bytes at R1 (432 bytes today,
   since `1d94eb24`'s cross-game texture-role unification). See
   [Material table](#material-table-r1).
 - **Disney BSDF** (#1248–#1257, 2026-05): IOR-derived Fresnel F0, Burley +
@@ -268,7 +269,7 @@ the allocator fires after the logical device has already been destroyed.
 5. Walk the ECS via `build_render_data` to collect visible mesh handles,
    transforms, the per-frame `MaterialTable`, light sources, decals, and
    skinned-mesh bone palettes.
-6. Update the camera UBO (`GpuCamera`, 352 bytes) — view + prev-view-proj
+6. Update the camera UBO (`GpuCamera`, 368 bytes) — view + prev-view-proj
    + inverse(viewProj) + **Halton jitter** for TAA + `rt_flag` (1.0 only
    when ray_query is supported AND the TLAS is written for this frame;
    `patch_camera_rt_flag` flips it in-place after `write_tlas` succeeds,
@@ -528,8 +529,8 @@ the same ~35 fields that many times. R1 factored them into a deduped
 **`GpuMaterial`** (300 bytes at R1, 432 bytes today — see
 [`shader-pipeline.md`](shader-pipeline.md) for the current field layout)
 and a per-frame **`MaterialTable`** SSBO
-(binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (128 bytes as of
-#2219; 112 bytes at R1) references its material via `material_id: u32`,
+(binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (160 bytes as of
+#3231; 128 bytes at #2219; 112 bytes at R1) references its material via `material_id: u32`,
 and identical materials
 collapse to the same id via `MaterialTable::intern`. `triangle.frag` reads
 `materials[inst.materialId].foo` for every per-material field.
@@ -579,8 +580,8 @@ material-level) stay on `GpuInstance.flags`:
 > `triangle.vert/frag`, `water.vert/frag`, `cluster_cull.comp`,
 > `caustic_splat.comp`. Post-R1 the contract narrowed so only
 > `triangle.frag` mirrors the full `GpuMaterial`. The
-> `gpu_instance_is_128_bytes_std430_compatible`, `gpu_camera_is_352_bytes`
-> (the live 352-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
+> `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_368_bytes`
+> (the live 368-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
 > the byte layout; the `feedback_shader_struct_sync` note records the update
 > protocol.
 

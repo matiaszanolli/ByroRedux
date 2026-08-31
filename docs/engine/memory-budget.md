@@ -27,14 +27,14 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 
 | Buffer | Constant | Entries | Entry size | Per-frame | × 2 FIF |
 |---|---|---|---|---|---|
-| Light SSBO | `MAX_LIGHTS` = 512 | 512 | 64 B | 32 KB | **64 KB** |
-| Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 128 B (#2219) | 33.6 MB | **67.1 MB** |
+| Light SSBO | `MAX_LIGHTS` = 1023 (`RESERVOIR_LIGHT_MASK`, #8e7582ed — not 512, that's `MAX_LIGHTS_PER_CLUSTER`) | 1023 | 64 B | 64 KB | **128 KB** |
+| Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 160 B (#3231) | 41.9 MB | **83.9 MB** |
 | Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 6.75 MB | **13.5 MB** |
-| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 32 B | — | **32 KB** (single shared buffer, NOT FIF-doubled) |
+| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 96 B (`GpuTerrainTile`, 3× `[u32; 8]`) | — | **~96 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
-| Camera UBO | — | 1 | 352 B | 352 B | **704 B** |
+| Camera UBO | — | 1 | 368 B (#3323) | 368 B | **736 B** |
 
 ¹ Eight 12.6 MB bone-sized allocations, not one: palette (`bone_device`),
 `bone_world` staging, and `bone_world` device-copy are each FIF-doubled
@@ -418,7 +418,7 @@ rebuilt from scratch to prevent BVH quality decay.
 | Item | Value |
 |---|---|
 | Bindless array ceiling | `min(device.maxPerStageDescriptorUpdateAfterBindSampledImages, 65 535)` |
-| Descriptor pool | `max_textures × MAX_FRAMES_IN_FLIGHT` combined image sampler descriptors |
+| Descriptor pool | `max_textures × 2 × MAX_FRAMES_IN_FLIGHT` combined image sampler descriptors — each per-frame set carries **two** `max_textures`-sized bindings |
 | Staging pool cap | 128 MB (retained after upload flush, #239) |
 | Deferred-destroy countdown | `MAX_FRAMES_IN_FLIGHT` = 2 frames |
 

@@ -190,7 +190,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 
 ## GPU Data Types
 
-### `GpuCamera` — 352 bytes, uniform buffer (Set 1, Binding 1)
+### `GpuCamera` — 368 bytes, uniform buffer (Set 1, Binding 1)
 
 [`gpu_types.rs`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs)
 
@@ -209,6 +209,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
 | 336 | 16 | `render_debug` | x = `RenderDebugMode` shader discriminant; y = optional `f32::to_bits` RT-LOD scale; z = diagnostic LOD-counter enable; w reserved |
+| 352 | 16 | `exterior_sky_tint` | xyz = the live exterior's sky zenith colour (#3323); w reserved. Feeds `triangle.frag`'s window-portal escape branch so a ray leaving an interior cell sees the real outdoor sky instead of a frozen noon-blue default; falls back to `SkyParams::default().zenith_color` when no exterior has loaded this session |
 
 ### `GpuWaterParams` — 368 bytes, SSBO (Set 2, Binding 1)
 
@@ -245,7 +246,7 @@ unsized SSBO declaration in both shader stages.
 | 336 | 16 | `uv_offset` | mesh UV offset, flow-map index bits, tile scale |
 | 352 | 16 | `optical` | x = Creation-era depth amount; yzw reserved |
 
-### `GpuInstance` — 128 bytes, SSBO (Set 1, Binding 4)
+### `GpuInstance` — 160 bytes, SSBO (Set 1, Binding 4)
 
 One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 
@@ -265,7 +266,11 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 104 | 4 | `avg_albedo_b` | Pre-computed average albedo B |
 | 108 | 4 | `surface_id` | Stable ECS-derived surface identity — written to the Mesh ID attachment by opaque draws so TAA/SVGF history survives draw-order changes |
 | 112 | 8 | `skinned_vertex_address` | GPU address (`uint64_t`) of this entity's skinned-vertex output buffer, `0` for rigid instances — #2219, dereferenced via `GL_EXT_buffer_reference` for deformed-pose RT hit-normal reconstruction |
-| 120 | 8 | `_reserved` | Padding to a 16-byte-aligned std430 stride — no live data |
+| 120 | 8 | `_reserved` | Padding — no live data |
+| 128 | 8 | `morph_delta_address` | GPU address (`uint64_t`) of this entity's current morph-target delta buffer, `0` when the entity has no morph data (#3231) |
+| 136 | 8 | `morph_weight_address` | GPU address (`uint64_t`) of this entity's current morph weights, `0` under the same condition as `morph_delta_address` (#3231) |
+| 144 | 4 | `morph_target_count` | Number of morph targets the two addresses above carry, `0` when neither is live (#3231) |
+| 148 | 12 | `_reserved2a`/`_reserved2b`/`_reserved2c` | Padding to a 16-byte-aligned std430 stride — three separate scalar `u32`s, deliberately not a `uvec3` (std430 vec3-alignment footgun, #3231) |
 
 **Instance flags** (`flags` field, offset 84):
 
@@ -424,7 +429,7 @@ pipeline. Defined in
 | 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite, caustic, volumetrics |
 | 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa, caustic |
 | 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull, caustic_splat |
-| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (352 B) | triangle, water, cluster_cull, caustic_splat, volumetrics |
+| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull, caustic_splat, volumetrics |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water, caustic_splat, volumetrics |
 | 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame) | triangle |
 | 1 | 4 | `STORAGE_BUFFER` | `GpuInstance[]` | triangle, ui, water, caustic_splat |
@@ -434,7 +439,7 @@ pipeline. Defined in
 | 1 | 8 | `STORAGE_BUFFER` | Global vertex SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
 | 1 | 9 | `STORAGE_BUFFER` | Global index SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
 | 1 | 10 | `STORAGE_BUFFER` | Terrain tile buffer | triangle |
-| 1 | 11 | `STORAGE_BUFFER` | `GpuRayBudget` — 8 × `u32` (32 B): `rayBudgetCount`, `glassRayLimit`, `directShadowSamples`, `maxPathSegments`, `maxShadedHits`, `volumetricLightCap`, `qualityTier`, reserved. Only word 0 is the CPU-zeroed atomic counter; sizing a range/flush/barrier from `u32` is 28 B short | triangle |
+| 1 | 11 | `STORAGE_BUFFER` | `GpuRayBudget` — 17 × `u32` (68 B): `rayBudgetCount`, `glassRayLimit`, `directShadowSamples`, `maxPathSegments`, `maxShadedHits`, `volumetricLightCap`, `qualityTier`, `reserved`, plus nine RT-LOD telemetry words (`lodFragments`, `lodBin0..3`, `reflectionTraced`, `reflectionLodCulled`, `giTraced`, `giLodCulled`). Only word 0 is the CPU-zeroed atomic counter; sizing a range/flush/barrier from `u32` is 64 B short | triangle |
 | 1 | 12 | `STORAGE_BUFFER` | Bone palette (previous frame) | triangle |
 | 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle, water (`materials[inst.materialId]` in the secondary-ray hit path) |
 | 1 | 14 | `UNIFORM_BUFFER` | DALC cube (6-axis ambient) | triangle |
@@ -442,6 +447,7 @@ pipeline. Defined in
 | 1 | 16 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (current frame) | triangle (Session-49 ReSTIR) |
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 1 | 18 | `STORAGE_BUFFER` | Previous-frame rigid instance model matrices (rigid motion vectors). Entries align **index-for-index** with binding 4's current-frame `GpuInstance[]` after sorting/batching, so `gl_InstanceIndex` addresses both without depending on last frame's draw order | triangle (vertex stage) |
+| 1 | 19 | `STORAGE_BUFFER` (`coherent`) | `SelectedRayProbeBuffer` — the debug ray-probe readback for the currently-selected pixel: control (generation, state, pixel xy), ids (light index, mask, hit instance, flags), origin+tMin, direction+tMax, hit distance + averaged visibility | triangle (debug ray-probe path) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 | 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
 

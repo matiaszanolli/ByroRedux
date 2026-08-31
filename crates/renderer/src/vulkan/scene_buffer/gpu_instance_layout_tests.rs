@@ -47,10 +47,11 @@ fn gpu_instance_is_160_bytes_std430_compatible() {
 }
 
 /// Regression for #1028 / R-D6-01, updated for #markarth-precision.
-/// `GpuCamera` must stay 352 B — three `mat4` (192 B) plus ten
-/// trailing 16-byte vectors (160 B): `position`, `flags`, `screen`, `fog`,
+/// `GpuCamera` must stay 368 B — three `mat4` (192 B) plus eleven
+/// trailing 16-byte vectors (176 B): `position`, `flags`, `screen`, `fog`,
 /// `jitter`, `sky_tint`, `sun_direction` (#1210 Phase A+B),
-/// `dof_params`, `render_origin` (#markarth-precision), `render_debug`.
+/// `dof_params`, `render_origin` (#markarth-precision), `render_debug`,
+/// `exterior_sky_tint` (#3323).
 /// Every shader that re-declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
 /// `caustic_splat.comp`) must match this size — pre-#1028 some
@@ -125,10 +126,12 @@ fn gpu_instance_field_offsets_match_shader_contract() {
 ///
 /// Deferring to the size guard was not sufficient either, which is why this
 /// now asserts on names rather than being deleted as a duplicate:
-/// `GpuInstance` carries 8 bytes of `_reserved` padding at offset 120, so two
-/// `u32` per-material fields can be reintroduced *into that padding* with the
-/// struct still exactly 128 B and every existing offset unchanged. The size
-/// and offset pins both stay green through that; only a name check catches it.
+/// `GpuInstance` carries two reserved regions today — 8 bytes of `_reserved`
+/// at offset 120, and 12 bytes across `_reserved2a`/`_reserved2b`/
+/// `_reserved2c` at offset 148 (#3231) — so per-material `u32` fields can be
+/// reintroduced *into either padding region* with the struct still exactly
+/// 160 B and every existing offset unchanged. The size and offset pins both
+/// stay green through that; only a name check catches it.
 #[test]
 fn gpu_instance_does_not_re_expand_with_per_material_fields() {
     const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");

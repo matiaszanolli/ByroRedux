@@ -128,14 +128,16 @@ pub struct GpuInstance {
     /// per-material reads go through `materials[material_id].<field>`;
     /// Phase 6 dropped the redundant per-instance copies that used to
     /// inflate this struct from 112 B to 400 B. (112 B was the size right
-    /// after that drop; #2219 later grew the struct to its current 128 B
-    /// for the unrelated `skinned_vertex_address` — see the layout history
+    /// after that drop; #2219 later grew the struct to 128 B for the
+    /// unrelated `skinned_vertex_address`, and #3231 grew it again to its
+    /// current 160 B for morph-target fields — see the layout history
     /// on `GpuInstance` itself.)
     pub material_id: u32, // 4 B, offset 88
     /// Per-draw optical IOR. This occupies the former padding slot so the
     /// std430 layout size didn't change when this field was added (112 B
-    /// at the time; #2219 later grew the struct to 128 B for an unrelated
-    /// reason — see `skinned_vertex_address`); the caustic pass consumes
+    /// at the time; #2219 later grew the struct to 128 B, then #3231 to
+    /// its current 160 B, both for unrelated reasons — see
+    /// `skinned_vertex_address` and the morph-target fields); the caustic pass consumes
     /// it without needing a duplicate material-table descriptor.
     ///
     /// Named `_pad_id0` until #2164/L-3 — live data wearing a padding
@@ -332,7 +334,7 @@ impl GpuSelectedRayProbe {
     }
 }
 
-/// GPU-side camera data (**352 bytes**, std140-compatible).
+/// GPU-side camera data (**368 bytes**, std140-compatible).
 ///
 /// Layout pinned by `gpu_camera_is_368_bytes` test — three `mat4` (3×64 = 192 B) +
 /// eleven trailing `vec4` (11×16 = 176 B: position, flags, screen, fog, jitter,
@@ -340,7 +342,8 @@ impl GpuSelectedRayProbe {
 /// exterior_sky_tint) → 368 B. The size grew
 /// 304 → 320 B with the DOF `dof_params` field and 320 → 336 B with the
 /// `render_origin` field (#markarth-precision / #1492), then 336 → 352 B with
-/// the structured renderer-debug control.
+/// the structured renderer-debug control, then 352 → 368 B with the appended
+/// `exterior_sky_tint` vec4 (#3323).
 /// Every
 /// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:
