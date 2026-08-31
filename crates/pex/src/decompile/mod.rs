@@ -10,12 +10,19 @@
 //!    instruction stream into blocks at jump boundaries and records each
 //!    block's successor edges.
 //! 2. [`lift`] — opcode → node-tree lifting + copy-propagation.
-//! 3. [`control_flow`] — control-flow reconstruction (if/else, loops) over
+//! 3. [`boolean`] — short-circuit boolean-operator reconstruction
+//!    (`rebuild_boolean_operators`), collapsing `&&`/`||` chains into one
+//!    conditional **before** control-flow reconstruction sees the CFG —
+//!    load-bearing order: [`control_flow`]'s conditional-predecessor
+//!    branch fails closed (#1732) precisely because well-formed input
+//!    should never reach it after this pass has run.
+//! 4. [`control_flow`] — control-flow reconstruction (if/else, loops) over
 //!    the CFG.
-//! 4. [`lower`] — lowers the node tree → `byroredux_papyrus::ast::Script`,
+//! 5. [`lower`] — lowers the node tree → `byroredux_papyrus::ast::Script`,
 //!    with a fidelity gate.
-//! 5. [`boolean`] — short-circuit boolean-operator reconstruction
-//!    (`rebuild_boolean_operators`).
+//!
+//! Authority for this order: `lower::decompile_body`, which calls all
+//! five in sequence.
 //!
 //! [`node`] holds the shared node-tree types; [`event_names`] is a support
 //! module for event-handler name recognition. Neither is a pipeline phase
