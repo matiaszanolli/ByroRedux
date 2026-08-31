@@ -125,6 +125,25 @@ fn f32_at(b: &[u8], o: usize) -> io::Result<f32> {
 /// (`/100`) here, so callers get an engine-ready value.
 pub(crate) fn parse_placement_lod(bytes: &[u8]) -> io::Result<Vec<PlacementGroup>> {
     let num_groups = u32_at(bytes, 0)?;
+    // #3518 — bound the header count against the file's own smallest legal
+    // encoding (8 B/group: `base_form_id` + `count`, even with zero
+    // placements) before allocating, same guard doctrine as
+    // `checked_entry_count` (BSA/BA2 entry counts, #586) and
+    // `allocate_vec`/`allocate_vec_sized` (NIF, #2523). Without this, a
+    // hostile/corrupt `0xFFFFFFFF` header word requests ~137 GB in one
+    // `Vec::with_capacity`, which aborts the process (`handle_alloc_error`)
+    // instead of returning the `Err` this function's own doc promises.
+    let max_groups = bytes.len().saturating_sub(4) / 8;
+    if num_groups as usize > max_groups {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "group count {num_groups} exceeds what {} remaining bytes could encode \
+                 ({max_groups} groups at 8 B minimum each)",
+                bytes.len().saturating_sub(4),
+            ),
+        ));
+    }
     let mut off = 4usize;
     let mut groups = Vec::with_capacity(num_groups as usize);
     for _ in 0..num_groups {
@@ -749,6 +768,42 @@ mod tests {
         assert!(parse_placement_lod(&b).is_err());
         // Empty buffer also errors cleanly.
         assert!(parse_placement_lod(&[]).is_err());
+    }
+
+    /// #3518 — a hostile/corrupt `0xFFFFFFFF` group count must return `Err`
+    /// (the documented recovery path) rather than reach
+    /// `Vec::with_capacity`, which would request ~137 GB and abort the
+    /// process instead of unwinding to the caller's "skip this file" logic.
+    #[test]
+    fn u32_max_group_count_errors_instead_of_aborting() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(parse_placement_lod(&b).is_err());
+
+        // Same header word backed by a few real bytes still can't possibly
+        // encode u32::MAX groups (8 B minimum each) — still an error, not
+        // an allocation sized off the untrusted count.
+        let mut b2 = Vec::new();
+        b2.extend_from_slice(&u32::MAX.to_le_bytes());
+        b2.extend_from_slice(&[0u8; 64]);
+        assert!(parse_placement_lod(&b2).is_err());
+    }
+
+    /// The bound is exact, not overzealous: a header claiming exactly the
+    /// number of groups the buffer can encode (here, zero-placement groups
+    /// at the 8 B floor) must still parse successfully.
+    #[test]
+    fn group_count_at_the_exact_capacity_boundary_still_parses() {
+        let mut b = Vec::new();
+        let push_u32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
+        push_u32(&mut b, 3); // num_groups — exactly 3 zero-placement groups fit
+        for form in [0x10u32, 0x20, 0x30] {
+            push_u32(&mut b, form);
+            push_u32(&mut b, 0); // count = 0 → no SoA blocks follow
+        }
+        let groups = parse_placement_lod(&b).expect("exact-capacity header must parse");
+        assert_eq!(groups.len(), 3);
+        assert!(groups.iter().all(|g| g.placements.is_empty()));
     }
 
     /// FO3-D4-01 (#2086): the `DistantLOD\*.lod` placement scheme is

@@ -1236,6 +1236,40 @@ fn reload_interior_session(
 /// discarded in-flight cell payload just means that cell isn't in `World`
 /// yet; the fresh `WorldStreamingState` rebuilt below re-requests it from
 /// scratch around the saved grid, so nothing is lost, only re-fetched.
+/// Whether it's safe to run the saved-delta overlay (`build_form_id_remap`
+/// + `apply_deltas` in [`execute_pending_save_loads`]) after a `FullRadius`
+/// exterior bootstrap — #3499. `exterior_reload_bootstrap_mode()`'s whole
+/// point is guaranteeing every saved cell is resident first, via
+/// `bootstrap_waiting`'s `!pending.is_empty()` loop condition; but that
+/// loop's one non-`pending`-driven exit (the streaming worker thread dying
+/// mid-bootstrap) can return with cells still pending. Applying the overlay
+/// in that state would silently drop every saved row belonging to a cell
+/// that never arrived.
+fn exterior_reload_overlay_is_safe(pending_after_bootstrap: usize) -> bool {
+    pending_after_bootstrap == 0
+}
+
+#[cfg(test)]
+mod exterior_reload_overlay_tests {
+    use super::exterior_reload_overlay_is_safe;
+
+    /// The common case: `stream_initial_radius`'s wait loop drained
+    /// `pending` normally, so the overlay is safe to run.
+    #[test]
+    fn zero_pending_is_safe() {
+        assert!(exterior_reload_overlay_is_safe(0));
+    }
+
+    /// #3499's regression case: the worker-disconnect `break` can exit the
+    /// wait loop with cells still pending — the overlay must be refused,
+    /// not silently applied against an incomplete world.
+    #[test]
+    fn nonzero_pending_is_unsafe() {
+        assert!(!exterior_reload_overlay_is_safe(1));
+        assert!(!exterior_reload_overlay_is_safe(48));
+    }
+}
+
 fn reload_exterior_session(
     world: &mut World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -1328,8 +1362,38 @@ fn reload_exterior_session(
         radius_load: state.radius_load,
         radius_unload: state.radius_unload,
     });
+    // #3499 — `exterior_reload_bootstrap_mode()` is `FullRadius` specifically
+    // so this function's caller can safely run `build_form_id_remap` +
+    // `apply_deltas` against a fully-resident world: `bootstrap_waiting`
+    // loops until `state.pending` drains. But `stream_initial_radius`'s wait
+    // loop has one exit that isn't `pending`-driven — the streaming worker
+    // thread disconnecting mid-bootstrap — and on that path `pending` is
+    // still non-empty here. Applying the delta overlay anyway would
+    // silently drop every saved row belonging to a cell that never
+    // arrived: the exact #3280 mechanism, on a narrower trigger. The fresh
+    // ESM-only world is committed either way (nothing left to roll back —
+    // the old session was already drained above), so abort only the
+    // overlay: return `None` so the caller's `let Some(ReloadOutcome {..})
+    // = outcome else { return; }` skips `build_form_id_remap`/`apply_deltas`
+    // and everything after, the same posture `validate_snapshot_types` /
+    // `validate_cell_loadable` already take for their own failure modes.
+    let pending_after_bootstrap = state.pending.len();
     *streaming = Some(state);
     ctx.signal_temporal_discontinuity(crate::streaming_helpers::SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+    if !exterior_reload_overlay_is_safe(pending_after_bootstrap) {
+        let message = format!(
+            "save load: worldspace '{}' reloaded from ESM, but the streaming worker \
+             disconnected mid-bootstrap with {pending_after_bootstrap} cell(s) still pending — \
+             skipping the saved-delta overlay rather than silently dropping rows for cells that \
+             never arrived. The session is now on fresh ESM state for this worldspace with NO \
+             save-state overlay applied; reload the save again once the streaming worker issue \
+             is resolved.",
+            ext_ctx.worldspace_key
+        );
+        log::error!("{message}");
+        notify_player(world, message);
+        return None;
+    }
     Some(ReloadOutcome {
         location_label,
         count_label,
