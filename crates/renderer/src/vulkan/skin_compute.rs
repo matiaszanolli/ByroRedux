@@ -677,11 +677,12 @@ impl SkinComputePipeline {
             &[descriptor_set],
             &[],
         );
-        // SAFETY: `SkinPushConstants` is `repr(C)` with three u32 fields,
-        // 12 bytes, no interior padding. The slice is contiguous +
-        // aligned (`size_of::<SkinPushConstants>()` matches the
-        // shader-side `PushConstants` block byte-for-byte; mismatched
-        // shape is caught by `push_constants_size_is_12_bytes` test).
+        // SAFETY: `SkinPushConstants` is `repr(C)` with six fields
+        // (u64, u64, u32, u32, u32, u32), 32 bytes, no interior padding
+        // (#3231). The slice is contiguous + aligned
+        // (`size_of::<SkinPushConstants>()` matches the shader-side
+        // `PushConstants` block byte-for-byte; mismatched shape is caught
+        // by the `push_constants_size_is_32_bytes` test).
         let bytes = std::slice::from_raw_parts(
             (&push as *const SkinPushConstants) as *const u8,
             PUSH_CONSTANTS_SIZE as usize,

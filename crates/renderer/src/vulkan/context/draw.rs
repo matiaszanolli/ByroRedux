@@ -344,9 +344,18 @@ mod skinned_vertex_address_tests {
 /// reconstructs a super-sampled result; the vertex shader applies it AFTER
 /// motion-vector computation so reprojection stays jitter-free.
 ///
-/// Period 16 (#1093 / REN-D11-002): Halton(2) natural period is 2, Halton(3)
-/// natural period is 3, LCM = 6. Using 16 (nearest power-of-2 ≥ 6) avoids the
-/// asymmetric Y-coverage gap that `% 8` caused.
+/// Period 16 (#1093 / REN-D11-002). **Correction 2026-08-31**: this
+/// comment previously claimed Halton(2)/Halton(3) have "natural periods"
+/// of 2/3 with an LCM of 6 — Halton sequences are aperiodic (the radical
+/// inverse is injective on the index), so there is no such period to take.
+/// It also claimed `% 8` never reached "the 9th Halton(3) sample ≈ 0.889";
+/// `halton(9, 3) = 1/27 ≈ 0.037` is what index 9 actually gives, and
+/// `0.889 = halton(8, 3)` — reached by `% 8` (index range `1..=8`). The
+/// sample `% 8` actually omits is index 9's `1/27`; `% 8`'s Y set is in
+/// fact perfectly stratified to ninths, and `% 16` adds four 27ths that
+/// are *not* aligned to that grid, so it is not obviously more uniform.
+/// The real motivation for 16 over 8 is not re-derived here — treat this
+/// as an open question rather than re-quote the retracted rationale above.
 ///
 /// Returns `(0.0, 0.0)` (no jitter) whenever `taa_present` is false OR
 /// `taa_failed` is true (#1932 / TAA-D13-01) — a permanent TAA failure must
@@ -2026,10 +2035,11 @@ impl VulkanContext {
         // is applied in the vertex shader AFTER motion vector computation so
         // reprojection is jitter-free.
         //
-        // Period 16 (#1093 / REN-D11-002): Halton(2) natural period is 2,
-        // Halton(3) natural period is 3, LCM = 6. Using 16 (nearest power-
-        // of-2 ≥ 6) avoids the asymmetric Y-coverage gap that % 8 caused
-        // (the 9th Halton(3) sample ≈ 0.889 was never reached with % 8).
+        // Period 16 (#1093 / REN-D11-002) — see `taa_jitter`'s doc comment
+        // for the corrected rationale (2026-08-31): the "natural period"
+        // framing this comment used to repeat here was mathematically
+        // false and misidentified which sample % 8 misses; do not re-quote
+        // it, the real reason for 16 over 8 is not re-derived.
         // #1932 / TAA-D13-01 — gate on `!self.taa_failed` too, matching the
         // dispatch gate above and `upload_params`. Without it, a permanent
         // TAA failure would leave composite reading raw un-resolved HDR
