@@ -682,6 +682,7 @@ dependencies = [
  "byroredux-facegen",
  "byroredux-game-detect",
  "byroredux-hkx",
+ "byroredux-mod-runtime",
  "byroredux-nif",
  "byroredux-physics",
  "byroredux-platform",
@@ -700,14 +701,17 @@ dependencies = [
  "log",
  "rayon",
  "rustc-hash 2.1.2",
+ "semver",
  "serde",
  "serde_json",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",
+ "wat",
  "winit",
 ]
 
@@ -848,6 +852,8 @@ dependencies = [
 name = "byroredux-mod-runtime"
 version = "0.1.0"
 dependencies = [
+ "byroredux-sdk",
+ "semver",
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
@@ -913,11 +919,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "byroredux-core",
+ "byroredux-sdk",
  "env_logger",
  "flate2",
  "log",
  "semver",
  "serde",
+ "thiserror 2.0.18",
  "toml",
  "uuid",
 ]
@@ -973,6 +981,10 @@ name = "byroredux-sdk"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

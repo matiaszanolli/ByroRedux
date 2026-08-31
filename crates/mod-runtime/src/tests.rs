@@ -1,7 +1,26 @@
 use crate::{
-    CapabilitySet, FaultKind, InstanceStatus, LifecyclePhase, LogLevel, Principal, PrincipalId,
-    SandboxConfig, SandboxError, SandboxRuntime, LOG_CAPABILITY,
+    CapabilitySet, FaultKind, InstanceStatus, LifecyclePhase, LogLevel, PrincipalId, SandboxConfig,
+    SandboxError, SandboxRuntime, LOG_CAPABILITY,
 };
+use byroredux_sdk::component::{
+    ComponentFieldDeclaration, ComponentSchema, ComponentStoreLimits, ExtensionComponentStore,
+    ExtensionValue, ExtensionValueType,
+};
+use byroredux_sdk::event::ActivationEvent;
+use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, ServiceId};
+use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
+use byroredux_sdk::manifest::{
+    CapabilityRequest, ComponentSchemaDeclaration, EventSubscription, ExecutableComponent,
+    ExtensionManifest, EXTENSION_MANIFEST_VERSION,
+};
+use byroredux_sdk::projection::{EntityProjection, WorldTransform};
+use byroredux_sdk::service::{
+    CompatibilityError, ACTIVATE_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
+    EVENTS_SUBSCRIBE_CAPABILITY, LOGGING_SERVICE, STORAGE_READ_OWN_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY,
+};
+use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
+use semver::{Version, VersionReq};
 
 const IMPORTS: &str = r#"
     (import "byro:mod-host/logging@0.1.0" (instance $logging
@@ -13,23 +32,250 @@ const IMPORTS: &str = r#"
         (export "principal-id" (func (result string)))
         (export "has-capability" (func (param "capability" string) (result bool)))
     ))
+    (import "byro:mod-host/state@0.1.0" (instance $state
+        (type $entity-ref-shape (record
+            (field "world-generation" u64)
+            (field "object" u64)))
+        (export "entity-ref" (type $entity-ref (eq $entity-ref-shape)))
+        (export "queue-increment-own-i64" (func
+            (param "entity" $entity-ref)
+            (param "schema-index" u32)
+            (param "field-index" u32)
+            (param "delta" s64)))
+    ))
+    (alias export $state "entity-ref" (type $entity-ref))
 "#;
 
-fn principal() -> Principal {
-    Principal::new(
-        PrincipalId::new("org.byroredux.tests.lifecycle").unwrap(),
-        "Lifecycle test mod",
-    )
-    .unwrap()
+const ON_ACTIVATE_CORE: &str = r#"
+                (func (export "on-activate")
+                    (param i64 i64 i32 i64 i64))
+"#;
+
+const ON_ACTIVATE_LIFT: &str = r#"
+            (func (export "on-activate")
+                (param "subject" $entity-ref)
+                (param "activator" (option $entity-ref))
+                (canon lift (core func $guest-instance "on-activate")))
+"#;
+
+fn manifest_with_log(required: bool) -> ExtensionManifest {
+    ExtensionManifest {
+        manifest_version: EXTENSION_MANIFEST_VERSION,
+        id: ExtensionId::new("org.byroredux.tests.lifecycle").unwrap(),
+        name: "Lifecycle test mod".to_owned(),
+        version: Version::new(1, 0, 0),
+        sdk: VersionReq::parse("^0.1").unwrap(),
+        dependencies: Vec::new(),
+        components: vec![ExecutableComponent {
+            id: ComponentId::new("runtime").unwrap(),
+            path: "runtime.wasm".to_owned(),
+            world: ServiceId::new("byro.mod-host.extension").unwrap(),
+            world_version: VersionReq::parse("^0.1").unwrap(),
+        }],
+        capabilities: vec![CapabilityRequest {
+            id: CapabilityId::new(LOG_CAPABILITY).unwrap(),
+            required,
+        }],
+        subscriptions: Vec::new(),
+        component_schemas: Vec::new(),
+        principal_storage_schema: None,
+    }
+}
+
+fn manifest() -> ExtensionManifest {
+    manifest_with_log(false)
+}
+
+fn activation_manifest() -> ExtensionManifest {
+    let mut manifest = manifest();
+    manifest.capabilities = vec![
+        CapabilityRequest {
+            id: CapabilityId::new(EVENTS_SUBSCRIBE_CAPABILITY).unwrap(),
+            required: true,
+        },
+        CapabilityRequest {
+            id: CapabilityId::new(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap(),
+            required: true,
+        },
+    ];
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(ACTIVATE_EVENT).unwrap(),
+        filters: Vec::new(),
+    }];
+    manifest.component_schemas = vec![ComponentSchemaDeclaration {
+        id: ComponentSchemaId::new("org.byroredux.tests.activation-count").unwrap(),
+        version: 1,
+        fields: vec![ComponentFieldDeclaration {
+            id: ComponentFieldId::new("count").unwrap(),
+            value_type: ExtensionValueType::I64,
+        }],
+    }];
+    manifest
+}
+
+fn principal_storage_manifest() -> ExtensionManifest {
+    let mut manifest = manifest();
+    manifest.capabilities = vec![
+        CapabilityRequest {
+            id: CapabilityId::new(EVENTS_SUBSCRIBE_CAPABILITY).unwrap(),
+            required: true,
+        },
+        CapabilityRequest {
+            id: CapabilityId::new(STORAGE_READ_OWN_CAPABILITY).unwrap(),
+            required: true,
+        },
+        CapabilityRequest {
+            id: CapabilityId::new(STORAGE_WRITE_OWN_CAPABILITY).unwrap(),
+            required: true,
+        },
+    ];
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(ACTIVATE_EVENT).unwrap(),
+        filters: Vec::new(),
+    }];
+    manifest.principal_storage_schema = Some(1);
+    manifest
+}
+
+fn principal_storage_increment_component() -> String {
+    r#"(component
+            (import "byro:mod-host/state@0.1.0" (instance $state
+                (type $entity-ref-shape (record
+                    (field "world-generation" u64)
+                    (field "object" u64)))
+                (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+            ))
+            (import "byro:mod-host/storage@0.1.0" (instance $storage
+                (export "queue-increment-i64" (func
+                    (param "key" string)
+                    (param "delta" s64)))
+            ))
+            (alias export $state "entity-ref" (type $entity-ref))
+            (alias export $storage "queue-increment-i64" (func $increment))
+            (core module $libc
+                (memory (export "memory") 1)
+                (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+                    unreachable)
+            )
+            (core instance $libc (instantiate $libc))
+            (core func $increment-lower
+                (canon lower (func $increment)
+                    (memory $libc "memory")
+                    (realloc (func $libc "realloc")))
+            )
+            (core module $guest
+                (import "libc" "memory" (memory 1))
+                (import "host" "increment" (func $increment (param i32 i32 i64)))
+                (data (i32.const 0) "activation-count")
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                (func (export "on-activate")
+                    (param i64 i64 i32 i64 i64)
+                    i32.const 0
+                    i32.const 16
+                    i64.const 1
+                    call $increment)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "libc" (instance $libc))
+                (with "host" (instance (export "increment" (func $increment-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            (func (export "on-activate")
+                (param "subject" $entity-ref)
+                (param "activator" (option $entity-ref))
+                (canon lift (core func $guest-instance "on-activate")))
+        )"#
+    .to_owned()
+}
+
+fn entity_projection_component() -> String {
+    r#"(component
+            (type $entity-ref-shape (record
+                (field "world-generation" u64)
+                (field "object" u64)))
+            (import "byro:mod-host/state@0.1.0" (instance $state
+                (export "entity-ref" (type $entity-ref-in (eq $entity-ref-shape)))
+            ))
+            (import "byro:mod-host/world-state@0.1.0" (instance $world
+                (export "entity-ref" (type $entity-ref-world (eq $entity-ref-shape)))
+                (export "contains-entity" (func
+                    (param "entity" $entity-ref-world)
+                    (result bool)))
+            ))
+            (alias export $state "entity-ref" (type $entity-ref))
+            (alias export $world "contains-entity" (func $contains))
+            (core func $contains-lower (canon lower (func $contains)))
+            (core module $guest
+                (import "host" "contains" (func $contains (param i64 i64) (result i32)))
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                (func (export "on-activate")
+                    (param $world i64) (param $object i64) (param i32 i64 i64)
+                    local.get $world
+                    local.get $object
+                    call $contains
+                    i32.eqz
+                    if
+                        unreachable
+                    end)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "host" (instance (export "contains" (func $contains-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            (func (export "on-activate")
+                (param "subject" $entity-ref)
+                (param "activator" (option $entity-ref))
+                (canon lift (core func $guest-instance "on-activate")))
+        )"#
+    .to_owned()
+}
+
+fn entity_projection_manifest(required: bool) -> ExtensionManifest {
+    let mut manifest = activation_manifest();
+    manifest.component_schemas.clear();
+    manifest.capabilities = vec![
+        CapabilityRequest {
+            id: CapabilityId::new(EVENTS_SUBSCRIBE_CAPABILITY).unwrap(),
+            required: true,
+        },
+        CapabilityRequest {
+            id: CapabilityId::new(WORLD_ENTITY_READ_CAPABILITY).unwrap(),
+            required,
+        },
+    ];
+    manifest
 }
 
 fn runtime(config: SandboxConfig) -> SandboxRuntime {
     SandboxRuntime::new(config).unwrap()
 }
 
+fn component_id() -> ComponentId {
+    ComponentId::new("runtime").unwrap()
+}
+
 fn compile_wat(runtime: &SandboxRuntime, source: &str) -> crate::CompiledMod {
     let bytes = wat::parse_str(source).unwrap();
-    runtime.compile(&bytes).unwrap()
+    runtime
+        .compile(&manifest(), &component_id(), &bytes)
+        .unwrap()
+}
+
+fn compile_wat_for(
+    runtime: &SandboxRuntime,
+    manifest: &ExtensionManifest,
+    source: &str,
+) -> crate::CompiledMod {
+    let bytes = wat::parse_str(source).unwrap();
+    runtime.compile(manifest, &component_id(), &bytes).unwrap()
 }
 
 fn logging_component() -> String {
@@ -67,6 +313,7 @@ fn logging_component() -> String {
                     i32.const 32
                     i32.const 8
                     call $log)
+                {ON_ACTIVATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -76,6 +323,7 @@ fn logging_component() -> String {
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
         )"#
     )
 }
@@ -91,12 +339,14 @@ fn looping_component() -> String {
                         drop
                         br $forever))
                 (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
         )"#
     )
 }
@@ -109,12 +359,14 @@ fn oversized_memory_component() -> String {
                 (memory 2)
                 (func (export "initialize"))
                 (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
         )"#
     )
 }
@@ -129,14 +381,145 @@ fn component_with_wasi_import() -> String {
             (core module $guest
                 (func (export "initialize"))
                 (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
         )"#
     )
+}
+
+fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> String {
+    let tail = if trap_after_queue { "unreachable" } else { "" };
+    let queue_calls = r#"
+                    local.get $world
+                    local.get $object
+                    i32.const 0
+                    i32.const 0
+                    i64.const 1
+                    call $increment
+"#
+    .repeat(queue_count);
+    format!(
+        r#"(component
+            {IMPORTS}
+            (alias export $state "queue-increment-own-i64" (func $increment))
+            (core func $increment-lower (canon lower (func $increment)))
+            (core module $guest
+                (import "host" "increment" (func $increment
+                    (param i64 i64 i32 i32 i64)))
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                (func (export "on-activate")
+                    (param $world i64) (param $object i64)
+                    (param i32 i64 i64)
+                    {queue_calls}
+                    {tail})
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "host" (instance
+                    (export "increment" (func $increment-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+        )"#
+    )
+}
+
+#[test]
+fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
+    let runtime = runtime(SandboxConfig::default());
+    assert_eq!(runtime.catalog().sdk_version(), &Version::new(0, 1, 0));
+    assert_eq!(
+        runtime.catalog().service_version(LOGGING_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime.catalog().supports_capability(LOG_CAPABILITY));
+}
+
+#[test]
+fn incompatible_sdk_is_rejected_before_component_bytes_are_compiled() {
+    let runtime = runtime(SandboxConfig::default());
+    let mut incompatible = manifest();
+    incompatible.sdk = VersionReq::parse(">=1.0").unwrap();
+
+    let error = runtime
+        .compile(&incompatible, &component_id(), b"not wasm")
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        SandboxError::ExtensionContract(CompatibilityError::UnsupportedSdk { .. })
+    ));
+}
+
+#[test]
+fn effective_grants_cannot_exceed_manifest_or_host_authority() {
+    let runtime = runtime(SandboxConfig::default());
+    let declared = manifest();
+    let compiled = compile_wat(&runtime, &looping_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant("byro.world.raw-memory").unwrap();
+
+    let result = runtime.instantiate(&compiled, &declared, grants);
+    assert!(matches!(
+        result,
+        Err(SandboxError::ExtensionContract(
+            CompatibilityError::UndeclaredGrant(_)
+        ))
+    ));
+
+    let required = manifest_with_log(true);
+    let compiled = runtime
+        .compile(
+            &required,
+            &component_id(),
+            &wat::parse_str(looping_component()).unwrap(),
+        )
+        .unwrap();
+    let result = runtime.instantiate(&compiled, &required, CapabilitySet::new());
+    assert!(matches!(
+        result,
+        Err(SandboxError::ExtensionContract(
+            CompatibilityError::MissingRequiredGrant(_)
+        ))
+    ));
+}
+
+#[test]
+fn compiled_artifacts_are_bound_to_declared_component_and_manifest_version() {
+    let runtime = runtime(SandboxConfig::default());
+    let declared = manifest();
+    let undeclared = ComponentId::new("other").unwrap();
+    assert!(matches!(
+        runtime.compile(&declared, &undeclared, b"not wasm"),
+        Err(SandboxError::UndeclaredComponent { .. })
+    ));
+
+    let compiled = compile_wat(&runtime, &looping_component());
+    let mut changed = declared.clone();
+    changed.version = Version::new(2, 0, 0);
+    assert!(matches!(
+        runtime.instantiate(&compiled, &changed, CapabilitySet::new()),
+        Err(SandboxError::ManifestMismatch { .. })
+    ));
+
+    let mut same_version_changed_contract = declared.clone();
+    same_version_changed_contract.principal_storage_schema = Some(1);
+    assert!(matches!(
+        runtime.instantiate(
+            &compiled,
+            &same_version_changed_contract,
+            CapabilitySet::new()
+        ),
+        Err(SandboxError::ManifestMismatch { .. })
+    ));
 }
 
 #[test]
@@ -145,7 +528,7 @@ fn lifecycle_calls_are_capability_gated_and_attributed() {
     let compiled = compile_wat(&runtime, &logging_component());
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
 
     assert_eq!(instance.status(), &InstanceStatus::Ready);
     instance.initialize().unwrap();
@@ -160,7 +543,7 @@ fn lifecycle_calls_are_capability_gated_and_attributed() {
     assert!(instance
         .logs()
         .iter()
-        .all(|entry| entry.principal == *principal().id()));
+        .all(|entry| entry.principal == PrincipalId::from(&manifest().id)));
 }
 
 #[test]
@@ -168,7 +551,7 @@ fn denied_host_call_quarantines_only_its_instance() {
     let runtime = runtime(SandboxConfig::default());
     let compiled = compile_wat(&runtime, &logging_component());
     let mut denied = runtime
-        .instantiate(&compiled, principal(), CapabilitySet::new())
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
         .unwrap();
 
     let error = denied.initialize().unwrap_err();
@@ -188,7 +571,7 @@ fn denied_host_call_quarantines_only_its_instance() {
 
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut unrelated = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut unrelated = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
     unrelated.initialize().unwrap();
     assert_eq!(unrelated.status(), &InstanceStatus::Active);
 }
@@ -202,7 +585,7 @@ fn fuel_exhaustion_quarantines_runaway_guest() {
     let runtime = runtime(config);
     let compiled = compile_wat(&runtime, &looping_component());
     let mut instance = runtime
-        .instantiate(&compiled, principal(), CapabilitySet::new())
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
         .unwrap();
 
     let error = instance.initialize().unwrap_err();
@@ -219,7 +602,7 @@ fn memory_ceiling_is_enforced_during_instantiation() {
     };
     let runtime = runtime(config);
     let compiled = compile_wat(&runtime, &oversized_memory_component());
-    let result = runtime.instantiate(&compiled, principal(), CapabilitySet::new());
+    let result = runtime.instantiate(&compiled, &manifest(), CapabilitySet::new());
 
     assert!(matches!(result, Err(SandboxError::Instantiate(_))));
 }
@@ -235,7 +618,7 @@ fn log_size_limit_is_enforced_at_the_host_boundary() {
     let compiled = compile_wat(&runtime, &logging_component());
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
 
     assert!(matches!(
         instance.initialize(),
@@ -249,7 +632,7 @@ fn log_size_limit_is_enforced_at_the_host_boundary() {
 fn wasi_imports_are_absent_by_default() {
     let runtime = runtime(SandboxConfig::default());
     let compiled = compile_wat(&runtime, &component_with_wasi_import());
-    let result = runtime.instantiate(&compiled, principal(), CapabilitySet::new());
+    let result = runtime.instantiate(&compiled, &manifest(), CapabilitySet::new());
 
     assert!(matches!(
         result,
@@ -275,7 +658,7 @@ fn draining_logs_returns_budget_and_keeps_the_guest_healthy() {
     let compiled = compile_wat(&runtime, &logging_component());
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
 
     instance.initialize().unwrap();
     assert_eq!(instance.logs().len(), 1);
@@ -308,7 +691,7 @@ fn an_undrained_log_budget_still_quarantines_but_names_itself() {
     let compiled = compile_wat(&runtime, &logging_component());
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
 
     instance.initialize().unwrap();
     assert!(matches!(
@@ -338,7 +721,7 @@ fn a_genuine_fault_is_not_labelled_a_budget_overrun() {
     let runtime = runtime(SandboxConfig::default());
     let compiled = compile_wat(&runtime, &looping_component());
     let mut instance = runtime
-        .instantiate(&compiled, principal(), CapabilitySet::new())
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
         .unwrap();
 
     assert!(matches!(
@@ -364,7 +747,7 @@ fn an_oversized_message_is_a_guest_fault_not_a_budget_overrun() {
     let compiled = compile_wat(&runtime, &logging_component());
     let mut grants = CapabilitySet::new();
     grants.grant(LOG_CAPABILITY).unwrap();
-    let mut instance = runtime.instantiate(&compiled, principal(), grants).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest(), grants).unwrap();
 
     assert!(matches!(
         instance.initialize(),
@@ -387,12 +770,20 @@ fn compile_rejects_hostile_input_without_panicking() {
     // A valid component, truncated at every prefix length. Each is a
     // plausible-but-malformed input of exactly the shape a partial download or
     // a deliberately-clipped file produces.
-    let valid = wat::parse_str(&logging_component()).unwrap();
-    assert!(runtime.compile(&valid).is_ok(), "the fixture must compile");
+    let valid = wat::parse_str(logging_component()).unwrap();
+    assert!(
+        runtime
+            .compile(&manifest(), &component_id(), &valid)
+            .is_ok(),
+        "the fixture must compile"
+    );
     let mut rejected = 0usize;
     for cut in 0..valid.len() {
         // Calling at all is half the assertion: a panic here fails the test.
-        if runtime.compile(&valid[..cut]).is_err() {
+        if runtime
+            .compile(&manifest(), &component_id(), &valid[..cut])
+            .is_err()
+        {
             rejected += 1;
         }
     }
@@ -405,7 +796,9 @@ fn compile_rejects_hostile_input_without_panicking() {
         "only {rejected} of {} truncations were rejected",
         valid.len()
     );
-    assert!(runtime.compile(&valid[..8]).is_ok());
+    assert!(runtime
+        .compile(&manifest(), &component_id(), &valid[..8])
+        .is_ok());
 
     for (label, bytes) in [
         ("empty", Vec::new()),
@@ -424,7 +817,9 @@ fn compile_rejects_hostile_input_without_panicking() {
         ),
     ] {
         assert!(
-            runtime.compile(&bytes).is_err(),
+            runtime
+                .compile(&manifest(), &component_id(), &bytes)
+                .is_err(),
             "{label} compiled instead of being rejected"
         );
     }
@@ -439,7 +834,9 @@ fn compile_rejects_a_valid_core_module_that_is_not_a_component() {
     let core = wat::parse_str(r#"(module (func (export "initialize")))"#).unwrap();
     assert!(core.starts_with(b"\0asm"), "fixture must be real wasm");
 
-    let error = runtime.compile(&core).unwrap_err();
+    let error = runtime
+        .compile(&manifest(), &component_id(), &core)
+        .unwrap_err();
     assert!(
         matches!(error, SandboxError::Compile(_)),
         "expected a compile rejection, got {error:?}"
@@ -452,7 +849,9 @@ fn component_byte_limit_is_checked_before_compilation() {
         max_component_bytes: 4,
         ..SandboxConfig::default()
     });
-    let error = runtime.compile(b"not wasm").unwrap_err();
+    let error = runtime
+        .compile(&manifest(), &component_id(), b"not wasm")
+        .unwrap_err();
 
     assert!(matches!(
         error,
@@ -460,5 +859,282 @@ fn component_byte_limit_is_checked_before_compilation() {
             actual: 8,
             maximum: 4
         }
+    ));
+}
+
+#[test]
+fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = activation_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &activation_counter_component(1, false));
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let subject = EntityRef::new(3, 41).unwrap();
+    let commands = instance
+        .on_activate(ActivationEvent {
+            subject,
+            activator: Some(EntityRef::new(3, 1).unwrap()),
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 1);
+
+    let owner = instance.principal().id().clone();
+    let declaration = &manifest.component_schemas[0];
+    let mut state = ExtensionComponentStore::new(ComponentStoreLimits::default()).unwrap();
+    state
+        .register_schema(
+            &owner,
+            ComponentSchema {
+                id: declaration.id.clone(),
+                version: declaration.version,
+                fields: declaration.fields.clone(),
+            },
+        )
+        .unwrap();
+    let component_commands: Vec<_> = commands
+        .into_iter()
+        .map(|command| match command {
+            HostCommand::Component(command) => command,
+            HostCommand::PrincipalStorage(_) => {
+                panic!("fixture emitted an unexpected storage command")
+            }
+        })
+        .collect();
+    state.apply_batch(&owner, &component_commands).unwrap();
+
+    assert_eq!(
+        state
+            .row(&owner, &declaration.id, subject)
+            .and_then(|row| row.get("count")),
+        Some(&ExtensionValue::I64(1))
+    );
+}
+
+#[test]
+fn principal_storage_mutation_is_deferred_and_principal_attributed() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = principal_storage_manifest();
+    let compiled = compile_wat_for(
+        &runtime,
+        &manifest,
+        &principal_storage_increment_component(),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let commands = instance
+        .on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 1);
+    let storage_commands: Vec<_> = commands
+        .into_iter()
+        .map(|command| match command {
+            HostCommand::PrincipalStorage(command) => command,
+            HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),
+        })
+        .collect();
+
+    let owner = instance.principal().id().clone();
+    let mut storage = PrincipalStorageStore::new(PrincipalStorageLimits::default()).unwrap();
+    storage.register_schema(owner.clone(), 1).unwrap();
+    storage.apply_batch(&owner, &storage_commands).unwrap();
+    assert_eq!(
+        storage
+            .values(&owner)
+            .unwrap()
+            .get(&byroredux_sdk::identity::StorageKey::new("activation-count").unwrap()),
+        Some(&ExtensionValue::I64(1))
+    );
+}
+
+#[test]
+fn entity_projection_snapshot_is_callback_local_and_cleared_after_delivery() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = entity_projection_manifest(true);
+    let compiled = compile_wat_for(&runtime, &manifest, &entity_projection_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(WORLD_ENTITY_READ_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let subject = EntityRef::new(4, 8).unwrap();
+    let transform = WorldTransform::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], 1.0).unwrap();
+    instance.set_entity_projections([EntityProjection::new(
+        subject,
+        None,
+        Some("Subject".to_owned()),
+        Some(transform),
+    )
+    .unwrap()]);
+    assert!(instance
+        .on_activate(ActivationEvent {
+            subject,
+            activator: None,
+        })
+        .unwrap()
+        .is_empty());
+
+    let error = instance
+        .on_activate(ActivationEvent {
+            subject,
+            activator: None,
+        })
+        .unwrap_err();
+    assert!(matches!(error, SandboxError::GuestFault { .. }));
+    assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(WORLD_ENTITY_READ_CAPABILITY).unwrap();
+    let mut mismatched = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    mismatched.initialize().unwrap();
+    mismatched.set_entity_projections([EntityProjection::new(subject, None, None, None).unwrap()]);
+    let error = mismatched
+        .on_activate(ActivationEvent {
+            subject: EntityRef::new(4, 9).unwrap(),
+            activator: None,
+        })
+        .unwrap_err();
+    assert!(matches!(error, SandboxError::GuestFault { .. }));
+    assert!(matches!(
+        mismatched.status(),
+        InstanceStatus::Quarantined(_)
+    ));
+}
+
+#[test]
+fn entity_projection_host_call_requires_its_explicit_capability() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = entity_projection_manifest(false);
+    let compiled = compile_wat_for(&runtime, &manifest, &entity_projection_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+    let subject = EntityRef::new(1, 1).unwrap();
+    instance.set_entity_projections([EntityProjection::new(subject, None, None, None).unwrap()]);
+
+    let error = instance
+        .on_activate(ActivationEvent {
+            subject,
+            activator: None,
+        })
+        .unwrap_err();
+    assert!(matches!(error, SandboxError::GuestFault { .. }));
+    assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+}
+
+#[test]
+fn a_trapping_activation_discards_every_queued_command() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = activation_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &activation_counter_component(1, true));
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::GuestFault {
+            phase: LifecyclePhase::Activate,
+            ..
+        })
+    ));
+    assert!(matches!(
+        instance.status(),
+        InstanceStatus::Quarantined(fault)
+            if fault.phase == LifecyclePhase::Activate && fault.kind == FaultKind::Guest
+    ));
+}
+
+#[test]
+fn activation_command_budget_quarantines_only_the_producing_instance() {
+    let runtime = runtime(SandboxConfig {
+        max_commands_per_entry: 1,
+        ..SandboxConfig::default()
+    });
+    let manifest = activation_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &activation_counter_component(2, false));
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::GuestFault {
+            phase: LifecyclePhase::Activate,
+            ..
+        })
+    ));
+    assert!(matches!(
+        instance.status(),
+        InstanceStatus::Quarantined(fault)
+            if fault.kind == FaultKind::CommandBudgetExhausted
+    ));
+}
+
+#[test]
+fn event_delivery_requires_both_subscription_and_capability() {
+    let runtime = runtime(SandboxConfig::default());
+    let mut declared = activation_manifest();
+    for capability in &mut declared.capabilities {
+        capability.required = false;
+    }
+    let compiled = compile_wat_for(&runtime, &declared, &activation_counter_component(1, false));
+    let mut instance = runtime
+        .instantiate(&compiled, &declared, CapabilitySet::new())
+        .unwrap();
+    instance.initialize().unwrap();
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::EventDeliveryDenied(_))
+    ));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let mut unsubscribed = declared.clone();
+    unsubscribed.subscriptions.clear();
+    let compiled = compile_wat_for(
+        &runtime,
+        &unsubscribed,
+        &activation_counter_component(1, false),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime
+        .instantiate(&compiled, &unsubscribed, grants)
+        .unwrap();
+    instance.initialize().unwrap();
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::EventNotSubscribed(_))
     ));
 }

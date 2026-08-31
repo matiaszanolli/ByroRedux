@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+byroredux-sdk = { workspace = true }
+semver = { workspace = true }
 thiserror = { workspace = true }
 wasmtime = { workspace = true }
 

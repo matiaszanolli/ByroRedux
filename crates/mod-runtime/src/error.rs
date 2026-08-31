@@ -1,4 +1,6 @@
 use crate::{InstanceStatus, LifecyclePhase};
+use byroredux_sdk::identity::{ComponentId, EventId, ExtensionId};
+use byroredux_sdk::service::CompatibilityError;
 use thiserror::Error;
 
 /// Failures produced while configuring, linking, or executing a sandbox.
@@ -10,8 +12,23 @@ pub enum SandboxError {
     #[error("invalid principal id: {0}")]
     InvalidPrincipal(String),
 
-    #[error("invalid capability id: {0}")]
-    InvalidCapability(String),
+    #[error("extension contract rejected before execution: {0}")]
+    ExtensionContract(#[from] CompatibilityError),
+
+    #[error("extension {extension} does not declare component {component}")]
+    UndeclaredComponent {
+        extension: ExtensionId,
+        component: ComponentId,
+    },
+
+    #[error("compiled component belongs to {compiled}, not requested extension {requested}")]
+    ManifestMismatch { compiled: String, requested: String },
+
+    #[error("extension is not subscribed to event {0}")]
+    EventNotSubscribed(EventId),
+
+    #[error("extension lacks capability required to receive event {0}")]
+    EventDeliveryDenied(EventId),
 
     #[error("component is {actual} bytes, exceeding the {maximum}-byte limit")]
     ComponentTooLarge { actual: usize, maximum: usize },

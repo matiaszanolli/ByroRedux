@@ -13,8 +13,12 @@ mod identity;
 mod limits;
 mod runtime;
 
+pub use byroredux_sdk::component::ExtensionCommand;
+pub use byroredux_sdk::event::ActivationEvent;
+pub use byroredux_sdk::identity::{CapabilityId, CapabilitySet, PrincipalId};
+pub use byroredux_sdk::service::LOG_WRITE_CAPABILITY as LOG_CAPABILITY;
 pub use error::{Result, SandboxError};
-pub use identity::{CapabilityId, CapabilitySet, Principal, PrincipalId, LOG_CAPABILITY};
+pub use identity::Principal;
 pub use limits::SandboxConfig;
 pub use runtime::{
     CompiledMod, FaultInfo, FaultKind, InstanceStatus, LifecyclePhase, LogEntry, LogLevel,

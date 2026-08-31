@@ -26,6 +26,7 @@
 pub mod datastore;
 pub mod equip;
 pub mod esm;
+pub mod extension;
 // Legacy Form ID bridge (LegacyFormId / LegacyLoadOrder). Kept `pub(crate)`
 // rather than `pub`: it is forward-looking scaffolding for the stable
 // content-addressed Form ID resolver and has no consumer yet. Its first real
@@ -37,6 +38,7 @@ pub mod record;
 pub mod resolver;
 
 pub use datastore::{Conflict, DataStore, ResolvedRecord};
+pub use extension::{ExtensionResolutionError, ResolvedExtensionSet};
 pub use manifest::PluginManifest;
 pub use record::{ErasedComponent, ErasedComponentData, Record, RecordType};
 pub use resolver::{ConflictResolution, DependencyResolver};

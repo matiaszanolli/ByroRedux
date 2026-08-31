@@ -87,6 +87,8 @@ pub struct SandboxConfig {
     pub max_log_entries: usize,
     pub max_log_message_bytes: usize,
     pub max_log_bytes: usize,
+    /// Maximum deferred state mutations one guest entry may enqueue.
+    pub max_commands_per_entry: usize,
 }
 
 impl Default for SandboxConfig {
@@ -103,6 +105,7 @@ impl Default for SandboxConfig {
             max_log_entries: 1_024,
             max_log_message_bytes: 16 * 1024,
             max_log_bytes: 1024 * 1024,
+            max_commands_per_entry: 1_024,
         }
     }
 }
@@ -200,6 +203,16 @@ impl SandboxConfig {
                 "max_log_message_bytes must not exceed max_log_bytes",
             ));
         }
+        if self.max_commands_per_entry == 0 {
+            return Err(SandboxError::InvalidConfig(
+                "max_commands_per_entry must be non-zero",
+            ));
+        }
+        if self.max_commands_per_entry > MAX_SANE_LIMIT {
+            return Err(SandboxError::InvalidConfig(
+                "max_commands_per_entry exceeds the sane ceiling",
+            ));
+        }
         Ok(())
     }
 }
@@ -262,7 +275,7 @@ mod tests {
     /// `usize::MAX` (or `u64::MAX` for fuel) and expects rejection.
     #[test]
     fn every_resource_field_rejects_usize_max() {
-        let cases: [(&str, SandboxConfig); 8] = [
+        let cases: [(&str, SandboxConfig); 9] = [
             (
                 "max_component_bytes",
                 SandboxConfig {
@@ -316,6 +329,13 @@ mod tests {
                 "max_log_entries",
                 SandboxConfig {
                     max_log_entries: usize::MAX,
+                    ..SandboxConfig::default()
+                },
+            ),
+            (
+                "max_commands_per_entry",
+                SandboxConfig {
+                    max_commands_per_entry: usize::MAX,
                     ..SandboxConfig::default()
                 },
             ),

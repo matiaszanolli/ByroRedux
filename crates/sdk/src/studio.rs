@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
-
-use byroredux_core::ecs::{EntityId, Resource};
 use byroredux_core::math::Vec3;
+
+use crate::identity::ObjectId;
 
 /// A finite world-space sphere contributed by a renderable asset object.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -105,32 +104,18 @@ pub struct AssetSource {
     pub label: String,
 }
 
-/// Persistent document state. The host owns the ECS objects and records their
-/// stable IDs here so room helpers and unrelated scene entities stay excluded.
-#[derive(Debug, Clone)]
-pub struct StudioSession {
-    pub source: AssetSource,
-    pub objects: Vec<EntityId>,
-    pub selected: Option<EntityId>,
-    pub fit: CornellFit,
-    pub revision: u64,
-    pub original_transforms: BTreeMap<EntityId, TransformValue>,
-}
-
-impl Resource for StudioSession {}
-
 /// UI-facing immutable document projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StudioSnapshot {
     pub source_label: String,
     pub revision: u64,
-    pub selected: Option<EntityId>,
+    pub selected: Option<ObjectId>,
     pub objects: Vec<ObjectSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectSnapshot {
-    pub entity: EntityId,
+    pub id: ObjectId,
     pub name: String,
     pub transform: TransformValue,
     pub material: Option<MaterialValue>,
@@ -153,29 +138,29 @@ pub struct MaterialValue {
     pub ior: f32,
 }
 
-/// Typed mutation protocol shared by GUI, CLI, automation, and future plugins.
+/// Typed mutation protocol shared by GUI, CLI, automation, and trusted tools.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StudioCommand {
-    Select(Option<EntityId>),
+    Select(Option<ObjectId>),
     PickFromView,
     SetTransform {
-        entity: EntityId,
+        object: ObjectId,
         value: TransformValue,
     },
-    ResetTransform(EntityId),
+    ResetTransform(ObjectId),
     SetMaterial {
-        entity: EntityId,
+        object: ObjectId,
         value: MaterialValue,
     },
-    FrameSelection(EntityId),
+    FrameSelection(ObjectId),
 }
 
 /// Return the nearest positive ray/sphere hit. Invalid spheres are ignored.
 pub fn pick_spheres(
     origin: [f32; 3],
     direction: [f32; 3],
-    spheres: impl IntoIterator<Item = (EntityId, BoundSphere)>,
-) -> Option<EntityId> {
+    spheres: impl IntoIterator<Item = (ObjectId, BoundSphere)>,
+) -> Option<ObjectId> {
     let origin = Vec3::from_array(origin);
     let direction = Vec3::from_array(direction).normalize_or_zero();
     if !origin.is_finite() || direction == Vec3::ZERO {
@@ -183,7 +168,7 @@ pub fn pick_spheres(
     }
     spheres
         .into_iter()
-        .filter_map(|(entity, sphere)| {
+        .filter_map(|(object, sphere)| {
             let center = Vec3::from_array(sphere.center);
             let radius = sphere.radius.abs();
             if !center.is_finite() || !radius.is_finite() {
@@ -200,10 +185,10 @@ pub fn pick_spheres(
             let near = projected - half_chord;
             let far = projected + half_chord;
             let distance = if near >= 0.0 { near } else { far };
-            (distance >= 0.0).then_some((entity, distance))
+            (distance >= 0.0).then_some((object, distance))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(entity, _)| entity)
+        .map(|(object, _)| object)
 }
 
 #[cfg(test)]
@@ -247,21 +232,21 @@ mod tests {
             [0.0, 0.0, -1.0],
             [
                 (
-                    9,
+                    ObjectId::new(9).unwrap(),
                     BoundSphere {
                         center: [0.0, 0.0, -8.0],
                         radius: 1.0,
                     },
                 ),
                 (
-                    4,
+                    ObjectId::new(4).unwrap(),
                     BoundSphere {
                         center: [0.0, 0.0, -3.0],
                         radius: 0.5,
                     },
                 ),
                 (
-                    2,
+                    ObjectId::new(2).unwrap(),
                     BoundSphere {
                         center: [0.0, 0.0, 2.0],
                         radius: 1.0,
@@ -269,6 +254,6 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(hit, Some(4));
+        assert_eq!(hit, ObjectId::new(4));
     }
 }

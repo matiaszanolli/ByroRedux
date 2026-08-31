@@ -12,7 +12,8 @@
 //!    flagged as `TieBreak` for user review.
 
 use byroredux_core::form_id::PluginId;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 
 use crate::manifest::PluginManifest;
 
@@ -33,44 +34,19 @@ pub enum ConflictResolution {
 ///
 /// Adjacency is stored as `plugin → [its direct dependencies]`.
 pub struct DependencyResolver {
-    adjacency: HashMap<PluginId, Vec<PluginId>>,
+    graph: DependencyGraph<PluginId>,
 }
 
 impl DependencyResolver {
     /// Build the DAG from a slice of manifests.
     pub fn new(manifests: &[PluginManifest]) -> Self {
-        let adjacency = manifests
-            .iter()
-            .map(|m| (m.id, m.dependencies.clone()))
-            .collect();
-        Self { adjacency }
+        let graph = DependencyGraph::new(manifests.iter().map(|m| (m.id, m.dependencies.clone())));
+        Self { graph }
     }
 
     /// Compute the full transitive dependency set for a plugin (BFS).
     pub fn transitive_deps(&self, plugin: PluginId) -> HashSet<PluginId> {
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-
-        if let Some(direct) = self.adjacency.get(&plugin) {
-            for &dep in direct {
-                queue.push_back(dep);
-            }
-        }
-
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current) {
-                continue;
-            }
-            if let Some(deps) = self.adjacency.get(&current) {
-                for &dep in deps {
-                    if !visited.contains(&dep) {
-                        queue.push_back(dep);
-                    }
-                }
-            }
-        }
-
-        visited
+        self.graph.transitive_deps(&plugin)
     }
 
     /// Given a set of plugins that all touch the same record, determine
@@ -123,6 +99,119 @@ impl DependencyResolver {
             // No dependency relationship — deterministic tiebreak.
             let winner = *plugins.iter().min().unwrap();
             (winner, ConflictResolution::TieBreak { winner })
+        }
+    }
+}
+
+/// Shared dependency primitive for record ancestry and executable-extension
+/// activation. Edges point from a node to its direct dependencies.
+pub(crate) struct DependencyGraph<K> {
+    adjacency: HashMap<K, Vec<K>>,
+}
+
+impl<K> DependencyGraph<K>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    pub(crate) fn new(edges: impl IntoIterator<Item = (K, Vec<K>)>) -> Self {
+        Self {
+            adjacency: edges.into_iter().collect(),
+        }
+    }
+
+    pub(crate) fn transitive_deps(&self, node: &K) -> HashSet<K> {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        if let Some(direct) = self.adjacency.get(node) {
+            for dependency in direct {
+                queue.push_back(dependency.clone());
+            }
+        }
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if let Some(deps) = self.adjacency.get(&current) {
+                for dependency in deps {
+                    if !visited.contains(dependency) {
+                        queue.push_back(dependency.clone());
+                    }
+                }
+            }
+        }
+
+        visited
+    }
+
+    /// Produce a deterministic dependency-first order or the first stable
+    /// cycle path. Every dependency is expected to be present as a node.
+    pub(crate) fn dependency_order(&self) -> Result<Vec<K>, Vec<K>> {
+        let mut dependency_count = HashMap::with_capacity(self.adjacency.len());
+        let mut dependents: HashMap<K, Vec<K>> = HashMap::new();
+        for (node, dependencies) in &self.adjacency {
+            dependency_count.insert(node.clone(), dependencies.len());
+            for dependency in dependencies {
+                dependents
+                    .entry(dependency.clone())
+                    .or_default()
+                    .push(node.clone());
+            }
+        }
+
+        let mut ready: BTreeSet<K> = dependency_count
+            .iter()
+            .filter_map(|(node, &count)| (count == 0).then_some(node.clone()))
+            .collect();
+        let mut ordered = Vec::with_capacity(self.adjacency.len());
+        while let Some(node) = ready.pop_first() {
+            ordered.push(node.clone());
+            if let Some(children) = dependents.get_mut(&node) {
+                children.sort();
+                for child in children.iter() {
+                    let count = dependency_count
+                        .get_mut(child)
+                        .expect("dependent must be an input node");
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.insert(child.clone());
+                    }
+                }
+            }
+        }
+        if ordered.len() == self.adjacency.len() {
+            return Ok(ordered);
+        }
+
+        // Every node left after Kahn's algorithm depends on another remaining
+        // node. Walk the lexically first such edge until a node repeats to
+        // produce a deterministic cycle diagnostic without recursive stack
+        // growth on hostile high-count manifests.
+        let remaining: BTreeSet<K> = dependency_count
+            .iter()
+            .filter_map(|(node, &count)| (count != 0).then_some(node.clone()))
+            .collect();
+        let mut positions = HashMap::new();
+        let mut path = Vec::new();
+        let mut current = remaining
+            .first()
+            .expect("an incomplete order must leave at least one node")
+            .clone();
+        loop {
+            if let Some(&start) = positions.get(&current) {
+                let mut cycle = path[start..].to_vec();
+                cycle.push(current);
+                return Err(cycle);
+            }
+            positions.insert(current.clone(), path.len());
+            path.push(current.clone());
+            current = self.adjacency[&current]
+                .iter()
+                .filter(|dependency| remaining.contains(*dependency))
+                .min()
+                .expect("remaining node must depend on another remaining node")
+                .clone();
         }
     }
 }

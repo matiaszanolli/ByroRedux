@@ -5,4 +5,13 @@
 //! how assets are imported and rendered; UI layers only consume snapshots and
 //! emit commands.
 
+#![forbid(unsafe_code)]
+
+pub mod component;
+pub mod event;
+pub mod identity;
+pub mod manifest;
+pub mod projection;
+pub mod service;
+pub mod storage;
 pub mod studio;

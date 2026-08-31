@@ -16,13 +16,95 @@ interface logging {
 interface context {
     principal-id: func() -> string;
     has-capability: func(capability: string) -> bool;
+    sdk-version: func() -> string;
+    service-version: func(service: string) -> option<string>;
+}
+
+/// Deferred mutations to principal-owned extension component state.
+interface state {
+    record entity-ref {
+        world-generation: u64,
+        object: u64,
+    }
+
+    /// Queue one checked increment. Schema and field indices refer to the
+    /// ordered tables in the authenticated package manifest.
+    queue-increment-own-i64: func(
+        entity: entity-ref,
+        schema-index: u32,
+        field-index: u32,
+        delta: s64,
+    );
+}
+
+/// Principal-scoped persistent data stored inside the engine save.
+interface storage {
+    variant value {
+        boolean(bool),
+        signed(s64),
+        unsigned(u64),
+        text(string),
+        bytes(list<u8>),
+    }
+
+    schema-version: func() -> option<u32>;
+    get: func(key: string) -> option<value>;
+    queue-set: func(key: string, value: value);
+    queue-delete: func(key: string);
+    queue-increment-i64: func(key: string, delta: s64);
+}
+
+/// Immutable facts about live entities already disclosed to this callback.
+interface world-state {
+    use state.{entity-ref};
+
+    record form-ref {
+        source-high: u64,
+        source-low: u64,
+        local: u32,
+    }
+
+    record vec3 {
+        x: f32,
+        y: f32,
+        z: f32,
+    }
+
+    record quat {
+        x: f32,
+        y: f32,
+        z: f32,
+        w: f32,
+    }
+
+    record world-transform {
+        translation: vec3,
+        rotation: quat,
+        scale: f32,
+    }
+
+    record entity-projection {
+        entity: entity-ref,
+        form: option<form-ref>,
+        name: option<string>,
+        world-transform: option<world-transform>,
+    }
+
+    contains-entity: func(entity: entity-ref) -> bool;
+    get-entity: func(entity: entity-ref) -> option<entity-projection>;
 }
 
 /// Minimal lifecycle contract for the first executable-mod runtime slice.
 world extension {
     import logging;
     import context;
+    import state;
+    import storage;
+    import world-state;
+
+    use state.{entity-ref};
 
     export initialize: func();
+    export on-activate: func(subject: entity-ref, activator: option<entity-ref>);
     export shutdown: func();
 }
