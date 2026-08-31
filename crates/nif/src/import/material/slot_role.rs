@@ -145,13 +145,25 @@ pub struct TextureSlotContext {
 /// `bsver >= 172`, so its `shader_type` is decoded by
 /// `parse_shader_type_data_fo76` and is a `BSShaderType155` value.
 /// `TextureSlotLayout::from_bsver` splits `Starfield` off from `Fallout76` for
-/// the *slot* table, and keying this translation on that narrower tag left
-/// Starfield's raw types falling through untranslated to be read as Skyrim
-/// numbers. `normalize_shader_type` masked 4 and 5 (their payload variants
-/// carry the tag), but 3 / 12 / 17 parse to `ShaderTypeData::None` and did not:
-/// a Starfield FaceTint (3) reached the slot table as Skyrim Parallax and bound
-/// the head's detail map as a POM height field — the exact failure #2694 fixed
-/// for Skyrim. Keep the guard on the same boundary the parser used.
+/// the *slot* table, and keying this translation on that narrower tag would
+/// leave Starfield's raw types falling through untranslated to be read as
+/// Skyrim numbers. `normalize_shader_type` masks 4 and 5 (their payload
+/// variants carry the tag), but 3 / 12 / 17 parse to `ShaderTypeData::None`
+/// and would not — a Starfield FaceTint (3) *would* reach the slot table as
+/// Skyrim Parallax and bind the head's detail map as a POM height field, the
+/// exact failure #2694 fixed for Skyrim, **for a Starfield type-3 property
+/// with a `BSShaderTextureSet`**.
+///
+/// **This guard is currently forward-compat, not a fix for an observed
+/// misroute.** #3364 was filed code-read-only ("no Starfield install on this
+/// machine to census"); a corpus census over all six vanilla Starfield mesh
+/// archives (2026-08-31, `_tmp_sf_facetint_census`, 60,816 NIFs, 2,564 full
+/// non-stub `BSLightingShaderProperty` blocks at bsver ≥ 172) found **zero**
+/// with a resolved `BSShaderTextureSet` carrying any non-empty slot — this
+/// module's header claim holds: Starfield content authors its texture roles
+/// through BGSM/BGEM/the materialsbeta CDB, not this table. Keep the guard on
+/// the same boundary the parser used in case mod content or a future vanilla
+/// asset does carry one.
 pub const fn canonical_shader_type(layout: TextureSlotLayout, raw: u32) -> u32 {
     if matches!(
         layout,
