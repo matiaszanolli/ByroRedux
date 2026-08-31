@@ -626,7 +626,7 @@ authoritative rather than re-derived.
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (8 attachments × 2 FIF, incl. FSR reactive/transparency masks) | ~23 MB | ~47 MB (4K) |
+| G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; **not** counting the separate HDR colour, depth, or depth-history attachments) | ~91 MB (1080p) | ~365 MB (4K) |
 | Scene SSBOs | ~223 MB | ~223 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
@@ -643,7 +643,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.74 GB** | **~3.4 GB at native 4K**, inside the < 4 GB target — see the per-preset table in the Volumetrics section |
+| **Estimated total** | **~1.81 GB** | **~3.72 GB at native 4K**, inside the < 4 GB target but with less margin than previously recorded — see the per-preset table in the Volumetrics section |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
