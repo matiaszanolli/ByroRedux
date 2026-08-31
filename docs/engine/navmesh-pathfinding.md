@@ -326,6 +326,35 @@ add indexing then, against real evidence.
    and state, and it is a real number rather than a hope — but it is a
    different mechanism from "decode a field", so Phase 2 stays deferred
    pending a decision to build it.
+
+   **Landed (2026-08-31, #3802)** — exact-vertex-match geometric join,
+   exactly the mechanism above, implemented in
+   `byroredux/src/systems/navmesh_path.rs`: border edges are derived
+   independently of `edge_neighbours`'s (still-unconfirmed) slot ordering
+   via vertex-index-pair membership counting — a triangle's 3 vertices
+   unambiguously give its 3 edges regardless of winding, so this needed no
+   new assumption. Two tiles' border edges landing in the same 1e-2
+   world-unit quantization bucket are a portal; a single A\* implementation
+   over `(mesh_form, triangle)` nodes walks both `edge_neighbours`
+   (within-tile) and the geometric portal graph (cross-tile) with the same
+   centroid-distance cost model Phase 1 already uses, so the admissible
+   straight-line-to-goal heuristic carries over unchanged.
+   `path_from_resident_tiles` tries Phase 1's same-tile search first
+   (unchanged behavior, unchanged tests, for the common case) and only
+   falls through to the cross-tile graph when `current` and `goal`
+   localize onto different resident tiles. The accepted accuracy bound is
+   exactly what this section measured: **~67% of adjacent tile pairs**
+   join automatically; the remaining ~33% (small authored coordinate
+   drift between separately-baked meshes) still needs the tolerance sweep
+   flagged above, not attempted here — same no-guessing posture as every
+   other unconfirmed NAVM field. Cost: the portal graph is rebuilt on
+   every cross-tile search rather than cached (resident tile counts per
+   cell are small and residency changes are already infrequent/cached
+   around — see §7); revisit if telemetry ever says otherwise. 6 new
+   tests, including one at the ECS level pinning a path that crosses two
+   distinct `NavmeshTile` entities' geometry, and one confirming the
+   same-tile fallback's output is byte-identical to before this phase
+   landed.
 3. **Phase 3 — wire into Wander/Travel** (§6's easy consumers first).
    **Travel half landed (2026-08-23)**, `byroredux/src/systems/travel.rs`
    + `crate::components::NavPath` (the cached-waypoint-queue component

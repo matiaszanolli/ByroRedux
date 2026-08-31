@@ -1,4 +1,4 @@
-//! Single-tile NAVM pathfinding — Phases 1 and 3 of
+//! NAVM pathfinding — Phases 1, 2 and 3 of
 //! `docs/engine/navmesh-pathfinding.md`'s rollout (EX-16 item 3, #2372).
 //!
 //! A\* over one [`NavmRecord`]'s triangle-adjacency graph
@@ -12,14 +12,22 @@
 //! procedures — travel / wander / patrol / follow / escort / guard — through
 //! `locomotion::step_along_waypoints`, not by `travel_system` alone.
 //!
-//! Deliberately **single-tile only**: `external_connections` (cross-tile
-//! links) aren't walked here. Phase 2 (cross-tile search) turned out to
-//! be genuinely **blocked**, not just unscheduled — see the design doc's
-//! §9 Phase 2 entry for the corpus-verified finding (`NavmExternalConnection`
-//! has no confirmed source-triangle field). A caller with a start/goal
-//! that don't both localize onto the same resident tile gets `None`,
-//! same "degrade, don't fail" posture the design doc's §4 establishes for
-//! the residency boundary generally.
+//! **Cross-tile (Phase 2, #3802)**: `external_connections` itself is still
+//! not walked — `NavmExternalConnection` has no confirmed source-triangle
+//! field, corpus-verified unrecoverable from the sub-record (design doc
+//! §9 Phase 2, "Resolved (2026-08-27, #3300)"). The join is instead
+//! recovered **geometrically**: two tiles' border edges that share exact
+//! vertex positions (within a 1e-2 world-unit bucket) are a genuine
+//! portal between them. Measured coverage on `FalloutNV.esm`: 67.1% of
+//! adjacent mesh pairs share at least one such vertex. The remaining ~33%
+//! (separately-authored meshes with small coordinate drift at their
+//! shared border) would need a tolerance sweep to recover, which the
+//! design doc explicitly flags as unmeasured — this module doesn't
+//! attempt it, same no-guessing posture as every other unconfirmed NAVM
+//! field. [`path_from_resident_tiles`] tries the exact same-tile search
+//! first (unchanged, zero behavior change for that case) and only reaches
+//! for the geometric cross-tile graph when `current` and `goal` localize
+//! onto different resident tiles.
 //!
 //! # Coordinate space
 //! [`NavmRecord::vertices`] are raw `NVVX` floats in Bethesda **Z-up**
@@ -143,6 +151,319 @@ fn shared_edge(a: &NavmTriangle, b: &NavmTriangle) -> Option<(u16, u16)> {
     let first = shared.next()?;
     let second = shared.next()?;
     Some((first, second))
+}
+
+// ── Phase 2 — cross-tile geometric join (#3802) ─────────────────────────
+
+/// A cross-tile graph node: `(mesh_form, triangle_index)`. Plain `usize`
+/// (as [`astar_triangle_path`] uses) isn't enough once more than one
+/// tile's triangles are in play — two different tiles' index spaces are
+/// otherwise indistinguishable.
+type CrossTileNode = (u32, usize);
+
+/// World-space quantization bucket for geometric vertex matching — 1e-2
+/// world units, matching the corpus-measured exact-match bound the design
+/// doc's §9 Phase 2 entry establishes. Scaling and rounding to an integer
+/// tuple (rather than comparing rounded floats directly) sidesteps float
+/// equality entirely: two positions bucket together iff they round to the
+/// same integer triple.
+const VERTEX_QUANTIZE_SCALE: f32 = 100.0; // 1 / 1e-2
+
+fn quantize(v: Vec3) -> (i64, i64, i64) {
+    (
+        (v.x * VERTEX_QUANTIZE_SCALE).round() as i64,
+        (v.y * VERTEX_QUANTIZE_SCALE).round() as i64,
+        (v.z * VERTEX_QUANTIZE_SCALE).round() as i64,
+    )
+}
+
+type QuantizedEdgeKey = ((i64, i64, i64), (i64, i64, i64));
+
+/// Order-independent key for the edge `(a, b)` — a portal's two tiles
+/// don't necessarily list their shared vertices in the same order.
+fn quantized_edge_key(a: Vec3, b: Vec3) -> QuantizedEdgeKey {
+    let (qa, qb) = (quantize(a), quantize(b));
+    if qa <= qb {
+        (qa, qb)
+    } else {
+        (qb, qa)
+    }
+}
+
+/// The 3 unordered vertex-index pairs of a triangle — its 3 geometric
+/// edges. Unlike the funnel algorithm's left/right question (module doc),
+/// this needs no winding convention: a triangle has exactly 3 vertices, so
+/// each pair of them is unambiguously one edge regardless of storage
+/// order.
+fn triangle_edge_index_pairs(tri: &NavmTriangle) -> [(u16, u16); 3] {
+    let [a, b, c] = tri.vertices;
+    [(a, b), (b, c), (c, a)]
+}
+
+fn ordered_index_pair(a: u16, b: u16) -> (u16, u16) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Border edges of `navm`: `(triangle_index, vertex_a, vertex_b)` for
+/// every vertex-index pair that belongs to exactly one triangle in this
+/// mesh. Derived independently of `edge_neighbours`'s slot ordering
+/// (unconfirmed convention — see module doc) via the same vertex-index-set
+/// approach [`shared_edge`] already uses, so this doesn't add a new
+/// assumption to what's already trusted; it only adds a new use of it.
+fn border_edges(navm: &NavmRecord) -> Vec<(usize, u16, u16)> {
+    let mut owners: HashMap<(u16, u16), Vec<(usize, u16, u16)>> = HashMap::new();
+    for (tri_idx, tri) in navm.triangles.iter().enumerate() {
+        for (a, b) in triangle_edge_index_pairs(tri) {
+            owners
+                .entry(ordered_index_pair(a, b))
+                .or_default()
+                .push((tri_idx, a, b));
+        }
+    }
+    owners
+        .into_values()
+        .filter(|owners| owners.len() == 1)
+        .map(|mut owners| owners.remove(0))
+        .collect()
+}
+
+/// The geometric cross-tile portal graph (design doc §9 Phase 2): for
+/// every resident tile's border edge, an adjacency-list entry to every
+/// *other* tile's border edge sharing the same quantized world-space
+/// position, carrying the shared position's midpoint (needed later for
+/// waypoint extraction — see [`cross_tile_corridor_to_waypoints`]).
+///
+/// O(total border edges) to build, O(total border edges) space. Built
+/// fresh on every cross-tile search rather than cached — resident tile
+/// sets only change on cell load/unload (an infrequent, already-cached-
+/// around event via [`resolve_cached_waypoints`]'s residency generation),
+/// and per-cell border-edge counts are small, so this hasn't shown up as
+/// a cost worth caching around; revisit if telemetry says otherwise.
+struct CrossTileGraph {
+    edges: HashMap<CrossTileNode, Vec<(CrossTileNode, Vec3)>>,
+}
+
+impl CrossTileGraph {
+    fn build<'a>(tiles: impl Iterator<Item = &'a NavmRecord>) -> Self {
+        let mut by_key: HashMap<QuantizedEdgeKey, Vec<(CrossTileNode, Vec3, Vec3)>> =
+            HashMap::new();
+        for navm in tiles {
+            for (tri_idx, v_a, v_b) in border_edges(navm) {
+                let (Some(a), Some(b)) = (vertex_yup(navm, v_a), vertex_yup(navm, v_b)) else {
+                    continue;
+                };
+                by_key
+                    .entry(quantized_edge_key(a, b))
+                    .or_default()
+                    .push(((navm.form_id, tri_idx), a, b));
+            }
+        }
+        let mut edges: HashMap<CrossTileNode, Vec<(CrossTileNode, Vec3)>> = HashMap::new();
+        for owners in by_key.values() {
+            if owners.len() < 2 {
+                continue; // no match on this edge — the common case
+            }
+            for &(node, a, b) in owners {
+                let midpoint = (a + b) / 2.0;
+                for &(other_node, ..) in owners {
+                    // Different *mesh*, not just a different triangle — a
+                    // border edge only ever belongs to one triangle within
+                    // its own mesh (that's what makes it a border edge),
+                    // so a same-mesh match here would mean two distinct
+                    // border edges of the same tile happen to land in the
+                    // same quantized bucket. Guarded rather than assumed
+                    // impossible.
+                    if other_node.0 == node.0 {
+                        continue;
+                    }
+                    edges.entry(node).or_default().push((other_node, midpoint));
+                }
+            }
+        }
+        Self { edges }
+    }
+
+    fn neighbours(&self, node: CrossTileNode) -> &[(CrossTileNode, Vec3)] {
+        self.edges.get(&node).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+/// Locate which resident tile's geometry contains `point`, returning its
+/// `(mesh_form, triangle)`. Mirrors [`find_containing_triangle`] but
+/// across every tile in `tiles` rather than one — the cross-tile
+/// equivalent of Phase 1's single-tile localization.
+fn locate_across_tiles<'a>(
+    tiles: impl Iterator<Item = &'a NavmRecord>,
+    point: Vec3,
+) -> Option<CrossTileNode> {
+    tiles.into_iter().find_map(|navm| {
+        find_containing_triangle(navm, point).map(|tri| (navm.form_id, tri))
+    })
+}
+
+/// Same shape as [`ScoredNode`], over [`CrossTileNode`] instead of a bare
+/// triangle index — kept as its own type rather than a generic
+/// `ScoredNode<T>` to avoid touching the well-tested single-tile path at
+/// all for this addition.
+#[derive(Copy, Clone)]
+struct ScoredCrossTileNode {
+    f_score: f32,
+    node: CrossTileNode,
+}
+impl ScoredCrossTileNode {
+    fn new(f_score: f32, node: CrossTileNode) -> Self {
+        Self { f_score, node }
+    }
+}
+impl PartialEq for ScoredCrossTileNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.f_score == other.f_score && self.node == other.node
+    }
+}
+impl Eq for ScoredCrossTileNode {}
+impl PartialOrd for ScoredCrossTileNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ScoredCrossTileNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed so `BinaryHeap` (a max-heap) pops the lowest f-score
+        // first; ties broken by node for deterministic tests — same
+        // convention as `ScoredNode`.
+        other
+            .f_score
+            .total_cmp(&self.f_score)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+/// A\* over the combined within-tile (`edge_neighbours`) and cross-tile
+/// (geometric portal) adjacency graph. Same cost model as
+/// [`astar_triangle_path`] (centroid-to-centroid distance, admissible
+/// straight-line heuristic to the goal centroid) extended to
+/// [`CrossTileNode`]s so a straight-line distance across tiles remains a
+/// valid lower bound regardless of which tile a node belongs to.
+fn astar_cross_tile_path(
+    navm_by_form: &HashMap<u32, &NavmRecord>,
+    graph: &CrossTileGraph,
+    start: CrossTileNode,
+    goal: CrossTileNode,
+) -> Option<Vec<CrossTileNode>> {
+    if start == goal {
+        return Some(vec![start]);
+    }
+    let node_centroid = |node: CrossTileNode| -> Option<Vec3> {
+        Some(centroid(&triangle_vertices(navm_by_form.get(&node.0)?, node.1)?))
+    };
+    let goal_centroid = node_centroid(goal)?;
+
+    let mut open = BinaryHeap::new();
+    let mut g_score: HashMap<CrossTileNode, f32> = HashMap::new();
+    let mut came_from: HashMap<CrossTileNode, CrossTileNode> = HashMap::new();
+    let mut closed: HashSet<CrossTileNode> = HashSet::new();
+
+    g_score.insert(start, 0.0);
+    open.push(ScoredCrossTileNode::new(
+        node_centroid(start)?.distance(goal_centroid),
+        start,
+    ));
+
+    while let Some(ScoredCrossTileNode { node: current, .. }) = open.pop() {
+        if current == goal {
+            let mut path = vec![current];
+            let mut cursor = current;
+            while let Some(&prev) = came_from.get(&cursor) {
+                path.push(prev);
+                cursor = prev;
+            }
+            path.reverse();
+            return Some(path);
+        }
+        if !closed.insert(current) {
+            continue;
+        }
+        let Some(current_centroid) = node_centroid(current) else {
+            continue;
+        };
+
+        // Collected up front rather than relaxed in-line: `graph.neighbours`
+        // borrows `graph` (outside the loop's other mutable state) while
+        // the within-tile arm borrows `navm_by_form`, and both need to
+        // feed the same relax step below without fighting the borrow
+        // checker over `g_score`/`open`/`came_from`.
+        let mut neighbours: Vec<CrossTileNode> = navm_by_form
+            .get(&current.0)
+            .and_then(|navm| navm.triangles.get(current.1))
+            .map(|tri| {
+                tri.edge_neighbours
+                    .iter()
+                    .filter_map(|n| *n)
+                    .map(|n| (current.0, n as usize))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        neighbours.extend(graph.neighbours(current).iter().map(|&(n, _)| n));
+
+        for neighbour in neighbours {
+            if closed.contains(&neighbour) {
+                continue;
+            }
+            let Some(neigh_centroid) = node_centroid(neighbour) else {
+                continue;
+            };
+            let tentative_g = g_score[&current] + current_centroid.distance(neigh_centroid);
+            let better = g_score
+                .get(&neighbour)
+                .is_none_or(|&existing| tentative_g < existing);
+            if better {
+                came_from.insert(neighbour, current);
+                g_score.insert(neighbour, tentative_g);
+                open.push(ScoredCrossTileNode::new(
+                    tentative_g + neigh_centroid.distance(goal_centroid),
+                    neighbour,
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Cross-tile equivalent of [`corridor_to_waypoints`]: `start`, then a
+/// portal waypoint between every consecutive corridor node pair, then
+/// `goal`. A within-tile step (same `mesh_form`) reuses
+/// [`shared_edge`]'s exact-vertex-index-intersection midpoint, byte-for-
+/// byte the same as Phase 1. A cross-tile step (different `mesh_form`)
+/// uses the matched portal's midpoint the geometric join already computed
+/// — geometrically the same world position from either tile's side, since
+/// the join is an exact (quantized) vertex match.
+fn cross_tile_corridor_to_waypoints(
+    navm_by_form: &HashMap<u32, &NavmRecord>,
+    graph: &CrossTileGraph,
+    corridor: &[CrossTileNode],
+    start: Vec3,
+    goal: Vec3,
+) -> Option<Vec<Vec3>> {
+    let mut waypoints = vec![start];
+    for pair in corridor.windows(2) {
+        let &[a, b] = pair else { continue };
+        if a.0 == b.0 {
+            let navm = navm_by_form.get(&a.0)?;
+            let tri_a = navm.triangles.get(a.1)?;
+            let tri_b = navm.triangles.get(b.1)?;
+            let (v0, v1) = shared_edge(tri_a, tri_b)?;
+            waypoints.push((vertex_yup(navm, v0)? + vertex_yup(navm, v1)?) / 2.0);
+        } else {
+            let (_, midpoint) = graph.neighbours(a).iter().find(|(n, _)| *n == b)?;
+            waypoints.push(*midpoint);
+        }
+    }
+    waypoints.push(goal);
+    Some(waypoints)
 }
 
 #[derive(Copy, Clone)]
@@ -288,24 +609,38 @@ pub(crate) fn find_path_within_tile(
 /// for one whose geometry localizes `current`, and return the remaining
 /// waypoints from there to `goal` (never including `current` itself,
 /// always ending with `goal` when a path was found). `None` when no
-/// resident tile localizes `current`, or the one that does can't reach
-/// `goal` within itself — callers fall back to walking straight at
-/// `goal`, exactly today's pre-pathing behavior (design doc §4's
+/// resident tile localizes `current`, or `goal` doesn't localize onto
+/// *any* resident tile — callers fall back to walking straight at `goal`,
+/// exactly today's pre-pathing behavior (design doc §4's
 /// residency-boundary degrade, applied to "no tile at all" as well as
-/// "goal outside the known corridor").
+/// "goal outside every known corridor").
 ///
-/// Cross-tile search (trying a *different* resident tile than the one
-/// `current` localizes on) is Phase 2, genuinely blocked — see the
-/// design doc's §9 Phase 2 entry — so this only ever searches the single
-/// tile `current` is standing on.
+/// Tries the same-tile search first — unchanged from Phase 1, so a
+/// `current`/`goal` pair that both localize onto one tile costs and
+/// behaves exactly as before. Only when that fails (or no single tile
+/// contains both) does this reach for Phase 2's geometric cross-tile
+/// graph (#3802) across every resident tile.
 pub(crate) fn path_from_resident_tiles(
     tiles: &byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>,
     current: Vec3,
     goal: Vec3,
 ) -> Option<Vec<Vec3>> {
-    tiles.iter().find_map(|(_, tile)| {
+    if let Some(path) = tiles.iter().find_map(|(_, tile)| {
         find_path_within_tile(&tile.0, current, goal).map(|path| path.into_iter().skip(1).collect())
-    })
+    }) {
+        return Some(path);
+    }
+
+    let navms: Vec<&NavmRecord> = tiles.iter().map(|(_, tile)| &tile.0).collect();
+    let start = locate_across_tiles(navms.iter().copied(), current)?;
+    let goal_node = locate_across_tiles(navms.iter().copied(), goal)?;
+    let navm_by_form: HashMap<u32, &NavmRecord> =
+        navms.iter().map(|navm| (navm.form_id, *navm)).collect();
+    let graph = CrossTileGraph::build(navms.iter().copied());
+
+    let corridor = astar_cross_tile_path(&navm_by_form, &graph, start, goal_node)?;
+    let waypoints = cross_tile_corridor_to_waypoints(&navm_by_form, &graph, &corridor, current, goal)?;
+    Some(waypoints.into_iter().skip(1).collect())
 }
 
 /// Phase 4 ECS bridge: resolve the waypoint queue a locomotion system
@@ -451,6 +786,148 @@ mod tests {
             ],
             ..NavmRecord::default()
         }
+    }
+
+    /// Same shape as [`two_triangle_quad`], offset `x_offset` world units
+    /// along X and tagged with `form_id` — a second navmesh tile for
+    /// cross-tile (Phase 2, #3802) tests. `x_offset = 10.0` makes this
+    /// tile's `[10,20] x [0,10]` footprint share its entire `x = 10` edge
+    /// with `two_triangle_quad`'s `[0,10] x [0,10]` footprint exactly (no
+    /// quantization tolerance needed), giving triangle 0's `(10,0,0)-
+    /// (10,0,10)` border edge a real geometric portal to match.
+    fn adjacent_quad(form_id: u32, x_offset: f32) -> NavmRecord {
+        let yup_verts = [
+            [x_offset, 0.0, 0.0],
+            [x_offset + 10.0, 0.0, 0.0],
+            [x_offset + 10.0, 0.0, 10.0],
+            [x_offset, 0.0, 10.0],
+        ];
+        NavmRecord {
+            form_id,
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    // ── Phase 2 — cross-tile geometric join (#3802) ───────────────────
+
+    #[test]
+    fn border_edges_are_the_quads_perimeter_not_the_internal_diagonal() {
+        let navm = two_triangle_quad();
+        let mut edges: Vec<(u16, u16)> = border_edges(&navm)
+            .into_iter()
+            .map(|(_, a, b)| ordered_index_pair(a, b))
+            .collect();
+        edges.sort();
+        // Perimeter: (0,1) bottom, (1,2) right, (2,3) top, (0,3) left.
+        // The internal diagonal (0,2) — shared by both triangles — must
+        // NOT appear; it's the one pair `border_edges` should exclude.
+        assert_eq!(edges, vec![(0, 1), (0, 3), (1, 2), (2, 3)]);
+    }
+
+    #[test]
+    fn cross_tile_graph_finds_the_shared_border_between_adjacent_tiles() {
+        let tile_a = adjacent_quad(1, 0.0);
+        let tile_b = adjacent_quad(2, 10.0);
+        let graph = CrossTileGraph::build([&tile_a, &tile_b].into_iter());
+
+        // Tile A's triangle 0 owns the shared `x=10` edge; tile B's
+        // triangle 1 owns the matching edge from its own side (derived by
+        // hand in this fn's caller-facing doc comment).
+        let neighbours = graph.neighbours((1, 0));
+        assert_eq!(neighbours.len(), 1, "exactly one portal, to tile B's triangle 1");
+        let (node, midpoint) = neighbours[0];
+        assert_eq!(node, (2, 1));
+        assert_eq!(midpoint, Vec3::new(10.0, 0.0, 5.0));
+
+        // Symmetric from the other side.
+        let back = graph.neighbours((2, 1));
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].0, (1, 0));
+
+        // No other triangle in either tile borders anything cross-tile.
+        assert!(graph.neighbours((1, 1)).is_empty());
+        assert!(graph.neighbours((2, 0)).is_empty());
+    }
+
+    #[test]
+    fn cross_tile_graph_does_not_connect_tiles_that_do_not_touch() {
+        let tile_a = adjacent_quad(1, 0.0);
+        let tile_b = adjacent_quad(2, 1000.0); // far away, no shared vertices
+        let graph = CrossTileGraph::build([&tile_a, &tile_b].into_iter());
+        assert!(graph.neighbours((1, 0)).is_empty());
+        assert!(graph.neighbours((1, 1)).is_empty());
+    }
+
+    #[test]
+    fn astar_cross_tile_path_crosses_the_shared_portal() {
+        let tile_a = adjacent_quad(1, 0.0);
+        let tile_b = adjacent_quad(2, 10.0);
+        let navm_by_form: HashMap<u32, &NavmRecord> =
+            [(1, &tile_a), (2, &tile_b)].into_iter().collect();
+        let graph = CrossTileGraph::build([&tile_a, &tile_b].into_iter());
+
+        let corridor = astar_cross_tile_path(&navm_by_form, &graph, (1, 0), (2, 1))
+            .expect("tile 0's triangle 0 reaches tile B's triangle 1 via the portal");
+        assert_eq!(corridor, vec![(1, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn path_from_resident_tiles_crosses_a_tile_boundary() {
+        let mut world = byroredux_core::ecs::World::new();
+        world.register::<crate::components::NavmeshTile>();
+        let a = world.spawn();
+        world.insert(a, crate::components::NavmeshTile(adjacent_quad(1, 0.0)));
+        let b = world.spawn();
+        world.insert(b, crate::components::NavmeshTile(adjacent_quad(2, 10.0)));
+        let tiles = world
+            .query::<crate::components::NavmeshTile>()
+            .expect("NavmeshTile registered");
+
+        let start = Vec3::new(8.0, 0.0, 2.0); // tile A, triangle 0
+        let goal = Vec3::new(12.0, 0.0, 8.0); // tile B, triangle 1
+
+        let path = path_from_resident_tiles(&tiles, start, goal)
+            .expect("A's triangle 0 and B's triangle 1 are joined by the geometric portal");
+        // `path_from_resident_tiles` never re-includes `current`: just the
+        // portal midpoint, then the goal.
+        assert_eq!(path, vec![Vec3::new(10.0, 0.0, 5.0), goal]);
+    }
+
+    #[test]
+    fn path_from_resident_tiles_still_prefers_the_same_tile_when_both_points_are_on_it() {
+        // Regression: Phase 2's fallback must not change Phase 1's
+        // behavior for the common case — a second, unrelated resident
+        // tile in the query must not perturb a same-tile result.
+        let mut world = byroredux_core::ecs::World::new();
+        world.register::<crate::components::NavmeshTile>();
+        let a = world.spawn();
+        world.insert(a, crate::components::NavmeshTile(adjacent_quad(1, 0.0)));
+        let b = world.spawn();
+        world.insert(b, crate::components::NavmeshTile(adjacent_quad(2, 10.0)));
+        let tiles = world
+            .query::<crate::components::NavmeshTile>()
+            .expect("NavmeshTile registered");
+
+        let start = Vec3::new(8.0, 0.0, 2.0); // tile A, triangle 0
+        let goal = Vec3::new(2.0, 0.0, 8.0); // tile A, triangle 1 — same tile as start
+
+        let path = path_from_resident_tiles(&tiles, start, goal).expect("same-tile path exists");
+        // Exactly Phase 1's single-tile result: one portal midpoint (the
+        // shared diagonal), then goal — no cross-tile hop involved.
+        assert_eq!(path, vec![Vec3::new(5.0, 0.0, 5.0), goal]);
     }
 
     /// A 4-triangle strip forming a `[0,40] x [0,10]` hallway (Y-up),

@@ -1100,11 +1100,16 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 4 for the
    full writeup, including the per-system detail. EX-16 item 3 is now
    fully wired end-to-end for single-tile pathing on every game except
-   FO4 (blocked on the separate `NVNM` body decode) — only cross-tile
-   (Phase 2, corpus-blocked) and door-aware pathing remain open.
+   FO4 (blocked on the separate `NVNM` body decode).
 
    **Filed as its own issue (2026-08-24)**: #3300 — the two open decode
    questions (cross-tile join field, door/cover triangle semantics).
+   `NavmExternalConnection`'s source-triangle field turned out
+   unrecoverable (2026-08-27); door/cover triangle semantics is still
+   open. **Cross-tile connectivity landed (2026-08-31, #3802)** via the
+   geometric vertex-matching join #3300 scoped — see
+   [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 2. Only
+   door-aware pathing and FO4 support remain open for EX-16 item 3.
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`
