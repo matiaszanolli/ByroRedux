@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/boot-request",
     "crates/save",
     "crates/nif",
     "crates/hkx",
@@ -39,6 +40,7 @@ license = "MIT"
 [workspace.dependencies]
 # Engine crates
 byroredux-core = { path = "crates/core" }
+byroredux-boot-request = { path = "crates/boot-request" }
 byroredux-save = { path = "crates/save" }
 byroredux-renderer = { path = "crates/renderer" }
 byroredux-fsr3-sys = { path = "crates/fsr3-sys" }

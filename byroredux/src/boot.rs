@@ -3,7 +3,8 @@
 //! the winit event-loop kickoff. `App`'s `ApplicationHandler` impl and
 //! per-frame stepping stay in `main.rs` / `app_step.rs` respectively.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use byroredux_boot_request::BootRequest;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
@@ -23,6 +24,7 @@ use crate::interaction::{
     ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionCandidateScratch,
     InteractionState, InteractionTrace,
 };
+use crate::settings_io;
 use crate::systems::{
     animate_lights_system, footstep_system, log_stats_system, make_animation_system,
     make_billboard_system, make_transform_propagation_system, make_world_bound_propagation_system,
@@ -77,6 +79,12 @@ pub(crate) fn run() -> Result<()> {
     #[cfg(feature = "dhat-heap")]
     let _dhat_profiler = dhat::Profiler::new_heap();
 
+    // `--boot <path>` — the launcher handoff — expands first, so a request
+    // may emit `--game <key>` and reuse the profile expander below rather
+    // than duplicating archive fan-out. Generated flags append after the
+    // user's own argv, keeping explicit command-line flags in control. See
+    // `docs/engine/launcher.md` §2.
+    //
     // Phase 20 — expand `--game <key>` into the full set of
     // `--esm` / `--bsa` / `--textures-bsa` / `--materials-ba2`
     // args BEFORE anything else reads argv. User-supplied flags
@@ -90,7 +98,8 @@ pub(crate) fn run() -> Result<()> {
     // (scene.rs, nif_loader, debug_load, transition rebuilds)
     // see the post-expansion list instead of re-reading raw
     // `std::env::args()` and losing the synthesized flags.
-    let args: Vec<String> = expand_game_profile_args(std::env::args().collect());
+    let args: Vec<String> =
+        expand_game_profile_args(expand_boot_request(std::env::args().collect())?);
     crate::cli_args::set_effective_args(args.clone());
     let debug_mode = args.iter().any(|a| a == "--debug");
 
@@ -1615,6 +1624,196 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
 /// Missing profile / non-existent paths → log a warning and
 /// return the input unchanged so the engine still boots (the
 /// user can correct + retry without a re-build cycle).
+/// Expand `--boot <path>` — the launcher handoff — into engine argv.
+///
+/// Runs *before* [`expand_game_profile_args`] so a request may legitimately
+/// emit `--game <key>` and let the already-tested profile expander do the
+/// archive fan-out; a self-contained request emits resolved paths instead and
+/// the profile expander then sees `--esm` and leaves it alone. Nothing
+/// downstream of these two functions learns that a launcher exists.
+///
+/// Generated flags are appended after the user's own argv, so an explicit
+/// command-line flag keeps first-occurrence precedence over its counterpart in
+/// the request file. See `docs/engine/launcher.md` §2.
+///
+/// A request that cannot be read, parsed, or version-matched is a hard error
+/// rather than a warning: the launcher wrote it, so a bad one means the two
+/// binaries disagree, and half-loading it would strand the user in a scene they
+/// did not ask for with no indication why.
+fn expand_boot_request(args: Vec<String>) -> Result<Vec<String>> {
+    let Some(path) = parse_string_arg(&args, "--boot") else {
+        return Ok(args);
+    };
+    let request = BootRequest::load(&path)
+        .with_context(|| format!("--boot {path}: could not load the launcher boot request"))?;
+
+    let mut args = strip_flag_and_value(args, "--boot");
+
+    // The settings registry is read from this path before `VulkanContext` is
+    // created, so pointing at it here is what lets a launcher steer renderer
+    // setup. An explicit env var still wins — same precedence as argv.
+    if let Some(settings_path) = request.settings_path() {
+        if std::env::var_os(settings_io::SETTINGS_PATH_ENV).is_none() {
+            std::env::set_var(settings_io::SETTINGS_PATH_ENV, settings_path);
+        } else {
+            eprintln!(
+                "--boot {path}: settings path {settings_path:?} suppressed; \
+                 {} is set in the environment",
+                settings_io::SETTINGS_PATH_ENV
+            );
+        }
+    }
+
+    let expansion = request.to_args(&args);
+    for note in &expansion.notes {
+        eprintln!("--boot {path}: {note}");
+    }
+    eprintln!(
+        "--boot {path}: expanded to {} argument(s)",
+        expansion.args.len()
+    );
+    args.extend(expansion.args);
+    Ok(args)
+}
+
+#[cfg(test)]
+mod boot_request_seam_tests {
+    //! The `--boot` seam, tested as *equivalence* rather than against literal
+    //! flag vectors.
+    //!
+    //! Both expanders read the real profile registry and resolve paths against
+    //! the machine's games root, so a literal expectation would encode one
+    //! developer's disk layout. Comparing a request-driven expansion against
+    //! the equivalent hand-typed command line cancels the environment out and
+    //! asserts the property that actually matters: **a boot request reaches the
+    //! same engine state as the documented CLI.**
+
+    use super::{expand_boot_request, expand_game_profile_args};
+    use byroredux_boot_request::{Action, BootRequest};
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// Expand a request written to a scratch file, exactly as `run()` does.
+    fn expand_via_file(request: &BootRequest, extra: &[&str]) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boot.toml");
+        request.save(&path).unwrap();
+
+        let mut args = argv(&["byroredux", "--boot"]);
+        args.push(path.to_string_lossy().into_owned());
+        args.extend(argv(extra));
+        expand_game_profile_args(expand_boot_request(args).unwrap())
+    }
+
+    /// The P1 gate: `--boot` with a profile request lands on the same argv as
+    /// the equivalent `--game <key> --cell <edid>` invocation from the README.
+    #[test]
+    fn a_profile_request_expands_to_the_same_argv_as_the_documented_cli() {
+        let request = BootRequest::for_profile("skyrim_se").with_action(Action::Cell {
+            edid: "WhiterunBanneredMare".into(),
+        });
+        let typed = expand_game_profile_args(argv(&[
+            "byroredux",
+            "--game",
+            "skyrim_se",
+            "--cell",
+            "WhiterunBanneredMare",
+        ]));
+        assert_eq!(expand_via_file(&request, &[]), typed);
+    }
+
+    /// Same property for an exterior grid, which exercises the multi-flag
+    /// `--wrld` / `--grid` / `--radius` triple.
+    #[test]
+    fn a_grid_request_expands_to_the_same_argv_as_the_documented_cli() {
+        let request = BootRequest::for_profile("fnv").with_action(Action::Grid {
+            worldspace: "WastelandNV".into(),
+            x: 0,
+            y: 0,
+            radius: Some(3),
+        });
+        let typed = expand_game_profile_args(argv(&[
+            "byroredux",
+            "--game",
+            "fnv",
+            "--wrld",
+            "WastelandNV",
+            "--grid",
+            "0,0",
+            "--radius",
+            "3",
+        ]));
+        assert_eq!(expand_via_file(&request, &[]), typed);
+    }
+
+    /// `--boot` itself must not survive into the expanded argv — every
+    /// downstream parser walks the whole vector, and an unrecognised flag
+    /// followed by a path is exactly the shape that confuses positional
+    /// mesh-path handling.
+    #[test]
+    fn the_boot_flag_and_its_value_are_stripped() {
+        let expanded = expand_via_file(&BootRequest::for_profile("fnv"), &[]);
+        assert!(!expanded.iter().any(|arg| arg == "--boot"));
+        assert!(!expanded.iter().any(|arg| arg.ends_with("boot.toml")));
+    }
+
+    /// §2.4 — an explicit flag overrides its request counterpart, so one field
+    /// can be changed without editing the file.
+    #[test]
+    fn an_explicit_cell_overrides_the_request_action() {
+        let request = BootRequest::for_profile("skyrim_se").with_action(Action::Cell {
+            edid: "WhiterunBanneredMare".into(),
+        });
+        let expanded = expand_via_file(&request, &["--cell", "BleakFallsBarrow01"]);
+        assert!(expanded
+            .windows(2)
+            .any(|pair| pair == ["--cell", "BleakFallsBarrow01"]));
+        assert!(!expanded.iter().any(|arg| arg == "WhiterunBanneredMare"));
+    }
+
+    /// A version skew means the launcher and engine are from different builds.
+    /// It must stop the launch, not degrade it — a half-loaded request would
+    /// strand the user in a scene they did not ask for.
+    #[test]
+    fn a_version_mismatch_refuses_the_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boot.toml");
+        std::fs::write(&path, "version = 99\n[game]\nprofile = \"fnv\"\n").unwrap();
+
+        let mut args = argv(&["byroredux", "--boot"]);
+        args.push(path.to_string_lossy().into_owned());
+        let error = expand_boot_request(args).unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("99"), "{rendered}");
+        assert!(rendered.contains("different builds"), "{rendered}");
+    }
+
+    /// A `--boot` pointing at nothing is a hard error naming the path, not a
+    /// silent fallback to the default scene.
+    #[test]
+    fn a_missing_request_file_refuses_the_launch() {
+        let args = argv(&["byroredux", "--boot", "/nonexistent/boot.toml"]);
+        let rendered = format!("{:#}", expand_boot_request(args).unwrap_err());
+        assert!(rendered.contains("/nonexistent/boot.toml"), "{rendered}");
+    }
+
+    /// No `--boot` at all must leave argv byte-for-byte untouched, so the seam
+    /// is inert for every existing invocation.
+    #[test]
+    fn argv_without_the_flag_passes_through_unchanged() {
+        let args = argv(&[
+            "byroredux",
+            "--mesh",
+            "sweetroll.nif",
+            "--bench-frames",
+            "10",
+        ]);
+        assert_eq!(expand_boot_request(args.clone()).unwrap(), args);
+    }
+}
+
 fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     let new_game = args.iter().any(|arg| arg == "--new-game");
     // Launch defaults from the `[defaults]` table (profiles.toml,

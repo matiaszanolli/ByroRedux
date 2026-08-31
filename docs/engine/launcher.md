@@ -1,6 +1,10 @@
 # ByroRedux Launcher — public-facing front end
 
-**Status**: PROPOSED (2026-08-30). No code written.
+**Status**: PROPOSED (2026-08-30); **P1 items 1-2 landed the same day** —
+[`crates/boot-request/`](../../crates/boot-request/) (the contract, 16 tests) and
+the `expand_boot_request` seam in [`boot.rs`](../../byroredux/src/boot.rs)
+(7 tests, including argv equivalence against the documented CLI). Everything
+from P1 item 3 (install detection) onward is still design only.
 
 The **launcher** is the first thing a non-developer sees. Today the engine's
 only entry point is a ~60-flag argv surface driven from a terminal, backed by a
@@ -129,14 +133,15 @@ New crate `crates/boot-request/`, depended on by both `byro-launcher` and
 `byroredux`, so the two cannot drift. Serde-derived, TOML on disk.
 
 ```toml
-# ~/.byroredux/boot.toml  — written by the launcher, read via `--boot <path>`
+# boot.toml — written by the launcher, read via `--boot <path>`.
+# Every path is absolute: nothing in the engine expands `~`.
 version = 1
 
 [game]
 profile   = "skyrim_se"                              # GameProfileEntry key
 data_dir  = "/games/Skyrim Special Edition/Data"     # already resolved, absolute
-esm       = "Skyrim.esm"
-masters   = ["Update.esm"]                           # ordered
+esm       = "Dawnguard.esm"                          # main plugin
+masters   = ["Skyrim.esm", "Update.esm"]             # ordered; joined against data_dir
 
 [game.archives]
 meshes    = ["Skyrim - Meshes0.bsa"]
@@ -152,7 +157,7 @@ kind = "new_game"
 # kind = "grid";      worldspace = "Tamriel"; x = 5; y = -24; radius = 1
 
 [settings]
-path = "~/.byroredux/settings.toml"                  # §4; the registry file
+path = "/home/u/.config/byroredux/settings.toml"     # §4; the registry file
 
 [mods]
 load_order = []                                      # P4; empty until then
@@ -495,9 +500,13 @@ Each phase ends at a gate that is demonstrable to someone who is not us.
 
 ### P1 — Boot contract and detection *(no GUI)*
 
-1. `crates/boot-request` with round-trip tests and strict `version` handling.
-2. `expand_boot_request` in `boot.rs`, ahead of `expand_game_profile_args`;
-   argv precedence per §2.4.
+1. ~~`crates/boot-request` with round-trip tests and strict `version`
+   handling.~~ **Landed.** Every `Action` variant round-trips; an unknown
+   version is refused *by version*, not by a field-level parse error, so the
+   user is told to reinstall rather than shown a confusing schema complaint.
+2. ~~`expand_boot_request` in `boot.rs`, ahead of `expand_game_profile_args`;
+   argv precedence per §2.4.~~ **Landed.** Argv without `--boot` passes through
+   byte-for-byte, so the seam is inert for every existing invocation.
 3. `crates/game-detect`: Steam VDF/ACF walk, GOG and registry probes, the
    `ValidationReport`, and profile write-back to `~/.byroredux/profiles.toml`.
 4. A `byro-dbg`-style CLI front end (`byro-detect`) that prints the report.
@@ -560,7 +569,7 @@ Per §7, after the load-order design lands.
 | # | Question | Why it matters | Proposed answer |
 |---|---|---|---|
 | Q1 | Does the launcher stay resident, or exec-and-exit? | Resident gives crash reporting (§8); exec-and-exit is simpler and frees ~40 MB. | **Resident.** The crash-visibility argument is the same one that produced §0.1. |
-| Q2 | Where does `~/.byroredux/` live on Windows? | Config path portability. | Adopt `directories`-style platform dirs, with `~/.byroredux` kept as an honoured legacy path on Linux so no dev box breaks. |
+| Q2 | Where does `~/.byroredux/` live on Windows? | Config path portability. | **Half answered already**: `settings_io::discover_settings_path` resolves `%APPDATA%` / `~/Library/Application Support` / `$XDG_CONFIG_HOME` / `~/.config` today. Only `profiles.toml` still hard-codes `~/.byroredux`. Move it onto the same resolver, keeping `~/.byroredux` as an honoured legacy path so no dev box breaks. |
 | Q3 | Should detection auto-write profile overrides, or ask? | Silent writes to a file a developer hand-edits are hostile. | Ask on first detection; never overwrite an existing non-empty `root` without confirmation. |
 | Q4 | One `settings.toml` for all games, or per-profile? | Different games plausibly want different presets. | Start global (matches today). Add a per-profile overlay only when a concrete need appears. |
 | Q5 | Can `ash` enumerate adapters when `vkCreateDevice` would fail? | The §4.3 pre-flight depends on it. | Believed yes — instance + `vkEnumeratePhysicalDevices` + property queries need no logical device — but **verify on a machine without ray-query before building the screen on it.** |

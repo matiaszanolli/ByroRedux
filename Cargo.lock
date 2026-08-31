@@ -453,6 +453,7 @@ dependencies = [
  "ash",
  "byroredux-audio",
  "byroredux-bgsm",
+ "byroredux-boot-request",
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-cxx-bridge",
@@ -506,6 +507,16 @@ dependencies = [
  "byroredux-bsa",
  "env_logger",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "byroredux-boot-request"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

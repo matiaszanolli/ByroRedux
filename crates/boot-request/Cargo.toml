@@ -1,0 +1,16 @@
+[package]
+name = "byroredux-boot-request"
+version.workspace = true
+edition.workspace = true
+
+# The launcher/engine handoff contract. Deliberately dependency-free beyond
+# serde + toml: both `byro-launcher` (which must build and run without a
+# Vulkan device) and `byroredux` link this crate, so anything heavier here
+# would leak a GPU/engine dependency into the launcher.
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

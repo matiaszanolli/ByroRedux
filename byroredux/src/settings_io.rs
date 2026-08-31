@@ -16,7 +16,10 @@ use byroredux_core::settings::{SettingValue, SettingsRegistry};
 use serde::{Deserialize, Serialize};
 
 const SETTINGS_VERSION: u32 = 1;
-const SETTINGS_PATH_ENV: &str = "BYROREDUX_SETTINGS_PATH";
+/// Environment override for the settings-registry path. Also honoured by
+/// the `--boot` launcher handoff, which points at it rather than passing a
+/// flag, so both routes resolve through one name.
+pub(crate) const SETTINGS_PATH_ENV: &str = "BYROREDUX_SETTINGS_PATH";
 
 /// Location of the user settings file. Kept as a resource so every native
 /// settings frontend writes through the same path.
