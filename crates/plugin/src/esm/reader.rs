@@ -536,8 +536,13 @@ pub struct FileHeader {
     /// 24-bit object id. The load-order builder turns this into a
     /// [`GlobalSlot::Light`] so [`FormIdRemap`] decodes the plugin's forms
     /// (and references to ESL masters) correctly. No vanilla Skyrim SE /
-    /// FO4 / Starfield master is ESL-flagged; this is for third-party ESL
-    /// mods and ESL-flagged CC content. See SK-D4-03 / #1554.
+    /// FO4 / Starfield **master** (`.esm`) is ESL-flagged — but the decode
+    /// path is exercised on stock content anyway: a stock Anniversary
+    /// Edition install ships three ESL-flagged plugins, one of them
+    /// (`_ResourcePack.esl`, 374 records, 3-entry MAST list) base-game
+    /// content rather than third-party or Creation Club (measured
+    /// 2026-08-30, SK-D4-02). This is not a mod-only code path.
+    /// See SK-D4-03 / #1554.
     pub light_master: bool,
 }
 

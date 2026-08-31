@@ -77,8 +77,9 @@ pub mod fo3nv_f1 {
 pub mod fo3nv_f2 {
     /// Bit 21 — `Alpha_Decal`. FO3/FNV-only extension that flags a
     /// mesh as alpha-blended decal (blood splat / gore).
-    /// **Warning**: bit 21 on Skyrim SLSF2 is `Cloud_LOD`, NOT decal —
-    /// do NOT test this constant on a `BSLightingShaderProperty`.
+    /// **Warning**: bit 21 on Skyrim SLSF2 is `Anisotropic_Lighting`
+    /// (`Cloud_LOD` is Skyrim's bit 20), NOT decal — do NOT test this
+    /// constant on a `BSLightingShaderProperty`.
     pub const ALPHA_DECAL: u32 = 0x0020_0000;
 }
 
@@ -214,9 +215,10 @@ pub mod fo4_slsf1 {
 /// a few shared positions:
 /// - Bit 6 is `Glow_Map` on both FO4 and Skyrim
 /// - Bit 15 is `Dismemberment` on FO4
-/// - Bit 21 is `Anisotropic_Lighting` on FO4 (Skyrim: `Cloud_LOD`,
-///   FO3/FNV F2: `Alpha_Decal` — **three different semantics on the
-///   same bit across games**)
+/// - Bit 21 is `Anisotropic_Lighting` on FO4 — the same semantic Skyrim
+///   uses at bit 21 (Skyrim's `Cloud_LOD` is a separate bit, 20).
+///   FO3/FNV F2 bit 21 is `Alpha_Decal` — **two different semantics on
+///   the same bit, FO3/FNV vs Skyrim/FO4**
 /// - Bit 24 is `Multi_Layer_Parallax` on FO4
 /// - Bit 25 is `Alpha_Test` on FO4. Skyrim has no `Alpha_Test` bit on
 ///   either SLSF1 (bit 25 there is `Remappable_Textures`) or SLSF2 (bit 25
@@ -249,10 +251,11 @@ pub mod fo4_slsf2 {
     pub const HIDE_ON_LOCAL_MAP: u32 = 0x0004_0000;
     pub const PREMULT_ALPHA: u32 = 0x0008_0000;
     pub const VATS_TARGET: u32 = 0x0010_0000;
-    /// Bit 21 — `Anisotropic_Lighting` on FO4. Distinct from
-    /// `Cloud_LOD` (Skyrim) and `Alpha_Decal` (FO3/FNV) at the same
-    /// numeric value. The reason a legacy `is_decal_from_shader_flags`
-    /// that tests `flags2 & 0x0020_0000` MUST NOT run on FO4 properties.
+    /// Bit 21 — `Anisotropic_Lighting` on FO4, the same semantic Skyrim
+    /// uses at this bit. Distinct from `Alpha_Decal` (FO3/FNV) at the
+    /// same numeric value. The reason a legacy `is_decal_from_shader_flags`
+    /// that tests `flags2 & 0x0020_0000` MUST NOT run on FO4 (or Skyrim)
+    /// properties.
     pub const ANISOTROPIC_LIGHTING: u32 = 0x0020_0000;
     pub const SKEW_SPECULAR_ALPHA: u32 = 0x0040_0000;
     pub const MENU_SCREEN: u32 = 0x0080_0000;

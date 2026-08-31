@@ -754,9 +754,15 @@ pub struct BSLightingShaderProperty {
     /// #1606 — opaque Starfield trailing block. Starfield (bsver ≥ 172)
     /// full-body `BSLightingShaderProperty` blocks carry a trailing field
     /// the FO76+ parser doesn't decode: byte-audited over
-    /// `Starfield - LODMeshes.ba2` as **38 B = 9× f32 + 2 B**, byte-identical
-    /// across all 26 LOD instances (`[2.0, 3.0, 0.1, 0.0, 0.02, 0.0289,
-    /// 0.095, 0.003, 1.0, 0x00, 0x00]`), but **undocumented in nif.xml**
+    /// `Starfield - LODMeshes.ba2` as **30 B = 7× f32 + 2 B**, byte-identical
+    /// across all 26 LOD instances (`[0.1, 0.0, 0.02, 0.0289,
+    /// 0.095, 0.003, 1.0, 0x00, 0x00]`) — re-measured 2026-08-31, shorter
+    /// than an earlier 38 B / 9× f32 recording (#1606's original audit) by
+    /// exactly 8 bytes: #2622 subsequently moved a leading float pair into
+    /// the Starfield decode path proper, and `read_wetness_block` now stops
+    /// 8 bytes earlier for it. Independently confirmed over `FaceMeshes.ba2`
+    /// + `Meshes01.ba2` (32,340 files): 1,879 inline blocks, `tail_len = 30`
+    /// uniformly. Still **undocumented in nif.xml**
     /// (every tail field there gates on `#FO4#`/`#F76#`). Rather than
     /// fabricate field names/semantics, the bytes are captured opaquely up
     /// to `block_size` so they're preserved for a future decoder and the

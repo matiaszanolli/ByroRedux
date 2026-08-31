@@ -34,11 +34,12 @@
 //!   count × f32        scale     (PERCENT — divide by 100 → multiplier)
 //! ```
 //!
-//! Validation across the corpus: the SoA layout consumes 9888/9889 files
-//! exactly (the lone outlier is `toddland`, the CS tutorial world, whose
-//! LOD data is degenerate); rotations are all within ±2π rad; scales are
-//! all positive. Positions confine to the single cell named by the file,
-//! so the files are **per-cell**.
+//! Validation across the corpus (re-measured 2026-08-30): the SoA layout
+//! consumes **9889/9889 files exactly** — no outlier, `toddland` included;
+//! zero trailing bytes, zero overrun, zero errors. Rotations are all within
+//! ±2π rad except a single one (a rotation-range note, not a consume
+//! failure); scales are all positive. Positions confine to the single cell
+//! named by the file, so the files are **per-cell**.
 //!
 //! Each placement spawns one imported `_far.nif` as an
 //! [`IsLodTerrain`](crate::components::IsLodTerrain) entity (no BLAS, lean
@@ -69,10 +70,16 @@ use super::lod_support::{
 };
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
-/// scheme. Cells within this distance of the player — and entirely beyond
-/// the full-detail ring — load their `.lod`. Mirrors
-/// [`super::object_lod::OBJECT_LOD_RADIUS_CELLS`]; the placement scheme is
-/// many small draws per cell, so the same conservative 16-cell band.
+/// scheme (Oblivion `.lod`, FO3/FNV legacy blocks) — the flat, single-ring
+/// object-LOD reader for games with no baked quadtree. Cells within this
+/// distance of the player — and entirely beyond the full-detail ring —
+/// load their `.lod`. This no longer mirrors a same-shaped constant on the
+/// Skyrim/FO4 side: the flat object-LOD ring there was replaced by the
+/// quadtree band ladder in [`super::lod_bands::LodBandLadder`], which
+/// streams multiple discrete levels (4/8/16 for Skyrim) rather than one
+/// flat ring, so the two schemes no longer mirror each other. The
+/// placement scheme correctly stays a flat 16-cell ring — no baked
+/// quadtree exists for Oblivion/FO3/FNV.
 pub(crate) const PLACEMENT_LOD_RADIUS_CELLS: i32 = 16;
 
 /// One distant-object placement decoded from a `.lod` file. Values are in
