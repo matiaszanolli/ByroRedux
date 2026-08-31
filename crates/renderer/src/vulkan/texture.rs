@@ -641,10 +641,13 @@ impl Drop for Texture {
     }
 }
 
-/// Execute a one-time-submit command buffer: allocate, record, submit, wait, free.
+/// Run a closure in a one-time-submit command buffer: allocate, record,
+/// submit, wait, free.
 ///
-/// The queue `Mutex` is locked only for the submit+wait, not during recording.
-/// Run a closure in a one-time-submit command buffer, then wait for completion.
+/// The queue `Mutex` is locked for the **submit only** — it is released
+/// before the fence wait, so a GPU-execution wait never serialises a second
+/// graphics-queue thread (#1713; `one_time_lock_scope_tests` pins the scope
+/// close between the two). Recording happens outside the lock entirely.
 ///
 /// The closure returns `Result<()>` so recording errors (e.g. failed buffer
 /// allocation mid-build) propagate out *without* submitting a partially-
