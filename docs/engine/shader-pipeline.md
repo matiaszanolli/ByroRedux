@@ -99,6 +99,16 @@ graphics+compute queue. Pass ordering is inside
                            transitions (READ_ONLY → TRANSFER_SRC → READ_ONLY
                            restored after the copy); history image mirrors
                            SHADER_READ_ONLY → TRANSFER_DST → SHADER_READ_ONLY.
+7b depth_capture_record_  ─  [TRANSFER] (#3308) recorded immediately after
+   copy                      step 7, which leaves the depth image back in
+                           DEPTH_STENCIL_READ_ONLY_OPTIMAL — exactly the
+                           layout this pass requires and restores. Two more
+                           depth-image layout transitions around a
+                           `cmd_copy_image_to_buffer` (READ_ONLY →
+                           TRANSFER_SRC → READ_ONLY), independent of step 7's
+                           own copy. Not a no-op: it moves the depth image
+                           twice more before every later depth consumer
+                           (SSAO, SVGF, composite, FSR).
 8  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
 9  [Barrier]               caustic accum atomic-add → SHADER_READ
 10 svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
@@ -107,25 +117,38 @@ graphics+compute queue. Pass ordering is inside
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
 12 caustic_splat.comp   ─  caustic scatter
-13 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED);
-                           reads cluster_cull's cluster grid + light-index
-                           list from step 5
+13 volumetrics_inject   ─┐ froxel grid (output consumed by composite,
+                           VOLUMETRIC_OUTPUT_CONSUMED = true); reads
+                           cluster_cull's cluster grid + light-index list
+                           from step 5
 14 volumetrics_integrate ─┘
 15 taa.comp              ─  TAA resolve
 16 ssao.comp             ─  SSAO texture
-17 bloom_downsample ×N   ─┐ bloom pyramid
-   bloom_upsample   ×N   ─┘
-18 [Composite render pass]─ raster:
+17 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
-                           no tone-map, does NOT write the swapchain)
+                           no tone-map, does NOT write the swapchain; does
+                           NOT add bloom — see step 18, #2796)
+18 bloom_downsample ×N   ─┐ bloom pyramid, runs AFTER composite
+   bloom_upsample   ×N    │ (`record_bloom_pass`, ordered after
+   bloom_apply.comp      ─┘ `record_composite_pass` and before
+                           `record_upscale_pass`); `bloom_apply.comp` reads
+                           composite's HDR output back as a storage image
+                           and adds `up_mips[0]` in place
+                           (`BLOOM_INTENSITY = 0.15`)
 19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
 20 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
                            exposure + ACES tone-map + underwater extinction,
-                           writes the swapchain (`PRESENT_SRC_KHR`). Also
+                           writes the swapchain (`PRESENT_SRC_KHR`); then,
+                           in the same subpass, `PresentationPipeline::
+                           record_overlay` draws the Scaleform/Ruffle UI
+                           quad (`ui.vert` / `ui.frag`) on top (#3426 — moved
+                           here from the tail of the main render pass, so
+                           the overlay is composited after tone-map/upscale
+                           and never temporally reconstructed). Also
                            where step 1's image-health counters get WRITTEN:
                            an isnan/isinf check on the pre-tonemap linear HDR
                            value, atomicAdd'd into the `ImageHealth` SSBO this
