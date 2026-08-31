@@ -106,5 +106,6 @@ world extension {
 
     export initialize: func();
     export on-activate: func(subject: entity-ref, activator: option<entity-ref>);
+    export on-cell-load: func(subject: entity-ref);
     export shutdown: func();
 }

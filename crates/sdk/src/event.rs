@@ -12,3 +12,10 @@ pub struct ActivationEvent {
     /// Stable handle for the activating entity, when one is representable.
     pub activator: Option<EntityRef>,
 }
+
+/// Payload of `byro.events.cell-load`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CellLoadEvent {
+    /// Newly loaded script-bearing entity.
+    pub subject: EntityRef,
+}

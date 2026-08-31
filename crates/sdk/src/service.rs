@@ -39,6 +39,8 @@ pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 pub const EXTENSION_WORLD_SERVICE: &str = "byro.mod-host.extension";
 /// Canonical activation event identifier.
 pub const ACTIVATE_EVENT: &str = "byro.events.activate";
+/// Canonical script-bearing entity load event identifier.
+pub const CELL_LOAD_EVENT: &str = "byro.events.cell-load";
 
 /// Semantic version of the SDK contract defined by this crate build.
 pub fn current_sdk_version() -> Version {

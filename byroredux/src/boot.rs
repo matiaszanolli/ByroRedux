@@ -1668,6 +1668,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<byroredux_core::string::StringPool>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_cell_load_dispatch_system,
+        Access::new()
+            .reads::<byroredux_scripting::OnCellLoadEvent>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::components::Name>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .reads::<byroredux_core::ecs::components::Transform>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .reads_resource::<byroredux_core::string::StringPool>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
     scheduler
@@ -2184,6 +2197,27 @@ mod fragment_activation_order_tests {
                 < pos("Stage::Update, quest_fragment_dispatch)"),
             "quest_fragment_dispatch consumes QuestStageAdvanced and must stay after \
              quest_advance_dispatch"
+        );
+    }
+
+    #[test]
+    fn extension_event_adapters_run_before_transient_cleanup() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let pos = |needle: &str| {
+            setup
+                .rfind(needle)
+                .unwrap_or_else(|| panic!("{needle} is no longer registered in boot.rs"))
+        };
+
+        let activation = pos("crate::extensions::extension_activation_dispatch_system");
+        let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
+        let cleanup = pos("byroredux_scripting::event_cleanup_system");
+        assert!(
+            activation < cleanup && cell_load < cleanup,
+            "extension event adapters must observe transient markers before cleanup"
         );
     }
 }

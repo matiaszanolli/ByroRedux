@@ -4,7 +4,7 @@ use crate::bindings::byro::mod_host::{
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
-use byroredux_sdk::event::ActivationEvent;
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
 };
@@ -12,7 +12,7 @@ use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
-    COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
+    CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, LOGGING_SERVICE,
     PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
     WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
@@ -48,6 +48,7 @@ pub enum LogLevel {
 pub enum LifecyclePhase {
     Initialize,
     Activate,
+    CellLoad,
     Shutdown,
 }
 
@@ -56,6 +57,7 @@ impl fmt::Display for LifecyclePhase {
         formatter.write_str(match self {
             Self::Initialize => "initialize",
             Self::Activate => "on-activate",
+            Self::CellLoad => "on-cell-load",
             Self::Shutdown => "shutdown",
         })
     }
@@ -370,6 +372,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == ACTIVATE_EVENT),
+            subscribed_to_cell_load: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == CELL_LOAD_EVENT),
             pending_commands: Vec::new(),
             max_commands_per_entry: self.config.max_commands_per_entry,
             accepting_commands: false,
@@ -501,6 +507,39 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one canonical entity-load event and return deferred commands.
+    pub fn on_cell_load(&mut self, event: CellLoadEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::CellLoad,
+                status: self.status.clone(),
+            });
+        }
+        let event_id = EventId::new(CELL_LOAD_EVENT)
+            .expect("the engine's canonical cell-load event id is valid");
+        if !self.store.data().subscribed_to_cell_load {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        let subject = state::EntityRef {
+            world_generation: event.subject.world_generation(),
+            object: event.subject.object(),
+        };
+        let result = self.enter(LifecyclePhase::CellLoad, true, |bindings, store| {
+            bindings.call_on_cell_load(store, subject)
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Replace the read-only principal storage snapshot visible to callbacks.
     pub fn set_principal_storage_snapshot(&mut self, values: BTreeMap<StorageKey, ExtensionValue>) {
         self.store.data_mut().principal_storage = values;
@@ -622,6 +661,7 @@ struct HostState {
     log_budget_exhausted: bool,
     schemas: Vec<ComponentSchemaDeclaration>,
     subscribed_to_activate: bool,
+    subscribed_to_cell_load: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,

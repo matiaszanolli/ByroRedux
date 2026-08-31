@@ -23,13 +23,13 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
-use byroredux_sdk::event::ActivationEvent;
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
-use byroredux_sdk::service::{ACTIVATE_EVENT, EVENTS_SUBSCRIBE_CAPABILITY};
+use byroredux_sdk::service::{ACTIVATE_EVENT, CELL_LOAD_EVENT, EVENTS_SUBSCRIBE_CAPABILITY};
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
     PrincipalStorageStore,
@@ -160,6 +160,7 @@ struct HostedComponent {
     extension: ExtensionId,
     component: ComponentId,
     receives_activate: bool,
+    receives_cell_load: bool,
     instance: ModInstance,
 }
 
@@ -265,6 +266,10 @@ impl ExtensionHost {
             .subscriptions
             .iter()
             .any(|subscription| subscription.event.as_str() == ACTIVATE_EVENT);
+        let receives_cell_load = manifest
+            .subscriptions
+            .iter()
+            .any(|subscription| subscription.event.as_str() == CELL_LOAD_EVENT);
         let mut staged_components = Vec::with_capacity(compiled.len());
         let mut staged_diagnostics = Vec::new();
         for (component_id, compiled) in compiled {
@@ -283,6 +288,7 @@ impl ExtensionHost {
                 extension: manifest.id.clone(),
                 component: component_id,
                 receives_activate,
+                receives_cell_load,
                 instance,
             });
         }
@@ -422,59 +428,92 @@ impl ExtensionHost {
                         }
                     }));
 
-                match result {
-                    Ok(commands) => {
-                        let command_count = commands.len();
-                        let mut component_commands = Vec::new();
-                        let mut storage_commands = Vec::new();
-                        for command in commands {
-                            match command {
-                                HostCommand::Component(command) => {
-                                    component_commands.push(command);
-                                }
-                                HostCommand::PrincipalStorage(command) => {
-                                    storage_commands.push(command);
-                                }
-                            }
-                        }
-                        let mut staged_state = self.state.clone();
-                        let mut staged_storage = self.principal_storage.clone();
-                        let apply_result = staged_state
-                            .apply_batch(&principal, &component_commands)
-                            .map_err(|error| error.to_string())
-                            .and_then(|()| {
-                                if storage_commands.is_empty() {
-                                    Ok(())
-                                } else {
-                                    staged_storage
-                                        .apply_batch(&principal, &storage_commands)
-                                        .map_err(|error| error.to_string())
-                                }
-                            });
-                        if let Err(error) = apply_result {
-                            let message = format!("deferred command batch rejected: {error}");
-                            hosted.instance.reject_deferred_commands(message.clone());
-                            self.diagnostics.push(ExtensionDiagnostic::Fault {
-                                extension: hosted.extension.clone(),
-                                component: hosted.component.clone(),
-                                message,
-                            });
-                            stats.faults += 1;
-                        } else {
-                            self.state = staged_state;
-                            self.principal_storage = staged_storage;
-                            stats.commands_applied += command_count;
-                        }
-                    }
-                    Err(error) => {
-                        self.diagnostics.push(ExtensionDiagnostic::Fault {
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    /// Deliver already-snapshotted cell-load markers in deterministic order.
+    #[cfg(test)]
+    pub fn dispatch_cell_loads(
+        &mut self,
+        cell_loads: impl IntoIterator<Item = RawCellLoad>,
+    ) -> ExtensionDispatchStats {
+        self.dispatch_cell_loads_with_projections(cell_loads, &BTreeMap::new())
+    }
+
+    fn dispatch_cell_loads_with_projections(
+        &mut self,
+        cell_loads: impl IntoIterator<Item = RawCellLoad>,
+        raw_projections: &BTreeMap<EntityId, RawEntityProjection>,
+    ) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        for cell_load in cell_loads {
+            stats.events += 1;
+            let subject = match self.bind_entity(cell_load.subject, cell_load.subject_form) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.record_host_fault(error.to_string());
+                    stats.faults += 1;
+                    continue;
+                }
+            };
+            let entity_projections = vec![entity_projection(
+                subject,
+                cell_load.subject_form,
+                raw_projections.get(&cell_load.subject),
+            )];
+
+            for hosted in &mut self.components {
+                if !hosted.receives_cell_load
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                hosted
+                    .instance
+                    .set_entity_projections(entity_projections.clone());
+                let result = hosted.instance.on_cell_load(CellLoadEvent { subject });
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
                             extension: hosted.extension.clone(),
                             component: hosted.component.clone(),
-                            message: error.to_string(),
-                        });
-                        stats.faults += 1;
-                    }
-                }
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
             }
         }
         stats
@@ -764,6 +803,66 @@ impl ExtensionHost {
     }
 }
 
+fn apply_delivery_result(
+    hosted: &mut HostedComponent,
+    result: Result<Vec<HostCommand>, SandboxError>,
+    principal: &PrincipalId,
+    state: &mut ExtensionComponentStore,
+    principal_storage: &mut PrincipalStorageStore,
+    diagnostics: &mut Vec<ExtensionDiagnostic>,
+    stats: &mut ExtensionDispatchStats,
+) {
+    let commands = match result {
+        Ok(commands) => commands,
+        Err(error) => {
+            diagnostics.push(ExtensionDiagnostic::Fault {
+                extension: hosted.extension.clone(),
+                component: hosted.component.clone(),
+                message: error.to_string(),
+            });
+            stats.faults += 1;
+            return;
+        }
+    };
+    let command_count = commands.len();
+    let mut component_commands = Vec::new();
+    let mut storage_commands = Vec::new();
+    for command in commands {
+        match command {
+            HostCommand::Component(command) => component_commands.push(command),
+            HostCommand::PrincipalStorage(command) => storage_commands.push(command),
+        }
+    }
+    let mut staged_state = state.clone();
+    let mut staged_storage = principal_storage.clone();
+    let apply_result = staged_state
+        .apply_batch(principal, &component_commands)
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            if storage_commands.is_empty() {
+                Ok(())
+            } else {
+                staged_storage
+                    .apply_batch(principal, &storage_commands)
+                    .map_err(|error| error.to_string())
+            }
+        });
+    if let Err(error) = apply_result {
+        let message = format!("deferred command batch rejected: {error}");
+        hosted.instance.reject_deferred_commands(message.clone());
+        diagnostics.push(ExtensionDiagnostic::Fault {
+            extension: hosted.extension.clone(),
+            component: hosted.component.clone(),
+            message,
+        });
+        stats.faults += 1;
+    } else {
+        *state = staged_state;
+        *principal_storage = staged_storage;
+        stats.commands_applied += command_count;
+    }
+}
+
 /// Raw ECS identity snapshot captured before entering untrusted code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RawActivation {
@@ -771,6 +870,13 @@ pub(crate) struct RawActivation {
     pub subject_form: Option<FormRef>,
     pub activator: Option<EntityId>,
     pub activator_form: Option<FormRef>,
+}
+
+/// Raw cell-load identity captured before entering untrusted code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RawCellLoad {
+    pub subject: EntityId,
+    pub subject_form: Option<FormRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -899,6 +1005,59 @@ pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
     if stats.faults > 0 {
         log::warn!(
             "extension activation dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
+/// Late-stage adapter from cell-load markers to sandbox callbacks.
+///
+/// Like activation delivery, all ECS guards are dropped before guest code
+/// runs. The marker remains available to built-in systems until the shared
+/// transient-event cleanup pass.
+pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
+    let raw_subjects = {
+        let Some(events) = world.query::<byroredux_scripting::OnCellLoadEvent>() else {
+            return;
+        };
+        events
+            .iter()
+            .map(|(subject, _)| subject)
+            .collect::<Vec<_>>()
+    };
+    if raw_subjects.is_empty() {
+        return;
+    }
+    let form_bindings = forms_by_entity(world);
+    let disclosed_entities = raw_subjects.iter().copied().collect::<BTreeSet<_>>();
+    let projections = capture_entity_projections(world, &disclosed_entities);
+    let cell_loads = raw_subjects.into_iter().map(|subject| RawCellLoad {
+        subject,
+        subject_form: form_bindings.get(&subject).copied(),
+    });
+
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_cell_loads_with_projections(cell_loads, &projections);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension cell-load dispatch: events={} deliveries={} commands={} faults={}",
             stats.events,
             stats.deliveries,
             stats.commands_applied,
@@ -1318,6 +1477,13 @@ mod tests {
       i32.const 0
       i64.const 1
       call $increment)
+    (func (export "on-cell-load") (param $world i64) (param $object i64)
+      local.get $world
+      local.get $object
+      i32.const 0
+      i32.const 0
+      i64.const 1
+      call $increment)
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -1328,6 +1494,9 @@ mod tests {
     (param "subject" $entity-ref)
     (param "activator" (option $entity-ref))
     (canon lift (core func $guest-instance "on-activate")))
+  (func (export "on-cell-load")
+    (param "subject" $entity-ref)
+    (canon lift (core func $guest-instance "on-cell-load")))
 )
 "#;
 
@@ -1368,6 +1537,7 @@ mod tests {
       i32.const 16
       i64.const 1
       call $increment)
+    (func (export "on-cell-load") (param i64 i64))
   )
   (core instance $guest-instance (instantiate $guest
     (with "libc" (instance $libc))
@@ -1379,6 +1549,9 @@ mod tests {
     (param "subject" $entity-ref)
     (param "activator" (option $entity-ref))
     (canon lift (core func $guest-instance "on-activate")))
+  (func (export "on-cell-load")
+    (param "subject" $entity-ref)
+    (canon lift (core func $guest-instance "on-cell-load")))
 )
 "#;
 
@@ -1412,6 +1585,7 @@ mod tests {
       if
         unreachable
       end)
+    (func (export "on-cell-load") (param i64 i64))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "contains" (func $contains-lower))))
@@ -1422,6 +1596,9 @@ mod tests {
     (param "subject" $entity-ref)
     (param "activator" (option $entity-ref))
     (canon lift (core func $guest-instance "on-activate")))
+  (func (export "on-cell-load")
+    (param "subject" $entity-ref)
+    (canon lift (core func $guest-instance "on-cell-load")))
 )
 "#;
 
@@ -1470,6 +1647,15 @@ mod tests {
         grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
         grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
         grants
+    }
+
+    fn cell_load_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(CELL_LOAD_EVENT).unwrap(),
+            filters: Vec::new(),
+        }];
+        manifest
     }
 
     fn storage_manifest(id: &str) -> ExtensionManifest {
@@ -1555,6 +1741,10 @@ mod tests {
         host_with_manifest(manifest(id))
     }
 
+    fn host_with_cell_load_package(id: &str) -> ExtensionHost {
+        host_with_manifest(cell_load_manifest(id))
+    }
+
     fn host_with_manifest(manifest: ExtensionManifest) -> ExtensionHost {
         let mut host =
             ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
@@ -1626,6 +1816,46 @@ mod tests {
         );
         assert_eq!(host.package_count(), 1);
         assert_eq!(host.component_count(), 1);
+    }
+
+    #[test]
+    fn live_host_delivers_cell_load_only_to_its_declared_subscriber() {
+        let mut host = host_with_cell_load_package("org.example.live-cell-load");
+        let stats = host.dispatch_cell_loads([RawCellLoad {
+            subject: 41,
+            subject_form: None,
+        }]);
+        assert_eq!(
+            stats,
+            ExtensionDispatchStats {
+                events: 1,
+                deliveries: 1,
+                commands_applied: 1,
+                faults: 0,
+            }
+        );
+
+        let subject = host.handles.by_entity[&41];
+        let owner = PrincipalId::new("org.example.live-cell-load").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, subject)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(1))
+        );
+        assert_eq!(
+            host.dispatch_activations([RawActivation {
+                subject: 41,
+                subject_form: None,
+                activator: None,
+                activator_form: None,
+            }]),
+            ExtensionDispatchStats {
+                events: 1,
+                ..ExtensionDispatchStats::default()
+            }
+        );
     }
 
     #[test]
@@ -1724,6 +1954,32 @@ mod tests {
             Some(&ExtensionValue::I64(1))
         );
         assert!(world.has::<byroredux_scripting::ActivateEvent>(subject_entity));
+    }
+
+    #[test]
+    fn cell_load_adapter_delivers_before_shared_event_cleanup() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let subject_entity = world.spawn();
+        world.insert(subject_entity, byroredux_scripting::OnCellLoadEvent);
+        let slot =
+            ExtensionHostSlot::from_host(host_with_cell_load_package("org.example.cell-load"));
+        let host = slot.host().unwrap();
+        world.insert_resource(slot);
+
+        extension_cell_load_dispatch_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        let subject = host.handles.by_entity[&subject_entity];
+        let owner = PrincipalId::new("org.example.cell-load").unwrap();
+        let schema = ComponentSchemaId::new("example.activation-count").unwrap();
+        assert_eq!(
+            host.state()
+                .row(&owner, &schema, subject)
+                .and_then(|row| row.get("count")),
+            Some(&ExtensionValue::I64(1))
+        );
+        assert!(world.has::<byroredux_scripting::OnCellLoadEvent>(subject_entity));
     }
 
     #[test]

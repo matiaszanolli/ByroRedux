@@ -6,7 +6,7 @@ use byroredux_sdk::component::{
     ComponentFieldDeclaration, ComponentSchema, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionValue, ExtensionValueType,
 };
-use byroredux_sdk::event::ActivationEvent;
+use byroredux_sdk::event::{ActivationEvent, CellLoadEvent};
 use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, ServiceId};
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
@@ -15,7 +15,7 @@ use byroredux_sdk::manifest::{
 };
 use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
-    CompatibilityError, ACTIVATE_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
+    CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, LOGGING_SERVICE, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY,
 };
@@ -56,6 +56,17 @@ const ON_ACTIVATE_LIFT: &str = r#"
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
                 (canon lift (core func $guest-instance "on-activate")))
+"#;
+
+const ON_CELL_LOAD_CORE: &str = r#"
+                (func (export "on-cell-load")
+                    (param i64 i64))
+"#;
+
+const ON_CELL_LOAD_LIFT: &str = r#"
+            (func (export "on-cell-load")
+                (param "subject" $entity-ref)
+                (canon lift (core func $guest-instance "on-cell-load")))
 "#;
 
 fn manifest_with_log(required: bool) -> ExtensionManifest {
@@ -109,6 +120,15 @@ fn activation_manifest() -> ExtensionManifest {
             id: ComponentFieldId::new("count").unwrap(),
             value_type: ExtensionValueType::I64,
         }],
+    }];
+    manifest
+}
+
+fn cell_load_manifest() -> ExtensionManifest {
+    let mut manifest = activation_manifest();
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(CELL_LOAD_EVENT).unwrap(),
+        filters: Vec::new(),
     }];
     manifest
 }
@@ -169,6 +189,7 @@ fn principal_storage_increment_component() -> String {
                 (data (i32.const 0) "activation-count")
                 (func (export "initialize"))
                 (func (export "shutdown"))
+                (func (export "on-cell-load") (param i64 i64))
                 (func (export "on-activate")
                     (param i64 i64 i32 i64 i64)
                     i32.const 0
@@ -184,6 +205,9 @@ fn principal_storage_increment_component() -> String {
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            (func (export "on-cell-load")
+                (param "subject" $entity-ref)
+                (canon lift (core func $guest-instance "on-cell-load")))
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -213,6 +237,7 @@ fn entity_projection_component() -> String {
                 (import "host" "contains" (func $contains (param i64 i64) (result i32)))
                 (func (export "initialize"))
                 (func (export "shutdown"))
+                (func (export "on-cell-load") (param i64 i64))
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
                     local.get $world
@@ -230,6 +255,9 @@ fn entity_projection_component() -> String {
                 (canon lift (core func $guest-instance "initialize")))
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
+            (func (export "on-cell-load")
+                (param "subject" $entity-ref)
+                (canon lift (core func $guest-instance "on-cell-load")))
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -314,6 +342,7 @@ fn logging_component() -> String {
                     i32.const 8
                     call $log)
                 {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -324,6 +353,7 @@ fn logging_component() -> String {
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
             {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
         )"#
     )
 }
@@ -340,6 +370,7 @@ fn looping_component() -> String {
                         br $forever))
                 (func (export "shutdown"))
                 {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -347,6 +378,7 @@ fn looping_component() -> String {
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
             {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
         )"#
     )
 }
@@ -360,6 +392,7 @@ fn oversized_memory_component() -> String {
                 (func (export "initialize"))
                 (func (export "shutdown"))
                 {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -367,6 +400,7 @@ fn oversized_memory_component() -> String {
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
             {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
         )"#
     )
 }
@@ -382,6 +416,7 @@ fn component_with_wasi_import() -> String {
                 (func (export "initialize"))
                 (func (export "shutdown"))
                 {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -389,6 +424,7 @@ fn component_with_wasi_import() -> String {
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
             {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
         )"#
     )
 }
@@ -414,6 +450,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                     (param i64 i64 i32 i32 i64)))
                 (func (export "initialize"))
                 (func (export "shutdown"))
+                {ON_CELL_LOAD_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
                     (param i32 i64 i64)
@@ -429,8 +466,94 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             (func (export "shutdown")
                 (canon lift (core func $guest-instance "shutdown")))
             {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
         )"#
     )
+}
+
+fn cell_load_counter_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (alias export $state "queue-increment-own-i64" (func $increment))
+            (core func $increment-lower (canon lower (func $increment)))
+            (core module $guest
+                (import "host" "increment" (func $increment
+                    (param i64 i64 i32 i32 i64)))
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                (func (export "on-cell-load")
+                    (param $world i64) (param $object i64)
+                    local.get $world
+                    local.get $object
+                    i32.const 0
+                    i32.const 0
+                    i64.const 1
+                    call $increment)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "host" (instance
+                    (export "increment" (func $increment-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+        )"#
+    )
+}
+
+#[test]
+fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = cell_load_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &cell_load_counter_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+    let subject = EntityRef::new(1, 41).unwrap();
+
+    let commands = instance.on_cell_load(CellLoadEvent { subject }).unwrap();
+    let component_commands = commands
+        .into_iter()
+        .map(|command| match command {
+            HostCommand::Component(command) => command,
+            HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
+        })
+        .collect::<Vec<_>>();
+    let principal = PrincipalId::from(&manifest.id);
+    let mut store = ExtensionComponentStore::new(ComponentStoreLimits::default()).unwrap();
+    store
+        .register_schema(
+            &principal,
+            ComponentSchema {
+                id: manifest.component_schemas[0].id.clone(),
+                version: manifest.component_schemas[0].version,
+                fields: manifest.component_schemas[0].fields.clone(),
+            },
+        )
+        .unwrap();
+    store.apply_batch(&principal, &component_commands).unwrap();
+
+    let schema = &manifest.component_schemas[0].id;
+    assert_eq!(
+        store
+            .row(&principal, schema, subject)
+            .and_then(|row| row.get("count")),
+        Some(&ExtensionValue::I64(1))
+    );
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject,
+            activator: None,
+        }),
+        Err(SandboxError::EventNotSubscribed { .. })
+    ));
 }
 
 #[test]
