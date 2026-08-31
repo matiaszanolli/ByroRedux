@@ -11,7 +11,9 @@
 //! - **Starfield (v2/v3)** — extends the archive header by 8 (v2) or 12 (v3)
 //!   bytes. v2 carries both GNRL (mesh) and DX10 (texture) archives in
 //!   vanilla Starfield; v3 is DX10-only in the shipped game (no v3 GNRL
-//!   observed across 108 vanilla archives). v3 adds a `compression_method`
+//!   observed across 129 installed Starfield archives / 50 vanilla,
+//!   measured 2026-08-30; installed corpus for the other BTDX games that
+//!   same run: FO4 187 archives, FO76 101). v3 adds a `compression_method`
 //!   field: 0 = zlib, 3 = LZ4 block. Both GNRL and DX10 extraction are
 //!   fully supported for v2 and v3.
 //!
@@ -217,8 +219,9 @@ impl Ba2Archive {
         //   variant; the parser treats them identically here).
         // v2 (Starfield GNRL and DX10): +8 bytes (2×u32 unknown, likely
         //   compressed name-table metadata). Compression is always zlib.
-        // v3 (Starfield DX10 only in vanilla; no v3 GNRL observed across 108
-        //   vanilla archives): +12 bytes (2×u32 unknown + u32 compression
+        // v3 (Starfield DX10 only in vanilla; no v3 GNRL observed across 129
+        //   installed Starfield archives / 50 vanilla, measured 2026-08-30):
+        //   +12 bytes (2×u32 unknown + u32 compression
         //   method). Method 0 = zlib, 3 = LZ4 block.
         //
         // #811 / FO4-D2-NEW-01 — match exhaustively over the supported

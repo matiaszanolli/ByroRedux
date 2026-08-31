@@ -187,12 +187,20 @@ with a documented default.
 ## 3. What is still hard
 
 The remaining risk is **not** the vocabulary — it is memory. `parse` peaks at
-**9.19 GB RSS** on the 105 MB CDB (87× blow-up, measured in
-`AUDIT_STARFIELD_2026-08-16.md` § SF-D3-02, re-confirmed here). `ParseLimits`
+**9.19 GB RSS** on the base 105 MB CDB (87× blow-up, measured in
+`AUDIT_STARFIELD_2026-08-16.md` § SF-D3-02, re-confirmed here). That figure is
+a **per-CDB** measurement on the base CDB only, not the whole corpus: a
+per-archive sizing pass (2026-08-30, AUDIT_STARFIELD Dimension 3) found
+`SFBGS007 - Main.ba2` carries a **second** full-size `materialsbeta.cdb`
+(104,868,172 B / 1,458,383 chunks / 97 classes, within 0.2% of the base CDB
+on every axis), and 13 CDBs total across the corpus: **3,077,172 chunks
+across ~232 MB**, roughly 2× the 1,457,575 chunks the 9.19 GB figure was
+measured on. A Phase-2 reader reusing the current `parse` across the
+discovered set would peak north of **~18 GB**, not 9.19 GB. `ParseLimits`
 does not help: it is a pre-walk reject on object-chunk count, so a low budget
 returns `Err(ParseBudgetExceeded)` rather than a partial or streamed result.
 Calling `parse` on the cell-load path is not viable, and there are 13 CDBs to
-index, not one.
+index, two of them full-size, not one.
 
 That makes an indexed or streaming reader variant the real Phase-2 work — and
 it is now a well-specified problem rather than an open one, because we know

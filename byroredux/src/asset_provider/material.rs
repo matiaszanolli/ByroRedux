@@ -1124,11 +1124,13 @@ pub(crate) fn merge_external_material(
         path.ends_with(".mat") || path.ends_with(".bgsm") || path.ends_with(".bgem");
     let starfield_cdb_gate = starfield_named_material && provider.has_starfield_cdb();
 
-    // `.mat` short-circuits: Starfield ships no `.mat` sidecar files, so
-    // there is no resolver below for this path to miss and nothing is
-    // gained by running the dispatch. See [`apply_cdb_pbr_fallback`] for
-    // the full rationale and for why the `.bgsm`/`.bgem` names do NOT
-    // short-circuit here any more (#3230).
+    // `.mat` short-circuits: vanilla Starfield ships no `.mat`/`.bgsm`/
+    // `.bgem` sidecars, but an installed Creation/mod archive can — 20 JSON
+    // `.mat` exports measured across 129 installed archives (2026-08-30).
+    // The short-circuit is retained anyway because no JSON `.mat` resolver
+    // exists yet, not because the files cannot exist. See
+    // [`apply_cdb_pbr_fallback`] for the full rationale and for why the
+    // `.bgsm`/`.bgem` names do NOT short-circuit here any more (#3230).
     //
     // `from_bgsm` is deliberately left unset by that helper — the flag
     // gates BGSM spec-glossiness translation (an FO4 format convention).
