@@ -471,14 +471,28 @@ impl ConsoleCommand for SceneShowCommand {
         let Some(form_id) = parse_console_u32(raw) else {
             return CommandOutput::error(format!("bad scene FormID `{raw}`"));
         };
-        let Some(registry) = world.try_resource::<SceneRegistry>() else {
-            return CommandOutput::error("scene runtime unavailable");
-        };
-        let Some(definition) = registry.definition(form_id) else {
-            return CommandOutput::error(format!("unknown scene 0x{form_id:08X}"));
-        };
-        let Some(entity) = registry.scene_entity(form_id) else {
-            return CommandOutput::error(format!("scene 0x{form_id:08X} has no playback entity"));
+        // #3650 — snapshot the definition (an `Arc` bump, not a deep copy)
+        // and the entity id, then DROP the `SceneRegistry` guard before
+        // touching `ScenePlayer`. Holding it across that read recorded
+        // `SceneRegistry -> ScenePlayer`, the reverse of the direction
+        // `actor_quest_trigger_is_in_sequence` establishes on every frame a
+        // trigger volume is entered (`QuestAdvanceOnActivate -> ScenePlayer
+        // -> SceneRegistry`, `crates/scripting/src/trigger.rs`). With no
+        // overlap this command now records no edge for the pair at all,
+        // leaving the trigger scan as the single recorded direction.
+        let (definition, entity) = {
+            let Some(registry) = world.try_resource::<SceneRegistry>() else {
+                return CommandOutput::error("scene runtime unavailable");
+            };
+            let Some(definition) = registry.definition_arc(form_id) else {
+                return CommandOutput::error(format!("unknown scene 0x{form_id:08X}"));
+            };
+            let Some(entity) = registry.scene_entity(form_id) else {
+                return CommandOutput::error(format!(
+                    "scene 0x{form_id:08X} has no playback entity"
+                ));
+            };
+            (definition, entity)
         };
         let Some(player) = world.get::<ScenePlayer>(entity) else {
             return CommandOutput::error(format!(

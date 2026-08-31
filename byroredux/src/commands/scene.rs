@@ -524,11 +524,19 @@ impl ConsoleCommand for MatListCommand {
         "List entities with a Material + their PBR scalars (companion to mat.set)"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
-        let Some(q) = world.query::<Material>() else {
+        // #3648 SIBLING — snapshot into owned rows so the `Material` query
+        // guard is released before the `resolve_entity_name` calls below.
+        // Borrowing `&Material` out of `q` kept it live across `Name` ->
+        // `StringPool`, recording `Material -> StringPool` against
+        // `studio_host::snapshot`'s `StringPool -> Material`.
+        let Some(rows) = world.query::<Material>().map(|q| {
+            let mut rows: Vec<(EntityId, Material)> =
+                q.iter().map(|(e, m)| (e, m.clone())).collect();
+            rows.sort_by_key(|(e, _)| *e);
+            rows
+        }) else {
             return CommandOutput::line("No Material components in the world.");
         };
-        let mut rows: Vec<(EntityId, &Material)> = q.iter().collect();
-        rows.sort_by_key(|(e, _)| *e);
         if rows.is_empty() {
             return CommandOutput::line("No Material components in the world.");
         }
@@ -536,7 +544,8 @@ impl ConsoleCommand for MatListCommand {
             "{:>5}  {:<20} {:>5} {:>5} {:>5} {:>5} {:>4}  {:<14}",
             "id", "name", "metal", "rough", "alpha", "emul", "kind", "diffuse(rgb)"
         )];
-        for (e, m) in rows {
+        for (e, m) in &rows {
+            let e = *e;
             let name = resolve_entity_name(world, e).unwrap_or_else(|| "-".to_string());
             let name: String = name.chars().take(20).collect();
             lines.push(format!(
@@ -580,7 +589,13 @@ impl ConsoleCommand for MatDumpCommand {
             Ok(entity) => entity,
             Err(error) => return CommandOutput::line(format!("mat.dump: {error}")),
         };
-        let Some(material) = world.get::<Material>(entity) else {
+        // #3648 SIBLING — snapshot and drop, for the same reason `mat.list`
+        // above does: `resolve_entity_name` below reaches `Name` and
+        // `StringPool`, and this guard used to span that call.
+        let Some(material): Option<Material> = world
+            .get::<Material>(entity)
+            .map(|material| material.clone())
+        else {
             return CommandOutput::line(format!("mat.dump: entity {entity} has no Material."));
         };
 

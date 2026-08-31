@@ -1140,3 +1140,96 @@ fn combat_approach_line_of_sight_is_permissive_without_physics() {
         Vec3::new(0.0, 0.0, -100.0),
     ));
 }
+
+/// Lock-order pins for the console commands that acquire a second guard
+/// underneath a first (#3648, #3650).
+///
+/// Both defects are invisible to `cargo test`: the guards are all reads, the
+/// commands run in the exclusive `DebugDrainSystem`, and the tracker's global
+/// graph is a process-wide `LazyLock` read from `BYRO_LOCK_ORDER_CHECK` once
+/// at startup — so it cannot be armed for one test without arming it for the
+/// whole binary. What the fixes change is which guards are *live* across a
+/// call, and that is only visible in source.
+mod lock_order_pin_tests {
+    const ASSETS_RS: &str = include_str!("commands/assets.rs");
+    const SCENE_RS: &str = include_str!("commands/scene.rs");
+    const QUEST_RS: &str = include_str!("commands/quest.rs");
+
+    /// Source of one `execute` body, located by the command's `name()`
+    /// literal so a moved `impl` block still resolves.
+    fn execute_body_after(src: &'static str, command_name: &str) -> &'static str {
+        let needle = format!("\"{command_name}\"");
+        let anchor = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no command named {needle} — it moved or was renamed"));
+        let rest = &src[anchor..];
+        let start = rest
+            .find("fn execute(")
+            .unwrap_or_else(|| panic!("{needle} has no execute()"));
+        let body = &rest[start..];
+        let end = body.find("\n    }\n").unwrap_or(body.len());
+        &body[..end]
+    }
+
+    /// #3648 — `skin.dump` must snapshot `SkinnedMesh` and drop the guard.
+    /// `format_skin_dump` acquires `GlobalTransform` (plus `Name` and
+    /// `StringPool`) per bone, so a live `SkinnedMesh` guard across that call
+    /// is `SkinnedMesh -> GlobalTransform`, the inverse of the canonical
+    /// order that `make_world_bound_propagation_system` records every frame.
+    #[test]
+    fn skin_dump_snapshots_the_skinned_mesh_before_formatting() {
+        let body = execute_body_after(ASSETS_RS, "skin.dump");
+        assert!(
+            body.contains("Option<SkinnedMesh>"),
+            "skin.dump must bind an owned `Option<SkinnedMesh>` snapshot, not \
+             the `ComponentRef` returned by `world.get` — the guard would \
+             otherwise live across `format_skin_dump`'s GlobalTransform reads \
+             (#3648, the console half of #2388)",
+        );
+    }
+
+    /// #3648 SIBLING — the two `Material` console commands hold their guard
+    /// across `resolve_entity_name`, which reaches `Name` then `StringPool`.
+    /// `studio_host::snapshot` records the opposing `StringPool -> Material`.
+    #[test]
+    fn material_commands_snapshot_before_resolving_names() {
+        for (command, needle) in [
+            ("mat.list", "Vec<(EntityId, Material)>"),
+            ("mat.dump", "Option<Material>"),
+        ] {
+            let body = execute_body_after(SCENE_RS, command);
+            assert!(
+                body.contains(needle),
+                "{command} must snapshot its Material into `{needle}` and drop \
+                 the storage guard before calling `resolve_entity_name` \
+                 (#3648 SIBLING)",
+            );
+        }
+    }
+
+    /// #3650 — `scene.show` must drop the `SceneRegistry` guard before
+    /// reading `ScenePlayer`. `actor_quest_trigger_is_in_sequence` records
+    /// `ScenePlayer -> SceneRegistry` every frame a trigger volume is
+    /// entered, so the reverse closes a cycle.
+    #[test]
+    fn scene_show_drops_the_registry_before_reading_the_player() {
+        let body = execute_body_after(QUEST_RS, "scene.show");
+        let registry = body
+            .find("try_resource::<SceneRegistry>()")
+            .expect("scene.show must read the SceneRegistry");
+        let player = body
+            .find("get::<ScenePlayer>(")
+            .expect("scene.show must read the ScenePlayer");
+        assert!(registry < player, "scene.show reads ScenePlayer first");
+        // The registry acquisition must sit inside a scope that closes before
+        // the ScenePlayer read — a snapshot block, not a function-long guard.
+        let between = &body[registry..player];
+        assert!(
+            between.contains("definition_arc") && between.contains("\n        };"),
+            "scene.show must snapshot via `definition_arc` inside a block that \
+             CLOSES before `world.get::<ScenePlayer>` — holding the registry \
+             across that read records `SceneRegistry -> ScenePlayer`, the \
+             reverse of trigger.rs's direction (#3650)",
+        );
+    }
+}

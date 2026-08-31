@@ -709,7 +709,20 @@ impl ConsoleCommand for SkinDumpCommand {
             Ok(v) => v,
             Err(_) => return CommandOutput::line("Usage: skin.dump <entity_id>"),
         };
-        let Some(skin) = world.get::<SkinnedMesh>(entity) else {
+        // #3648 — snapshot and DROP the `SkinnedMesh` guard before calling
+        // `format_skin_dump`. Binding the `ComponentRef` through `let ...
+        // else` kept the read guard live for the whole function, and the
+        // formatter acquires `GlobalTransform` (plus `Name` and
+        // `StringPool`) per bone underneath it — `SkinnedMesh ->
+        // GlobalTransform`, the inverse of `docs/engine/ecs.md`'s canonical
+        // order, and the exact inversion #2388 fixed in the debug-server
+        // sibling `eval_inspect_skinned_mesh` while missing this one.
+        // `make_world_bound_propagation_system` records the forward edge
+        // every frame, so with `BYRO_LOCK_ORDER_CHECK=1` the two together
+        // closed a cycle and aborted whichever landed second.
+        let Some(skin): Option<SkinnedMesh> =
+            world.get::<SkinnedMesh>(entity).map(|skin| skin.clone())
+        else {
             return CommandOutput::line(format!("Entity {} has no SkinnedMesh component", entity));
         };
         let lines = format_skin_dump(world, entity, &skin);

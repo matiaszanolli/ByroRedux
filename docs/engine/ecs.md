@@ -648,6 +648,44 @@ its fast path, so it clones the component and drops the guard before touching
 the ruleset — it must never hold the two together. `CharacterLevel` is read on
 the same snapshot-first rule.
 
+Three further clusters have a settled direction, each established by a system
+that runs every frame (#3651 — until then the direction lived only in a local
+comment in the establishing crate, and the second consumer of each cluster
+re-derived it from scratch and got the opposite one):
+
+```
+AnimationClipRegistry → NameIndex → AnimationPlayer
+QuestAdvanceOnActivate → ScenePlayer → QuestStageState → SceneRegistry
+RapierHandles → CollisionShape → RigidBodyData → GlobalTransform
+              → ActorBoneCollider   ⇒ then snapshot, drop, and take PhysicsWorld
+```
+
+**Animation.** `animation_system_inner` (`byroredux/src/systems/animation.rs`)
+calls the registry and `NameIndex` "the two outermost locks" (#2400): it holds
+the registry read for the whole function and takes `AnimationPlayer` for
+*write* underneath it. That makes the pair a hard blocking edge, not a
+reader-reader one. `save::validate_animation` took the reverse until #3649.
+
+**Scene / quest.** `actor_quest_trigger_is_in_sequence`
+(`crates/scripting/src/trigger.rs`) holds `QuestAdvanceOnActivate` and
+`ScenePlayer` across the whole check, scopes `SceneRegistry` to the summary
+loop, and reads `QuestStageState` afterwards. #3580 additionally requires the
+registry guard to be *dropped* before `QuestStageState`, because
+`condition::evaluate`'s `IsSceneActionComplete` arm records
+`QuestStageState → SceneRegistry`. `scene.show` held
+`SceneRegistry → ScenePlayer` until #3650 and now snapshots the definition
+(`SceneRegistry::definition_arc`) so it records no edge for the pair at all.
+
+**Physics shapes.** `physics_sync::collect_newcomers`
+(`crates/physics/src/sync.rs`) establishes the component span, acquiring
+`GlobalTransform` last so it matches `push_kinematic`'s handles → body →
+global order. `PhysicsWorld` is *not* part of that span and must never be
+held with it: every site — `collect_newcomers`/`register_newcomers`,
+`push_kinematic`, `combat_input_system`, `interaction`'s line-of-sight ray —
+collects what it needs from the component queries, drops them, and only then
+takes the resource. Treat `PhysicsWorld` the way `StringPool` is treated at
+the tail of the main order, except that here the guards do not overlap at all.
+
 Two properties make a violation cheap to miss and expensive to hit:
 
 - Exclusive systems can invert the order and never deadlock, because no two

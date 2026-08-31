@@ -365,10 +365,18 @@ fn validate_saved_entity_references(
 /// Every `AnimationPlayer.clip_handle` must resolve in the clip registry,
 /// and its `root_entity` (if set) must be a spawned id.
 fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<ValidationError>) {
+    // #3649 — `AnimationClipRegistry` BEFORE `AnimationPlayer`, matching the
+    // order `animation_system_inner` establishes every frame: its doc comment
+    // calls the registry and `NameIndex` "the two outermost locks" (#2400)
+    // and takes `AnimationPlayer` for WRITE underneath them. Acquiring the
+    // player query first here recorded the reverse edge, and because the
+    // opposing acquisition is a write it is a hard blocking edge, not a
+    // reader-reader one. `docs/engine/ecs.md`'s canonical table now carries
+    // the pair so the next crate does not have to re-derive it.
+    let registry = world.try_resource::<AnimationClipRegistry>();
     let Some(q) = world.query::<AnimationPlayer>() else {
         return;
     };
-    let registry = world.try_resource::<AnimationClipRegistry>();
 
     for (entity, player) in q.iter() {
         if let Some(reg) = registry.as_ref() {
@@ -407,10 +415,17 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
 /// world carries no pool at all is itself unresolvable, so it is flagged
 /// too. SAVE-D4-01.
 fn validate_inventory_instances(world: &World, errors: &mut Vec<ValidationError>) {
+    // #3649 SIBLING — resource before storage, same rule `validate_animation`
+    // above now follows. The production consumer
+    // (`cell_loader::unload::release_victim_item_instances`) scopes its
+    // `Inventory` query, drops it, and only then takes the pool, so it
+    // records no edge for this pair and there is no live cycle to close.
+    // Hoisting the acquisition keeps the shape out of the file rather than
+    // relying on that site staying two-phase.
+    let pool = world.try_resource::<ItemInstancePool>();
     let Some(q_inv) = world.query::<Inventory>() else {
         return;
     };
-    let pool = world.try_resource::<ItemInstancePool>();
 
     for (entity, inventory) in q_inv.iter() {
         for (idx, stack) in inventory.items.iter().enumerate() {
@@ -692,5 +707,69 @@ mod tests {
         assert_eq!(errors[0].entity, e);
         assert_eq!(errors[0].kind, ValidationKind::UnsavedProgression);
         assert!(errors[0].detail.contains("42"));
+    }
+}
+
+/// #3649 — `validate_animation` and `validate_inventory_instances` must take
+/// their resource BEFORE the component storage they pair it with.
+///
+/// `animation_system_inner` (`byroredux/src/systems/animation.rs`) holds
+/// `AnimationClipRegistry` as one of its "two outermost locks" (#2400) and
+/// takes `AnimationPlayer` for *write* underneath it. This crate acquired the
+/// two in the opposite order, so with `BYRO_LOCK_ORDER_CHECK=1` a frame plus a
+/// save closed a cycle — and because the opposing acquisition is a write, it is
+/// a hard blocking edge rather than a reader-reader one.
+///
+/// The tracker's graph is a process-global `LazyLock` read from the
+/// environment once at startup, so it cannot be driven from a unit test
+/// without enabling it for the whole binary. Which order the two guards are
+/// taken in is visible only in source, so pin it there — the same treatment
+/// `byroredux/src/scheduler_access_tests.rs` uses for declarations it cannot
+/// otherwise observe.
+#[cfg(test)]
+mod lock_order_pin_tests {
+    const VALIDATE_RS: &str = include_str!("validate.rs");
+
+    fn body_of(needle: &str) -> &'static str {
+        let start = VALIDATE_RS
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` not found — the function moved or was renamed"));
+        let rest = &VALIDATE_RS[start..];
+        let end = rest.find("\n}\n").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[test]
+    fn validate_animation_takes_the_registry_before_the_player_query() {
+        let body = body_of("fn validate_animation(");
+        let registry = body
+            .find("try_resource::<AnimationClipRegistry>()")
+            .expect("validate_animation must read the clip registry");
+        let players = body
+            .find("query::<AnimationPlayer>()")
+            .expect("validate_animation must query AnimationPlayer");
+        assert!(
+            registry < players,
+            "validate_animation acquires AnimationPlayer before \
+             AnimationClipRegistry — that inverts `animation_system_inner`'s \
+             outermost-lock order (#2400/#3649); see docs/engine/ecs.md",
+        );
+    }
+
+    #[test]
+    fn validate_inventory_instances_takes_the_pool_before_the_inventory_query() {
+        let body = body_of("fn validate_inventory_instances(");
+        let pool = body
+            .find("try_resource::<ItemInstancePool>()")
+            .expect("validate_inventory_instances must read the instance pool");
+        let inventories = body
+            .find("query::<Inventory>()")
+            .expect("validate_inventory_instances must query Inventory");
+        assert!(
+            pool < inventories,
+            "validate_inventory_instances acquires Inventory before \
+             ItemInstancePool — resource before storage, matching \
+             validate_animation (#3649)",
+        );
     }
 }

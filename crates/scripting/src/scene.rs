@@ -55,7 +55,11 @@ impl SceneRegistry {
         self.definitions.is_empty()
     }
 
-    fn definition_arc(&self, form_id: u32) -> Option<Arc<ScenRecord>> {
+    /// The definition as a refcount bump rather than a borrow, so a caller
+    /// can snapshot it and drop the `SceneRegistry` guard before acquiring
+    /// anything else (#3650). `definition` stays the cheap read for callers
+    /// that finish inside the guard.
+    pub fn definition_arc(&self, form_id: u32) -> Option<Arc<ScenRecord>> {
         self.definitions.get(&form_id).cloned()
     }
 }

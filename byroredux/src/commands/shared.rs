@@ -119,12 +119,15 @@ pub(crate) fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -
     {
         let (entity_str, name_str, world_mat) = match maybe_bone {
             Some(bone_e) => {
-                // `get::<Name>` fully releases its internal lock before
-                // returning, so acquiring `StringPool` only afterward
-                // (rather than holding it across the call) never presents
-                // the lock-order detector with a Pool-while-holding-Name
-                // edge — matching `resolve_entity_name`'s Name-before-Pool
-                // convention for this pair (#313).
+                // `Name` BEFORE `StringPool`: the `ComponentRef` returned by
+                // `get::<Name>` owns its read guard for the whole closure, so
+                // the pool really is acquired *while* `Name` is held — which
+                // is the canonical direction (`... -> Name -> StringPool`,
+                // the sink at the tail of `docs/engine/ecs.md`'s order) and
+                // matches `resolve_entity_name`'s convention for this pair
+                // (#313, #3446). This comment used to claim the guard was
+                // already released here; it is not, and the ordering is what
+                // makes the site correct.
                 let name = world
                     .get::<Name>(*bone_e)
                     .and_then(|n| {
