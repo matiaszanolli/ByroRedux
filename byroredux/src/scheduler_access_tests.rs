@@ -657,3 +657,71 @@ fn p2_gameplay_exclusives_declare_non_empty_access() {
         );
     }
 }
+
+/// #3653 — `submersion_system` (Late) authors `ParticleEmitter::rate`;
+/// `particle_system` (PostUpdate), its sole consumer, runs a stage earlier,
+/// so the rate spawned against in frame N is frame N-1's.
+///
+/// The lag is accepted deliberately: `disturbance_rate` is a pure function
+/// of the camera `GlobalTransform` that `camera_follow_system` authors in
+/// Late, so hoisting the write into PostUpdate would relocate the frame of
+/// latency onto the camera pose instead — the bug #3180 closed. Pin the
+/// stage assignment so a future "fix" that moves either system has to
+/// re-derive that argument rather than silently reintroducing #3180.
+///
+/// `analyze_pair` is intra-stage and cannot see this pair at all.
+#[test]
+fn particle_emitter_rate_lag_is_structural() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let stage_of = |needle: &str| -> Stage {
+        let mut found = report.stages.iter().flat_map(|stage| {
+            stage
+                .systems
+                .iter()
+                .filter(|row| row.name.contains(needle))
+                .map(move |_| stage.stage)
+        });
+        let stage = found
+            .next()
+            .unwrap_or_else(|| panic!("no system named `{needle}` (#3653)"));
+        assert!(found.next().is_none(), "`{needle}` matches several rows");
+        stage
+    };
+
+    assert_eq!(
+        stage_of("::particle_system"),
+        Stage::PostUpdate,
+        "particle_system moved stage — re-derive #3653's accepted lag",
+    );
+    assert_eq!(
+        stage_of("::submersion_system"),
+        Stage::Late,
+        "submersion_system moved out of Stage::Late — it is there because \
+         `camera_follow_system` authors the camera pose in Late (#3180); \
+         moving it back to PostUpdate to close #3653's one-frame rate lag \
+         would reintroduce the pose lag #3180 fixed",
+    );
+
+    // Both halves of the pair must name `ParticleEmitter`, so the
+    // cross-stage hand-off is visible on `sys.accesses` even though the
+    // analyzer cannot classify it (#3473 precedent).
+    for needle in ["::particle_system", "::submersion_system"] {
+        let declared = report
+            .stages
+            .iter()
+            .flat_map(|stage| stage.systems.iter())
+            .find(|row| row.name.contains(needle))
+            .and_then(|row| row.declared.clone())
+            .unwrap_or_else(|| panic!("`{needle}` reports a blank access row (#3653)"));
+        assert!(
+            declared
+                .components_write
+                .iter()
+                .any(|entry| entry.type_name.ends_with("ParticleEmitter")),
+            "`{needle}` must declare its `ParticleEmitter` write — it is one \
+             half of the cross-stage rate hand-off (#3653)",
+        );
+    }
+}
