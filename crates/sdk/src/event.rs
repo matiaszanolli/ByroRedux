@@ -1,6 +1,7 @@
 //! Canonical, versioned events delivered to executable extensions.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::identity::{EntityRef, EventId, FormRef, PrincipalId};
 
@@ -17,6 +18,12 @@ pub const MAX_LEGACY_SKSE_MOD_EVENT_NAME_BYTES: usize = 53;
 /// Bound for the Papyrus callback identifier retained by a dynamic legacy
 /// registration.
 pub const MAX_LEGACY_SKSE_CALLBACK_BYTES: usize = 128;
+
+/// Maximum live handle builders retained by one compatibility adapter.
+pub const MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS: usize = 64;
+
+/// Maximum typed arguments in one handle-built event.
+pub const MAX_LEGACY_SKSE_MOD_EVENT_ARGUMENTS: usize = 128;
 
 /// A principal-authored event queued by one successful guest callback.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +86,237 @@ pub struct LegacySkseModEventPayload {
     pub string_arg: String,
     pub number_arg_bits: u32,
     pub sender: Option<FormRef>,
+}
+
+/// One typed argument pushed through SKSE's handle-based `ModEvent` API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacySkseModEventValue {
+    Bool(bool),
+    Int(i32),
+    FloatBits(u32),
+    String(String),
+    Form(Option<FormRef>),
+}
+
+impl LegacySkseModEventValue {
+    pub fn float(value: f32) -> Self {
+        Self::FloatBits(value.to_bits())
+    }
+
+    pub fn as_float(&self) -> Option<f32> {
+        match self {
+            Self::FloatBits(bits) => Some(f32::from_bits(*bits)),
+            _ => None,
+        }
+    }
+}
+
+/// Versioned payload for `ModEvent.Create/Push*/Send`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacySkseVariadicModEventPayload {
+    pub arguments: Vec<LegacySkseModEventValue>,
+}
+
+impl LegacySkseVariadicModEventPayload {
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        if self.arguments.len() > MAX_LEGACY_SKSE_MOD_EVENT_ARGUMENTS {
+            return None;
+        }
+        let count = u16::try_from(self.arguments.len()).ok()?;
+        let mut bytes = Vec::new();
+        bytes.push(1);
+        bytes.extend_from_slice(&count.to_le_bytes());
+        for argument in &self.arguments {
+            match argument {
+                LegacySkseModEventValue::Bool(value) => {
+                    bytes.extend_from_slice(&[0, u8::from(*value)]);
+                }
+                LegacySkseModEventValue::Int(value) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                LegacySkseModEventValue::FloatBits(bits) => {
+                    bytes.push(2);
+                    bytes.extend_from_slice(&bits.to_le_bytes());
+                }
+                LegacySkseModEventValue::String(value) => {
+                    bytes.push(3);
+                    bytes.extend_from_slice(&u32::try_from(value.len()).ok()?.to_le_bytes());
+                    bytes.extend_from_slice(value.as_bytes());
+                }
+                LegacySkseModEventValue::Form(value) => {
+                    bytes.push(4);
+                    match value {
+                        Some(form) => {
+                            bytes.push(1);
+                            bytes.extend_from_slice(&form.source());
+                            bytes.extend_from_slice(&form.local().to_le_bytes());
+                        }
+                        None => bytes.push(0),
+                    }
+                }
+            }
+            if bytes.len() > MAX_CUSTOM_EVENT_PAYLOAD_BYTES {
+                return None;
+            }
+        }
+        Some(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let (&version, rest) = bytes.split_first()?;
+        if version != 1 {
+            return None;
+        }
+        let (count, mut rest) = take_u16(rest)?;
+        let count = usize::from(count);
+        if count > MAX_LEGACY_SKSE_MOD_EVENT_ARGUMENTS {
+            return None;
+        }
+        let mut arguments = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (&tag, next) = rest.split_first()?;
+            rest = next;
+            let argument = match tag {
+                0 => {
+                    let (&value, next) = rest.split_first()?;
+                    rest = next;
+                    LegacySkseModEventValue::Bool(match value {
+                        0 => false,
+                        1 => true,
+                        _ => return None,
+                    })
+                }
+                1 => {
+                    let (value, next) = take_i32(rest)?;
+                    rest = next;
+                    LegacySkseModEventValue::Int(value)
+                }
+                2 => {
+                    let (bits, next) = take_u32(rest)?;
+                    rest = next;
+                    LegacySkseModEventValue::FloatBits(bits)
+                }
+                3 => {
+                    let (length, next) = take_u32(rest)?;
+                    let length = usize::try_from(length).ok()?;
+                    let (value, next) = next.split_at_checked(length)?;
+                    rest = next;
+                    LegacySkseModEventValue::String(std::str::from_utf8(value).ok()?.to_owned())
+                }
+                4 => {
+                    let (&present, next) = rest.split_first()?;
+                    rest = next;
+                    let value = match present {
+                        0 => None,
+                        1 => {
+                            let (source, next) = rest.split_at_checked(16)?;
+                            let source = source.try_into().ok()?;
+                            let (local, next) = take_u32(next)?;
+                            rest = next;
+                            Some(FormRef::new(source, local))
+                        }
+                        _ => return None,
+                    };
+                    LegacySkseModEventValue::Form(value)
+                }
+                _ => return None,
+            };
+            arguments.push(argument);
+        }
+        rest.is_empty().then_some(Self { arguments })
+    }
+}
+
+/// One in-progress handle event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LegacySkseModEventBuilder {
+    event: EventId,
+    arguments: Vec<LegacySkseModEventValue>,
+}
+
+/// Engine-owned replacement for SKSE's transient ModEvent handle registry.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LegacySkseModEventBuilders {
+    next_handle: u32,
+    builders: BTreeMap<u32, LegacySkseModEventBuilder>,
+}
+
+impl LegacySkseModEventBuilders {
+    pub fn new() -> Self {
+        Self {
+            next_handle: 1,
+            builders: BTreeMap::new(),
+        }
+    }
+
+    /// Create a builder, returning SKSE's failure sentinel (`0`) on rejection.
+    pub fn create(&mut self, event_name: &str) -> u32 {
+        let Some(event) = legacy_skse_mod_event_id(event_name) else {
+            return 0;
+        };
+        if self.builders.len() >= MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS {
+            return 0;
+        }
+        for _ in 0..=MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS {
+            let handle = self.next_handle.max(1);
+            self.next_handle = handle.wrapping_add(1).max(1);
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.builders.entry(handle) {
+                entry.insert(LegacySkseModEventBuilder {
+                    event,
+                    arguments: Vec::new(),
+                });
+                return handle;
+            }
+        }
+        0
+    }
+
+    /// Push one argument. Invalid handles or an oversized payload are ignored,
+    /// matching the legacy void-return functions.
+    pub fn push(&mut self, handle: u32, value: LegacySkseModEventValue) {
+        let Some(builder) = self.builders.get_mut(&handle) else {
+            return;
+        };
+        if builder.arguments.len() >= MAX_LEGACY_SKSE_MOD_EVENT_ARGUMENTS {
+            return;
+        }
+        builder.arguments.push(value);
+        let encodable = LegacySkseVariadicModEventPayload {
+            arguments: builder.arguments.clone(),
+        }
+        .encode()
+        .is_some();
+        if !encodable {
+            builder.arguments.pop();
+        }
+    }
+
+    /// Send and release a handle. `None` is SKSE's `false` result.
+    pub fn send(&mut self, handle: u32) -> Option<PublishEventCommand> {
+        let builder = self.builders.remove(&handle)?;
+        let payload = LegacySkseVariadicModEventPayload {
+            arguments: builder.arguments,
+        }
+        .encode()?;
+        PublishEventCommand::new(builder.event, payload)
+    }
+
+    pub fn release(&mut self, handle: u32) {
+        self.builders.remove(&handle);
+    }
+
+    pub fn contains(&self, handle: u32) -> bool {
+        self.builders.contains_key(&handle)
+    }
+
+    pub fn len(&self) -> usize {
+        self.builders.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.builders.is_empty()
+    }
 }
 
 impl LegacySkseModEventPayload {
@@ -148,6 +386,16 @@ impl LegacySkseModEventPayload {
 fn take_u32(bytes: &[u8]) -> Option<(u32, &[u8])> {
     let (value, rest) = bytes.split_at_checked(4)?;
     Some((u32::from_le_bytes(value.try_into().ok()?), rest))
+}
+
+fn take_u16(bytes: &[u8]) -> Option<(u16, &[u8])> {
+    let (value, rest) = bytes.split_at_checked(2)?;
+    Some((u16::from_le_bytes(value.try_into().ok()?), rest))
+}
+
+fn take_i32(bytes: &[u8]) -> Option<(i32, &[u8])> {
+    let (value, rest) = bytes.split_at_checked(4)?;
+    Some((i32::from_le_bytes(value.try_into().ok()?), rest))
 }
 
 /// Reversibly map one legacy shared event name to an engine channel.
@@ -332,6 +580,62 @@ mod custom_event_tests {
         )
         .is_none());
         assert!(LegacyModEventSubscriptionCommand::unsubscribe("ready").is_some());
+    }
+
+    #[test]
+    fn legacy_skse_handle_builder_sends_typed_arguments_and_releases() {
+        let mut builders = LegacySkseModEventBuilders::new();
+        let handle = builders.create("SKIWF_widgetLoaded");
+        assert_ne!(handle, 0);
+        builders.push(handle, LegacySkseModEventValue::Bool(true));
+        builders.push(handle, LegacySkseModEventValue::Int(-12));
+        builders.push(handle, LegacySkseModEventValue::float(3.25));
+        builders.push(handle, LegacySkseModEventValue::String("ready".to_owned()));
+        builders.push(
+            handle,
+            LegacySkseModEventValue::Form(Some(FormRef::new([7; 16], 0x123))),
+        );
+
+        let command = builders.send(handle).unwrap();
+        assert!(builders.is_empty());
+        assert_eq!(
+            legacy_skse_mod_event_name(&command.event).as_deref(),
+            Some("SKIWF_widgetLoaded")
+        );
+        let payload = LegacySkseVariadicModEventPayload::decode(&command.payload).unwrap();
+        assert_eq!(payload.arguments.len(), 5);
+        assert_eq!(payload.arguments[0], LegacySkseModEventValue::Bool(true));
+        assert_eq!(payload.arguments[1], LegacySkseModEventValue::Int(-12));
+        assert_eq!(payload.arguments[2].as_float(), Some(3.25));
+        assert_eq!(
+            payload.arguments[4],
+            LegacySkseModEventValue::Form(Some(FormRef::new([7; 16], 0x123)))
+        );
+        assert!(builders.send(handle).is_none());
+    }
+
+    #[test]
+    fn legacy_skse_handle_builder_bounds_handles_and_payloads() {
+        let mut builders = LegacySkseModEventBuilders::new();
+        assert_eq!(builders.create(""), 0);
+        let handles = (0..MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS)
+            .map(|index| builders.create(&format!("event-{index}")))
+            .collect::<Vec<_>>();
+        assert!(handles.iter().all(|handle| *handle != 0));
+        assert_eq!(builders.create("overflow"), 0);
+
+        let handle = handles[0];
+        builders.push(
+            handle,
+            LegacySkseModEventValue::String("x".repeat(MAX_CUSTOM_EVENT_PAYLOAD_BYTES)),
+        );
+        let command = builders.send(handle).unwrap();
+        let payload = LegacySkseVariadicModEventPayload::decode(&command.payload).unwrap();
+        assert!(payload.arguments.is_empty());
+
+        let released = handles[1];
+        builders.release(released);
+        assert_eq!(builders.len(), MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS - 2);
     }
 }
 

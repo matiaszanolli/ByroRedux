@@ -16,8 +16,8 @@ use byroredux_sdk::content::{ContentCatalog, PluginKind, MAX_PLUGIN_NAME_BYTES};
 use byroredux_sdk::event::{
     custom_event_publishable_by, is_custom_event_id, is_legacy_skse_mod_event_id, ActivationEvent,
     CellLoadEvent, CustomEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
-    InputPhase, LegacyModEventSubscriptionCommand, PublishEventCommand, SessionEvent, SessionPhase,
-    UpdateEvent,
+    InputPhase, LegacyModEventSubscriptionCommand, LegacySkseModEventBuilders,
+    LegacySkseModEventValue, PublishEventCommand, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::factions::{FactionMembership, FactionSnapshot};
 use byroredux_sdk::identity::{
@@ -673,6 +673,7 @@ impl SandboxRuntime {
                 .map(|subscription| subscription.event.clone())
                 .collect(),
             legacy_mod_event_callbacks: BTreeMap::new(),
+            legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,
@@ -1407,6 +1408,7 @@ struct HostState {
     subscribed_to_session: bool,
     custom_subscriptions: Vec<EventId>,
     legacy_mod_event_callbacks: BTreeMap<EventId, String>,
+    legacy_mod_event_builders: LegacySkseModEventBuilders,
     current_custom_event: Option<CustomEvent>,
     current_legacy_callback: Option<String>,
     current_console_args: Option<Vec<u8>>,
@@ -1465,6 +1467,79 @@ impl events::Host for HostState {
         Ok(())
     }
 
+    fn legacy_builder_create(&mut self, event_name: String) -> wasmtime::Result<u32> {
+        self.require_legacy_builder_access()?;
+        Ok(self.legacy_mod_event_builders.create(&event_name))
+    }
+
+    fn legacy_builder_push_bool(&mut self, handle: u32, value: bool) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders
+            .push(handle, LegacySkseModEventValue::Bool(value));
+        Ok(())
+    }
+
+    fn legacy_builder_push_int(&mut self, handle: u32, value: i32) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders
+            .push(handle, LegacySkseModEventValue::Int(value));
+        Ok(())
+    }
+
+    fn legacy_builder_push_float(&mut self, handle: u32, value: f32) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders
+            .push(handle, LegacySkseModEventValue::float(value));
+        Ok(())
+    }
+
+    fn legacy_builder_push_string(&mut self, handle: u32, value: String) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders
+            .push(handle, LegacySkseModEventValue::String(value));
+        Ok(())
+    }
+
+    fn legacy_builder_push_form(
+        &mut self,
+        handle: u32,
+        value: Option<state::FormRef>,
+    ) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders.push(
+            handle,
+            LegacySkseModEventValue::Form(value.map(sdk_form_ref)),
+        );
+        Ok(())
+    }
+
+    fn legacy_builder_send(&mut self, handle: u32) -> wasmtime::Result<bool> {
+        self.require_legacy_builder_access()?;
+        if !self.legacy_mod_event_builders.contains(handle) {
+            return Ok(false);
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let command = self
+            .legacy_mod_event_builders
+            .send(handle)
+            .expect("validated legacy builder must remain encodable");
+        self.pending_commands
+            .push(HostCommand::PublishEvent(command));
+        Ok(true)
+    }
+
+    fn legacy_builder_release(&mut self, handle: u32) -> wasmtime::Result<()> {
+        self.require_legacy_builder_access()?;
+        self.legacy_mod_event_builders.release(handle);
+        Ok(())
+    }
+
     fn queue_legacy_subscribe(
         &mut self,
         event_name: String,
@@ -1520,6 +1595,19 @@ impl events::Host for HostState {
 }
 
 impl HostState {
+    fn require_legacy_builder_access(&self) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("mod-event builders are only accessible during an event callback");
+        }
+        if !self.grants.contains(EVENTS_PUBLISH_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {EVENTS_PUBLISH_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
     fn require_legacy_subscription_command(&mut self) -> wasmtime::Result<()> {
         if !self.accepting_commands {
             wasmtime::bail!("event subscriptions are only accepted during an event callback");
@@ -2913,6 +3001,7 @@ mod projection_tests {
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
             legacy_mod_event_callbacks: BTreeMap::new(),
+            legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,
@@ -3018,6 +3107,93 @@ mod projection_tests {
         )
         .is_err());
         assert!(denied.pending_commands.is_empty());
+    }
+
+    #[test]
+    fn legacy_mod_event_builder_preserves_typed_arguments_and_send_is_deferred() {
+        let mut state = content_host_state(false);
+        state.grants.grant(EVENTS_PUBLISH_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 1;
+
+        let handle = <HostState as events::Host>::legacy_builder_create(
+            &mut state,
+            "typed-ready".to_owned(),
+        )
+        .unwrap();
+        assert_ne!(handle, 0);
+        <HostState as events::Host>::legacy_builder_push_bool(&mut state, handle, true).unwrap();
+        <HostState as events::Host>::legacy_builder_push_int(&mut state, handle, -7).unwrap();
+        <HostState as events::Host>::legacy_builder_push_float(&mut state, handle, 1.25).unwrap();
+        <HostState as events::Host>::legacy_builder_push_string(
+            &mut state,
+            handle,
+            "payload".to_owned(),
+        )
+        .unwrap();
+        <HostState as events::Host>::legacy_builder_push_form(
+            &mut state,
+            handle,
+            Some(state::FormRef {
+                source_high: 0x0001_0203_0405_0607,
+                source_low: 0x0809_0a0b_0c0d_0e0f,
+                local: 0x1234,
+            }),
+        )
+        .unwrap();
+        assert!(<HostState as events::Host>::legacy_builder_send(&mut state, handle).unwrap());
+
+        let HostCommand::PublishEvent(command) = &state.pending_commands[0] else {
+            panic!("builder send must queue a custom event");
+        };
+        assert_eq!(
+            command.event,
+            byroredux_sdk::event::legacy_skse_mod_event_id("typed-ready").unwrap()
+        );
+        let decoded =
+            byroredux_sdk::event::LegacySkseVariadicModEventPayload::decode(&command.payload)
+                .unwrap();
+        assert_eq!(
+            decoded.arguments,
+            vec![
+                LegacySkseModEventValue::Bool(true),
+                LegacySkseModEventValue::Int(-7),
+                LegacySkseModEventValue::float(1.25),
+                LegacySkseModEventValue::String("payload".to_owned()),
+                LegacySkseModEventValue::Form(Some(FormRef::new(
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                    0x1234,
+                ))),
+            ]
+        );
+        assert!(!<HostState as events::Host>::legacy_builder_send(&mut state, handle).unwrap());
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        assert!(<HostState as events::Host>::legacy_builder_create(
+            &mut denied,
+            "typed-ready".to_owned(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn legacy_mod_event_builder_survives_a_rejected_send_budget() {
+        let mut state = content_host_state(false);
+        state.grants.grant(EVENTS_PUBLISH_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 0;
+        let handle = <HostState as events::Host>::legacy_builder_create(
+            &mut state,
+            "retry-ready".to_owned(),
+        )
+        .unwrap();
+
+        assert!(<HostState as events::Host>::legacy_builder_send(&mut state, handle).is_err());
+        assert_eq!(state.legacy_mod_event_builders.len(), 1);
+        state.max_commands_per_entry = 1;
+        assert!(<HostState as events::Host>::legacy_builder_send(&mut state, handle).unwrap());
+        assert!(state.legacy_mod_event_builders.is_empty());
     }
 
     #[test]
@@ -3154,6 +3330,7 @@ mod projection_tests {
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
             legacy_mod_event_callbacks: BTreeMap::new(),
+            legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,

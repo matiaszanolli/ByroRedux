@@ -180,6 +180,35 @@ pub fn method_source_alias(function: &str) -> Option<SourceAlias> {
 /// components; floats, Forms, pluck, file, list, and cross-principal sharing
 /// remain unsupported until an engine service can honor their full contracts.
 pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
+    if provider.eq_ignore_ascii_case("ModEvent") {
+        let (function, operation, value_kind) = if function.eq_ignore_ascii_case("Create") {
+            ("Create", "events.legacy-builder-create", "handle")
+        } else if function.eq_ignore_ascii_case("Send") {
+            ("Send", "events.legacy-builder-send", "bool")
+        } else if function.eq_ignore_ascii_case("Release") {
+            ("Release", "events.legacy-builder-release", "none")
+        } else if function.eq_ignore_ascii_case("PushBool") {
+            ("PushBool", "events.legacy-builder-push", "bool")
+        } else if function.eq_ignore_ascii_case("PushInt") {
+            ("PushInt", "events.legacy-builder-push", "signed")
+        } else if function.eq_ignore_ascii_case("PushFloat") {
+            ("PushFloat", "events.legacy-builder-push", "float")
+        } else if function.eq_ignore_ascii_case("PushString") {
+            ("PushString", "events.legacy-builder-push", "text")
+        } else if function.eq_ignore_ascii_case("PushForm") {
+            ("PushForm", "events.legacy-builder-push", "form")
+        } else {
+            return None;
+        };
+        return Some(SourceAlias {
+            provider: "ModEvent",
+            function,
+            service: EVENT_SERVICE,
+            operation,
+            value_kind,
+            constraint: "<=64 live handles; <=128 arguments; encoded payload <=4096 bytes",
+        });
+    }
     if !provider.eq_ignore_ascii_case("StorageUtil") {
         return None;
     }
@@ -385,32 +414,18 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         ));
     }
     if provider.eq_ignore_ascii_case("ModEvent") {
-        return Some(
-            if matches_ignore_ascii_case(
-                function,
-                &[
-                    "Create",
-                    "Send",
-                    "Release",
-                    "PushBool",
-                    "PushInt",
-                    "PushFloat",
-                    "PushString",
-                    "PushForm",
-                ],
-            ) {
-                mapped(
+        return Some(if source_alias(provider, function).is_some() {
+            mapped(
                 ExtenderFamily::Skse,
                 EVENT_SERVICE,
-                "replace the transient ModEvent handle with a bounded typed event builder on the shared engine compatibility bus",
+                "an exact transient ModEvent handle adapter targets the bounded shared engine compatibility bus",
             )
-            } else {
-                unsupported(
+        } else {
+            unsupported(
                 ExtenderFamily::Skse,
                 "the ModEvent provider is recognized, but this function has no exact engine mapping",
             )
-            },
-        );
+        });
     }
     if provider.eq_ignore_ascii_case("Input") {
         return Some(
@@ -692,6 +707,14 @@ mod tests {
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Mapped
+        );
+        assert_eq!(
+            source_alias("ModEvent", "Create").unwrap().operation,
+            "events.legacy-builder-create"
+        );
+        assert_eq!(
+            source_alias("ModEvent", "PushForm").unwrap().value_kind,
+            "form"
         );
     }
 

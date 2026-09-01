@@ -34,7 +34,17 @@ interface context {
 /// the exact manifest subscription index, so channels never become
 /// guest-chosen numeric identifiers.
 interface events {
+    use state.{form-ref};
+
     publish: func(event: string, payload: list<u8>);
+    legacy-builder-create: func(event-name: string) -> u32;
+    legacy-builder-push-bool: func(handle: u32, value: bool);
+    legacy-builder-push-int: func(handle: u32, value: s32);
+    legacy-builder-push-float: func(handle: u32, value: f32);
+    legacy-builder-push-string: func(handle: u32, value: string);
+    legacy-builder-push-form: func(handle: u32, value: option<form-ref>);
+    legacy-builder-send: func(handle: u32) -> bool;
+    legacy-builder-release: func(handle: u32);
     /// Queue an SKSE-compatible runtime registration. Registrations are
     /// transient by design and must be refreshed after load, matching SKSE.
     queue-legacy-subscribe: func(event-name: string, callback: string);

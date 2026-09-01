@@ -478,9 +478,11 @@ The first event adapter covers fixed-arity
 `Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
 name to the shared engine-owned compatibility bus and preserves the string,
 float, and stable sender form synchronously without an SKSE DLL. The lower-level
-`ModEvent.Create/Push*/Send/Release` family is now recognized only by exact
-function name and remains mapped—not native—until its transient typed builder
-is executable. Runtime `RegisterForModEvent`, `UnregisterForModEvent`, and
+`ModEvent.Create/Push*/Send/Release` family now uses an engine-owned transient
+typed builder: handles are non-zero and bounded per adapter, bool/int/float/
+string/Form arguments retain order and type, oversized pushes are ignored like
+the legacy void-return calls, and Send atomically releases into the shared bus.
+Runtime `RegisterForModEvent`, `UnregisterForModEvent`, and
 `UnregisterForAllModEvents` adapters now queue capability-gated subscription
 mutations in the same atomic callback batch. Successful registration exposes
 the bounded callback identifier during delivery; registrations remain
