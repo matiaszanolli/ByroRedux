@@ -126,16 +126,46 @@ pub fn adapt_legacy_send_mod_event(
 
 /// Exact source alias for extender-added instance calls.
 pub fn method_source_alias(function: &str) -> Option<SourceAlias> {
-    function
-        .eq_ignore_ascii_case("SendModEvent")
-        .then_some(SourceAlias {
-            provider: "Form/Alias/ActiveMagicEffect",
-            function: "SendModEvent",
-            service: EVENT_SERVICE,
-            operation: "events.publish",
-            value_kind: "legacy-skse-fixed-event",
-            constraint: "event name <=53 UTF-8 bytes; sender must have a stable FormRef",
-        })
+    let (function, operation, value_kind, constraint) =
+        if function.eq_ignore_ascii_case("SendModEvent") {
+            (
+                "SendModEvent",
+                "events.publish",
+                "legacy-skse-fixed-event",
+                "event name <=53 UTF-8 bytes; sender must have a stable FormRef",
+            )
+        } else if function.eq_ignore_ascii_case("RegisterForModEvent") {
+            (
+                "RegisterForModEvent",
+                "events.queue-legacy-subscribe",
+                "legacy-skse-registration",
+                "event name <=53 UTF-8 bytes; callback <=128 bytes; refresh after load",
+            )
+        } else if function.eq_ignore_ascii_case("UnregisterForModEvent") {
+            (
+                "UnregisterForModEvent",
+                "events.queue-legacy-unsubscribe",
+                "legacy-skse-registration",
+                "event name <=53 UTF-8 bytes",
+            )
+        } else if function.eq_ignore_ascii_case("UnregisterForAllModEvents") {
+            (
+                "UnregisterForAllModEvents",
+                "events.queue-legacy-unsubscribe-all",
+                "legacy-skse-registration",
+                "removes only runtime SKSE-compatibility registrations",
+            )
+        } else {
+            return None;
+        };
+    Some(SourceAlias {
+        provider: "Form/Alias/ActiveMagicEffect",
+        function,
+        service: EVENT_SERVICE,
+        operation,
+        value_kind,
+        constraint,
+    })
 }
 
 /// Resolve the first engine-backed PapyrusUtil source aliases.
@@ -423,21 +453,7 @@ pub fn classify_method_call(function: &str) -> Option<CompatibilityMatch> {
         return Some(mapped(
             ExtenderFamily::Skse,
             EVENT_SERVICE,
-            "an exact fixed-arity source adapter targets the shared engine ModEvent compatibility bus",
-        ));
-    }
-    if matches_ignore_ascii_case(
-        function,
-        &[
-            "RegisterForModEvent",
-            "UnregisterForModEvent",
-            "UnregisterForAllModEvents",
-        ],
-    ) {
-        return Some(mapped(
-            ExtenderFamily::Skse,
-            EVENT_SERVICE,
-            "declare the channel in the extension manifest and publish or subscribe through byro.events",
+            "an exact source adapter targets the shared engine ModEvent compatibility bus",
         ));
     }
     if matches_ignore_ascii_case(
@@ -648,6 +664,18 @@ mod tests {
         assert_eq!(
             method_source_alias("sendmodevent").unwrap().operation,
             "events.publish"
+        );
+        assert_eq!(
+            method_source_alias("RegisterForModEvent")
+                .unwrap()
+                .operation,
+            "events.queue-legacy-subscribe"
+        );
+        assert_eq!(
+            method_source_alias("UnregisterForAllModEvents")
+                .unwrap()
+                .operation,
+            "events.queue-legacy-unsubscribe-all"
         );
     }
 

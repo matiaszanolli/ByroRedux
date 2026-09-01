@@ -35,9 +35,10 @@ use byroredux_sdk::component::{
 use byroredux_sdk::console::ConsoleCommandResult;
 use byroredux_sdk::content::ContentCatalog;
 use byroredux_sdk::event::{
-    custom_event_publishable_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
-    EquipmentEvent, HitEvent, InputAction as SdkInputAction, InputActionEvent, InputPhase,
-    SessionEvent, SessionPhase, UpdateEvent,
+    custom_event_publishable_by, is_custom_event_id, is_legacy_skse_mod_event_id, ActivationEvent,
+    CellLoadEvent, CustomEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
+    InputActionEvent, InputPhase, LegacyModEventSubscriptionCommand, SessionEvent, SessionPhase,
+    UpdateEvent,
 };
 use byroredux_sdk::factions::{FactionMembership, FactionSnapshot, MAX_FACTIONS_PER_ENTITY};
 use byroredux_sdk::identity::{
@@ -1804,6 +1805,7 @@ fn apply_delivery_result(
     let mut component_commands = Vec::new();
     let mut storage_commands = Vec::new();
     let mut published_events = Vec::new();
+    let mut legacy_event_subscriptions = Vec::new();
     let mut setting_writes = Vec::new();
     let mut actor_value_writes = Vec::new();
     let mut package_evaluations = Vec::new();
@@ -1814,6 +1816,9 @@ fn apply_delivery_result(
             HostCommand::ActorValue(command) => actor_value_writes.push(command),
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::EvaluatePackage(command) => package_evaluations.push(command),
+            HostCommand::LegacyModEventSubscription(command) => {
+                legacy_event_subscriptions.push(command)
+            }
             HostCommand::PlayIdle(command) => animation_commands.push(command),
             HostCommand::Reputation(command) => reputation_writes.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
@@ -1823,6 +1828,24 @@ fn apply_delivery_result(
     }
     let mut staged_state = state.clone();
     let mut staged_storage = principal_storage.clone();
+    let mut staged_custom_subscriptions = hosted.custom_subscriptions.clone();
+    let staged_subscriptions = legacy_event_subscriptions.iter().try_for_each(|command| {
+        if !command.is_valid() {
+            return Err("legacy mod-event subscription command is invalid".to_owned());
+        }
+        match command {
+            LegacyModEventSubscriptionCommand::Subscribe { event, .. } => {
+                staged_custom_subscriptions.insert(event.clone());
+            }
+            LegacyModEventSubscriptionCommand::Unsubscribe { event } => {
+                staged_custom_subscriptions.remove(event);
+            }
+            LegacyModEventSubscriptionCommand::UnsubscribeAll => {
+                staged_custom_subscriptions.retain(|event| !is_legacy_skse_mod_event_id(event));
+            }
+        }
+        Ok(())
+    });
     let staged_events = published_events
         .into_iter()
         .map(|command| {
@@ -1843,7 +1866,7 @@ fn apply_delivery_result(
                 .ok_or_else(|| "custom event payload is invalid or exceeds its bound".to_owned())
         })
         .collect::<Result<Vec<_>, _>>();
-    let apply_result = staged_events.and_then(|staged_events| {
+    let apply_result = staged_subscriptions.and_then(|()| staged_events).and_then(|staged_events| {
         let owned_setting_prefix = format!("ext.{principal}.");
         if setting_writes
             .iter()
@@ -1945,6 +1968,10 @@ fn apply_delivery_result(
         Ok(staged_events) => {
             *state = staged_state;
             *principal_storage = staged_storage;
+            hosted.custom_subscriptions = staged_custom_subscriptions;
+            hosted
+                .instance
+                .apply_legacy_mod_event_subscription_commands(&legacy_event_subscriptions);
             pending_custom_events.extend(staged_events);
             pending_setting_writes.extend(setting_writes);
             pending_actor_value_writes.extend(actor_value_writes);
@@ -4989,6 +5016,157 @@ mod tests {
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(1))
         );
+    }
+
+    #[test]
+    fn legacy_mod_event_runtime_registration_controls_live_routing() {
+        let subscriber = PrincipalId::new("org.example.dynamic-subscriber").unwrap();
+        let sender = PrincipalId::new("org.example.dynamic-publisher").unwrap();
+        let channel =
+            byroredux_sdk::event::legacy_skse_mod_event_id("SKICP_configManagerReady").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_storage_package(subscriber.as_str());
+
+        let subscribe =
+            HostCommand::LegacyModEventSubscription(LegacyModEventSubscriptionCommand::Subscribe {
+                event: channel.clone(),
+                callback: "OnConfigManagerReady".to_owned(),
+            });
+        let mut registration_stats = ExtensionDispatchStats::default();
+        let hosted = &mut host.components[0];
+        apply_delivery_result(
+            hosted,
+            Ok(vec![subscribe]),
+            LifecyclePhase::Activate,
+            &subscriber,
+            DeliveryCommitContext {
+                state: &mut host.state,
+                principal_storage: &mut host.principal_storage,
+                pending_custom_events: &mut host.pending_custom_events,
+                pending_setting_writes: &mut host.pending_setting_writes,
+                pending_actor_value_writes: &mut host.pending_actor_value_writes,
+                pending_package_evaluations: &mut host.pending_package_evaluations,
+                pending_animation_commands: &mut host.pending_animation_commands,
+                pending_reputation_writes: &mut host.pending_reputation_writes,
+                diagnostics: &mut host.diagnostics,
+                stats: &mut registration_stats,
+            },
+        );
+        assert_eq!(registration_stats.commands_applied, 1);
+        assert!(host.components[0].custom_subscriptions.contains(&channel));
+        assert_eq!(
+            host.components[0]
+                .instance
+                .legacy_mod_event_callback(&channel),
+            Some("OnConfigManagerReady")
+        );
+
+        host.pending_custom_events.push(CustomEvent {
+            event: channel.clone(),
+            sender: sender.clone(),
+            payload: byroredux_sdk::event::LegacySkseModEventPayload::new(String::new(), 0.0, None)
+                .encode()
+                .unwrap(),
+        });
+        let delivered = host.dispatch_custom_events();
+        assert_eq!(delivered.deliveries, 1);
+        assert_eq!(delivered.commands_applied, 1);
+        assert_eq!(
+            host.principal_storage
+                .values(&subscriber)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+
+        let unsubscribe = HostCommand::LegacyModEventSubscription(
+            LegacyModEventSubscriptionCommand::Unsubscribe {
+                event: channel.clone(),
+            },
+        );
+        let mut registration_stats = ExtensionDispatchStats::default();
+        let hosted = &mut host.components[0];
+        apply_delivery_result(
+            hosted,
+            Ok(vec![unsubscribe]),
+            LifecyclePhase::Activate,
+            &subscriber,
+            DeliveryCommitContext {
+                state: &mut host.state,
+                principal_storage: &mut host.principal_storage,
+                pending_custom_events: &mut host.pending_custom_events,
+                pending_setting_writes: &mut host.pending_setting_writes,
+                pending_actor_value_writes: &mut host.pending_actor_value_writes,
+                pending_package_evaluations: &mut host.pending_package_evaluations,
+                pending_animation_commands: &mut host.pending_animation_commands,
+                pending_reputation_writes: &mut host.pending_reputation_writes,
+                diagnostics: &mut host.diagnostics,
+                stats: &mut registration_stats,
+            },
+        );
+        assert_eq!(registration_stats.commands_applied, 1);
+        assert!(!host.components[0].custom_subscriptions.contains(&channel));
+        assert_eq!(
+            host.components[0]
+                .instance
+                .legacy_mod_event_callback(&channel),
+            None
+        );
+
+        host.pending_custom_events.push(CustomEvent {
+            event: channel,
+            sender,
+            payload: Vec::new(),
+        });
+        let suppressed = host.dispatch_custom_events();
+        assert_eq!(suppressed.events, 1);
+        assert_eq!(suppressed.deliveries, 0);
+    }
+
+    #[test]
+    fn invalid_legacy_registration_rejects_its_entire_callback_batch() {
+        let principal = PrincipalId::new("org.example.atomic-registration").unwrap();
+        let key = StorageKey::new("should-not-commit").unwrap();
+        let mut host = host_with_storage_package(principal.as_str());
+        let commands = vec![
+            HostCommand::PrincipalStorage(byroredux_sdk::storage::PrincipalStorageCommand::Set {
+                key: key.clone(),
+                value: ExtensionValue::I64(1),
+            }),
+            HostCommand::LegacyModEventSubscription(LegacyModEventSubscriptionCommand::Subscribe {
+                event: EventId::new("mod.org.example.atomic-registration.event.not-legacy")
+                    .unwrap(),
+                callback: "OnInvalid".to_owned(),
+            }),
+        ];
+        let mut stats = ExtensionDispatchStats::default();
+        let hosted = &mut host.components[0];
+        apply_delivery_result(
+            hosted,
+            Ok(commands),
+            LifecyclePhase::Activate,
+            &principal,
+            DeliveryCommitContext {
+                state: &mut host.state,
+                principal_storage: &mut host.principal_storage,
+                pending_custom_events: &mut host.pending_custom_events,
+                pending_setting_writes: &mut host.pending_setting_writes,
+                pending_actor_value_writes: &mut host.pending_actor_value_writes,
+                pending_package_evaluations: &mut host.pending_package_evaluations,
+                pending_animation_commands: &mut host.pending_animation_commands,
+                pending_reputation_writes: &mut host.pending_reputation_writes,
+                diagnostics: &mut host.diagnostics,
+                stats: &mut stats,
+            },
+        );
+
+        assert_eq!(stats.commands_applied, 0);
+        assert_eq!(stats.faults, 1);
+        assert!(host
+            .principal_storage
+            .values(&principal)
+            .and_then(|values| values.get(&key))
+            .is_none());
+        assert!(host.components[0].custom_subscriptions.is_empty());
     }
 
     #[test]

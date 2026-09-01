@@ -35,6 +35,13 @@ interface context {
 /// guest-chosen numeric identifiers.
 interface events {
     publish: func(event: string, payload: list<u8>);
+    /// Queue an SKSE-compatible runtime registration. Registrations are
+    /// transient by design and must be refreshed after load, matching SKSE.
+    queue-legacy-subscribe: func(event-name: string, callback: string);
+    queue-legacy-unsubscribe: func(event-name: string);
+    queue-legacy-unsubscribe-all: func();
+    /// Callback identifier registered for the event currently being delivered.
+    current-legacy-callback: func() -> option<string>;
     current-payload-len: func() -> u32;
     current-payload-byte: func(index: u32) -> option<u8>;
 }

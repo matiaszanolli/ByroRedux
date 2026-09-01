@@ -1300,6 +1300,9 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
             HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::Reputation(_) => panic!("unexpected reputation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
+            HostCommand::LegacyModEventSubscription(_) => {
+                panic!("unexpected legacy event-subscription command")
+            }
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1369,6 +1372,9 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
             HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::Reputation(_) => panic!("unexpected reputation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
+            HostCommand::LegacyModEventSubscription(_) => {
+                panic!("unexpected legacy event-subscription command")
+            }
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1444,6 +1450,9 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
             HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::Reputation(_) => panic!("unexpected reputation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
+            HostCommand::LegacyModEventSubscription(_) => {
+                panic!("unexpected legacy event-subscription command")
+            }
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -2236,6 +2245,9 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
             HostCommand::EvaluatePackage(_) => {
                 panic!("fixture emitted an unexpected package command")
             }
+            HostCommand::LegacyModEventSubscription(_) => {
+                panic!("fixture emitted an unexpected legacy event-subscription command")
+            }
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => {
                 panic!("fixture emitted an unexpected storage command")
@@ -2291,6 +2303,9 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
             }
             HostCommand::EvaluatePackage(_) => {
                 panic!("fixture emitted an unexpected package command")
+            }
+            HostCommand::LegacyModEventSubscription(_) => {
+                panic!("fixture emitted an unexpected legacy event-subscription command")
             }
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),

@@ -14,11 +14,51 @@ pub const LEGACY_SKSE_MOD_EVENT_PREFIX: &str = "legacy.skse.mod-event.";
 /// Maximum UTF-8 event-name length that fits reversibly in an [`EventId`].
 pub const MAX_LEGACY_SKSE_MOD_EVENT_NAME_BYTES: usize = 53;
 
+/// Bound for the Papyrus callback identifier retained by a dynamic legacy
+/// registration.
+pub const MAX_LEGACY_SKSE_CALLBACK_BYTES: usize = 128;
+
 /// A principal-authored event queued by one successful guest callback.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishEventCommand {
     pub event: EventId,
     pub payload: Vec<u8>,
+}
+
+/// Deferred runtime registration mutation for SKSE-compatible mod events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyModEventSubscriptionCommand {
+    Subscribe { event: EventId, callback: String },
+    Unsubscribe { event: EventId },
+    UnsubscribeAll,
+}
+
+impl LegacyModEventSubscriptionCommand {
+    pub fn subscribe(event_name: &str, callback: String) -> Option<Self> {
+        (!callback.is_empty() && callback.len() <= MAX_LEGACY_SKSE_CALLBACK_BYTES).then_some(())?;
+        Some(Self::Subscribe {
+            event: legacy_skse_mod_event_id(event_name)?,
+            callback,
+        })
+    }
+
+    pub fn unsubscribe(event_name: &str) -> Option<Self> {
+        Some(Self::Unsubscribe {
+            event: legacy_skse_mod_event_id(event_name)?,
+        })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Subscribe { event, callback } => {
+                is_legacy_skse_mod_event_id(event)
+                    && !callback.is_empty()
+                    && callback.len() <= MAX_LEGACY_SKSE_CALLBACK_BYTES
+            }
+            Self::Unsubscribe { event } => is_legacy_skse_mod_event_id(event),
+            Self::UnsubscribeAll => true,
+        }
+    }
 }
 
 /// Canonical custom/mod event delivered to an exact manifest subscriber.
@@ -272,6 +312,26 @@ mod custom_event_tests {
         assert_eq!(LegacySkseModEventPayload::decode(&encoded), Some(payload));
         assert!(LegacySkseModEventPayload::decode(&encoded[..encoded.len() - 1]).is_none());
         assert!(LegacySkseModEventPayload::decode(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn legacy_skse_dynamic_subscription_commands_are_bounded() {
+        let subscribe = LegacyModEventSubscriptionCommand::subscribe(
+            "SKICP_configManagerReady",
+            "OnConfigManagerReady".to_owned(),
+        )
+        .unwrap();
+        assert!(matches!(
+            subscribe,
+            LegacyModEventSubscriptionCommand::Subscribe { .. }
+        ));
+        assert!(LegacyModEventSubscriptionCommand::subscribe("ready", String::new()).is_none());
+        assert!(LegacyModEventSubscriptionCommand::subscribe(
+            "ready",
+            "x".repeat(MAX_LEGACY_SKSE_CALLBACK_BYTES + 1),
+        )
+        .is_none());
+        assert!(LegacyModEventSubscriptionCommand::unsubscribe("ready").is_some());
     }
 }
 

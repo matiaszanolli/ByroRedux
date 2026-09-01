@@ -480,8 +480,11 @@ name to the shared engine-owned compatibility bus and preserves the string,
 float, and stable sender form synchronously without an SKSE DLL. The lower-level
 `ModEvent.Create/Push*/Send/Release` family is now recognized only by exact
 function name and remains mapped—not native—until its transient typed builder
-is executable. Runtime Register/Unregister adapters are the next event slice;
-manifest-static subscriptions alone do not satisfy their lifecycle contract.
+is executable. Runtime `RegisterForModEvent`, `UnregisterForModEvent`, and
+`UnregisterForAllModEvents` adapters now queue capability-gated subscription
+mutations in the same atomic callback batch. Successful registration exposes
+the bounded callback identifier during delivery; registrations remain
+transient and are refreshed after load, matching SKSE's lifecycle contract.
 
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified

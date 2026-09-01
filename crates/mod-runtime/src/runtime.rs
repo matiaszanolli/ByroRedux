@@ -14,9 +14,10 @@ use byroredux_sdk::console::{
 };
 use byroredux_sdk::content::{ContentCatalog, PluginKind, MAX_PLUGIN_NAME_BYTES};
 use byroredux_sdk::event::{
-    custom_event_publishable_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
-    EquipmentEvent, HitEvent, InputAction, InputActionEvent, InputPhase, PublishEventCommand,
-    SessionEvent, SessionPhase, UpdateEvent,
+    custom_event_publishable_by, is_custom_event_id, is_legacy_skse_mod_event_id, ActivationEvent,
+    CellLoadEvent, CustomEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
+    InputPhase, LegacyModEventSubscriptionCommand, PublishEventCommand, SessionEvent, SessionPhase,
+    UpdateEvent,
 };
 use byroredux_sdk::factions::{FactionMembership, FactionSnapshot};
 use byroredux_sdk::identity::{
@@ -671,7 +672,9 @@ impl SandboxRuntime {
                 .filter(|subscription| is_custom_event_id(&subscription.event))
                 .map(|subscription| subscription.event.clone())
                 .collect(),
+            legacy_mod_event_callbacks: BTreeMap::new(),
             current_custom_event: None,
+            current_legacy_callback: None,
             current_console_args: None,
             console_command_indices: manifest
                 .console_commands
@@ -1044,7 +1047,45 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
-    /// Deliver one principal-owned custom event to an exact manifest subscriber.
+    /// Apply a successfully committed legacy registration batch.
+    pub fn apply_legacy_mod_event_subscription_commands(
+        &mut self,
+        commands: &[LegacyModEventSubscriptionCommand],
+    ) {
+        let data = self.store.data_mut();
+        for command in commands {
+            match command {
+                LegacyModEventSubscriptionCommand::Subscribe { event, callback } => {
+                    if !data.custom_subscriptions.contains(event) {
+                        data.custom_subscriptions.push(event.clone());
+                    }
+                    data.legacy_mod_event_callbacks
+                        .insert(event.clone(), callback.clone());
+                }
+                LegacyModEventSubscriptionCommand::Unsubscribe { event } => {
+                    data.custom_subscriptions
+                        .retain(|candidate| candidate != event);
+                    data.legacy_mod_event_callbacks.remove(event);
+                }
+                LegacyModEventSubscriptionCommand::UnsubscribeAll => {
+                    data.custom_subscriptions
+                        .retain(|event| !is_legacy_skse_mod_event_id(event));
+                    data.legacy_mod_event_callbacks.clear();
+                }
+            }
+        }
+    }
+
+    /// Return the Papyrus callback registered for one compatibility channel.
+    pub fn legacy_mod_event_callback(&self, event: &EventId) -> Option<&str> {
+        self.store
+            .data()
+            .legacy_mod_event_callbacks
+            .get(event)
+            .map(String::as_str)
+    }
+
+    /// Deliver one custom event to an exact static or runtime subscriber.
     ///
     /// The callback receives the manifest subscription index. Its opaque bytes
     /// are readable only for the duration of this callback through `events`.
@@ -1079,12 +1120,20 @@ impl ModInstance {
             });
         }
         let subscription_index = u32::try_from(subscription_index)
-            .expect("manifest subscription count is bounded below u32::MAX");
+            .expect("bounded subscription count is below u32::MAX");
+        let callback = self
+            .store
+            .data()
+            .legacy_mod_event_callbacks
+            .get(&event.event)
+            .cloned();
         self.store.data_mut().current_custom_event = Some(event);
+        self.store.data_mut().current_legacy_callback = callback;
         let result = self.enter(LifecyclePhase::CustomEvent, true, |bindings, store| {
             bindings.call_on_custom_event(store, subscription_index)
         });
         self.store.data_mut().current_custom_event = None;
+        self.store.data_mut().current_legacy_callback = None;
         self.store.data_mut().entity_projections.clear();
         result?;
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
@@ -1357,7 +1406,9 @@ struct HostState {
     subscribed_to_input: bool,
     subscribed_to_session: bool,
     custom_subscriptions: Vec<EventId>,
+    legacy_mod_event_callbacks: BTreeMap<EventId, String>,
     current_custom_event: Option<CustomEvent>,
+    current_legacy_callback: Option<String>,
     current_console_args: Option<Vec<u8>>,
     console_command_indices: std::collections::BTreeSet<u32>,
     console_output: Vec<String>,
@@ -1414,6 +1465,44 @@ impl events::Host for HostState {
         Ok(())
     }
 
+    fn queue_legacy_subscribe(
+        &mut self,
+        event_name: String,
+        callback: String,
+    ) -> wasmtime::Result<()> {
+        self.require_legacy_subscription_command()?;
+        let command = LegacyModEventSubscriptionCommand::subscribe(&event_name, callback)
+            .ok_or_else(|| wasmtime::Error::msg("invalid legacy mod-event name or callback"))?;
+        self.pending_commands
+            .push(HostCommand::LegacyModEventSubscription(command));
+        Ok(())
+    }
+
+    fn queue_legacy_unsubscribe(&mut self, event_name: String) -> wasmtime::Result<()> {
+        self.require_legacy_subscription_command()?;
+        let command = LegacyModEventSubscriptionCommand::unsubscribe(&event_name)
+            .ok_or_else(|| wasmtime::Error::msg("invalid legacy mod-event name"))?;
+        self.pending_commands
+            .push(HostCommand::LegacyModEventSubscription(command));
+        Ok(())
+    }
+
+    fn queue_legacy_unsubscribe_all(&mut self) -> wasmtime::Result<()> {
+        self.require_legacy_subscription_command()?;
+        self.pending_commands
+            .push(HostCommand::LegacyModEventSubscription(
+                LegacyModEventSubscriptionCommand::UnsubscribeAll,
+            ));
+        Ok(())
+    }
+
+    fn current_legacy_callback(&mut self) -> wasmtime::Result<Option<String>> {
+        if self.current_custom_event.is_none() {
+            wasmtime::bail!("legacy callback is only visible during on-custom-event");
+        }
+        Ok(self.current_legacy_callback.clone())
+    }
+
     fn current_payload_len(&mut self) -> wasmtime::Result<u32> {
         let event = self.current_custom_event.as_ref().ok_or_else(|| {
             wasmtime::Error::msg("custom event payload is only visible during on-custom-event")
@@ -1427,6 +1516,28 @@ impl events::Host for HostState {
             wasmtime::Error::msg("custom event payload is only visible during on-custom-event")
         })?;
         Ok(event.payload.get(index as usize).copied())
+    }
+}
+
+impl HostState {
+    fn require_legacy_subscription_command(&mut self) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("event subscriptions are only accepted during an event callback");
+        }
+        if !self.grants.contains(EVENTS_SUBSCRIBE_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {EVENTS_SUBSCRIBE_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        Ok(())
     }
 }
 
@@ -2801,7 +2912,9 @@ mod projection_tests {
             subscribed_to_input: false,
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
+            legacy_mod_event_callbacks: BTreeMap::new(),
             current_custom_event: None,
+            current_legacy_callback: None,
             current_console_args: None,
             console_command_indices: BTreeSet::new(),
             console_output: Vec::new(),
@@ -2908,6 +3021,45 @@ mod projection_tests {
     }
 
     #[test]
+    fn legacy_mod_event_registration_commands_are_bounded_and_deferred() {
+        let mut state = content_host_state(false);
+        state.grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 3;
+
+        <HostState as events::Host>::queue_legacy_subscribe(
+            &mut state,
+            "SKICP_configManagerReady".to_owned(),
+            "OnConfigManagerReady".to_owned(),
+        )
+        .unwrap();
+        <HostState as events::Host>::queue_legacy_unsubscribe(
+            &mut state,
+            "SKICP_configManagerReady".to_owned(),
+        )
+        .unwrap();
+        <HostState as events::Host>::queue_legacy_unsubscribe_all(&mut state).unwrap();
+        assert_eq!(state.pending_commands.len(), 3);
+        assert!(matches!(
+            &state.pending_commands[0],
+            HostCommand::LegacyModEventSubscription(
+                LegacyModEventSubscriptionCommand::Subscribe { callback, .. }
+            ) if callback == "OnConfigManagerReady"
+        ));
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        denied.max_commands_per_entry = 1;
+        assert!(<HostState as events::Host>::queue_legacy_subscribe(
+            &mut denied,
+            "ready".to_owned(),
+            "OnReady".to_owned(),
+        )
+        .is_err());
+        assert!(denied.pending_commands.is_empty());
+    }
+
+    #[test]
     fn scalar_storage_commands_have_callback_local_read_your_writes() {
         let mut state = content_host_state(false);
         state.grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
@@ -3001,7 +3153,9 @@ mod projection_tests {
             subscribed_to_input: false,
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
+            legacy_mod_event_callbacks: BTreeMap::new(),
             current_custom_event: None,
+            current_legacy_callback: None,
             current_console_args: None,
             console_command_indices: BTreeSet::new(),
             console_output: Vec::new(),

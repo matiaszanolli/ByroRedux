@@ -198,6 +198,7 @@ pub enum HostCommand {
     Reputation(crate::reputation::ReputationCommand),
     Component(ExtensionCommand),
     EvaluatePackage(crate::packages::EvaluatePackageCommand),
+    LegacyModEventSubscription(crate::event::LegacyModEventSubscriptionCommand),
     PrincipalStorage(PrincipalStorageCommand),
     PublishEvent(PublishEventCommand),
     Setting(crate::settings::SettingWriteCommand),
