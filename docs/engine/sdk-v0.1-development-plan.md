@@ -95,15 +95,17 @@ Wasm host after ECS guards are released. Trigger handlers preserve one dispatch
 per entering actor. The subset supports scalar locals, literal arguments,
 assignments, and bounded boolean branches with negation, short-circuit logical
 operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
-and object expressions, broader events, other latent primitives, continuation
-save persistence, and dynamic object dispatch remain open. Provider-bearing
+and object expressions, broader events, other latent primitives, and dynamic
+object dispatch remain open. Provider-bearing
 handlers support bounded `Utility.Wait` continuations that preserve locals and
-ordered branch/enclosing tails. Quest and scene fragments now treat top-level
-provider calls from source/decompiled PEX as sequencing barriers, persist them
-through existing latent continuations, and invoke them only after fragment ECS
-guards are released. Successful calls resume later native effects in the same
-fragment, including across multiple barriers and supported conditional
-branches; failure aborts that fragment's tail. Quest events, scene invocations,
+ordered branch/enclosing tails across save/load. Restored calls are reconciled
+against the live provider catalog before dispatch. Quest and scene fragments
+now treat top-level provider calls from source/decompiled PEX as sequencing
+barriers, persist them through existing latent continuations, and invoke them
+only after fragment ECS guards are released. Successful calls resume later
+native effects in the same fragment, including across multiple barriers and
+supported conditional branches; failure aborts that fragment's tail. Quest
+events, scene invocations,
 and ready latent continuations flush each fragment before the next one begins.
 The first curated extender-era pack is also executable without an extension
 package: ten SKSE `Game` content calls
@@ -878,8 +880,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   Provider-bearing event handlers now suspend across bounded `Utility.Wait`
   calls while preserving locals and ordered branch/enclosing tails. Compiled
   SCDA call encoding, arithmetic/string/object expressions, broader events,
-  other latent primitives, continuation save persistence, and dynamic object
-  dispatch remain pending.
+  other latent primitives, and dynamic object dispatch remain pending. The
+  continuation queue is registered with the save system and revalidates saved
+  routes against the live catalog before resuming.
   Ten exact SKSE `Game` content extensions are now engine-owned
   catalog aliases: `GetModCount`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
@@ -1025,7 +1028,8 @@ invocations, and ready latent continuations flush one ordered fragment at a
 time, with quest cascades reconciled through the canonical sequenced journal.
 Provider-bearing event handlers also suspend across `Utility.Wait`, retain
 typed locals, and resume selected branch and enclosing handler tails in order.
-The continuation queue is bounded; save/load persistence remains open.
+The bounded queue survives save/load, and restored routes must match the live
+catalog before any host callback runs.
 
 ### 14.3 Source and PEX parity
 
@@ -1057,7 +1061,9 @@ Checkpoint commit: `feat(scripting): suspend provider handlers across waits`.
 Delivered for literal non-negative `Utility.Wait` calls in provider-bearing
 source/decompiled-PEX handlers, including waits inside supported conditional
 branches. Locals and ordered tails survive the bounded runtime continuation;
-save/load persistence and other latent primitives remain open.
+the continuation also round-trips through the save registry and rejects stale
+or tampered routes before callback dispatch. Other latent primitives remain
+open.
 
 ### 14.4 Exit gate
 

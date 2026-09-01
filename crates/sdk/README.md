@@ -69,7 +69,9 @@ The current public surface includes:
   Papyrus runtime slice lowers manifest aliases from source and decompiled PEX
   for `OnLoad`, `OnActivate`, `OnTriggerEnter`, and `OnUpdate` handlers.
   Bounded `Utility.Wait` continuations preserve locals and ordered branch/
-  handler tails; trigger handlers preserve one dispatch per entering actor. All
+  handler tails and survive save/load. Restored routes are reconciled against
+  the live catalog before dispatch. Trigger handlers preserve one dispatch per
+  entering actor. All
   routes execute through the same authenticated host without an extender DLL.
   Conditions support bounded negation, short-circuit conjunction/disjunction,
   and same-type boolean/integer/float comparisons over locals, literals, and
