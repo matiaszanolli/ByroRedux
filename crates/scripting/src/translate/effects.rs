@@ -41,6 +41,7 @@ use byroredux_papyrus::ast::{BinaryOp, Expr, Stmt, UnaryOp};
 use byroredux_papyrus::span::Spanned;
 
 use crate::cinematic::CinematicAnimationEvent;
+use crate::papyrus_provider::{lower_provider_call, PapyrusProviderCatalog};
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
     as_num, classify_guard_atom, int_arg, is_game_get_player, method_call, quest_via, split_and,
@@ -55,6 +56,14 @@ pub struct StageDoneGuard {
     pub quest: QuestRef,
     pub stage: u16,
     pub done: bool,
+}
+
+/// Typed provider invocation deferred until fragment ECS guards are released.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct FragmentProviderCall {
+    pub route: String,
+    pub arguments: Vec<byroredux_sdk::script_function::ScriptValue>,
 }
 
 /// A canonical effect a fragment statement lowers to. The runtime applies
@@ -211,6 +220,9 @@ pub enum Effect {
         actors: Vec<ActorRef>,
         poll_seconds: f32,
     },
+    /// A manifest or engine-owned static provider call at fragment tail.
+    /// Runtime dispatch occurs only after quest/object ECS guards are released.
+    ProviderCall(FragmentProviderCall),
 }
 
 /// An actor receiver is either the canonical player or a VMAD-resolved
@@ -291,14 +303,38 @@ pub fn lower_fragment_with_quest_properties(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
 ) -> Option<Vec<Effect>> {
+    lower_fragment_with_quest_properties_and_providers(body, quest_property_names, None)
+}
+
+/// Lower a fragment with an exact provider catalog. Provider calls are
+/// accepted only as an ordered top-level tail so deferred host dispatch cannot
+/// reorder them around later native effects.
+pub fn lower_fragment_with_quest_properties_and_providers(
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
     let mut scope = Scope {
         known_quest_properties: quest_property_names.clone(),
         ..Scope::default()
     };
-    lower_statements(body, &mut scope)
+    let effects = lower_statements(body, &mut scope, providers)?;
+    let mut provider_tail_started = false;
+    for effect in &effects {
+        if matches!(effect, Effect::ProviderCall(_)) {
+            provider_tail_started = true;
+        } else if provider_tail_started {
+            return None;
+        }
+    }
+    Some(effects)
 }
 
-fn lower_statements(body: &[Spanned<Stmt>], scope: &mut Scope) -> Option<Vec<Effect>> {
+fn lower_statements(
+    body: &[Spanned<Stmt>],
+    scope: &mut Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
     let mut effects = Vec::new();
     for stmt in body {
         match &stmt.node {
@@ -324,7 +360,9 @@ fn lower_statements(body: &[Spanned<Stmt>], scope: &mut Scope) -> Option<Vec<Eff
             }
             // `Return` with no value is Champollion's fragment terminator.
             Stmt::Return(None) => {}
-            Stmt::ExprStmt(e) => effects.push(classify_effect(&e.node, scope)?),
+            Stmt::ExprStmt(e) => {
+                effects.push(classify_effect_with_providers(&e.node, scope, providers)?)
+            }
             Stmt::While { condition, body } => {
                 effects.push(lower_3d_loaded_wait(&condition.node, body, scope)?);
             }
@@ -355,10 +393,10 @@ fn lower_statements(body: &[Spanned<Stmt>], scope: &mut Scope) -> Option<Vec<Eff
                     })
                     .collect::<Option<Vec<_>>>()?;
                 let mut then_scope = scope.clone();
-                let then_effects = lower_statements(body, &mut then_scope)?;
+                let then_effects = lower_statements(body, &mut then_scope, None)?;
                 let mut else_scope = scope.clone();
                 let else_effects = match else_body.as_deref() {
-                    Some(body) => lower_statements(body, &mut else_scope)?,
+                    Some(body) => lower_statements(body, &mut else_scope, None)?,
                     None => Vec::new(),
                 };
                 let has_latent = |branch: &[Effect]| {
@@ -466,6 +504,26 @@ fn is_side_effect_free(e: &Expr) -> bool {
 /// Classify a single effect statement against the primitive table.
 fn classify_effect(e: &Expr, scope: &Scope) -> Option<Effect> {
     EFFECT_PRIMITIVES.iter().find_map(|p| p(e, scope))
+}
+
+fn classify_effect_with_providers(
+    expression: &Expr,
+    scope: &Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Effect> {
+    if let Some(providers) = providers {
+        match lower_provider_call(expression, providers) {
+            Ok(Some(call)) => {
+                return Some(Effect::ProviderCall(FragmentProviderCall {
+                    route: call.route.qualified_name().to_owned(),
+                    arguments: call.arguments,
+                }));
+            }
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+    }
+    classify_effect(expression, scope)
 }
 
 /// An effect primitive: matches one effect-call shape and binds its
@@ -1327,6 +1385,53 @@ mod tests {
                     stage: 10,
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn provider_calls_lower_only_as_an_ordered_fragment_tail() {
+        let providers = PapyrusProviderCatalog::engine_compatibility();
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Self.SetStage(10)\n\
+             Game.GetModCount()\n\
+             Game.IsPluginInstalled(\"Update.esm\")\n\
+             EndFunction\n",
+        );
+        let effects = lower_fragment_with_quest_properties_and_providers(
+            &body,
+            &HashSet::new(),
+            Some(&providers),
+        )
+        .unwrap();
+        assert!(matches!(effects[0], Effect::SetStage { stage: 10, .. }));
+        assert!(matches!(
+            &effects[1],
+            Effect::ProviderCall(call)
+                if call.route == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE
+        ));
+        assert!(matches!(
+            &effects[2],
+            Effect::ProviderCall(call)
+                if call.route
+                    == byroredux_sdk::compatibility::PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE
+        ));
+
+        let reordered = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Game.GetModCount()\n\
+             Self.SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment_with_quest_properties_and_providers(
+                &reordered,
+                &HashSet::new(),
+                Some(&providers),
+            ),
+            None
         );
     }
 

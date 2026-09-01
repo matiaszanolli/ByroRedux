@@ -32,13 +32,22 @@ pub type PapyrusProviderCallback =
     dyn Fn(&str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
 
 /// Live catalog and host callback published atomically by the executable.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct PapyrusProviderRuntime {
     catalog: Arc<PapyrusProviderCatalog>,
     callback: Option<Arc<PapyrusProviderCallback>>,
 }
 
 impl Resource for PapyrusProviderRuntime {}
+
+impl Default for PapyrusProviderRuntime {
+    fn default() -> Self {
+        Self {
+            catalog: Arc::new(PapyrusProviderCatalog::engine_compatibility()),
+            callback: None,
+        }
+    }
+}
 
 impl PapyrusProviderRuntime {
     /// Immutable manifest-backed alias catalog used during script lowering.
@@ -1363,6 +1372,10 @@ mod tests {
     #[test]
     fn engine_compatibility_catalog_lowers_only_the_exact_game_alias() {
         let mut catalog = PapyrusProviderCatalog::engine_compatibility();
+        assert!(PapyrusProviderRuntime::default()
+            .catalog()
+            .resolve("Game", "GetModCount")
+            .is_some());
         let call = lower_provider_call(&expression("Game.GetModByName(\"Update.esm\")"), &catalog)
             .unwrap()
             .unwrap();

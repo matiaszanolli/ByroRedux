@@ -92,6 +92,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::EvaluatePackage { .. } => "EvaluatePackage",
         Effect::Wait { .. } => "Wait",
         Effect::WaitForActors3DLoaded { .. } => "WaitForActors3DLoaded",
+        Effect::ProviderCall(_) => "ProviderCall",
     }
 }
 

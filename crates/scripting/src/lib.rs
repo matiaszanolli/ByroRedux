@@ -65,10 +65,12 @@ pub use events::{
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
     populate_quest_fragments_from_pex, populate_quest_fragments_from_pex_detailed,
-    populate_scene_fragments_from_pex, populate_scene_fragments_from_pex_detailed,
-    quest_fragment_dispatch_system, scene_fragment_dispatch_system, DeferredFragmentEffects,
-    FragmentExecutionQueue, FragmentPexTranslation, PendingFragmentActivations,
-    QuestStageFragments, ReferenceEnableState, SceneFragments,
+    populate_quest_fragments_from_pex_detailed_with_providers, populate_scene_fragments_from_pex,
+    populate_scene_fragments_from_pex_detailed,
+    populate_scene_fragments_from_pex_detailed_with_providers, quest_fragment_dispatch_system,
+    scene_fragment_dispatch_system, DeferredFragmentEffects, FragmentExecutionQueue,
+    FragmentPexTranslation, PendingFragmentActivations, QuestStageFragments, ReferenceEnableState,
+    SceneFragments,
 };
 pub use globals::Globals;
 pub use obscript::{

@@ -108,6 +108,9 @@ pub(crate) fn populate_quest_fragments(
     if !have_archive {
         return;
     }
+    let providers = world
+        .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+        .catalog();
 
     let mut total = 0usize;
     let mut quests_with_fragments = 0usize;
@@ -149,11 +152,12 @@ pub(crate) fn populate_quest_fragments(
             };
             let translation = {
                 let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
-                byroredux_scripting::populate_quest_fragments_from_pex_detailed(
+                byroredux_scripting::populate_quest_fragments_from_pex_detailed_with_providers(
                     &mut frags,
                     byroredux_scripting::QuestFormId(form_id),
                     &bytes,
                     &bindings,
+                    &providers,
                 )
             };
             total += translation.inserted;
@@ -183,6 +187,9 @@ fn populate_scene_fragments(
     if !have_archive {
         return 0;
     }
+    let providers = world
+        .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+        .catalog();
 
     let mut total = 0;
     for (&scene_form_id, scene) in &index.scenes {
@@ -218,13 +225,14 @@ fn populate_scene_fragments(
             };
             let translation = {
                 let mut fragments = world.resource_mut::<byroredux_scripting::SceneFragments>();
-                byroredux_scripting::populate_scene_fragments_from_pex_detailed(
+                byroredux_scripting::populate_scene_fragments_from_pex_detailed_with_providers(
                     &mut fragments,
                     scene_form_id,
                     byroredux_scripting::QuestFormId(quest_form_id),
                     scene.script_instance.as_ref(),
                     &bytes,
                     &bindings,
+                    &providers,
                 )
             };
             total += translation.inserted;

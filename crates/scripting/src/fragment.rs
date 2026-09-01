@@ -54,7 +54,7 @@ use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt, Type};
 use byroredux_papyrus::span::Spanned;
 
 use crate::translate::compose::{ObjectRef, QuestRef};
-use crate::translate::effects::{lower_fragment_with_quest_properties, ActorRef, Effect};
+use crate::translate::effects::{ActorRef, Effect};
 
 /// Persistent enable/disable state for placed references targeted by
 /// Papyrus fragments. Form IDs keep the state valid while the reference's
@@ -545,6 +545,7 @@ pub struct DeferredFragmentEffects {
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
     reference_enable_changes: Vec<(u32, bool)>,
+    provider_calls: Vec<crate::translate::effects::FragmentProviderCall>,
 }
 
 impl DeferredFragmentEffects {
@@ -574,6 +575,7 @@ impl DeferredFragmentEffects {
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
             reference_enable_changes: Vec::new(),
+            provider_calls: Vec::new(),
         }
     }
 
@@ -598,24 +600,43 @@ impl DeferredFragmentEffects {
                 }
             }
         }
-        if self.cinematic_presentation.is_empty() {
-            return;
+        if !self.cinematic_presentation.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
+                for effect in self.cinematic_presentation {
+                    match effect {
+                        DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
+                            state.sitting_rotation_degrees = degrees;
+                        }
+                        DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                            event,
+                            quest,
+                            image_space_modifiers,
+                        } => {
+                            state.register_player_animation_event(
+                                event,
+                                quest,
+                                image_space_modifiers,
+                            );
+                        }
+                    }
+                }
+            }
         }
-        let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() else {
-            return;
-        };
-        for effect in self.cinematic_presentation {
-            match effect {
-                DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
-                    state.sitting_rotation_degrees = degrees;
+        if !self.provider_calls.is_empty() {
+            let callback = world
+                .try_resource::<crate::PapyrusProviderRuntime>()
+                .and_then(|runtime| runtime.callback());
+            if let Some(callback) = callback {
+                for call in self.provider_calls {
+                    if let Err(error) = callback(&call.route, &call.arguments) {
+                        log::warn!("deferred fragment provider call aborted: {error}");
+                        break;
+                    }
                 }
-                DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
-                    event,
-                    quest,
-                    image_space_modifiers,
-                } => {
-                    state.register_player_animation_event(event, quest, image_space_modifiers);
-                }
+            } else {
+                log::warn!(
+                    "deferred fragment provider calls dropped: provider host is unavailable"
+                );
             }
         }
     }
@@ -1171,6 +1192,10 @@ fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
+        Effect::ProviderCall(call) => {
+            deferred.provider_calls.push(call.clone());
+            None
+        }
         Effect::Conditional { .. } => {
             unreachable!("conditional effects are expanded by apply_effects")
         }
@@ -1343,7 +1368,8 @@ fn apply_quest_scoped_effect(
         | Effect::RegisterPlayerAnimationEvent { .. }
         | Effect::EvaluatePackage { .. }
         | Effect::Wait { .. }
-        | Effect::WaitForActors3DLoaded { .. } => {
+        | Effect::WaitForActors3DLoaded { .. }
+        | Effect::ProviderCall(_) => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }
@@ -1668,6 +1694,33 @@ pub fn populate_quest_fragments_from_pex_detailed(
     pex_bytes: &[u8],
     bindings: &[(u16, &str)],
 ) -> FragmentPexTranslation {
+    populate_quest_fragments_from_pex_detailed_internal(frags, quest, pex_bytes, bindings, None)
+}
+
+/// Provider-aware quest-fragment lowering from the same decompiled PEX AST.
+pub fn populate_quest_fragments_from_pex_detailed_with_providers(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    pex_bytes: &[u8],
+    bindings: &[(u16, &str)],
+    providers: &crate::PapyrusProviderCatalog,
+) -> FragmentPexTranslation {
+    populate_quest_fragments_from_pex_detailed_internal(
+        frags,
+        quest,
+        pex_bytes,
+        bindings,
+        Some(providers),
+    )
+}
+
+fn populate_quest_fragments_from_pex_detailed_internal(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    pex_bytes: &[u8],
+    bindings: &[(u16, &str)],
+    providers: Option<&crate::PapyrusProviderCatalog>,
+) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
         Ok(p) => p,
@@ -1701,7 +1754,9 @@ pub fn populate_quest_fragments_from_pex_detailed(
         }
     };
     FragmentPexTranslation {
-        inserted: populate_quest_fragments_from_script(frags, quest, &script, bindings),
+        inserted: populate_quest_fragments_from_script_internal(
+            frags, quest, &script, bindings, providers,
+        ),
         compatibility: Some(compatibility),
         fingerprint,
     }
@@ -1717,6 +1772,27 @@ pub fn populate_quest_fragments_from_script(
     quest: QuestFormId,
     script: &Script,
     bindings: &[(u16, &str)],
+) -> usize {
+    populate_quest_fragments_from_script_internal(frags, quest, script, bindings, None)
+}
+
+/// Provider-aware AST lowering for quest-stage fragments.
+pub fn populate_quest_fragments_from_script_with_providers(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    script: &Script,
+    bindings: &[(u16, &str)],
+    providers: &crate::PapyrusProviderCatalog,
+) -> usize {
+    populate_quest_fragments_from_script_internal(frags, quest, script, bindings, Some(providers))
+}
+
+fn populate_quest_fragments_from_script_internal(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    script: &Script,
+    bindings: &[(u16, &str)],
+    providers: Option<&crate::PapyrusProviderCatalog>,
 ) -> usize {
     let mut inserted = 0;
     // A QUST stage may carry several log entries, each with its own
@@ -1743,7 +1819,13 @@ pub fn populate_quest_fragments_from_script(
         // fully lower is skipped, not partially applied. An empty
         // fully-lowered fragment carries no effects, so it needn't occupy
         // the map (a lookup miss is equivalent to an empty entry).
-        if let Some(effects) = lower_fragment_with_quest_properties(body, &quest_properties) {
+        if let Some(effects) =
+            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+                body,
+                &quest_properties,
+                providers,
+            )
+        {
             if !effects.is_empty() {
                 if !effects_by_stage.contains_key(stage) {
                     stage_order.push(*stage);
@@ -1794,6 +1876,47 @@ pub fn populate_scene_fragments_from_pex_detailed(
     pex_bytes: &[u8],
     bindings: &[(SceneFragmentEvent, &str)],
 ) -> FragmentPexTranslation {
+    populate_scene_fragments_from_pex_detailed_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        pex_bytes,
+        bindings,
+        None,
+    )
+}
+
+/// Provider-aware scene-fragment lowering from the same decompiled PEX AST.
+pub fn populate_scene_fragments_from_pex_detailed_with_providers(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    pex_bytes: &[u8],
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: &crate::PapyrusProviderCatalog,
+) -> FragmentPexTranslation {
+    populate_scene_fragments_from_pex_detailed_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        pex_bytes,
+        bindings,
+        Some(providers),
+    )
+}
+
+fn populate_scene_fragments_from_pex_detailed_internal(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    pex_bytes: &[u8],
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: Option<&crate::PapyrusProviderCatalog>,
+) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
         Ok(pex) => pex,
@@ -1822,13 +1945,14 @@ pub fn populate_scene_fragments_from_pex_detailed(
         }
     };
     FragmentPexTranslation {
-        inserted: populate_scene_fragments_from_script(
+        inserted: populate_scene_fragments_from_script_internal(
             frags,
             scene_form_id,
             context,
             vmad,
             &script,
             bindings,
+            providers,
         ),
         compatibility: Some(compatibility),
         fingerprint,
@@ -1873,6 +1997,47 @@ pub fn populate_scene_fragments_from_script(
     script: &Script,
     bindings: &[(SceneFragmentEvent, &str)],
 ) -> usize {
+    populate_scene_fragments_from_script_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        script,
+        bindings,
+        None,
+    )
+}
+
+/// Provider-aware AST lowering for authored scene lifecycle fragments.
+pub fn populate_scene_fragments_from_script_with_providers(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    script: &Script,
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: &crate::PapyrusProviderCatalog,
+) -> usize {
+    populate_scene_fragments_from_script_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        script,
+        bindings,
+        Some(providers),
+    )
+}
+
+fn populate_scene_fragments_from_script_internal(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    script: &Script,
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: Option<&crate::PapyrusProviderCatalog>,
+) -> usize {
     let quest_properties = quest_property_names(script);
     let mut inserted = 0;
     for (event, fragment_name) in bindings {
@@ -1882,7 +2047,13 @@ pub fn populate_scene_fragments_from_script(
             );
             continue;
         };
-        if let Some(effects) = lower_fragment_with_quest_properties(body, &quest_properties) {
+        if let Some(effects) =
+            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+                body,
+                &quest_properties,
+                providers,
+            )
+        {
             if !effects.is_empty() {
                 frags.insert(scene_form_id, *event, context, vmad.cloned(), effects);
                 inserted += 1;

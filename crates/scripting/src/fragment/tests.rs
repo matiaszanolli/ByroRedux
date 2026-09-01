@@ -114,6 +114,54 @@ fn apply_effects_writes_stage_and_objectives() {
 }
 
 #[test]
+fn provider_call_tail_waits_for_deferred_fragment_apply() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::translate::effects::FragmentProviderCall;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let world = fixture();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+        calls_for_callback
+            .lock()
+            .unwrap()
+            .push((route.to_owned(), arguments.to_vec()));
+        Ok(ScriptValue::Integer(2))
+    }) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+    let effects = [Effect::ProviderCall(FragmentProviderCall {
+        route: "byro.content.catalog.get-mod-count".to_owned(),
+        arguments: Vec::new(),
+    })];
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+
+    apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    assert!(calls.lock().unwrap().is_empty());
+
+    deferred.apply(&world);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[("byro.content.catalog.get-mod-count".to_owned(), Vec::new())]
+    );
+}
+
+#[test]
 fn apply_effects_selects_get_stage_done_conditional_branch() {
     let world = World::new();
     let effects = vec![Effect::Conditional {
@@ -621,6 +669,62 @@ fn end_to_end_lower_then_dispatch() {
     let obj = world.resource::<QuestObjectiveState>();
     assert!(obj.get(Q, 10).completed);
     assert!(obj.get(Q, 20).displayed);
+}
+
+#[test]
+fn provider_aware_fragment_population_dispatches_native_tail() {
+    use std::sync::{Arc, Mutex};
+
+    use byroredux_papyrus::parse_script;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let (script, errors) = parse_script(
+        "ScriptName QF_Test extends Quest\n\
+         Function Fragment_0()\n\
+         Self.SetStage(20)\n\
+         Game.GetModCount()\n\
+         EndFunction\n",
+    )
+    .unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let providers = crate::PapyrusProviderCatalog::engine_compatibility();
+    let world = fixture();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+        calls_for_callback
+            .lock()
+            .unwrap()
+            .push((route.to_owned(), arguments.to_vec()));
+        Ok(ScriptValue::Integer(1))
+    }) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(&world, Arc::new(providers.clone()), Some(callback));
+    {
+        let mut fragments = world.resource_mut::<QuestStageFragments>();
+        assert_eq!(
+            populate_quest_fragments_from_script_with_providers(
+                &mut fragments,
+                Q,
+                &script,
+                &[(10, "Fragment_0")],
+                &providers,
+            ),
+            1
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[(
+            byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE.to_owned(),
+            Vec::new(),
+        )]
+    );
 }
 
 #[test]
