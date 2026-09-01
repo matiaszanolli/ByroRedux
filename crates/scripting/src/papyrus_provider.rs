@@ -22,7 +22,9 @@ use byroredux_sdk::{
     },
 };
 
-use crate::events::{ActivateEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent};
+use crate::events::{
+    ActivateEvent, EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent,
+};
 use crate::recurring_update::OnUpdateEvent;
 
 const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
@@ -327,6 +329,9 @@ pub enum PapyrusProviderEvent {
     OnInit,
     OnLoad,
     OnActivate,
+    OnHit,
+    OnObjectEquipped,
+    OnObjectUnequipped,
     OnTriggerEnter,
     OnUpdate,
 }
@@ -491,6 +496,12 @@ fn lower_event_into(
         PapyrusProviderEvent::OnLoad
     } else if event.name.node.eq_ignore_case("OnActivate") {
         PapyrusProviderEvent::OnActivate
+    } else if event.name.node.eq_ignore_case("OnHit") {
+        PapyrusProviderEvent::OnHit
+    } else if event.name.node.eq_ignore_case("OnObjectEquipped") {
+        PapyrusProviderEvent::OnObjectEquipped
+    } else if event.name.node.eq_ignore_case("OnObjectUnequipped") {
+        PapyrusProviderEvent::OnObjectUnequipped
     } else if event.name.node.eq_ignore_case("OnTriggerEnter") {
         PapyrusProviderEvent::OnTriggerEnter
     } else if event.name.node.eq_ignore_case("OnUpdate") {
@@ -1008,6 +1019,33 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    let hit = world
+        .query::<HitEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let equipment_changes = world
+        .query::<EquipmentEventBatch>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, batch)| {
+                    (
+                        entity,
+                        batch
+                            .0
+                            .iter()
+                            .map(|change| change.equipped)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let trigger_entries = world
         .query::<OnTriggerEnterEvent>()
         .map(|events| {
@@ -1048,6 +1086,12 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 BTreeMap::new(),
             ));
         }
+        if hit.contains(&entity) {
+            handlers.push((
+                program.handler(PapyrusProviderEvent::OnHit).to_vec(),
+                BTreeMap::new(),
+            ));
+        }
         if let Some(entry_count) = trigger_entries.get(&entity) {
             for _ in 0..*entry_count {
                 handlers.push((
@@ -1056,6 +1100,16 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                         .to_vec(),
                     BTreeMap::new(),
                 ));
+            }
+        }
+        if let Some(changes) = equipment_changes.get(&entity) {
+            for equipped in changes {
+                let event = if *equipped {
+                    PapyrusProviderEvent::OnObjectEquipped
+                } else {
+                    PapyrusProviderEvent::OnObjectUnequipped
+                };
+                handlers.push((program.handler(event).to_vec(), BTreeMap::new()));
             }
         }
         if updated.contains(&entity) {
@@ -1722,6 +1776,74 @@ mod tests {
                 ScriptValue::String("initialized".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn combat_and_equipment_events_dispatch_in_batch_order() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnHit()
+                WeatherNative.WeatherAt(1, "hit")
+            EndEvent
+            Event OnObjectEquipped()
+                WeatherNative.WeatherAt(2, "equipped")
+            EndEvent
+            Event OnObjectUnequipped()
+                WeatherNative.WeatherAt(3, "unequipped")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback.lock().unwrap().push(arguments.to_vec());
+            Ok(ScriptValue::String("clear".to_owned()))
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        let aggressor = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(
+            entity,
+            HitEvent {
+                aggressor,
+                source: aggressor,
+                projectile: 0,
+                damage: 10.0,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        world.insert(
+            entity,
+            EquipmentEventBatch(vec![
+                crate::EquipmentChange {
+                    item_form_id: 1,
+                    equipped: false,
+                },
+                crate::EquipmentChange {
+                    item_form_id: 2,
+                    equipped: true,
+                },
+            ]),
+        );
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0][0], ScriptValue::Integer(1));
+        assert_eq!(calls[1][0], ScriptValue::Integer(3));
+        assert_eq!(calls[2][0], ScriptValue::Integer(2));
     }
 
     #[test]
