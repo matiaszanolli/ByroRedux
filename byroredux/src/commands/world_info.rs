@@ -198,10 +198,17 @@ pub(crate) fn format_sdk_compat_entry(
         byroredux_scripting::CompatibilityDisposition::Unsupported => "unsupported",
     };
     let service = entry.compatibility.service.unwrap_or("none");
-    format!(
+    let mut line = format!(
         "  {disposition:<11} {}.{}: {} occurrence(s) in {} script(s), service={service}",
         entry.provider, entry.function, entry.occurrences, entry.scripts,
-    )
+    );
+    if let Some(alias) = byroredux_scripting::source_alias(&entry.provider, &entry.function) {
+        line.push_str(&format!(
+            ", alias={}<{}> ({})",
+            alias.operation, alias.value_kind, alias.constraint
+        ));
+    }
+    line
 }
 /// `ctx.scratch` — print per-Vec capacity / len / heap-bytes for every
 /// persistent CPU-side scratch buffer in the renderer (R6).

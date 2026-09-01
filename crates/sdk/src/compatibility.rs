@@ -37,6 +37,53 @@ pub struct CompatibilityMatch {
     pub guidance: &'static str,
 }
 
+/// Exact semantic target for a legacy source call that can be ported onto an
+/// existing engine service without reproducing extender internals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceAlias {
+    pub provider: &'static str,
+    pub function: &'static str,
+    pub service: &'static str,
+    pub operation: &'static str,
+    pub value_kind: &'static str,
+    pub constraint: &'static str,
+}
+
+/// Resolve the first engine-backed PapyrusUtil source aliases.
+///
+/// `StorageUtil` namespaces values by `(object, key, type)`, while
+/// `byro.storage` is private to one extension principal and keys each value
+/// once. These aliases therefore cover only global (`ObjKey == None`) integer
+/// and string reads. Object-scoped values require extension components;
+/// writes are deferred by the sandbox host and cannot yet preserve
+/// StorageUtil's same-call visibility and return contract. Floats, Forms,
+/// pluck, file, and list operations likewise remain unsupported until the
+/// semantic service can honor their full contracts.
+pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
+    if !provider.eq_ignore_ascii_case("StorageUtil") {
+        return None;
+    }
+    let (function, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
+        ("GetIntValue", "signed")
+    } else if function.eq_ignore_ascii_case("HasIntValue") {
+        ("HasIntValue", "signed")
+    } else if function.eq_ignore_ascii_case("GetStringValue") {
+        ("GetStringValue", "text")
+    } else if function.eq_ignore_ascii_case("HasStringValue") {
+        ("HasStringValue", "text")
+    } else {
+        return None;
+    };
+    Some(SourceAlias {
+        provider: "StorageUtil",
+        function,
+        service: PRINCIPAL_STORAGE_SERVICE,
+        operation: "storage.get",
+        value_kind,
+        constraint: "ObjKey must be None; a key must not be shared across legacy value kinds",
+    })
+}
+
 /// Classify a static Papyrus call by provider type and function name.
 /// Returns `None` for providers that are not known extender APIs.
 pub fn classify_static_call(provider: &str, function: &str) -> Option<CompatibilityMatch> {
@@ -69,11 +116,17 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         });
     }
     if provider.eq_ignore_ascii_case("StorageUtil") {
-        return Some(mapped(
-            ExtenderFamily::PapyrusUtil,
-            PRINCIPAL_STORAGE_SERVICE,
-            "migrate global values to principal storage and object-scoped values to extension components",
-        ));
+        return Some(match source_alias(provider, function) {
+            Some(_) => mapped(
+                ExtenderFamily::PapyrusUtil,
+                PRINCIPAL_STORAGE_SERVICE,
+                "an exact global-value source alias targets byro.storage; ObjKey must be None",
+            ),
+            None => unsupported(
+                ExtenderFamily::PapyrusUtil,
+                "this StorageUtil function has no exact engine alias; writes are deferred, object-scoped values require extension components, and float/Form/file/list semantics remain unavailable",
+            ),
+        });
     }
     if provider.eq_ignore_ascii_case("JsonUtil") {
         return Some(unsupported(
@@ -220,6 +273,29 @@ mod tests {
         assert_eq!(storage.service, Some(PRINCIPAL_STORAGE_SERVICE));
         let event = classify_method_call("RegisterForModEvent").unwrap();
         assert_eq!(event.service, Some(EVENT_SERVICE));
+    }
+
+    #[test]
+    fn storage_aliases_are_exact_global_scalar_operations() {
+        let get = source_alias("storageutil", "getintvalue").unwrap();
+        assert_eq!(get.service, PRINCIPAL_STORAGE_SERVICE);
+        assert_eq!(get.operation, "storage.get");
+        assert_eq!(get.value_kind, "signed");
+        assert!(get.constraint.contains("ObjKey must be None"));
+
+        let string = source_alias("StorageUtil", "HasStringValue").unwrap();
+        assert_eq!(string.operation, "storage.get");
+        assert_eq!(string.value_kind, "text");
+        assert!(source_alias("StorageUtil", "SetStringValue").is_none());
+        assert!(source_alias("StorageUtil", "AdjustIntValue").is_none());
+        assert!(source_alias("StorageUtil", "GetFloatValue").is_none());
+        assert!(source_alias("StorageUtil", "FormListAdd").is_none());
+        assert_eq!(
+            classify_static_call("StorageUtil", "GetFloatValue")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Unsupported
+        );
     }
 
     #[test]

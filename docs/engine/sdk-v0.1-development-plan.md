@@ -452,6 +452,17 @@ belongs to the host, not `byroredux-sdk`.
 | Arbitrary object extra data | Schema-defined extension components attached to stable entities |
 | Direct engine object or memory access | No equivalent; explicit semantic capability required |
 
+The first exact source-alias pack covers global (`ObjKey == None`)
+`StorageUtil` integer and string get/has calls. Each descriptor names the
+concrete `byro.storage.get` operation, expected WIT value variant, and key
+isolation constraint. Writes remain unsupported because sandbox mutations are
+deferred and cannot yet preserve StorageUtil's same-call visibility contract;
+Float, Form, pluck, file-backed, list, and object-scoped calls are also
+deliberately unsupported until an engine service can honor their complete
+semantics. Recognizing the provider is not enough to claim compatibility. The
+function signatures are anchored to PapyrusUtil's
+[published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
+
 ## 8. v0.1 delivery phases
 
 Each phase lands independently with tests and documentation. A plan update is

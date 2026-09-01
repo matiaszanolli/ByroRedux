@@ -9,7 +9,8 @@ use byroredux_papyrus::{
 };
 use byroredux_pex::{CallScope, CallSite, CallSiteDiagnostic, CallTarget, Pex};
 pub use byroredux_sdk::compatibility::{
-    classify_method_call, classify_static_call, CompatibilityDisposition, CompatibilityMatch,
+    classify_method_call, classify_static_call, source_alias, CompatibilityDisposition,
+    CompatibilityMatch, SourceAlias,
 };
 
 /// One recognized extender-era call and its engine-level disposition.

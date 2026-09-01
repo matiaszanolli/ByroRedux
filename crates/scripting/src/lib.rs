@@ -39,9 +39,9 @@ pub use cinematic::{
 pub use cleanup::event_cleanup_system;
 pub use compatibility::{
     analyze_pex_compatibility, analyze_source_compatibility, classify_method_call,
-    classify_static_call, record_compatibility_report, CompatibilityDisposition,
+    classify_static_call, record_compatibility_report, source_alias, CompatibilityDisposition,
     CompatibilityFinding, CompatibilityMatch, CompatibilityRegistry, CompatibilityReport,
-    CompatibilitySummaryEntry, SourceCompatibilityFinding, SourceCompatibilityReport,
+    CompatibilitySummaryEntry, SourceAlias, SourceCompatibilityFinding, SourceCompatibilityReport,
 };
 pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,

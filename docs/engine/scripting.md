@@ -705,6 +705,11 @@ many references therefore counts it once. Operators can run `sdk.compat` in
 unique-script counts, mapped engine services, malformed-call totals, and
 whether the registry hit its budget. This is an observed-script report for the
 current engine world, not yet an eager scan of every PEX in every archive.
+For exact `StorageUtil` global integer/string read aliases, each aggregate also
+prints the target `byro.storage` operation, expected value variant, and
+`ObjKey == None` constraint. Writes and other `StorageUtil` families are
+reported unsupported rather than receiving a provider-wide compatibility
+claim.
 
 ### Fragments → Triggered Systems
 

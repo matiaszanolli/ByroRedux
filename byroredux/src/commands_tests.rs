@@ -42,6 +42,8 @@ fn sdk_compat_command_formats_engine_service_mapping() {
         "{output}"
     );
     assert!(output.contains("service=byro.storage"), "{output}");
+    assert!(output.contains("alias=storage.get<signed>"), "{output}");
+    assert!(output.contains("ObjKey must be None"), "{output}");
 }
 
 #[test]
