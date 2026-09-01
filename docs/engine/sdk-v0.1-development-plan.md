@@ -93,8 +93,10 @@ decompiled PEX into a typed program, and `OnLoad`, `OnActivate`,
 `OnTriggerEnter`, and `OnUpdate` handlers execute through the same authenticated
 Wasm host after ECS guards are released. Trigger handlers preserve one dispatch
 per entering actor. The subset supports scalar locals, literal arguments,
-assignments, and bounded boolean branches; broader expressions and events,
-fragments, latent calls, and dynamic object dispatch remain open. The first
+assignments, and bounded boolean branches with negation, short-circuit logical
+operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
+and object expressions, broader events, fragments, latent calls, and dynamic
+object dispatch remain open. The first
 curated extender-era pack is
 also executable without an extension package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
@@ -854,11 +856,14 @@ proceeds by semantic domain and closes only against real mod fixtures.
   guard-free `OnLoad`/`OnActivate`/`OnTriggerEnter`/`OnUpdate` program that
   calls the same live host. Trigger entry multiplicity is preserved. The
   current subset covers scalar locals, literal arguments, assignments, and
-  bounded boolean branches. A synthetic byte-level Skyrim PEX fixture now
-  exercises the production reader/decompiler/translation boundary. Compiled
-  SCDA call encoding, fragment scheduling, broader expressions/events, latent
-  calls, and dynamic object dispatch remain pending. Ten exact SKSE `Game`
-  content extensions are now engine-owned catalog aliases: `GetModCount`,
+  bounded boolean branches, including negation, short-circuit logical
+  operators, and same-type boolean/integer/float comparisons over locals,
+  literals, and provider results. A synthetic byte-level Skyrim PEX fixture
+  now exercises the production reader/decompiler/translation boundary.
+  Compiled SCDA call encoding, fragment scheduling, arithmetic/string/object
+  expressions, broader events, latent calls, and dynamic object dispatch
+  remain pending. Ten exact SKSE `Game` content extensions are now engine-owned
+  catalog aliases: `GetModCount`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
   `GetLightModByName`, `GetLightModName`, `GetModDependencyCount`,
   `GetLightModDependencyCount`, and `GetNthLightModDependency`. They need
@@ -991,7 +996,9 @@ snapshots programs and event IDs, releases ECS guards, invokes the existing
 extension host, and resumes assignment/branch evaluation only from a validated
 result. A later event-dispatch checkpoint adds `OnTriggerEnter` with one call
 per entering actor and recurring `OnUpdate` delivery through the same guard-free
-path. Quest/scene fragment queue integration remains open.
+path. Typed condition evaluation now adds bounded negation, short-circuit
+logical operators, and same-type boolean/integer/float comparisons. Quest/scene
+fragment queue integration remains open.
 
 ### 14.3 Source and PEX parity
 

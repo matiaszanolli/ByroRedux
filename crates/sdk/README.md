@@ -69,8 +69,10 @@ The current public surface includes:
   Papyrus runtime slice lowers manifest aliases from source and decompiled PEX
   for non-latent `OnLoad`, `OnActivate`, `OnTriggerEnter`, and `OnUpdate`
   handlers. Trigger handlers preserve one dispatch per entering actor. All
-  routes execute through
-  the same authenticated host without an extender DLL. Recognized extender
+  routes execute through the same authenticated host without an extender DLL.
+  Conditions support bounded negation, short-circuit conjunction/disjunction,
+  and same-type boolean/integer/float comparisons over locals, literals, and
+  provider results. Recognized extender
   calls that do not yet have an executable route reject their complete handler
   with an attributed translation error rather than disappearing silently. The
   first exact engine-owned compatibility pack is ten SKSE `Game`
