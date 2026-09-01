@@ -676,6 +676,13 @@ physical-key injection, and raw Scaleform access produce explicit policy
 diagnostics. Vanilla and unknown mod calls are left alone, while malformed call
 metadata is reported rather than silently omitted.
 
+`analyze_source_compatibility` applies the same catalog directly to a parsed
+Papyrus AST. It recursively covers functions, events, states, full properties,
+groups, initializers, defaults, nested expressions, and control-flow bodies,
+returning byte spans and one-based source lines in source order. This gives
+authoring and porting tools the same compatibility policy before a `.pex` is
+compiled.
+
 ### Fragments → Triggered Systems
 
 Papyrus fragments are inline script snippets that run at specific moments:

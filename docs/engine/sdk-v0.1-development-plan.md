@@ -723,9 +723,11 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   diagnostics. Translation invokes this preflight before decompilation. A
   checked-in byte-level Skyrim PEX conformance fixture now guards mapped
   StorageUtil/mod-event calls, an unsupported JsonUtil call, vararg counts,
-  and debug source-line attribution through the real decoder.
-  Whole-load-order launch reporting, source scans, and ObScript/xNVSE/OBSE
-  scanning remain pending.**
+  and debug source-line attribution through the real decoder. Parsed Papyrus
+  source can now be scanned through the same catalog with recursive AST
+  coverage, byte spans, source lines, scopes, and argument counts.
+  Whole-load-order launch reporting and ObScript/xNVSE/OBSE scanning remain
+  pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 
