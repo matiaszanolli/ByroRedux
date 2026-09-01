@@ -24,6 +24,7 @@ const BOOLEAN: u8 = 1;
 const INTEGER: u8 = 2;
 const FLOAT: u8 = 3;
 const STRING: u8 = 4;
+const FORM: u8 = 5;
 
 /// One decoded engine-native function call from legacy bytecode.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +78,7 @@ pub fn encode_legacy_obscript_sdk_call(
                     ScriptValue::String(value) if value.len() <= MAX_SCRIPT_STRING_BYTES => {
                         value.len()
                     }
-                    ScriptValue::String(_) | ScriptValue::Form(_) | ScriptValue::Entity(_) => {
+                    ScriptValue::String(_) | ScriptValue::Entity(_) => {
                         return Err(LegacyObscriptSdkCallError::UnsupportedArgument { index });
                     }
                     ScriptValue::Float(value) if !value.is_finite() => {
@@ -116,6 +117,11 @@ pub fn encode_legacy_obscript_sdk_call(
                 payload.push(STRING);
                 push_u16(&mut payload, value.len())?;
                 payload.extend_from_slice(value.as_bytes());
+            }
+            ScriptValue::Form(value) => {
+                payload.push(FORM);
+                payload.extend_from_slice(&value.source());
+                payload.extend_from_slice(&value.local().to_le_bytes());
             }
             _ => return Err(LegacyObscriptSdkCallError::UnsupportedArgument { index }),
         }
@@ -187,6 +193,18 @@ pub fn decode_legacy_obscript_sdk_call(
                 let value = std::str::from_utf8(take(payload, &mut cursor, len)?)
                     .map_err(|_| LegacyObscriptSdkCallError::InvalidUtf8)?;
                 ScriptValue::String(value.to_owned())
+            }
+            FORM => {
+                let source: [u8; 16] = take(payload, &mut cursor, 16)?
+                    .try_into()
+                    .map_err(|_| LegacyObscriptSdkCallError::Truncated)?;
+                let local: [u8; 4] = take(payload, &mut cursor, 4)?
+                    .try_into()
+                    .map_err(|_| LegacyObscriptSdkCallError::Truncated)?;
+                ScriptValue::Form(crate::identity::FormRef::new(
+                    source,
+                    u32::from_le_bytes(local),
+                ))
             }
             other => return Err(LegacyObscriptSdkCallError::InvalidValueTag(other)),
         };
@@ -263,6 +281,7 @@ mod tests {
                 ScriptValue::Integer(-7),
                 ScriptValue::Float(2.5),
                 ScriptValue::String("hello world".to_owned()),
+                ScriptValue::Form(crate::identity::FormRef::new([7; 16], 0x1234)),
             ],
         };
         let payload =
@@ -278,8 +297,10 @@ mod tests {
         );
         assert_eq!(
             encode_legacy_obscript_sdk_call(
-                "ext.org.example.inspect.form",
-                &[ScriptValue::Form(crate::identity::FormRef::new([1; 16], 2))],
+                "ext.org.example.inspect.entity",
+                &[ScriptValue::Entity(
+                    crate::identity::EntityRef::new(1, 2).unwrap(),
+                )],
             ),
             Err(LegacyObscriptSdkCallError::UnsupportedArgument { index: 0 })
         );
