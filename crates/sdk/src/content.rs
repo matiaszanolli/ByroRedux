@@ -26,6 +26,8 @@ pub struct PluginInfo {
     name: String,
     source: [u8; 16],
     kind: PluginKind,
+    #[serde(default)]
+    dependencies: Vec<u32>,
 }
 
 impl PluginInfo {
@@ -42,7 +44,12 @@ impl PluginInfo {
         {
             return Err(ContentCatalogError::InvalidPluginName(name));
         }
-        Ok(Self { name, source, kind })
+        Ok(Self {
+            name,
+            source,
+            kind,
+            dependencies: Vec::new(),
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -56,6 +63,11 @@ impl PluginInfo {
     pub const fn kind(&self) -> PluginKind {
         self.kind
     }
+
+    /// Catalog ordinals of this plugin's declared masters, in TES4 order.
+    pub fn dependencies(&self) -> &[u32] {
+        &self.dependencies
+    }
 }
 
 /// Immutable callback snapshot of the active game-content load order.
@@ -65,14 +77,27 @@ pub struct ContentCatalog(Vec<PluginInfo>);
 
 impl ContentCatalog {
     pub fn new(plugins: Vec<PluginInfo>) -> Result<Self, ContentCatalogError> {
+        let dependencies = vec![Vec::new(); plugins.len()];
+        Self::new_with_dependencies(plugins, dependencies)
+    }
+
+    pub fn new_with_dependencies(
+        mut plugins: Vec<PluginInfo>,
+        dependencies: Vec<Vec<u32>>,
+    ) -> Result<Self, ContentCatalogError> {
         if plugins.len() > MAX_LOADED_PLUGINS {
             return Err(ContentCatalogError::PluginBudgetExceeded {
                 maximum: MAX_LOADED_PLUGINS,
             });
         }
+        if dependencies.len() != plugins.len() {
+            return Err(ContentCatalogError::DependencyShapeMismatch);
+        }
         let mut names = BTreeSet::new();
         let mut sources = BTreeSet::new();
-        for plugin in &plugins {
+        for (plugin_index, (plugin, plugin_dependencies)) in
+            plugins.iter_mut().zip(dependencies).enumerate()
+        {
             let folded = plugin.name.to_ascii_lowercase();
             if !names.insert(folded) {
                 return Err(ContentCatalogError::DuplicatePluginName(
@@ -82,6 +107,24 @@ impl ContentCatalog {
             if !sources.insert(plugin.source) {
                 return Err(ContentCatalogError::DuplicateSource(plugin.source));
             }
+            let mut unique_dependencies = BTreeSet::new();
+            for dependency in &plugin_dependencies {
+                if *dependency as usize >= plugin_index {
+                    return Err(ContentCatalogError::InvalidDependency {
+                        plugin: u32::try_from(plugin_index)
+                            .expect("content catalog is bounded below u32::MAX"),
+                        dependency: *dependency,
+                    });
+                }
+                if !unique_dependencies.insert(*dependency) {
+                    return Err(ContentCatalogError::DuplicateDependency {
+                        plugin: u32::try_from(plugin_index)
+                            .expect("content catalog is bounded below u32::MAX"),
+                        dependency: *dependency,
+                    });
+                }
+            }
+            plugin.dependencies = plugin_dependencies;
         }
         Ok(Self(plugins))
     }
@@ -96,6 +139,13 @@ impl ContentCatalog {
 
     pub fn plugin(&self, index: u32) -> Option<&PluginInfo> {
         self.0.get(index as usize)
+    }
+
+    pub fn dependency(&self, plugin: u32, index: u32) -> Option<u32> {
+        self.plugin(plugin)?
+            .dependencies()
+            .get(index as usize)
+            .copied()
     }
 
     pub fn find(&self, name: &str) -> Option<(u32, &PluginInfo)> {
@@ -143,6 +193,12 @@ pub enum ContentCatalogError {
     DuplicatePluginName(String),
     #[error("loaded plugins repeat stable source identity {0:02x?}")]
     DuplicateSource([u8; 16]),
+    #[error("dependency lists must be parallel with loaded plugins")]
+    DependencyShapeMismatch,
+    #[error("plugin {plugin} has invalid forward or self dependency {dependency}")]
+    InvalidDependency { plugin: u32, dependency: u32 },
+    #[error("plugin {plugin} repeats dependency {dependency}")]
+    DuplicateDependency { plugin: u32, dependency: u32 },
 }
 
 #[cfg(test)]
@@ -192,5 +248,32 @@ mod tests {
             Err(ContentCatalogError::DuplicatePluginName(_))
         ));
         assert!(PluginInfo::new("../escape.esm", [0; 16], PluginKind::Regular).is_err());
+    }
+
+    #[test]
+    fn dependencies_are_ordered_bounded_edges_to_earlier_plugins() {
+        let catalog = ContentCatalog::new_with_dependencies(
+            vec![
+                plugin("Skyrim.esm", 1, PluginKind::Regular),
+                plugin("Update.esm", 2, PluginKind::Regular),
+                plugin("Example.esp", 3, PluginKind::Regular),
+            ],
+            vec![vec![], vec![0], vec![0, 1]],
+        )
+        .unwrap();
+        assert_eq!(catalog.plugin(2).unwrap().dependencies(), &[0, 1]);
+        assert_eq!(catalog.dependency(2, 0), Some(0));
+        assert_eq!(catalog.dependency(2, 2), None);
+
+        assert!(matches!(
+            ContentCatalog::new_with_dependencies(
+                vec![
+                    plugin("Skyrim.esm", 1, PluginKind::Regular),
+                    plugin("Update.esm", 2, PluginKind::Regular),
+                ],
+                vec![vec![], vec![1]],
+            ),
+            Err(ContentCatalogError::InvalidDependency { .. })
+        ));
     }
 }

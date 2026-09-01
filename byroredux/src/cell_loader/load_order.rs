@@ -42,16 +42,36 @@ pub(super) fn plugin_basename_lc(path: &str) -> String {
 pub(crate) struct LoadOrder {
     names: Vec<String>,
     slots: Vec<esm::reader::GlobalSlot>,
+    dependencies: Vec<Vec<u32>>,
 }
 
 impl LoadOrder {
+    #[cfg(test)]
     pub(crate) fn new(names: Vec<String>, slots: Vec<esm::reader::GlobalSlot>) -> Self {
+        let dependencies = vec![Vec::new(); names.len()];
+        Self::with_dependencies(names, slots, dependencies)
+    }
+
+    pub(crate) fn with_dependencies(
+        names: Vec<String>,
+        slots: Vec<esm::reader::GlobalSlot>,
+        dependencies: Vec<Vec<u32>>,
+    ) -> Self {
         debug_assert_eq!(
             names.len(),
             slots.len(),
             "load-order names and slots must stay parallel"
         );
-        Self { names, slots }
+        debug_assert_eq!(
+            names.len(),
+            dependencies.len(),
+            "load-order names and dependencies must stay parallel"
+        );
+        Self {
+            names,
+            slots,
+            dependencies,
+        }
     }
 
     /// Build an order in which every plugin is a regular master taking a
@@ -74,6 +94,7 @@ impl Default for LoadOrder {
         Self {
             names: Vec::new(),
             slots: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 }
@@ -119,7 +140,9 @@ impl GlobalFormIdResolver {
                 PluginInfo::new(name, plugin.0.to_be_bytes(), kind)
             })
             .collect::<Result<Vec<_>, _>>()
-            .and_then(ContentCatalog::new);
+            .and_then(|plugins| {
+                ContentCatalog::new_with_dependencies(plugins, load_order.dependencies.clone())
+            });
         let content_catalog = match plugins {
             Ok(catalog) => Arc::new(catalog),
             Err(error) => {
@@ -404,6 +427,7 @@ where
     // dependents, so a single forward pass assigns every slot before it's
     // referenced.
     let mut slots: Vec<esm::reader::GlobalSlot> = Vec::with_capacity(plugin_paths.len());
+    let mut dependencies: Vec<Vec<u32>> = Vec::with_capacity(plugin_paths.len());
     let mut next_regular: u16 = 0;
     let mut next_light: u16 = 0;
 
@@ -434,6 +458,19 @@ where
         slots.push(plugin_slot);
 
         let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
+        let plugin_dependencies = header
+            .master_files
+            .iter()
+            .map(|master| {
+                let master = master.to_ascii_lowercase();
+                load_order
+                    .iter()
+                    .position(|name| name == &master)
+                    .and_then(|position| u32::try_from(position).ok())
+                    .expect("validated master is present earlier in bounded load order")
+            })
+            .collect();
+        dependencies.push(plugin_dependencies);
         // #1553 — install this plugin's companion string tables for the
         // record walk so localized FULL/DESC/etc. lstring indices resolve
         // to authored names instead of `<lstring 0xNNNNNNNN>`. RAII guard:
@@ -448,7 +485,10 @@ where
             });
         merged.merge_from(plugin_records);
     }
-    Ok((merged, LoadOrder::new(load_order, slots)))
+    Ok((
+        merged,
+        LoadOrder::with_dependencies(load_order, slots, dependencies),
+    ))
 }
 
 /// Allocate one global load-order slot without ever entering reserved or
@@ -528,12 +568,13 @@ mod tests {
 
     #[test]
     fn global_form_resolver_projects_regular_and_light_plugins_in_load_order() {
-        let order = LoadOrder::new(
+        let order = LoadOrder::with_dependencies(
             vec!["Skyrim.esm".into(), "Creation.esl".into()],
             vec![
                 esm::reader::GlobalSlot::Regular(0),
                 esm::reader::GlobalSlot::Light(5),
             ],
+            vec![vec![], vec![0]],
         );
         let catalog = GlobalFormIdResolver::from_load_order(&order).content_catalog();
 
@@ -542,6 +583,7 @@ mod tests {
         assert_eq!(catalog.plugin(1).unwrap().name(), "Creation.esl");
         assert_eq!(catalog.plugin(1).unwrap().kind(), PluginKind::Light);
         assert_eq!(catalog.find("CREATION.ESL").unwrap().0, 1);
+        assert_eq!(catalog.plugin(1).unwrap().dependencies(), &[0]);
         assert_eq!(
             catalog.qualify_form("creation.esl", 0xabc),
             Some(byroredux_sdk::identity::FormRef::new(
@@ -858,6 +900,33 @@ mod tests {
         buf.extend_from_slice(&[0u8; 8]);
         buf.extend_from_slice(&sub_data);
         buf
+    }
+
+    #[test]
+    fn parsed_master_lists_become_sdk_dependency_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let skyrim = dir.path().join("Skyrim.esm");
+        let update = dir.path().join("Update.esm");
+        let example = dir.path().join("Example.esp");
+        fs::write(&skyrim, build_tes4_with_masters(0, &[])).unwrap();
+        fs::write(&update, build_tes4_with_masters(0, &["Skyrim.esm"])).unwrap();
+        fs::write(
+            &example,
+            build_tes4_with_masters(0, &["Skyrim.esm", "Update.esm"]),
+        )
+        .unwrap();
+
+        let paths = [
+            skyrim.to_str().unwrap(),
+            update.to_str().unwrap(),
+            example.to_str().unwrap(),
+        ];
+        let (_, order) = parse_record_indexes_in_load_order(&paths).unwrap();
+        let catalog = GlobalFormIdResolver::from_load_order(&order).content_catalog();
+
+        assert!(catalog.plugin(0).unwrap().dependencies().is_empty());
+        assert_eq!(catalog.plugin(1).unwrap().dependencies(), &[0]);
+        assert_eq!(catalog.plugin(2).unwrap().dependencies(), &[0, 1]);
     }
 
     /// A REFR with just `NAME` (base object) + zeroed `DATA` (pos/rot) —

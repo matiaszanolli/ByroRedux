@@ -1582,6 +1582,19 @@ impl content_catalog::Host for HostState {
         Ok(self.content_catalog.find(&name).map(|(index, _)| index))
     }
 
+    fn dependency_count(&mut self, plugin: u32) -> wasmtime::Result<Option<u32>> {
+        self.require_content_catalog_read()?;
+        Ok(self.content_catalog.plugin(plugin).map(|plugin| {
+            u32::try_from(plugin.dependencies().len())
+                .expect("content catalog is bounded below u32::MAX")
+        }))
+    }
+
+    fn dependency_at(&mut self, plugin: u32, index: u32) -> wasmtime::Result<Option<u32>> {
+        self.require_content_catalog_read()?;
+        Ok(self.content_catalog.dependency(plugin, index))
+    }
+
     fn qualify_form(
         &mut self,
         plugin: String,
@@ -2079,12 +2092,15 @@ mod projection_tests {
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(
-                ContentCatalog::new(vec![
-                    PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular)
-                        .unwrap(),
-                    PluginInfo::new("Creation.esl", 2_u128.to_be_bytes(), PluginKind::Light)
-                        .unwrap(),
-                ])
+                ContentCatalog::new_with_dependencies(
+                    vec![
+                        PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular)
+                            .unwrap(),
+                        PluginInfo::new("Creation.esl", 2_u128.to_be_bytes(), PluginKind::Light)
+                            .unwrap(),
+                    ],
+                    vec![vec![], vec![0]],
+                )
                 .unwrap(),
             ),
             engine_settings: Arc::new(
@@ -2128,6 +2144,18 @@ mod projection_tests {
             .unwrap(),
             Some(1)
         );
+        assert_eq!(
+            <HostState as content_catalog::Host>::dependency_count(&mut state, 1).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            <HostState as content_catalog::Host>::dependency_at(&mut state, 1, 0).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            <HostState as content_catalog::Host>::dependency_at(&mut state, 1, 1).unwrap(),
+            None
+        );
         let form = <HostState as content_catalog::Host>::qualify_form(
             &mut state,
             "creation.esl".to_owned(),
@@ -2149,6 +2177,9 @@ mod projection_tests {
 
         let mut denied = content_host_state(false);
         let error = <HostState as content_catalog::Host>::plugin_count(&mut denied).unwrap_err();
+        assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
+        let error =
+            <HostState as content_catalog::Host>::dependency_count(&mut denied, 1).unwrap_err();
         assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
         assert!(<HostState as content_catalog::Host>::find_plugin(
             &mut state,
