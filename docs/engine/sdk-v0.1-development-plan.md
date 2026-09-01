@@ -97,9 +97,10 @@ translated program attaches, independently of cell load; trigger handlers
 preserve one dispatch per entering actor. `OnHit` projects its four boolean
 attack/block flags into typed handler locals. The subset supports scalar locals,
 literal arguments, assignments, and bounded boolean branches with negation,
-short-circuit logical operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
-and object expressions, broader events, other latent primitives, and dynamic
-object dispatch remain open. Provider-bearing
+short-circuit logical operators, same-type boolean/integer/float comparisons,
+and string equality/inequality. Arithmetic, string concatenation, object
+expressions, broader events, other latent primitives, and dynamic object
+dispatch remain open. Provider-bearing
 handlers support bounded `Utility.Wait` continuations that preserve locals and
 ordered branch/enclosing tails across save/load. Restored calls are reconciled
 against the live provider catalog before dispatch. Quest and scene fragments
@@ -874,9 +875,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   four scalar `OnHit` attack/block parameters are projected under their authored
   names. The current subset covers scalar locals, literal arguments, assignments, and
   bounded boolean branches, including negation, short-circuit logical
-  operators, and same-type boolean/integer/float comparisons over locals,
-  literals, and provider results. A synthetic byte-level Skyrim PEX fixture
-  now exercises the production reader/decompiler/translation boundary.
+  operators, same-type boolean/integer/float comparisons, and string
+  equality/inequality over locals, literals, and provider results. A synthetic
+  byte-level Skyrim PEX fixture now exercises the production
+  reader/decompiler/translation boundary.
   Quest/scene fragment PEX now lowers top-level provider calls as sequencing
   barriers, preserves them across the existing latent continuation queue, and
   dispatches them only after fragment guards drop. A successful call resumes
@@ -886,9 +888,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   before starting the next independent item.
   Provider-bearing event handlers now suspend across bounded `Utility.Wait`
   calls while preserving locals and ordered branch/enclosing tails. Compiled
-  SCDA call encoding, arithmetic/string/object expressions, broader events,
-  other latent primitives, and dynamic object dispatch remain pending. The
-  continuation queue is registered with the save system and revalidates saved
+  SCDA call encoding, arithmetic/string-concatenation/object expressions,
+  broader events, other latent primitives, and dynamic object dispatch remain
+  pending. The continuation queue is registered with the save system and revalidates saved
   routes against the live catalog before resuming.
   Ten exact SKSE `Game` content extensions are now engine-owned
   catalog aliases: `GetModCount`,
@@ -1027,7 +1029,8 @@ result. `OnInit` is a distinct one-shot attach event and runs before a same-fram
 `OnLoad`. A later event-dispatch checkpoint adds `OnTriggerEnter` with one call
 per entering actor and recurring `OnUpdate` delivery through the same guard-free
 path. Typed condition evaluation now adds bounded negation, short-circuit
-logical operators, and same-type boolean/integer/float comparisons. Quest/scene
+logical operators, same-type boolean/integer/float comparisons, and string
+equality/inequality. Quest/scene
 fragment PEX now uses top-level provider calls as guard-free sequencing barriers
 and resumes each successful call's native tail in order within that fragment.
 Calls selected inside supported conditional branches preserve the branch and
@@ -1096,6 +1099,12 @@ positions in the canonical `OnHit` signature. Source/PEX parameter names are
 retained as typed locals and may drive the existing bounded condition IR; the
 reference-bearing parameters remain unavailable until the executable converts
 raw ECS identities through its generational handle registry.
+
+Checkpoint commit: `feat(scripting): compare provider string results`.
+
+Delivered for equality and inequality between same-typed string literals,
+locals, and provider results. Ordered string comparisons remain rejected, and
+no implicit numeric/string coercion or concatenation was introduced.
 
 ### 14.4 Exit gate
 
