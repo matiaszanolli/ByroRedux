@@ -537,7 +537,10 @@ the concrete `byro.storage` recipe, expected WIT value variant, and isolation
 constraint. An executable SDK adapter case-folds and type-namespaces portable
 keys, preserves missing values and synchronous returns, maps zero/empty sets to
 deletion, and reports whether unset found a value. The storage service supplies
-the callback-local read-your-writes needed by those recipes. Adjust, Float,
+the callback-local read-your-writes needed by those recipes. These exact aliases
+are now published by the engine compatibility catalog and execute without an
+external extension package, using the authenticated archive-script principal
+before and after latent waits. Adjust, Float,
 Form, pluck, file-backed, list, object-scoped, arbitrary-key, and cross-mod
 shared calls remain deliberately unsupported until an engine service can honor
 their complete semantics. Recognizing the provider is not enough to claim
@@ -1197,9 +1200,22 @@ serialize the same identity, so the save format advances to major version 12
 rather than resuming a stateful call as unauthenticated/global. The executable
 registers archive principals with private storage and container namespaces before
 save restore, and a zero-package launch still installs the engine provider host.
-Quest/scene fragment calls remain explicitly unowned; their archive provenance
-must be carried through fragment registration before principal-stateful
-`StorageUtil` or JContainers aliases are enabled there.
+
+Checkpoint commit: `feat(scripting): retain fragment script principals`.
+
+Delivered for archive-backed quest and scene fragment PEX. Fragment registration
+stamps the winning archive principal recursively onto deferred provider effects,
+including conditional branches; guard-free calls retain it across latent waits
+and save/load. The required saved field advances the container format to major
+version 13 rather than restoring a fragment call into a global namespace.
+
+Checkpoint commit: `feat(scripting): execute StorageUtil scalar aliases`.
+
+Delivered for exact global `StorageUtil` integer and string get/has/set/unset
+spellings. The built-in catalog validates exact arity and `ObjKey == None`, the
+engine host routes calls through principal-private storage with case-folded typed
+keys and synchronous legacy return values, and source handlers preserve their
+owner across `Utility.Wait`. Object-scoped and cross-principal calls fail closed.
 
 ### 14.4 Exit gate
 
