@@ -135,6 +135,7 @@ in the design narrative.
 |---|---|---|---|
 | `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
 | `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
+| `EquipmentEventBatch` | ordered item FormID + equipped-state transitions | actor `OnObjectEquipped` / `OnObjectUnequipped` | inventory/equip runtime and translated fragment effects |
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |

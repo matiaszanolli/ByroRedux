@@ -90,8 +90,9 @@ the sandbox boundary. Compiled SCDA SDK-call encoding and the general Papyrus
 dispatcher remain open. A conservative Papyrus vertical slice is live:
 manifest-declared `Provider.Function(...)` aliases lower from parsed source and
 decompiled PEX into a typed program, and `OnInit`, `OnLoad`, `OnActivate`,
-`OnTriggerEnter`, and `OnUpdate` handlers execute through the same authenticated
-Wasm host after ECS guards are released. `OnInit` is emitted once when the
+`OnHit`, `OnObjectEquipped`, `OnObjectUnequipped`, `OnTriggerEnter`, and
+`OnUpdate` handlers execute through the same authenticated Wasm host after ECS
+guards are released. `OnInit` is emitted once when the
 translated program attaches, independently of cell load; trigger handlers
 preserve one dispatch per entering actor. The subset supports scalar locals,
 literal arguments, assignments, and bounded boolean branches with negation,
@@ -864,9 +865,11 @@ proceeds by semantic domain and closes only against real mod fixtures.
   through `ext.<extension-id>.<function>` assignments and conditions without
   OBSE/xNVSE. Manifest-declared `Provider.Function(...)` aliases now lower
   case-insensitively from parsed Papyrus and decompiled PEX into a typed,
-  guard-free `OnInit`/`OnLoad`/`OnActivate`/`OnTriggerEnter`/`OnUpdate` program
-  that calls the same live host. Program attachment emits one engine-owned
-  initialization marker, while trigger entry multiplicity is preserved. The
+  guard-free event program that calls the same live host. Supported events are
+  `OnInit`, `OnLoad`, `OnActivate`, `OnHit`, `OnObjectEquipped`,
+  `OnObjectUnequipped`, `OnTriggerEnter`, and `OnUpdate`. Program attachment
+  emits one engine-owned initialization marker; trigger entry multiplicity and
+  ordered wearer equipment transitions are preserved. The
   current subset covers scalar locals, literal arguments, assignments, and
   bounded boolean branches, including negation, short-circuit logical
   operators, and same-type boolean/integer/float comparisons over locals,
@@ -1074,6 +1077,15 @@ Delivered for source and decompiled-PEX `OnInit` handlers. Attaching a static
 provider program emits a dedicated transient marker, the provider runtime
 dispatches it ahead of same-frame load/interaction events without holding ECS
 guards, and late-stage cleanup prevents a second initialization dispatch.
+
+Checkpoint commit: `feat(scripting): dispatch provider combat events`.
+
+Delivered for live combat `OnHit` plus actor-side `OnObjectEquipped` and
+`OnObjectUnequipped`. The provider runtime snapshots the existing engine event
+markers before guest entry and preserves every transition in a wearer-owned
+equipment batch. Event-payload locals are not projected yet, so handlers that
+reference those parameters still reject as a whole instead of observing a
+fabricated value.
 
 ### 14.4 Exit gate
 
