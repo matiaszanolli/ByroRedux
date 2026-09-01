@@ -97,11 +97,29 @@ interface storage {
         bytes(list<u8>),
     }
 
+    enum collection-kind {
+        array,
+        associative-map,
+        set,
+    }
+
     schema-version: func() -> option<u32>;
     get: func(key: string) -> option<value>;
     queue-set: func(key: string, value: value);
     queue-delete: func(key: string);
     queue-increment-i64: func(key: string, delta: s64);
+    get-collection-kind: func(key: string) -> option<collection-kind>;
+    collection-len: func(key: string) -> option<u32>;
+    array-get: func(key: string, index: u32) -> option<value>;
+    queue-array-push: func(key: string, value: value);
+    queue-array-set: func(key: string, index: u32, value: value);
+    queue-array-remove: func(key: string, index: u32);
+    map-get: func(key: string, entry: string) -> option<value>;
+    queue-map-set: func(key: string, entry: string, value: value);
+    queue-map-delete: func(key: string, entry: string);
+    set-contains: func(key: string, value: value) -> bool;
+    queue-set-insert: func(key: string, value: value);
+    queue-set-remove: func(key: string, value: value);
 }
 
 /// Immutable facts about live entities already disclosed to this callback.

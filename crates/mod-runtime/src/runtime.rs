@@ -23,7 +23,7 @@ use byroredux_sdk::service::{
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
-use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand};
+use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand, PrincipalStorageValue};
 use semver::Version;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -867,7 +867,10 @@ impl ModInstance {
     }
 
     /// Replace the read-only principal storage snapshot visible to callbacks.
-    pub fn set_principal_storage_snapshot(&mut self, values: BTreeMap<StorageKey, ExtensionValue>) {
+    pub fn set_principal_storage_snapshot(
+        &mut self,
+        values: BTreeMap<StorageKey, PrincipalStorageValue>,
+    ) {
         self.store.data_mut().principal_storage = values;
     }
 
@@ -999,7 +1002,7 @@ struct HostState {
     current_custom_event: Option<CustomEvent>,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
-    principal_storage: BTreeMap<StorageKey, ExtensionValue>,
+    principal_storage: BTreeMap<StorageKey, PrincipalStorageValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
     pending_commands: Vec<HostCommand>,
     max_commands_per_entry: usize,
@@ -1116,28 +1119,18 @@ impl wit_storage::Host for HostState {
 
     fn get(&mut self, key: String) -> wasmtime::Result<Option<wit_storage::Value>> {
         self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
-        let key = StorageKey::new(key)
-            .map_err(|error| wasmtime::Error::msg(format!("invalid storage key: {error}")))?;
-        Ok(self.principal_storage.get(&key).map(|value| match value {
-            ExtensionValue::Bool(value) => wit_storage::Value::Boolean(*value),
-            ExtensionValue::I64(value) => wit_storage::Value::Signed(*value),
-            ExtensionValue::U64(value) => wit_storage::Value::Unsigned(*value),
-            ExtensionValue::String(value) => wit_storage::Value::Text(value.clone()),
-            ExtensionValue::Bytes(value) => wit_storage::Value::Bytes(value.clone()),
-        }))
+        let key = sdk_storage_key(key)?;
+        Ok(self
+            .principal_storage
+            .get(&key)
+            .and_then(PrincipalStorageValue::as_scalar)
+            .map(wit_storage_value))
     }
 
     fn queue_set(&mut self, key: String, value: wit_storage::Value) -> wasmtime::Result<()> {
         self.require_storage_write()?;
-        let key = StorageKey::new(key)
-            .map_err(|error| wasmtime::Error::msg(format!("invalid storage key: {error}")))?;
-        let value = match value {
-            wit_storage::Value::Boolean(value) => ExtensionValue::Bool(value),
-            wit_storage::Value::Signed(value) => ExtensionValue::I64(value),
-            wit_storage::Value::Unsigned(value) => ExtensionValue::U64(value),
-            wit_storage::Value::Text(value) => ExtensionValue::String(value),
-            wit_storage::Value::Bytes(value) => ExtensionValue::Bytes(value),
-        };
+        let key = sdk_storage_key(key)?;
+        let value = sdk_storage_value(value);
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::Set { key, value },
         ));
@@ -1146,8 +1139,7 @@ impl wit_storage::Host for HostState {
 
     fn queue_delete(&mut self, key: String) -> wasmtime::Result<()> {
         self.require_storage_write()?;
-        let key = StorageKey::new(key)
-            .map_err(|error| wasmtime::Error::msg(format!("invalid storage key: {error}")))?;
+        let key = sdk_storage_key(key)?;
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::Delete { key },
         ));
@@ -1156,12 +1148,202 @@ impl wit_storage::Host for HostState {
 
     fn queue_increment_i64(&mut self, key: String, delta: i64) -> wasmtime::Result<()> {
         self.require_storage_write()?;
-        let key = StorageKey::new(key)
-            .map_err(|error| wasmtime::Error::msg(format!("invalid storage key: {error}")))?;
+        let key = sdk_storage_key(key)?;
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::IncrementI64 { key, delta },
         ));
         Ok(())
+    }
+
+    fn get_collection_kind(
+        &mut self,
+        key: String,
+    ) -> wasmtime::Result<Option<wit_storage::CollectionKind>> {
+        self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
+        let key = sdk_storage_key(key)?;
+        Ok(match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::Array(_)) => Some(wit_storage::CollectionKind::Array),
+            Some(PrincipalStorageValue::Map(_)) => {
+                Some(wit_storage::CollectionKind::AssociativeMap)
+            }
+            Some(PrincipalStorageValue::Set(_)) => Some(wit_storage::CollectionKind::Set),
+            _ => None,
+        })
+    }
+
+    fn collection_len(&mut self, key: String) -> wasmtime::Result<Option<u32>> {
+        self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
+        let key = sdk_storage_key(key)?;
+        let length = match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::Array(values)) => values.len(),
+            Some(PrincipalStorageValue::Map(values)) => values.len(),
+            Some(PrincipalStorageValue::Set(values)) => values.len(),
+            _ => return Ok(None),
+        };
+        Ok(Some(u32::try_from(length).expect(
+            "storage collection length is bounded below u32::MAX",
+        )))
+    }
+
+    fn array_get(
+        &mut self,
+        key: String,
+        index: u32,
+    ) -> wasmtime::Result<Option<wit_storage::Value>> {
+        self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
+        let key = sdk_storage_key(key)?;
+        match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::Array(values)) => {
+                Ok(values.get(index as usize).map(wit_storage_value_ref))
+            }
+            Some(_) => wasmtime::bail!("storage key {key} is not an array"),
+            None => Ok(None),
+        }
+    }
+
+    fn queue_array_push(&mut self, key: String, value: wit_storage::Value) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::ArrayPush {
+                key: sdk_storage_key(key)?,
+                value: sdk_storage_value(value),
+            },
+        ));
+        Ok(())
+    }
+
+    fn queue_array_set(
+        &mut self,
+        key: String,
+        index: u32,
+        value: wit_storage::Value,
+    ) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::ArraySet {
+                key: sdk_storage_key(key)?,
+                index,
+                value: sdk_storage_value(value),
+            },
+        ));
+        Ok(())
+    }
+
+    fn queue_array_remove(&mut self, key: String, index: u32) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::ArrayRemove {
+                key: sdk_storage_key(key)?,
+                index,
+            },
+        ));
+        Ok(())
+    }
+
+    fn map_get(
+        &mut self,
+        key: String,
+        entry: String,
+    ) -> wasmtime::Result<Option<wit_storage::Value>> {
+        self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
+        let key = sdk_storage_key(key)?;
+        match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::Map(values)) => {
+                Ok(values.get(&entry).map(wit_storage_value_ref))
+            }
+            Some(_) => wasmtime::bail!("storage key {key} is not a map"),
+            None => Ok(None),
+        }
+    }
+
+    fn queue_map_set(
+        &mut self,
+        key: String,
+        entry: String,
+        value: wit_storage::Value,
+    ) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::MapSet {
+                key: sdk_storage_key(key)?,
+                entry,
+                value: sdk_storage_value(value),
+            },
+        ));
+        Ok(())
+    }
+
+    fn queue_map_delete(&mut self, key: String, entry: String) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::MapDelete {
+                key: sdk_storage_key(key)?,
+                entry,
+            },
+        ));
+        Ok(())
+    }
+
+    fn set_contains(&mut self, key: String, value: wit_storage::Value) -> wasmtime::Result<bool> {
+        self.require_storage(STORAGE_READ_OWN_CAPABILITY)?;
+        let key = sdk_storage_key(key)?;
+        let value = sdk_storage_value(value);
+        match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::Set(values)) => Ok(values.contains(&value)),
+            Some(_) => wasmtime::bail!("storage key {key} is not a set"),
+            None => Ok(false),
+        }
+    }
+
+    fn queue_set_insert(&mut self, key: String, value: wit_storage::Value) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::SetInsert {
+                key: sdk_storage_key(key)?,
+                value: sdk_storage_value(value),
+            },
+        ));
+        Ok(())
+    }
+
+    fn queue_set_remove(&mut self, key: String, value: wit_storage::Value) -> wasmtime::Result<()> {
+        self.require_storage_write()?;
+        self.pending_commands.push(HostCommand::PrincipalStorage(
+            PrincipalStorageCommand::SetRemove {
+                key: sdk_storage_key(key)?,
+                value: sdk_storage_value(value),
+            },
+        ));
+        Ok(())
+    }
+}
+
+fn sdk_storage_key(key: String) -> wasmtime::Result<StorageKey> {
+    StorageKey::new(key)
+        .map_err(|error| wasmtime::Error::msg(format!("invalid storage key: {error}")))
+}
+
+fn sdk_storage_value(value: wit_storage::Value) -> ExtensionValue {
+    match value {
+        wit_storage::Value::Boolean(value) => ExtensionValue::Bool(value),
+        wit_storage::Value::Signed(value) => ExtensionValue::I64(value),
+        wit_storage::Value::Unsigned(value) => ExtensionValue::U64(value),
+        wit_storage::Value::Text(value) => ExtensionValue::String(value),
+        wit_storage::Value::Bytes(value) => ExtensionValue::Bytes(value),
+    }
+}
+
+fn wit_storage_value(value: ExtensionValue) -> wit_storage::Value {
+    wit_storage_value_ref(&value)
+}
+
+fn wit_storage_value_ref(value: &ExtensionValue) -> wit_storage::Value {
+    match value {
+        ExtensionValue::Bool(value) => wit_storage::Value::Boolean(*value),
+        ExtensionValue::I64(value) => wit_storage::Value::Signed(*value),
+        ExtensionValue::U64(value) => wit_storage::Value::Unsigned(*value),
+        ExtensionValue::String(value) => wit_storage::Value::Text(value.clone()),
+        ExtensionValue::Bytes(value) => wit_storage::Value::Bytes(value.clone()),
     }
 }
 
@@ -1366,6 +1548,7 @@ mod projection_tests {
     use super::*;
     use byroredux_sdk::identity::FormRef;
     use byroredux_sdk::projection::WorldTransform;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn wit_projection_preserves_portable_fields_and_redacts_transform_without_grant() {
@@ -1395,5 +1578,89 @@ mod projection_tests {
         assert!(wit_entity_projection(&projection, false)
             .world_transform
             .is_none());
+    }
+
+    #[test]
+    fn collection_snapshot_reads_preserve_kind_length_and_primitive_values() {
+        let mut grants = CapabilitySet::new();
+        grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+        let mut state = HostState {
+            principal: Principal::new(
+                PrincipalId::new("org.example.collections").unwrap(),
+                "Collections".to_owned(),
+            )
+            .unwrap(),
+            grants,
+            catalog: Arc::new(ServiceCatalog::new(current_sdk_version())),
+            limits: StoreLimitsBuilder::new().build(),
+            logs: Vec::new(),
+            log_bytes: 0,
+            max_log_entries: 1,
+            max_log_message_bytes: 1,
+            max_log_bytes: 1,
+            log_budget_exhausted: false,
+            schemas: Vec::new(),
+            subscribed_to_activate: false,
+            subscribed_to_cell_load: false,
+            subscribed_to_hit: false,
+            subscribed_to_equipment: false,
+            subscribed_to_input: false,
+            subscribed_to_session: false,
+            custom_subscriptions: Vec::new(),
+            current_custom_event: None,
+            subscribed_to_update: false,
+            principal_storage_schema: Some(1),
+            principal_storage: BTreeMap::from([
+                (
+                    StorageKey::new("array").unwrap(),
+                    PrincipalStorageValue::Array(vec![ExtensionValue::I64(7)]),
+                ),
+                (
+                    StorageKey::new("map").unwrap(),
+                    PrincipalStorageValue::Map(BTreeMap::from([(
+                        "entry".to_owned(),
+                        ExtensionValue::String("value".to_owned()),
+                    )])),
+                ),
+                (
+                    StorageKey::new("set").unwrap(),
+                    PrincipalStorageValue::Set(BTreeSet::from([ExtensionValue::U64(9)])),
+                ),
+            ]),
+            entity_projections: BTreeMap::new(),
+            pending_commands: Vec::new(),
+            max_commands_per_entry: 1,
+            accepting_commands: false,
+            command_budget_exhausted: false,
+        };
+
+        assert!(matches!(
+            <HostState as wit_storage::Host>::get_collection_kind(&mut state, "array".to_owned())
+                .unwrap(),
+            Some(wit_storage::CollectionKind::Array)
+        ));
+        assert_eq!(
+            <HostState as wit_storage::Host>::collection_len(&mut state, "map".to_owned()).unwrap(),
+            Some(1)
+        );
+        assert!(matches!(
+            <HostState as wit_storage::Host>::array_get(&mut state, "array".to_owned(), 0).unwrap(),
+            Some(wit_storage::Value::Signed(7))
+        ));
+        assert!(matches!(
+            <HostState as wit_storage::Host>::map_get(
+                &mut state,
+                "map".to_owned(),
+                "entry".to_owned()
+            )
+            .unwrap(),
+            Some(wit_storage::Value::Text(value)) if value == "value"
+        ));
+        assert!(<HostState as wit_storage::Host>::set_contains(
+            &mut state,
+            "set".to_owned(),
+            wit_storage::Value::Unsigned(9),
+        )
+        .unwrap());
     }
 }

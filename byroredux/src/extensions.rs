@@ -2492,6 +2492,7 @@ mod tests {
         STORAGE_WRITE_OWN_CAPABILITY, WORLD_ENTITY_READ_CAPABILITY,
         WORLD_TRANSFORM_READ_CAPABILITY,
     };
+    use byroredux_sdk::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 
     const COMPONENT: &str = r#"
 (component
@@ -3404,7 +3405,7 @@ mod tests {
             host.principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(2))
+            Some(&PrincipalStorageValue::I64(2))
         );
     }
 
@@ -3431,7 +3432,7 @@ mod tests {
             host.principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(1))
+            Some(&PrincipalStorageValue::I64(1))
         );
     }
 
@@ -3468,7 +3469,7 @@ mod tests {
             host.principal_storage
                 .values(&subscriber)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(1))
+            Some(&PrincipalStorageValue::I64(1))
         );
 
         host.pending_custom_events.push(CustomEvent {
@@ -3587,7 +3588,7 @@ mod tests {
             host.principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(1))
+            Some(&PrincipalStorageValue::I64(1))
         );
 
         assert_eq!(host.dispatch_updates(0.35).deliveries, 1);
@@ -3596,7 +3597,7 @@ mod tests {
             host.principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(3))
+            Some(&PrincipalStorageValue::I64(3))
         );
     }
 
@@ -3636,7 +3637,7 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(1))
+            Some(&PrincipalStorageValue::I64(1))
         );
     }
 
@@ -3664,8 +3665,29 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(2))
+            Some(&PrincipalStorageValue::I64(2))
         );
+        source
+            .principal_storage
+            .apply_batch(
+                &principal,
+                &[
+                    PrincipalStorageCommand::ArrayPush {
+                        key: StorageKey::new("history").unwrap(),
+                        value: ExtensionValue::String("Helgen".to_owned()),
+                    },
+                    PrincipalStorageCommand::MapSet {
+                        key: StorageKey::new("aliases").unwrap(),
+                        entry: "player".to_owned(),
+                        value: ExtensionValue::String("Dragonborn".to_owned()),
+                    },
+                    PrincipalStorageCommand::SetInsert {
+                        key: StorageKey::new("visited").unwrap(),
+                        value: ExtensionValue::U64(7),
+                    },
+                ],
+            )
+            .unwrap();
 
         let saved = source.capture_saved_state(&BTreeMap::new()).unwrap();
         assert_eq!(saved.principal_storage.len(), 1);
@@ -3673,6 +3695,15 @@ mod tests {
         restored
             .restore_saved_state(&saved, &BTreeMap::new())
             .unwrap();
+        assert_eq!(
+            restored
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&StorageKey::new("history").unwrap())),
+            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::String(
+                "Helgen".to_owned()
+            )]))
+        );
         assert_eq!(
             restored.dispatch_activations([activation]).commands_applied,
             1
@@ -3682,7 +3713,7 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(3))
+            Some(&PrincipalStorageValue::I64(3))
         );
 
         let mut unavailable =
@@ -3705,7 +3736,7 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(2))
+            Some(&PrincipalStorageValue::I64(2))
         );
     }
 
@@ -3885,7 +3916,7 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(2))
+            Some(&PrincipalStorageValue::I64(2))
         );
     }
 
@@ -3924,7 +3955,7 @@ mod tests {
                 .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
-            Some(&ExtensionValue::I64(1))
+            Some(&PrincipalStorageValue::I64(1))
         );
     }
 

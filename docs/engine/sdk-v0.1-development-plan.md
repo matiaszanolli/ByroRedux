@@ -50,7 +50,9 @@ ByroRedux save container: transient handles translate to load-order-independent
 `FormRef` values, payloads are bounded and preflighted before world teardown,
 fresh handles are assigned after reload, and rows for missing packages or
 temporarily unloaded forms are retained without a cosave. Exact-version restore
-and bounded principal-private persistent storage are implemented; schema
+and bounded principal-private persistent storage are implemented, including
+deterministic arrays, string-keyed maps, and primitive sets with atomic
+deferred mutation and save participation; schema
 migrators, additional projection families/events, and status tooling remain
 open.
 
@@ -572,6 +574,11 @@ proceeds by semantic domain and closes only against real mod fixtures.
   4 KiB payloads, bounded engine queueing, atomic publication, deterministic
   routing, and next-pass non-reentrant delivery; typed payload schemas remain.**
 - Persistent maps, arrays, sets, and entity-attached extension components.
+  **Principal-private arrays, string-keyed maps, and primitive sets are
+  implemented with deterministic serialization, explicit collection APIs,
+  per-collection bounds, atomic batches, and in-save persistence. Dynamic
+  entity-attached component rows are also implemented; collection-valued
+  component fields and filtered collection queries remain.**
 - Input action/control subscriptions after user rebinding. **Implemented for
   the engine's normalized action catalog with press/release edges and validated
   action filters; custom action registration remains.**

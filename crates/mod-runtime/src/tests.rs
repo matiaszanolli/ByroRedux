@@ -26,7 +26,9 @@ use byroredux_sdk::service::{
     LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
-use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
+use byroredux_sdk::storage::{
+    HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
+};
 use semver::{Version, VersionReq};
 
 const IMPORTS: &str = r#"
@@ -221,6 +223,96 @@ fn custom_event_publisher_component() -> String {
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
                 (with "host" (instance (export "publish" (func $publish-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+        )"#
+    )
+}
+
+fn persistent_collections_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (import "byro:mod-host/storage@0.1.0" (instance $storage
+                (type $value-shape (variant
+                    (case "boolean" bool)
+                    (case "signed" s64)
+                    (case "unsigned" u64)
+                    (case "text" string)
+                    (case "bytes" (list u8))))
+                (export "value" (type $value (eq $value-shape)))
+                (export "queue-array-push" (func
+                    (param "key" string) (param "value" $value)))
+                (export "queue-map-set" (func
+                    (param "key" string) (param "entry" string) (param "value" $value)))
+                (export "queue-set-insert" (func
+                    (param "key" string) (param "value" $value)))
+            ))
+            (alias export $storage "queue-array-push" (func $array-push))
+            (alias export $storage "queue-map-set" (func $map-set))
+            (alias export $storage "queue-set-insert" (func $set-insert))
+            (core module $libc
+                (memory (export "memory") 1)
+                (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+                    i32.const 128)
+            )
+            (core instance $libc (instantiate $libc))
+            (core func $array-push-lower
+                (canon lower (func $array-push)
+                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+            (core func $map-set-lower
+                (canon lower (func $map-set)
+                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+            (core func $set-insert-lower
+                (canon lower (func $set-insert)
+                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+            (core module $guest
+                (import "libc" "memory" (memory 1))
+                (import "host" "array-push"
+                    (func $array-push (param i32 i32 i32 i64 i32)))
+                (import "host" "map-set"
+                    (func $map-set (param i32 i32 i32 i32 i32 i64 i32)))
+                (import "host" "set-insert"
+                    (func $set-insert (param i32 i32 i32 i64 i32)))
+                (data (i32.const 0) "array")
+                (data (i32.const 16) "map")
+                (data (i32.const 32) "entry")
+                (data (i32.const 48) "set")
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                (func (export "on-activate") (param i64 i64 i32 i64 i64)
+                    i32.const 0 i32.const 5 i32.const 1 i64.const 7 i32.const 0
+                    call $array-push
+                    i32.const 16 i32.const 3 i32.const 32 i32.const 5
+                    i32.const 1 i64.const 8 i32.const 0
+                    call $map-set
+                    i32.const 48 i32.const 3 i32.const 1 i64.const 9 i32.const 0
+                    call $set-insert)
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "libc" (instance $libc))
+                (with "host" (instance
+                    (export "array-push" (func $array-push-lower))
+                    (export "map-set" (func $map-set-lower))
+                    (export "set-insert" (func $set-insert-lower))))
             ))
             (func (export "initialize")
                 (canon lift (core func $guest-instance "initialize")))
@@ -1214,7 +1306,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
     assert_eq!(
         storage.values(&principal).and_then(|values| values
             .get(&byroredux_sdk::identity::StorageKey::new("activation-count").unwrap())),
-        Some(&ExtensionValue::I64(1))
+        Some(&PrincipalStorageValue::I64(1))
     );
     assert!(matches!(
         instance.on_update(UpdateEvent {
@@ -1898,7 +1990,55 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
             .values(&owner)
             .unwrap()
             .get(&byroredux_sdk::identity::StorageKey::new("activation-count").unwrap()),
-        Some(&ExtensionValue::I64(1))
+        Some(&PrincipalStorageValue::I64(1))
+    );
+}
+
+#[test]
+fn persistent_collection_mutations_are_deferred_and_principal_attributed() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = principal_storage_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &persistent_collections_component());
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+    let commands = instance
+        .on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 3);
+    let storage_commands = commands
+        .into_iter()
+        .map(|command| match command {
+            HostCommand::PrincipalStorage(command) => command,
+            _ => panic!("collection fixture returned a non-storage command"),
+        })
+        .collect::<Vec<_>>();
+    let owner = instance.principal().id().clone();
+    let mut storage = PrincipalStorageStore::new(PrincipalStorageLimits::default()).unwrap();
+    storage.register_schema(owner.clone(), 1).unwrap();
+    storage.apply_batch(&owner, &storage_commands).unwrap();
+    let values = storage.values(&owner).unwrap();
+    assert_eq!(
+        values.get(&byroredux_sdk::identity::StorageKey::new("array").unwrap()),
+        Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(7)]))
+    );
+    assert_eq!(
+        values.get(&byroredux_sdk::identity::StorageKey::new("map").unwrap()),
+        Some(&PrincipalStorageValue::Map(
+            std::collections::BTreeMap::from([("entry".to_owned(), ExtensionValue::I64(8),)])
+        ))
+    );
+    assert_eq!(
+        values.get(&byroredux_sdk::identity::StorageKey::new("set").unwrap()),
+        Some(&PrincipalStorageValue::Set(
+            std::collections::BTreeSet::from([ExtensionValue::I64(9),])
+        ))
     );
 }
 

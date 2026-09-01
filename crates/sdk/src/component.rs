@@ -12,7 +12,7 @@ use crate::storage::PersistedPrincipalStorage;
 pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 2;
 
 /// Portable value kinds supported by the first dynamic-component contract.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExtensionValueType {
     Bool,
@@ -23,7 +23,7 @@ pub enum ExtensionValueType {
 }
 
 /// Bounded, serialization-safe value stored in an extension-owned row.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum ExtensionValue {
     Bool(bool),
