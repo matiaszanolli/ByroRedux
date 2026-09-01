@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::components::{
-    ActorValues, EquipmentSlots, FormIdComponent, GlobalTransform, Inventory, InventoryIndex, Name,
-    Transform,
+    ActorValues, EquipmentSlots, FactionRanks, FormIdComponent, GlobalTransform, Inventory,
+    InventoryIndex, Name, Transform,
 };
 use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
@@ -37,6 +37,7 @@ use byroredux_sdk::event::{
     EquipmentEvent, HitEvent, InputAction as SdkInputAction, InputActionEvent, InputPhase,
     SessionEvent, SessionPhase, UpdateEvent,
 };
+use byroredux_sdk::factions::{FactionMembership, FactionSnapshot, MAX_FACTIONS_PER_ENTITY};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
 };
@@ -1788,6 +1789,7 @@ struct RawEntityProjection {
     world_transform: Option<WorldTransform>,
     actor_values: Option<Vec<(FormRef, ActorValueState)>>,
     inventory: Option<InventorySnapshot>,
+    factions: Option<FactionSnapshot>,
 }
 
 fn entity_projection(
@@ -1808,8 +1810,12 @@ fn entity_projection(
             .expect("live actor-value capture enforces SDK bounds"),
         None => projection,
     };
-    match raw.and_then(|projection| projection.inventory.clone()) {
+    let projection = match raw.and_then(|projection| projection.inventory.clone()) {
         Some(inventory) => projection.with_inventory(inventory),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.factions.clone()) {
+        Some(factions) => projection.with_factions(factions),
         None => projection,
     }
 }
@@ -2981,6 +2987,44 @@ fn capture_entity_projections(
             projection.inventory = Some(
                 InventorySnapshot::new(entries, truncated)
                     .expect("live inventory capture enforces SDK bounds and ordering"),
+            );
+        }
+    }
+    if let (Some(faction_ranks), Some(resolver)) = (
+        world.query::<FactionRanks>(),
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
+    ) {
+        for (entity, projection) in &mut projections {
+            let Some(ranks) = faction_ranks.get(*entity) else {
+                continue;
+            };
+            let mut truncated = false;
+            let mut memberships = BTreeMap::<FormRef, i8>::new();
+            for &(global_faction, rank) in &ranks.0 {
+                let Some(faction) = resolver.resolve(global_faction).map(form_ref) else {
+                    truncated = true;
+                    continue;
+                };
+                if faction.local() == 0 {
+                    truncated = true;
+                    continue;
+                }
+                memberships.entry(faction).or_insert(rank);
+            }
+            let mut memberships = memberships
+                .into_iter()
+                .map(|(faction, rank)| {
+                    FactionMembership::new(faction, rank)
+                        .expect("resolved faction forms are non-null")
+                })
+                .collect::<Vec<_>>();
+            if memberships.len() > MAX_FACTIONS_PER_ENTITY {
+                memberships.truncate(MAX_FACTIONS_PER_ENTITY);
+                truncated = true;
+            }
+            projection.factions = Some(
+                FactionSnapshot::new(memberships, truncated)
+                    .expect("live faction capture enforces SDK bounds and ordering"),
             );
         }
     }
@@ -5012,6 +5056,30 @@ mod tests {
             .unwrap();
         assert_eq!(weapon.count(), 1);
         assert!(weapon.weapon_equipped());
+    }
+
+    #[test]
+    fn faction_projection_preserves_first_rank_and_reports_unresolved_forms() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            FactionRanks::from_pairs([(0x44, -1), (0x44, 3), (0x0100_0045, 2)]),
+        );
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].factions.as_ref().unwrap();
+        assert!(snapshot.truncated());
+        assert_eq!(snapshot.memberships().len(), 1);
+        let faction = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x44);
+        assert_eq!(snapshot.rank(faction), Some(-1));
     }
 
     #[test]

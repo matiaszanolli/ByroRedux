@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::actor_values::{ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY};
+use crate::factions::FactionSnapshot;
 use crate::identity::{EntityRef, FormRef};
 use crate::inventory::InventorySnapshot;
 
@@ -67,6 +68,7 @@ pub struct EntityProjection {
     world_transform: Option<WorldTransform>,
     actor_values: Option<BTreeMap<FormRef, ActorValueState>>,
     inventory: Option<InventorySnapshot>,
+    factions: Option<FactionSnapshot>,
 }
 
 impl EntityProjection {
@@ -91,6 +93,7 @@ impl EntityProjection {
             world_transform,
             actor_values: None,
             inventory: None,
+            factions: None,
         })
     }
 
@@ -142,6 +145,15 @@ impl EntityProjection {
 
     pub fn inventory(&self) -> Option<&InventorySnapshot> {
         self.inventory.as_ref()
+    }
+
+    pub fn with_factions(mut self, factions: FactionSnapshot) -> Self {
+        self.factions = Some(factions);
+        self
+    }
+
+    pub fn factions(&self) -> Option<&FactionSnapshot> {
+        self.factions.as_ref()
     }
 }
 

@@ -26,6 +26,9 @@ The current public surface includes:
   truncation bit. Optional validated metadata carries the resolved item name,
   semantic category, value, and non-negative finite weight. The contract
   deliberately does not invent stable per-instance handles.
+- `FactionSnapshot` exposes deterministic callback-local FACT memberships and
+  signed ranks through portable identities, with explicit truncation. It does
+  not conflate membership with REPU fame/infamy or faction relationships.
 - Validated extension, principal, capability, service, event, and schema IDs
   are stable namespaced values shared by package loaders and sandbox hosts.
 - `ExtensionManifest` declares SDK/dependency ranges, executable components,

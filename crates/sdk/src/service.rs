@@ -37,6 +37,8 @@ pub const ACTOR_VALUES_READ_CAPABILITY: &str = "byro.actor-values.read";
 pub const ACTOR_VALUES_WRITE_CAPABILITY: &str = "byro.actor-values.write";
 /// Capability required to read callback-local inventory/equipment summaries.
 pub const INVENTORY_READ_CAPABILITY: &str = "byro.inventory.read";
+/// Capability required to read callback-local faction memberships.
+pub const FACTIONS_READ_CAPABILITY: &str = "byro.factions.read";
 /// Capability required to inspect the active game-content load order.
 pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 /// Capability required to publish and execute manifest-declared console commands.
@@ -63,6 +65,8 @@ pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 pub const ACTOR_VALUES_SERVICE: &str = "byro.actor-values";
 /// Service providing callback-local portable inventory/equipment summaries.
 pub const INVENTORY_SERVICE: &str = "byro.inventory";
+/// Service providing callback-local portable faction memberships.
+pub const FACTIONS_SERVICE: &str = "byro.factions";
 /// Service providing loaded plugin discovery and portable form qualification.
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// Service providing bounded, principal-namespaced console callbacks.

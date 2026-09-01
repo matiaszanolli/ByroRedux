@@ -12,6 +12,7 @@ pub mod component;
 pub mod console;
 pub mod content;
 pub mod event;
+pub mod factions;
 pub mod identity;
 pub mod inventory;
 pub mod manifest;

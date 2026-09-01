@@ -95,6 +95,12 @@ the resolved plugin index, and an explicit truncation flag when a form cannot
 be resolved or the budget is exceeded. Per-instance mutation remains closed
 until item-instance identity and reconciliation can be made stable across
 callback boundaries.
+Faction membership reads are also live as a separate semantic service. A
+bounded callback-local snapshot exposes portable FACT identities and signed
+membership ranks, preserves the engine's first-entry-wins rule for malformed
+duplicates, and reports unresolved or over-budget memberships explicitly.
+REPU fame/infamy and inter-faction relationship data remain separate pending
+contracts because they are not faction ranks.
 
 ## 1. Outcome
 
@@ -658,7 +664,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   deferred semantic writes keyed by portable AVIF identity. Inventory and worn
   equipment have a capability-gated, read-only aggregated snapshot with item
   names, categories, values, weights, and explicit truncation; mutation and the
-  remaining gameplay domains are pending.**
+  remaining gameplay domains are pending. Portable faction membership/rank
+  reads are implemented separately; reputation and inter-faction relations
+  remain pending.**
 - World/reference spatial queries and safe spawn/despawn operations.
 - Typed script-callable extension functions.
 

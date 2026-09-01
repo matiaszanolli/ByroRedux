@@ -1,5 +1,5 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, console, content_catalog, context, events, inventory, logging, state,
+    actor_values, console, content_catalog, context, events, factions, inventory, logging, state,
     storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
@@ -16,6 +16,7 @@ use byroredux_sdk::event::{
     EquipmentEvent, HitEvent, InputAction, InputActionEvent, InputPhase, PublishEventCommand,
     SessionEvent, SessionPhase, UpdateEvent,
 };
+use byroredux_sdk::factions::{FactionMembership, FactionSnapshot};
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, FormRef, PrincipalId, ServiceId,
     StorageKey,
@@ -29,10 +30,10 @@ use byroredux_sdk::service::{
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE,
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY,
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
-    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
-    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
-    INVENTORY_SERVICE, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT,
-    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY,
+    FACTIONS_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
+    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE,
+    SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
     SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
     UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
     WORLD_TRANSFORM_READ_CAPABILITY,
@@ -258,6 +259,10 @@ impl SandboxRuntime {
                 "Read portable inventory and equipment summaries from callback-visible entities",
             ),
             (
+                FACTIONS_READ_CAPABILITY,
+                "Read portable faction membership ranks from callback-visible actors",
+            ),
+            (
                 CONTENT_CATALOG_READ_CAPABILITY,
                 "Inspect loaded game plugins and qualify portable authored forms",
             ),
@@ -337,6 +342,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(INVENTORY_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(FACTIONS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(FACTIONS_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1758,6 +1774,21 @@ impl inventory::Host for HostState {
     }
 }
 
+impl factions::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+    ) -> wasmtime::Result<Option<factions::FactionSnapshot>> {
+        self.require_factions_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::factions)
+            .map(wit_faction_snapshot))
+    }
+}
+
 impl console::Host for HostState {
     fn args_len(&mut self) -> wasmtime::Result<u32> {
         self.require_console_context()?;
@@ -1875,6 +1906,25 @@ fn wit_item_metadata(metadata: &ItemMetadata) -> inventory::ItemMetadata {
     }
 }
 
+fn wit_faction_snapshot(snapshot: &FactionSnapshot) -> factions::FactionSnapshot {
+    factions::FactionSnapshot {
+        memberships: snapshot
+            .memberships()
+            .iter()
+            .copied()
+            .map(wit_faction_membership)
+            .collect(),
+        truncated: snapshot.truncated(),
+    }
+}
+
+fn wit_faction_membership(membership: FactionMembership) -> factions::FactionMembership {
+    factions::FactionMembership {
+        faction: wit_form_ref(membership.faction()),
+        rank: membership.rank(),
+    }
+}
+
 fn wit_entity_projection(
     projection: &EntityProjection,
     include_transform: bool,
@@ -1933,6 +1983,16 @@ impl HostState {
         if !self.grants.contains(INVENTORY_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {INVENTORY_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_factions_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(FACTIONS_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {FACTIONS_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2545,6 +2605,36 @@ mod projection_tests {
         let mut denied = content_host_state(false);
         let error = <HostState as inventory::Host>::get(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(INVENTORY_READ_CAPABILITY));
+    }
+
+    #[test]
+    fn factions_are_callback_local_portable_ranked_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let faction = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let snapshot =
+            FactionSnapshot::new(vec![FactionMembership::new(faction, -1).unwrap()], true).unwrap();
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_factions(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+
+        let mut state = content_host_state(false);
+        state.grants.grant(FACTIONS_READ_CAPABILITY).unwrap();
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as factions::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.memberships.len(), 1);
+        assert_eq!(sdk_form_ref(snapshot.memberships[0].faction), faction);
+        assert_eq!(snapshot.memberships[0].rank, -1);
+
+        let mut denied = content_host_state(false);
+        let error = <HostState as factions::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(FACTIONS_READ_CAPABILITY));
     }
 
     #[test]

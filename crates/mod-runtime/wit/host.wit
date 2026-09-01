@@ -262,6 +262,23 @@ interface inventory {
     get: func(entity: entity-ref) -> option<inventory-snapshot>;
 }
 
+/// Callback-local faction membership ranks keyed by portable FACT identity.
+interface factions {
+    use state.{entity-ref, form-ref};
+
+    record faction-membership {
+        faction: form-ref,
+        rank: s8,
+    }
+
+    record faction-snapshot {
+        memberships: list<faction-membership>,
+        truncated: bool,
+    }
+
+    get: func(entity: entity-ref) -> option<faction-snapshot>;
+}
+
 /// Callback-local engine console arguments and bounded output. Commands are
 /// declared in the authenticated manifest; guests cannot choose global names.
 interface console {
@@ -282,6 +299,7 @@ world extension {
     import content-catalog;
     import actor-values;
     import inventory;
+    import factions;
     import console;
 
     use state.{entity-ref, form-ref, hit-details, input-action, input-phase, session-phase};
