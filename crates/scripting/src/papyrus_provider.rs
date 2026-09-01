@@ -18,10 +18,15 @@ use byroredux_sdk::{
         adapt_legacy_send_mod_event, classify_static_call, papyrus_game_content_declarations,
         papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
         papyrus_storage_util_declarations, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
-        PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+        PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
     },
     event::{
@@ -363,16 +368,24 @@ pub fn lower_provider_call(
 
 fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
     match route {
-        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE | PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE => {
-            Some((2, 3))
-        }
-        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE | PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE => {
-            Some((3, 3))
-        }
+        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE => Some((2, 3)),
+        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE => Some((3, 3)),
         PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE
         | PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE
         | PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE
-        | PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE => Some((2, 2)),
+        | PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE => Some((2, 2)),
         _ => None,
     }
 }
@@ -3325,6 +3338,42 @@ mod tests {
                 ScriptValue::None,
                 ScriptValue::String("Score".to_owned()),
                 ScriptValue::Integer(-1),
+            ]
+        );
+        let float = lower_provider_call(
+            &expression("StorageUtil.AdjustFloatValue(None, \"Weight\", 0.5)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            float.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE
+        );
+        assert_eq!(
+            float.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Weight".to_owned()),
+                ScriptValue::Float(0.5),
+            ]
+        );
+        let form = lower_provider_call(
+            &expression("StorageUtil.SetFormValue(None, \"Owner\", None)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            form.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE
+        );
+        assert_eq!(
+            form.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Owner".to_owned()),
+                ScriptValue::None,
             ]
         );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)

@@ -775,7 +775,8 @@ mod tests {
 
         let report = analyze_pex_compatibility(&pex);
         assert_eq!(report.findings.len(), 3);
-        assert_eq!(report.mapped_count(), 2);
+        assert_eq!(report.mapped_count(), 1);
+        assert_eq!(report.native_count(), 1);
         assert_eq!(report.unsupported_count(), 1);
         assert_eq!(
             report.findings[0].compatibility.service,
@@ -813,9 +814,9 @@ EndEvent
 
         let report = analyze_source_compatibility(&script, source);
         assert_eq!(report.findings.len(), 3);
-        assert_eq!(report.mapped_count(), 2);
+        assert_eq!(report.mapped_count(), 1);
         assert_eq!(report.unsupported_count(), 1);
-        assert_eq!(report.native_count(), 0);
+        assert_eq!(report.native_count(), 1);
 
         let storage = &report.findings[0];
         assert_eq!(storage.scope, "ReadVisits");
@@ -977,7 +978,7 @@ End"#;
         assert_eq!(storage.scripts, 2);
         assert_eq!(
             storage.compatibility.disposition,
-            CompatibilityDisposition::Mapped
+            CompatibilityDisposition::Native
         );
     }
 }

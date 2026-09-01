@@ -197,6 +197,18 @@ pub const PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.set-int-value";
 pub const PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-int-value";
+pub const PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.adjust-int-value";
+pub const PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.get-float-value";
+pub const PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.has-float-value";
+pub const PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.set-float-value";
+pub const PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.unset-float-value";
+pub const PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.adjust-float-value";
 pub const PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-string-value";
 pub const PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE: &str =
@@ -205,6 +217,14 @@ pub const PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.set-string-value";
 pub const PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-string-value";
+pub const PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.get-form-value";
+pub const PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.has-form-value";
+pub const PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.set-form-value";
+pub const PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.unset-form-value";
 pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
 pub const PAPYRUS_MOD_EVENT_ROUTE_PREFIX: &str = "byro.events.compat.mod-event.";
 
@@ -681,6 +701,64 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             ScriptValueType::Boolean,
         ),
         papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+            "storage-util-adjust-int-value",
+            "AdjustIntValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("amount", ScriptValueType::Integer, true),
+            ],
+            ScriptValueType::Integer,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+            "storage-util-get-float-value",
+            "GetFloatValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Float, true),
+            ],
+            ScriptValueType::Float,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+            "storage-util-has-float-value",
+            "HasFloatValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+            "storage-util-set-float-value",
+            "SetFloatValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("value", ScriptValueType::Float, true),
+            ],
+            ScriptValueType::Float,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+            "storage-util-unset-float-value",
+            "UnsetFloatValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+            "storage-util-adjust-float-value",
+            "AdjustFloatValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("amount", ScriptValueType::Float, true),
+            ],
+            ScriptValueType::Float,
+        ),
+        papyrus_storage_util_declaration(
             PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
             "storage-util-get-string-value",
             "GetStringValue",
@@ -713,6 +791,42 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
             "storage-util-unset-string-value",
             "UnsetStringValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+            "storage-util-get-form-value",
+            "GetFormValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Form, true),
+            ],
+            ScriptValueType::Form,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+            "storage-util-has-form-value",
+            "HasFormValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+            "storage-util-set-form-value",
+            "SetFormValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("value", ScriptValueType::Form, true),
+            ],
+            ScriptValueType::Form,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+            "storage-util-unset-form-value",
+            "UnsetFormValue",
             &object_and_key,
             ScriptValueType::Boolean,
         ),
@@ -959,28 +1073,40 @@ pub fn adapt_legacy_obscript_load_order(
 }
 
 /// Scalar `StorageUtil` call supported by the engine source adapter.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum StorageUtilScalarCall {
     GetInt { missing: i32 },
     HasInt,
     SetInt { value: i32 },
     UnsetInt,
+    AdjustInt { amount: i32 },
+    GetFloat { missing: f32 },
+    HasFloat,
+    SetFloat { value: f32 },
+    UnsetFloat,
+    AdjustFloat { amount: f32 },
     GetString { missing: String },
     HasString,
     SetString { value: String },
     UnsetString,
+    GetForm { missing: Option<FormRef> },
+    HasForm,
+    SetForm { value: Option<FormRef> },
+    UnsetForm,
 }
 
 /// Papyrus-visible result produced by a scalar `StorageUtil` adapter call.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum StorageUtilScalarResult {
     Int(i32),
+    Float(f32),
     Bool(bool),
     String(String),
+    Form(Option<FormRef>),
 }
 
 /// Executable result of adapting one global scalar `StorageUtil` call.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StorageUtilAdaptation {
     /// Type-isolated, case-folded key in the authenticated principal namespace.
     pub key: StorageKey,
@@ -999,6 +1125,10 @@ pub enum StorageUtilAdapterError {
     InvalidKey(#[from] IdentityError),
     #[error("StorageUtil integer value is outside the Papyrus i32 range")]
     IntegerOutOfRange,
+    #[error("StorageUtil integer adjustment overflowed the Papyrus i32 range")]
+    IntegerOverflow,
+    #[error("StorageUtil float value must be finite")]
+    NonFiniteFloat,
     #[error("StorageUtil adapter found an incompatible value at its type-isolated key")]
     TypeMismatch,
 }
@@ -1127,6 +1257,18 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         ("SetIntValue", "storage.queue-set/delete", "signed")
     } else if function.eq_ignore_ascii_case("UnsetIntValue") {
         ("UnsetIntValue", "storage.get+queue-delete", "signed")
+    } else if function.eq_ignore_ascii_case("AdjustIntValue") {
+        ("AdjustIntValue", "storage.get+queue-set/delete", "signed")
+    } else if function.eq_ignore_ascii_case("GetFloatValue") {
+        ("GetFloatValue", "storage.get", "float")
+    } else if function.eq_ignore_ascii_case("HasFloatValue") {
+        ("HasFloatValue", "storage.get", "float")
+    } else if function.eq_ignore_ascii_case("SetFloatValue") {
+        ("SetFloatValue", "storage.queue-set/delete", "float")
+    } else if function.eq_ignore_ascii_case("UnsetFloatValue") {
+        ("UnsetFloatValue", "storage.get+queue-delete", "float")
+    } else if function.eq_ignore_ascii_case("AdjustFloatValue") {
+        ("AdjustFloatValue", "storage.get+queue-set/delete", "float")
     } else if function.eq_ignore_ascii_case("GetStringValue") {
         ("GetStringValue", "storage.get", "text")
     } else if function.eq_ignore_ascii_case("HasStringValue") {
@@ -1135,6 +1277,14 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         ("SetStringValue", "storage.queue-set/delete", "text")
     } else if function.eq_ignore_ascii_case("UnsetStringValue") {
         ("UnsetStringValue", "storage.get+queue-delete", "text")
+    } else if function.eq_ignore_ascii_case("GetFormValue") {
+        ("GetFormValue", "storage.get", "form")
+    } else if function.eq_ignore_ascii_case("HasFormValue") {
+        ("HasFormValue", "storage.get", "form")
+    } else if function.eq_ignore_ascii_case("SetFormValue") {
+        ("SetFormValue", "storage.queue-set/delete", "form")
+    } else if function.eq_ignore_ascii_case("UnsetFormValue") {
+        ("UnsetFormValue", "storage.get+queue-delete", "form")
     } else {
         return None;
     };
@@ -1299,7 +1449,7 @@ fn legacy_container_source_alias(provider: &str, function: &str) -> Option<Sourc
 /// Execute the engine recipe for a supported global scalar `StorageUtil` call.
 ///
 /// The caller supplies the current value from the callback transaction overlay
-/// and queues the returned command through `byro.storage`. Integer and string
+/// and queues the returned command through `byro.storage`. Scalar type
 /// keys are kept separate exactly as in `StorageUtil`, and names are folded to
 /// ASCII lowercase because the legacy API treats value names case-insensitively.
 pub fn adapt_storage_util_global_scalar(
@@ -1307,17 +1457,25 @@ pub fn adapt_storage_util_global_scalar(
     call: StorageUtilScalarCall,
     current: Option<&PrincipalStorageValue>,
 ) -> Result<StorageUtilAdaptation, StorageUtilAdapterError> {
-    let integer = matches!(
-        &call,
+    let prefix = match &call {
         StorageUtilScalarCall::GetInt { .. }
-            | StorageUtilScalarCall::HasInt
-            | StorageUtilScalarCall::SetInt { .. }
-            | StorageUtilScalarCall::UnsetInt
-    );
-    let prefix = if integer {
-        "storageutil.int:"
-    } else {
-        "storageutil.string:"
+        | StorageUtilScalarCall::HasInt
+        | StorageUtilScalarCall::SetInt { .. }
+        | StorageUtilScalarCall::UnsetInt
+        | StorageUtilScalarCall::AdjustInt { .. } => "storageutil.int:",
+        StorageUtilScalarCall::GetFloat { .. }
+        | StorageUtilScalarCall::HasFloat
+        | StorageUtilScalarCall::SetFloat { .. }
+        | StorageUtilScalarCall::UnsetFloat
+        | StorageUtilScalarCall::AdjustFloat { .. } => "storageutil.float:",
+        StorageUtilScalarCall::GetString { .. }
+        | StorageUtilScalarCall::HasString
+        | StorageUtilScalarCall::SetString { .. }
+        | StorageUtilScalarCall::UnsetString => "storageutil.string:",
+        StorageUtilScalarCall::GetForm { .. }
+        | StorageUtilScalarCall::HasForm
+        | StorageUtilScalarCall::SetForm { .. }
+        | StorageUtilScalarCall::UnsetForm => "storageutil.form:",
     };
     let key = StorageKey::new(format!("{prefix}{}", key_name.to_ascii_lowercase()))?;
 
@@ -1351,6 +1509,41 @@ pub fn adapt_storage_util_global_scalar(
             StorageUtilScalarResult::Bool(checked_int(current)?.is_some()),
             Some(PrincipalStorageCommand::Delete { key: key.clone() }),
         ),
+        StorageUtilScalarCall::AdjustInt { amount } => {
+            let value = checked_int(current)?
+                .unwrap_or(0)
+                .checked_add(amount)
+                .ok_or(StorageUtilAdapterError::IntegerOverflow)?;
+            let command = storage_util_set_int(&key, value);
+            (StorageUtilScalarResult::Int(value), Some(command))
+        }
+        StorageUtilScalarCall::GetFloat { missing } => {
+            validate_storage_util_float(missing)?;
+            (
+                StorageUtilScalarResult::Float(checked_float(current)?.unwrap_or(missing)),
+                None,
+            )
+        }
+        StorageUtilScalarCall::HasFloat => (
+            StorageUtilScalarResult::Bool(checked_float(current)?.is_some()),
+            None,
+        ),
+        StorageUtilScalarCall::SetFloat { value } => {
+            validate_storage_util_float(value)?;
+            let command = storage_util_set_float(&key, value);
+            (StorageUtilScalarResult::Float(value), Some(command))
+        }
+        StorageUtilScalarCall::UnsetFloat => (
+            StorageUtilScalarResult::Bool(checked_float(current)?.is_some()),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+        ),
+        StorageUtilScalarCall::AdjustFloat { amount } => {
+            validate_storage_util_float(amount)?;
+            let value = checked_float(current)?.unwrap_or(0.0) + amount;
+            validate_storage_util_float(value)?;
+            let command = storage_util_set_float(&key, value);
+            (StorageUtilScalarResult::Float(value), Some(command))
+        }
         StorageUtilScalarCall::GetString { missing } => {
             let value = match current {
                 Some(PrincipalStorageValue::String(value)) => value.clone(),
@@ -1378,12 +1571,71 @@ pub fn adapt_storage_util_global_scalar(
             StorageUtilScalarResult::Bool(checked_string(current)?.is_some()),
             Some(PrincipalStorageCommand::Delete { key: key.clone() }),
         ),
+        StorageUtilScalarCall::GetForm { missing } => (
+            StorageUtilScalarResult::Form(checked_form(current)?.or(missing)),
+            None,
+        ),
+        StorageUtilScalarCall::HasForm => (
+            StorageUtilScalarResult::Bool(checked_form(current)?.is_some()),
+            None,
+        ),
+        StorageUtilScalarCall::SetForm { value } => {
+            let command = match value {
+                Some(value) => PrincipalStorageCommand::Set {
+                    key: key.clone(),
+                    value: ExtensionValue::Bytes(encode_storage_util_form(value)),
+                },
+                None => PrincipalStorageCommand::Delete { key: key.clone() },
+            };
+            (StorageUtilScalarResult::Form(value), Some(command))
+        }
+        StorageUtilScalarCall::UnsetForm => (
+            StorageUtilScalarResult::Bool(checked_form(current)?.is_some()),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+        ),
     };
     Ok(StorageUtilAdaptation {
         key,
         result,
         command,
     })
+}
+
+fn storage_util_set_int(key: &StorageKey, value: i32) -> PrincipalStorageCommand {
+    if value == 0 {
+        PrincipalStorageCommand::Delete { key: key.clone() }
+    } else {
+        PrincipalStorageCommand::Set {
+            key: key.clone(),
+            value: ExtensionValue::I64(i64::from(value)),
+        }
+    }
+}
+
+fn validate_storage_util_float(value: f32) -> Result<(), StorageUtilAdapterError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(StorageUtilAdapterError::NonFiniteFloat)
+    }
+}
+
+fn storage_util_set_float(key: &StorageKey, value: f32) -> PrincipalStorageCommand {
+    if value == 0.0 {
+        PrincipalStorageCommand::Delete { key: key.clone() }
+    } else {
+        PrincipalStorageCommand::Set {
+            key: key.clone(),
+            value: ExtensionValue::Bytes(value.to_bits().to_le_bytes().to_vec()),
+        }
+    }
+}
+
+fn encode_storage_util_form(value: FormRef) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(20);
+    encoded.extend_from_slice(&value.source());
+    encoded.extend_from_slice(&value.local().to_le_bytes());
+    encoded
 }
 
 fn checked_int(
@@ -1406,6 +1658,46 @@ fn checked_string(
         Some(_) => Err(StorageUtilAdapterError::TypeMismatch),
         None => Ok(None),
     }
+}
+
+fn checked_float(
+    current: Option<&PrincipalStorageValue>,
+) -> Result<Option<f32>, StorageUtilAdapterError> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let PrincipalStorageValue::Bytes(encoded) = current else {
+        return Err(StorageUtilAdapterError::TypeMismatch);
+    };
+    let encoded: [u8; 4] = encoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| StorageUtilAdapterError::TypeMismatch)?;
+    let value = f32::from_bits(u32::from_le_bytes(encoded));
+    validate_storage_util_float(value)?;
+    Ok(Some(value))
+}
+
+fn checked_form(
+    current: Option<&PrincipalStorageValue>,
+) -> Result<Option<FormRef>, StorageUtilAdapterError> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let PrincipalStorageValue::Bytes(encoded) = current else {
+        return Err(StorageUtilAdapterError::TypeMismatch);
+    };
+    if encoded.len() != 20 {
+        return Err(StorageUtilAdapterError::TypeMismatch);
+    }
+    let mut source = [0_u8; 16];
+    source.copy_from_slice(&encoded[..16]);
+    let local = u32::from_le_bytes(
+        encoded[16..]
+            .try_into()
+            .map_err(|_| StorageUtilAdapterError::TypeMismatch)?,
+    );
+    Ok(Some(FormRef::new(source, local)))
 }
 
 /// Classify a static Papyrus call by provider type and function name.
@@ -1464,14 +1756,14 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
     }
     if provider.eq_ignore_ascii_case("StorageUtil") {
         return Some(match source_alias(provider, function) {
-            Some(_) => mapped(
+            Some(_) => native(
                 ExtenderFamily::PapyrusUtil,
                 PRINCIPAL_STORAGE_SERVICE,
-                "an exact global-value source alias targets byro.storage; ObjKey must be None",
+                "an exact engine-owned global-value adapter targets byro.storage; ObjKey must be None",
             ),
             None => unsupported(
                 ExtenderFamily::PapyrusUtil,
-                "this StorageUtil function has no exact engine alias; object-scoped values require extension components, and adjust/float/Form/file/list/cross-principal semantics remain unavailable",
+                "this StorageUtil function has no exact engine alias; object-scoped values require extension components, and pluck/file/list/cross-principal semantics remain unavailable",
             ),
         });
     }
@@ -1654,7 +1946,7 @@ mod tests {
     #[test]
     fn storage_and_events_map_to_existing_semantic_services() {
         let storage = classify_static_call("storageutil", "GetIntValue").unwrap();
-        assert_eq!(storage.disposition, CompatibilityDisposition::Mapped);
+        assert_eq!(storage.disposition, CompatibilityDisposition::Native);
         assert_eq!(storage.service, Some(PRINCIPAL_STORAGE_SERVICE));
         let event = classify_method_call("RegisterForModEvent").unwrap();
         assert_eq!(event.service, Some(EVENT_SERVICE));
@@ -1878,15 +2170,36 @@ mod tests {
         assert_eq!(set.operation, "storage.queue-set/delete");
         let unset = source_alias("StorageUtil", "UnsetIntValue").unwrap();
         assert_eq!(unset.operation, "storage.get+queue-delete");
-        assert!(source_alias("StorageUtil", "AdjustIntValue").is_none());
-        assert!(source_alias("StorageUtil", "GetFloatValue").is_none());
+        assert_eq!(
+            source_alias("StorageUtil", "AdjustIntValue")
+                .unwrap()
+                .operation,
+            "storage.get+queue-set/delete"
+        );
+        assert_eq!(
+            source_alias("StorageUtil", "GetFloatValue")
+                .unwrap()
+                .value_kind,
+            "float"
+        );
+        assert_eq!(
+            source_alias("StorageUtil", "SetFormValue")
+                .unwrap()
+                .value_kind,
+            "form"
+        );
         assert!(source_alias("StorageUtil", "FormListAdd").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
                 .disposition,
-            CompatibilityDisposition::Unsupported
+            CompatibilityDisposition::Native
         );
+        let declarations = papyrus_storage_util_declarations();
+        assert_eq!(declarations.len(), 18);
+        assert!(declarations
+            .iter()
+            .all(|function| function.declaration.validate().is_ok()));
     }
 
     #[test]
@@ -2014,6 +2327,67 @@ mod tests {
     }
 
     #[test]
+    fn storage_util_adapter_round_trips_float_form_and_numeric_adjustments() {
+        let float = adapt_storage_util_global_scalar(
+            "SharedKey",
+            StorageUtilScalarCall::SetFloat { value: 1.25 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(float.key.as_str(), "storageutil.float:sharedkey");
+        let Some(PrincipalStorageCommand::Set {
+            value: ExtensionValue::Bytes(encoded),
+            ..
+        }) = float.command
+        else {
+            panic!("float set must encode a bounded byte value");
+        };
+        let adjusted = adapt_storage_util_global_scalar(
+            "sharedkey",
+            StorageUtilScalarCall::AdjustFloat { amount: 0.5 },
+            Some(&PrincipalStorageValue::Bytes(encoded)),
+        )
+        .unwrap();
+        assert_eq!(adjusted.result, StorageUtilScalarResult::Float(1.75));
+
+        let adjusted_int = adapt_storage_util_global_scalar(
+            "new-count",
+            StorageUtilScalarCall::AdjustInt { amount: 4 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(adjusted_int.result, StorageUtilScalarResult::Int(4));
+
+        let form = FormRef::new([0x2a; 16], 0x1234_5678);
+        let set_form = adapt_storage_util_global_scalar(
+            "SharedKey",
+            StorageUtilScalarCall::SetForm { value: Some(form) },
+            None,
+        )
+        .unwrap();
+        assert_eq!(set_form.key.as_str(), "storageutil.form:sharedkey");
+        let Some(PrincipalStorageCommand::Set {
+            value: ExtensionValue::Bytes(encoded),
+            ..
+        }) = set_form.command
+        else {
+            panic!("form set must encode a bounded byte value");
+        };
+        assert_eq!(encoded.len(), 20);
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "sharedkey",
+                StorageUtilScalarCall::GetForm { missing: None },
+                Some(&PrincipalStorageValue::Bytes(encoded)),
+            )
+            .unwrap()
+            .result,
+            StorageUtilScalarResult::Form(Some(form))
+        );
+        assert_ne!(float.key, set_form.key);
+    }
+
+    #[test]
     fn storage_util_adapter_rejects_unrepresentable_or_corrupt_values() {
         assert!(matches!(
             adapt_storage_util_global_scalar(
@@ -2028,6 +2402,38 @@ mod tests {
                 "score",
                 StorageUtilScalarCall::GetInt { missing: 0 },
                 Some(&PrincipalStorageValue::String("wrong".to_owned())),
+            ),
+            Err(StorageUtilAdapterError::TypeMismatch)
+        );
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "score",
+                StorageUtilScalarCall::AdjustInt { amount: 1 },
+                Some(&PrincipalStorageValue::I64(i64::from(i32::MAX))),
+            ),
+            Err(StorageUtilAdapterError::IntegerOverflow)
+        );
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "ratio",
+                StorageUtilScalarCall::SetFloat { value: f32::NAN },
+                None,
+            ),
+            Err(StorageUtilAdapterError::NonFiniteFloat)
+        );
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "ratio",
+                StorageUtilScalarCall::GetFloat { missing: f32::NAN },
+                None,
+            ),
+            Err(StorageUtilAdapterError::NonFiniteFloat)
+        );
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "owner",
+                StorageUtilScalarCall::HasForm,
+                Some(&PrincipalStorageValue::Bytes(vec![0; 19])),
             ),
             Err(StorageUtilAdapterError::TypeMismatch)
         );

@@ -531,18 +531,22 @@ belongs to the host, not `byroredux-sdk`.
 | Arbitrary object extra data | Schema-defined extension components attached to stable entities |
 | Direct engine object or memory access | No equivalent; explicit semantic capability required |
 
-The first exact source-alias pack covers global (`ObjKey == None`)
-`StorageUtil` integer and string get/has/set/unset calls. Each descriptor names
+The exact source-alias pack covers global (`ObjKey == None`) `StorageUtil`
+integer, float, string, and Form get/has/set/unset calls plus integer and float
+adjustment. Each descriptor names
 the concrete `byro.storage` recipe, expected WIT value variant, and isolation
 constraint. An executable SDK adapter case-folds and type-namespaces portable
-keys, preserves missing values and synchronous returns, maps zero/empty sets to
-deletion, and reports whether unset found a value. The storage service supplies
+keys, preserves missing values and synchronous returns, maps zero/empty/`None`
+sets to deletion, and reports whether unset found a value. Floats use exact
+four-byte IEEE-754 payloads and Forms use fixed portable `FormRef` payloads
+inside the existing bounded byte value, so this expansion does not alter the
+save schema. The storage service supplies
 the callback-local read-your-writes needed by those recipes. These exact aliases
 are now published by the engine compatibility catalog and execute without an
 external extension package, using the authenticated archive-script principal
-before and after latent waits. Adjust, Float,
-Form, pluck, file-backed, list, object-scoped, arbitrary-key, and cross-mod
-shared calls remain deliberately unsupported until an engine service can honor
+before and after latent waits. Pluck, file-backed, list, object-scoped,
+arbitrary-key, and cross-mod shared calls remain deliberately unsupported until
+an engine service can honor
 their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
@@ -1308,10 +1312,17 @@ JContainers introspection/copy pack (`empty`, `isArray`, `isMap`, `shallowCopy`,
 `deepCopy`). Deep copies preserve shared children and cycles with fresh handles;
 shallow copies retain references to the original children. The pack operates
 entirely on the existing bounded registry and does not change its saved shape.
-StorageUtil Float/Form/adjust calls rank next but need new portable
-principal-storage value kinds and therefore another save-contract decision.
 Dynamic physical-key registration and arbitrary UI access remain behind
 normalized-input and isolated-UI policy work, respectively.
+
+Checkpoint commit: `feat(scripting): expand StorageUtil scalar aliases`.
+
+Delivered the remaining exact global scalar surface: Float and Form
+get/has/set/unset plus `AdjustIntValue` and `AdjustFloatValue`. Float and Form
+state is encoded under type-isolated keys using existing bounded bytes, avoiding
+a storage/save format change. Non-finite floats, malformed persisted payloads,
+integer overflow, non-global object keys, and cross-principal access fail
+closed; zero results and `None` retain PapyrusUtil's unset semantics.
 
 ### 14.4 Exit gate
 

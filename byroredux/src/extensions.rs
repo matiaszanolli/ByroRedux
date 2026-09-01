@@ -41,9 +41,14 @@ use byroredux_sdk::compatibility::{
     PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
     PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
     PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
+    PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
 };
 use byroredux_sdk::component::{
@@ -1007,6 +1012,39 @@ impl ExtensionHost {
                 [ScriptValue::None, ScriptValue::String(key)],
             ) => (key, StorageUtilScalarCall::UnsetInt),
             (
+                PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(amount)],
+            ) => (
+                key,
+                StorageUtilScalarCall::AdjustInt {
+                    amount: integer(*amount)?,
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::GetFloat { missing: 0.0 }),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Float(missing)],
+            ) => (key, StorageUtilScalarCall::GetFloat { missing: *missing }),
+            (
+                PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::HasFloat),
+            (
+                PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Float(value)],
+            ) => (key, StorageUtilScalarCall::SetFloat { value: *value }),
+            (
+                PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::UnsetFloat),
+            (
+                PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Float(amount)],
+            ) => (key, StorageUtilScalarCall::AdjustFloat { amount: *amount }),
+            (
                 PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
                 [ScriptValue::None, ScriptValue::String(key)],
             ) => (
@@ -1041,6 +1079,44 @@ impl ExtensionHost {
                 PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
                 [ScriptValue::None, ScriptValue::String(key)],
             ) => (key, StorageUtilScalarCall::UnsetString),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::GetForm { missing: None }),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::None],
+            ) => (key, StorageUtilScalarCall::GetForm { missing: None }),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Form(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::GetForm {
+                    missing: Some(*missing),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::HasForm),
+            (
+                PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::None],
+            ) => (key, StorageUtilScalarCall::SetForm { value: None }),
+            (
+                PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Form(value)],
+            ) => (
+                key,
+                StorageUtilScalarCall::SetForm {
+                    value: Some(*value),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::UnsetForm),
             _ => {
                 return Err(unavailable(
                     "StorageUtil supports only global ObjKey=None scalar calls with exact typed arguments"
@@ -1062,8 +1138,11 @@ impl ExtensionHost {
         }
         Ok(match adaptation.result {
             StorageUtilScalarResult::Int(value) => ScriptValue::Integer(i64::from(value)),
+            StorageUtilScalarResult::Float(value) => ScriptValue::Float(value),
             StorageUtilScalarResult::Bool(value) => ScriptValue::Boolean(value),
             StorageUtilScalarResult::String(value) => ScriptValue::String(value),
+            StorageUtilScalarResult::Form(Some(value)) => ScriptValue::Form(value),
+            StorageUtilScalarResult::Form(None) => ScriptValue::None,
         })
     }
 
@@ -6779,6 +6858,69 @@ mod tests {
             ScriptValue::Boolean(true)
         );
 
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("visits".to_owned()),
+                    ScriptValue::Integer(2),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Integer(2)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("Ratio".to_owned()),
+                    ScriptValue::Float(1.25),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Float(1.25)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("ratio".to_owned()),
+                    ScriptValue::Float(0.5),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Float(1.75)
+        );
+        let stored_form = FormRef::new([0x4d; 16], 0x1020_3040);
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("Owner".to_owned()),
+                    ScriptValue::Form(stored_form),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Form(stored_form)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+                &[ScriptValue::None, ScriptValue::String("owner".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Form(stored_form)
+        );
+
         let object = ScriptValue::Form(FormRef::new([9; 16], 1));
         assert!(matches!(
             host.invoke_owned_papyrus_provider(
@@ -7446,10 +7588,16 @@ mod tests {
             ScriptName StorageFixture
             Event OnLoad()
                 StorageUtil.SetIntValue(None, "Count", 3)
+                StorageUtil.SetFloatValue(None, "Ratio", 1.25)
                 Utility.Wait(0.0)
                 Int value
                 value = StorageUtil.GetIntValue(None, "count", -1)
-                If value == 3
+                Int visits
+                visits = StorageUtil.AdjustIntValue(None, "visits", 2)
+                Float ratio
+                ratio = StorageUtil.AdjustFloatValue(None, "ratio", 0.5)
+                StorageUtil.SetFormValue(None, "Owner", None)
+                If value == 3 && visits == 2 && ratio == 1.75
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent
@@ -7485,6 +7633,17 @@ mod tests {
             values.get(&StorageKey::new("storageutil.string:status").unwrap()),
             Some(&PrincipalStorageValue::String("ready".to_owned()))
         );
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.int:visits").unwrap()),
+            Some(&PrincipalStorageValue::I64(2))
+        );
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.float:ratio").unwrap()),
+            Some(&PrincipalStorageValue::Bytes(
+                1.75_f32.to_bits().to_le_bytes().to_vec()
+            ))
+        );
+        assert!(!values.contains_key(&StorageKey::new("storageutil.form:owner").unwrap()));
     }
 
     #[test]
