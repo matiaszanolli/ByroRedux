@@ -2731,14 +2731,26 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
 /// The resolver owns the immutable catalog, so the common path is one Arc
 /// clone plus a pointer comparison and never rebuilds plugin metadata.
 pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
-    let (catalog, faction_relationships) = {
+    let (resolver, catalog, faction_relationships) = {
         let Some(resolver) =
             world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
         else {
+            byroredux_scripting::set_papyrus_provider_form_resolver(world, None);
             return;
         };
-        (resolver.content_catalog(), resolver.faction_relationships())
+        (
+            resolver.clone(),
+            resolver.content_catalog(),
+            resolver.faction_relationships(),
+        )
     };
+    let form_resolver = Arc::new(move |form_id: u32| {
+        resolver
+            .resolve(form_id)
+            .map(form_ref)
+            .ok_or_else(|| format!("global FormID {form_id:#010x} is not in the active load order"))
+    }) as Arc<byroredux_scripting::PapyrusProviderFormResolver>;
+    byroredux_scripting::set_papyrus_provider_form_resolver(world, Some(form_resolver));
     // Built-in legacy scripts consume the same immutable snapshot as sandbox
     // guests. Publish it even when no ExtensionHost is configured so OBSE/
     // xNVSE-compatible engine behavior never depends on an external runtime.
@@ -7267,6 +7279,7 @@ mod tests {
         let slot = ExtensionHostSlot::initialize_default();
         let host = slot.host().unwrap();
         let mut world = World::new();
+        byroredux_scripting::register(&mut world);
         world.insert_resource(resolver);
         world.insert_resource(slot);
 
@@ -7304,6 +7317,12 @@ mod tests {
             .unwrap();
         assert_eq!(relationship.modifier(), 25);
         assert_eq!(relationship.combat_reaction_raw(), 3);
+        drop(host);
+        let form_resolver = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .form_resolver()
+            .expect("content sync publishes a form resolver");
+        assert_eq!(form_resolver(0xFE00_3ABC).unwrap(), form);
     }
 
     #[test]

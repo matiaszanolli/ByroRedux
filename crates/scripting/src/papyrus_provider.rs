@@ -15,7 +15,7 @@ use byroredux_papyrus::ast::{
 };
 use byroredux_sdk::{
     compatibility::{classify_static_call, papyrus_game_content_declarations},
-    identity::{EntityRef, ExtensionId},
+    identity::{EntityRef, ExtensionId, FormRef},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
         ScriptValueType,
@@ -39,12 +39,17 @@ pub type PapyrusProviderCallback =
 pub type PapyrusProviderEntityResolver =
     dyn Fn(EntityId) -> Result<EntityRef, String> + Send + Sync;
 
+/// Executable-owned conversion from a remapped global FormID to portable SDK
+/// identity. Unlike entity handles, resolved forms are safe to persist.
+pub type PapyrusProviderFormResolver = dyn Fn(u32) -> Result<FormRef, String> + Send + Sync;
+
 /// Live catalog and host callback published atomically by the executable.
 #[derive(Clone)]
 pub struct PapyrusProviderRuntime {
     catalog: Arc<PapyrusProviderCatalog>,
     callback: Option<Arc<PapyrusProviderCallback>>,
     entity_resolver: Option<Arc<PapyrusProviderEntityResolver>>,
+    form_resolver: Option<Arc<PapyrusProviderFormResolver>>,
 }
 
 impl Resource for PapyrusProviderRuntime {}
@@ -55,6 +60,7 @@ impl Default for PapyrusProviderRuntime {
             catalog: Arc::new(PapyrusProviderCatalog::engine_compatibility()),
             callback: None,
             entity_resolver: None,
+            form_resolver: None,
         }
     }
 }
@@ -73,6 +79,10 @@ impl PapyrusProviderRuntime {
     pub fn entity_resolver(&self) -> Option<Arc<PapyrusProviderEntityResolver>> {
         self.entity_resolver.clone()
     }
+
+    pub fn form_resolver(&self) -> Option<Arc<PapyrusProviderFormResolver>> {
+        self.form_resolver.clone()
+    }
 }
 
 /// Install the executable's opaque-handle converter independently of the
@@ -83,6 +93,17 @@ pub fn set_papyrus_provider_entity_resolver(
 ) {
     if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
         runtime.entity_resolver = resolver;
+    }
+}
+
+/// Install the executable's stable authored-form converter independently of
+/// the provider callback so built-in compatibility routes can use it too.
+pub fn set_papyrus_provider_form_resolver(
+    world: &World,
+    resolver: Option<Arc<PapyrusProviderFormResolver>>,
+) {
+    if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
+        runtime.form_resolver = resolver;
     }
 }
 
@@ -577,10 +598,18 @@ struct PapyrusProviderParameterBinding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PapyrusProviderParameterSource {
     Entity,
+    Form,
     PowerAttack,
     SneakAttack,
     BashAttack,
     Blocked,
+}
+
+#[derive(Default)]
+struct PapyrusProviderProjectedLocals {
+    values: BTreeMap<String, ScriptValue>,
+    entities: Vec<(String, EntityId)>,
+    forms: Vec<(String, u32)>,
 }
 
 impl Component for PapyrusProviderProgram {
@@ -605,17 +634,23 @@ impl PapyrusProviderProgram {
         event_kind: PapyrusProviderEvent,
         entity: Option<EntityId>,
         hit: Option<&HitEvent>,
-    ) -> (BTreeMap<String, ScriptValue>, Vec<(String, EntityId)>) {
-        let mut locals = BTreeMap::new();
-        let mut entities = Vec::new();
+        form: Option<u32>,
+    ) -> PapyrusProviderProjectedLocals {
+        let mut projected = PapyrusProviderProjectedLocals::default();
         let Some(handler) = self.handlers.get(&event_kind) else {
-            return (locals, entities);
+            return projected;
         };
         for parameter in &handler.parameters {
             let value = match parameter.source {
                 PapyrusProviderParameterSource::Entity => {
                     if let Some(entity) = entity {
-                        entities.push((parameter.name.clone(), entity));
+                        projected.entities.push((parameter.name.clone(), entity));
+                    }
+                    continue;
+                }
+                PapyrusProviderParameterSource::Form => {
+                    if let Some(form) = form {
+                        projected.forms.push((parameter.name.clone(), form));
                     }
                     continue;
                 }
@@ -630,9 +665,11 @@ impl PapyrusProviderProgram {
                 }
                 PapyrusProviderParameterSource::Blocked => hit.is_some_and(|hit| hit.blocked),
             };
-            locals.insert(parameter.name.clone(), ScriptValue::Boolean(value));
+            projected
+                .values
+                .insert(parameter.name.clone(), ScriptValue::Boolean(value));
         }
-        (locals, entities)
+        projected
     }
 }
 
@@ -749,6 +786,21 @@ fn lower_event_parameters(
                 bindings.push(PapyrusProviderParameterBinding {
                     name,
                     source: PapyrusProviderParameterSource::Entity,
+                });
+            }
+        }
+    }
+    if matches!(
+        event_kind,
+        PapyrusProviderEvent::OnObjectEquipped | PapyrusProviderEvent::OnObjectUnequipped
+    ) {
+        if let Some(parameter) = event.params.first() {
+            if matches!(&parameter.ty.node, Type::Object(_)) {
+                let name = parameter.name.node.0.to_ascii_lowercase();
+                locals.insert(name.clone(), ScriptValueType::Form);
+                bindings.push(PapyrusProviderParameterBinding {
+                    name,
+                    source: PapyrusProviderParameterSource::Form,
                 });
             }
         }
@@ -1287,11 +1339,16 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     let runtime = world
         .try_resource::<PapyrusProviderRuntime>()
         .and_then(|runtime| {
-            runtime
-                .callback()
-                .map(|callback| (runtime.catalog(), callback, runtime.entity_resolver()))
+            runtime.callback().map(|callback| {
+                (
+                    runtime.catalog(),
+                    callback,
+                    runtime.entity_resolver(),
+                    runtime.form_resolver(),
+                )
+            })
         });
-    let Some((catalog, callback, entity_resolver)) = runtime else {
+    let Some((catalog, callback, entity_resolver, form_resolver)) = runtime else {
         return;
     };
     let pending = {
@@ -1309,7 +1366,12 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if continuation.remaining_seconds > 0.0 {
             still_pending.push(continuation);
         } else {
-            handlers.push((continuation.statements, continuation.locals, Vec::new()));
+            handlers.push((
+                continuation.statements,
+                continuation.locals,
+                Vec::new(),
+                Vec::new(),
+            ));
         }
     }
 
@@ -1360,7 +1422,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                         batch
                             .0
                             .iter()
-                            .map(|change| change.equipped)
+                            .map(|change| (change.item_form_id, change.equipped))
                             .collect::<Vec<_>>(),
                     )
                 })
@@ -1394,6 +1456,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 program.handler(PapyrusProviderEvent::OnInit).to_vec(),
                 BTreeMap::new(),
                 Vec::new(),
+                Vec::new(),
             ));
         }
         if loaded.contains(&entity) {
@@ -1401,53 +1464,69 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 program.handler(PapyrusProviderEvent::OnLoad).to_vec(),
                 BTreeMap::new(),
                 Vec::new(),
+                Vec::new(),
             ));
         }
         if let Some(activator) = activated.get(&entity) {
-            let (locals, entities) =
-                program.projected_locals(PapyrusProviderEvent::OnActivate, Some(*activator), None);
+            let projected = program.projected_locals(
+                PapyrusProviderEvent::OnActivate,
+                Some(*activator),
+                None,
+                None,
+            );
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnActivate).to_vec(),
-                locals,
-                entities,
+                projected.values,
+                projected.entities,
+                projected.forms,
             ));
         }
         if let Some(hit) = hits.get(&entity) {
-            let (locals, entities) = program.projected_locals(
+            let projected = program.projected_locals(
                 PapyrusProviderEvent::OnHit,
                 Some(hit.aggressor),
                 Some(hit),
+                None,
             );
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnHit).to_vec(),
-                locals,
-                entities,
+                projected.values,
+                projected.entities,
+                projected.forms,
             ));
         }
         if let Some(triggerers) = trigger_entries.get(&entity) {
             for triggerer in triggerers {
-                let (locals, entities) = program.projected_locals(
+                let projected = program.projected_locals(
                     PapyrusProviderEvent::OnTriggerEnter,
                     Some(*triggerer),
+                    None,
                     None,
                 );
                 handlers.push((
                     program
                         .handler(PapyrusProviderEvent::OnTriggerEnter)
                         .to_vec(),
-                    locals,
-                    entities,
+                    projected.values,
+                    projected.entities,
+                    projected.forms,
                 ));
             }
         }
         if let Some(changes) = equipment_changes.get(&entity) {
-            for equipped in changes {
+            for (form_id, equipped) in changes {
                 let event = if *equipped {
                     PapyrusProviderEvent::OnObjectEquipped
                 } else {
                     PapyrusProviderEvent::OnObjectUnequipped
                 };
-                handlers.push((program.handler(event).to_vec(), BTreeMap::new(), Vec::new()));
+                let projected = program.projected_locals(event, None, None, Some(*form_id));
+                handlers.push((
+                    program.handler(event).to_vec(),
+                    projected.values,
+                    projected.entities,
+                    projected.forms,
+                ));
             }
         }
         if updated.contains(&entity) {
@@ -1455,12 +1534,13 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 program.handler(PapyrusProviderEvent::OnUpdate).to_vec(),
                 BTreeMap::new(),
                 Vec::new(),
+                Vec::new(),
             ));
         }
     }
     drop(programs);
 
-    for (statements, mut locals, entity_locals) in handlers {
+    for (statements, mut locals, entity_locals, form_locals) in handlers {
         if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
             log::warn!("Papyrus provider handler aborted before dispatch: {error}");
             continue;
@@ -1475,6 +1555,26 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             match resolver(entity) {
                 Ok(entity) => {
                     locals.insert(name, ScriptValue::Entity(entity));
+                }
+                Err(error) => {
+                    log::warn!("Papyrus provider handler aborted: {error}");
+                    projection_failed = true;
+                    break;
+                }
+            }
+        }
+        if projection_failed {
+            continue;
+        }
+        for (name, form_id) in form_locals {
+            let Some(resolver) = form_resolver.as_ref() else {
+                log::warn!("Papyrus provider handler aborted: form resolver is unavailable");
+                projection_failed = true;
+                break;
+            };
+            match resolver(form_id) {
+                Ok(form) => {
+                    locals.insert(name, ScriptValue::Form(form));
                 }
                 Err(error) => {
                     log::warn!("Papyrus provider handler aborted: {error}");
@@ -1906,6 +2006,27 @@ mod tests {
         }
     }
 
+    fn form_declaration() -> ScriptFunctionDeclaration {
+        ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("inspect-form").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![ScriptParameterDeclaration {
+                id: ScriptParameterId::new("form").unwrap(),
+                value_type: ScriptValueType::Form,
+                optional: false,
+            }],
+            result: Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::String,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "WeatherNative".to_owned(),
+                function: "InspectForm".to_owned(),
+            }),
+            description: "Inspect one stable authored form".to_owned(),
+        }
+    }
+
     fn expression(source: &str) -> Expr {
         let source = format!("ScriptName Fixture\nEvent OnInit()\n  {source}\nEndEvent\n");
         let (script, errors) = parse_script(&source).unwrap();
@@ -1937,6 +2058,12 @@ mod tests {
             .insert(
                 &ExtensionId::new("org.example.weather").unwrap(),
                 &entity_declaration(),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                &ExtensionId::new("org.example.weather").unwrap(),
+                &form_declaration(),
             )
             .unwrap();
         catalog
@@ -2257,11 +2384,11 @@ mod tests {
                     WeatherNative.WeatherAt(1, "hit")
                 EndIf
             EndEvent
-            Event OnObjectEquipped()
-                WeatherNative.WeatherAt(2, "equipped")
+            Event OnObjectEquipped(Form akBaseObject, ObjectReference akReference)
+                WeatherNative.InspectForm(akBaseObject)
             EndEvent
-            Event OnObjectUnequipped()
-                WeatherNative.WeatherAt(3, "unequipped")
+            Event OnObjectUnequipped(Form akBaseObject, ObjectReference akReference)
+                WeatherNative.InspectForm(akBaseObject)
             EndEvent
         "#;
         let (script, errors) = parse_script(source).unwrap();
@@ -2279,6 +2406,9 @@ mod tests {
             Ok(ScriptValue::String("clear".to_owned()))
         }) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let form_resolver = Arc::new(|form_id: u32| Ok(FormRef::new([7; 16], form_id)))
+            as Arc<PapyrusProviderFormResolver>;
+        set_papyrus_provider_form_resolver(&world, Some(form_resolver));
         let entity = world.spawn();
         let aggressor = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, program);
@@ -2314,8 +2444,64 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0][0], ScriptValue::Integer(1));
-        assert_eq!(calls[1][0], ScriptValue::Integer(3));
-        assert_eq!(calls[2][0], ScriptValue::Integer(2));
+        assert_eq!(calls[1], [ScriptValue::Form(FormRef::new([7; 16], 1))]);
+        assert_eq!(calls[2], [ScriptValue::Form(FormRef::new([7; 16], 2))]);
+    }
+
+    #[test]
+    fn equipment_form_identity_survives_a_latent_handler_tail() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnObjectEquipped(Form akBaseObject, ObjectReference akReference)
+                Utility.Wait(0.5)
+                WeatherNative.InspectForm(akBaseObject)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback.lock().unwrap().push(arguments.to_vec());
+            Ok(ScriptValue::String("ok".to_owned()))
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let form_resolver = Arc::new(|form_id: u32| Ok(FormRef::new([8; 16], form_id)))
+            as Arc<PapyrusProviderFormResolver>;
+        set_papyrus_provider_form_resolver(&world, Some(form_resolver));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(
+            entity,
+            EquipmentEventBatch(vec![crate::EquipmentChange {
+                item_form_id: 0x44,
+                equipped: true,
+            }]),
+        );
+
+        papyrus_provider_system(&world, 0.0);
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(
+            world.resource::<PapyrusProviderContinuationQueue>().len(),
+            1
+        );
+        crate::event_cleanup_system(&world, 0.0);
+
+        papyrus_provider_system(&world, 0.5);
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![vec![ScriptValue::Form(FormRef::new([8; 16], 0x44))]]
+        );
+        assert!(world
+            .resource::<PapyrusProviderContinuationQueue>()
+            .is_empty());
     }
 
     #[test]
