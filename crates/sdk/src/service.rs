@@ -37,6 +37,8 @@ pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 pub const CONSOLE_REGISTER_CAPABILITY: &str = "byro.console.register";
 /// Capability required to read the public engine-settings snapshot.
 pub const SETTINGS_READ_CAPABILITY: &str = "byro.settings.read";
+/// Capability required to register manifest-declared principal settings.
+pub const SETTINGS_REGISTER_CAPABILITY: &str = "byro.settings.register";
 /// Service providing principal and host-contract discovery.
 pub const CONTEXT_SERVICE: &str = "byro.context";
 /// Service providing bounded attributed diagnostics.
@@ -300,6 +302,7 @@ mod tests {
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
             console_commands: Vec::new(),
+            settings: Vec::new(),
             principal_storage_schema: None,
         }
     }

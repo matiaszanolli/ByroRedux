@@ -25,8 +25,9 @@ use byroredux_sdk::service::{
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
     INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
-    SETTINGS_READ_CAPABILITY, SETTINGS_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -455,6 +456,7 @@ fn manifest_with_log(required: bool) -> ExtensionManifest {
         subscriptions: Vec::new(),
         component_schemas: Vec::new(),
         console_commands: Vec::new(),
+        settings: Vec::new(),
         principal_storage_schema: None,
     }
 }
@@ -1616,6 +1618,9 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(SETTINGS_READ_CAPABILITY));
+    assert!(runtime
+        .catalog()
+        .supports_capability(SETTINGS_REGISTER_CAPABILITY));
 }
 
 #[test]

@@ -202,6 +202,7 @@ mod tests {
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
             console_commands: Vec::new(),
+            settings: Vec::new(),
             principal_storage_schema: None,
         }
     }

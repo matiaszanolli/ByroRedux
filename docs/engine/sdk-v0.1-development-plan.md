@@ -69,8 +69,11 @@ component. Typed settings reads are now engine-owned too:
 `byro.settings.read` projects the same persisted universal `SettingsRegistry`
 consumed by native menus into bounded bool/number/choice values, is available
 during component initialization, and refreshes before later callbacks.
-Manifest-declared, principal-namespaced setting registration and deferred
-writes remain.
+Manifest-declared registration is now implemented as well:
+granted packages contribute bounded toggle/slider/choice metadata under
+`ext.<extension-id>.*`, persisted values are overlaid before guest
+initialization, and registration commits atomically with package activation;
+deferred guest writes remain.
 
 ## 1. Outcome
 
@@ -497,7 +500,7 @@ Status: **Exact-version entity-attached and principal-storage persistence
 and the first read-only plugin/form catalog, manifest-declared namespaced
 console registration, and typed universal-settings reads implemented;
 migrations, service aliases, record metadata queries, namespaced setting
-registration/writes, and real-mod fixtures remain pending.**
+writes, and real-mod fixtures remain pending.**
 
 Deliverables:
 
@@ -609,8 +612,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   bounded arguments/output, atomic deferred mutation, capability denial, and
   per-component fault isolation. Capability-gated typed reads project the
   native universal settings registry with startup-correct and live-refreshed
-  bool/number/choice values; principal-namespaced registration and deferred
-  writes remain.**
+  bool/number/choice values. Granted manifests can register bounded native
+  toggle/slider/choice controls under `ext.<extension-id>.*`, atomically with
+  package activation and persisted-value overlay; deferred writes remain.**
 - Plugin/form/dependency introspection. **Loaded regular/light plugin
   enumeration, case-insensitive basename lookup, stable source identity, and
   bounded portable form qualification are implemented behind

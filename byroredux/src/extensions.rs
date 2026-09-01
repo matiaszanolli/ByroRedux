@@ -39,9 +39,12 @@ use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAM
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, CONSOLE_REGISTER_CAPABILITY, EQUIPMENT_EVENT,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    SESSION_EVENT, UPDATE_EVENT,
+    SESSION_EVENT, SETTINGS_REGISTER_CAPABILITY, UPDATE_EVENT,
 };
-use byroredux_sdk::settings::{SettingValue as SdkSettingValue, SettingsSnapshot};
+use byroredux_sdk::settings::{
+    SettingControlDeclaration, SettingDeclaration, SettingValue as SdkSettingValue,
+    SettingsSnapshot,
+};
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
     PrincipalStorageStore,
@@ -1941,6 +1944,12 @@ pub(crate) fn extension_engine_settings_sync_system(world: &World, _dt: f32) {
 
 fn engine_settings_snapshot(world: &World) -> Option<Arc<SettingsSnapshot>> {
     let registry = world.try_resource::<byroredux_core::settings::SettingsRegistry>()?;
+    settings_snapshot_from_registry(&registry).ok()
+}
+
+fn settings_snapshot_from_registry(
+    registry: &byroredux_core::settings::SettingsRegistry,
+) -> Result<Arc<SettingsSnapshot>, byroredux_sdk::settings::SettingsSnapshotError> {
     let entries = registry.entries().map(|entry| {
         let value = match &entry.value {
             byroredux_core::settings::SettingValue::Bool(value) => SdkSettingValue::Boolean(*value),
@@ -1953,7 +1962,63 @@ fn engine_settings_snapshot(world: &World) -> Option<Arc<SettingsSnapshot>> {
         };
         (entry.id.clone(), value)
     });
-    SettingsSnapshot::new(entries).ok().map(Arc::new)
+    SettingsSnapshot::new(entries).map(Arc::new)
+}
+
+fn register_extension_setting(
+    registry: &mut byroredux_core::settings::SettingsRegistry,
+    extension: &ExtensionId,
+    declaration: &SettingDeclaration,
+) -> Result<(), byroredux_core::settings::SettingsError> {
+    use byroredux_core::settings::{SettingChoice, SettingEntry};
+
+    let id = declaration.qualified_name(extension);
+    let mut entry = match (&declaration.default, &declaration.control) {
+        (SdkSettingValue::Boolean(value), SettingControlDeclaration::Toggle) => {
+            SettingEntry::toggle(
+                id,
+                extension.as_str(),
+                &declaration.label,
+                &declaration.description,
+                *value,
+            )
+        }
+        (
+            SdkSettingValue::Number(value),
+            SettingControlDeclaration::Slider {
+                min,
+                max,
+                step,
+                unit,
+            },
+        ) => SettingEntry::slider(
+            id,
+            extension.as_str(),
+            &declaration.label,
+            &declaration.description,
+            *value,
+            *min,
+            *max,
+            *step,
+            unit,
+        ),
+        (SdkSettingValue::Choice(value), SettingControlDeclaration::Choice { options }) => {
+            SettingEntry::choice(
+                id,
+                extension.as_str(),
+                &declaration.label,
+                &declaration.description,
+                value,
+                options
+                    .iter()
+                    .map(|option| SettingChoice::new(&option.value, &option.label))
+                    .collect(),
+            )
+        }
+        _ => unreachable!("validated setting declarations have matching types"),
+    };
+    entry.restart_required = declaration.restart_required;
+    registry.register(entry)
 }
 
 /// Late-stage adapter from transient ECS markers to sandbox callbacks.
@@ -2420,9 +2485,6 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
 
     let mut staged_host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default())?;
-    if let Some(settings) = engine_settings_snapshot(world) {
-        staged_host.set_engine_settings(settings);
-    }
     let mut sources = BTreeMap::<ExtensionId, PathBuf>::new();
     let mut manifests = Vec::with_capacity(manifest_paths.len());
     for path in manifest_paths {
@@ -2474,6 +2536,34 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
         }
     }
 
+    let mut staged_settings = world
+        .try_resource::<byroredux_core::settings::SettingsRegistry>()
+        .map(|registry| registry.clone());
+    for manifest in resolved.manifests() {
+        let granted = grants
+            .get(&manifest.id)
+            .is_some_and(|grants| grants.contains(SETTINGS_REGISTER_CAPABILITY));
+        if !granted {
+            continue;
+        }
+        let registry = staged_settings.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("extension settings requested before SettingsRegistry installation")
+        })?;
+        for declaration in &manifest.settings {
+            register_extension_setting(registry, &manifest.id, declaration).map_err(|error| {
+                anyhow::anyhow!("could not register setting for {}: {error}", manifest.id)
+            })?;
+        }
+    }
+    if let Some(registry) = staged_settings.as_mut() {
+        if let Some(persistence) = world.try_resource::<crate::settings_io::SettingsPersistence>() {
+            crate::settings_io::load(registry, &persistence);
+        }
+        let snapshot = settings_snapshot_from_registry(registry)
+            .map_err(|error| anyhow::anyhow!("extension settings snapshot is invalid: {error}"))?;
+        staged_host.set_engine_settings(snapshot);
+    }
+
     for manifest in resolved.manifests() {
         let root = &sources[&manifest.id];
         let mut artifacts = ExtensionArtifacts::new();
@@ -2492,6 +2582,9 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
     let package_count = staged_host.package_count();
     let component_count = staged_host.component_count();
     emit_diagnostics(staged_host.take_diagnostics());
+    if let Some(staged_settings) = staged_settings {
+        *world.resource_mut::<byroredux_core::settings::SettingsRegistry>() = staged_settings;
+    }
     {
         let mut slot = world.resource_mut::<ExtensionHostSlot>();
         slot.replace_host(staged_host);
@@ -2864,11 +2957,7 @@ mod tests {
     (func (export "on-session-event") (param i32 i32 i32))
     (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
-    (func (export "on-console-command") (param i32)
-      i32.const 0
-      i32.const 16
-      i64.const 1
-      call $increment)
+    (func (export "on-console-command") (param i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -3246,6 +3335,7 @@ mod tests {
                 }],
             }],
             console_commands: Vec::new(),
+            settings: Vec::new(),
             principal_storage_schema: None,
         }
     }
@@ -4832,6 +4922,10 @@ required = true
 id = "byro.components.write-own"
 required = true
 
+[[capabilities]]
+id = "byro.settings.register"
+required = true
+
 [[subscriptions]]
 event = "byro.events.activate"
 
@@ -4842,12 +4936,20 @@ version = 1
 [[component_schemas.fields]]
 id = "count"
 value_type = "i64"
+
+[[settings]]
+id = "strength"
+label = "Strength"
+description = "Effect strength"
+default = { Number = 1.0 }
+control = { kind = "slider", min = 0.0, max = 2.0, step = 0.1, unit = "x" }
 "#,
         )
         .unwrap();
 
         let mut world = World::new();
         world.insert_resource(ExtensionHostSlot::initialize_default());
+        world.insert_resource(byroredux_core::settings::SettingsRegistry::default());
         let base_args = vec![
             "byroredux".to_owned(),
             "--extension".to_owned(),
@@ -4859,6 +4961,9 @@ value_type = "i64"
             let host = slot.host().unwrap();
             assert_eq!(host.lock().unwrap().package_count(), 0);
         }
+        assert!(!world
+            .resource::<byroredux_core::settings::SettingsRegistry>()
+            .contains("ext.org.example.cli.strength"));
 
         let mut granted_args = base_args;
         granted_args.extend([
@@ -4869,5 +4974,12 @@ value_type = "i64"
         let slot = world.resource::<ExtensionHostSlot>();
         let host = slot.host().unwrap();
         assert_eq!(host.lock().unwrap().package_count(), 1);
+        let settings = world.resource::<byroredux_core::settings::SettingsRegistry>();
+        let entry = settings.get("ext.org.example.cli.strength").unwrap();
+        assert_eq!(
+            entry.value,
+            byroredux_core::settings::SettingValue::Number(1.0)
+        );
+        assert_eq!(entry.section, "org.example.cli");
     }
 }

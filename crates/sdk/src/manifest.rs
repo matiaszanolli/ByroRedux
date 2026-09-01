@@ -17,6 +17,7 @@ use crate::event::{
 use crate::identity::{
     CapabilityId, ComponentId, ComponentSchemaId, EventId, ExtensionId, ServiceId,
 };
+use crate::settings::{SettingDeclaration, MAX_EXTENSION_SETTINGS, MAX_SETTING_KEY_BYTES};
 
 /// The only manifest schema understood by this SDK release.
 pub const EXTENSION_MANIFEST_VERSION: u32 = 1;
@@ -49,7 +50,7 @@ const BUILTIN_IMMEDIATE_EVENT_IDS: &[&str] = &[
 /// Parsing this value does not grant authority. The loader must call
 /// [`Self::validate`], resolve dependencies, and apply host/user policy before
 /// compiling or instantiating any component.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionManifest {
     /// Manifest schema version, independent of the extension and SDK versions.
@@ -79,6 +80,9 @@ pub struct ExtensionManifest {
     /// Principal-namespaced engine-console commands routed to components.
     #[serde(default)]
     pub console_commands: Vec<ConsoleCommandDeclaration>,
+    /// Principal-namespaced settings registered in the native settings model.
+    #[serde(default)]
+    pub settings: Vec<SettingDeclaration>,
     /// Version of principal-scoped persistent storage, when used.
     #[serde(default)]
     pub principal_storage_schema: Option<u32>,
@@ -243,6 +247,9 @@ pub enum ManifestError {
     /// Console help text must be safe for terminals and non-empty.
     #[error("console command {0} has an invalid description")]
     InvalidConsoleDescription(crate::identity::ConsoleCommandId),
+    /// A setting declaration has mismatched types, unsafe text, or invalid bounds.
+    #[error("setting {0} has invalid metadata, type, default, or bounds")]
+    InvalidSetting(crate::identity::SettingId),
 }
 
 impl ExtensionManifest {
@@ -275,6 +282,7 @@ impl ExtensionManifest {
             self.console_commands.len(),
             MAX_CONSOLE_COMMANDS,
         )?;
+        check_len("settings", self.settings.len(), MAX_EXTENSION_SETTINGS)?;
         if self.components.is_empty() {
             return Err(ManifestError::MissingComponent);
         }
@@ -312,6 +320,15 @@ impl ExtensionManifest {
                 || command.description.len() > MAX_CONSOLE_DESCRIPTION_BYTES
             {
                 return Err(ManifestError::InvalidConsoleDescription(command.id.clone()));
+            }
+        }
+
+        let mut settings = BTreeSet::new();
+        for setting in &self.settings {
+            insert_unique(&mut settings, "setting", &setting.id)?;
+            if !setting.is_valid() || setting.qualified_name(&self.id).len() > MAX_SETTING_KEY_BYTES
+            {
+                return Err(ManifestError::InvalidSetting(setting.id.clone()));
             }
         }
 
@@ -510,6 +527,7 @@ mod tests {
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
             console_commands: Vec::new(),
+            settings: Vec::new(),
             principal_storage_schema: Some(1),
         }
     }
@@ -557,6 +575,47 @@ mod tests {
         assert!(matches!(
             unsafe_help.validate(),
             Err(ManifestError::InvalidConsoleDescription(_))
+        ));
+    }
+
+    #[test]
+    fn settings_are_unique_typed_and_principal_namespaced() {
+        let declaration = SettingDeclaration {
+            id: crate::identity::SettingId::new("strength").unwrap(),
+            label: "Strength".to_owned(),
+            description: "Effect strength".to_owned(),
+            default: crate::settings::SettingValue::Number(1.0),
+            control: crate::settings::SettingControlDeclaration::Slider {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                unit: "x".to_owned(),
+            },
+            restart_required: false,
+        };
+        let mut valid = manifest();
+        valid.settings.push(declaration.clone());
+        valid.validate().unwrap();
+        assert_eq!(
+            declaration.qualified_name(&valid.id),
+            "ext.org.example.weather.strength"
+        );
+
+        let mut duplicate = valid.clone();
+        duplicate.settings.push(declaration);
+        assert!(matches!(
+            duplicate.validate(),
+            Err(ManifestError::DuplicateId {
+                kind: "setting",
+                ..
+            })
+        ));
+
+        let mut invalid = valid;
+        invalid.settings[0].default = crate::settings::SettingValue::Boolean(true);
+        assert!(matches!(
+            invalid.validate(),
+            Err(ManifestError::InvalidSetting(_))
         ));
     }
 

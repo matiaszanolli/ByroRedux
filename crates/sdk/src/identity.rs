@@ -127,6 +127,10 @@ namespaced_id!(
     "Manifest-local identifier for one engine-console command."
 );
 namespaced_id!(
+    SettingId,
+    "Manifest-local identifier for one principal-owned engine setting."
+);
+namespaced_id!(
     StorageKey,
     "Stable key in one principal's private persistent storage namespace."
 );
