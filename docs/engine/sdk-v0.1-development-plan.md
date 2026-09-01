@@ -689,7 +689,11 @@ proceeds by semantic domain and closes only against real mod fixtures.
   reads are implemented separately; reputation and inter-faction relations
   remain pending. Ranked perk reads are implemented from the canonical live
   component; perk mutation remains pending rank-limit and progression
-  validation.**
+  validation. Authored IDLE animation state and behavior-event generations are
+  projected through portable identities; capability-gated playback requests
+  resolve the IDLE record and delegate to the same cinematic actor request
+  consumed by translated Papyrus rather than accepting clip names or runtime
+  handles. General animation graph control remains pending.**
 - World/reference spatial queries and safe spawn/despawn operations. **Bounded
   radius queries over live authored references are implemented with portable
   identities, deterministic distance ordering, explicit truncation, and no raw

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::actor_values::{ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY};
+use crate::animation::AnimationSnapshot;
 use crate::factions::FactionSnapshot;
 use crate::identity::{EntityRef, FormRef};
 use crate::inventory::InventorySnapshot;
@@ -73,6 +74,7 @@ pub struct EntityProjection {
     factions: Option<FactionSnapshot>,
     perks: Option<PerkSnapshot>,
     packages: Option<PackageSnapshot>,
+    animation: Option<AnimationSnapshot>,
 }
 
 impl EntityProjection {
@@ -100,6 +102,7 @@ impl EntityProjection {
             factions: None,
             perks: None,
             packages: None,
+            animation: None,
         })
     }
 
@@ -178,6 +181,15 @@ impl EntityProjection {
 
     pub fn packages(&self) -> Option<&PackageSnapshot> {
         self.packages.as_ref()
+    }
+
+    pub fn with_animation(mut self, animation: AnimationSnapshot) -> Self {
+        self.animation = Some(animation);
+        self
+    }
+
+    pub const fn animation(&self) -> Option<AnimationSnapshot> {
+        self.animation
     }
 }
 

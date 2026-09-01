@@ -1,10 +1,11 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, console, content_catalog, context, events, factions, inventory, logging,
-    packages, perks, state, storage as wit_storage, world_spatial, world_state,
+    actor_values, animation, console, content_catalog, context, events, factions, inventory,
+    logging, packages, perks, state, storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::actor_values::{ActorValueCommand, ActorValueOperation, ActorValueState};
+use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
 use byroredux_sdk::console::{
     ConsoleCommandResult, MAX_CONSOLE_ARGUMENT_BYTES, MAX_CONSOLE_OUTPUT_BYTES,
@@ -31,18 +32,18 @@ use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     ACTOR_VALUES_READ_CAPABILITY, ACTOR_VALUES_SERVICE, ACTOR_VALUES_WRITE_CAPABILITY,
-    CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE,
-    CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY,
-    CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
-    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY,
-    FACTIONS_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
-    PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
-    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
-    WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    ANIMATION_PLAY_CAPABILITY, ANIMATION_READ_CAPABILITY, ANIMATION_SERVICE, CELL_LOAD_EVENT,
+    COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONSOLE_REGISTER_CAPABILITY,
+    CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY, CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE,
+    EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE,
+    EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE, HIT_EVENT,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
+    INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY, PACKAGES_READ_CAPABILITY,
+    PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
+    SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
+    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
@@ -262,6 +263,14 @@ impl SandboxRuntime {
                 "Queue bounded canonical actor-value mutations",
             ),
             (
+                ANIMATION_READ_CAPABILITY,
+                "Read authored animation state from callback-visible actors",
+            ),
+            (
+                ANIMATION_PLAY_CAPABILITY,
+                "Request authored IDLE playback for callback-visible actors",
+            ),
+            (
                 INVENTORY_READ_CAPABILITY,
                 "Read portable inventory and equipment summaries from callback-visible entities",
             ),
@@ -354,6 +363,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(ACTOR_VALUES_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(ANIMATION_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(ANIMATION_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1912,6 +1932,55 @@ impl packages::Host for HostState {
     }
 }
 
+impl animation::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+    ) -> wasmtime::Result<Option<animation::AnimationSnapshot>> {
+        self.require_animation_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::animation)
+            .map(wit_animation_snapshot))
+    }
+
+    fn queue_play_idle(
+        &mut self,
+        entity: state::EntityRef,
+        idle: state::FormRef,
+    ) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("animation playback is only accepted during a callback");
+        }
+        if !self.grants.contains(ANIMATION_PLAY_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {ANIMATION_PLAY_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let entity = sdk_entity_ref(entity)?;
+        if !self.entity_projections.contains_key(&entity) {
+            wasmtime::bail!("animation target is not visible to this callback");
+        }
+        let idle = sdk_form_ref(idle);
+        if idle.local() == 0 {
+            wasmtime::bail!("animation IDLE identity reserves local zero");
+        }
+        self.pending_commands
+            .push(HostCommand::PlayIdle(PlayIdleCommand::new(entity, idle)));
+        Ok(())
+    }
+}
+
 impl world_spatial::Host for HostState {
     fn nearby(
         &mut self,
@@ -2118,6 +2187,24 @@ fn wit_package_selection(selection: &PackageSelection) -> packages::PackageSelec
     }
 }
 
+fn wit_animation_snapshot(snapshot: AnimationSnapshot) -> animation::AnimationSnapshot {
+    animation::AnimationSnapshot {
+        requested_idle: snapshot.requested_idle().map(wit_form_ref),
+        request_generation: snapshot.request_generation(),
+        awaited_event: snapshot.awaited_event().map(wit_animation_event),
+        last_event: snapshot.last_event().map(wit_animation_event),
+        event_generation: snapshot.event_generation(),
+    }
+}
+
+fn wit_animation_event(event: AnimationEvent) -> animation::AnimationEvent {
+    match event {
+        AnimationEvent::PlayImod => animation::AnimationEvent::PlayImod,
+        AnimationEvent::IdleFurnitureExit => animation::AnimationEvent::IdleFurnitureExit,
+        AnimationEvent::ExitCartEnd => animation::AnimationEvent::ExitCartEnd,
+    }
+}
+
 fn wit_spatial_query_result(result: &SpatialQueryResult) -> world_spatial::SpatialQueryResult {
     world_spatial::SpatialQueryResult {
         hits: result.hits().iter().copied().map(wit_spatial_hit).collect(),
@@ -2225,6 +2312,16 @@ impl HostState {
         if !self.grants.contains(PACKAGES_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {PACKAGES_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_animation_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(ANIMATION_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {ANIMATION_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2957,6 +3054,62 @@ mod projection_tests {
         let error =
             <HostState as packages::Host>::queue_evaluate(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(PACKAGES_EVALUATE_CAPABILITY));
+    }
+
+    #[test]
+    fn animation_is_portable_deferred_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let idle = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let snapshot = AnimationSnapshot::new(
+            Some(idle),
+            7,
+            Some(AnimationEvent::ExitCartEnd),
+            Some(AnimationEvent::PlayImod),
+            8,
+        );
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_animation(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+        let wit_idle = wit_form_ref(idle);
+
+        let mut state = content_host_state(false);
+        state.grants.grant(ANIMATION_READ_CAPABILITY).unwrap();
+        state.grants.grant(ANIMATION_PLAY_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as animation::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sdk_form_ref(snapshot.requested_idle.unwrap()), idle);
+        assert_eq!(snapshot.request_generation, 7);
+        assert_eq!(
+            snapshot.awaited_event,
+            Some(animation::AnimationEvent::ExitCartEnd)
+        );
+        assert_eq!(
+            snapshot.last_event,
+            Some(animation::AnimationEvent::PlayImod)
+        );
+        assert_eq!(snapshot.event_generation, 8);
+        <HostState as animation::Host>::queue_play_idle(&mut state, wit_entity, wit_idle).unwrap();
+        let [HostCommand::PlayIdle(command)] = state.pending_commands.as_slice() else {
+            panic!("expected one authored animation command")
+        };
+        assert_eq!(command.entity(), entity);
+        assert_eq!(command.idle(), idle);
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        let error = <HostState as animation::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(ANIMATION_READ_CAPABILITY));
+        let error =
+            <HostState as animation::Host>::queue_play_idle(&mut denied, wit_entity, wit_idle)
+                .unwrap_err();
+        assert!(error.to_string().contains(ANIMATION_PLAY_CAPABILITY));
     }
 
     #[test]

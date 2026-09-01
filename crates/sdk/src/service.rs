@@ -35,6 +35,10 @@ pub const WORLD_TRANSFORM_READ_CAPABILITY: &str = "byro.world.transform.read";
 pub const ACTOR_VALUES_READ_CAPABILITY: &str = "byro.actor-values.read";
 /// Capability required to queue canonical actor-value mutations.
 pub const ACTOR_VALUES_WRITE_CAPABILITY: &str = "byro.actor-values.write";
+/// Capability required to inspect callback-local authored animation state.
+pub const ANIMATION_READ_CAPABILITY: &str = "byro.animation.read";
+/// Capability required to request authored IDLE playback on a visible actor.
+pub const ANIMATION_PLAY_CAPABILITY: &str = "byro.animation.play";
 /// Capability required to read callback-local inventory/equipment summaries.
 pub const INVENTORY_READ_CAPABILITY: &str = "byro.inventory.read";
 /// Capability required to read callback-local faction memberships.
@@ -71,6 +75,8 @@ pub const PRINCIPAL_STORAGE_SERVICE: &str = "byro.storage";
 pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 /// Service providing canonical actor-value reads and deferred mutations.
 pub const ACTOR_VALUES_SERVICE: &str = "byro.actor-values";
+/// Service providing authored animation state and semantic playback requests.
+pub const ANIMATION_SERVICE: &str = "byro.animation";
 /// Service providing callback-local portable inventory/equipment summaries.
 pub const INVENTORY_SERVICE: &str = "byro.inventory";
 /// Service providing callback-local portable faction memberships.

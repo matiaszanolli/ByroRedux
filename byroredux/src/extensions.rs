@@ -26,6 +26,7 @@ use byroredux_mod_runtime::{
 use byroredux_sdk::actor_values::{
     ActorValueCommand, ActorValueOperation, ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY,
 };
+use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
@@ -78,6 +79,7 @@ const MAX_PENDING_CUSTOM_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_SETTING_WRITES: usize = 256;
 const MAX_PENDING_ACTOR_VALUE_WRITES: usize = 256;
 const MAX_PENDING_PACKAGE_EVALUATIONS: usize = 256;
+const MAX_PENDING_ANIMATION_COMMANDS: usize = 256;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -264,6 +266,7 @@ pub(crate) struct ExtensionHost {
     pending_setting_writes: Vec<byroredux_sdk::settings::SettingWriteCommand>,
     pending_actor_value_writes: Vec<ActorValueCommand>,
     pending_package_evaluations: Vec<EvaluatePackageCommand>,
+    pending_animation_commands: Vec<PlayIdleCommand>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
@@ -290,6 +293,7 @@ impl ExtensionHost {
             pending_setting_writes: Vec::new(),
             pending_actor_value_writes: Vec::new(),
             pending_package_evaluations: Vec::new(),
+            pending_animation_commands: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
@@ -539,6 +543,7 @@ impl ExtensionHost {
                 pending_setting_writes: &mut self.pending_setting_writes,
                 pending_actor_value_writes: &mut self.pending_actor_value_writes,
                 pending_package_evaluations: &mut self.pending_package_evaluations,
+                pending_animation_commands: &mut self.pending_animation_commands,
                 diagnostics: &mut self.diagnostics,
                 stats: &mut stats,
             },
@@ -732,6 +737,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -816,6 +822,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -904,6 +911,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -975,6 +983,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1042,6 +1051,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1106,6 +1116,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1245,6 +1256,7 @@ impl ExtensionHost {
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
+                        pending_animation_commands: &mut self.pending_animation_commands,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1319,6 +1331,7 @@ impl ExtensionHost {
                     pending_setting_writes: &mut self.pending_setting_writes,
                     pending_actor_value_writes: &mut self.pending_actor_value_writes,
                     pending_package_evaluations: &mut self.pending_package_evaluations,
+                    pending_animation_commands: &mut self.pending_animation_commands,
                     diagnostics: &mut self.diagnostics,
                     stats: &mut stats,
                 },
@@ -1645,6 +1658,25 @@ impl ExtensionHost {
             })
             .collect()
     }
+
+    fn take_resolved_animation_commands(&mut self) -> Result<Vec<ResolvedPlayIdle>, String> {
+        let commands = std::mem::take(&mut self.pending_animation_commands);
+        commands
+            .into_iter()
+            .map(|command| {
+                let entity = self.handles.resolve(command.entity()).ok_or_else(|| {
+                    format!(
+                        "animation command targeted stale entity {:?}",
+                        command.entity()
+                    )
+                })?;
+                Ok(ResolvedPlayIdle {
+                    entity,
+                    idle: command.idle(),
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1655,6 +1687,12 @@ struct ResolvedActorValueWrite {
     value: f32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedPlayIdle {
+    entity: EntityId,
+    idle: FormRef,
+}
+
 struct DeliveryCommitContext<'a> {
     state: &'a mut ExtensionComponentStore,
     principal_storage: &'a mut PrincipalStorageStore,
@@ -1662,6 +1700,7 @@ struct DeliveryCommitContext<'a> {
     pending_setting_writes: &'a mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
     pending_actor_value_writes: &'a mut Vec<ActorValueCommand>,
     pending_package_evaluations: &'a mut Vec<EvaluatePackageCommand>,
+    pending_animation_commands: &'a mut Vec<PlayIdleCommand>,
     diagnostics: &'a mut Vec<ExtensionDiagnostic>,
     stats: &'a mut ExtensionDispatchStats,
 }
@@ -1680,6 +1719,7 @@ fn apply_delivery_result(
         pending_setting_writes,
         pending_actor_value_writes,
         pending_package_evaluations,
+        pending_animation_commands,
         diagnostics,
         stats,
     } = context;
@@ -1702,11 +1742,13 @@ fn apply_delivery_result(
     let mut setting_writes = Vec::new();
     let mut actor_value_writes = Vec::new();
     let mut package_evaluations = Vec::new();
+    let mut animation_commands = Vec::new();
     for command in commands {
         match command {
             HostCommand::ActorValue(command) => actor_value_writes.push(command),
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::EvaluatePackage(command) => package_evaluations.push(command),
+            HostCommand::PlayIdle(command) => animation_commands.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
             HostCommand::PublishEvent(command) => published_events.push(command),
             HostCommand::Setting(command) => setting_writes.push(command),
@@ -1769,6 +1811,15 @@ fn apply_delivery_result(
                 "pending package reevaluation limit of {MAX_PENDING_PACKAGE_EVALUATIONS} exceeded"
             ));
         }
+        let next_animation_command_count = pending_animation_commands
+            .len()
+            .checked_add(animation_commands.len())
+            .ok_or_else(|| "pending animation command count overflow".to_owned())?;
+        if next_animation_command_count > MAX_PENDING_ANIMATION_COMMANDS {
+            return Err(format!(
+                "pending animation command limit of {MAX_PENDING_ANIMATION_COMMANDS} exceeded"
+            ));
+        }
         let next_event_count = pending_custom_events
             .len()
             .checked_add(staged_events.len())
@@ -1822,6 +1873,7 @@ fn apply_delivery_result(
             pending_setting_writes.extend(setting_writes);
             pending_actor_value_writes.extend(actor_value_writes);
             pending_package_evaluations.extend(package_evaluations);
+            pending_animation_commands.extend(animation_commands);
             stats.commands_applied += command_count;
         }
     }
@@ -1879,6 +1931,7 @@ struct RawEntityProjection {
     factions: Option<FactionSnapshot>,
     perks: Option<PerkSnapshot>,
     packages: Option<PackageSnapshot>,
+    animation: Option<AnimationSnapshot>,
 }
 
 fn entity_projection(
@@ -1911,8 +1964,12 @@ fn entity_projection(
         Some(perks) => projection.with_perks(perks),
         None => projection,
     };
-    match raw.and_then(|projection| projection.packages.clone()) {
+    let projection = match raw.and_then(|projection| projection.packages.clone()) {
         Some(packages) => projection.with_packages(packages),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.animation) {
+        Some(animation) => projection.with_animation(animation),
         None => projection,
     }
 }
@@ -3215,6 +3272,24 @@ fn capture_entity_projections(
     if let Some(resolver) =
         world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
     {
+        if let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() {
+            for (entity, projection) in &mut projections {
+                let Some(state) = states.get(*entity) else {
+                    continue;
+                };
+                projection.animation = Some(AnimationSnapshot::new(
+                    state
+                        .requested_idle_form_id
+                        .and_then(|form| resolver.resolve(form))
+                        .map(form_ref)
+                        .filter(|form| form.local() != 0),
+                    state.idle_request_serial,
+                    state.awaited_event.map(animation_event),
+                    state.last_animation_event.map(animation_event),
+                    state.animation_event_serial,
+                ));
+            }
+        }
         let mut package_captures = projections
             .keys()
             .copied()
@@ -3344,6 +3419,16 @@ fn push_package_selection(capture: &mut PackageCapture, selection: PackageSelect
     }
 }
 
+fn animation_event(event: byroredux_scripting::CinematicAnimationEvent) -> AnimationEvent {
+    match event {
+        byroredux_scripting::CinematicAnimationEvent::PlayImod => AnimationEvent::PlayImod,
+        byroredux_scripting::CinematicAnimationEvent::IdleFurnitureExit => {
+            AnimationEvent::IdleFurnitureExit
+        }
+        byroredux_scripting::CinematicAnimationEvent::ExitCartEnd => AnimationEvent::ExitCartEnd,
+    }
+}
+
 fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
     let commands = match host.take_resolved_actor_value_writes() {
         Ok(commands) => commands,
@@ -3448,9 +3533,52 @@ fn apply_pending_package_evaluations(world: &World, host: &mut ExtensionHost) {
     }
 }
 
+fn apply_pending_animation_commands(world: &World, host: &mut ExtensionHost) {
+    let commands = match host.take_resolved_animation_commands() {
+        Ok(commands) => commands,
+        Err(error) => {
+            host.record_host_fault(format!("deferred animation batch rejected: {error}"));
+            return;
+        }
+    };
+    if commands.is_empty() {
+        return;
+    }
+    let apply = (|| -> Result<(), String> {
+        let resolver = world
+            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
+        let mut resolved = Vec::with_capacity(commands.len());
+        for command in commands {
+            let idle = resolver
+                .global_form_id(command.idle)
+                .ok_or_else(|| "portable animation IDLE identity is not loaded".to_owned())?;
+            resolved.push((command.entity, idle));
+        }
+        drop(resolver);
+        let mut states = world
+            .query_mut::<byroredux_scripting::ActorCinematicState>()
+            .ok_or_else(|| "ActorCinematicState storage is unavailable".to_owned())?;
+        for (entity, idle) in resolved {
+            if let Some(state) = states.get_mut(entity) {
+                state.request_idle(idle);
+            } else {
+                let mut state = byroredux_scripting::ActorCinematicState::default();
+                state.request_idle(idle);
+                states.insert(entity, state);
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = apply {
+        host.record_host_fault(format!("deferred animation batch rejected: {error}"));
+    }
+}
+
 fn apply_pending_world_commands(world: &World, host: &mut ExtensionHost) {
     apply_pending_actor_value_writes(world, host);
     apply_pending_package_evaluations(world, host);
+    apply_pending_animation_commands(world, host);
 }
 
 fn entities_by_form(world: &World) -> BTreeMap<FormRef, EntityId> {
@@ -4682,6 +4810,7 @@ mod tests {
                 pending_setting_writes: &mut host.pending_setting_writes,
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
                 pending_package_evaluations: &mut host.pending_package_evaluations,
+                pending_animation_commands: &mut host.pending_animation_commands,
                 diagnostics: &mut host.diagnostics,
                 stats: &mut stats,
             },
@@ -5536,6 +5665,57 @@ mod tests {
             .push(EvaluatePackageCommand::new(handle));
         apply_pending_world_commands(&world, &mut host);
         assert!(world.has::<byroredux_scripting::EvaluatePackageRequest>(actor));
+    }
+
+    #[test]
+    fn animation_projection_and_command_share_the_authored_idle_runtime() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            byroredux_scripting::ActorCinematicState {
+                requested_idle_form_id: Some(0x44),
+                idle_request_serial: 3,
+                awaited_event: Some(byroredux_scripting::CinematicAnimationEvent::ExitCartEnd),
+                last_animation_event: Some(
+                    byroredux_scripting::CinematicAnimationEvent::IdleFurnitureExit,
+                ),
+                animation_event_serial: 5,
+                ..Default::default()
+            },
+        );
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].animation.unwrap();
+        assert_eq!(snapshot.requested_idle().unwrap().local(), 0x44);
+        assert_eq!(snapshot.request_generation(), 3);
+        assert_eq!(snapshot.awaited_event(), Some(AnimationEvent::ExitCartEnd));
+        assert_eq!(
+            snapshot.last_event(),
+            Some(AnimationEvent::IdleFurnitureExit)
+        );
+        assert_eq!(snapshot.event_generation(), 5);
+
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let handle = host.bind_entity(actor, None).unwrap();
+        let replacement = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x55);
+        host.pending_animation_commands
+            .push(PlayIdleCommand::new(handle, replacement));
+        apply_pending_world_commands(&world, &mut host);
+        let state = world
+            .get::<byroredux_scripting::ActorCinematicState>(actor)
+            .unwrap();
+        assert_eq!(state.requested_idle_form_id, Some(0x55));
+        assert_eq!(state.idle_request_serial, 4);
     }
 
     #[test]

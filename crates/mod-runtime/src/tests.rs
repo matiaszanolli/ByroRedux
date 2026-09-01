@@ -1296,6 +1296,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
@@ -1363,6 +1364,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
@@ -1436,6 +1438,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::PlayIdle(_) => panic!("unexpected animation command"),
             HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
@@ -2211,6 +2214,9 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
             HostCommand::ActorValue(_) => {
                 panic!("fixture emitted an unexpected actor-value command")
             }
+            HostCommand::PlayIdle(_) => {
+                panic!("fixture emitted an unexpected animation command")
+            }
             HostCommand::EvaluatePackage(_) => {
                 panic!("fixture emitted an unexpected package command")
             }
@@ -2260,6 +2266,9 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
         .map(|command| match command {
             HostCommand::ActorValue(_) => {
                 panic!("fixture emitted an unexpected actor-value command")
+            }
+            HostCommand::PlayIdle(_) => {
+                panic!("fixture emitted an unexpected animation command")
             }
             HostCommand::EvaluatePackage(_) => {
                 panic!("fixture emitted an unexpected package command")

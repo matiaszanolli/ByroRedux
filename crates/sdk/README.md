@@ -37,6 +37,10 @@ The current public surface includes:
   their current winners, scene/action provenance, and template identities.
   `EvaluatePackageCommand` requests semantic reevaluation through the shared
   engine marker instead of manipulating AI state directly.
+- `AnimationSnapshot` exposes the latest portable authored IDLE request and
+  behavior-event generations. `PlayIdleCommand` defers playback through the
+  same cinematic actor state consumed by native script effects; guests never
+  choose archive paths, clip handles, or animation-player internals.
 - `SpatialSnapshot` provides bounded, deterministic radius queries over live
   authored references. Results carry portable `FormRef` identities and finite
   world positions, never ECS IDs; truncation remains explicit.
@@ -96,6 +100,9 @@ bounded spatial snapshot of live authored references. Ranked actor perks are
 also projected read-only from the canonical live character component.
 Ambient and scene package state is projected together, while capability-gated
 reevaluation is deferred to the existing selectors used by native scripting.
+Authored animation state is projected separately, and capability-gated IDLE
+requests resolve portable forms before entering the same playback path used by
+translated Papyrus `PlayIdle` calls.
 Actor-value mutations resolve transient entity handles and portable AVIF
 identities, then stage and validate the full batch before touching ECS state.
 Inventory and perk mutation wait for their stable validation contracts. Schema

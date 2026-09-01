@@ -323,6 +323,28 @@ interface packages {
     queue-evaluate: func(entity: entity-ref);
 }
 
+/// Authored actor animation state and semantic IDLE playback requests.
+interface animation {
+    use state.{entity-ref, form-ref};
+
+    enum animation-event {
+        play-imod,
+        idle-furniture-exit,
+        exit-cart-end,
+    }
+
+    record animation-snapshot {
+        requested-idle: option<form-ref>,
+        request-generation: u64,
+        awaited-event: option<animation-event>,
+        last-event: option<animation-event>,
+        event-generation: u64,
+    }
+
+    get: func(entity: entity-ref) -> option<animation-snapshot>;
+    queue-play-idle: func(entity: entity-ref, idle: form-ref);
+}
+
 /// Bounded spatial queries over live authored references. Results use
 /// portable form identities and never expose ECS slots or engine pointers.
 interface world-spatial {
@@ -367,6 +389,7 @@ world extension {
     import factions;
     import perks;
     import packages;
+    import animation;
     import world-spatial;
     import console;
 

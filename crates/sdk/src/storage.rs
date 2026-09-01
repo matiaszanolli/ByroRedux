@@ -194,6 +194,7 @@ pub enum PrincipalStorageCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostCommand {
     ActorValue(crate::actor_values::ActorValueCommand),
+    PlayIdle(crate::animation::PlayIdleCommand),
     Component(ExtensionCommand),
     EvaluatePackage(crate::packages::EvaluatePackageCommand),
     PrincipalStorage(PrincipalStorageCommand),
