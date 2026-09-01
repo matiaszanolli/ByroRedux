@@ -835,6 +835,9 @@ fn lower_condition_value(
                 .is_finite()
                 .then_some((ScriptValue::Float(value), ScriptValueType::Float))
         }
+        Expr::StringLit(value) => {
+            Some((ScriptValue::String(value.clone()), ScriptValueType::String))
+        }
         _ => None,
     };
     if let Some((value, value_type)) = literal {
@@ -882,7 +885,11 @@ fn comparison_is_supported(
             PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
         ),
         ScriptValueType::Integer | ScriptValueType::Float => true,
-        _ => false,
+        ScriptValueType::String => matches!(
+            operator,
+            PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
+        ),
+        ScriptValueType::Form | ScriptValueType::Entity => false,
     }
 }
 
@@ -1442,6 +1449,11 @@ fn compare_condition_values(
         (ScriptValue::Float(left), ScriptValue::Float(right)) => {
             Ok(compare_ordered(*left, operator, *right))
         }
+        (ScriptValue::String(left), ScriptValue::String(right)) => match operator {
+            PapyrusProviderComparison::Equal => Ok(left == right),
+            PapyrusProviderComparison::NotEqual => Ok(left != right),
+            _ => Err("ordered string provider comparison reached execution".to_owned()),
+        },
         _ => Err("provider comparison operands changed type at execution".to_owned()),
     }
 }
@@ -2107,6 +2119,11 @@ mod tests {
                 If true || Game.IsPluginInstalled("MustNotRun.esp")
                     WeatherNative.WeatherAt(6, "short-circuited")
                 EndIf
+                String weather
+                weather = WeatherNative.WeatherAt(0, "probe")
+                If weather == "rain"
+                    WeatherNative.WeatherAt(7, "string-matched")
+                EndIf
             EndEvent
         "#;
         let (script, errors) = parse_script(source).unwrap();
@@ -2134,6 +2151,8 @@ mod tests {
                 Ok(ScriptValue::Integer(2))
             } else if route.ends_with("is-plugin-installed") {
                 Ok(ScriptValue::Boolean(false))
+            } else if arguments.first() == Some(&ScriptValue::Integer(0)) {
+                Ok(ScriptValue::String("rain".to_owned()))
             } else {
                 Ok(ScriptValue::String("ok".to_owned()))
             }
@@ -2146,11 +2165,13 @@ mod tests {
         papyrus_provider_system(&world, 0.0);
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 4);
+        assert_eq!(calls.len(), 6);
         assert!(calls[0].0.ends_with("get-mod-count"));
         assert!(calls[1].0.ends_with("is-plugin-installed"));
         assert_eq!(calls[2].1[0], ScriptValue::Integer(4));
         assert_eq!(calls[3].1[0], ScriptValue::Integer(6));
+        assert_eq!(calls[4].1[0], ScriptValue::Integer(0));
+        assert_eq!(calls[5].1[0], ScriptValue::Integer(7));
         assert!(calls.iter().all(|(_, arguments)| arguments.first()
             != Some(&ScriptValue::String("MustNotRun.esp".to_owned()))));
     }
