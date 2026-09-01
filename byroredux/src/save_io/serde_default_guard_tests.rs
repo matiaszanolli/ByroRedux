@@ -355,8 +355,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Provider invocation arguments now preserve literal-vs-local identity in
     // the already-saved continuation queue. That changes an existing nested
     // on-disk type, so v11 deliberately rejects older suspended handlers.
-    const BASELINE_MAJOR: u16 = 11;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb3e_cd3a_2c11_7d9e;
+    // Provider continuations now retain the owning legacy-script principal so
+    // a resumed stateful compatibility call cannot lose namespace isolation.
+    // That required field makes v12 intentionally incompatible with v11.
+    const BASELINE_MAJOR: u16 = 12;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x03b0_1c23_c1d8_d6be;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

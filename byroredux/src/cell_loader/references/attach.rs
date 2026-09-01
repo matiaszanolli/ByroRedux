@@ -678,11 +678,11 @@ pub(super) fn attach_vmad_scripts(
     for (script_instance, script) in scripts {
         // Scope the provider borrow: extract the owned `.pex` bytes,
         // then drop the resource read before the `&mut World` spawn.
-        let bytes = {
+        let resolved = {
             let provider = world.resource::<crate::asset_provider::ScriptProvider>();
-            provider.extract_pex(&script.name)
+            provider.resolve_pex(&script.name)
         };
-        let Some(bytes) = bytes else {
+        let Some(resolved) = resolved else {
             log::trace!(
                 "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
                 script.name,
@@ -696,7 +696,7 @@ pub(super) fn attach_vmad_scripts(
             .map(|runtime| runtime.catalog())
             .unwrap_or_default();
         let translation = byroredux_scripting::translate_pex_detailed_with_providers(
-            &bytes,
+            &resolved.bytes,
             game,
             Some(script_instance),
             None,
@@ -718,7 +718,12 @@ pub(super) fn attach_vmad_scripts(
                 "M47.2: attached engine-native provider calls from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
                 script.name,
             );
-            byroredux_scripting::attach_papyrus_provider_program(world, entity, program);
+            byroredux_scripting::attach_owned_papyrus_provider_program(
+                world,
+                entity,
+                program,
+                resolved.principal.clone(),
+            );
             any = true;
         }
         match translation.recognized {

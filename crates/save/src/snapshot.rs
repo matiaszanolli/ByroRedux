@@ -107,7 +107,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// flat vector of already-resolved values to typed literal/local argument
 /// expressions. The old flat JSON shape does not deserialize into the tagged
 /// argument enum, and no migrator exists yet, so pre-v11 saves are rejected.
-pub const FORMAT_MAJOR: u16 = 11;
+/// Version 12 adds the stable legacy-script principal to every suspended
+/// provider continuation. Resuming without it would collapse principal-private
+/// compatibility storage into an unauthenticated global namespace.
+pub const FORMAT_MAJOR: u16 = 12;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -699,11 +699,11 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
 
     use byroredux_papyrus::parse_script;
     use byroredux_scripting::{
-        attach_papyrus_provider_program, lower_provider_program, papyrus_provider_system,
+        attach_owned_papyrus_provider_program, lower_provider_program, papyrus_provider_system,
         set_papyrus_provider_runtime, OnCellLoadEvent, PapyrusProviderCallback,
         PapyrusProviderCatalog, PapyrusProviderContinuationQueue,
     };
-    use byroredux_sdk::script_function::ScriptValue;
+    use byroredux_sdk::{identity::PrincipalId, script_function::ScriptValue};
 
     let reg = build_save_registry();
     let (script, errors) = parse_script(
@@ -726,11 +726,15 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
     src.insert_resource(StringPool::new());
     src.insert_resource(FormIdPool::new());
     byroredux_scripting::register(&mut src);
-    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::None))
-        as Arc<PapyrusProviderCallback>;
+    let callback = Arc::new(
+        |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+         _route: &str,
+         _arguments: &[ScriptValue]| Ok(ScriptValue::None),
+    ) as Arc<PapyrusProviderCallback>;
     set_papyrus_provider_runtime(&src, Arc::clone(&catalog), Some(callback));
     let entity = src.spawn();
-    attach_papyrus_provider_program(&mut src, entity, program);
+    let principal = PrincipalId::new("legacy.scripts.save-fixture").unwrap();
+    attach_owned_papyrus_provider_program(&mut src, entity, program, principal.clone());
     src.insert(entity, OnCellLoadEvent);
     papyrus_provider_system(&src, 0.0);
     assert_eq!(src.resource::<PapyrusProviderContinuationQueue>().len(), 1);
@@ -747,13 +751,18 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
 
     let resumed_calls = Arc::new(Mutex::new(Vec::new()));
     let resumed_calls_for_callback = Arc::clone(&resumed_calls);
-    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-        resumed_calls_for_callback
-            .lock()
-            .unwrap()
-            .push((route.to_owned(), arguments.to_vec()));
-        Ok(ScriptValue::None)
-    }) as Arc<PapyrusProviderCallback>;
+    let callback = Arc::new(
+        move |principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              route: &str,
+              arguments: &[ScriptValue]| {
+            resumed_calls_for_callback.lock().unwrap().push((
+                principal.map(ToString::to_string),
+                route.to_owned(),
+                arguments.to_vec(),
+            ));
+            Ok(ScriptValue::None)
+        },
+    ) as Arc<PapyrusProviderCallback>;
     set_papyrus_provider_runtime(&dst, catalog, Some(callback));
     papyrus_provider_system(&dst, 5.0);
 
@@ -763,6 +772,7 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
     assert_eq!(
         resumed_calls.lock().unwrap().as_slice(),
         &[(
+            Some(principal.to_string()),
             byroredux_sdk::compatibility::PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE.to_owned(),
             vec![ScriptValue::String("Update.esm".to_owned())],
         )]

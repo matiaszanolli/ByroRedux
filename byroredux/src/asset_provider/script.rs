@@ -1,4 +1,15 @@
 use super::*;
+use byroredux_sdk::identity::PrincipalId;
+
+struct ScriptArchive {
+    archive: Archive,
+    principal: PrincipalId,
+}
+
+pub(crate) struct ResolvedPex {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) principal: PrincipalId,
+}
 
 /// Searches game archives for compiled Papyrus scripts (`.pex`) by
 /// script name. The M47.2 attach path resolves an attached script
@@ -15,7 +26,7 @@ use super::*;
 /// finds no compiled behavior and falls through, exactly like an
 /// unregistered SCPT.
 pub(crate) struct ScriptProvider {
-    archives: Vec<Archive>,
+    archives: Vec<ScriptArchive>,
 }
 
 impl ScriptProvider {
@@ -44,13 +55,24 @@ impl ScriptProvider {
     /// priority) — see #1743 / SCR-D7-03. Returns `None` when no archive
     /// carries the script.
     pub(crate) fn extract_pex(&self, script_name: &str) -> Option<Vec<u8>> {
+        self.resolve_pex(script_name).map(|resolved| resolved.bytes)
+    }
+
+    pub(crate) fn resolve_pex(&self, script_name: &str) -> Option<ResolvedPex> {
         let name = pex_archive_path(script_name);
-        for archive in &self.archives {
-            if let Ok(data) = archive.extract(&name) {
-                return Some(data);
+        for source in &self.archives {
+            if let Ok(bytes) = source.archive.extract(&name) {
+                return Some(ResolvedPex {
+                    bytes,
+                    principal: source.principal.clone(),
+                });
             }
         }
         None
+    }
+
+    pub(crate) fn principals(&self) -> impl Iterator<Item = &PrincipalId> {
+        self.archives.iter().map(|source| &source.principal)
     }
 }
 
@@ -69,6 +91,46 @@ pub(crate) fn pex_archive_path(script_name: &str) -> String {
         name = format!("scripts\\{name}");
     }
     name
+}
+
+/// Portable package identity for legacy scripts supplied by one archive.
+/// The filename is stable across installations; its hash keeps the principal
+/// compact and disambiguates archive names that normalize to the same slug.
+pub(crate) fn legacy_script_principal(path: &str) -> PrincipalId {
+    let filename = path.replace('\\', "/");
+    let filename = filename.rsplit('/').next().unwrap_or(&filename);
+    let lowercase = filename.to_ascii_lowercase();
+    let stem = lowercase
+        .strip_suffix(".bsa")
+        .or_else(|| lowercase.strip_suffix(".ba2"))
+        .unwrap_or(&lowercase);
+    let mut slug = String::with_capacity(stem.len().min(64));
+    let mut separator = false;
+    for byte in stem.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            slug.push(char::from(byte));
+            separator = false;
+        } else if !separator && !slug.is_empty() {
+            slug.push('-');
+            separator = true;
+        }
+        if slug.len() == 64 {
+            break;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("archive");
+    }
+    let hash = lowercase
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    PrincipalId::new(format!("legacy.scripts.{slug}.{hash:016x}"))
+        .expect("generated legacy script principal must satisfy the SDK identity grammar")
 }
 
 /// Populate the [`byroredux_scripting::QuestStageFragments`] table from a
@@ -720,7 +782,10 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
                 match Archive::open(path) {
                     Ok(a) => {
                         log::info!("Opened script archive: '{path}'");
-                        provider.archives.push(a);
+                        provider.archives.push(ScriptArchive {
+                            archive: a,
+                            principal: legacy_script_principal(path),
+                        });
                     }
                     Err(e) => log::warn!("Failed to open script archive '{path}': {e}"),
                 }

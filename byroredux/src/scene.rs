@@ -809,7 +809,11 @@ pub(crate) fn setup_scene(
             // and the attach path falls through, same as an unregistered
             // SCPT. Inserted once; it persists across door-walk cell
             // transitions (which reuse the same World).
-            world.insert_resource(crate::asset_provider::build_script_provider(&args));
+            let script_provider = crate::asset_provider::build_script_provider(&args);
+            let script_principals = script_provider.principals().cloned().collect::<Vec<_>>();
+            crate::extensions::register_legacy_script_principals(world, script_principals)
+                .expect("engine extension host must be installed before scene setup");
+            world.insert_resource(script_provider);
         }
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {

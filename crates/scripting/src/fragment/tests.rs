@@ -123,13 +123,17 @@ fn provider_barrier_resumes_native_fragment_tail_after_host_call() {
     let world = fixture();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_for_callback = Arc::clone(&calls);
-    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-        calls_for_callback
-            .lock()
-            .unwrap()
-            .push((route.to_owned(), arguments.to_vec()));
-        Ok(ScriptValue::Integer(2))
-    }) as Arc<crate::PapyrusProviderCallback>;
+    let callback = Arc::new(
+        move |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              route: &str,
+              arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            Ok(ScriptValue::Integer(2))
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
     crate::set_papyrus_provider_runtime(
         &world,
         Arc::new(crate::PapyrusProviderCatalog::default()),
@@ -196,10 +200,14 @@ fn branch_provider_barrier_resumes_branch_and_outer_tails_in_order() {
     let world = fixture();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_for_callback = Arc::clone(&calls);
-    let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
-        calls_for_callback.lock().unwrap().push(route.to_owned());
-        Ok(ScriptValue::Integer(1))
-    }) as Arc<crate::PapyrusProviderCallback>;
+    let callback = Arc::new(
+        move |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              route: &str,
+              _arguments: &[ScriptValue]| {
+            calls_for_callback.lock().unwrap().push(route.to_owned());
+            Ok(ScriptValue::Integer(1))
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
     crate::set_papyrus_provider_runtime(
         &world,
         Arc::new(crate::PapyrusProviderCatalog::default()),
@@ -273,7 +281,9 @@ fn failed_provider_barrier_aborts_its_native_fragment_tail() {
 
     let world = fixture();
     let callback = Arc::new(
-        |_route: &str, _arguments: &[byroredux_sdk::script_function::ScriptValue]| {
+        |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+         _route: &str,
+         _arguments: &[byroredux_sdk::script_function::ScriptValue]| {
             Err("provider failed".to_owned())
         },
     ) as Arc<crate::PapyrusProviderCallback>;
@@ -319,8 +329,11 @@ fn quest_fragments_flush_provider_barriers_before_the_next_event() {
     const Q2: QuestFormId = QuestFormId(0x0001_2346);
 
     let world = fixture();
-    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)))
-        as Arc<crate::PapyrusProviderCallback>;
+    let callback = Arc::new(
+        |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+         _route: &str,
+         _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)),
+    ) as Arc<crate::PapyrusProviderCallback>;
     crate::set_papyrus_provider_runtime(
         &world,
         Arc::new(crate::PapyrusProviderCatalog::default()),
@@ -902,13 +915,17 @@ fn provider_aware_fragment_population_resumes_after_native_call() {
     let world = fixture();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_for_callback = Arc::clone(&calls);
-    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-        calls_for_callback
-            .lock()
-            .unwrap()
-            .push((route.to_owned(), arguments.to_vec()));
-        Ok(ScriptValue::Integer(1))
-    }) as Arc<crate::PapyrusProviderCallback>;
+    let callback = Arc::new(
+        move |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              route: &str,
+              arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            Ok(ScriptValue::Integer(1))
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
     crate::set_papyrus_provider_runtime(&world, Arc::new(providers.clone()), Some(callback));
     {
         let mut fragments = world.resource_mut::<QuestStageFragments>();
@@ -2743,8 +2760,11 @@ fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
     use byroredux_sdk::script_function::ScriptValue;
 
     let mut world = fixture();
-    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)))
-        as Arc<crate::PapyrusProviderCallback>;
+    let callback = Arc::new(
+        |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+         _route: &str,
+         _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)),
+    ) as Arc<crate::PapyrusProviderCallback>;
     crate::set_papyrus_provider_runtime(
         &world,
         Arc::new(crate::PapyrusProviderCatalog::default()),

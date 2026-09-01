@@ -1540,6 +1540,17 @@ fn build_script_provider_without_args_is_empty_and_misses() {
     assert!(provider.extract_pex("DA10MainDoorScript").is_none());
 }
 
+#[test]
+fn legacy_script_principal_is_portable_and_archive_scoped() {
+    let first = legacy_script_principal("/games/Data/My Mod - Scripts.bsa");
+    let relocated = legacy_script_principal("D:\\Portable\\Data\\MY MOD - SCRIPTS.BSA");
+    let other = legacy_script_principal("/games/Data/Other Mod - Scripts.bsa");
+
+    assert_eq!(first, relocated);
+    assert_ne!(first, other);
+    assert!(first.as_str().starts_with("legacy.scripts.my-mod-scripts."));
+}
+
 /// The `.pex` archive-key normalisation: a bare VMAD-authored script
 /// name resolves to `scripts\<lower>.pex`, and names that already
 /// carry the folder / extension / forward-slashes are idempotent.

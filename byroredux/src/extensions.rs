@@ -308,6 +308,7 @@ pub(crate) struct ExtensionHost {
     diagnostics: Vec<ExtensionDiagnostic>,
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
+    legacy_script_principals: BTreeSet<PrincipalId>,
     legacy_containers: BTreeMap<PrincipalId, LegacyContainerRegistry>,
     retained_legacy_containers: Vec<PersistedLegacyContainers>,
     pending_custom_events: Vec<CustomEvent>,
@@ -341,6 +342,7 @@ impl ExtensionHost {
             diagnostics: Vec::new(),
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
+            legacy_script_principals: BTreeSet::new(),
             legacy_containers: BTreeMap::new(),
             retained_legacy_containers: Vec::new(),
             pending_custom_events: Vec::new(),
@@ -689,6 +691,15 @@ impl ExtensionHost {
     /// principal-namespaced function through the shared typed boundary.
     fn invoke_papyrus_provider(
         &mut self,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        self.invoke_owned_papyrus_provider(None, qualified_name, arguments)
+    }
+
+    fn invoke_owned_papyrus_provider(
+        &mut self,
+        _principal: Option<&PrincipalId>,
         qualified_name: &str,
         arguments: &[ScriptValue],
     ) -> Result<ScriptValue, ExtensionHostError> {
@@ -1772,7 +1783,22 @@ impl ExtensionHost {
         self.components
             .iter()
             .map(|component| PrincipalId::from(&component.extension))
+            .chain(self.legacy_script_principals.iter().cloned())
             .collect()
+    }
+
+    fn register_legacy_script_principal(
+        &mut self,
+        principal: PrincipalId,
+    ) -> Result<(), ExtensionHostError> {
+        if self.legacy_script_principals.contains(&principal) {
+            return Ok(());
+        }
+        self.principal_storage
+            .register_schema(principal.clone(), 1)?;
+        self.legacy_containers.entry(principal.clone()).or_default();
+        self.legacy_script_principals.insert(principal);
+        Ok(())
     }
 
     fn validate_saved_state(
@@ -2562,6 +2588,17 @@ fn sync_extension_script_function_invoker(world: &World) {
                 .map_err(|error| error.to_string())
         }) as Arc<byroredux_scripting::ExtensionScriptFunctionCallback>
     });
+    let provider_callback = host.as_ref().map(|host| {
+        let host = Arc::clone(host);
+        Arc::new(
+            move |principal: Option<&PrincipalId>, name: &str, arguments: &[ScriptValue]| {
+                host.lock()
+                    .map_err(|_| "extension host mutex was poisoned".to_owned())?
+                    .invoke_owned_papyrus_provider(principal, name, arguments)
+                    .map_err(|error| error.to_string())
+            },
+        ) as Arc<byroredux_scripting::PapyrusProviderCallback>
+    });
     let entity_resolver = host.map(|host| {
         Arc::new(move |entity: EntityId| {
             host.lock()
@@ -2571,9 +2608,29 @@ fn sync_extension_script_function_invoker(world: &World) {
                 .map_err(|error| error.to_string())
         }) as Arc<byroredux_scripting::PapyrusProviderEntityResolver>
     });
-    byroredux_scripting::set_extension_script_function_invoker(world, callback.clone());
-    byroredux_scripting::set_papyrus_provider_runtime(world, Arc::new(catalog), callback);
+    byroredux_scripting::set_extension_script_function_invoker(world, callback);
+    byroredux_scripting::set_papyrus_provider_runtime(world, Arc::new(catalog), provider_callback);
     byroredux_scripting::set_papyrus_provider_entity_resolver(world, entity_resolver);
+}
+
+/// Register archive-backed legacy script packages as active engine principals.
+/// This must run before save restoration so their private storage records are
+/// rebound instead of retained as belonging to an unavailable package.
+pub(crate) fn register_legacy_script_principals(
+    world: &World,
+    principals: impl IntoIterator<Item = PrincipalId>,
+) -> anyhow::Result<()> {
+    let host = world
+        .try_resource::<ExtensionHostSlot>()
+        .and_then(|slot| slot.host())
+        .ok_or_else(|| anyhow::anyhow!("extension host is unavailable"))?;
+    let mut host = host
+        .lock()
+        .map_err(|_| anyhow::anyhow!("extension host mutex was poisoned"))?;
+    for principal in principals {
+        host.register_legacy_script_principal(principal)?;
+    }
+    Ok(())
 }
 
 struct ExtensionConsoleCommand {
@@ -3384,10 +3441,6 @@ fn emit_diagnostics(diagnostics: Vec<ExtensionDiagnostic>) {
 /// host installed, so ordinary content remains usable.
 pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyhow::Result<usize> {
     let manifest_paths = flag_values(args, "--extension");
-    if manifest_paths.is_empty() {
-        return Ok(0);
-    }
-
     let mut staged_host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default())?;
     let mut sources = BTreeMap::<ExtensionId, PathBuf>::new();
@@ -5995,6 +6048,70 @@ mod tests {
     }
 
     #[test]
+    fn legacy_script_principals_are_private_and_restore_as_active_packages() {
+        let first = PrincipalId::new("legacy.scripts.first").unwrap();
+        let second = PrincipalId::new("legacy.scripts.second").unwrap();
+        let key = StorageKey::new("shared-name").unwrap();
+        let mut source =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        source
+            .register_legacy_script_principal(first.clone())
+            .unwrap();
+        source
+            .register_legacy_script_principal(second.clone())
+            .unwrap();
+        source
+            .principal_storage
+            .apply_batch(
+                &first,
+                &[PrincipalStorageCommand::Set {
+                    key: key.clone(),
+                    value: ExtensionValue::I64(1),
+                }],
+            )
+            .unwrap();
+        source
+            .principal_storage
+            .apply_batch(
+                &second,
+                &[PrincipalStorageCommand::Set {
+                    key: key.clone(),
+                    value: ExtensionValue::I64(2),
+                }],
+            )
+            .unwrap();
+
+        let saved = source.capture_saved_state(&BTreeMap::new()).unwrap();
+        let mut restored =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        restored
+            .register_legacy_script_principal(first.clone())
+            .unwrap();
+        restored
+            .register_legacy_script_principal(second.clone())
+            .unwrap();
+        restored
+            .restore_saved_state(&saved, &BTreeMap::new())
+            .unwrap();
+
+        assert_eq!(
+            restored
+                .principal_storage
+                .values(&first)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+        assert_eq!(
+            restored
+                .principal_storage
+                .values(&second)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(2))
+        );
+        assert!(restored.retained_storage.is_empty());
+    }
+
+    #[test]
     fn legacy_container_objects_are_principal_local_and_save_persistent() {
         let principal = PrincipalId::new("org.example.storage").unwrap();
         let mut source = host_with_storage_package(principal.as_str());
@@ -7799,5 +7916,20 @@ control = { kind = "slider", min = 0.0, max = 2.0, step = 0.1, unit = "x" }
             byroredux_core::settings::SettingValue::Number(1.0)
         );
         assert_eq!(entry.section, "org.example.cli");
+    }
+
+    #[test]
+    fn empty_extension_set_still_installs_the_engine_provider_host() {
+        let mut world = World::new();
+        world.insert_resource(ExtensionHostSlot::initialize_default());
+        world.insert_resource(byroredux_core::settings::SettingsRegistry::default());
+        byroredux_scripting::register(&mut world);
+
+        assert_eq!(load_requested_extensions(&world, &[]).unwrap(), 0);
+        assert!(world.resource::<ExtensionHostSlot>().host().is_some());
+        assert!(world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .callback()
+            .is_some());
     }
 }

@@ -651,7 +651,7 @@ impl DeferredFragmentEffects {
 
         let mut advances = Vec::new();
         for step in std::mem::take(&mut self.provider_steps) {
-            if let Err(error) = callback(&step.call.route, &step.call.arguments) {
+            if let Err(error) = callback(None, &step.call.route, &step.call.arguments) {
                 log::warn!("deferred fragment provider call aborted: {error}");
                 continue;
             }

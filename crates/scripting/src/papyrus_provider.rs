@@ -15,7 +15,7 @@ use byroredux_papyrus::ast::{
 };
 use byroredux_sdk::{
     compatibility::{classify_static_call, papyrus_game_content_declarations},
-    identity::{EntityRef, ExtensionId, FormRef},
+    identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
         ScriptValueType,
@@ -32,7 +32,7 @@ const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
 
 /// Host callback shared by Papyrus handlers after all ECS guards are dropped.
 pub type PapyrusProviderCallback =
-    dyn Fn(&str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
+    dyn Fn(Option<&PrincipalId>, &str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
 
 /// Executable-owned conversion from a raw ECS identity to the same opaque,
 /// generational handle used by sandbox callbacks.
@@ -518,6 +518,7 @@ struct PendingPapyrusProviderContinuation {
     remaining_seconds: f32,
     statements: Vec<PapyrusProviderStatement>,
     locals: BTreeMap<String, ScriptValue>,
+    principal: Option<PrincipalId>,
 }
 
 /// Bounded latent tails for provider-bearing Papyrus event handlers.
@@ -587,6 +588,7 @@ pub struct PapyrusProviderProgram {
 struct PapyrusProviderHandler {
     statements: Vec<PapyrusProviderStatement>,
     parameters: Vec<PapyrusProviderParameterBinding>,
+    principal: Option<PrincipalId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -643,6 +645,14 @@ impl PapyrusProviderProgram {
                 .entry(event)
                 .or_default()
                 .append(&mut handlers);
+        }
+    }
+
+    fn set_principal(&mut self, principal: PrincipalId) {
+        for handlers in self.handlers.values_mut() {
+            for handler in handlers {
+                handler.principal = Some(principal.clone());
+            }
         }
     }
 }
@@ -777,6 +787,7 @@ fn lower_event_into(
         vec![PapyrusProviderHandler {
             statements,
             parameters,
+            principal: None,
         }],
     );
     Ok(())
@@ -1352,6 +1363,19 @@ pub fn attach_papyrus_provider_program(
     world.insert(entity, OnInitEvent);
 }
 
+/// Attach a translated program with the stable package principal that supplied
+/// its compiled script. The owner is retained independently for every merged
+/// handler and for any latent continuation it creates.
+pub fn attach_owned_papyrus_provider_program(
+    world: &mut World,
+    entity: EntityId,
+    mut program: PapyrusProviderProgram,
+    principal: PrincipalId,
+) {
+    program.set_principal(principal);
+    attach_papyrus_provider_program(world, entity, program);
+}
+
 /// Execute provider handlers only after snapshotting programs and event
 /// markers. No ECS query or resource guard survives the host callback.
 pub fn papyrus_provider_system(world: &World, dt: f32) {
@@ -1390,6 +1414,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 continuation.locals,
                 Vec::new(),
                 Vec::new(),
+                continuation.principal,
             ));
         }
     }
@@ -1478,6 +1503,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                     projected.values,
                     projected.entities,
                     projected.forms,
+                    handler.principal.clone(),
                 ));
             }
         };
@@ -1529,7 +1555,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     }
     drop(programs);
 
-    for (statements, mut locals, entity_locals, form_locals) in handlers {
+    for (statements, mut locals, entity_locals, form_locals, principal) in handlers {
         if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
             log::warn!("Papyrus provider handler aborted before dispatch: {error}");
             continue;
@@ -1575,12 +1601,18 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if projection_failed {
             continue;
         }
-        match execute_statements(&statements, callback.as_ref(), &mut locals) {
+        match execute_statements(
+            &statements,
+            callback.as_ref(),
+            principal.as_ref(),
+            &mut locals,
+        ) {
             Ok(Some((remaining_seconds, statements))) => {
                 still_pending.push(PendingPapyrusProviderContinuation {
                     remaining_seconds,
                     statements,
                     locals,
+                    principal,
                 });
             }
             Ok(None) => {}
@@ -1770,6 +1802,7 @@ fn validate_provider_value(
 fn execute_statements(
     statements: &[PapyrusProviderStatement],
     callback: &PapyrusProviderCallback,
+    principal: Option<&PrincipalId>,
     locals: &mut BTreeMap<String, ScriptValue>,
 ) -> Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String> {
     for (index, statement) in statements.iter().enumerate() {
@@ -1779,12 +1812,12 @@ fn execute_statements(
             }
             PapyrusProviderStatement::AssignCall { name, call } => {
                 let arguments = materialize_provider_arguments(call, locals)?;
-                let value = callback(call.route.qualified_name(), &arguments)?;
+                let value = callback(principal, call.route.qualified_name(), &arguments)?;
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::Call(call) => {
                 let arguments = materialize_provider_arguments(call, locals)?;
-                callback(call.route.qualified_name(), &arguments)?;
+                callback(principal, call.route.qualified_name(), &arguments)?;
             }
             PapyrusProviderStatement::Wait { seconds } => {
                 return Ok(Some((*seconds, statements[index + 1..].to_vec())));
@@ -1794,7 +1827,7 @@ fn execute_statements(
                 then_branch,
                 else_branch,
             } => {
-                let selected = if evaluate_condition(condition, callback, locals)? {
+                let selected = if evaluate_condition(condition, callback, principal, locals)? {
                     then_branch
                 } else {
                     else_branch
@@ -1803,7 +1836,7 @@ fn execute_statements(
                     Vec::with_capacity(selected.len() + statements.len().saturating_sub(index + 1));
                 ordered_tail.extend_from_slice(selected);
                 ordered_tail.extend_from_slice(&statements[index + 1..]);
-                return execute_statements(&ordered_tail, callback, locals);
+                return execute_statements(&ordered_tail, callback, principal, locals);
             }
         }
     }
@@ -1813,27 +1846,28 @@ fn execute_statements(
 fn evaluate_condition(
     condition: &PapyrusProviderCondition,
     callback: &PapyrusProviderCallback,
+    principal: Option<&PrincipalId>,
     locals: &BTreeMap<String, ScriptValue>,
 ) -> Result<bool, String> {
     match condition {
         PapyrusProviderCondition::Not(condition) => {
-            return Ok(!evaluate_condition(condition, callback, locals)?);
+            return Ok(!evaluate_condition(condition, callback, principal, locals)?);
         }
         PapyrusProviderCondition::And(left, right) => {
-            return Ok(evaluate_condition(left, callback, locals)?
-                && evaluate_condition(right, callback, locals)?);
+            return Ok(evaluate_condition(left, callback, principal, locals)?
+                && evaluate_condition(right, callback, principal, locals)?);
         }
         PapyrusProviderCondition::Or(left, right) => {
-            return Ok(evaluate_condition(left, callback, locals)?
-                || evaluate_condition(right, callback, locals)?);
+            return Ok(evaluate_condition(left, callback, principal, locals)?
+                || evaluate_condition(right, callback, principal, locals)?);
         }
         PapyrusProviderCondition::Compare {
             left,
             operator,
             right,
         } => {
-            let left = evaluate_condition_value(left, callback, locals)?;
-            let right = evaluate_condition_value(right, callback, locals)?;
+            let left = evaluate_condition_value(left, callback, principal, locals)?;
+            let right = evaluate_condition_value(right, callback, principal, locals)?;
             return compare_condition_values(&left, *operator, &right);
         }
         _ => {}
@@ -1846,7 +1880,7 @@ fn evaluate_condition(
             .ok_or_else(|| format!("translated local {name} was not initialized"))?,
         PapyrusProviderCondition::Call(call) => {
             let arguments = materialize_provider_arguments(call, locals)?;
-            callback(call.route.qualified_name(), &arguments)?
+            callback(principal, call.route.qualified_name(), &arguments)?
         }
         PapyrusProviderCondition::Not(_)
         | PapyrusProviderCondition::And(_, _)
@@ -1862,6 +1896,7 @@ fn evaluate_condition(
 fn evaluate_condition_value(
     value: &PapyrusProviderValue,
     callback: &PapyrusProviderCallback,
+    principal: Option<&PrincipalId>,
     locals: &BTreeMap<String, ScriptValue>,
 ) -> Result<ScriptValue, String> {
     match value {
@@ -1872,7 +1907,7 @@ fn evaluate_condition_value(
             .ok_or_else(|| format!("translated local {name} was not initialized")),
         PapyrusProviderValue::Call(call) => {
             let arguments = materialize_provider_arguments(call, locals)?;
-            callback(call.route.qualified_name(), &arguments)
+            callback(principal, call.route.qualified_name(), &arguments)
         }
     }
 }
@@ -2336,13 +2371,15 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
-            Ok(ScriptValue::String("clear".to_owned()))
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::String("clear".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let entity = world.spawn();
 
@@ -2361,6 +2398,54 @@ mod tests {
                 ScriptValue::Integer(4),
                 ScriptValue::String("initialized".to_owned())
             ]
+        );
+    }
+
+    #[test]
+    fn owned_program_preserves_its_principal_across_a_latent_tail() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnInit()
+                WeatherNative.WeatherAt(1, "before")
+                Utility.Wait(0.0)
+                WeatherNative.WeatherAt(2, "after")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+        let principal = PrincipalId::new("legacy.scripts.fixture").unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let owners = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&owners);
+        let callback = Arc::new(
+            move |principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(principal.map(ToString::to_string));
+                Ok(ScriptValue::String("ok".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_owned_papyrus_provider_program(&mut world, entity, program, principal.clone());
+
+        papyrus_provider_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<PapyrusProviderContinuationQueue>().len(),
+            1
+        );
+        crate::event_cleanup_system(&world, 0.0);
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(
+            *owners.lock().unwrap(),
+            [Some(principal.to_string()), Some(principal.to_string())]
         );
     }
 
@@ -2399,10 +2484,12 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&calls);
-        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
-            observed.lock().unwrap().push(arguments.to_vec());
-            Ok(ScriptValue::String("ok".to_owned()))
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, _route: &str, arguments: &[ScriptValue]| {
+                observed.lock().unwrap().push(arguments.to_vec());
+                Ok(ScriptValue::String("ok".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let entity = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, lower(first_source));
@@ -2460,10 +2547,12 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback.lock().unwrap().push(arguments.to_vec());
-            Ok(ScriptValue::String("clear".to_owned()))
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, _route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback.lock().unwrap().push(arguments.to_vec());
+                Ok(ScriptValue::String("clear".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let form_resolver = Arc::new(|form_id: u32| Ok(FormRef::new([7; 16], form_id)))
             as Arc<PapyrusProviderFormResolver>;
@@ -2526,10 +2615,12 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback.lock().unwrap().push(arguments.to_vec());
-            Ok(ScriptValue::String("ok".to_owned()))
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, _route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback.lock().unwrap().push(arguments.to_vec());
+                Ok(ScriptValue::String("ok".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let form_resolver = Arc::new(|form_id: u32| Ok(FormRef::new([8; 16], form_id)))
             as Arc<PapyrusProviderFormResolver>;
@@ -2587,17 +2678,19 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
-            if route.ends_with("is-storm") {
-                Ok(ScriptValue::Boolean(true))
-            } else {
-                Ok(ScriptValue::String("rain".to_owned()))
-            }
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route.ends_with("is-storm") {
+                    Ok(ScriptValue::Boolean(true))
+                } else {
+                    Ok(ScriptValue::String("rain".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let entity = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, program);
@@ -2644,17 +2737,19 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
-            if route.ends_with("is-storm") {
-                Ok(ScriptValue::Boolean(true))
-            } else {
-                Ok(ScriptValue::String("ok".to_owned()))
-            }
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route.ends_with("is-storm") {
+                    Ok(ScriptValue::Boolean(true))
+                } else {
+                    Ok(ScriptValue::String("ok".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
         let entity = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, program);
@@ -2710,10 +2805,12 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
-            calls_for_callback.lock().unwrap().push(route.to_owned());
-            Ok(ScriptValue::None)
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, _arguments: &[ScriptValue]| {
+                calls_for_callback.lock().unwrap().push(route.to_owned());
+                Ok(ScriptValue::None)
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
         let entity = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, program);
@@ -2775,21 +2872,23 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
-            if route.ends_with("get-mod-count") {
-                Ok(ScriptValue::Integer(2))
-            } else if route.ends_with("is-plugin-installed") {
-                Ok(ScriptValue::Boolean(false))
-            } else if arguments.first() == Some(&ScriptValue::Integer(0)) {
-                Ok(ScriptValue::String("rain".to_owned()))
-            } else {
-                Ok(ScriptValue::String("ok".to_owned()))
-            }
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route.ends_with("get-mod-count") {
+                    Ok(ScriptValue::Integer(2))
+                } else if route.ends_with("is-plugin-installed") {
+                    Ok(ScriptValue::Boolean(false))
+                } else if arguments.first() == Some(&ScriptValue::Integer(0)) {
+                    Ok(ScriptValue::String("rain".to_owned()))
+                } else {
+                    Ok(ScriptValue::String("ok".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
         let entity = world.spawn();
         attach_papyrus_provider_program(&mut world, entity, program);
@@ -2831,13 +2930,15 @@ mod tests {
         crate::register(&mut world);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_callback = Arc::clone(&calls);
-        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
-            Ok(ScriptValue::String("ok".to_owned()))
-        }) as Arc<PapyrusProviderCallback>;
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::String("ok".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
         let resolver = Arc::new(|entity: EntityId| {
             EntityRef::new(9, u64::from(entity) + 1).ok_or_else(|| "invalid test entity".to_owned())
