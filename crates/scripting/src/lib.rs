@@ -78,7 +78,7 @@ pub use obscript_runtime::{
     attach_legacy_obscript_program, compile_legacy_obscript_bytecode_program,
     compile_legacy_obscript_program, legacy_obscript_load_order_system,
     set_legacy_obscript_content_catalog, LegacyObscriptAssignment, LegacyObscriptContentCatalog,
-    LegacyObscriptEvent, LegacyObscriptProgram,
+    LegacyObscriptEvent, LegacyObscriptProgram, LegacyObscriptStatement,
 };
 pub use package::{
     install_package_linked_references, install_package_records, install_package_target_directions,

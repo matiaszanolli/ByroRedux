@@ -1,9 +1,9 @@
 //! Conservative ECS runtime for engine-native legacy load-order probes.
 //!
-//! This translator intentionally accepts only event handlers made entirely of
-//! unconditional supported `Set` statements. A handler containing control
-//! flow or any other executable statement is rejected as a unit, so partial
-//! ObScript support cannot silently change the meaning of a real script.
+//! This translator intentionally accepts only exact supported load-order calls,
+//! assignments, and bounded `if`/`else` trees. Any other executable statement
+//! rejects its handler as a unit, so partial ObScript support cannot silently
+//! change the meaning of a real script.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,9 +27,14 @@ const SHORT: u16 = 0x12;
 const LONG: u16 = 0x13;
 const FLOAT: u16 = 0x14;
 const SET_TO: u16 = 0x15;
+const IF: u16 = 0x16;
+const ELSE: u16 = 0x17;
+const ELSE_IF: u16 = 0x18;
+const END_IF: u16 = 0x19;
 const REFERENCE_FUNCTION: u16 = 0x1c;
 const SCRIPT_NAME: u16 = 0x1d;
 const REF: u16 = 0x1f;
+const MAX_LEGACY_OBSCRIPT_NESTING: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LegacyObscriptEvent {
@@ -44,10 +49,20 @@ pub struct LegacyObscriptAssignment {
     pub call: LegacyObscriptLoadOrderCall,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyObscriptStatement {
+    Assignment(LegacyObscriptAssignment),
+    If {
+        condition: LegacyObscriptLoadOrderCall,
+        then_branch: Vec<LegacyObscriptStatement>,
+        else_branch: Vec<LegacyObscriptStatement>,
+    },
+}
+
 /// Static translated behavior attached to one legacy scripted entity.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LegacyObscriptProgram {
-    handlers: BTreeMap<LegacyObscriptEvent, Vec<LegacyObscriptAssignment>>,
+    handlers: BTreeMap<LegacyObscriptEvent, Vec<LegacyObscriptStatement>>,
 }
 
 impl Component for LegacyObscriptProgram {
@@ -55,7 +70,7 @@ impl Component for LegacyObscriptProgram {
 }
 
 impl LegacyObscriptProgram {
-    pub fn handler(&self, event: LegacyObscriptEvent) -> &[LegacyObscriptAssignment] {
+    pub fn handler(&self, event: LegacyObscriptEvent) -> &[LegacyObscriptStatement] {
         self.handlers.get(&event).map_or(&[], Vec::as_slice)
     }
 
@@ -107,18 +122,13 @@ pub fn attach_legacy_obscript_program(
 }
 
 /// Compile source-less `SCDA` only when every statement in a supported event
-/// block is a local assignment whose right-hand side is one exact supported
-/// load-order call. General expressions and control flow are declined.
+/// block is an exact supported assignment or bounded `if`/`else` statement.
 pub fn compile_legacy_obscript_bytecode_program(
     script: &ScriptRecord,
     dialect: ObscriptDialect,
 ) -> Option<LegacyObscriptProgram> {
     let mut program = LegacyObscriptProgram::default();
-    let mut block: Option<(
-        Option<LegacyObscriptEvent>,
-        bool,
-        Vec<LegacyObscriptAssignment>,
-    )> = None;
+    let mut block: Option<(Option<LegacyObscriptEvent>, Vec<CompiledLine<'_>>)> = None;
     let mut offset = 0usize;
 
     while offset < script.compiled.len() {
@@ -133,44 +143,36 @@ pub fn compile_legacy_obscript_bytecode_program(
                 return None;
             }
             let event = compiled_event(read_u16(payload, 0)?).filter(|_| payload.len() == 6);
-            block = Some((event, true, Vec::new()));
+            block = Some((event, Vec::new()));
             continue;
         }
         if opcode == END {
             if !payload.is_empty() {
                 return None;
             }
-            let (event, valid, assignments) = block.take()?;
-            if let Some(event) = event.filter(|_| valid && !assignments.is_empty()) {
-                program
-                    .handlers
-                    .entry(event)
-                    .or_default()
-                    .extend(assignments);
+            let (event, lines) = block.take()?;
+            if let Some(event) = event {
+                let statements = parse_compiled_statements(script, dialect, &lines)?;
+                if !statements.is_empty() {
+                    program
+                        .handlers
+                        .entry(event)
+                        .or_default()
+                        .extend(statements);
+                }
             }
             continue;
         }
 
-        let Some((event, valid, assignments)) = block.as_mut() else {
+        let Some((event, lines)) = block.as_mut() else {
             if !matches!(opcode, SHORT | LONG | FLOAT | SCRIPT_NAME | REF) {
                 return None;
             }
             continue;
         };
-        if event.is_none() || !*valid {
-            continue;
+        if event.is_some() {
+            lines.push(CompiledLine { opcode, payload });
         }
-        if opcode != SET_TO {
-            *valid = false;
-            assignments.clear();
-            continue;
-        }
-        let Some(assignment) = parse_compiled_assignment(script, payload, dialect) else {
-            *valid = false;
-            assignments.clear();
-            continue;
-        };
-        assignments.push(assignment);
     }
 
     if block.is_some() || program.is_empty() {
@@ -178,6 +180,88 @@ pub fn compile_legacy_obscript_bytecode_program(
     } else {
         Some(program)
     }
+}
+
+#[derive(Clone, Copy)]
+struct CompiledLine<'a> {
+    opcode: u16,
+    payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatementTerminator {
+    End,
+    Else,
+    EndIf,
+}
+
+fn parse_compiled_statements(
+    script: &ScriptRecord,
+    dialect: ObscriptDialect,
+    lines: &[CompiledLine<'_>],
+) -> Option<Vec<LegacyObscriptStatement>> {
+    let mut cursor = 0;
+    let (statements, terminator) = parse_compiled_sequence(script, dialect, lines, &mut cursor, 0)?;
+    (terminator == StatementTerminator::End && cursor == lines.len()).then_some(statements)
+}
+
+fn parse_compiled_sequence(
+    script: &ScriptRecord,
+    dialect: ObscriptDialect,
+    lines: &[CompiledLine<'_>],
+    cursor: &mut usize,
+    depth: usize,
+) -> Option<(Vec<LegacyObscriptStatement>, StatementTerminator)> {
+    let mut statements = Vec::new();
+    while let Some(line) = lines.get(*cursor).copied() {
+        *cursor += 1;
+        match line.opcode {
+            SET_TO => statements.push(LegacyObscriptStatement::Assignment(
+                parse_compiled_assignment(script, line.payload, dialect)?,
+            )),
+            IF => {
+                if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
+                    return None;
+                }
+                let condition = parse_compiled_condition(line.payload, dialect)?;
+                let (then_branch, terminator) =
+                    parse_compiled_sequence(script, dialect, lines, cursor, depth + 1)?;
+                let else_branch = if terminator == StatementTerminator::Else {
+                    let (else_branch, terminator) =
+                        parse_compiled_sequence(script, dialect, lines, cursor, depth + 1)?;
+                    (terminator == StatementTerminator::EndIf).then_some(else_branch)?
+                } else {
+                    (terminator == StatementTerminator::EndIf).then(Vec::new)?
+                };
+                statements.push(LegacyObscriptStatement::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                });
+            }
+            ELSE if line.payload.len() == 2 => {
+                return Some((statements, StatementTerminator::Else));
+            }
+            END_IF if line.payload.is_empty() => {
+                return Some((statements, StatementTerminator::EndIf));
+            }
+            ELSE_IF => return None,
+            _ => return None,
+        }
+    }
+    Some((statements, StatementTerminator::End))
+}
+
+fn parse_compiled_condition(
+    payload: &[u8],
+    dialect: ObscriptDialect,
+) -> Option<LegacyObscriptLoadOrderCall> {
+    let expression_len = usize::from(read_u16(payload, 2)?);
+    let expression_end = 4usize.checked_add(expression_len)?;
+    if expression_end != payload.len() {
+        return None;
+    }
+    decode_exact_load_order_expression(&payload[4..expression_end], dialect)
 }
 
 fn compiled_line(bytes: &[u8], offset: usize) -> Option<(u16, &[u8], usize)> {
@@ -235,18 +319,14 @@ fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
-/// Compile only pure load-order-query handlers. Any unsupported statement or
-/// control flow invalidates its enclosing handler rather than being ignored.
+/// Compile exact load-order-query assignments and bounded `if`/`else` trees.
+/// Any unsupported statement invalidates its enclosing handler.
 pub fn compile_legacy_obscript_program(
     script: &ScriptRecord,
     source: &str,
 ) -> Option<LegacyObscriptProgram> {
     let mut program = LegacyObscriptProgram::default();
-    let mut block: Option<(
-        Option<LegacyObscriptEvent>,
-        bool,
-        Vec<LegacyObscriptAssignment>,
-    )> = None;
+    let mut block: Option<(Option<LegacyObscriptEvent>, Vec<Vec<String>>)> = None;
 
     for raw_line in source.lines() {
         let line = strip_comment(raw_line).trim();
@@ -265,35 +345,35 @@ pub fn compile_legacy_obscript_program(
             let event = (tokens.len() == 2)
                 .then(|| event_from_name(&tokens[1]))
                 .flatten();
-            block = Some((event, true, Vec::new()));
+            block = Some((event, Vec::new()));
             continue;
         }
         if tokens[0].eq_ignore_ascii_case("end") {
-            let Some((event, valid, assignments)) = block.take() else {
+            if tokens.len() != 1 {
+                return None;
+            }
+            let Some((event, lines)) = block.take() else {
                 continue;
             };
-            if let Some(event) = event.filter(|_| valid && !assignments.is_empty()) {
-                program
-                    .handlers
-                    .entry(event)
-                    .or_default()
-                    .extend(assignments);
+            if let Some(event) = event {
+                let statements = parse_source_statements(script, &lines)?;
+                if !statements.is_empty() {
+                    program
+                        .handlers
+                        .entry(event)
+                        .or_default()
+                        .extend(statements);
+                }
             }
             continue;
         }
 
-        let Some((event, valid, assignments)) = block.as_mut() else {
+        let Some((event, lines)) = block.as_mut() else {
             continue;
         };
-        if event.is_none() || !*valid {
-            continue;
+        if event.is_some() {
+            lines.push(tokens);
         }
-        let Some(assignment) = parse_assignment(script, &tokens) else {
-            *valid = false;
-            assignments.clear();
-            continue;
-        };
-        assignments.push(assignment);
     }
 
     if block.is_some() || program.is_empty() {
@@ -301,6 +381,59 @@ pub fn compile_legacy_obscript_program(
     } else {
         Some(program)
     }
+}
+
+fn parse_source_statements(
+    script: &ScriptRecord,
+    lines: &[Vec<String>],
+) -> Option<Vec<LegacyObscriptStatement>> {
+    let mut cursor = 0;
+    let (statements, terminator) = parse_source_sequence(script, lines, &mut cursor, 0)?;
+    (terminator == StatementTerminator::End && cursor == lines.len()).then_some(statements)
+}
+
+fn parse_source_sequence(
+    script: &ScriptRecord,
+    lines: &[Vec<String>],
+    cursor: &mut usize,
+    depth: usize,
+) -> Option<(Vec<LegacyObscriptStatement>, StatementTerminator)> {
+    let mut statements = Vec::new();
+    while let Some(tokens) = lines.get(*cursor) {
+        *cursor += 1;
+        let keyword = tokens.first()?;
+        if keyword.eq_ignore_ascii_case("if") {
+            if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
+                return None;
+            }
+            let condition = parse_source_call(&tokens[1..])?;
+            let (then_branch, terminator) =
+                parse_source_sequence(script, lines, cursor, depth + 1)?;
+            let else_branch = if terminator == StatementTerminator::Else {
+                let (else_branch, terminator) =
+                    parse_source_sequence(script, lines, cursor, depth + 1)?;
+                (terminator == StatementTerminator::EndIf).then_some(else_branch)?
+            } else {
+                (terminator == StatementTerminator::EndIf).then(Vec::new)?
+            };
+            statements.push(LegacyObscriptStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            });
+        } else if keyword.eq_ignore_ascii_case("else") && tokens.len() == 1 {
+            return Some((statements, StatementTerminator::Else));
+        } else if keyword.eq_ignore_ascii_case("endif") && tokens.len() == 1 {
+            return Some((statements, StatementTerminator::EndIf));
+        } else if keyword.eq_ignore_ascii_case("elseif") {
+            return None;
+        } else {
+            statements.push(LegacyObscriptStatement::Assignment(parse_assignment(
+                script, tokens,
+            )?));
+        }
+    }
+    Some((statements, StatementTerminator::End))
 }
 
 fn event_from_name(name: &str) -> Option<LegacyObscriptEvent> {
@@ -326,26 +459,30 @@ fn parse_assignment(script: &ScriptRecord, tokens: &[String]) -> Option<LegacyOb
         .locals
         .iter()
         .find(|local| local.name.eq_ignore_ascii_case(&tokens[1]))?;
-    let command = &tokens[3];
-    let call = if command.eq_ignore_ascii_case("IsModLoaded") && tokens.len() == 5 {
-        LegacyObscriptLoadOrderCall::IsModLoaded {
-            plugin: tokens[4].clone(),
-        }
-    } else if command.eq_ignore_ascii_case("GetModIndex") && tokens.len() == 5 {
-        LegacyObscriptLoadOrderCall::GetModIndex {
-            plugin: tokens[4].clone(),
-        }
-    } else if command.eq_ignore_ascii_case("GetNumLoadedMods") && tokens.len() == 4 {
-        LegacyObscriptLoadOrderCall::GetNumLoadedMods
-    } else if command.eq_ignore_ascii_case("GetNumLoadedPlugins") && tokens.len() == 4 {
-        LegacyObscriptLoadOrderCall::GetNumLoadedPlugins
-    } else {
-        return None;
-    };
+    let call = parse_source_call(&tokens[3..])?;
     Some(LegacyObscriptAssignment {
         target: local.name.clone(),
         call,
     })
+}
+
+fn parse_source_call(tokens: &[String]) -> Option<LegacyObscriptLoadOrderCall> {
+    let command = tokens.first()?;
+    if command.eq_ignore_ascii_case("IsModLoaded") && tokens.len() == 2 {
+        Some(LegacyObscriptLoadOrderCall::IsModLoaded {
+            plugin: tokens[1].clone(),
+        })
+    } else if command.eq_ignore_ascii_case("GetModIndex") && tokens.len() == 2 {
+        Some(LegacyObscriptLoadOrderCall::GetModIndex {
+            plugin: tokens[1].clone(),
+        })
+    } else if command.eq_ignore_ascii_case("GetNumLoadedMods") && tokens.len() == 1 {
+        Some(LegacyObscriptLoadOrderCall::GetNumLoadedMods)
+    } else if command.eq_ignore_ascii_case("GetNumLoadedPlugins") && tokens.len() == 1 {
+        Some(LegacyObscriptLoadOrderCall::GetNumLoadedPlugins)
+    } else {
+        None
+    }
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -442,19 +579,57 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
 fn collect_writes(
     catalog: &ContentCatalog,
     entity: EntityId,
-    assignments: &[LegacyObscriptAssignment],
+    statements: &[LegacyObscriptStatement],
     writes: &mut Vec<(EntityId, String, f32)>,
 ) {
-    for assignment in assignments {
-        let Ok(result) = adapt_legacy_obscript_load_order(catalog, assignment.call.clone()) else {
-            continue;
-        };
-        let value = match result {
-            LegacyObscriptLoadOrderResult::Bool(value) => f32::from(value),
-            LegacyObscriptLoadOrderResult::Integer(value) => value as f32,
-            LegacyObscriptLoadOrderResult::String(_) => continue,
-        };
-        writes.push((entity, assignment.target.clone(), value));
+    for statement in statements {
+        match statement {
+            LegacyObscriptStatement::Assignment(assignment) => {
+                let Some(value) = evaluate_load_order_call(catalog, &assignment.call)
+                    .and_then(load_order_result_number)
+                else {
+                    continue;
+                };
+                writes.push((entity, assignment.target.clone(), value));
+            }
+            LegacyObscriptStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let branch = if evaluate_load_order_call(catalog, condition)
+                    .is_some_and(load_order_result_truthy)
+                {
+                    then_branch
+                } else {
+                    else_branch
+                };
+                collect_writes(catalog, entity, branch, writes);
+            }
+        }
+    }
+}
+
+fn evaluate_load_order_call(
+    catalog: &ContentCatalog,
+    call: &LegacyObscriptLoadOrderCall,
+) -> Option<LegacyObscriptLoadOrderResult> {
+    adapt_legacy_obscript_load_order(catalog, call.clone()).ok()
+}
+
+fn load_order_result_number(result: LegacyObscriptLoadOrderResult) -> Option<f32> {
+    match result {
+        LegacyObscriptLoadOrderResult::Bool(value) => Some(f32::from(value)),
+        LegacyObscriptLoadOrderResult::Integer(value) => Some(value as f32),
+        LegacyObscriptLoadOrderResult::String(_) => None,
+    }
+}
+
+fn load_order_result_truthy(result: LegacyObscriptLoadOrderResult) -> bool {
+    match result {
+        LegacyObscriptLoadOrderResult::Bool(value) => value,
+        LegacyObscriptLoadOrderResult::Integer(value) => value != 0,
+        LegacyObscriptLoadOrderResult::String(value) => !value.is_empty(),
     }
 }
 
@@ -500,10 +675,7 @@ mod tests {
         bytes
     }
 
-    fn compiled_assignment(event: u16, local_index: u16, command: u16, plugin: &str) -> Vec<u8> {
-        let mut begin = event.to_le_bytes().to_vec();
-        begin.extend_from_slice(&0u32.to_le_bytes());
-
+    fn compiled_expression(command: u16, plugin: &str) -> Vec<u8> {
         let mut arguments = 1u16.to_le_bytes().to_vec();
         arguments.extend_from_slice(&(plugin.len() as u16).to_le_bytes());
         arguments.extend_from_slice(plugin.as_bytes());
@@ -511,19 +683,57 @@ mod tests {
         expression.extend_from_slice(&command.to_le_bytes());
         expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
         expression.extend_from_slice(&arguments);
+        expression
+    }
+
+    fn compiled_assignment_payload(local_index: u16, command: u16, plugin: &str) -> Vec<u8> {
+        let expression = compiled_expression(command, plugin);
         let mut assignment = vec![b's'];
         assignment.extend_from_slice(&local_index.to_le_bytes());
         assignment.extend_from_slice(&(expression.len() as u16).to_le_bytes());
         assignment.extend_from_slice(&expression);
+        assignment
+    }
+
+    fn compiled_assignment(event: u16, local_index: u16, command: u16, plugin: &str) -> Vec<u8> {
+        let mut begin = event.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
 
         let mut compiled = framed(BEGIN, &begin);
-        compiled.extend(framed(SET_TO, &assignment));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(local_index, command, plugin),
+        ));
+        compiled.extend(framed(END, &[]));
+        compiled
+    }
+
+    fn compiled_conditional(event: u16, condition_plugin: &str) -> Vec<u8> {
+        let mut begin = event.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+        let expression = compiled_expression(0x14ae, condition_plugin);
+        let mut condition = 0u16.to_le_bytes().to_vec();
+        condition.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        condition.extend_from_slice(&expression);
+
+        let mut compiled = framed(BEGIN, &begin);
+        compiled.extend(framed(IF, &condition));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Missing.esp"),
+        ));
+        compiled.extend(framed(ELSE, &[0, 0]));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Companion Pack.esp"),
+        ));
+        compiled.extend(framed(END_IF, &[]));
         compiled.extend(framed(END, &[]));
         compiled
     }
 
     #[test]
-    fn compiler_accepts_only_pure_supported_handlers() {
+    fn source_compiler_accepts_assignments_and_bounded_conditionals() {
         let source = r#"
             scn CompatibilityGate
             begin GameMode
@@ -538,10 +748,28 @@ mod tests {
             begin GameMode
                 if IsModLoaded "Companion Pack.esp"
                     set index to GetModIndex "Companion Pack.esp"
+                else
+                    set index to GetModIndex "Missing.esp"
                 endif
             end
         "#;
-        assert!(compile_legacy_obscript_program(&script(conditional), conditional).is_none());
+        let conditional_program =
+            compile_legacy_obscript_program(&script(conditional), conditional).unwrap();
+        assert!(matches!(
+            conditional_program.handler(LegacyObscriptEvent::GameMode),
+            [LegacyObscriptStatement::If { .. }]
+        ));
+
+        let else_if = r#"
+            begin GameMode
+                if IsModLoaded "Companion Pack.esp"
+                    set index to GetModIndex "Companion Pack.esp"
+                elseif IsModLoaded "Missing.esp"
+                    set index to GetModIndex "Missing.esp"
+                endif
+            end
+        "#;
+        assert!(compile_legacy_obscript_program(&script(else_if), else_if).is_none());
 
         let filtered = r#"
             begin OnActivate Player
@@ -549,6 +777,56 @@ mod tests {
             end
         "#;
         assert!(compile_legacy_obscript_program(&script(filtered), filtered).is_none());
+    }
+
+    #[test]
+    fn source_compiler_rejects_excessive_nesting() {
+        let mut source = "begin GameMode\n".to_owned();
+        for _ in 0..=MAX_LEGACY_OBSCRIPT_NESTING {
+            source.push_str("if IsModLoaded \"Companion Pack.esp\"\n");
+        }
+        source.push_str("set index to GetModIndex \"Companion Pack.esp\"\n");
+        for _ in 0..=MAX_LEGACY_OBSCRIPT_NESTING {
+            source.push_str("endif\n");
+        }
+        source.push_str("end\n");
+
+        assert!(compile_legacy_obscript_program(&script(&source), &source).is_none());
+    }
+
+    #[test]
+    fn source_conditionals_execute_only_the_selected_branch() {
+        let source = r#"
+            begin OnLoad
+                if IsModLoaded "Missing.esp"
+                    set index to GetModIndex "Missing.esp"
+                else
+                    if IsModLoaded "Companion Pack.esp"
+                        set index to GetModIndex "Companion Pack.esp"
+                    endif
+                endif
+            end
+        "#;
+        let mut world = World::new();
+        crate::register(&mut world);
+        set_legacy_obscript_content_catalog(&world, catalog());
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &script(source),
+            None,
+        ));
+        world.insert(entity, OnCellLoadEvent);
+
+        legacy_obscript_load_order_system(&world, 0.0);
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -601,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_pure_handler_lowers_but_control_flow_declines() {
+    fn compiled_handler_lowers_assignments_and_conditionals() {
         let mut record = script("");
         record.source = None;
         record.locals[1].index = 7;
@@ -610,17 +888,63 @@ mod tests {
         let program =
             compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).unwrap();
         assert_eq!(program.handler(LegacyObscriptEvent::OnLoad).len(), 1);
-        assert_eq!(
-            program.handler(LegacyObscriptEvent::OnLoad)[0].target,
-            "index"
-        );
+        assert!(matches!(
+            program.handler(LegacyObscriptEvent::OnLoad),
+            [LegacyObscriptStatement::Assignment(LegacyObscriptAssignment {
+                target,
+                ..
+            })] if target == "index"
+        ));
+
+        record.compiled = compiled_conditional(21, "Missing.esp");
+        let program =
+            compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).unwrap();
+        assert!(matches!(
+            program.handler(LegacyObscriptEvent::OnLoad),
+            [LegacyObscriptStatement::If { .. }]
+        ));
 
         let begin_len = framed(BEGIN, &[21, 0, 0, 0, 0, 0]).len();
         record
             .compiled
-            .splice(begin_len..begin_len, framed(0x16, &[0, 0, 0, 0]));
+            .splice(begin_len..begin_len, framed(ELSE_IF, &[0, 0, 0, 0]));
         assert!(
             compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).is_none()
+        );
+
+        record.compiled = compiled_conditional(21, "Missing.esp");
+        record.compiled[begin_len + 6] += 1;
+        assert!(
+            compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).is_none()
+        );
+    }
+
+    #[test]
+    fn compiled_conditionals_execute_only_the_selected_branch() {
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled_conditional(21, "Missing.esp");
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        set_legacy_obscript_content_catalog(&world, catalog());
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        world.insert(entity, OnCellLoadEvent);
+
+        legacy_obscript_load_order_system(&world, 0.0);
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
         );
     }
 
@@ -657,7 +981,7 @@ mod tests {
     fn preserved_source_rejection_does_not_fall_back_to_compiled_bytes() {
         let source = r#"
             begin OnLoad
-                if IsModLoaded "Companion Pack.esp"
+                if loaded == 1
                     set index to GetModIndex "Companion Pack.esp"
                 endif
             end
