@@ -46,6 +46,8 @@ use byroredux_sdk::compatibility::{
     PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
@@ -995,6 +997,19 @@ impl ExtensionHost {
                 },
             ),
             (
+                PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::PluckInt { missing: 0 }),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::PluckInt {
+                    missing: integer(*missing)?,
+                },
+            ),
+            (
                 PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
                 [ScriptValue::None, ScriptValue::String(key)],
             ) => (key, StorageUtilScalarCall::HasInt),
@@ -1029,6 +1044,14 @@ impl ExtensionHost {
                 [ScriptValue::None, ScriptValue::String(key), ScriptValue::Float(missing)],
             ) => (key, StorageUtilScalarCall::GetFloat { missing: *missing }),
             (
+                PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::PluckFloat { missing: 0.0 }),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Float(missing)],
+            ) => (key, StorageUtilScalarCall::PluckFloat { missing: *missing }),
+            (
                 PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
                 [ScriptValue::None, ScriptValue::String(key)],
             ) => (key, StorageUtilScalarCall::HasFloat),
@@ -1051,6 +1074,24 @@ impl ExtensionHost {
                 key,
                 StorageUtilScalarCall::GetString {
                     missing: String::new(),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (
+                key,
+                StorageUtilScalarCall::PluckString {
+                    missing: String::new(),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::String(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::PluckString {
+                    missing: missing.clone(),
                 },
             ),
             (
@@ -1093,6 +1134,23 @@ impl ExtensionHost {
             ) => (
                 key,
                 StorageUtilScalarCall::GetForm {
+                    missing: Some(*missing),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::PluckForm { missing: None }),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::None],
+            ) => (key, StorageUtilScalarCall::PluckForm { missing: None }),
+            (
+                PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Form(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::PluckForm {
                     missing: Some(*missing),
                 },
             ),
@@ -6920,6 +6978,24 @@ mod tests {
             .unwrap(),
             ScriptValue::Form(stored_form)
         );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+                &[ScriptValue::None, ScriptValue::String("owner".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Form(stored_form)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+                &[ScriptValue::None, ScriptValue::String("owner".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::None
+        );
 
         let object = ScriptValue::Form(FormRef::new([9; 16], 1));
         assert!(matches!(
@@ -7589,6 +7665,9 @@ mod tests {
             Event OnLoad()
                 StorageUtil.SetIntValue(None, "Count", 3)
                 StorageUtil.SetFloatValue(None, "Ratio", 1.25)
+                StorageUtil.SetIntValue(None, "OneShot", 11)
+                StorageUtil.SetFloatValue(None, "OneFloat", 2.5)
+                StorageUtil.SetStringValue(None, "OneString", "go")
                 Utility.Wait(0.0)
                 Int value
                 value = StorageUtil.GetIntValue(None, "count", -1)
@@ -7596,6 +7675,10 @@ mod tests {
                 visits = StorageUtil.AdjustIntValue(None, "visits", 2)
                 Float ratio
                 ratio = StorageUtil.AdjustFloatValue(None, "ratio", 0.5)
+                StorageUtil.PluckIntValue(None, "oneshot", -1)
+                StorageUtil.PluckFloatValue(None, "onefloat", -1.0)
+                StorageUtil.PluckStringValue(None, "onestring", "missing")
+                StorageUtil.PluckFormValue(None, "absent-form", None)
                 StorageUtil.SetFormValue(None, "Owner", None)
                 If value == 3 && visits == 2 && ratio == 1.75
                     StorageUtil.SetStringValue(None, "Status", "ready")
@@ -7644,6 +7727,9 @@ mod tests {
             ))
         );
         assert!(!values.contains_key(&StorageKey::new("storageutil.form:owner").unwrap()));
+        assert!(!values.contains_key(&StorageKey::new("storageutil.int:oneshot").unwrap()));
+        assert!(!values.contains_key(&StorageKey::new("storageutil.float:onefloat").unwrap()));
+        assert!(!values.contains_key(&StorageKey::new("storageutil.string:onestring").unwrap()));
     }
 
     #[test]

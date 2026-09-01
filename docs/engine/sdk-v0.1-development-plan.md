@@ -532,8 +532,8 @@ belongs to the host, not `byroredux-sdk`.
 | Direct engine object or memory access | No equivalent; explicit semantic capability required |
 
 The exact source-alias pack covers global (`ObjKey == None`) `StorageUtil`
-integer, float, string, and Form get/has/set/unset calls plus integer and float
-adjustment. Each descriptor names
+integer, float, string, and Form get/has/set/unset/pluck calls plus integer and
+float adjustment. Each descriptor names
 the concrete `byro.storage` recipe, expected WIT value variant, and isolation
 constraint. An executable SDK adapter case-folds and type-namespaces portable
 keys, preserves missing values and synchronous returns, maps zero/empty/`None`
@@ -544,8 +544,8 @@ save schema. The storage service supplies
 the callback-local read-your-writes needed by those recipes. These exact aliases
 are now published by the engine compatibility catalog and execute without an
 external extension package, using the authenticated archive-script principal
-before and after latent waits. Pluck, file-backed, list, object-scoped,
-arbitrary-key, and cross-mod shared calls remain deliberately unsupported until
+before and after latent waits. File-backed, list, object-scoped, arbitrary-key,
+and cross-mod shared calls remain deliberately unsupported until
 an engine service can honor
 their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
@@ -1323,6 +1323,14 @@ state is encoded under type-isolated keys using existing bounded bytes, avoiding
 a storage/save format change. Non-finite floats, malformed persisted payloads,
 integer overflow, non-global object keys, and cross-principal access fail
 closed; zero results and `None` retain PapyrusUtil's unset semantics.
+
+Checkpoint commit: `feat(scripting): execute StorageUtil pluck aliases`.
+
+Delivered `PluckIntValue`, `PluckFloatValue`, `PluckStringValue`, and
+`PluckFormValue` for global principal-private values. Each call validates and
+returns the stored typed value (or its optional missing default), then queues a
+delete in the same engine-owned callback transaction. The pack reuses the
+existing scalar encodings and does not change the save format.
 
 ### 14.4 Exit gate
 

@@ -191,6 +191,8 @@ pub const PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE: &str =
     "byro.content.catalog.get-nth-light-mod-dependency";
 pub const PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-int-value";
+pub const PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.pluck-int-value";
 pub const PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.has-int-value";
 pub const PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE: &str =
@@ -201,6 +203,8 @@ pub const PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.adjust-int-value";
 pub const PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-float-value";
+pub const PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.pluck-float-value";
 pub const PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.has-float-value";
 pub const PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE: &str =
@@ -211,6 +215,8 @@ pub const PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.adjust-float-value";
 pub const PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-string-value";
+pub const PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.pluck-string-value";
 pub const PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.has-string-value";
 pub const PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE: &str =
@@ -219,6 +225,8 @@ pub const PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-string-value";
 pub const PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-form-value";
+pub const PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.pluck-form-value";
 pub const PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.has-form-value";
 pub const PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE: &str =
@@ -676,6 +684,17 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             ScriptValueType::Integer,
         ),
         papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+            "storage-util-pluck-int-value",
+            "PluckIntValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Integer, true),
+            ],
+            ScriptValueType::Integer,
+        ),
+        papyrus_storage_util_declaration(
             PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
             "storage-util-has-int-value",
             "HasIntValue",
@@ -715,6 +734,17 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
             "storage-util-get-float-value",
             "GetFloatValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Float, true),
+            ],
+            ScriptValueType::Float,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+            "storage-util-pluck-float-value",
+            "PluckFloatValue",
             &[
                 object_and_key[0],
                 object_and_key[1],
@@ -770,6 +800,17 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             ScriptValueType::String,
         ),
         papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+            "storage-util-pluck-string-value",
+            "PluckStringValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::String, true),
+            ],
+            ScriptValueType::String,
+        ),
+        papyrus_storage_util_declaration(
             PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
             "storage-util-has-string-value",
             "HasStringValue",
@@ -798,6 +839,17 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
             "storage-util-get-form-value",
             "GetFormValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Form, true),
+            ],
+            ScriptValueType::Form,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+            "storage-util-pluck-form-value",
+            "PluckFormValue",
             &[
                 object_and_key[0],
                 object_and_key[1],
@@ -1076,20 +1128,24 @@ pub fn adapt_legacy_obscript_load_order(
 #[derive(Clone, Debug, PartialEq)]
 pub enum StorageUtilScalarCall {
     GetInt { missing: i32 },
+    PluckInt { missing: i32 },
     HasInt,
     SetInt { value: i32 },
     UnsetInt,
     AdjustInt { amount: i32 },
     GetFloat { missing: f32 },
+    PluckFloat { missing: f32 },
     HasFloat,
     SetFloat { value: f32 },
     UnsetFloat,
     AdjustFloat { amount: f32 },
     GetString { missing: String },
+    PluckString { missing: String },
     HasString,
     SetString { value: String },
     UnsetString,
     GetForm { missing: Option<FormRef> },
+    PluckForm { missing: Option<FormRef> },
     HasForm,
     SetForm { value: Option<FormRef> },
     UnsetForm,
@@ -1251,6 +1307,8 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     }
     let (function, operation, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
         ("GetIntValue", "storage.get", "signed")
+    } else if function.eq_ignore_ascii_case("PluckIntValue") {
+        ("PluckIntValue", "storage.get+queue-delete", "signed")
     } else if function.eq_ignore_ascii_case("HasIntValue") {
         ("HasIntValue", "storage.get", "signed")
     } else if function.eq_ignore_ascii_case("SetIntValue") {
@@ -1261,6 +1319,8 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         ("AdjustIntValue", "storage.get+queue-set/delete", "signed")
     } else if function.eq_ignore_ascii_case("GetFloatValue") {
         ("GetFloatValue", "storage.get", "float")
+    } else if function.eq_ignore_ascii_case("PluckFloatValue") {
+        ("PluckFloatValue", "storage.get+queue-delete", "float")
     } else if function.eq_ignore_ascii_case("HasFloatValue") {
         ("HasFloatValue", "storage.get", "float")
     } else if function.eq_ignore_ascii_case("SetFloatValue") {
@@ -1271,6 +1331,8 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         ("AdjustFloatValue", "storage.get+queue-set/delete", "float")
     } else if function.eq_ignore_ascii_case("GetStringValue") {
         ("GetStringValue", "storage.get", "text")
+    } else if function.eq_ignore_ascii_case("PluckStringValue") {
+        ("PluckStringValue", "storage.get+queue-delete", "text")
     } else if function.eq_ignore_ascii_case("HasStringValue") {
         ("HasStringValue", "storage.get", "text")
     } else if function.eq_ignore_ascii_case("SetStringValue") {
@@ -1279,6 +1341,8 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         ("UnsetStringValue", "storage.get+queue-delete", "text")
     } else if function.eq_ignore_ascii_case("GetFormValue") {
         ("GetFormValue", "storage.get", "form")
+    } else if function.eq_ignore_ascii_case("PluckFormValue") {
+        ("PluckFormValue", "storage.get+queue-delete", "form")
     } else if function.eq_ignore_ascii_case("HasFormValue") {
         ("HasFormValue", "storage.get", "form")
     } else if function.eq_ignore_ascii_case("SetFormValue") {
@@ -1459,20 +1523,24 @@ pub fn adapt_storage_util_global_scalar(
 ) -> Result<StorageUtilAdaptation, StorageUtilAdapterError> {
     let prefix = match &call {
         StorageUtilScalarCall::GetInt { .. }
+        | StorageUtilScalarCall::PluckInt { .. }
         | StorageUtilScalarCall::HasInt
         | StorageUtilScalarCall::SetInt { .. }
         | StorageUtilScalarCall::UnsetInt
         | StorageUtilScalarCall::AdjustInt { .. } => "storageutil.int:",
         StorageUtilScalarCall::GetFloat { .. }
+        | StorageUtilScalarCall::PluckFloat { .. }
         | StorageUtilScalarCall::HasFloat
         | StorageUtilScalarCall::SetFloat { .. }
         | StorageUtilScalarCall::UnsetFloat
         | StorageUtilScalarCall::AdjustFloat { .. } => "storageutil.float:",
         StorageUtilScalarCall::GetString { .. }
+        | StorageUtilScalarCall::PluckString { .. }
         | StorageUtilScalarCall::HasString
         | StorageUtilScalarCall::SetString { .. }
         | StorageUtilScalarCall::UnsetString => "storageutil.string:",
         StorageUtilScalarCall::GetForm { .. }
+        | StorageUtilScalarCall::PluckForm { .. }
         | StorageUtilScalarCall::HasForm
         | StorageUtilScalarCall::SetForm { .. }
         | StorageUtilScalarCall::UnsetForm => "storageutil.form:",
@@ -1489,6 +1557,13 @@ pub fn adapt_storage_util_global_scalar(
                 None => missing,
             };
             (StorageUtilScalarResult::Int(value), None)
+        }
+        StorageUtilScalarCall::PluckInt { missing } => {
+            let value = checked_int(current)?.unwrap_or(missing);
+            (
+                StorageUtilScalarResult::Int(value),
+                Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+            )
         }
         StorageUtilScalarCall::HasInt => (
             StorageUtilScalarResult::Bool(checked_int(current)?.is_some()),
@@ -1524,6 +1599,13 @@ pub fn adapt_storage_util_global_scalar(
                 None,
             )
         }
+        StorageUtilScalarCall::PluckFloat { missing } => {
+            validate_storage_util_float(missing)?;
+            (
+                StorageUtilScalarResult::Float(checked_float(current)?.unwrap_or(missing)),
+                Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+            )
+        }
         StorageUtilScalarCall::HasFloat => (
             StorageUtilScalarResult::Bool(checked_float(current)?.is_some()),
             None,
@@ -1552,6 +1634,12 @@ pub fn adapt_storage_util_global_scalar(
             };
             (StorageUtilScalarResult::String(value), None)
         }
+        StorageUtilScalarCall::PluckString { missing } => (
+            StorageUtilScalarResult::String(
+                checked_string(current)?.map_or(missing, str::to_owned),
+            ),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+        ),
         StorageUtilScalarCall::HasString => (
             StorageUtilScalarResult::Bool(checked_string(current)?.is_some()),
             None,
@@ -1574,6 +1662,10 @@ pub fn adapt_storage_util_global_scalar(
         StorageUtilScalarCall::GetForm { missing } => (
             StorageUtilScalarResult::Form(checked_form(current)?.or(missing)),
             None,
+        ),
+        StorageUtilScalarCall::PluckForm { missing } => (
+            StorageUtilScalarResult::Form(checked_form(current)?.or(missing)),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
         ),
         StorageUtilScalarCall::HasForm => (
             StorageUtilScalarResult::Bool(checked_form(current)?.is_some()),
@@ -2188,6 +2280,12 @@ mod tests {
                 .value_kind,
             "form"
         );
+        assert_eq!(
+            source_alias("StorageUtil", "PluckStringValue")
+                .unwrap()
+                .operation,
+            "storage.get+queue-delete"
+        );
         assert!(source_alias("StorageUtil", "FormListAdd").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
@@ -2196,7 +2294,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 18);
+        assert_eq!(declarations.len(), 22);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -2385,6 +2483,62 @@ mod tests {
             StorageUtilScalarResult::Form(Some(form))
         );
         assert_ne!(float.key, set_form.key);
+    }
+
+    #[test]
+    fn storage_util_adapter_plucks_each_scalar_type_and_deletes_missing_keys() {
+        let int = adapt_storage_util_global_scalar(
+            "count",
+            StorageUtilScalarCall::PluckInt { missing: -1 },
+            Some(&PrincipalStorageValue::I64(9)),
+        )
+        .unwrap();
+        assert_eq!(int.result, StorageUtilScalarResult::Int(9));
+        assert!(matches!(
+            int.command,
+            Some(PrincipalStorageCommand::Delete { .. })
+        ));
+
+        let float = adapt_storage_util_global_scalar(
+            "ratio",
+            StorageUtilScalarCall::PluckFloat { missing: -1.0 },
+            Some(&PrincipalStorageValue::Bytes(
+                2.5_f32.to_bits().to_le_bytes().to_vec(),
+            )),
+        )
+        .unwrap();
+        assert_eq!(float.result, StorageUtilScalarResult::Float(2.5));
+
+        let string = adapt_storage_util_global_scalar(
+            "status",
+            StorageUtilScalarCall::PluckString {
+                missing: "missing".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            string.result,
+            StorageUtilScalarResult::String("missing".to_owned())
+        );
+        assert!(matches!(
+            string.command,
+            Some(PrincipalStorageCommand::Delete { .. })
+        ));
+
+        let form = FormRef::new([0x17; 16], 0x42);
+        let plucked_form = adapt_storage_util_global_scalar(
+            "owner",
+            StorageUtilScalarCall::PluckForm { missing: None },
+            Some(&PrincipalStorageValue::Bytes(encode_storage_util_form(
+                form,
+            ))),
+        )
+        .unwrap();
+        assert_eq!(
+            plucked_form.result,
+            StorageUtilScalarResult::Form(Some(form))
+        );
     }
 
     #[test]
