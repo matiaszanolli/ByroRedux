@@ -233,6 +233,7 @@ pub const PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.set-form-value";
 pub const PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-form-value";
+pub const PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX: &str = "byro.storage.compat.storage-util.list-";
 pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
 pub const PAPYRUS_MOD_EVENT_ROUTE_PREFIX: &str = "byro.events.compat.mod-event.";
 
@@ -372,8 +373,88 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
     ]
 }
 
+fn papyrus_storage_util_list_declarations(
+    object_and_key: &[(&str, ScriptValueType, bool); 2],
+) -> Vec<EnginePapyrusFunctionDeclaration> {
+    let mut declarations = Vec::with_capacity(24);
+    for (kind, suffix, value_type) in [
+        ("int", "Int", ScriptValueType::Integer),
+        ("float", "Float", ScriptValueType::Float),
+        ("string", "String", ScriptValueType::String),
+        ("form", "Form", ScriptValueType::Form),
+    ] {
+        for (operation, function_operation, result, parameters) in [
+            (
+                "add",
+                "Add",
+                ScriptValueType::Integer,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("value", value_type, true),
+                    ("allow-duplicate", ScriptValueType::Boolean, true),
+                ],
+            ),
+            (
+                "get",
+                "Get",
+                value_type,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("index", ScriptValueType::Integer, true),
+                ],
+            ),
+            (
+                "count",
+                "Count",
+                ScriptValueType::Integer,
+                object_and_key.to_vec(),
+            ),
+            (
+                "clear",
+                "Clear",
+                ScriptValueType::Integer,
+                object_and_key.to_vec(),
+            ),
+            (
+                "find",
+                "Find",
+                ScriptValueType::Integer,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("value", value_type, true),
+                ],
+            ),
+            (
+                "has",
+                "Has",
+                ScriptValueType::Boolean,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("value", value_type, true),
+                ],
+            ),
+        ] {
+            let function = format!("{suffix}List{function_operation}");
+            let id = format!("storage-util-{kind}-list-{operation}");
+            let route = format!("{PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX}{kind}-{operation}");
+            declarations.push(papyrus_storage_util_declaration(
+                &route,
+                &id,
+                &function,
+                &parameters,
+                result,
+            ));
+        }
+    }
+    declarations
+}
+
 fn papyrus_storage_util_declaration(
-    route: &'static str,
+    route: &str,
     id: &str,
     function: &str,
     parameters: &[(&str, ScriptValueType, bool)],
@@ -403,8 +484,7 @@ fn papyrus_storage_util_declaration(
                 provider: "StorageUtil".to_owned(),
                 function: function.to_owned(),
             }),
-            description: "Engine-owned principal-private PapyrusUtil scalar compatibility"
-                .to_owned(),
+            description: "Engine-owned principal-private PapyrusUtil compatibility".to_owned(),
         },
     }
 }
@@ -671,7 +751,7 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
         // enforce the exact legacy arity independently.
         ("key", ScriptValueType::String, true),
     ];
-    vec![
+    let mut declarations = vec![
         papyrus_storage_util_declaration(
             PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
             "storage-util-get-int-value",
@@ -882,7 +962,9 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             &object_and_key,
             ScriptValueType::Boolean,
         ),
-    ]
+    ];
+    declarations.extend(papyrus_storage_util_list_declarations(&object_and_key));
+    declarations
 }
 
 pub fn adapt_papyrus_game_get_mod_count(catalog: &ContentCatalog) -> i32 {
@@ -1189,6 +1271,71 @@ pub enum StorageUtilAdapterError {
     TypeMismatch,
 }
 
+/// Scalar element kind used by the exact `StorageUtil` list adapters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageUtilListKind {
+    Int,
+    Float,
+    String,
+    Form,
+}
+
+/// Typed value stored in a principal-private `StorageUtil` list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StorageUtilListValue {
+    Int(i32),
+    Float(f32),
+    String(String),
+    Form(Option<FormRef>),
+}
+
+/// Core global list operation supported by the engine source adapter.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StorageUtilListCall {
+    Add {
+        value: StorageUtilListValue,
+        allow_duplicate: bool,
+    },
+    Get {
+        index: i32,
+    },
+    Count,
+    Clear,
+    Find {
+        value: StorageUtilListValue,
+    },
+    Has {
+        value: StorageUtilListValue,
+    },
+}
+
+/// Papyrus-visible result of one core `StorageUtil` list operation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StorageUtilListResult {
+    Value(StorageUtilListValue),
+    Int(i32),
+    Bool(bool),
+}
+
+/// Validated result plus deferred mutations for one list call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorageUtilListAdaptation {
+    pub key: StorageKey,
+    pub result: StorageUtilListResult,
+    pub commands: Vec<PrincipalStorageCommand>,
+}
+
+/// Closed operation names carried by built-in list routes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageUtilListOperation {
+    Add,
+    Get,
+    Count,
+    Clear,
+    Find,
+    Has,
+}
+
 /// Failure to adapt SKSE's fixed-arity `SendModEvent` call.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum LegacyModEventAdapterError {
@@ -1258,17 +1405,17 @@ pub fn method_source_alias(function: &str) -> Option<SourceAlias> {
     })
 }
 
-/// Resolve the first engine-backed PapyrusUtil source aliases.
+/// Resolve engine-backed PapyrusUtil source aliases.
 ///
 /// `StorageUtil` namespaces values by `(object, key, type)`, while
 /// `byro.storage` is private to one extension principal and keys each value
-/// once. These aliases therefore cover only global (`ObjKey == None`) integer
-/// and string values whose names fit the portable storage-key grammar. The
+/// once. These aliases therefore cover only global (`ObjKey == None`) values
+/// whose names fit the portable storage-key grammar. The
 /// executable adapter below case-folds and type-namespaces those keys. Its
 /// writes preserve synchronous return and same-callback visibility through the
 /// host transaction overlay. Object-scoped values require extension
-/// components; floats, Forms, pluck, file, list, and cross-principal sharing
-/// remain unsupported until an engine service can honor their full contracts.
+/// components, file access, and cross-principal sharing remain unsupported
+/// until an engine service can honor their full contracts.
 pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     if let Some(alias) = legacy_container_source_alias(provider, function) {
         return Some(alias);
@@ -1304,6 +1451,9 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     }
     if !provider.eq_ignore_ascii_case("StorageUtil") {
         return None;
+    }
+    if let Some(alias) = storage_util_list_source_alias(function) {
+        return Some(alias);
     }
     let (function, operation, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
         ("GetIntValue", "storage.get", "signed")
@@ -1360,6 +1510,50 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         value_kind,
         constraint: "ObjKey must be None; portable key; principal-private (no cross-mod sharing)",
     })
+}
+
+fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
+    let aliases = [
+        ("IntListAdd", "storage.array-get+queue-push", "signed"),
+        ("IntListGet", "storage.array-get", "signed"),
+        ("IntListCount", "storage.array-get", "signed"),
+        ("IntListClear", "storage.array-get+queue-delete", "signed"),
+        ("IntListFind", "storage.array-get", "signed"),
+        ("IntListHas", "storage.array-get", "bool"),
+        ("FloatListAdd", "storage.array-get+queue-push", "float"),
+        ("FloatListGet", "storage.array-get", "float"),
+        ("FloatListCount", "storage.array-get", "signed"),
+        ("FloatListClear", "storage.array-get+queue-delete", "signed"),
+        ("FloatListFind", "storage.array-get", "signed"),
+        ("FloatListHas", "storage.array-get", "bool"),
+        ("StringListAdd", "storage.array-get+queue-push", "text"),
+        ("StringListGet", "storage.array-get", "text"),
+        ("StringListCount", "storage.array-get", "signed"),
+        (
+            "StringListClear",
+            "storage.array-get+queue-delete",
+            "signed",
+        ),
+        ("StringListFind", "storage.array-get", "signed"),
+        ("StringListHas", "storage.array-get", "bool"),
+        ("FormListAdd", "storage.array-get+queue-push", "form"),
+        ("FormListGet", "storage.array-get", "form"),
+        ("FormListCount", "storage.array-get", "signed"),
+        ("FormListClear", "storage.array-get+queue-delete", "signed"),
+        ("FormListFind", "storage.array-get", "signed"),
+        ("FormListHas", "storage.array-get", "bool"),
+    ];
+    aliases
+        .into_iter()
+        .find(|(candidate, _, _)| function.eq_ignore_ascii_case(candidate))
+        .map(|(function, operation, value_kind)| SourceAlias {
+            provider: "StorageUtil",
+            function,
+            service: PRINCIPAL_STORAGE_SERVICE,
+            operation,
+            value_kind,
+            constraint: "ObjKey must be None; bounded typed list; principal-private",
+        })
 }
 
 fn legacy_container_source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
@@ -1790,6 +1984,199 @@ fn checked_form(
             .map_err(|_| StorageUtilAdapterError::TypeMismatch)?,
     );
     Ok(Some(FormRef::new(source, local)))
+}
+
+/// Decode a built-in global `StorageUtil` list route.
+pub fn parse_storage_util_list_route(
+    route: &str,
+) -> Option<(StorageUtilListKind, StorageUtilListOperation)> {
+    let suffix = route.strip_prefix(PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX)?;
+    let (kind, operation) = suffix.split_once('-')?;
+    let kind = match kind {
+        "int" => StorageUtilListKind::Int,
+        "float" => StorageUtilListKind::Float,
+        "string" => StorageUtilListKind::String,
+        "form" => StorageUtilListKind::Form,
+        _ => return None,
+    };
+    let operation = match operation {
+        "add" => StorageUtilListOperation::Add,
+        "get" => StorageUtilListOperation::Get,
+        "count" => StorageUtilListOperation::Count,
+        "clear" => StorageUtilListOperation::Clear,
+        "find" => StorageUtilListOperation::Find,
+        "has" => StorageUtilListOperation::Has,
+        _ => return None,
+    };
+    Some((kind, operation))
+}
+
+/// Adapt one exact global `StorageUtil` list call to bounded principal storage.
+pub fn adapt_storage_util_global_list(
+    key_name: &str,
+    kind: StorageUtilListKind,
+    call: StorageUtilListCall,
+    current: Option<&PrincipalStorageValue>,
+    max_entries: usize,
+) -> Result<StorageUtilListAdaptation, StorageUtilAdapterError> {
+    let kind_name = match kind {
+        StorageUtilListKind::Int => "int",
+        StorageUtilListKind::Float => "float",
+        StorageUtilListKind::String => "string",
+        StorageUtilListKind::Form => "form",
+    };
+    let key = StorageKey::new(format!(
+        "storageutil.list.{kind_name}:{}",
+        key_name.to_ascii_lowercase()
+    ))?;
+    let values = decode_storage_util_list(kind, current)?;
+    let mut commands = Vec::with_capacity(1);
+    let result = match call {
+        StorageUtilListCall::Add {
+            value,
+            allow_duplicate,
+        } => {
+            let encoded = encode_storage_util_list_value(kind, &value)?;
+            if values.len() >= max_entries || (!allow_duplicate && values.contains(&value)) {
+                StorageUtilListResult::Int(-1)
+            } else {
+                let index = i32::try_from(values.len())
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
+                commands.push(PrincipalStorageCommand::ArrayPush {
+                    key: key.clone(),
+                    value: encoded,
+                });
+                StorageUtilListResult::Int(index)
+            }
+        }
+        StorageUtilListCall::Get { index } => {
+            let value = usize::try_from(index)
+                .ok()
+                .and_then(|index| values.get(index))
+                .cloned()
+                .unwrap_or_else(|| default_storage_util_list_value(kind));
+            StorageUtilListResult::Value(value)
+        }
+        StorageUtilListCall::Count => StorageUtilListResult::Int(
+            i32::try_from(values.len()).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+        ),
+        StorageUtilListCall::Clear => {
+            let count = i32::try_from(values.len())
+                .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
+            commands.push(PrincipalStorageCommand::Delete { key: key.clone() });
+            StorageUtilListResult::Int(count)
+        }
+        StorageUtilListCall::Find { value } => {
+            encode_storage_util_list_value(kind, &value)?;
+            let index = values
+                .iter()
+                .position(|candidate| candidate == &value)
+                .map_or(Ok(-1), |index| {
+                    i32::try_from(index).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)
+                })?;
+            StorageUtilListResult::Int(index)
+        }
+        StorageUtilListCall::Has { value } => {
+            encode_storage_util_list_value(kind, &value)?;
+            StorageUtilListResult::Bool(values.contains(&value))
+        }
+    };
+    Ok(StorageUtilListAdaptation {
+        key,
+        result,
+        commands,
+    })
+}
+
+fn decode_storage_util_list(
+    kind: StorageUtilListKind,
+    current: Option<&PrincipalStorageValue>,
+) -> Result<Vec<StorageUtilListValue>, StorageUtilAdapterError> {
+    let Some(current) = current else {
+        return Ok(Vec::new());
+    };
+    let PrincipalStorageValue::Array(values) = current else {
+        return Err(StorageUtilAdapterError::TypeMismatch);
+    };
+    values
+        .iter()
+        .map(|value| decode_storage_util_list_value(kind, value))
+        .collect()
+}
+
+fn encode_storage_util_list_value(
+    kind: StorageUtilListKind,
+    value: &StorageUtilListValue,
+) -> Result<ExtensionValue, StorageUtilAdapterError> {
+    match (kind, value) {
+        (StorageUtilListKind::Int, StorageUtilListValue::Int(value)) => {
+            Ok(ExtensionValue::I64(i64::from(*value)))
+        }
+        (StorageUtilListKind::Float, StorageUtilListValue::Float(value)) => {
+            validate_storage_util_float(*value)?;
+            Ok(ExtensionValue::Bytes(
+                value.to_bits().to_le_bytes().to_vec(),
+            ))
+        }
+        (StorageUtilListKind::String, StorageUtilListValue::String(value)) => {
+            Ok(ExtensionValue::String(value.clone()))
+        }
+        (StorageUtilListKind::Form, StorageUtilListValue::Form(None)) => {
+            Ok(ExtensionValue::Bytes(Vec::new()))
+        }
+        (StorageUtilListKind::Form, StorageUtilListValue::Form(Some(value))) => {
+            Ok(ExtensionValue::Bytes(encode_storage_util_form(*value)))
+        }
+        _ => Err(StorageUtilAdapterError::TypeMismatch),
+    }
+}
+
+fn decode_storage_util_list_value(
+    kind: StorageUtilListKind,
+    value: &ExtensionValue,
+) -> Result<StorageUtilListValue, StorageUtilAdapterError> {
+    match (kind, value) {
+        (StorageUtilListKind::Int, ExtensionValue::I64(value)) => Ok(StorageUtilListValue::Int(
+            i32::try_from(*value).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+        )),
+        (StorageUtilListKind::Float, ExtensionValue::Bytes(encoded)) => {
+            let encoded: [u8; 4] = encoded
+                .as_slice()
+                .try_into()
+                .map_err(|_| StorageUtilAdapterError::TypeMismatch)?;
+            let value = f32::from_bits(u32::from_le_bytes(encoded));
+            validate_storage_util_float(value)?;
+            Ok(StorageUtilListValue::Float(value))
+        }
+        (StorageUtilListKind::String, ExtensionValue::String(value)) => {
+            Ok(StorageUtilListValue::String(value.clone()))
+        }
+        (StorageUtilListKind::Form, ExtensionValue::Bytes(encoded)) if encoded.is_empty() => {
+            Ok(StorageUtilListValue::Form(None))
+        }
+        (StorageUtilListKind::Form, ExtensionValue::Bytes(encoded)) if encoded.len() == 20 => {
+            let mut source = [0_u8; 16];
+            source.copy_from_slice(&encoded[..16]);
+            let local = u32::from_le_bytes(
+                encoded[16..]
+                    .try_into()
+                    .map_err(|_| StorageUtilAdapterError::TypeMismatch)?,
+            );
+            Ok(StorageUtilListValue::Form(Some(FormRef::new(
+                source, local,
+            ))))
+        }
+        _ => Err(StorageUtilAdapterError::TypeMismatch),
+    }
+}
+
+fn default_storage_util_list_value(kind: StorageUtilListKind) -> StorageUtilListValue {
+    match kind {
+        StorageUtilListKind::Int => StorageUtilListValue::Int(0),
+        StorageUtilListKind::Float => StorageUtilListValue::Float(0.0),
+        StorageUtilListKind::String => StorageUtilListValue::String(String::new()),
+        StorageUtilListKind::Form => StorageUtilListValue::Form(None),
+    }
 }
 
 /// Classify a static Papyrus call by provider type and function name.
@@ -2286,7 +2673,13 @@ mod tests {
                 .operation,
             "storage.get+queue-delete"
         );
-        assert!(source_alias("StorageUtil", "FormListAdd").is_none());
+        assert_eq!(
+            source_alias("StorageUtil", "FormListAdd")
+                .unwrap()
+                .operation,
+            "storage.array-get+queue-push"
+        );
+        assert!(source_alias("StorageUtil", "FormListInsert").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
@@ -2294,7 +2687,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 22);
+        assert_eq!(declarations.len(), 46);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -2538,6 +2931,98 @@ mod tests {
         assert_eq!(
             plucked_form.result,
             StorageUtilScalarResult::Form(Some(form))
+        );
+    }
+
+    #[test]
+    fn storage_util_list_adapter_is_typed_bounded_and_preserves_legacy_results() {
+        let add = adapt_storage_util_global_list(
+            "Recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Add {
+                value: StorageUtilListValue::Int(4),
+                allow_duplicate: true,
+            },
+            None,
+            4,
+        )
+        .unwrap();
+        assert_eq!(add.key.as_str(), "storageutil.list.int:recent");
+        assert_eq!(add.result, StorageUtilListResult::Int(0));
+        assert_eq!(
+            add.commands,
+            [PrincipalStorageCommand::ArrayPush {
+                key: add.key.clone(),
+                value: ExtensionValue::I64(4),
+            }]
+        );
+
+        let current = PrincipalStorageValue::Array(vec![ExtensionValue::I64(4)]);
+        let duplicate = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Add {
+                value: StorageUtilListValue::Int(4),
+                allow_duplicate: false,
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(duplicate.result, StorageUtilListResult::Int(-1));
+        assert!(duplicate.commands.is_empty());
+        assert_eq!(
+            adapt_storage_util_global_list(
+                "recent",
+                StorageUtilListKind::Int,
+                StorageUtilListCall::Find {
+                    value: StorageUtilListValue::Int(4),
+                },
+                Some(&current),
+                4,
+            )
+            .unwrap()
+            .result,
+            StorageUtilListResult::Int(0)
+        );
+        assert_eq!(
+            adapt_storage_util_global_list(
+                "recent",
+                StorageUtilListKind::Int,
+                StorageUtilListCall::Get { index: -1 },
+                Some(&current),
+                4,
+            )
+            .unwrap()
+            .result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(0))
+        );
+
+        let none_form = PrincipalStorageValue::Array(vec![ExtensionValue::Bytes(Vec::new())]);
+        assert_eq!(
+            adapt_storage_util_global_list(
+                "owners",
+                StorageUtilListKind::Form,
+                StorageUtilListCall::Get { index: 0 },
+                Some(&none_form),
+                4,
+            )
+            .unwrap()
+            .result,
+            StorageUtilListResult::Value(StorageUtilListValue::Form(None))
+        );
+
+        assert_eq!(
+            adapt_storage_util_global_list(
+                "ratios",
+                StorageUtilListKind::Float,
+                StorageUtilListCall::Count,
+                Some(&PrincipalStorageValue::Array(vec![ExtensionValue::Bytes(
+                    vec![0; 3],
+                )])),
+                4,
+            ),
+            Err(StorageUtilAdapterError::TypeMismatch)
         );
     }
 

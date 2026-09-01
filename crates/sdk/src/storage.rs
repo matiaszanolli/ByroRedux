@@ -370,6 +370,11 @@ impl PrincipalStorageStore {
         self.values.get(principal)
     }
 
+    /// Hard bounds enforced by this store instance.
+    pub const fn limits(&self) -> &PrincipalStorageLimits {
+        &self.limits
+    }
+
     pub fn apply_batch(
         &mut self,
         principal: &PrincipalId,

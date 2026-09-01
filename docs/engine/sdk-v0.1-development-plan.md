@@ -544,8 +544,9 @@ save schema. The storage service supplies
 the callback-local read-your-writes needed by those recipes. These exact aliases
 are now published by the engine compatibility catalog and execute without an
 external extension package, using the authenticated archive-script principal
-before and after latent waits. File-backed, list, object-scoped, arbitrary-key,
-and cross-mod shared calls remain deliberately unsupported until
+before and after latent waits. File-backed, remaining list mutations and array
+transfers, object-scoped, arbitrary-key, and cross-mod shared calls remain
+deliberately unsupported until
 an engine service can honor
 their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
@@ -1331,6 +1332,17 @@ Delivered `PluckIntValue`, `PluckFloatValue`, `PluckStringValue`, and
 returns the stored typed value (or its optional missing default), then queues a
 delete in the same engine-owned callback transaction. The pack reuses the
 existing scalar encodings and does not change the save format.
+
+Checkpoint: `feat(scripting): execute StorageUtil list core aliases`.
+
+The first global typed-list pack adds 24 exact aliases across Int, Float,
+String, and Form: add, get, count, clear, find, and has. Lists use separate
+case-folded type namespaces over bounded principal-storage arrays. Add preserves
+the upstream duplicate policy and `-1` failure sentinel; invalid indices return
+the type default; clear returns the previous count. Float entries remain finite
+bit-exact values, and an empty byte payload represents a `None` Form entry
+without colliding with the 20-byte portable Form encoding. The existing array
+save shape and limits remain authoritative.
 
 ### 14.4 Exit gate
 

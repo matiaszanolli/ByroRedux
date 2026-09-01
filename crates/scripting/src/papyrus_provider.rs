@@ -17,19 +17,19 @@ use byroredux_sdk::{
     compatibility::{
         adapt_legacy_send_mod_event, classify_static_call, papyrus_game_content_declarations,
         papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
-        papyrus_storage_util_declarations, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
-        PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+        papyrus_storage_util_declarations, parse_storage_util_list_route, StorageUtilListOperation,
+        PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
+        PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
     },
     event::{
         CustomEvent, LegacyModEventSubscriptionCommand, LegacySkseModEventValue,
@@ -369,6 +369,15 @@ pub fn lower_provider_call(
 }
 
 fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
+    if let Some((_, operation)) = parse_storage_util_list_route(route) {
+        return Some(match operation {
+            StorageUtilListOperation::Add => (3, 4),
+            StorageUtilListOperation::Get
+            | StorageUtilListOperation::Find
+            | StorageUtilListOperation::Has => (3, 3),
+            StorageUtilListOperation::Count | StorageUtilListOperation::Clear => (2, 2),
+        });
+    }
     match route {
         PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE
         | PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE
@@ -3391,6 +3400,25 @@ mod tests {
         assert_eq!(
             pluck.route.qualified_name(),
             byroredux_sdk::compatibility::PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE
+        );
+        let list = lower_provider_call(
+            &expression("StorageUtil.IntListAdd(None, \"Recent\", 7, false)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-int-add"
+        );
+        assert_eq!(
+            list.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Recent".to_owned()),
+                ScriptValue::Integer(7),
+                ScriptValue::Boolean(false),
+            ]
         );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
             .unwrap()
