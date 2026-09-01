@@ -76,8 +76,9 @@ The current public surface includes:
   calls as sequencing barriers, persist them across existing latent waits, and
   dispatch only after fragment ECS guards are released. Each successful call
   resumes the remaining native effects in that fragment; a failed call aborts
-  its fragment tail. Branch-local calls remain fail-closed; cross-fragment
-  barrier flushing remains pending. Recognized extender calls that do not yet
+  its fragment tail. Calls inside supported conditional branches preserve both
+  their branch and enclosing tails. Cross-fragment barrier flushing remains
+  pending. Recognized extender calls that do not yet
   have an executable route reject their complete handler
   with an attributed translation error rather than disappearing silently. The
   first exact engine-owned compatibility pack is ten SKSE `Game`

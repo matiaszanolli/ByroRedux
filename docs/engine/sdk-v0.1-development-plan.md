@@ -100,8 +100,9 @@ dispatch remain open. Quest and scene fragments now treat top-level provider
 calls from source/decompiled PEX as sequencing barriers, persist them through
 existing latent continuations, and invoke them only after fragment ECS guards
 are released. Successful calls resume later native effects in the same
-fragment, including across multiple barriers; failure aborts that fragment's
-tail. Branch-local calls and cross-fragment barrier flushing remain pending.
+fragment, including across multiple barriers and supported conditional
+branches; failure aborts that fragment's tail. Cross-fragment barrier flushing
+remains pending.
 The first curated extender-era pack is also executable without an extension
 package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
@@ -869,8 +870,8 @@ proceeds by semantic domain and closes only against real mod fixtures.
   barriers, preserves them across the existing latent continuation queue, and
   dispatches them only after fragment guards drop. A successful call resumes
   later native effects within that fragment, including across multiple
-  barriers; failure aborts its remaining tail. Branch-local calls and
-  cross-fragment barrier flushing remain pending.
+  barriers and supported conditional branches; failure aborts its remaining
+  tail. Cross-fragment barrier flushing remains pending.
   Compiled SCDA call encoding, arithmetic/string/object expressions, broader
   events, latent provider calls, and dynamic object dispatch remain pending.
   Ten exact SKSE `Game` content extensions are now engine-owned
@@ -1011,8 +1012,9 @@ path. Typed condition evaluation now adds bounded negation, short-circuit
 logical operators, and same-type boolean/integer/float comparisons. Quest/scene
 fragment PEX now uses top-level provider calls as guard-free sequencing barriers
 and resumes each successful call's native tail in order within that fragment.
-Failed calls abort their fragment tail; branch-local calls and cross-fragment
-barrier flushing remain open.
+Calls selected inside supported conditional branches preserve the branch and
+enclosing tails. Failed calls abort their fragment tail; cross-fragment barrier
+flushing remains open.
 
 ### 14.3 Source and PEX parity
 
