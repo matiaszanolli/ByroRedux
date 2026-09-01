@@ -259,12 +259,19 @@ value_type = "form"
 [script_functions.result]
 value_type = "string"
 optional = false
+
+[script_functions.papyrus]
+provider = "WeatherNative"
+function = "WeatherAt"
 "#;
         let manifest = ResolvedExtensionSet::parse_manifest(source).unwrap();
         assert_eq!(manifest.id.as_str(), "org.example.weather");
         assert_eq!(manifest.components[0].path, "code/weather.wasm");
         assert_eq!(manifest.script_functions[0].id.as_str(), "weather-at");
         assert_eq!(manifest.script_functions[0].parameters.len(), 1);
+        let alias = manifest.script_functions[0].papyrus.as_ref().unwrap();
+        assert_eq!(alias.provider, "WeatherNative");
+        assert_eq!(alias.function, "WeatherAt");
     }
 
     #[test]

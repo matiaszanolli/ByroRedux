@@ -342,6 +342,7 @@ impl ExtensionManifest {
         }
 
         let mut script_functions = BTreeSet::new();
+        let mut papyrus_functions = BTreeSet::new();
         for function in &self.script_functions {
             insert_unique(&mut script_functions, "script function", &function.id)?;
             if !components.contains(&function.component) {
@@ -352,6 +353,11 @@ impl ExtensionManifest {
             }
             if function.validate().is_err() {
                 return Err(ManifestError::InvalidScriptFunction(function.id.clone()));
+            }
+            if let Some(alias) = &function.papyrus {
+                if !papyrus_functions.insert(alias.canonical_key()) {
+                    return Err(ManifestError::InvalidScriptFunction(function.id.clone()));
+                }
             }
         }
 
@@ -625,6 +631,10 @@ mod tests {
                 value_type: crate::script_function::ScriptValueType::String,
                 optional: false,
             }),
+            papyrus: Some(crate::script_function::PapyrusFunctionAlias {
+                provider: "WeatherNative".to_owned(),
+                function: "WeatherAt".to_owned(),
+            }),
             description: "Return the active weather name at a location".to_owned(),
         };
         let mut valid = manifest();
@@ -643,6 +653,17 @@ mod tests {
                 kind: "script function",
                 ..
             })
+        ));
+
+        let mut duplicate_alias = valid.clone();
+        let mut second = duplicate_alias.script_functions[0].clone();
+        second.id = crate::identity::ScriptFunctionId::new("forecast-at").unwrap();
+        second.papyrus.as_mut().unwrap().provider = "WEATHERNATIVE".to_owned();
+        second.papyrus.as_mut().unwrap().function = "weatherat".to_owned();
+        duplicate_alias.script_functions.push(second);
+        assert!(matches!(
+            duplicate_alias.validate(),
+            Err(ManifestError::InvalidScriptFunction(_))
         ));
 
         valid.script_functions[0].component = ComponentId::new("missing").unwrap();

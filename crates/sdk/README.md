@@ -61,9 +61,12 @@ The current public surface includes:
   and validates that effective grants are supported and were actually
   requested.
 - `script_function` defines bounded manifest-published function signatures and
-  typed boolean/integer/float/string/form/entity values. The Wasm host exposes
-  callback-local typed arguments and results, while source ObScript can call
-  granted providers as `ext.<extension-id>.<function>` without an extender DLL.
+  typed boolean/integer/float/string/form/entity values. An optional validated
+  `Provider.Function` alias gives Papyrus source and PEX a legal cross-game
+  static-call spelling without weakening principal-qualified routing. The Wasm
+  host exposes callback-local typed arguments and results, while source
+  ObScript can call granted providers as `ext.<extension-id>.<function>`
+  without an extender DLL.
 - `compatibility` classifies recognized SKSE/F4SE, PapyrusUtil,
   JContainers, input, event, and UI calls as engine-native, mapped to a
   semantic service, or explicitly unsupported with migration guidance. It

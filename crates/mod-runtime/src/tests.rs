@@ -521,6 +521,7 @@ fn script_function_manifest(result_type: ScriptValueType) -> ExtensionManifest {
             value_type: result_type,
             optional: false,
         }),
+        papyrus: None,
         description: "Return the test answer".to_owned(),
     }];
     manifest

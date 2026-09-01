@@ -4919,6 +4919,7 @@ mod tests {
                 value_type: ScriptValueType::Integer,
                 optional: false,
             }),
+            papyrus: None,
             description: "Return the test answer".to_owned(),
         }];
         manifest
