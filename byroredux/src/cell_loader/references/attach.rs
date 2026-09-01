@@ -249,15 +249,40 @@ fn attach_scpt_script(
         );
         return false;
     };
-    if let Some(source) = script.source.as_deref() {
-        let report = byroredux_scripting::compatibility::analyze_obscript_compatibility(
-            &script.editor_id,
-            source,
-        );
+    let source = script.source.as_deref();
+    let report = source
+        .map(|source| {
+            byroredux_scripting::compatibility::analyze_obscript_compatibility(
+                &script.editor_id,
+                source,
+            )
+        })
+        .or_else(|| {
+            let dialect = match index.game {
+                esm::reader::GameKind::Oblivion => Some(byroredux_scripting::ObscriptDialect::Obse),
+                esm::reader::GameKind::Fallout3NV
+                    if index.character_rules
+                        == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS =>
+                {
+                    Some(byroredux_scripting::ObscriptDialect::Xnvse)
+                }
+                _ => None,
+            }?;
+            Some(
+                byroredux_scripting::compatibility::analyze_obscript_bytecode_compatibility(
+                    &script.editor_id,
+                    &script.compiled,
+                    dialect,
+                ),
+            )
+        });
+    if let Some(report) = report {
         let fingerprint =
             byroredux_scripting::compatibility::legacy_script_fingerprint(&script.compiled)
-                ^ byroredux_scripting::compatibility::legacy_script_fingerprint(source.as_bytes())
-                    .rotate_left(1);
+                ^ source.map_or(0, |source| {
+                    byroredux_scripting::compatibility::legacy_script_fingerprint(source.as_bytes())
+                        .rotate_left(1)
+                });
         byroredux_scripting::compatibility::record_compatibility_report(
             world,
             fingerprint,
@@ -306,6 +331,7 @@ fn attach_scpt_script(
 #[cfg(test)]
 mod scpt_compatibility_tests {
     use super::*;
+    use byroredux_core::character::CharacterRulesProfile;
     use byroredux_plugin::esm::records::{ActiRecord, EsmIndex, ScriptRecord};
     use byroredux_scripting::{CompatibilityDisposition, CompatibilityRegistry};
 
@@ -358,6 +384,137 @@ mod scpt_compatibility_tests {
             summary[0].compatibility.service,
             Some(byroredux_sdk::service::CONTEXT_SERVICE)
         );
+    }
+
+    #[test]
+    fn source_less_fnv_scpt_records_compiled_xnvse_probe() {
+        const BASE_FORM_ID: u32 = 0x0100_0011;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0012;
+
+        let expression = [b'X', 0x00, 0x14, 0x00, 0x00];
+        let mut compiled = vec![0x16, 0x00, 0x09, 0x00, 0x00, 0x00, 0x05, 0x00];
+        compiled.extend_from_slice(&expression);
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord {
+                form_id: BASE_FORM_ID,
+                script_form_id: SCRIPT_FORM_ID,
+                ..Default::default()
+            },
+        );
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "CompiledVersionGate".to_owned(),
+                source: None,
+                compiled,
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        world.insert_resource(CompatibilityRegistry::default());
+        let entity = world.spawn();
+        assert!(!attach_scpt_script(
+            &mut world,
+            entity,
+            BASE_FORM_ID,
+            &index
+        ));
+
+        let registry = world.resource::<CompatibilityRegistry>();
+        assert_eq!(registry.script_count(), 1);
+        let summary = registry.summary();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].provider, "xnvse");
+        assert_eq!(summary[0].function, "getnvseversion");
+    }
+
+    #[test]
+    fn source_less_fo3_scpt_does_not_apply_xnvse_opcode_table() {
+        const BASE_FORM_ID: u32 = 0x0100_0021;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0022;
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT3,
+            ..Default::default()
+        };
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord {
+                form_id: BASE_FORM_ID,
+                script_form_id: SCRIPT_FORM_ID,
+                ..Default::default()
+            },
+        );
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "Fo3UnknownOpcode".to_owned(),
+                source: None,
+                compiled: vec![0x00, 0x14, 0x00, 0x00],
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        world.insert_resource(CompatibilityRegistry::default());
+        let entity = world.spawn();
+        assert!(!attach_scpt_script(
+            &mut world,
+            entity,
+            BASE_FORM_ID,
+            &index
+        ));
+        assert_eq!(world.resource::<CompatibilityRegistry>().script_count(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires installed Fallout New Vegas and Oblivion masters"]
+    fn installed_legacy_masters_have_structurally_valid_scda() {
+        let fixtures = [
+            (
+                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm",
+                byroredux_scripting::ObscriptDialect::Xnvse,
+            ),
+            (
+                "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm",
+                byroredux_scripting::ObscriptDialect::Obse,
+            ),
+        ];
+        for (path, dialect) in fixtures {
+            let data = std::fs::read(path).expect("installed legacy master");
+            let index = esm::parse_esm(&data).expect("parse legacy master");
+            let compiled_scripts: Vec<_> = index
+                .scripts
+                .values()
+                .filter(|script| !script.compiled.is_empty())
+                .collect();
+            assert!(
+                !compiled_scripts.is_empty(),
+                "{path} has no compiled SCPT data"
+            );
+            let malformed: Vec<_> = compiled_scripts
+                .iter()
+                .filter_map(|script| {
+                    let decoded =
+                        byroredux_scripting::decode_extender_calls(&script.compiled, dialect);
+                    (!decoded.diagnostics.is_empty())
+                        .then_some((&script.editor_id, decoded.diagnostics))
+                })
+                .collect();
+            assert!(
+                malformed.is_empty(),
+                "{path} contained malformed SCDA: {malformed:?}"
+            );
+        }
     }
 }
 

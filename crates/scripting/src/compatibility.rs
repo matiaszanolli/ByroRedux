@@ -241,6 +241,69 @@ pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> C
     }
 }
 
+/// Analyze source-less compiled SCDA using the bounded structural decoder.
+pub fn analyze_obscript_bytecode_compatibility(
+    source_file: &str,
+    compiled: &[u8],
+    dialect: crate::obscript::ObscriptDialect,
+) -> CompatibilityReport {
+    let decoded = crate::obscript::decode_extender_calls(compiled, dialect);
+    let scope = CallScope::StateFunction {
+        state: "ObScript".to_owned(),
+        function: "<compiled>".to_owned(),
+    };
+    let findings = decoded
+        .calls
+        .into_iter()
+        .filter_map(|call| {
+            let compatibility = classify_obscript_command(call.command)?;
+            let provider = match compatibility.family {
+                ExtenderFamily::Xnvse => "xNVSE",
+                ExtenderFamily::Obse => "OBSE",
+                ExtenderFamily::Shared => "xNVSE/OBSE",
+                _ => unreachable!("ObScript classifier returned a non-ObScript family"),
+            };
+            Some(CompatibilityFinding {
+                call: CallSite {
+                    source_file: source_file.to_owned(),
+                    object: "<obscript>".to_owned(),
+                    scope: scope.clone(),
+                    instruction_index: call.byte_offset,
+                    source_line: None,
+                    target: CallTarget::StaticType(provider.to_owned()),
+                    function: call.command.to_owned(),
+                    argument_count: obscript_argument_count(call.command),
+                },
+                compatibility,
+            })
+        })
+        .collect();
+    let malformed_calls = decoded
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| CallSiteDiagnostic {
+            source_file: source_file.to_owned(),
+            object: "<obscript>".to_owned(),
+            scope: scope.clone(),
+            instruction_index: diagnostic.byte_offset,
+            source_line: None,
+            message: diagnostic.message.to_owned(),
+        })
+        .collect();
+    CompatibilityReport {
+        findings,
+        malformed_calls,
+    }
+}
+
+fn obscript_argument_count(command: &str) -> usize {
+    usize::from(
+        command.eq_ignore_ascii_case("IsModLoaded")
+            || command.eq_ignore_ascii_case("GetModIndex")
+            || command.eq_ignore_ascii_case("GetNthModName"),
+    )
+}
+
 /// Stable fingerprint for preserved legacy script source/bytecode evidence.
 pub fn legacy_script_fingerprint(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
@@ -825,6 +888,35 @@ End"#;
                     == Some(byroredux_sdk::service::CONTENT_CATALOG_SERVICE)
                 && finding.call.target == CallTarget::StaticType("xNVSE/OBSE".to_owned())
         }));
+    }
+
+    #[test]
+    fn legacy_obscript_bytecode_maps_decoded_calls_and_diagnostics() {
+        let expression = [b'X', 0xaf, 0x14, 0x00, 0x00];
+        let mut compiled = vec![0x16, 0x00, 0x09, 0x00, 0x00, 0x00, 0x05, 0x00];
+        compiled.extend_from_slice(&expression);
+        let report = analyze_obscript_bytecode_compatibility(
+            "CompiledGate",
+            &compiled,
+            crate::obscript::ObscriptDialect::Xnvse,
+        );
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].call.function, "GetModIndex");
+        assert_eq!(report.findings[0].call.argument_count, 1);
+        assert_eq!(
+            report.findings[0].compatibility.service,
+            Some(byroredux_sdk::service::CONTENT_CATALOG_SERVICE)
+        );
+        assert!(report.malformed_calls.is_empty());
+
+        let malformed = analyze_obscript_bytecode_compatibility(
+            "BrokenGate",
+            &[0x16, 0x00, 0xff, 0xff],
+            crate::obscript::ObscriptDialect::Xnvse,
+        );
+        assert_eq!(malformed.findings.len(), 0);
+        assert_eq!(malformed.malformed_calls.len(), 1);
+        assert_eq!(malformed.malformed_calls[0].instruction_index, 0);
     }
 
     #[test]

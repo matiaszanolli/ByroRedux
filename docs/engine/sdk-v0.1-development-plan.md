@@ -508,9 +508,15 @@ comments or strings as calls, and xNVSE `GetNVSEVersion`/
 `GetNVSERevision`/`GetNVSEBeta` plus OBSE `GetOBSEVersion`/
 `GetOBSERevision` probes map to `byro.context` feature discovery in the same
 bounded, fingerprint-deduplicated registry used by PEX. This is preflight and
-porting evidence, not an ObScript interpreter: source-less records containing
-only opaque `SCDA` bytecode remain unclassified until the engine has a verified
-opcode decoder. The first shared load-order pack maps `IsModLoaded`,
+porting evidence, not an ObScript interpreter. A bounded `SCDA` decoder now
+walks verified statement framing, reference-call headers, and ordinary
+`Set`/`If`/`ElseIf` expression call tags. It recovers the supported xNVSE/OBSE
+version and load-order opcodes from source-less records, selects the dialect
+from the parsed game/profile boundary, and reports malformed lengths without
+guessing past damaged data. The decoder's framing was exercised across every
+compiled SCPT in the installed Fallout New Vegas and Oblivion masters. Extended
+expression-evaluator payloads, arbitrary command arguments, and full execution
+remain pending. The first shared load-order pack maps `IsModLoaded`,
 `GetModIndex`, `GetNumLoadedMods`/`GetNumLoadedPlugins`, and `GetNthModName` to
 exact `byro.content.catalog` lookup/count/name recipes. Numeric indices are
 callback-local compatibility values; portable forms continue to use stable
@@ -814,8 +820,8 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   to context feature discovery, shared plugin/load-order queries map to the
   content catalog, and unrecognized `GetNVSE*`/`GetOBSE*` probes are reported
   as unsupported. Eager scanning of every script in the full load-order
-  archives, broader command-pack classification, and decoding source-less
-  `SCDA` ObScript bytecode remain pending.**
+  archives, broader command-pack classification, full SCDA argument decoding,
+  and ObScript execution remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 

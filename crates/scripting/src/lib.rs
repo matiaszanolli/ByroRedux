@@ -18,6 +18,7 @@ pub mod equipment;
 pub mod events;
 pub mod fragment;
 pub mod globals;
+pub mod obscript;
 pub mod package;
 pub mod papyrus_demo;
 pub mod player_control;
@@ -38,10 +39,11 @@ pub use cinematic::{
 };
 pub use cleanup::event_cleanup_system;
 pub use compatibility::{
-    analyze_pex_compatibility, analyze_source_compatibility, classify_method_call,
-    classify_static_call, record_compatibility_report, source_alias, CompatibilityDisposition,
-    CompatibilityFinding, CompatibilityMatch, CompatibilityRegistry, CompatibilityReport,
-    CompatibilitySummaryEntry, SourceAlias, SourceCompatibilityFinding, SourceCompatibilityReport,
+    analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
+    analyze_source_compatibility, classify_method_call, classify_static_call,
+    record_compatibility_report, source_alias, CompatibilityDisposition, CompatibilityFinding,
+    CompatibilityMatch, CompatibilityRegistry, CompatibilityReport, CompatibilitySummaryEntry,
+    SourceAlias, SourceCompatibilityFinding, SourceCompatibilityReport,
 };
 pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
@@ -67,6 +69,7 @@ pub use fragment::{
     QuestStageFragments, ReferenceEnableState, SceneFragments,
 };
 pub use globals::Globals;
+pub use obscript::{decode_extender_calls, ObscriptDecode, ObscriptDialect};
 pub use package::{
     install_package_linked_references, install_package_records, install_package_target_directions,
     install_package_target_positions, scene_package_system, ActiveScenePackageAction,
