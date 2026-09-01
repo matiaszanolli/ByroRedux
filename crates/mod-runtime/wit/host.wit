@@ -279,6 +279,23 @@ interface factions {
     get: func(entity: entity-ref) -> option<faction-snapshot>;
 }
 
+/// Callback-local owned perk ranks keyed by portable PERK identity.
+interface perks {
+    use state.{entity-ref, form-ref};
+
+    record perk-entry {
+        perk: form-ref,
+        rank: u8,
+    }
+
+    record perk-snapshot {
+        entries: list<perk-entry>,
+        truncated: bool,
+    }
+
+    get: func(entity: entity-ref) -> option<perk-snapshot>;
+}
+
 /// Bounded spatial queries over live authored references. Results use
 /// portable form identities and never expose ECS slots or engine pointers.
 interface world-spatial {
@@ -321,6 +338,7 @@ world extension {
     import actor-values;
     import inventory;
     import factions;
+    import perks;
     import world-spatial;
     import console;
 

@@ -10,6 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use byroredux_core::character::Perks;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::components::{
     ActorValues, EquipmentSlots, FactionRanks, FormIdComponent, GlobalTransform, Inventory,
@@ -45,6 +46,7 @@ use byroredux_sdk::inventory::{
     InventoryEntry, InventorySnapshot, MAX_INVENTORY_ENTRIES_PER_ENTITY,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
+use byroredux_sdk::perks::{PerkEntry, PerkSnapshot, MAX_PERKS_PER_ENTITY};
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, CONSOLE_REGISTER_CAPABILITY, EQUIPMENT_EVENT,
@@ -1797,6 +1799,7 @@ struct RawEntityProjection {
     actor_values: Option<Vec<(FormRef, ActorValueState)>>,
     inventory: Option<InventorySnapshot>,
     factions: Option<FactionSnapshot>,
+    perks: Option<PerkSnapshot>,
 }
 
 fn entity_projection(
@@ -1821,8 +1824,12 @@ fn entity_projection(
         Some(inventory) => projection.with_inventory(inventory),
         None => projection,
     };
-    match raw.and_then(|projection| projection.factions.clone()) {
+    let projection = match raw.and_then(|projection| projection.factions.clone()) {
         Some(factions) => projection.with_factions(factions),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.perks.clone()) {
+        Some(perks) => projection.with_perks(perks),
         None => projection,
     }
 }
@@ -3073,6 +3080,47 @@ fn capture_entity_projections(
             projection.factions = Some(
                 FactionSnapshot::new(memberships, truncated)
                     .expect("live faction capture enforces SDK bounds and ordering"),
+            );
+        }
+    }
+    if let (Some(perks), Some(resolver)) = (
+        world.query::<Perks>(),
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
+    ) {
+        for (entity, projection) in &mut projections {
+            let Some(perks) = perks.get(*entity) else {
+                continue;
+            };
+            let mut truncated = false;
+            let mut entries = BTreeMap::<FormRef, u8>::new();
+            for perk in &perks.entries {
+                let Some(identity) = resolver.resolve(perk.perk_form_id).map(form_ref) else {
+                    truncated = true;
+                    continue;
+                };
+                if identity.local() == 0 || perk.rank == 0 {
+                    truncated = true;
+                    continue;
+                }
+                if let std::collections::btree_map::Entry::Vacant(entry) = entries.entry(identity) {
+                    entry.insert(perk.rank);
+                } else {
+                    truncated = true;
+                }
+            }
+            let mut entries = entries
+                .into_iter()
+                .map(|(perk, rank)| {
+                    PerkEntry::new(perk, rank).expect("resolved perk entries are valid")
+                })
+                .collect::<Vec<_>>();
+            if entries.len() > MAX_PERKS_PER_ENTITY {
+                entries.truncate(MAX_PERKS_PER_ENTITY);
+                truncated = true;
+            }
+            projection.perks = Some(
+                PerkSnapshot::new(entries, truncated)
+                    .expect("live perk capture enforces SDK bounds and ordering"),
             );
         }
     }
@@ -5128,6 +5176,49 @@ mod tests {
         assert_eq!(snapshot.memberships().len(), 1);
         let faction = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x44);
         assert_eq!(snapshot.rank(faction), Some(-1));
+    }
+
+    #[test]
+    fn perk_projection_preserves_first_rank_and_reports_invalid_entries() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            Perks {
+                entries: vec![
+                    byroredux_core::character::PerkRank {
+                        perk_form_id: 0x44,
+                        rank: 1,
+                    },
+                    byroredux_core::character::PerkRank {
+                        perk_form_id: 0x44,
+                        rank: 3,
+                    },
+                    byroredux_core::character::PerkRank {
+                        perk_form_id: 0x45,
+                        rank: 0,
+                    },
+                    byroredux_core::character::PerkRank {
+                        perk_form_id: 0x0100_0046,
+                        rank: 2,
+                    },
+                ],
+            },
+        );
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].perks.as_ref().unwrap();
+        assert!(snapshot.truncated());
+        assert_eq!(snapshot.entries().len(), 1);
+        let perk = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x44);
+        assert_eq!(snapshot.rank(perk), Some(1));
     }
 
     #[test]

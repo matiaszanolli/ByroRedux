@@ -101,6 +101,11 @@ membership ranks, preserves the engine's first-entry-wins rule for malformed
 duplicates, and reports unresolved or over-budget memberships explicitly.
 REPU fame/infamy and inter-faction relationship data remain separate pending
 contracts because they are not faction ranks.
+Ranked perk reads are live from the canonical `Perks` component used by actor
+spawning and condition evaluation. The callback-local snapshot is bounded,
+portable, deterministically ordered, and explicit about invalid or unresolved
+entries. Grant/revoke remains closed until the host can validate each PERK's
+declared rank limit and honor progression-side effects atomically.
 The first spatial service is live as a bounded, read-only authored-reference
 query. Capability-gated callbacks can search the latest live snapshot around
 an arbitrary finite world position, receive distance-sorted portable `FormRef`
@@ -672,7 +677,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   names, categories, values, weights, and explicit truncation; mutation and the
   remaining gameplay domains are pending. Portable faction membership/rank
   reads are implemented separately; reputation and inter-faction relations
-  remain pending.**
+  remain pending. Ranked perk reads are implemented from the canonical live
+  component; perk mutation remains pending rank-limit and progression
+  validation.**
 - World/reference spatial queries and safe spawn/despawn operations. **Bounded
   radius queries over live authored references are implemented with portable
   identities, deterministic distance ordering, explicit truncation, and no raw

@@ -8,6 +8,7 @@ use crate::actor_values::{ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY};
 use crate::factions::FactionSnapshot;
 use crate::identity::{EntityRef, FormRef};
 use crate::inventory::InventorySnapshot;
+use crate::perks::PerkSnapshot;
 
 /// Maximum UTF-8 bytes exposed for one entity display name.
 pub const MAX_ENTITY_NAME_BYTES: usize = 1_024;
@@ -69,6 +70,7 @@ pub struct EntityProjection {
     actor_values: Option<BTreeMap<FormRef, ActorValueState>>,
     inventory: Option<InventorySnapshot>,
     factions: Option<FactionSnapshot>,
+    perks: Option<PerkSnapshot>,
 }
 
 impl EntityProjection {
@@ -94,6 +96,7 @@ impl EntityProjection {
             actor_values: None,
             inventory: None,
             factions: None,
+            perks: None,
         })
     }
 
@@ -154,6 +157,15 @@ impl EntityProjection {
 
     pub fn factions(&self) -> Option<&FactionSnapshot> {
         self.factions.as_ref()
+    }
+
+    pub fn with_perks(mut self, perks: PerkSnapshot) -> Self {
+        self.perks = Some(perks);
+        self
+    }
+
+    pub fn perks(&self) -> Option<&PerkSnapshot> {
+        self.perks.as_ref()
     }
 }
 

@@ -29,6 +29,10 @@ The current public surface includes:
 - `FactionSnapshot` exposes deterministic callback-local FACT memberships and
   signed ranks through portable identities, with explicit truncation. It does
   not conflate membership with REPU fame/infamy or faction relationships.
+- `PerkSnapshot` exposes bounded, deterministic owned perk ranks through
+  portable identities, with explicit truncation for invalid or unresolved
+  live entries. Perk mutation remains closed pending rank-limit and progression
+  semantics.
 - `SpatialSnapshot` provides bounded, deterministic radius queries over live
   authored references. Results carry portable `FormRef` identities and finite
   world positions, never ECS IDs; truncation remains explicit.
@@ -84,11 +88,12 @@ orderly shutdown. It also snapshots names, stable form identities, world
 transforms, and bounded actor values before guest delivery, with separate
 read/write grants. It also projects capability-gated inventory and worn
 equipment summaries by portable base form, faction memberships, and the latest
-bounded spatial snapshot of live authored references. Actor-value mutations
-resolve transient entity handles and portable AVIF identities, then stage and
-validate the full batch before touching ECS state. Inventory mutation waits for
-a stable item-instance contract. Schema migrators and the broader service
-surface are still planned work.
+bounded spatial snapshot of live authored references. Ranked actor perks are
+also projected read-only from the canonical live character component.
+Actor-value mutations resolve transient entity handles and portable AVIF
+identities, then stage and validate the full batch before touching ECS state.
+Inventory and perk mutation wait for their stable validation contracts. Schema
+migrators and the broader service surface are still planned work.
 
 Run the current tool with:
 

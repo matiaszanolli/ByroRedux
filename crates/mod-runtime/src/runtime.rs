@@ -1,6 +1,6 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, console, content_catalog, context, events, factions, inventory, logging, state,
-    storage as wit_storage, world_spatial, world_state,
+    actor_values, console, content_catalog, context, events, factions, inventory, logging, perks,
+    state, storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -23,6 +23,7 @@ use byroredux_sdk::identity::{
 };
 use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot, ItemCategory, ItemMetadata};
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
+use byroredux_sdk::perks::{PerkEntry, PerkSnapshot};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
@@ -32,11 +33,12 @@ use byroredux_sdk::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY,
     FACTIONS_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE,
-    SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
-    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
-    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
-    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PERKS_READ_CAPABILITY,
+    PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
+    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
+    WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
@@ -264,6 +266,10 @@ impl SandboxRuntime {
                 "Read portable faction membership ranks from callback-visible actors",
             ),
             (
+                PERKS_READ_CAPABILITY,
+                "Read portable ranked perks from callback-visible actors",
+            ),
+            (
                 WORLD_SPATIAL_READ_CAPABILITY,
                 "Query bounded live authored references by finite world position and radius",
             ),
@@ -358,6 +364,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(FACTIONS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(PERKS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(PERKS_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1812,6 +1829,18 @@ impl factions::Host for HostState {
     }
 }
 
+impl perks::Host for HostState {
+    fn get(&mut self, entity: state::EntityRef) -> wasmtime::Result<Option<perks::PerkSnapshot>> {
+        self.require_perks_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::perks)
+            .map(wit_perk_snapshot))
+    }
+}
+
 impl world_spatial::Host for HostState {
     fn nearby(
         &mut self,
@@ -1969,6 +1998,25 @@ fn wit_faction_membership(membership: FactionMembership) -> factions::FactionMem
     }
 }
 
+fn wit_perk_snapshot(snapshot: &PerkSnapshot) -> perks::PerkSnapshot {
+    perks::PerkSnapshot {
+        entries: snapshot
+            .entries()
+            .iter()
+            .copied()
+            .map(wit_perk_entry)
+            .collect(),
+        truncated: snapshot.truncated(),
+    }
+}
+
+fn wit_perk_entry(entry: PerkEntry) -> perks::PerkEntry {
+    perks::PerkEntry {
+        perk: wit_form_ref(entry.perk()),
+        rank: entry.rank(),
+    }
+}
+
 fn wit_spatial_query_result(result: &SpatialQueryResult) -> world_spatial::SpatialQueryResult {
     world_spatial::SpatialQueryResult {
         hits: result.hits().iter().copied().map(wit_spatial_hit).collect(),
@@ -2056,6 +2104,16 @@ impl HostState {
         if !self.grants.contains(FACTIONS_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {FACTIONS_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_perks_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(PERKS_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {PERKS_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2710,6 +2768,35 @@ mod projection_tests {
         let mut denied = content_host_state(false);
         let error = <HostState as factions::Host>::get(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(FACTIONS_READ_CAPABILITY));
+    }
+
+    #[test]
+    fn perks_are_callback_local_portable_ranked_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let perk = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let snapshot = PerkSnapshot::new(vec![PerkEntry::new(perk, 2).unwrap()], true).unwrap();
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_perks(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+
+        let mut state = content_host_state(false);
+        state.grants.grant(PERKS_READ_CAPABILITY).unwrap();
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as perks::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(sdk_form_ref(snapshot.entries[0].perk), perk);
+        assert_eq!(snapshot.entries[0].rank, 2);
+
+        let mut denied = content_host_state(false);
+        let error = <HostState as perks::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(PERKS_READ_CAPABILITY));
     }
 
     #[test]

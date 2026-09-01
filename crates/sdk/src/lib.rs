@@ -16,6 +16,7 @@ pub mod factions;
 pub mod identity;
 pub mod inventory;
 pub mod manifest;
+pub mod perks;
 pub mod projection;
 pub mod service;
 pub mod settings;
