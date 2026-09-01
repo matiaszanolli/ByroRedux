@@ -138,6 +138,7 @@ in the design narrative.
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
+| `OnInitEvent` | (unit) | `OnInit` for translated provider handlers | `attach_papyrus_provider_program`; drained after one frame |
 | `OnCellLoadEvent` | (unit) | `OnLoad` / `OnCellLoad` | **live** — cell loader's `attach_script_for_refr` ([`byroredux/src/cell_loader/references/attach.rs`](../../byroredux/src/cell_loader/references/attach.rs)) |
 | `OnTriggerEnterEvent` | triggerer set | `OnTriggerEnter` (Skyrim+) / `OnTrigger` (FO3/FNV) | `trigger_detection_system` over live trigger volumes |
 | `OnEquipEvent` | `wearer: EntityId` | `OnEquip` / `OnEquipped` | marker contract is shipped; coverage remains demand-driven |
