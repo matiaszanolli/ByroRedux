@@ -1292,6 +1292,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
     let component_commands = commands
         .into_iter()
         .map(|command| match command {
+            HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1357,6 +1358,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
     let component_commands = commands
         .into_iter()
         .map(|command| match command {
+            HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1428,6 +1430,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
     let storage_commands = commands
         .into_iter()
         .map(|command| match command {
+            HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -2163,6 +2166,9 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
     let component_commands: Vec<_> = commands
         .into_iter()
         .map(|command| match command {
+            HostCommand::ActorValue(_) => {
+                panic!("fixture emitted an unexpected actor-value command")
+            }
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => {
                 panic!("fixture emitted an unexpected storage command")
@@ -2207,6 +2213,9 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
     let storage_commands: Vec<_> = commands
         .into_iter()
         .map(|command| match command {
+            HostCommand::ActorValue(_) => {
+                panic!("fixture emitted an unexpected actor-value command")
+            }
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("fixture emitted an unexpected event command"),

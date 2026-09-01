@@ -1,7 +1,10 @@
 //! Immutable, bounded views of live engine entities.
 
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
+use crate::actor_values::{ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY};
 use crate::identity::{EntityRef, FormRef};
 
 /// Maximum UTF-8 bytes exposed for one entity display name.
@@ -61,6 +64,7 @@ pub struct EntityProjection {
     form: Option<FormRef>,
     name: Option<String>,
     world_transform: Option<WorldTransform>,
+    actor_values: Option<BTreeMap<FormRef, ActorValueState>>,
 }
 
 impl EntityProjection {
@@ -83,7 +87,24 @@ impl EntityProjection {
             form,
             name,
             world_transform,
+            actor_values: None,
         })
+    }
+
+    /// Attach a bounded snapshot of canonical actor values. `Some(empty)`
+    /// still identifies an actor carrying the component.
+    pub fn with_actor_values(
+        mut self,
+        values: impl IntoIterator<Item = (FormRef, ActorValueState)>,
+    ) -> Result<Self, ProjectionError> {
+        let actor_values = values.into_iter().collect::<BTreeMap<_, _>>();
+        if actor_values.len() > MAX_ACTOR_VALUES_PER_ENTITY {
+            return Err(ProjectionError::ActorValueBudgetExceeded {
+                maximum: MAX_ACTOR_VALUES_PER_ENTITY,
+            });
+        }
+        self.actor_values = Some(actor_values);
+        Ok(self)
     }
 
     pub const fn entity(&self) -> EntityRef {
@@ -101,6 +122,14 @@ impl EntityProjection {
     pub const fn world_transform(&self) -> Option<WorldTransform> {
         self.world_transform
     }
+
+    pub fn actor_values(&self) -> Option<&BTreeMap<FormRef, ActorValueState>> {
+        self.actor_values.as_ref()
+    }
+
+    pub fn actor_value(&self, actor_value: FormRef) -> Option<ActorValueState> {
+        self.actor_values.as_ref()?.get(&actor_value).copied()
+    }
 }
 
 /// Rejection while constructing a bounded projection.
@@ -110,6 +139,8 @@ pub enum ProjectionError {
     NameTooLarge { actual: usize, maximum: usize },
     #[error("entity transform contains a non-finite value")]
     NonFiniteTransform,
+    #[error("actor-value snapshot exceeds the per-entity limit of {maximum}")]
+    ActorValueBudgetExceeded { maximum: usize },
 }
 
 #[cfg(test)]

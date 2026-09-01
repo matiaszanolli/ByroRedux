@@ -14,6 +14,7 @@ use byroredux_core::ecs::Resource;
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_plugin::esm;
 use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
+use byroredux_sdk::identity::FormRef;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -194,6 +195,17 @@ impl GlobalFormIdResolver {
             plugin,
             local: LocalFormId(local),
         })
+    }
+
+    pub(crate) fn global_form_id(&self, form: FormRef) -> Option<u32> {
+        let plugin = PluginId(u128::from_be_bytes(form.source()));
+        let (slot, _) = self.owners.iter().find(|(_, owner)| *owner == plugin)?;
+        let local = form.local();
+        let valid = match slot {
+            esm::reader::GlobalSlot::Regular(_) => local != 0 && local <= 0x00ff_ffff,
+            esm::reader::GlobalSlot::Light(_) => local != 0 && local <= 0x0000_0fff,
+        };
+        valid.then(|| slot.compose(local))
     }
 }
 
@@ -567,6 +579,13 @@ mod tests {
                 plugin: PluginId::from_filename("Update.esm"),
                 local: LocalFormId(0x0012_3456),
             })
+        );
+        assert_eq!(
+            GlobalFormIdResolver::from_load_order(&order).global_form_id(FormRef::new(
+                PluginId::from_filename("Update.esm").0.to_be_bytes(),
+                0x0012_3456,
+            )),
+            Some(0x0112_3456)
         );
     }
 

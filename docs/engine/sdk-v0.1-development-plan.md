@@ -80,6 +80,13 @@ initialization, and registration commits atomically with package activation;
 shared command budget, validates type/range/choice and principal ownership,
 then commits and persists the native registry after callbacks without guest
 reentrancy.
+The first Wave B gameplay service is live as well. Capability-gated callbacks
+can read bounded canonical actor-value projections keyed by portable AVIF
+`FormRef` identities and queue base, permanent, temporary, damage, or restore
+operations. The executable resolves opaque entity handles and portable forms,
+stages the complete batch against cloned `ActorValues`, rejects stale or
+non-finite results without partial actor mutation, and commits only after the
+callback returns.
 
 ## 1. Outcome
 
@@ -505,7 +512,7 @@ Exit gate:
 Status: **Exact-version entity-attached and principal-storage persistence
 and the first read-only plugin/form catalog, manifest-declared namespaced
 console registration, and typed universal-settings reads implemented;
-migrations, service aliases, record metadata queries, and real-mod fixtures
+migrations, service aliases, broader record metadata, and real-mod fixtures
 remain pending.**
 
 Deliverables:
@@ -517,7 +524,8 @@ Deliverables:
 - Add read-only plugin/form catalog services and a namespaced console-command
   registration slice. **Plugin enumeration and portable form qualification are
   implemented. Namespaced, capability-gated console registration and bounded
-  callback dispatch are implemented; dependency/record inspection remains.**
+  callback dispatch are implemented; dependency edges and portable record
+  existence/type inspection are implemented.**
 - Add SDK aliases for the first selected extender-script fixture, mapping it to
   semantic services rather than reproducing its implementation internals.
 - Add corrupt, missing-extension, downgrade, and migration-failure tests.
@@ -626,7 +634,8 @@ proceeds by semantic domain and closes only against real mod fixtures.
 - Plugin/form/dependency introspection. **Loaded regular/light plugin
   enumeration, case-insensitive basename lookup, stable source identity, and
   bounded portable form qualification are implemented behind
-  `byro.content.catalog.read`; dependency edges and record metadata remain.**
+  `byro.content.catalog.read`; ordered master edges and portable record
+  existence/type metadata are also implemented.**
 - Save/load/new-game lifecycle events. **Implemented with `new-game`,
   `save-complete`, and `load-complete` phases, validated manifest filters, a
   bounded engine queue, and post-commit save/load production; numeric slots are
@@ -636,7 +645,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
 
 - Form metadata, keywords, names, weights, and stable lookup.
 - Actor values, inventory, worn equipment, packages, factions, perks, magic,
-  appearance refresh, animation requests, and relationship queries.
+  appearance refresh, animation requests, and relationship queries. **Actor
+  values are implemented as bounded callback-local snapshots plus validated,
+  deferred semantic writes keyed by portable AVIF identity; the remaining
+  gameplay domains are pending.**
 - World/reference spatial queries and safe spawn/despawn operations.
 - Typed script-callable extension functions.
 

@@ -1,8 +1,10 @@
 use crate::bindings::byro::mod_host::{
-    console, content_catalog, context, events, logging, state, storage as wit_storage, world_state,
+    actor_values, console, content_catalog, context, events, logging, state,
+    storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
+use byroredux_sdk::actor_values::{ActorValueCommand, ActorValueOperation, ActorValueState};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
 use byroredux_sdk::console::{
     ConsoleCommandResult, MAX_CONSOLE_ARGUMENT_BYTES, MAX_CONSOLE_OUTPUT_BYTES,
@@ -22,6 +24,7 @@ use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
+    ACTOR_VALUES_READ_CAPABILITY, ACTOR_VALUES_SERVICE, ACTOR_VALUES_WRITE_CAPABILITY,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE,
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY,
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
@@ -241,6 +244,14 @@ impl SandboxRuntime {
                 "Read world transforms from callback-visible entity projections",
             ),
             (
+                ACTOR_VALUES_READ_CAPABILITY,
+                "Read canonical actor values from callback-visible actors",
+            ),
+            (
+                ACTOR_VALUES_WRITE_CAPABILITY,
+                "Queue bounded canonical actor-value mutations",
+            ),
+            (
                 CONTENT_CATALOG_READ_CAPABILITY,
                 "Inspect loaded game plugins and qualify portable authored forms",
             ),
@@ -298,6 +309,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(CONTENT_CATALOG_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(ACTOR_VALUES_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(ACTOR_VALUES_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1626,6 +1648,84 @@ impl content_catalog::Host for HostState {
     }
 }
 
+impl actor_values::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+        actor_value: state::FormRef,
+    ) -> wasmtime::Result<Option<actor_values::ActorValueState>> {
+        self.require_actor_values_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        let actor_value = sdk_form_ref(actor_value);
+        let Some(projection) = self.entity_projections.get(&entity) else {
+            return Ok(None);
+        };
+        let Some(values) = projection.actor_values() else {
+            return Ok(None);
+        };
+        if self
+            .content_catalog
+            .record(actor_value)
+            .is_none_or(|record| record.record_type() != *b"AVIF")
+        {
+            return Ok(None);
+        }
+        let value = values.get(&actor_value).copied().unwrap_or_default();
+        Ok(Some(wit_actor_value_state(value)))
+    }
+
+    fn queue(
+        &mut self,
+        entity: state::EntityRef,
+        actor_value: state::FormRef,
+        operation: actor_values::Operation,
+        value: f32,
+    ) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("actor-value writes are only accepted during an event callback");
+        }
+        if !self.grants.contains(ACTOR_VALUES_WRITE_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {ACTOR_VALUES_WRITE_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let entity = sdk_entity_ref(entity)?;
+        let actor_value = sdk_form_ref(actor_value);
+        let Some(projection) = self.entity_projections.get(&entity) else {
+            wasmtime::bail!("actor-value target is not visible in this callback");
+        };
+        if projection.actor_values().is_none() {
+            wasmtime::bail!("actor-value target does not carry canonical actor values");
+        }
+        if self
+            .content_catalog
+            .record(actor_value)
+            .is_none_or(|record| record.record_type() != *b"AVIF")
+        {
+            wasmtime::bail!("actor-value identity does not resolve to an AVIF record");
+        }
+        let operation = match operation {
+            actor_values::Operation::SetBase => ActorValueOperation::SetBase,
+            actor_values::Operation::ModifyPermanent => ActorValueOperation::ModifyPermanent,
+            actor_values::Operation::ModifyTemporary => ActorValueOperation::ModifyTemporary,
+            actor_values::Operation::Damage => ActorValueOperation::Damage,
+            actor_values::Operation::Restore => ActorValueOperation::Restore,
+        };
+        let command = ActorValueCommand::new(entity, actor_value, operation, value)
+            .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
+        self.pending_commands.push(HostCommand::ActorValue(command));
+        Ok(())
+    }
+}
+
 impl console::Host for HostState {
     fn args_len(&mut self) -> wasmtime::Result<u32> {
         self.require_console_context()?;
@@ -1687,6 +1787,23 @@ fn sdk_entity_ref(
         .ok_or_else(|| wasmtime::Error::msg("entity reference contains a reserved zero value"))
 }
 
+fn sdk_form_ref(form: state::FormRef) -> FormRef {
+    let mut source = [0_u8; 16];
+    source[..8].copy_from_slice(&form.source_high.to_be_bytes());
+    source[8..].copy_from_slice(&form.source_low.to_be_bytes());
+    FormRef::new(source, form.local)
+}
+
+fn wit_actor_value_state(value: ActorValueState) -> actor_values::ActorValueState {
+    actor_values::ActorValueState {
+        base: value.base(),
+        permanent: value.permanent(),
+        temporary: value.temporary(),
+        damage: value.damage(),
+        current: value.current(),
+    }
+}
+
 fn wit_entity_projection(
     projection: &EntityProjection,
     include_transform: bool,
@@ -1731,6 +1848,16 @@ fn wit_form_ref(form: byroredux_sdk::identity::FormRef) -> state::FormRef {
 }
 
 impl HostState {
+    fn require_actor_values_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(ACTOR_VALUES_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {ACTOR_VALUES_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
     fn require_console_context(&self) -> wasmtime::Result<()> {
         if !self.grants.contains(CONSOLE_REGISTER_CAPABILITY) {
             wasmtime::bail!(
@@ -2117,7 +2244,10 @@ mod projection_tests {
                             .unwrap(),
                     ],
                     vec![vec![], vec![0]],
-                    vec![vec![(0x1234, *b"WEAP")], vec![(0xabc, *b"STAT")]],
+                    vec![
+                        vec![(0x333, *b"AVIF"), (0x1234, *b"WEAP")],
+                        vec![(0xabc, *b"STAT")],
+                    ],
                 )
                 .unwrap(),
             ),
@@ -2223,6 +2353,65 @@ mod projection_tests {
         assert!(<HostState as content_catalog::Host>::find_plugin(
             &mut state,
             "../escape.esm".to_owned(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn actor_values_are_callback_local_portable_deferred_and_capability_gated() {
+        let mut state = content_host_state(false);
+        state.grants.grant(ACTOR_VALUES_READ_CAPABILITY).unwrap();
+        state.grants.grant(ACTOR_VALUES_WRITE_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 2;
+        let entity = EntityRef::new(1, 9).unwrap();
+        let actor_value = FormRef::new(1_u128.to_be_bytes(), 0x333);
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_actor_values([(
+                actor_value,
+                ActorValueState::new(100.0, 20.0, 10.0, 35.0).unwrap(),
+            )])
+            .unwrap();
+        state.entity_projections.insert(entity, projection);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+        let wit_actor_value = wit_form_ref(actor_value);
+
+        let value = <HostState as actor_values::Host>::get(&mut state, wit_entity, wit_actor_value)
+            .unwrap()
+            .unwrap();
+        assert_eq!((value.base, value.current), (100.0, 95.0));
+        <HostState as actor_values::Host>::queue(
+            &mut state,
+            wit_entity,
+            wit_actor_value,
+            actor_values::Operation::ModifyPermanent,
+            5.0,
+        )
+        .unwrap();
+        let [HostCommand::ActorValue(command)] = state.pending_commands.as_slice() else {
+            panic!("expected one actor-value command")
+        };
+        assert_eq!(command.entity(), entity);
+        assert_eq!(command.actor_value(), actor_value);
+        assert_eq!(command.operation(), ActorValueOperation::ModifyPermanent);
+        assert_eq!(command.value(), 5.0);
+
+        let mut denied = content_host_state(false);
+        assert!(
+            <HostState as actor_values::Host>::get(&mut denied, wit_entity, wit_actor_value,)
+                .is_err()
+        );
+        denied.accepting_commands = true;
+        assert!(<HostState as actor_values::Host>::queue(
+            &mut denied,
+            wit_entity,
+            wit_actor_value,
+            actor_values::Operation::SetBase,
+            1.0,
         )
         .is_err());
     }

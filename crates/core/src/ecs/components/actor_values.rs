@@ -159,6 +159,11 @@ impl ActorValues {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    /// Iterate canonical AVIF FormIDs and their layered values.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &ActorValue)> {
+        self.values.iter().map(|(&form_id, value)| (form_id, value))
+    }
 }
 
 impl Component for ActorValues {

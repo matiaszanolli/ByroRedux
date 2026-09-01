@@ -11,13 +11,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
-use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform, Name, Transform};
+use byroredux_core::ecs::components::{
+    ActorValues, FormIdComponent, GlobalTransform, Name, Transform,
+};
 use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::string::StringPool;
 use byroredux_mod_runtime::{
     CapabilitySet, InstanceStatus, LifecyclePhase, LogEntry, LogLevel, ModInstance, SandboxConfig,
     SandboxError, SandboxRuntime,
+};
+use byroredux_sdk::actor_values::{
+    ActorValueCommand, ActorValueOperation, ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -57,6 +62,7 @@ const MAX_PENDING_SESSION_EVENTS: usize = 64;
 const MAX_PENDING_CUSTOM_EVENTS: usize = 256;
 const MAX_PENDING_CUSTOM_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_SETTING_WRITES: usize = 256;
+const MAX_PENDING_ACTOR_VALUE_WRITES: usize = 256;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -158,7 +164,6 @@ impl EntityHandleRegistry {
         Ok(handle)
     }
 
-    #[cfg(test)]
     fn resolve(&self, handle: EntityRef) -> Option<EntityId> {
         (handle.world_generation() == self.world_generation)
             .then(|| self.by_handle.get(&handle).copied())
@@ -242,6 +247,7 @@ pub(crate) struct ExtensionHost {
     retained_storage: Vec<PersistedPrincipalStorage>,
     pending_custom_events: Vec<CustomEvent>,
     pending_setting_writes: Vec<byroredux_sdk::settings::SettingWriteCommand>,
+    pending_actor_value_writes: Vec<ActorValueCommand>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
@@ -266,6 +272,7 @@ impl ExtensionHost {
             retained_storage: Vec::new(),
             pending_custom_events: Vec::new(),
             pending_setting_writes: Vec::new(),
+            pending_actor_value_writes: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
@@ -512,6 +519,7 @@ impl ExtensionHost {
             &mut self.principal_storage,
             &mut self.pending_custom_events,
             &mut self.pending_setting_writes,
+            &mut self.pending_actor_value_writes,
             &mut self.diagnostics,
             &mut stats,
         );
@@ -695,6 +703,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -775,6 +784,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -859,6 +869,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -926,6 +937,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -989,6 +1001,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1049,6 +1062,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1184,6 +1198,7 @@ impl ExtensionHost {
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
                     &mut self.pending_setting_writes,
+                    &mut self.pending_actor_value_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1254,6 +1269,7 @@ impl ExtensionHost {
                 &mut self.principal_storage,
                 &mut self.pending_custom_events,
                 &mut self.pending_setting_writes,
+                &mut self.pending_actor_value_writes,
                 &mut self.diagnostics,
                 &mut stats,
             );
@@ -1543,6 +1559,35 @@ impl ExtensionHost {
     pub fn take_diagnostics(&mut self) -> Vec<ExtensionDiagnostic> {
         std::mem::take(&mut self.diagnostics)
     }
+
+    fn take_resolved_actor_value_writes(&mut self) -> Result<Vec<ResolvedActorValueWrite>, String> {
+        let commands = std::mem::take(&mut self.pending_actor_value_writes);
+        commands
+            .into_iter()
+            .map(|command| {
+                let entity = self.handles.resolve(command.entity()).ok_or_else(|| {
+                    format!(
+                        "actor-value command targeted stale entity {:?}",
+                        command.entity()
+                    )
+                })?;
+                Ok(ResolvedActorValueWrite {
+                    entity,
+                    actor_value: command.actor_value(),
+                    operation: command.operation(),
+                    value: command.value(),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResolvedActorValueWrite {
+    entity: EntityId,
+    actor_value: FormRef,
+    operation: ActorValueOperation,
+    value: f32,
 }
 
 fn apply_delivery_result(
@@ -1554,6 +1599,7 @@ fn apply_delivery_result(
     principal_storage: &mut PrincipalStorageStore,
     pending_custom_events: &mut Vec<CustomEvent>,
     pending_setting_writes: &mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
+    pending_actor_value_writes: &mut Vec<ActorValueCommand>,
     diagnostics: &mut Vec<ExtensionDiagnostic>,
     stats: &mut ExtensionDispatchStats,
 ) {
@@ -1574,8 +1620,10 @@ fn apply_delivery_result(
     let mut storage_commands = Vec::new();
     let mut published_events = Vec::new();
     let mut setting_writes = Vec::new();
+    let mut actor_value_writes = Vec::new();
     for command in commands {
         match command {
+            HostCommand::ActorValue(command) => actor_value_writes.push(command),
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
             HostCommand::PublishEvent(command) => published_events.push(command),
@@ -1619,6 +1667,15 @@ fn apply_delivery_result(
         if next_setting_count > MAX_PENDING_SETTING_WRITES {
             return Err(format!(
                 "pending setting write limit of {MAX_PENDING_SETTING_WRITES} exceeded"
+            ));
+        }
+        let next_actor_value_count = pending_actor_value_writes
+            .len()
+            .checked_add(actor_value_writes.len())
+            .ok_or_else(|| "pending actor-value write count overflow".to_owned())?;
+        if next_actor_value_count > MAX_PENDING_ACTOR_VALUE_WRITES {
+            return Err(format!(
+                "pending actor-value write limit of {MAX_PENDING_ACTOR_VALUE_WRITES} exceeded"
             ));
         }
         let next_event_count = pending_custom_events
@@ -1672,6 +1729,7 @@ fn apply_delivery_result(
             *principal_storage = staged_storage;
             pending_custom_events.extend(staged_events);
             pending_setting_writes.extend(setting_writes);
+            pending_actor_value_writes.extend(actor_value_writes);
             stats.commands_applied += command_count;
         }
     }
@@ -1724,6 +1782,7 @@ pub(crate) struct RawHit {
 struct RawEntityProjection {
     name: Option<String>,
     world_transform: Option<WorldTransform>,
+    actor_values: Option<Vec<(FormRef, ActorValueState)>>,
 }
 
 fn entity_projection(
@@ -1731,13 +1790,19 @@ fn entity_projection(
     form: Option<FormRef>,
     raw: Option<&RawEntityProjection>,
 ) -> EntityProjection {
-    EntityProjection::new(
+    let projection = EntityProjection::new(
         entity,
         form,
         raw.and_then(|projection| projection.name.clone()),
         raw.and_then(|projection| projection.world_transform),
     )
-    .expect("live projection capture enforces SDK bounds")
+    .expect("live projection capture enforces SDK bounds");
+    match raw.and_then(|projection| projection.actor_values.as_ref()) {
+        Some(actor_values) => projection
+            .with_actor_values(actor_values.iter().copied())
+            .expect("live actor-value capture enforces SDK bounds"),
+        None => projection,
+    }
 }
 
 /// Cloneable ECS resource containing the non-ECS extension owner.
@@ -2161,6 +2226,7 @@ pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_activations_with_projections(activations, &projections);
+    apply_pending_actor_value_writes(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2214,6 +2280,7 @@ pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_cell_loads_with_projections(cell_loads, &projections);
+    apply_pending_actor_value_writes(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2292,6 +2359,7 @@ pub(crate) fn extension_equipment_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_equipment_changes_with_projections(changes, &projections);
+    apply_pending_actor_value_writes(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2482,6 +2550,7 @@ pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_hits_with_projections(hits, &projections);
+    apply_pending_actor_value_writes(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2794,7 +2863,112 @@ fn capture_entity_projections(
             });
         }
     }
+    if let (Some(actor_values), Some(resolver)) = (
+        world.query::<ActorValues>(),
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
+    ) {
+        for (entity, projection) in &mut projections {
+            let Some(values) = actor_values.get(*entity) else {
+                continue;
+            };
+            let mut values = values
+                .iter()
+                .filter_map(|(form_id, value)| {
+                    let actor_value = resolver.resolve(form_id).map(form_ref)?;
+                    let value = ActorValueState::new(
+                        value.base,
+                        value.permanent_mod,
+                        value.temporary_mod,
+                        value.damage,
+                    )
+                    .ok()?;
+                    Some((actor_value, value))
+                })
+                .collect::<Vec<_>>();
+            values.sort_by_key(|(form, _)| *form);
+            values.truncate(MAX_ACTOR_VALUES_PER_ENTITY);
+            projection.actor_values = Some(values);
+        }
+    }
     projections
+}
+
+fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
+    let commands = match host.take_resolved_actor_value_writes() {
+        Ok(commands) => commands,
+        Err(error) => {
+            host.record_host_fault(format!("deferred actor-value batch rejected: {error}"));
+            return;
+        }
+    };
+    if commands.is_empty() {
+        return;
+    }
+    let apply = (|| -> Result<(), String> {
+        let resolver = world
+            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
+        let values = world
+            .query::<ActorValues>()
+            .ok_or_else(|| "ActorValues storage is unavailable".to_owned())?;
+        let mut staged = BTreeMap::<EntityId, ActorValues>::new();
+        for command in &commands {
+            let actor_value = resolver
+                .global_form_id(command.actor_value)
+                .ok_or_else(|| "portable actor-value identity is not loaded".to_owned())?;
+            let actor_values = if let Some(values) = staged.get_mut(&command.entity) {
+                values
+            } else {
+                let values = values
+                    .get(command.entity)
+                    .cloned()
+                    .ok_or_else(|| "actor-value target no longer carries ActorValues".to_owned())?;
+                staged.entry(command.entity).or_insert(values)
+            };
+            match command.operation {
+                ActorValueOperation::SetBase => actor_values.set_base(actor_value, command.value),
+                ActorValueOperation::ModifyPermanent => {
+                    actor_values.mod_permanent(actor_value, command.value)
+                }
+                ActorValueOperation::ModifyTemporary => {
+                    actor_values.mod_temporary(actor_value, command.value)
+                }
+                ActorValueOperation::Damage => {
+                    actor_values.apply_damage(actor_value, command.value)
+                }
+                ActorValueOperation::Restore => actor_values.restore(actor_value, command.value),
+            }
+            let state = actor_values
+                .get(actor_value)
+                .expect("actor-value mutation creates the target entry");
+            if [
+                state.base,
+                state.permanent_mod,
+                state.temporary_mod,
+                state.damage,
+                state.current(),
+            ]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            {
+                return Err("actor-value command batch produced a non-finite value".to_owned());
+            }
+        }
+        drop(values);
+        let mut live = world
+            .query_mut::<ActorValues>()
+            .ok_or_else(|| "ActorValues storage disappeared before commit".to_owned())?;
+        for (entity, values) in staged {
+            let target = live
+                .get_mut(entity)
+                .ok_or_else(|| "actor-value target disappeared before commit".to_owned())?;
+            *target = values;
+        }
+        Ok(())
+    })();
+    if let Err(error) = apply {
+        host.record_host_fault(format!("deferred actor-value batch rejected: {error}"));
+    }
 }
 
 fn entities_by_form(world: &World) -> BTreeMap<FormRef, EntityId> {
@@ -4023,6 +4197,7 @@ mod tests {
             &mut host.principal_storage,
             &mut host.pending_custom_events,
             &mut host.pending_setting_writes,
+            &mut host.pending_actor_value_writes,
             &mut host.diagnostics,
             &mut stats,
         );
@@ -4608,6 +4783,92 @@ mod tests {
         );
         assert!(host.handles.by_entity.contains_key(&subject));
         assert!(host.handles.by_entity.contains_key(&activator));
+    }
+
+    #[test]
+    fn actor_value_projection_and_deferred_apply_use_portable_avif_identity_atomically() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut values = ActorValues::new();
+        values.set_base(0x333, 100.0);
+        world.insert(actor, values);
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+        let actor_value = FormRef::new(
+            byroredux_core::form_id::PluginId::from_filename("Skyrim.esm")
+                .0
+                .to_be_bytes(),
+            0x333,
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let captured = projections[&actor]
+            .actor_values
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|(form, _)| *form == actor_value)
+            .unwrap()
+            .1;
+        assert_eq!(captured.current(), 100.0);
+
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let handle = host.bind_entity(actor, None).unwrap();
+        host.pending_actor_value_writes.push(
+            ActorValueCommand::new(
+                handle,
+                actor_value,
+                ActorValueOperation::ModifyPermanent,
+                5.0,
+            )
+            .unwrap(),
+        );
+        apply_pending_actor_value_writes(&world, &mut host);
+        assert_eq!(
+            world
+                .query::<ActorValues>()
+                .unwrap()
+                .get(actor)
+                .unwrap()
+                .current(0x333),
+            105.0
+        );
+
+        host.pending_actor_value_writes.push(
+            ActorValueCommand::new(handle, actor_value, ActorValueOperation::SetBase, 200.0)
+                .unwrap(),
+        );
+        host.pending_actor_value_writes.push(
+            ActorValueCommand::new(
+                handle,
+                FormRef::new([99; 16], 1),
+                ActorValueOperation::SetBase,
+                1.0,
+            )
+            .unwrap(),
+        );
+        apply_pending_actor_value_writes(&world, &mut host);
+        assert_eq!(
+            world
+                .query::<ActorValues>()
+                .unwrap()
+                .get(actor)
+                .unwrap()
+                .current(0x333),
+            105.0,
+            "an unresolved command rejects the whole actor-value batch"
+        );
+        assert!(host.take_diagnostics().iter().any(|diagnostic| matches!(
+            diagnostic,
+            ExtensionDiagnostic::Fault { message, .. }
+                if message.contains("deferred actor-value batch rejected")
+        )));
     }
 
     #[test]

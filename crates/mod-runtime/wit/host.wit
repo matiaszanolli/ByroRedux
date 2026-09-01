@@ -195,6 +195,31 @@ interface content-catalog {
     qualify-form: func(plugin: string, local: u32) -> option<form-ref>;
 }
 
+/// Callback-local canonical actor values. Mutations are deferred until after
+/// guest execution and use portable AVIF identities.
+interface actor-values {
+    use state.{entity-ref, form-ref};
+
+    record actor-value-state {
+        base: f32,
+        permanent: f32,
+        temporary: f32,
+        damage: f32,
+        current: f32,
+    }
+
+    enum operation {
+        set-base,
+        modify-permanent,
+        modify-temporary,
+        damage,
+        restore,
+    }
+
+    get: func(entity: entity-ref, actor-value: form-ref) -> option<actor-value-state>;
+    queue: func(entity: entity-ref, actor-value: form-ref, operation: operation, value: f32);
+}
+
 /// Callback-local engine console arguments and bounded output. Commands are
 /// declared in the authenticated manifest; guests cannot choose global names.
 interface console {
@@ -213,6 +238,7 @@ world extension {
     import storage;
     import world-state;
     import content-catalog;
+    import actor-values;
     import console;
 
     use state.{entity-ref, form-ref, hit-details, input-action, input-phase, session-phase};

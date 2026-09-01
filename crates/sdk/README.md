@@ -16,6 +16,11 @@ The current public surface includes:
   their declared master edges, and portable record-existence/type metadata.
 - `EntityProjection` and `WorldTransform` are finite, bounded, renderer-neutral
   snapshots of callback-visible entities; they expose no ECS slot or pointer.
+  Actor-value projections use the canonical base/permanent/temporary/damage
+  layers and portable AVIF identities.
+- `ActorValueCommand` is the validated deferred mutation contract for setting
+  or modifying canonical actor-value layers without exposing native storage or
+  numeric global FormIDs.
 - Validated extension, principal, capability, service, event, and schema IDs
   are stable namespaced values shared by package loaders and sandbox hosts.
 - `ExtensionManifest` declares SDK/dependency ranges, executable components,
@@ -64,9 +69,12 @@ late-stage scheduler, commits deferred state atomically, invalidates transient
 handles on world replacement,
 persists form-backed extension rows in normal ByroRedux saves, retains rows for
 missing packages/forms, persists private principal storage, and performs
-orderly shutdown. It also snapshots names, stable form identities, and world
-transforms before guest delivery, with separate entity/transform read grants.
-Schema migrators and the broader service surface are still planned work.
+orderly shutdown. It also snapshots names, stable form identities, world
+transforms, and bounded actor values before guest delivery, with separate
+read/write grants. Actor-value mutations resolve transient entity handles and
+portable AVIF identities, then stage and validate the full batch before
+touching ECS state. Schema migrators and the broader service surface are still
+planned work.
 
 Run the current tool with:
 

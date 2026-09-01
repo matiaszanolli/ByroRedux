@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod actor_values;
 pub mod component;
 pub mod console;
 pub mod content;

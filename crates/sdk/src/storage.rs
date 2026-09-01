@@ -193,6 +193,7 @@ pub enum PrincipalStorageCommand {
 /// One mutation emitted by a sandbox callback.
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostCommand {
+    ActorValue(crate::actor_values::ActorValueCommand),
     Component(ExtensionCommand),
     PrincipalStorage(PrincipalStorageCommand),
     PublishEvent(PublishEventCommand),
