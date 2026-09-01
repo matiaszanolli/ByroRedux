@@ -468,6 +468,39 @@ interface console {
     set-failed: func();
 }
 
+/// Callback-local typed values for manifest-declared engine script functions.
+/// The argument count distinguishes an absent index from an explicit `none`
+/// value. Guests must set exactly one result before returning.
+interface script-functions {
+    use state.{entity-ref, form-ref};
+
+    enum value-type {
+        boolean,
+        integer,
+        floating-point,
+        text,
+        form,
+        entity,
+    }
+
+    argument-count: func() -> u32;
+    argument-type: func(index: u32) -> option<value-type>;
+    argument-boolean: func(index: u32) -> option<bool>;
+    argument-integer: func(index: u32) -> option<s64>;
+    argument-float: func(index: u32) -> option<f32>;
+    argument-string: func(index: u32) -> option<string>;
+    argument-form: func(index: u32) -> option<form-ref>;
+    argument-entity: func(index: u32) -> option<entity-ref>;
+
+    set-result-none: func();
+    set-result-boolean: func(value: bool);
+    set-result-integer: func(value: s64);
+    set-result-float: func(value: f32);
+    set-result-string: func(value: string);
+    set-result-form: func(value: form-ref);
+    set-result-entity: func(value: entity-ref);
+}
+
 /// Minimal lifecycle contract for the first executable-mod runtime slice.
 world extension {
     import logging;
@@ -488,6 +521,7 @@ world extension {
     import reputation;
     import world-spatial;
     import console;
+    import script-functions;
 
     use state.{entity-ref, form-ref, hit-details, input-action, input-phase, session-phase};
 
@@ -511,5 +545,6 @@ world extension {
     export on-custom-event: func(subscription-index: u32);
     export on-update: func(elapsed-seconds: f32);
     export on-console-command: func(command-index: u32);
+    export on-script-function: func(function-index: u32);
     export shutdown: func();
 }

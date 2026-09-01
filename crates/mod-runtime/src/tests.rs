@@ -12,7 +12,8 @@ use byroredux_sdk::event::{
     InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
-    CapabilityId, ComponentId, ConsoleCommandId, EventId, ExtensionId, FormRef, ServiceId,
+    CapabilityId, ComponentId, ConsoleCommandId, EventId, ExtensionId, FormRef, ScriptFunctionId,
+    ScriptParameterId, ServiceId,
 };
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
@@ -20,6 +21,10 @@ use byroredux_sdk::manifest::{
     ExecutableComponent, ExtensionManifest, EXTENSION_MANIFEST_VERSION,
 };
 use byroredux_sdk::projection::{EntityProjection, WorldTransform};
+use byroredux_sdk::script_function::{
+    ScriptFunctionDeclaration, ScriptParameterDeclaration, ScriptResultDeclaration, ScriptValue,
+    ScriptValueType,
+};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
@@ -28,10 +33,11 @@ use byroredux_sdk::service::{
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
     INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
     PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
-    SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, SETTINGS_READ_CAPABILITY,
-    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY, WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE,
+    SCRIPT_FUNCTIONS_REGISTER_CAPABILITY, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
+    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_SPATIAL_READ_CAPABILITY,
+    WORLD_SPATIAL_SERVICE,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -187,12 +193,16 @@ const ON_UPDATE_LIFT: &str = r#"
 
 const ON_CONSOLE_CORE: &str = r#"
                 (func (export "on-console-command") (param i32))
+                (func (export "on-script-function") (param i32))
 "#;
 
 const ON_CONSOLE_LIFT: &str = r#"
             (func (export "on-console-command")
                 (param "command-index" u32)
                 (canon lift (core func $guest-instance "on-console-command")))
+            (func (export "on-script-function")
+                (param "function-index" u32)
+                (canon lift (core func $guest-instance "on-script-function")))
 "#;
 
 fn custom_event_publisher_component() -> String {
@@ -401,12 +411,66 @@ fn console_component() -> String {
                     i32.const 0
                     i32.const 7
                     call $write-line)
+                (func (export "on-script-function") (param i32))
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
                 (with "host" (instance
                     (export "args-len" (func $args-len-lower))
                     (export "write-line" (func $write-line-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
+        )"#
+    )
+}
+
+fn script_function_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (import "byro:mod-host/script-functions@0.1.0" (instance $functions
+                (export "set-result-integer" (func (param "value" s64)))
+            ))
+            (alias export $functions "set-result-integer" (func $set-result))
+            (core func $set-result-lower (canon lower (func $set-result)))
+            (core module $guest
+                (import "host" "set-result" (func $set-result (param i64)))
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+                (func (export "on-console-command") (param i32))
+                (func (export "on-script-function") (param $index i32)
+                    local.get $index
+                    i32.eqz
+                    if
+                        i64.const 42
+                        call $set-result
+                    else
+                        unreachable
+                    end)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "host" (instance
+                    (export "set-result" (func $set-result-lower))))
             ))
             (func (export "initialize")
                 (canon lift (core func $guest-instance "initialize")))
@@ -435,6 +499,29 @@ fn console_manifest() -> ExtensionManifest {
         id: ConsoleCommandId::new("status").unwrap(),
         component: ComponentId::new("runtime").unwrap(),
         description: "Show test status".to_owned(),
+    }];
+    manifest
+}
+
+fn script_function_manifest(result_type: ScriptValueType) -> ExtensionManifest {
+    let mut manifest = manifest();
+    manifest.capabilities = vec![CapabilityRequest {
+        id: CapabilityId::new(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap(),
+        required: true,
+    }];
+    manifest.script_functions = vec![ScriptFunctionDeclaration {
+        id: ScriptFunctionId::new("answer").unwrap(),
+        component: ComponentId::new("runtime").unwrap(),
+        parameters: vec![ScriptParameterDeclaration {
+            id: ScriptParameterId::new("input").unwrap(),
+            value_type: ScriptValueType::Integer,
+            optional: false,
+        }],
+        result: Some(ScriptResultDeclaration {
+            value_type: result_type,
+            optional: false,
+        }),
+        description: "Return the test answer".to_owned(),
     }];
     manifest
 }
@@ -1845,6 +1932,62 @@ fn manifest_console_callback_is_bounded_attributed_and_capability_gated() {
     let error = denied.on_console_command(0, "hello").unwrap_err();
     assert!(error.to_string().contains(CONSOLE_REGISTER_CAPABILITY));
     assert_eq!(denied.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn typed_script_function_validates_host_input_and_guest_result() {
+    let runtime = SandboxRuntime::new(SandboxConfig::default()).unwrap();
+    let manifest = script_function_manifest(ScriptValueType::Integer);
+    let component = ComponentId::new("runtime").unwrap();
+    let bytes = wat::parse_str(script_function_component()).unwrap();
+    let compiled = runtime.compile(&manifest, &component, &bytes).unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.grant(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let error = instance.on_script_function(0, &[]).unwrap_err();
+    assert!(error.to_string().contains("expected 1..=1"));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let (value, commands) = instance
+        .on_script_function(0, &[ScriptValue::Integer(7)])
+        .unwrap();
+    assert_eq!(value, ScriptValue::Integer(42));
+    assert!(commands.is_empty());
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let error = instance
+        .on_script_function(1, &[ScriptValue::Integer(7)])
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("not declared for this component"));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn invalid_guest_script_result_quarantines_and_discards_commands() {
+    let runtime = SandboxRuntime::new(SandboxConfig::default()).unwrap();
+    let manifest = script_function_manifest(ScriptValueType::Boolean);
+    let component = ComponentId::new("runtime").unwrap();
+    let bytes = wat::parse_str(script_function_component()).unwrap();
+    let compiled = runtime.compile(&manifest, &component, &bytes).unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.grant(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let error = instance
+        .on_script_function(0, &[ScriptValue::Integer(7)])
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match its declaration"));
+    assert!(matches!(
+        instance.status(),
+        InstanceStatus::Quarantined(fault)
+            if fault.phase == LifecyclePhase::ScriptFunction
+                && fault.kind == FaultKind::Guest
+    ));
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use crate::bindings::byro::mod_host::{
     actor_values, animation, console, content_catalog, context, events, faction_relationships,
     factions, inventory, legacy_containers as wit_legacy_containers, logging, packages, perks,
-    reputation, state, storage as wit_storage, world_spatial, world_state,
+    reputation, script_functions, state, storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -36,6 +36,9 @@ use byroredux_sdk::relationships::FactionRelationshipCatalog;
 use byroredux_sdk::reputation::{
     ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
 };
+use byroredux_sdk::script_function::{
+    ScriptFunctionDeclaration, ScriptValue, MAX_SCRIPT_STRING_BYTES,
+};
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     ACTOR_VALUES_READ_CAPABILITY, ACTOR_VALUES_SERVICE, ACTOR_VALUES_WRITE_CAPABILITY,
@@ -49,11 +52,11 @@ use byroredux_sdk::service::{
     INVENTORY_SERVICE, LEGACY_CONTAINERS_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
     PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
     PRINCIPAL_STORAGE_SERVICE, REPUTATION_READ_CAPABILITY, REPUTATION_SERVICE,
-    REPUTATION_WRITE_CAPABILITY, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
-    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
-    WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    REPUTATION_WRITE_CAPABILITY, SCRIPT_FUNCTIONS_REGISTER_CAPABILITY, SCRIPT_FUNCTIONS_SERVICE,
+    SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
+    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
@@ -98,6 +101,7 @@ pub enum LifecyclePhase {
     CustomEvent,
     Update,
     ConsoleCommand,
+    ScriptFunction,
     Shutdown,
 }
 
@@ -114,6 +118,7 @@ impl fmt::Display for LifecyclePhase {
             Self::CustomEvent => "on-custom-event",
             Self::Update => "on-update",
             Self::ConsoleCommand => "on-console-command",
+            Self::ScriptFunction => "on-script-function",
             Self::Shutdown => "shutdown",
         })
     }
@@ -325,6 +330,10 @@ impl SandboxRuntime {
                 "Publish and execute bounded principal-namespaced console commands",
             ),
             (
+                SCRIPT_FUNCTIONS_REGISTER_CAPABILITY,
+                "Publish and execute bounded typed principal-namespaced script functions",
+            ),
+            (
                 SETTINGS_READ_CAPABILITY,
                 "Read stable typed public engine settings",
             ),
@@ -352,6 +361,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(SETTINGS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(SCRIPT_FUNCTIONS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -701,6 +721,21 @@ impl SandboxRuntime {
                         .expect("manifest console command count is bounded below u32::MAX")
                 })
                 .collect(),
+            script_functions: manifest
+                .script_functions
+                .iter()
+                .enumerate()
+                .filter(|(_, function)| function.component == compiled.component_id)
+                .map(|(index, function)| {
+                    (
+                        u32::try_from(index)
+                            .expect("manifest script function count is bounded below u32::MAX"),
+                        function.clone(),
+                    )
+                })
+                .collect(),
+            current_script_arguments: None,
+            current_script_result: None,
             console_output: Vec::new(),
             console_output_bytes: 0,
             console_failed: false,
@@ -1263,6 +1298,82 @@ impl ModInstance {
         Ok((output, commands))
     }
 
+    /// Invoke one manifest-declared typed function. Host-supplied arguments
+    /// are rejected before guest entry; guest result violations quarantine the
+    /// component and discard every deferred command from the call.
+    pub fn on_script_function(
+        &mut self,
+        function_index: u32,
+        arguments: &[ScriptValue],
+    ) -> Result<(ScriptValue, Vec<HostCommand>)> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::ScriptFunction,
+                status: self.status.clone(),
+            });
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY)
+        {
+            return Err(SandboxError::InvalidScriptFunctionCall {
+                function_index,
+                message: format!(
+                    "principal {} lacks capability {SCRIPT_FUNCTIONS_REGISTER_CAPABILITY}",
+                    self.principal().id()
+                ),
+            });
+        }
+        let Some(declaration) = self
+            .store
+            .data()
+            .script_functions
+            .get(&function_index)
+            .cloned()
+        else {
+            return Err(SandboxError::InvalidScriptFunctionCall {
+                function_index,
+                message: "function is not declared for this component".to_owned(),
+            });
+        };
+        declaration.validate_arguments(arguments).map_err(|error| {
+            SandboxError::InvalidScriptFunctionCall {
+                function_index,
+                message: error.to_string(),
+            }
+        })?;
+
+        {
+            let state = self.store.data_mut();
+            state.current_script_arguments = Some(arguments.to_vec());
+            state.current_script_result = None;
+        }
+        let result = self.enter(LifecyclePhase::ScriptFunction, true, |bindings, store| {
+            bindings.call_on_script_function(store, function_index)
+        });
+        self.store.data_mut().current_script_arguments = None;
+        result?;
+
+        let Some(value) = self.store.data_mut().current_script_result.take() else {
+            return self.quarantine(
+                LifecyclePhase::ScriptFunction,
+                FaultKind::Guest,
+                "script function returned without setting a result".to_owned(),
+            );
+        };
+        if let Err(error) = declaration.validate_result(&value) {
+            return self.quarantine(
+                LifecyclePhase::ScriptFunction,
+                FaultKind::Guest,
+                error.to_string(),
+            );
+        }
+        let commands = std::mem::take(&mut self.store.data_mut().pending_commands);
+        Ok((value, commands))
+    }
+
     /// Replace the read-only principal storage snapshot visible to callbacks.
     pub fn set_principal_storage_snapshot(
         &mut self,
@@ -1438,6 +1549,9 @@ struct HostState {
     current_legacy_callback: Option<String>,
     current_console_args: Option<Vec<u8>>,
     console_command_indices: std::collections::BTreeSet<u32>,
+    script_functions: BTreeMap<u32, ScriptFunctionDeclaration>,
+    current_script_arguments: Option<Vec<ScriptValue>>,
+    current_script_result: Option<ScriptValue>,
     console_output: Vec<String>,
     console_output_bytes: usize,
     console_failed: bool,
@@ -2502,6 +2616,121 @@ impl world_spatial::Host for HostState {
     }
 }
 
+impl script_functions::Host for HostState {
+    fn argument_count(&mut self) -> wasmtime::Result<u32> {
+        self.require_script_function_context()?;
+        Ok(
+            u32::try_from(self.current_script_arguments.as_ref().map_or(0, Vec::len))
+                .expect("script function argument count is bounded below u32::MAX"),
+        )
+    }
+
+    fn argument_type(
+        &mut self,
+        index: u32,
+    ) -> wasmtime::Result<Option<script_functions::ValueType>> {
+        self.require_script_function_context()?;
+        Ok(self
+            .current_script_arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get(index as usize))
+            .and_then(|value| match value {
+                ScriptValue::None => None,
+                ScriptValue::Boolean(_) => Some(script_functions::ValueType::Boolean),
+                ScriptValue::Integer(_) => Some(script_functions::ValueType::Integer),
+                ScriptValue::Float(_) => Some(script_functions::ValueType::FloatingPoint),
+                ScriptValue::String(_) => Some(script_functions::ValueType::Text),
+                ScriptValue::Form(_) => Some(script_functions::ValueType::Form),
+                ScriptValue::Entity(_) => Some(script_functions::ValueType::Entity),
+            }))
+    }
+
+    fn argument_boolean(&mut self, index: u32) -> wasmtime::Result<Option<bool>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::Boolean(value)) => Some(*value),
+            _ => None,
+        })
+    }
+
+    fn argument_integer(&mut self, index: u32) -> wasmtime::Result<Option<i64>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::Integer(value)) => Some(*value),
+            _ => None,
+        })
+    }
+
+    fn argument_float(&mut self, index: u32) -> wasmtime::Result<Option<f32>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::Float(value)) => Some(*value),
+            _ => None,
+        })
+    }
+
+    fn argument_string(&mut self, index: u32) -> wasmtime::Result<Option<String>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::String(value)) => Some(value.clone()),
+            _ => None,
+        })
+    }
+
+    fn argument_form(&mut self, index: u32) -> wasmtime::Result<Option<state::FormRef>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::Form(value)) => Some(wit_form_ref(*value)),
+            _ => None,
+        })
+    }
+
+    fn argument_entity(&mut self, index: u32) -> wasmtime::Result<Option<state::EntityRef>> {
+        self.require_script_function_context()?;
+        Ok(match self.script_argument(index) {
+            Some(ScriptValue::Entity(value)) => Some(state::EntityRef {
+                world_generation: value.world_generation(),
+                object: value.object(),
+            }),
+            _ => None,
+        })
+    }
+
+    fn set_result_none(&mut self) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::None)
+    }
+
+    fn set_result_boolean(&mut self, value: bool) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::Boolean(value))
+    }
+
+    fn set_result_integer(&mut self, value: i64) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::Integer(value))
+    }
+
+    fn set_result_float(&mut self, value: f32) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::Float(value))
+    }
+
+    fn set_result_string(&mut self, value: String) -> wasmtime::Result<()> {
+        if value.len() > MAX_SCRIPT_STRING_BYTES {
+            wasmtime::bail!(
+                "script function string result is {} bytes, exceeding {MAX_SCRIPT_STRING_BYTES}",
+                value.len()
+            );
+        }
+        self.set_script_result(ScriptValue::String(value))
+    }
+
+    fn set_result_form(&mut self, value: state::FormRef) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::Form(sdk_form_ref(value)))
+    }
+
+    fn set_result_entity(&mut self, value: state::EntityRef) -> wasmtime::Result<()> {
+        self.set_script_result(ScriptValue::Entity(sdk_entity_ref(value)?))
+    }
+}
+
 impl console::Host for HostState {
     fn args_len(&mut self) -> wasmtime::Result<u32> {
         self.require_console_context()?;
@@ -2891,6 +3120,36 @@ impl HostState {
         Ok(())
     }
 
+    fn require_script_function_context(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {SCRIPT_FUNCTIONS_REGISTER_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.current_script_arguments.is_none() {
+            wasmtime::bail!(
+                "script function host calls are only available during a script function callback"
+            );
+        }
+        Ok(())
+    }
+
+    fn script_argument(&self, index: u32) -> Option<&ScriptValue> {
+        self.current_script_arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get(index as usize))
+    }
+
+    fn set_script_result(&mut self, value: ScriptValue) -> wasmtime::Result<()> {
+        self.require_script_function_context()?;
+        if self.current_script_result.is_some() {
+            wasmtime::bail!("script function result was already set");
+        }
+        self.current_script_result = Some(value);
+        Ok(())
+    }
+
     fn require_world_entity_read(&self) -> wasmtime::Result<()> {
         if !self.grants.contains(WORLD_ENTITY_READ_CAPABILITY) {
             wasmtime::bail!(
@@ -3177,6 +3436,9 @@ mod projection_tests {
             current_legacy_callback: None,
             current_console_args: None,
             console_command_indices: BTreeSet::new(),
+            script_functions: BTreeMap::new(),
+            current_script_arguments: None,
+            current_script_result: None,
             console_output: Vec::new(),
             console_output_bytes: 0,
             console_failed: false,
@@ -3565,6 +3827,9 @@ mod projection_tests {
             current_legacy_callback: None,
             current_console_args: None,
             console_command_indices: BTreeSet::new(),
+            script_functions: BTreeMap::new(),
+            current_script_arguments: None,
+            current_script_result: None,
             console_output: Vec::new(),
             console_output_bytes: 0,
             console_failed: false,

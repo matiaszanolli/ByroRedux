@@ -33,6 +33,12 @@ pub enum SandboxError {
     #[error("invalid payload for event {event}: {message}")]
     InvalidEventPayload { event: EventId, message: String },
 
+    #[error("invalid script function call at declaration index {function_index}: {message}")]
+    InvalidScriptFunctionCall {
+        function_index: u32,
+        message: String,
+    },
+
     #[error("component is {actual} bytes, exceeding the {maximum}-byte limit")]
     ComponentTooLarge { actual: usize, maximum: usize },
 
