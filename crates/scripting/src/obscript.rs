@@ -136,6 +136,30 @@ pub fn decode_extender_calls(bytes: &[u8], dialect: ObscriptDialect) -> Obscript
     decoded
 }
 
+/// Decode one complete `X` expression token into a supported engine-native
+/// load-order call. Used by the conservative compiled-handler lowerer: any
+/// trailing operand/operator or unknown/version-probe command is a miss.
+pub(crate) fn decode_exact_load_order_expression(
+    expression: &[u8],
+    dialect: ObscriptDialect,
+) -> Option<LegacyObscriptLoadOrderCall> {
+    if expression.first() != Some(&b'X') {
+        return None;
+    }
+    let opcode = read_u16(expression, 1)?;
+    let argument_len = usize::from(read_u16(expression, 3)?);
+    let end = 5usize.checked_add(argument_len)?;
+    if end != expression.len() {
+        return None;
+    }
+    let mut decoded = ObscriptDecode::default();
+    push_known_call(&mut decoded, dialect, opcode, 1, &expression[5..end]);
+    if !decoded.diagnostics.is_empty() || decoded.calls.len() != 1 {
+        return None;
+    }
+    legacy_load_order_call(&decoded.calls[0]).ok().flatten()
+}
+
 fn scan_set_to(
     payload: &[u8],
     base_offset: usize,

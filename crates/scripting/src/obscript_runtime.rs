@@ -18,7 +18,18 @@ use byroredux_sdk::compatibility::{
 use byroredux_sdk::content::ContentCatalog;
 
 use crate::events::{ActivateEvent, OnCellLoadEvent};
+use crate::obscript::{decode_exact_load_order_expression, ObscriptDialect};
 use crate::vm_state::ScriptVariables;
+
+const BEGIN: u16 = 0x10;
+const END: u16 = 0x11;
+const SHORT: u16 = 0x12;
+const LONG: u16 = 0x13;
+const FLOAT: u16 = 0x14;
+const SET_TO: u16 = 0x15;
+const REFERENCE_FUNCTION: u16 = 0x1c;
+const SCRIPT_NAME: u16 = 0x1d;
+const REF: u16 = 0x1f;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LegacyObscriptEvent {
@@ -78,11 +89,14 @@ pub fn attach_legacy_obscript_program(
     world: &mut World,
     entity: EntityId,
     script: &ScriptRecord,
+    dialect: Option<ObscriptDialect>,
 ) -> bool {
-    let Some(source) = script.source.as_deref() else {
-        return false;
+    let program = if let Some(source) = script.source.as_deref() {
+        compile_legacy_obscript_program(script, source)
+    } else {
+        dialect.and_then(|dialect| compile_legacy_obscript_bytecode_program(script, dialect))
     };
-    let Some(program) = compile_legacy_obscript_program(script, source) else {
+    let Some(program) = program else {
         return false;
     };
     world.insert(entity, program);
@@ -90,6 +104,135 @@ pub fn attach_legacy_obscript_program(
         world.insert(entity, ScriptVariables::default());
     }
     true
+}
+
+/// Compile source-less `SCDA` only when every statement in a supported event
+/// block is a local assignment whose right-hand side is one exact supported
+/// load-order call. General expressions and control flow are declined.
+pub fn compile_legacy_obscript_bytecode_program(
+    script: &ScriptRecord,
+    dialect: ObscriptDialect,
+) -> Option<LegacyObscriptProgram> {
+    let mut program = LegacyObscriptProgram::default();
+    let mut block: Option<(
+        Option<LegacyObscriptEvent>,
+        bool,
+        Vec<LegacyObscriptAssignment>,
+    )> = None;
+    let mut offset = 0usize;
+
+    while offset < script.compiled.len() {
+        let (opcode, payload, next) = compiled_line(&script.compiled, offset)?;
+        offset = next;
+
+        if opcode == BEGIN {
+            if block.is_some() {
+                return None;
+            }
+            if payload.len() < 6 {
+                return None;
+            }
+            let event = compiled_event(read_u16(payload, 0)?).filter(|_| payload.len() == 6);
+            block = Some((event, true, Vec::new()));
+            continue;
+        }
+        if opcode == END {
+            if !payload.is_empty() {
+                return None;
+            }
+            let (event, valid, assignments) = block.take()?;
+            if let Some(event) = event.filter(|_| valid && !assignments.is_empty()) {
+                program
+                    .handlers
+                    .entry(event)
+                    .or_default()
+                    .extend(assignments);
+            }
+            continue;
+        }
+
+        let Some((event, valid, assignments)) = block.as_mut() else {
+            if !matches!(opcode, SHORT | LONG | FLOAT | SCRIPT_NAME | REF) {
+                return None;
+            }
+            continue;
+        };
+        if event.is_none() || !*valid {
+            continue;
+        }
+        if opcode != SET_TO {
+            *valid = false;
+            assignments.clear();
+            continue;
+        }
+        let Some(assignment) = parse_compiled_assignment(script, payload, dialect) else {
+            *valid = false;
+            assignments.clear();
+            continue;
+        };
+        assignments.push(assignment);
+    }
+
+    if block.is_some() || program.is_empty() {
+        None
+    } else {
+        Some(program)
+    }
+}
+
+fn compiled_line(bytes: &[u8], offset: usize) -> Option<(u16, &[u8], usize)> {
+    let opcode = read_u16(bytes, offset)?;
+    let (actual_opcode, length_offset, payload_offset) = if opcode == REFERENCE_FUNCTION {
+        (read_u16(bytes, offset + 4)?, offset + 6, offset + 8)
+    } else {
+        (opcode, offset + 2, offset + 4)
+    };
+    let payload_len = usize::from(read_u16(bytes, length_offset)?);
+    let payload_end = payload_offset.checked_add(payload_len)?;
+    Some((
+        actual_opcode,
+        bytes.get(payload_offset..payload_end)?,
+        payload_end,
+    ))
+}
+
+fn compiled_event(opcode: u16) -> Option<LegacyObscriptEvent> {
+    match opcode {
+        0 => Some(LegacyObscriptEvent::GameMode),
+        2 => Some(LegacyObscriptEvent::OnActivate),
+        21 => Some(LegacyObscriptEvent::OnLoad),
+        _ => None,
+    }
+}
+
+fn parse_compiled_assignment(
+    script: &ScriptRecord,
+    payload: &[u8],
+    dialect: ObscriptDialect,
+) -> Option<LegacyObscriptAssignment> {
+    if !matches!(payload.first(), Some(b's' | b'f')) {
+        return None;
+    }
+    let local_index = u32::from(read_u16(payload, 1)?);
+    let expression_len = usize::from(read_u16(payload, 3)?);
+    let expression_end = 5usize.checked_add(expression_len)?;
+    if expression_end != payload.len() {
+        return None;
+    }
+    let local = script
+        .locals
+        .iter()
+        .find(|local| local.index == local_index)?;
+    let call = decode_exact_load_order_expression(&payload[5..expression_end], dialect)?;
+    Some(LegacyObscriptAssignment {
+        target: local.name.clone(),
+        call,
+    })
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    Some(u16::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
 /// Compile only pure load-order-query handlers. Any unsupported statement or
@@ -350,6 +493,35 @@ mod tests {
         )
     }
 
+    fn framed(opcode: u16, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = opcode.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn compiled_assignment(event: u16, local_index: u16, command: u16, plugin: &str) -> Vec<u8> {
+        let mut begin = event.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut arguments = 1u16.to_le_bytes().to_vec();
+        arguments.extend_from_slice(&(plugin.len() as u16).to_le_bytes());
+        arguments.extend_from_slice(plugin.as_bytes());
+        let mut expression = vec![b'X'];
+        expression.extend_from_slice(&command.to_le_bytes());
+        expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
+        expression.extend_from_slice(&arguments);
+        let mut assignment = vec![b's'];
+        assignment.extend_from_slice(&local_index.to_le_bytes());
+        assignment.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        assignment.extend_from_slice(&expression);
+
+        let mut compiled = framed(BEGIN, &begin);
+        compiled.extend(framed(SET_TO, &assignment));
+        compiled.extend(framed(END, &[]));
+        compiled
+    }
+
     #[test]
     fn compiler_accepts_only_pure_supported_handlers() {
         let source = r#"
@@ -396,7 +568,8 @@ mod tests {
         assert!(attach_legacy_obscript_program(
             &mut world,
             entity,
-            &script(source)
+            &script(source),
+            None,
         ));
         world.insert(entity, OnCellLoadEvent);
 
@@ -425,5 +598,83 @@ mod tests {
                 .get_by_name("index"),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn compiled_pure_handler_lowers_but_control_flow_declines() {
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled_assignment(21, 7, 0x14af, "Companion Pack.esp");
+
+        let program =
+            compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).unwrap();
+        assert_eq!(program.handler(LegacyObscriptEvent::OnLoad).len(), 1);
+        assert_eq!(
+            program.handler(LegacyObscriptEvent::OnLoad)[0].target,
+            "index"
+        );
+
+        let begin_len = framed(BEGIN, &[21, 0, 0, 0, 0, 0]).len();
+        record
+            .compiled
+            .splice(begin_len..begin_len, framed(0x16, &[0, 0, 0, 0]));
+        assert!(
+            compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).is_none()
+        );
+    }
+
+    #[test]
+    fn source_less_compiled_handler_attaches_and_executes() {
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled_assignment(21, 7, 0x14af, "Companion Pack.esp");
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        set_legacy_obscript_content_catalog(&world, catalog());
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        world.insert(entity, OnCellLoadEvent);
+
+        legacy_obscript_load_order_system(&world, 0.0);
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn preserved_source_rejection_does_not_fall_back_to_compiled_bytes() {
+        let source = r#"
+            begin OnLoad
+                if IsModLoaded "Companion Pack.esp"
+                    set index to GetModIndex "Companion Pack.esp"
+                endif
+            end
+        "#;
+        let mut record = script(source);
+        record.locals[1].index = 7;
+        record.compiled = compiled_assignment(21, 7, 0x14af, "Companion Pack.esp");
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        assert!(!attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        assert!(!world.has::<LegacyObscriptProgram>(entity));
     }
 }

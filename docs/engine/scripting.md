@@ -249,13 +249,15 @@ The other three R5 demos carry per-instance properties that live in Skyrim+
 inert components — they defer to M47.2's VMAD decode. Unregistered scripts are
 the common case (vanilla FO3 ships ~1257 SCPT records; M47.0 hand-translates a
 handful). Before that fallback, the loader now conservatively translates pure
-pre-Skyrim `SCTX` handlers whose only executable statements assign engine-
-native load-order queries. `GameMode`, `OnLoad`, and `OnActivate` execute in
-the ECS schedule against the live immutable content catalog; numeric results
-land in save-backed `ScriptVariables`. Any unsupported statement or control
-flow rejects the whole handler, and compiled-only SCDA handler lowering is
-still pending. A registry miss is therefore silent only when neither path can
-attach behavior.
+pre-Skyrim handlers whose only executable statements assign engine-native
+load-order queries. It prefers preserved `SCTX`, then applies the same boundary
+to source-less `SCDA`: exact `Begin`/`Set`/`End` framing, local indices resolved
+through `SLSD` metadata, and one complete supported command expression per
+assignment. `GameMode`, `OnLoad`, and `OnActivate` execute in the ECS schedule
+against the live immutable content catalog; numeric results land in save-backed
+`ScriptVariables`. Any unsupported statement, expression tail, event filter,
+or control flow rejects the whole handler. A registry miss is therefore silent
+only when neither path can attach behavior.
 
 ### The R5 demo translations (`papyrus_demo/`)
 

@@ -250,6 +250,16 @@ fn attach_scpt_script(
         );
         return false;
     };
+    let dialect = match index.game {
+        esm::reader::GameKind::Oblivion => Some(byroredux_scripting::ObscriptDialect::Obse),
+        esm::reader::GameKind::Fallout3NV
+            if index.character_rules
+                == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS =>
+        {
+            Some(byroredux_scripting::ObscriptDialect::Xnvse)
+        }
+        _ => None,
+    };
     let source = script.source.as_deref();
     let report = source
         .map(|source| {
@@ -259,16 +269,7 @@ fn attach_scpt_script(
             )
         })
         .or_else(|| {
-            let dialect = match index.game {
-                esm::reader::GameKind::Oblivion => Some(byroredux_scripting::ObscriptDialect::Obse),
-                esm::reader::GameKind::Fallout3NV
-                    if index.character_rules
-                        == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS =>
-                {
-                    Some(byroredux_scripting::ObscriptDialect::Xnvse)
-                }
-                _ => None,
-            }?;
+            let dialect = dialect?;
             Some(
                 byroredux_scripting::compatibility::analyze_obscript_bytecode_compatibility(
                     &script.editor_id,
@@ -290,7 +291,8 @@ fn attach_scpt_script(
             Some(report),
         );
     }
-    let translated = byroredux_scripting::attach_legacy_obscript_program(world, entity, script);
+    let translated =
+        byroredux_scripting::attach_legacy_obscript_program(world, entity, script, dialect);
     // Scope the registry borrow tightly — the spawn fn that comes back
     // is a function pointer (Copy), so we can drop the borrow before
     // invoking the spawner with `&mut World`.
@@ -477,6 +479,62 @@ mod scpt_compatibility_tests {
     }
 
     #[test]
+    fn source_less_fnv_pure_load_order_handler_attaches_natively() {
+        const BASE_FORM_ID: u32 = 0x0100_0021;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0022;
+
+        let plugin = "Companion.esp";
+        let mut arguments = 1u16.to_le_bytes().to_vec();
+        arguments.extend_from_slice(&(plugin.len() as u16).to_le_bytes());
+        arguments.extend_from_slice(plugin.as_bytes());
+        let mut expression = vec![b'X', 0xaf, 0x14];
+        expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
+        expression.extend_from_slice(&arguments);
+        let mut set_payload = vec![b's', 1, 0];
+        set_payload.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        set_payload.extend_from_slice(&expression);
+        let mut compiled = vec![0x10, 0, 6, 0, 21, 0, 0, 0, 0, 0];
+        compiled.extend_from_slice(&[0x15, 0]);
+        compiled.extend_from_slice(&(set_payload.len() as u16).to_le_bytes());
+        compiled.extend_from_slice(&set_payload);
+        compiled.extend_from_slice(&[0x11, 0, 0, 0]);
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord {
+                form_id: BASE_FORM_ID,
+                script_form_id: SCRIPT_FORM_ID,
+                ..Default::default()
+            },
+        );
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "CompiledNativeLoadOrderGate".to_owned(),
+                source: None,
+                compiled,
+                locals: vec![ScriptLocalVar {
+                    index: 1,
+                    var_type: 2,
+                    name: "modIndex".to_owned(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let entity = world.spawn();
+        assert!(attach_scpt_script(&mut world, entity, BASE_FORM_ID, &index));
+        assert!(world.has::<byroredux_scripting::LegacyObscriptProgram>(entity));
+    }
+
+    #[test]
     fn source_less_fo3_scpt_does_not_apply_xnvse_opcode_table() {
         const BASE_FORM_ID: u32 = 0x0100_0021;
         const SCRIPT_FORM_ID: u32 = 0x0100_0022;
@@ -554,6 +612,18 @@ mod scpt_compatibility_tests {
                 malformed.is_empty(),
                 "{path} contained malformed SCDA: {malformed:?}"
             );
+            for script in compiled_scripts {
+                // The pure-handler lowerer must remain total over hostile or
+                // merely unsupported real bytecode. Vanilla masters contain
+                // no supported extender assignments, so a clean decline is
+                // the expected result throughout this installed corpus.
+                assert!(
+                    byroredux_scripting::compile_legacy_obscript_bytecode_program(script, dialect)
+                        .is_none(),
+                    "{path} unexpectedly lowered vanilla script {}",
+                    script.editor_id
+                );
+            }
         }
     }
 }
