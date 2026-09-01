@@ -966,42 +966,39 @@ mod tests {
 
         // First advance: 0.0 → 0.6, should cross "hit" at 0.5.
         advance_time(&mut player, &clip, 0.6);
-        let events =
-            collect_text_key_events(
-                &clip,
-                &pool,
-                player.prev_time,
-                player.local_time,
-                false,
-                player.last_delta,
-            );
+        let events = collect_text_key_events(
+            &clip,
+            &pool,
+            player.prev_time,
+            player.local_time,
+            false,
+            player.last_delta,
+        );
         assert_eq!(events, vec!["hit"]);
 
         // Second advance: 0.6 → 1.2, should cross "sound: swing" at 1.0.
         advance_time(&mut player, &clip, 0.6);
-        let events =
-            collect_text_key_events(
-                &clip,
-                &pool,
-                player.prev_time,
-                player.local_time,
-                false,
-                player.last_delta,
-            );
+        let events = collect_text_key_events(
+            &clip,
+            &pool,
+            player.prev_time,
+            player.local_time,
+            false,
+            player.last_delta,
+        );
         assert_eq!(events, vec!["sound: swing"]);
 
         // Advance past loop wrap: 1.2 → (1.2+1.0=2.2 mod 2.0=0.2),
         // should cross "end" at 1.8.
         advance_time(&mut player, &clip, 1.0);
-        let events =
-            collect_text_key_events(
-                &clip,
-                &pool,
-                player.prev_time,
-                player.local_time,
-                false,
-                player.last_delta,
-            );
+        let events = collect_text_key_events(
+            &clip,
+            &pool,
+            player.prev_time,
+            player.local_time,
+            false,
+            player.last_delta,
+        );
         assert!(events.contains(&"end".to_string()));
     }
 
@@ -1040,17 +1037,15 @@ mod tests {
         );
 
         advance_time(&mut player, &clip, 1.0);
-        assert!(
-            collect_text_key_events(
-                &clip,
-                &pool,
-                player.prev_time,
-                player.local_time,
-                false,
-                player.last_delta,
-            )
-                .is_empty()
-        );
+        assert!(collect_text_key_events(
+            &clip,
+            &pool,
+            player.prev_time,
+            player.local_time,
+            false,
+            player.last_delta,
+        )
+        .is_empty());
     }
 
     #[test]

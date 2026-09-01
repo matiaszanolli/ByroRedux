@@ -441,7 +441,10 @@ mod tests {
         assert_eq!(slots.equip_weapon(InventoryIndex(1)), None);
         // Re-wielding the same entry is not a swap.
         assert_eq!(slots.equip_weapon(InventoryIndex(1)), None);
-        assert_eq!(slots.equip_weapon(InventoryIndex(2)), Some(InventoryIndex(1)));
+        assert_eq!(
+            slots.equip_weapon(InventoryIndex(2)),
+            Some(InventoryIndex(1))
+        );
         assert_eq!(slots.unequip_weapon(), Some(InventoryIndex(2)));
         assert_eq!(slots.unequip_weapon(), None);
     }

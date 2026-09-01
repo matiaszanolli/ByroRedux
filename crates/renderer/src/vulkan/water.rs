@@ -1194,7 +1194,7 @@ mod tests {
             alpha_test_func: 0,
             roughness: 0.5,
             metalness: 0.0,
-            ior: 1.5,        // #1248 — test fixture; default dielectric.
+            ior: 1.5, // #1248 — test fixture; default dielectric.
             glass_fresnel_color: [1.0; 3],
             glass_refraction_scale: 0.05,
             glass_blur_scale: 0.4,

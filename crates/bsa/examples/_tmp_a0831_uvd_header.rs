@@ -40,7 +40,11 @@ fn main() {
     let stride = (files.len() / count.max(1)).max(1);
     let sample: Vec<&String> = files.iter().step_by(stride).take(count).collect();
 
-    println!("{} total .uvd files; sampling {}", files.len(), sample.len());
+    println!(
+        "{} total .uvd files; sampling {}",
+        files.len(),
+        sample.len()
+    );
 
     for f in sample {
         let data = match archive.extract(f) {
@@ -67,8 +71,20 @@ fn main() {
             let chunk = &data[off..end];
             print!("  {:#05x}: {}", off, hex(chunk, 16));
             if chunk.len() == 16 {
-                print!("  | f32x4=[{:.3}, {:.3}, {:.3}, {:.3}]", f32le(&data,off), f32le(&data,off+4), f32le(&data,off+8), f32le(&data,off+12));
-                print!(" i32x4=[{}, {}, {}, {}]", i32le(&data,off), i32le(&data,off+4), i32le(&data,off+8), i32le(&data,off+12));
+                print!(
+                    "  | f32x4=[{:.3}, {:.3}, {:.3}, {:.3}]",
+                    f32le(&data, off),
+                    f32le(&data, off + 4),
+                    f32le(&data, off + 8),
+                    f32le(&data, off + 12)
+                );
+                print!(
+                    " i32x4=[{}, {}, {}, {}]",
+                    i32le(&data, off),
+                    i32le(&data, off + 4),
+                    i32le(&data, off + 8),
+                    i32le(&data, off + 12)
+                );
             }
             println!();
         }

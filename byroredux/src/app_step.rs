@@ -834,21 +834,20 @@ impl App {
                         // never sees it and it survives the crossing intact
                         // instead of being torn down and immediately
                         // rebuilt identically.
-                        let preserved_persistent_root =
-                            self.streaming.as_mut().and_then(|state| {
-                                let root = cell_loader::persistent_root_survives_crossing(
-                                    &self.world,
-                                    state.persistent_root,
-                                    &wctx,
-                                    // #3376 — an unfinished root must be
-                                    // rebuilt, not preserved: the job that
-                                    // would finish it does not survive the
-                                    // drain below.
-                                    state.persistent_apply.is_some(),
-                                )?;
-                                state.persistent_root = None;
-                                Some(root)
-                            });
+                        let preserved_persistent_root = self.streaming.as_mut().and_then(|state| {
+                            let root = cell_loader::persistent_root_survives_crossing(
+                                &self.world,
+                                state.persistent_root,
+                                &wctx,
+                                // #3376 — an unfinished root must be
+                                // rebuilt, not preserved: the job that
+                                // would finish it does not survive the
+                                // drain below.
+                                state.persistent_apply.is_some(),
+                            )?;
+                            state.persistent_root = None;
+                            Some(root)
+                        });
 
                         // 4. Tear down any existing streaming state. The
                         // ordinary grid tiles always rebuild — only the
@@ -881,14 +880,15 @@ impl App {
                             crate::scene::ExteriorBootstrapMode::ForegroundFirst,
                             preserved_persistent_root,
                         );
-                        self.world.insert_resource(cell_loader::CurrentExteriorContext {
-                            worldspace_key,
-                            esm_path: esm_path.to_string(),
-                            masters: masters.to_vec(),
-                            grid,
-                            radius_load: state.radius_load,
-                            radius_unload: state.radius_unload,
-                        });
+                        self.world
+                            .insert_resource(cell_loader::CurrentExteriorContext {
+                                worldspace_key,
+                                esm_path: esm_path.to_string(),
+                                masters: masters.to_vec(),
+                                grid,
+                                radius_load: state.radius_load,
+                                radius_unload: state.radius_unload,
+                            });
                         self.streaming = Some(state);
 
                         // 6. Reposition the camera at the destination

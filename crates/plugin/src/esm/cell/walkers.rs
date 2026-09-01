@@ -677,7 +677,9 @@ pub(crate) fn parse_refr_group(
     pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
 ) -> Result<()> {
-    parse_refr_group_inner(reader, end, refs, landscape, navmeshes, pathgrids, deleted, 0)
+    parse_refr_group_inner(
+        reader, end, refs, landscape, navmeshes, pathgrids, deleted, 0,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

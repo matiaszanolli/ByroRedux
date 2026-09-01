@@ -468,6 +468,30 @@ fn set_reverb_send_db_persists() {
     assert!(world.reverb_send_db().is_infinite());
 }
 
+/// Regression for #3780: `REVERB_FEEDBACK`/`REVERB_DAMPING`/
+/// `REVERB_STEREO_WIDTH` were promoted from bare literals inline in the
+/// `ReverbBuilder` call to named constants with no other behavior change
+/// — this pins their exact values so an edit to the global reverb's sound
+/// is a deliberate, reviewable diff to this test, not a silent drift in
+/// an unnamed literal. Also pins the documented valid range for each
+/// (kira's own doc comments: feedback/stereo_width `0.0..=1.0`, damping
+/// unbounded-but-conceptually-normalized) so a future edit can't
+/// accidentally land outside what kira's `ReverbBuilder` actually models.
+#[test]
+fn reverb_parameters_are_named_and_in_kiras_documented_range() {
+    assert_eq!(REVERB_FEEDBACK, 0.85);
+    assert_eq!(REVERB_DAMPING, 0.6);
+    assert_eq!(REVERB_STEREO_WIDTH, 1.0);
+    assert!(
+        (0.0..=1.0).contains(&REVERB_FEEDBACK),
+        "kira: 1.0 gives an infinitely reverberating room"
+    );
+    assert!(
+        (0.0..=1.0).contains(&REVERB_STEREO_WIDTH),
+        "kira: 0.0 fully mono, 1.0 fully stereo"
+    );
+}
+
 #[test]
 fn underwater_listener_state_persists() {
     let mut world = AudioWorld::new();

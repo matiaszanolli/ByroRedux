@@ -157,10 +157,14 @@ fn resolve_shape_inner(
         // p1/p2 are finite, so the derived half_height is finite too.
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.radius1.max(s.radius2) * scale)?;
-        return Some(segment_shape(p1, p2, CollisionShape::Capsule {
-            half_height,
-            radius,
-        }));
+        return Some(segment_shape(
+            p1,
+            p2,
+            CollisionShape::Capsule {
+                half_height,
+                radius,
+            },
+        ));
     }
 
     // Cylinder
@@ -169,10 +173,14 @@ fn resolve_shape_inner(
         let p2 = finite_vec(havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale)?;
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.cylinder_radius * scale)?;
-        return Some(segment_shape(p1, p2, CollisionShape::Cylinder {
-            half_height,
-            radius,
-        }));
+        return Some(segment_shape(
+            p1,
+            p2,
+            CollisionShape::Cylinder {
+                half_height,
+                radius,
+            },
+        ));
     }
 
     // Convex hull
@@ -1239,9 +1247,8 @@ mod cycle_tests {
                 );
 
                 // The capsule's local +Y must rotate onto the authored axis.
-                let axis = (havok_to_engine(3.0, 0.0, 0.0)
-                    - havok_to_engine(1.0, 0.0, 0.0))
-                .normalize();
+                let axis =
+                    (havok_to_engine(3.0, 0.0, 0.0) - havok_to_engine(1.0, 0.0, 0.0)).normalize();
                 let mapped = *rotation * Vec3::Y;
                 assert!(
                     (mapped - axis).length() < 1e-4,

@@ -12,6 +12,7 @@
 //! `SparseSetStorage`, TypeId-sorted lock acquisition).
 
 pub mod animation;
+pub mod atomic_file;
 pub mod character;
 pub mod combat;
 pub mod combustion;
@@ -21,7 +22,6 @@ pub mod form_id;
 pub mod lighting;
 pub mod math;
 pub mod radiometry;
-pub mod atomic_file;
 pub mod settings;
 pub mod stealth;
 pub mod string;

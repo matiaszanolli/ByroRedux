@@ -6,8 +6,8 @@ pub(crate) use game_time::GameTimeRes;
 
 use byroredux_audio::Sound;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
+use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
 use rustc_hash::FxHashMap;

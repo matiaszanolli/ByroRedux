@@ -192,7 +192,10 @@ mod tests {
         pgrp.extend(point(4.0, 5.0, 6.0, 2));
         pgrp.extend(point(7.0, 8.0, 9.0, 1));
         // PGRR is flat, laid out per point in PGRP order: [1], [0, 2], [1].
-        let pgrr: Vec<u8> = [1u16, 0, 2, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let pgrr: Vec<u8> = [1u16, 0, 2, 1]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
 
         let record = parse_pgrd(
             0x0001_0000,
@@ -222,7 +225,11 @@ mod tests {
 
         let record = parse_pgrd(
             1,
-            &[sub(b"PGRR", pgrr), sub(b"PGRP", pgrp), sub(b"DATA", 2u16.to_le_bytes().to_vec())],
+            &[
+                sub(b"PGRR", pgrr),
+                sub(b"PGRP", pgrp),
+                sub(b"DATA", 2u16.to_le_bytes().to_vec()),
+            ],
         );
         assert_eq!(record.edges, vec![vec![Some(1), Some(1)], vec![]]);
     }

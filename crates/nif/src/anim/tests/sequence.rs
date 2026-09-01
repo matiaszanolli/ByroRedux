@@ -178,8 +178,8 @@ fn import_sequence_carries_authored_phase() {
 /// calls now. These pin that it sees the sequences.
 #[test]
 fn embedded_import_with_sequences_picks_up_a_nicontrollersequence() {
-    use crate::blocks::controller::{NiControllerManager, NiControllerSequence};
     use crate::blocks::controller::NiTimeControllerBase;
+    use crate::blocks::controller::{NiControllerManager, NiControllerSequence};
     use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
 
     let pose = NiQuatTransform {

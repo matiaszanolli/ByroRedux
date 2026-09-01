@@ -383,9 +383,9 @@ mod tests {
         // The three renamed-internal skills resolve by CK record identity.
         assert!(SkillSet::SKYRIM.get("Marksman").is_some()); // Archery
         assert!(SkillSet::SKYRIM.get("Speechcraft").is_some()); // Speech
-        // #3169 — Illusion's AVIF is authored `AVMysticism` in vanilla
-        // Skyrim.esm (0x45B); `AVIllusion` does not exist, so a roster
-        // keyed on the display name resolves to nothing.
+                                                                // #3169 — Illusion's AVIF is authored `AVMysticism` in vanilla
+                                                                // Skyrim.esm (0x45B); `AVIllusion` does not exist, so a roster
+                                                                // keyed on the display name resolves to nothing.
         assert!(SkillSet::SKYRIM.get("Mysticism").is_some()); // Illusion
         assert!(SkillSet::SKYRIM.get("Illusion").is_none());
         assert_eq!(SkillSet::SKYRIM.governing("OneHanded"), None);

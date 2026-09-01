@@ -48,7 +48,10 @@ fn main() {
     let archive = Ba2Archive::open(&args[1]).expect("open ba2");
     let count: usize = args.get(2).map(|s| s.parse().unwrap()).unwrap_or(40);
     let dump_strings = args.iter().any(|a| a == "--strings");
-    let dump_blob_to: Option<&String> = args.iter().position(|a| a == "--dump-blob").map(|i| &args[i + 1]);
+    let dump_blob_to: Option<&String> = args
+        .iter()
+        .position(|a| a == "--dump-blob")
+        .map(|i| &args[i + 1]);
 
     let mut files: Vec<String> = archive
         .list_files()
@@ -111,7 +114,11 @@ fn main() {
                     println!("    bytes[0x30..0x110]:");
                     for chunk_start in (0x30..0x110.min(d.len())).step_by(16) {
                         let end = (chunk_start + 16).min(d.len());
-                        println!("      {:#05x}: {}", chunk_start, hex(&d[chunk_start..end], 16));
+                        println!(
+                            "      {:#05x}: {}",
+                            chunk_start,
+                            hex(&d[chunk_start..end], 16)
+                        );
                     }
                 }
                 if dump_strings {
@@ -130,7 +137,10 @@ fn main() {
                                 "    PF: version={} contents={:?} sections={:?}",
                                 pf.header.file_version,
                                 pf.header.contents_version,
-                                pf.sections.iter().map(|s| (&s.name, s.absolute_data_start, s.absolute_end())).collect::<Vec<_>>()
+                                pf.sections
+                                    .iter()
+                                    .map(|s| (&s.name, s.absolute_data_start, s.absolute_end()))
+                                    .collect::<Vec<_>>()
                             );
                             println!("    classes={:?}", pf.class_names);
                         }

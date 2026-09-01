@@ -25,9 +25,7 @@ pub const NIF_ENTRY_EXTENSIONS: &[&str] = &[".nif", ".bto", ".btr"];
 /// archives are inconsistent about it.
 pub fn is_nif_entry(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    NIF_ENTRY_EXTENSIONS
-        .iter()
-        .any(|ext| lower.ends_with(ext))
+    NIF_ENTRY_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 /// The canonical `#`-prefixed header line for a per-block histogram TSV,
@@ -72,7 +70,9 @@ mod tests {
     #[test]
     fn non_nif_entries_are_rejected() {
         assert!(!is_nif_entry("textures/clutter/barrel01.dds"));
-        assert!(!is_nif_entry("meshes/actors/character/behaviors/0_master.hkx"));
+        assert!(!is_nif_entry(
+            "meshes/actors/character/behaviors/0_master.hkx"
+        ));
         // A substring match, not a suffix one, would accept this.
         assert!(!is_nif_entry("meshes/nif_notes.txt"));
     }

@@ -46,17 +46,17 @@ use std::collections::BTreeMap;
 /// which is the coverage blind spot the fix exists to close.
 const DISPATCH_HANDLED_FOURCCS: &[&[u8; 4]] = &[
     b"ACTI", b"ADDN", b"ALCH", b"ALOC", b"AMEF", b"AMMO", b"ANIO", b"APPA", b"ARMA", b"ARMO",
-    b"AOPF", b"ASPC", b"AVIF", b"BNDS", b"BOOK", b"BPTD", b"BSGN", b"CAMS", b"CCRD", b"CDCK", b"CELL",
-    b"CHAL", b"CHIP", b"CLAS", b"CLMT", b"CLOT", b"CMNY", b"COBJ", b"CONT", b"CPTH", b"CREA",
-    b"CSNO", b"CSTY", b"DEBR", b"DEHY", b"DIAL", b"DOBJ", b"DOOR", b"ECZN", b"EFSH", b"ENCH",
-    b"EXPL", b"EYES", b"FACT", b"FLOR", b"FLST", b"FURN", b"GLOB", b"GMST", b"GRAS", b"HAIR",
-    b"HDPT", b"HUNG", b"IDLE", b"IDLM", b"IMAD", b"IMGS", b"IMOD", b"INGR", b"IPCT", b"IPDS",
-    b"KEYM", b"LGTM", b"LIGH", b"LSCR", b"LSCT", b"LTEX", b"LVLC", b"LVLI", b"LVLN", b"MESG",
-    b"MGEF", b"MICN", b"MISC", b"MOVS", b"MSET", b"MSTT", b"MSWP", b"MUSC", b"NAVI", b"NAVM",
-    b"NOTE", b"NPC_", b"OTFT", b"PACK", b"PERK", b"PKIN", b"PROJ", b"PWAT", b"QUST", b"RACE",
-    b"RADS", b"RCCT", b"RCPE", b"REGN", b"REPU", b"RGDL", b"SCOL", b"SCPT", b"SECH", b"SGST", b"SLGM",
-    b"SLPD", b"SOUN", b"SPEL", b"STAT", b"TACT", b"TERM", b"TREE", b"TXST", b"VTYP", b"WATR",
-    b"WEAP", b"WRLD", b"WTHR",
+    b"AOPF", b"ASPC", b"AVIF", b"BNDS", b"BOOK", b"BPTD", b"BSGN", b"CAMS", b"CCRD", b"CDCK",
+    b"CELL", b"CHAL", b"CHIP", b"CLAS", b"CLMT", b"CLOT", b"CMNY", b"COBJ", b"CONT", b"CPTH",
+    b"CREA", b"CSNO", b"CSTY", b"DEBR", b"DEHY", b"DIAL", b"DOBJ", b"DOOR", b"ECZN", b"EFSH",
+    b"ENCH", b"EXPL", b"EYES", b"FACT", b"FLOR", b"FLST", b"FURN", b"GLOB", b"GMST", b"GRAS",
+    b"HAIR", b"HDPT", b"HUNG", b"IDLE", b"IDLM", b"IMAD", b"IMGS", b"IMOD", b"INGR", b"IPCT",
+    b"IPDS", b"KEYM", b"LGTM", b"LIGH", b"LSCR", b"LSCT", b"LTEX", b"LVLC", b"LVLI", b"LVLN",
+    b"MESG", b"MGEF", b"MICN", b"MISC", b"MOVS", b"MSET", b"MSTT", b"MSWP", b"MUSC", b"NAVI",
+    b"NAVM", b"NOTE", b"NPC_", b"OTFT", b"PACK", b"PERK", b"PKIN", b"PROJ", b"PWAT", b"QUST",
+    b"RACE", b"RADS", b"RCCT", b"RCPE", b"REGN", b"REPU", b"RGDL", b"SCOL", b"SCPT", b"SECH",
+    b"SGST", b"SLGM", b"SLPD", b"SOUN", b"SPEL", b"STAT", b"TACT", b"TERM", b"TREE", b"TXST",
+    b"VTYP", b"WATR", b"WEAP", b"WRLD", b"WTHR",
 ];
 
 fn is_dispatch_handled(fourcc: &[u8; 4]) -> bool {

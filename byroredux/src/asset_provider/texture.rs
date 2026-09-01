@@ -117,47 +117,46 @@ impl MeshResolver for TextureProvider {
 }
 
 /// M44 Phase 3.5 — try to populate `FootstepConfig.default_sound`
-/// from the BSA at `--sounds-bsa <path>` (if provided). Decodes the
+/// from the `--sounds-bsa` archive(s) (if any were provided). Decodes the
 /// canonical FNV dirt-walk left-foot WAV — every kf-era humanoid
 /// hits this on every other step. Future Phase 3.5b replaces the
 /// single-sound fallback with FOOT-record-driven per-material lookup.
 ///
+/// #3776 — takes the already-built [`SoundArchiveProvider`]
+/// rather than re-parsing `args` itself. `--sounds-bsa` is documented
+/// (and the provider itself already implements) as repeatable —
+/// override/mod archives listed before the vanilla one, first hit wins
+/// — but this function used to stop at the *first* `--sounds-bsa`
+/// occurrence, so a user who followed that documented ordering got a
+/// footstep sound that silently never loaded whenever the canonical path
+/// lived only in a later archive. Sharing the provider fixes that by
+/// construction: it already searches every opened archive in order.
+///
 /// Silently skips when:
-///   - `--sounds-bsa` is absent (no audio data wired by the user).
-///   - The BSA can't be opened (missing file, permissions).
-///   - The canonical path is missing from the archive (modded loadout?).
+///   - No `--sounds-bsa` archive opened successfully (flag absent, or
+///     every occurrence failed to open — already logged by
+///     [`build_sound_archive_provider`]).
+///   - The canonical path is missing from every opened archive.
 ///   - The decode fails through `byroredux_audio::load_sound_from_bytes`.
 ///
 /// Each failure logs at WARN; engine boot continues regardless.
-pub(crate) fn try_load_default_footstep(world: &mut byroredux_core::ecs::World, args: &[String]) {
-    let mut path: Option<&str> = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--sounds-bsa" {
-            path = args.get(i + 1).map(|s| s.as_str());
-            break;
-        }
-        i += 1;
+pub(crate) fn try_load_default_footstep(
+    world: &mut byroredux_core::ecs::World,
+    sounds: &SoundArchiveProvider,
+) {
+    if sounds.is_empty() {
+        return;
     }
-    let Some(path) = path else { return };
-    let archive = match Archive::open(path) {
-        Ok(a) => a,
-        Err(e) => {
-            log::warn!("M44 Phase 3.5: open --sounds-bsa '{path}': {e}");
-            return;
-        }
-    };
     // Vanilla FNV ships dirt-walk footsteps with left/right
     // alternation. Pick one canonical entry as the default until
     // FOOT records land. Path verified by `probe_substring` against
     // `Fallout - Sound.bsa`, 2026-05-05.
     const CANONICAL: &str = r"sound\fx\fst\dirt\walk\left\fst_dirt_walk_01.wav";
-    let bytes = match archive.extract(CANONICAL) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("M44 Phase 3.5: '{path}' missing canonical footstep '{CANONICAL}': {e}");
-            return;
-        }
+    let Some(bytes) = sounds.extract(CANONICAL) else {
+        log::warn!(
+            "M44 Phase 3.5: no --sounds-bsa archive carries canonical footstep '{CANONICAL}'"
+        );
+        return;
     };
     let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
         Ok(s) => s,
@@ -168,42 +167,34 @@ pub(crate) fn try_load_default_footstep(world: &mut byroredux_core::ecs::World, 
     };
     let mut config = world.resource_mut::<crate::components::FootstepConfig>();
     config.default_sound = Some(std::sync::Arc::new(sound));
-    log::info!("M44 Phase 3.5: footstep sound loaded from '{path}' ({CANONICAL})");
+    log::info!("M44 Phase 3.5: footstep sound loaded from --sounds-bsa ('{CANONICAL}')");
 }
 
-/// M44 water acoustics — load a physical splash one-shot when a sound BSA is
-/// supplied. Candidate paths cover the Skyrim and Fallout naming variants;
-/// the first archive hit wins, while missing audio remains a silent no-op.
+/// M44 water acoustics — load a physical splash one-shot from the
+/// `--sounds-bsa` archive(s) (if any were provided). Candidate paths cover
+/// the Skyrim and Fallout naming variants; the first archive/candidate hit
+/// wins, while missing audio remains a silent no-op.
+///
+/// #3776 — same fix and rationale as [`try_load_default_footstep`]: takes
+/// the shared, already-multi-archive [`SoundArchiveProvider`]
+/// instead of stopping at the first `--sounds-bsa` occurrence itself.
 pub(crate) fn try_load_default_water_splash(
     world: &mut byroredux_core::ecs::World,
-    args: &[String],
+    sounds: &SoundArchiveProvider,
 ) {
-    let Some(path) = args
-        .windows(2)
-        .find(|pair| pair[0] == "--sounds-bsa")
-        .map(|pair| pair[1].as_str())
-    else {
+    if sounds.is_empty() {
         return;
-    };
-    let archive = match Archive::open(path) {
-        Ok(a) => a,
-        Err(e) => {
-            log::warn!("water acoustics: open --sounds-bsa '{path}': {e}");
-            return;
-        }
-    };
+    }
     const CANDIDATES: &[&str] = &[
         r"sound\fx\phy\water\phy_water_m_01.wav",
         r"sound\fx\phy\phy_water_m_01.wav",
         r"sound\fx\fst\water\walk\l\fst_water_walk_03.wav",
     ];
-    let Some((chosen, bytes)) = CANDIDATES.iter().find_map(|candidate| {
-        archive
-            .extract(candidate)
-            .ok()
-            .map(|bytes| (*candidate, bytes))
-    }) else {
-        log::warn!("water acoustics: no splash candidate found in '{path}'");
+    let Some((chosen, bytes)) = CANDIDATES
+        .iter()
+        .find_map(|candidate| sounds.extract(candidate).map(|bytes| (*candidate, bytes)))
+    else {
+        log::warn!("water acoustics: no splash candidate found in any --sounds-bsa archive");
         return;
     };
     let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
@@ -216,7 +207,7 @@ pub(crate) fn try_load_default_water_splash(
     world
         .resource_mut::<crate::components::WaterAudioConfig>()
         .splash_sound = Some(std::sync::Arc::new(sound));
-    log::info!("water acoustics: loaded '{chosen}' from '{path}'");
+    log::info!("water acoustics: loaded '{chosen}' from --sounds-bsa");
 }
 
 /// #1776 — the aggregate "requested but zero opened" check, pulled out pure so

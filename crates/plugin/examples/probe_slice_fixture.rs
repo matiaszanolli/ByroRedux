@@ -162,7 +162,6 @@ fn main() -> anyhow::Result<()> {
                 arrive_yup[0], arrive_yup[1], arrive_yup[2]
             );
         }
-
     }
 
     Ok(())

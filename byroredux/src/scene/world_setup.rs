@@ -1422,10 +1422,12 @@ mod tests {
     /// resource these tests don't set up).
     fn region_wctx(grid: (i32, i32), region_form: u32, incidental: u32) -> ExteriorWorldContext {
         let mut index = EsmIndex::default();
-        index.cells.exterior_cells.entry("test".into()).or_default().insert(
-            grid,
-            empty_cell(grid, vec![region_form]),
-        );
+        index
+            .cells
+            .exterior_cells
+            .entry("test".into())
+            .or_default()
+            .insert(grid, empty_cell(grid, vec![region_form]));
         index.regions.insert(
             region_form,
             RegnRecord {
@@ -1470,7 +1472,13 @@ mod tests {
                 .map(|r| r.incidental_form),
             Some(Some(0xBBBB))
         );
-        assert_eq!(cache, Some(((0, 0), *world.resource::<crate::components::RegionAmbientRes>())));
+        assert_eq!(
+            cache,
+            Some((
+                (0, 0),
+                *world.resource::<crate::components::RegionAmbientRes>()
+            ))
+        );
     }
 
     /// A second call for the SAME grid cell, against a `wctx` whose region

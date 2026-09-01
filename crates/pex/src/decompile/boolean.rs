@@ -171,12 +171,9 @@ impl BoolPass<'_> {
                     // `translate_pex`'s `catch_unwind` guard cannot intercept
                     // it). The clone bought nothing — the scope is read here
                     // and nowhere else in this iteration.
-                    let condition_is_last_result = self
-                        .scopes
-                        .get(&current)
-                        .is_some_and(|scope| {
-                            !scope.is_empty() && last_result(scope).as_deref() == Some(&cond)
-                        });
+                    let condition_is_last_result = self.scopes.get(&current).is_some_and(|scope| {
+                        !scope.is_empty() && last_result(scope).as_deref() == Some(&cond)
+                    });
                     if condition_is_last_result {
                         let end_plus_1 = block.end + 1;
                         if block.on_true() == end_plus_1 {

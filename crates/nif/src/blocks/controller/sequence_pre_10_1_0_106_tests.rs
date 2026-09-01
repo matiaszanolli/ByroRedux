@@ -155,5 +155,8 @@ fn pre_10_1_0_106_sequence_layout_is_byte_exact() {
          mirroring Accum Root Name backing accum_root_name"
     );
     assert!(seq.manager_ref.is_null());
-    assert!(seq.anim_note_refs.is_empty(), "bsver 4 carries no anim notes");
+    assert!(
+        seq.anim_note_refs.is_empty(),
+        "bsver 4 carries no anim notes"
+    );
 }

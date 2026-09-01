@@ -526,10 +526,9 @@ fn expand_scol_with_empty_pkin_part_falls_through_to_the_leaf() {
             has_script: false,
         },
     );
-    index.packins.insert(
-        pkin_id,
-        mk_pkin_for_scol(pkin_id, "EmptyPkin", Vec::new()),
-    );
+    index
+        .packins
+        .insert(pkin_id, mk_pkin_for_scol(pkin_id, "EmptyPkin", Vec::new()));
 
     let synths = expand_scol_placements(scol_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
     assert_eq!(synths.len(), 1, "an empty PKIN must not drop the placement");

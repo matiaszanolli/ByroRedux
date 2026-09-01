@@ -1354,7 +1354,11 @@ mod phase_sync_tests {
 
         assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
         assert!(
-            world.query::<RapierHandles>().unwrap().get(entity).is_some(),
+            world
+                .query::<RapierHandles>()
+                .unwrap()
+                .get(entity)
+                .is_some(),
             "bootstrap must attach the Rapier handle row"
         );
         assert_eq!(
@@ -1474,8 +1478,7 @@ mod phase_sync_tests {
     /// precede it would close the reverse edge and panic here.
     #[test]
     fn pull_dynamic_does_not_close_transform_global_transform_lock_cycle() {
-        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
-        {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
 
@@ -1486,8 +1489,12 @@ mod phase_sync_tests {
         world.insert(parent, Transform::IDENTITY);
         world.insert(parent, parent_global);
 
-        let child_global =
-            GlobalTransform::compose(&parent_global, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child_global = GlobalTransform::compose(
+            &parent_global,
+            Vec3::new(5.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            1.0,
+        );
         let child = world.spawn();
         world.insert(child, Transform::IDENTITY);
         world.insert(child, child_global);

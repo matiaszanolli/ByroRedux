@@ -1767,7 +1767,10 @@ mod tests {
         );
 
         for (name, src) in [
-            ("docs/engine/nifal.md", include_str!("../../docs/engine/nifal.md")),
+            (
+                "docs/engine/nifal.md",
+                include_str!("../../docs/engine/nifal.md"),
+            ),
             (
                 ".claude/commands/audit-nifal/SKILL.md",
                 include_str!("../../.claude/commands/audit-nifal/SKILL.md"),

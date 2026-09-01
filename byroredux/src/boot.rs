@@ -538,18 +538,22 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // walking case without re-growing.
     world.insert_resource(crate::components::FootstepScratch::default());
     world.insert_resource(crate::components::WaterDisturbanceScratch::default());
-    // M44 Phase 3.5 — opportunistic footstep BSA load. When the
-    // user passed `--sounds-bsa <path>`, decode the canonical
-    // dirt-walk WAV and stash the `Arc<StaticSoundData>` in
-    // `FootstepConfig.default_sound`. Silently no-op when the
-    // flag is absent or the archive isn't openable.
-    crate::asset_provider::try_load_default_footstep(&mut world, args);
-    crate::asset_provider::try_load_default_water_splash(&mut world, args);
-    // EX-16 item 5 (#2372) — persistent `--sounds-bsa` handle for
-    // FormID-driven REGN ambient dispatch, unlike the two one-off
-    // hardcoded-path loads immediately above. Empty provider (no flag)
-    // makes every dispatch attempt a clean no-op.
-    world.insert_resource(crate::asset_provider::build_sound_archive_provider(args));
+    // EX-16 item 5 (#2372) — persistent `--sounds-bsa` handle, shared by
+    // FormID-driven REGN ambient dispatch AND the two one-off canonical-
+    // path loads immediately below (#3776 — built first and shared rather
+    // than each of the three re-parsing `args` on its own, which used to
+    // mean the one-off loaders only ever saw the *first* `--sounds-bsa`
+    // occurrence despite the flag being documented as repeatable). Empty
+    // provider (no flag, or every occurrence failed to open) makes every
+    // lookup a clean no-op.
+    let sound_archives = crate::asset_provider::build_sound_archive_provider(args);
+    // M44 Phase 3.5 — opportunistic footstep BSA load. Decodes the
+    // canonical dirt-walk WAV and stashes the `Arc<StaticSoundData>` in
+    // `FootstepConfig.default_sound`. Silently no-op when no
+    // `--sounds-bsa` archive carries it.
+    crate::asset_provider::try_load_default_footstep(&mut world, &sound_archives);
+    crate::asset_provider::try_load_default_water_splash(&mut world, &sound_archives);
+    world.insert_resource(sound_archives);
     // Process-lifetime cache of parsed-and-imported NIF scenes.
     // Persists across cell transitions so repeat visits don't re-
     // parse every clutter mesh. See #381.

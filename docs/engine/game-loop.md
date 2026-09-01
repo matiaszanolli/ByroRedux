@@ -52,7 +52,7 @@ Selected modifier / diagnostic flags (all read from `effective_args()`):
 | `--screenshot PATH` | Capture a PNG on the bench-exit frame (requires `--bench-frames`) |
 | `--camera-pos x,y,z` / `--camera-forward x,y,z` | Override the auto-framed initial camera pose |
 | `--fly` / `--player` | Start in fly-camera vs kinematic-character mode (M28.5) |
-| `--sounds-bsa PATH` | Opportunistically load the default footstep WAV (M44) |
+| `--sounds-bsa PATH` | Sound archive for footstep/splash defaults + REGN ambient dispatch (M44). Repeatable — override/mod archives listed before the vanilla one, first hit wins (#3776) |
 | `--materials-ba2 PATH` | BGSM/BGEM material archive (FO4+; usually synthesized by `--game`) |
 | `--sf-smoke <CELL_EDID>` | Headless Starfield ESM resolve-rate smoke test (requires `--esm`) |
 | `--rotation-mode 0..=3` | Diagnostic switch for the REFR Euler→Y-up conversion |

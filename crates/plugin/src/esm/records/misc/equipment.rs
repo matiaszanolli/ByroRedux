@@ -1,8 +1,8 @@
 //! Equipment / crafting / generic-record records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
-use crate::esm::records::common::remap_fid;
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
+use crate::esm::records::common::remap_fid;
 use crate::esm::sub_reader::SubReader;
 
 /// ARMA — armor addon record. Race-specific biped slot variants for

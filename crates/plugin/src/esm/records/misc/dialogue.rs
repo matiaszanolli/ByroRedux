@@ -750,7 +750,11 @@ mod oblivion_generation_tests {
     /// and `extract_dial_with_info` preserves it.
     #[test]
     fn a_group_with_no_pnam_orders_by_record_order() {
-        let infos = vec![info(0x111, vec![]), info(0x222, vec![]), info(0x333, vec![])];
+        let infos = vec![
+            info(0x111, vec![]),
+            info(0x222, vec![]),
+            info(0x333, vec![]),
+        ];
         let tree = build_conversation_tree(&infos).expect("no PNAM is not an error");
         assert_eq!(
             tree.chains,

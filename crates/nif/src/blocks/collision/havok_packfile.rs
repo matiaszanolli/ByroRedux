@@ -146,7 +146,10 @@ fn read_u32_le(data: &[u8], offset: usize) -> io::Result<u32> {
 fn read_cstr(data: &[u8], offset: usize, max_len: usize) -> io::Result<String> {
     let end = (offset + max_len).min(data.len());
     let slice = data.get(offset..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::UnexpectedEof, "havok packfile: truncated string")
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "havok packfile: truncated string",
+        )
     })?;
     let nul = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
     Ok(String::from_utf8_lossy(&slice[..nul]).into_owned())
@@ -292,14 +295,14 @@ mod tests {
         buf[60..64].copy_from_slice(&0x15u32.to_le_bytes()); // reserved
 
         let push_section = |buf: &mut Vec<u8>,
-                                 name: &str,
-                                 data_start: u32,
-                                 local_fixups: u32,
-                                 global_fixups: u32,
-                                 virtual_fixups: u32,
-                                 exports: u32,
-                                 imports: u32,
-                                 end: u32| {
+                            name: &str,
+                            data_start: u32,
+                            local_fixups: u32,
+                            global_fixups: u32,
+                            virtual_fixups: u32,
+                            exports: u32,
+                            imports: u32,
+                            end: u32| {
             let base = buf.len();
             buf.resize(base + SECTION_HEADER_SIZE, 0xFF);
             buf[base..base + name.len()].copy_from_slice(name.as_bytes());
@@ -345,14 +348,7 @@ mod tests {
         let data_start = types_start;
         let data_len = data_payload.len() as u32;
         push_section(
-            &mut buf,
-            "__data__",
-            data_start,
-            data_len,
-            data_len,
-            data_len,
-            data_len,
-            data_len,
+            &mut buf, "__data__", data_start, data_len, data_len, data_len, data_len, data_len,
             data_len,
         );
 
@@ -380,13 +376,21 @@ mod tests {
     #[test]
     fn extracts_class_names() {
         let blob = build_synthetic_packfile(
-            &["hkClass", "hknpPhysicsSystemData", "hknpCompressedMeshShapeData"],
+            &[
+                "hkClass",
+                "hknpPhysicsSystemData",
+                "hknpCompressedMeshShapeData",
+            ],
             &[0x11, 0x22],
         );
         let pf = parse_havok_packfile(&blob).expect("parse");
         assert_eq!(
             pf.class_names,
-            vec!["hkClass", "hknpPhysicsSystemData", "hknpCompressedMeshShapeData"]
+            vec![
+                "hkClass",
+                "hknpPhysicsSystemData",
+                "hknpCompressedMeshShapeData"
+            ]
         );
         assert!(pf.has_class("hknpCompressedMeshShapeData"));
         assert!(!pf.has_class("hkpRigidBody"));

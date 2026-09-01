@@ -3026,16 +3026,16 @@ impl VulkanContext {
                 // the fragment shader index a raw device address with the
                 // new mesh's (possibly larger) index range.
                 // #2402 — this filter must stay IN FRONT of the address read: a
-            // slot that no longer backs this mesh must contribute no address,
-            // cached or queried.
-            .filter(|slot| skin_slot_backs_mesh(slot.vertex_count(), mesh.vertex_count))
-            // #3469 — a plain field read. This was a `vkGetBufferDeviceAddress`
-            // call per skinned draw per frame, in the innermost
-            // O(visible-instance) loop, for an address that is fixed for the
-            // buffer's lifetime. `skin_pool_live = 83` on
-            // `skyrim_se-WhiterunDragonsreach` and several draws per NPC put it
-            // in the hundreds of driver round-trips per frame in that cell.
-            .map(|slot| slot.output_address());
+                // slot that no longer backs this mesh must contribute no address,
+                // cached or queried.
+                .filter(|slot| skin_slot_backs_mesh(slot.vertex_count(), mesh.vertex_count))
+                // #3469 — a plain field read. This was a `vkGetBufferDeviceAddress`
+                // call per skinned draw per frame, in the innermost
+                // O(visible-instance) loop, for an address that is fixed for the
+                // buffer's lifetime. `skin_pool_live = 83` on
+                // `skyrim_se-WhiterunDragonsreach` and several draws per NPC put it
+                // in the hundreds of driver round-trips per frame in that cell.
+                .map(|slot| slot.output_address());
             let skinned_vertex_address =
                 skinned_vertex_address_for_draw(draw_cmd.bone_offset, slot_address);
             // #3231 — GPU morph-target blending. Same shape as the

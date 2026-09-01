@@ -302,7 +302,8 @@ mod tests {
         // escape, where the ray provably left the cell), so it carries the
         // live sky while every field asserted above stays defaulted.
         assert_eq!(
-            params.exterior_zenith_color, [0.3, 0.5, 0.9],
+            params.exterior_zenith_color,
+            [0.3, 0.5, 0.9],
             "the exterior sky lane must survive into an interior — that is \
              the whole point of #3323"
         );

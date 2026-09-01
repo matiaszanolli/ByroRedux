@@ -356,25 +356,25 @@ pub struct GpuMaterial {
     pub shader_float: f32,   // offset 360
 
     // ── BGEM v21+ glass optical suite (offsets 364-392) ────────────
-    pub glass_fresnel_r: f32, // offset 364
-    pub glass_fresnel_g: f32, // offset 368
-    pub glass_fresnel_b: f32, // offset 372
-    pub glass_refraction_scale: f32, // offset 376
-    pub glass_blur_scale: f32, // offset 380
-    pub glass_blur_scale_factor: f32, // offset 384
+    pub glass_fresnel_r: f32,                   // offset 364
+    pub glass_fresnel_g: f32,                   // offset 368
+    pub glass_fresnel_b: f32,                   // offset 372
+    pub glass_refraction_scale: f32,            // offset 376
+    pub glass_blur_scale: f32,                  // offset 380
+    pub glass_blur_scale_factor: f32,           // offset 384
     pub glass_roughness_scratch_map_index: u32, // offset 388
-    pub glass_dirt_overlay_map_index: u32, // offset 392
+    pub glass_dirt_overlay_map_index: u32,      // offset 392
 
     // ── Bethesda authored lighting response (offsets 396-428) ──────
-    pub lighting_effect_1: f32, // offset 396
-    pub lighting_effect_2: f32, // offset 400
-    pub subsurface_rolloff: f32, // offset 404
-    pub rimlight_power: f32, // offset 408
-    pub backlight_power: f32, // offset 412
-    pub fresnel_power: f32, // offset 416
+    pub lighting_effect_1: f32,          // offset 396
+    pub lighting_effect_2: f32,          // offset 400
+    pub subsurface_rolloff: f32,         // offset 404
+    pub rimlight_power: f32,             // offset 408
+    pub backlight_power: f32,            // offset 412
+    pub fresnel_power: f32,              // offset 416
     pub grayscale_to_palette_scale: f32, // offset 420
-    pub lighting_mask_map_index: u32, // offset 424
-    pub back_lighting_map_index: u32, // offset 428 → total 432
+    pub lighting_mask_map_index: u32,    // offset 424
+    pub back_lighting_map_index: u32,    // offset 428 → total 432
 }
 
 impl Default for GpuMaterial {

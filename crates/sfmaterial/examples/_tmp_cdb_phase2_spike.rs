@@ -65,7 +65,11 @@ fn brief(v: &Value, d: usize) -> String {
             }
             s
         }
-        Value::Ref(r) => format!("{pad}Ref(type {})\n{}", r.type_ref.id, brief(&r.inner, d + 1)),
+        Value::Ref(r) => format!(
+            "{pad}Ref(type {})\n{}",
+            r.type_ref.id,
+            brief(&r.inner, d + 1)
+        ),
         other => format!("{pad}{other:?}\n"),
     }
 }
@@ -80,7 +84,11 @@ fn main() {
     let ba2 = Ba2Archive::open(&ba2_path).unwrap();
     let bytes = ba2.extract(&inner).unwrap();
     let cdb = ComponentDatabaseFile::parse(&bytes).unwrap();
-    println!("## parsed: {} classes, {} instances\n", cdb.classes.len(), cdb.instances.len());
+    println!(
+        "## parsed: {} classes, {} instances\n",
+        cdb.classes.len(),
+        cdb.instances.len()
+    );
 
     // ---- 0. class field layout: declaration order vs `offset` order ----
     // `read_user_class` reads values sequentially in declaration order and
@@ -90,22 +98,35 @@ fn main() {
     let mut disagree = 0usize;
     for c in &cdb.classes {
         let offs: Vec<u16> = c.fields.iter().map(|f| f.offset).collect();
-        let sorted = { let mut v = offs.clone(); v.sort_unstable(); v };
+        let sorted = {
+            let mut v = offs.clone();
+            v.sort_unstable();
+            v
+        };
         if offs != sorted {
             disagree += 1;
             if disagree <= 8 {
                 println!("     MISMATCH {} ({} fields)", c.name, c.fields.len());
                 for f in &c.fields {
-                    println!("        decl .{:<24} offset={:<4} size={}", f.name, f.offset, f.size);
+                    println!(
+                        "        decl .{:<24} offset={:<4} size={}",
+                        f.name, f.offset, f.size
+                    );
                 }
             }
         }
     }
-    println!("     classes whose declaration order != offset order: {disagree}/{}", cdb.classes.len());
+    println!(
+        "     classes whose declaration order != offset order: {disagree}/{}",
+        cdb.classes.len()
+    );
     for c in cdb.classes.iter().filter(|c| c.name == "BSResource::ID") {
         println!("     BSResource::ID layout:");
         for f in &c.fields {
-            println!("        decl .{:<8} offset={:<4} size={}", f.name, f.offset, f.size);
+            println!(
+                "        decl .{:<8} offset={:<4} size={}",
+                f.name, f.offset, f.size
+            );
         }
     }
     println!();
@@ -117,7 +138,11 @@ fn main() {
         .split('\0')
         .filter(|x| x.to_lowercase().ends_with(".mat"))
         .collect();
-    println!("## 1. STRT: {} bytes, {} strings ending `.mat`", raw.len(), mats.len());
+    println!(
+        "## 1. STRT: {} bytes, {} strings ending `.mat`",
+        raw.len(),
+        mats.len()
+    );
     for m in mats.iter().take(15) {
         println!("     {m}");
     }
@@ -126,17 +151,26 @@ fn main() {
     // ---- 2. CompiledDB.HashMap ----------------------------------------
     let mut hashmap_pairs: Vec<(u32, u32, u32, u64)> = Vec::new();
     for inst in &cdb.instances {
-        let Some(f) = obj(inst, "BSMaterial::Internal::CompiledDB") else { continue };
-        println!("## 2. CompiledDB fields: {:?}", f.keys().collect::<Vec<_>>());
+        let Some(f) = obj(inst, "BSMaterial::Internal::CompiledDB") else {
+            continue;
+        };
+        println!(
+            "## 2. CompiledDB fields: {:?}",
+            f.keys().collect::<Vec<_>>()
+        );
         if let Some(Value::Map(pairs)) = f.get("HashMap") {
             println!("     HashMap entries: {}", pairs.len());
             for (k, v) in pairs.iter() {
-                let Some(id) = obj(k, "BSResource::ID") else { continue };
+                let Some(id) = obj(k, "BSResource::ID") else {
+                    continue;
+                };
                 let (Some(dir), Some(ext), Some(file)) = (
                     id.get("Dir").and_then(as_u32),
                     id.get("Ext").and_then(as_u32),
                     id.get("File").and_then(as_u32),
-                ) else { continue };
+                ) else {
+                    continue;
+                };
                 if let Some(val) = as_u64(v) {
                     hashmap_pairs.push((dir, ext, file, val));
                 }
@@ -149,29 +183,51 @@ fn main() {
         }
         break;
     }
-    println!("     decoded {} (Dir,Ext,File)->u64 pairs", hashmap_pairs.len());
+    println!(
+        "     decoded {} (Dir,Ext,File)->u64 pairs",
+        hashmap_pairs.len()
+    );
     // Is `Ext` (or `File`) constant? A constant column is the extension hash.
     for (label, idx) in [("Dir", 0usize), ("Ext", 1), ("File", 2)] {
         let mut distinct = std::collections::HashSet::new();
         for p in &hashmap_pairs {
-            distinct.insert(match idx { 0 => p.0, 1 => p.1, _ => p.2 });
+            distinct.insert(match idx {
+                0 => p.0,
+                1 => p.1,
+                _ => p.2,
+            });
         }
-        println!("     column {label}: {} distinct value(s){}", distinct.len(),
+        println!(
+            "     column {label}: {} distinct value(s){}",
+            distinct.len(),
             if distinct.len() == 1 {
-                format!("  == {:#010x} (constant → this is the extension hash)",
-                    distinct.iter().next().unwrap())
-            } else { String::new() });
+                format!(
+                    "  == {:#010x} (constant → this is the extension hash)",
+                    distinct.iter().next().unwrap()
+                )
+            } else {
+                String::new()
+            }
+        );
     }
     for p in hashmap_pairs.iter().take(5) {
-        println!("     dir={:#010x} ext={:#010x} file={:#010x} -> {:#018x}", p.0, p.1, p.2, p.3);
+        println!(
+            "     dir={:#010x} ext={:#010x} file={:#010x} -> {:#018x}",
+            p.0, p.1, p.2, p.3
+        );
     }
     println!();
 
     // ---- 3. ObjectInfo layout ------------------------------------------
     println!("## 3. DBFileIndex::ObjectInfo");
     'idx: for inst in &cdb.instances {
-        let Some(f) = obj(inst, "BSComponentDB2::DBFileIndex") else { continue };
-        println!("     DBFileIndex fields: {:?}", f.keys().collect::<Vec<_>>());
+        let Some(f) = obj(inst, "BSComponentDB2::DBFileIndex") else {
+            continue;
+        };
+        println!(
+            "     DBFileIndex fields: {:?}",
+            f.keys().collect::<Vec<_>>()
+        );
         if let Some(Value::List(objs)) = f.get("Objects") {
             println!("     Objects: {}", objs.len());
             for o in objs.iter().take(4) {
@@ -188,36 +244,69 @@ fn main() {
     println!("## 4. one complete example per BSMaterial::* class");
     let mut seen: BTreeMap<String, &Value> = BTreeMap::new();
     fn collect<'a>(v: &'a Value, seen: &mut BTreeMap<String, &'a Value>, d: usize) {
-        if d > 4 { return; }
+        if d > 4 {
+            return;
+        }
         match v {
             Value::Object(o) => {
                 if o.class_name.starts_with("BSMaterial::") && !seen.contains_key(&o.class_name) {
                     // Prefer an example with at least one non-default-looking field.
                     seen.insert(o.class_name.clone(), v);
                 }
-                for (_k, fv) in &o.fields { collect(fv, seen, d + 1); }
+                for (_k, fv) in &o.fields {
+                    collect(fv, seen, d + 1);
+                }
             }
-            Value::List(items) => for i in items { collect(i, seen, d + 1) },
-            Value::Map(p) => for (k, vv) in p { collect(k, seen, d + 1); collect(vv, seen, d + 1) },
+            Value::List(items) => {
+                for i in items {
+                    collect(i, seen, d + 1)
+                }
+            }
+            Value::Map(p) => {
+                for (k, vv) in p {
+                    collect(k, seen, d + 1);
+                    collect(vv, seen, d + 1)
+                }
+            }
             Value::Ref(r) => collect(&r.inner, seen, d + 1),
             _ => {}
         }
     }
-    for inst in &cdb.instances { collect(inst, &mut seen, 0); }
+    for inst in &cdb.instances {
+        collect(inst, &mut seen, 0);
+    }
     let want = [
-        "BSMaterial::MRTextureFile", "BSMaterial::TextureFile", "BSMaterial::TextureSetID",
-        "BSMaterial::MaterialID", "BSMaterial::LayerID", "BSMaterial::BlenderID",
-        "BSMaterial::MaterialParamFloat", "BSMaterial::Color", "BSMaterial::ParamBool",
-        "BSMaterial::AlphaSettingsComponent", "BSMaterial::AlphaBlenderSettings",
-        "BSMaterial::ShaderRouteComponent", "BSMaterial::ShaderModelComponent",
-        "BSMaterial::EmissiveSettingsComponent", "BSMaterial::OpacityComponent",
-        "BSMaterial::DecalSettingsComponent", "BSMaterial::TextureReplacement",
-        "BSMaterial::TranslucencySettings", "BSMaterial::FlowSettingsComponent",
-        "BSMaterial::TextureAddressModeComponent", "BSMaterial::TextureResolutionSetting",
-        "BSMaterial::MaterialOverrideColorTypeComponent", "BSMaterial::Offset", "BSMaterial::Scale",
-        "BSMaterial::UVStreamID", "BSMaterial::UVStreamParamBool", "BSMaterial::Channel",
-        "BSMaterial::LevelOfDetailSettings", "BSMaterial::EffectSettingsComponent",
-        "BSMaterial::DetailBlenderSettings", "BSMaterial::CollisionComponent",
+        "BSMaterial::MRTextureFile",
+        "BSMaterial::TextureFile",
+        "BSMaterial::TextureSetID",
+        "BSMaterial::MaterialID",
+        "BSMaterial::LayerID",
+        "BSMaterial::BlenderID",
+        "BSMaterial::MaterialParamFloat",
+        "BSMaterial::Color",
+        "BSMaterial::ParamBool",
+        "BSMaterial::AlphaSettingsComponent",
+        "BSMaterial::AlphaBlenderSettings",
+        "BSMaterial::ShaderRouteComponent",
+        "BSMaterial::ShaderModelComponent",
+        "BSMaterial::EmissiveSettingsComponent",
+        "BSMaterial::OpacityComponent",
+        "BSMaterial::DecalSettingsComponent",
+        "BSMaterial::TextureReplacement",
+        "BSMaterial::TranslucencySettings",
+        "BSMaterial::FlowSettingsComponent",
+        "BSMaterial::TextureAddressModeComponent",
+        "BSMaterial::TextureResolutionSetting",
+        "BSMaterial::MaterialOverrideColorTypeComponent",
+        "BSMaterial::Offset",
+        "BSMaterial::Scale",
+        "BSMaterial::UVStreamID",
+        "BSMaterial::UVStreamParamBool",
+        "BSMaterial::Channel",
+        "BSMaterial::LevelOfDetailSettings",
+        "BSMaterial::EffectSettingsComponent",
+        "BSMaterial::DetailBlenderSettings",
+        "BSMaterial::CollisionComponent",
     ];
     for w in want {
         match seen.get(w) {
@@ -225,5 +314,8 @@ fn main() {
             None => println!("  <{w}>  (no instance reached at depth<=4)"),
         }
     }
-    println!("\n     total distinct BSMaterial::* classes reached: {}", seen.len());
+    println!(
+        "\n     total distinct BSMaterial::* classes reached: {}",
+        seen.len()
+    );
 }

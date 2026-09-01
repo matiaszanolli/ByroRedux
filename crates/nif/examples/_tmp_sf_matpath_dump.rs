@@ -24,11 +24,14 @@ fn main() {
             .list_files()
             .into_iter()
             .filter(|n| n.to_ascii_lowercase().ends_with(".nif"))
-            .map(|s| s.to_string()).take(cap)
+            .map(|s| s.to_string())
+            .take(cap)
             .collect();
         for n in nifs {
             let Ok(b) = a.extract(&n) else { continue };
-            let Ok(scene) = byroredux_nif::parse_nif(&b) else { continue };
+            let Ok(scene) = byroredux_nif::parse_nif(&b) else {
+                continue;
+            };
             for blk in &scene.blocks {
                 let nm = blk
                     .as_any()

@@ -76,9 +76,7 @@ impl Game {
     /// a fallback when the env var is unset, never a hard assumption.
     fn default_path(self) -> &'static str {
         match self {
-            Game::FalloutNV => {
-                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data"
-            }
+            Game::FalloutNV => "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
             Game::Fallout3 => "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
         }
     }
@@ -146,96 +144,108 @@ fn for_each_game(what: &str, body: impl Fn(Game, &Expected, Vec<u8>)) {
         ran += 1;
     }
     if ran == 0 {
-        eprintln!("no game data available for any of {:?}; skipping", Game::ALL);
+        eprintln!(
+            "no game data available for any of {:?}; skipping",
+            Game::ALL
+        );
     }
 }
 
 #[test]
 #[ignore]
 fn parse_vanilla_headhuman_egm() {
-    for_each_game(r"meshes\characters\head\headhuman.egm", |game, exp, bytes| {
-        let g = game.label();
-        assert_eq!(
-            bytes.len(),
-            exp.egm_bytes,
-            "[{g}] vanilla headhuman.egm baseline byte count drifted",
-        );
-        let egm = EgmFile::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
-        assert_eq!(egm.num_vertices, exp.egm_vertices, "[{g}] egm vertices");
-        assert_eq!(
-            egm.fggs_morphs.len(),
-            exp.egm_sym_morphs,
-            "[{g}] egm symmetric morphs"
-        );
-        assert_eq!(
-            egm.fgga_morphs.len(),
-            exp.egm_asym_morphs,
-            "[{g}] egm asymmetric morphs"
-        );
-        for morph in egm.fggs_morphs.iter().chain(egm.fgga_morphs.iter()) {
+    for_each_game(
+        r"meshes\characters\head\headhuman.egm",
+        |game, exp, bytes| {
+            let g = game.label();
             assert_eq!(
-                morph.deltas.len(),
-                exp.egm_vertices as usize,
-                "[{g}] every morph must carry one delta per vertex"
+                bytes.len(),
+                exp.egm_bytes,
+                "[{g}] vanilla headhuman.egm baseline byte count drifted",
             );
-        }
-        // NaN sentinel deltas DO appear in vanilla `headhuman.egm` —
-        // FaceGen's authoring pipeline stores "no displacement" as
-        // a half-float NaN bit-pattern on some entries (verified by
-        // dumping non-finite indices on 2026-04-29). The Phase 3b
-        // morph evaluator must guard against NaN propagation when
-        // it sums `weight * delta` per vertex; the parser layer
-        // preserves the on-disk bytes verbatim.
-        let nan_count: usize = egm
-            .fggs_morphs
-            .iter()
-            .chain(egm.fgga_morphs.iter())
-            .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
-            .sum();
-        eprintln!("[{g}] vanilla headhuman.egm: {nan_count} non-finite delta components");
-    });
+            let egm = EgmFile::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
+            assert_eq!(egm.num_vertices, exp.egm_vertices, "[{g}] egm vertices");
+            assert_eq!(
+                egm.fggs_morphs.len(),
+                exp.egm_sym_morphs,
+                "[{g}] egm symmetric morphs"
+            );
+            assert_eq!(
+                egm.fgga_morphs.len(),
+                exp.egm_asym_morphs,
+                "[{g}] egm asymmetric morphs"
+            );
+            for morph in egm.fggs_morphs.iter().chain(egm.fgga_morphs.iter()) {
+                assert_eq!(
+                    morph.deltas.len(),
+                    exp.egm_vertices as usize,
+                    "[{g}] every morph must carry one delta per vertex"
+                );
+            }
+            // NaN sentinel deltas DO appear in vanilla `headhuman.egm` —
+            // FaceGen's authoring pipeline stores "no displacement" as
+            // a half-float NaN bit-pattern on some entries (verified by
+            // dumping non-finite indices on 2026-04-29). The Phase 3b
+            // morph evaluator must guard against NaN propagation when
+            // it sums `weight * delta` per vertex; the parser layer
+            // preserves the on-disk bytes verbatim.
+            let nan_count: usize = egm
+                .fggs_morphs
+                .iter()
+                .chain(egm.fgga_morphs.iter())
+                .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
+                .sum();
+            eprintln!("[{g}] vanilla headhuman.egm: {nan_count} non-finite delta components");
+        },
+    );
 }
 
 #[test]
 #[ignore]
 fn parse_vanilla_headhuman_egt() {
-    for_each_game(r"meshes\characters\head\headhuman.egt", |game, exp, bytes| {
-        let g = game.label();
-        assert_eq!(
-            bytes.len(),
-            exp.egt_bytes,
-            "[{g}] vanilla headhuman.egt baseline byte count drifted",
-        );
-        let egt = EgtFile::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
-        assert_eq!(egt.width, exp.egt_width, "[{g}] egt width");
-        assert_eq!(egt.height, exp.egt_height, "[{g}] egt height");
-        assert_eq!(
-            egt.fgts_morphs.len(),
-            exp.egt_fgts_morphs,
-            "[{g}] egt texture morphs"
-        );
-        let expected_pixels = (exp.egt_width * exp.egt_height) as usize;
-        for morph in &egt.fgts_morphs {
+    for_each_game(
+        r"meshes\characters\head\headhuman.egt",
+        |game, exp, bytes| {
+            let g = game.label();
             assert_eq!(
-                morph.pixels.len(),
-                expected_pixels,
-                "[{g}] every texture morph must cover the full {}x{} tile",
-                exp.egt_width,
-                exp.egt_height
+                bytes.len(),
+                exp.egt_bytes,
+                "[{g}] vanilla headhuman.egt baseline byte count drifted",
             );
-        }
-    });
+            let egt = EgtFile::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
+            assert_eq!(egt.width, exp.egt_width, "[{g}] egt width");
+            assert_eq!(egt.height, exp.egt_height, "[{g}] egt height");
+            assert_eq!(
+                egt.fgts_morphs.len(),
+                exp.egt_fgts_morphs,
+                "[{g}] egt texture morphs"
+            );
+            let expected_pixels = (exp.egt_width * exp.egt_height) as usize;
+            for morph in &egt.fgts_morphs {
+                assert_eq!(
+                    morph.pixels.len(),
+                    expected_pixels,
+                    "[{g}] every texture morph must cover the full {}x{} tile",
+                    exp.egt_width,
+                    exp.egt_height
+                );
+            }
+        },
+    );
 }
 
 #[test]
 #[ignore]
 fn parse_vanilla_headhuman_tri_header() {
-    for_each_game(r"meshes\characters\head\headhuman.tri", |game, exp, bytes| {
-        let g = game.label();
-        let hdr = TriHeader::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
-        // Vanilla headhuman.nif has 1211 verts / 2294 tris — the .tri
-        // header must agree.
-        assert_eq!(hdr.num_vertices, exp.tri_vertices, "[{g}] tri vertices");
-        assert_eq!(hdr.num_triangles, exp.tri_triangles, "[{g}] tri triangles");
-    });
+    for_each_game(
+        r"meshes\characters\head\headhuman.tri",
+        |game, exp, bytes| {
+            let g = game.label();
+            let hdr = TriHeader::parse(&bytes).unwrap_or_else(|e| panic!("[{g}] parse: {e:?}"));
+            // Vanilla headhuman.nif has 1211 verts / 2294 tris — the .tri
+            // header must agree.
+            assert_eq!(hdr.num_vertices, exp.tri_vertices, "[{g}] tri vertices");
+            assert_eq!(hdr.num_triangles, exp.tri_triangles, "[{g}] tri triangles");
+        },
+    );
 }

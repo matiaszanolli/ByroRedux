@@ -697,7 +697,7 @@ mod tests {
     ///
     /// #2032 / PERF-D8-01 replaced the per-row `allocate_vec` +
     /// `read_u16_le` loop with a single bulk `read_pod_vec` over
-     /// #3777 — the meshlet + cull-data trailer is OPTIONAL.
+    /// #3777 — the meshlet + cull-data trailer is OPTIONAL.
     ///
     /// Starfield facegen `.mesh` bodies end exactly at the last LOD entry.
     /// Reading `n_meshlets` unconditionally hit "failed to fill whole
@@ -781,7 +781,7 @@ mod tests {
         );
     }
 
-   /// `outer_len * weights_per_vert` elements — that byte count
+    /// `outer_len * weights_per_vert` elements — that byte count
     /// (~17 GB here) trips `read_pod_vec`'s own `check_alloc` guard,
     /// which checks the hard `MAX_SINGLE_ALLOC_BYTES` cap BEFORE the
     /// remaining-stream-bytes check `allocate_vec` used,

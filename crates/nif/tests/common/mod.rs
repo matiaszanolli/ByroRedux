@@ -771,7 +771,11 @@ impl PerBlockHistogram {
     /// (`NifVersion::V5_0_0_1`) have no wire names to read, and truncated
     /// scenes hold fewer blocks than the header describes, so both fall
     /// back to the struct name for the entries they cannot resolve.
-    pub fn record_scene_blocks(&mut self, header: Option<&NifHeader>, blocks: &[Box<dyn NiObject>]) {
+    pub fn record_scene_blocks(
+        &mut self,
+        header: Option<&NifHeader>,
+        blocks: &[Box<dyn NiObject>],
+    ) {
         for (index, block) in blocks.iter().enumerate() {
             if let Some(unknown) = block.as_any().downcast_ref::<NiUnknown>() {
                 self.counts
@@ -789,10 +793,7 @@ impl PerBlockHistogram {
                 })
                 .map(|name| name.as_ref())
                 .unwrap_or_else(|| block.block_type_name());
-            self.counts
-                .entry(wire_name.to_string())
-                .or_default()
-                .parsed += 1;
+            self.counts.entry(wire_name.to_string()).or_default().parsed += 1;
         }
     }
 

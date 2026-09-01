@@ -412,7 +412,16 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     }
 
     for state in &object.states {
-        if state.name == object.auto_state_name {
+        // #3786 — Papyrus identifiers are case-insensitive, and every other
+        // identifier comparison in this file (parent-class-name, return-type,
+        // event-name lookup, the `true`/`false`/`none` literals) already
+        // matches that way. `==` here would silently drop this state's
+        // callables to script scope only in the false-negative direction
+        // (missed auto-state match), so mismatched casing degrades to a
+        // named state rather than corrupting anything — but it's still the
+        // one inconsistent comparison, and identifiers are untrusted `.pex`
+        // string-table data.
+        if state.name.eq_ignore_ascii_case(&object.auto_state_name) {
             // Auto/default state: its callables live at script scope.
             for f in &state.functions {
                 let item = handler_to_script_item(build_handler(object, f, &f.name)?);
@@ -530,6 +539,53 @@ mod tests {
         assert_eq!(e.params[0].name.node.0, "akActivator");
         // body: Foo() as an expression statement.
         assert!(matches!(e.body[0].node, Stmt::ExprStmt(_)));
+    }
+
+    #[test]
+    fn mismatched_casing_auto_state_still_hoists_its_callables_to_script_scope() {
+        // #3786 — `auto_state_name` and a state's own `name` are two
+        // independently-set `.pex` fields; Papyrus identifiers are
+        // case-insensitive, so a compiler encoding them with different
+        // casing must still match. Before the fix (`==`), this state would
+        // have landed as a named `State { is_auto: false }` instead of
+        // hoisting its `OnActivate` handler to script scope.
+        let func = PexFunction {
+            name: "OnActivate".into(),
+            return_type_name: "None".into(),
+            instructions: vec![ins(OpCode::Return, vec![id("::NoneVar")])],
+            ..PexFunction::default()
+        };
+        let pex = Pex {
+            script_type: crate::ScriptType::Skyrim,
+            header: Default::default(),
+            string_table: Vec::new(),
+            debug_info: Default::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "MyScript".into(),
+                parent_class_name: "ObjectReference".into(),
+                auto_state_name: "Waiting".into(),
+                states: vec![PexState {
+                    name: "waiting".into(),
+                    functions: vec![func],
+                }],
+                ..Object::default()
+            }],
+        };
+        let script = decompile_script(&pex).unwrap();
+        assert_eq!(
+            script.body.len(),
+            1,
+            "no separate named State item should exist for the auto state: {:?}",
+            script.body
+        );
+        let ScriptItem::Event(e) = &script.body[0].node else {
+            panic!(
+                "auto state's OnActivate should hoist to script scope as an Event, got {:?}",
+                script.body[0].node
+            );
+        };
+        assert_eq!(e.name.node.0, "OnActivate");
     }
 
     #[test]

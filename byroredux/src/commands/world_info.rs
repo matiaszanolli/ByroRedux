@@ -585,14 +585,10 @@ impl ConsoleCommand for TerrainSeamsCommand {
 /// Resolve the grid cell `cell.owners` reports on: `args` (`"<gx> <gy>"`)
 /// when given, else `current` (the player's own cell). Pure so the parsing
 /// itself is unit-testable without a `World`.
-fn parse_cell_owners_target(
-    args: &str,
-    current: Option<(i32, i32)>,
-) -> Result<(i32, i32), String> {
+fn parse_cell_owners_target(args: &str, current: Option<(i32, i32)>) -> Result<(i32, i32), String> {
     match args.split_whitespace().collect::<Vec<_>>().as_slice() {
-        [] => current.ok_or_else(|| {
-            "no active exterior session — pass `<gx> <gy>` explicitly".to_string()
-        }),
+        [] => current
+            .ok_or_else(|| "no active exterior session — pass `<gx> <gy>` explicitly".to_string()),
         [gx, gy] => {
             let parse_axis = |value: &str, axis: &str| {
                 value
@@ -698,9 +694,7 @@ impl ConsoleCommand for CellOwnersCommand {
             .unwrap_or(false);
         lines.push(match (music_active, Some(target) == current_grid) {
             (true, true) => "  Audio: 1 active channel (global REGN music, this cell)".to_string(),
-            (true, false) => {
-                "  Audio: 1 active channel (global REGN music, elsewhere)".to_string()
-            }
+            (true, false) => "  Audio: 1 active channel (global REGN music, elsewhere)".to_string(),
             (false, _) => "  Audio: no active channel".to_string(),
         });
 
@@ -1036,10 +1030,7 @@ mod cell_owners_tests {
 
     #[test]
     fn explicit_args_override_current_grid() {
-        assert_eq!(
-            parse_cell_owners_target("5 -7", Some((0, 0))),
-            Ok((5, -7))
-        );
+        assert_eq!(parse_cell_owners_target("5 -7", Some((0, 0))), Ok((5, -7)));
     }
 
     #[test]
@@ -1110,9 +1101,15 @@ mod cell_owners_tests {
         let joined = out.lines.join("\n");
         assert!(joined.contains("cell.owners (0, 0)"), "{joined}");
         assert!(joined.contains("music=0x00000010"), "{joined}");
-        assert!(joined.contains("NAVM: 1 tile(s), 3 vertices, 1 triangles"), "{joined}");
+        assert!(
+            joined.contains("NAVM: 1 tile(s), 3 vertices, 1 triangles"),
+            "{joined}"
+        );
         assert!(joined.contains("AI: 1 package owner(s)"), "{joined}");
-        assert!(joined.contains("actor=0x00001001 package=0x00002001"), "{joined}");
+        assert!(
+            joined.contains("actor=0x00001001 package=0x00002001"),
+            "{joined}"
+        );
     }
 
     /// An explicit non-current target: NAVM and AI still resolve correctly
@@ -1136,8 +1133,14 @@ mod cell_owners_tests {
         let joined = out.lines.join("\n");
         assert!(joined.contains("cell.owners (1, 1)"), "{joined}");
         assert!(joined.contains("not resolved for this cell"), "{joined}");
-        assert!(joined.contains("NAVM: 1 tile(s), 6 vertices, 2 triangles"), "{joined}");
-        assert!(joined.contains("actor=0x00001002 package=0x00002002"), "{joined}");
+        assert!(
+            joined.contains("NAVM: 1 tile(s), 6 vertices, 2 triangles"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("actor=0x00001002 package=0x00002002"),
+            "{joined}"
+        );
     }
 
     /// Oblivion authors zero NAVM records at all
@@ -1152,7 +1155,10 @@ mod cell_owners_tests {
         });
         let out = CellOwnersCommand.execute(&world, "");
         let joined = out.lines.join("\n");
-        assert!(joined.contains("NAVM: 0 tile(s), 0 vertices, 0 triangles"), "{joined}");
+        assert!(
+            joined.contains("NAVM: 0 tile(s), 0 vertices, 0 triangles"),
+            "{joined}"
+        );
         assert!(joined.contains("AI: 0 package owner(s)"), "{joined}");
     }
 }

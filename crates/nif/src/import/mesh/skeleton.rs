@@ -414,9 +414,7 @@ mod tests {
     /// still applies. This is what lifts apparel coverage from ~21% to ~47%.
     #[test]
     fn a_known_offset_resolves_what_an_ambiguous_search_cannot() {
-        let joints: Vec<([f32; 3], &str)> = (0..12)
-            .map(|i| ([0.0, 0.0, i as f32], "j"))
-            .collect();
+        let joints: Vec<([f32; 3], &str)> = (0..12).map(|i| ([0.0, 0.0, i as f32], "j")).collect();
         let s = skel(&joints);
         // Evenly spaced and colinear: several offsets fit, so the search
         // itself must decline...

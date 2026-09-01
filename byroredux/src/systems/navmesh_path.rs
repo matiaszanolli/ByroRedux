@@ -256,10 +256,11 @@ impl CrossTileGraph {
                 let (Some(a), Some(b)) = (vertex_yup(navm, v_a), vertex_yup(navm, v_b)) else {
                     continue;
                 };
-                by_key
-                    .entry(quantized_edge_key(a, b))
-                    .or_default()
-                    .push(((navm.form_id, tri_idx), a, b));
+                by_key.entry(quantized_edge_key(a, b)).or_default().push((
+                    (navm.form_id, tri_idx),
+                    a,
+                    b,
+                ));
             }
         }
         let mut edges: HashMap<CrossTileNode, Vec<(CrossTileNode, Vec3)>> = HashMap::new();
@@ -300,9 +301,9 @@ fn locate_across_tiles<'a>(
     tiles: impl Iterator<Item = &'a NavmRecord>,
     point: Vec3,
 ) -> Option<CrossTileNode> {
-    tiles.into_iter().find_map(|navm| {
-        find_containing_triangle(navm, point).map(|tri| (navm.form_id, tri))
-    })
+    tiles
+        .into_iter()
+        .find_map(|navm| find_containing_triangle(navm, point).map(|tri| (navm.form_id, tri)))
 }
 
 /// Same shape as [`ScoredNode`], over [`CrossTileNode`] instead of a bare
@@ -358,7 +359,10 @@ fn astar_cross_tile_path(
         return Some(vec![start]);
     }
     let node_centroid = |node: CrossTileNode| -> Option<Vec3> {
-        Some(centroid(&triangle_vertices(navm_by_form.get(&node.0)?, node.1)?))
+        Some(centroid(&triangle_vertices(
+            navm_by_form.get(&node.0)?,
+            node.1,
+        )?))
     };
     let goal_centroid = node_centroid(goal)?;
 
@@ -639,7 +643,8 @@ pub(crate) fn path_from_resident_tiles(
     let graph = CrossTileGraph::build(navms.iter().copied());
 
     let corridor = astar_cross_tile_path(&navm_by_form, &graph, start, goal_node)?;
-    let waypoints = cross_tile_corridor_to_waypoints(&navm_by_form, &graph, &corridor, current, goal)?;
+    let waypoints =
+        cross_tile_corridor_to_waypoints(&navm_by_form, &graph, &corridor, current, goal)?;
     Some(waypoints.into_iter().skip(1).collect())
 }
 
@@ -847,7 +852,11 @@ mod tests {
         // triangle 1 owns the matching edge from its own side (derived by
         // hand in this fn's caller-facing doc comment).
         let neighbours = graph.neighbours((1, 0));
-        assert_eq!(neighbours.len(), 1, "exactly one portal, to tile B's triangle 1");
+        assert_eq!(
+            neighbours.len(),
+            1,
+            "exactly one portal, to tile B's triangle 1"
+        );
         let (node, midpoint) = neighbours[0];
         assert_eq!(node, (2, 1));
         assert_eq!(midpoint, Vec3::new(10.0, 0.0, 5.0));

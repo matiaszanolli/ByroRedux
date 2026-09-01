@@ -169,11 +169,7 @@ impl ScriptFunctionDeclaration {
                 maximum: MAX_SCRIPT_FUNCTION_PARAMETERS,
             });
         }
-        if self
-            .papyrus
-            .as_ref()
-            .is_some_and(|alias| !alias.is_valid())
-        {
+        if self.papyrus.as_ref().is_some_and(|alias| !alias.is_valid()) {
             return Err(ScriptFunctionError::InvalidPapyrusAlias);
         }
         let mut ids = BTreeSet::new();

@@ -39,15 +39,14 @@ pub use collision_object::{
     BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkSystemBinary,
     NiCollisionObjectBase,
 };
-pub use havok_packfile::{
-    parse_havok_packfile, HavokPackfile, HavokPackfileHeader, PackfileSection,
-    HAVOK_PACKFILE_MAGIC,
-};
 pub use compressed_mesh::{
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, CmsBigTri, CmsChunk, CmsTransform,
 };
 pub use constraints::{
     BhkBreakableConstraint, BhkConstraint, BhkConstraintData, LimitedHingeCInfo, RagdollCInfo,
+};
+pub use havok_packfile::{
+    parse_havok_packfile, HavokPackfile, HavokPackfileHeader, PackfileSection, HAVOK_PACKFILE_MAGIC,
 };
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,

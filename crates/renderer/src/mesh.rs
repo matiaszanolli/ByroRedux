@@ -1301,13 +1301,8 @@ impl MeshRegistry {
         // be re-picked against a real number, its own doc's "chosen
         // conservatively pending live tuning" has no path to a tuned value.
         let rebuild_t0 = std::time::Instant::now();
-        let result = self.rebuild_geometry_ssbo_inner(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            rt_enabled,
-        );
+        let result =
+            self.rebuild_geometry_ssbo_inner(device, allocator, queue, command_pool, rt_enabled);
         self.geometry_rebuild_ns = self
             .geometry_rebuild_ns
             .saturating_add(rebuild_t0.elapsed().as_nanos() as u64);

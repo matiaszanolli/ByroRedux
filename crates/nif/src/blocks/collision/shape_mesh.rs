@@ -130,7 +130,6 @@ pub struct HkPackedNiTriStripsData {
     pub sub_parts: Vec<HkSubPartData>,
 }
 
-
 /// A single triangle in packed collision data.
 #[derive(Debug)]
 pub struct PackedTriangle {

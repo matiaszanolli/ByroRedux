@@ -1294,7 +1294,15 @@ mod interior_water_gate_tests {
     /// -368. Zero is the only value the census ever finds inert.
     #[test]
     fn every_authored_non_zero_height_still_spawns() {
-        for h in [14095.908_f32, 30345.0, -1547.9294, 7070.0, -368.0, 0.001, -0.001] {
+        for h in [
+            14095.908_f32,
+            30345.0,
+            -1547.9294,
+            7070.0,
+            -368.0,
+            0.001,
+            -0.001,
+        ] {
             assert_eq!(
                 interior_water_height(Some(h)),
                 Some(h),

@@ -1463,16 +1463,15 @@ impl GpuBuffer {
         // the device outlives the call.
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
-        let allocation = match allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
+        let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
+            &vulkan::AllocationCreateDesc {
                 name: "gpu_buffer_resumable",
                 requirements,
                 location: MemoryLocation::GpuOnly,
                 linear: true,
                 allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            }) {
+            },
+        ) {
             Ok(allocation) => allocation,
             Err(e) => {
                 // The buffer handle was created above but never bound — free
@@ -1491,7 +1490,8 @@ impl GpuBuffer {
         // SAFETY: `buffer` and `allocation` were both created here from this
         // device; the memory/offset come from the allocation that satisfied
         // `buffer`'s memory requirements, and the buffer is not yet bound.
-        if let Err(e) = unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
+        if let Err(e) =
+            unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
         {
             // SAFETY: same as above — created, unbound (bind just failed),
             // not yet destroyed.

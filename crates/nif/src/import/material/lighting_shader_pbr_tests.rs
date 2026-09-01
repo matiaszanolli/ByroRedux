@@ -142,9 +142,7 @@ fn skyrim_subsurface_and_backlight_scalars_land_in_material_info() {
 
 #[test]
 fn skyrim_lighting_feature_flags_land_independently_of_scalar_defaults() {
-    let mut shader = bslsp_with_pbr_scalars(
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.0,
-    );
+    let mut shader = bslsp_with_pbr_scalars(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.0);
     shader.shader_flags_2 = crate::shader_flags::skyrim_slsf2::SOFT_LIGHTING
         | crate::shader_flags::skyrim_slsf2::RIM_LIGHTING
         | crate::shader_flags::skyrim_slsf2::BACK_LIGHTING;

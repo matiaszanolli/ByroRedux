@@ -179,6 +179,27 @@ const UNDERWATER_CUTOFF_HZ: f64 = 900.0;
 /// degenerate filter, not a transparent one.
 const ABOVE_WATER_CUTOFF_HZ: f64 = 20_000.0;
 
+/// The global reverb send's `ReverbBuilder` parameters (#3780).
+///
+/// **No recorded provenance.** These three values landed with the M44
+/// Phase 6 commit (`e191d9f9`) with no rationale in the code or the
+/// commit message, and nothing in this tree, in kira's docs, or the
+/// Gamebryo 2.3 reference establishes what a Bethesda interior reverb
+/// should measure — inventing a plausible-sounding replacement trio
+/// would be exactly the failure this project's no-guessing rule exists to
+/// prevent. They also aren't kira's own `ReverbBuilder::default()`
+/// (`feedback: 0.9, damping: 0.1, stereo_width: 1.0` — kira 0.10.8), so
+/// this was a deliberate choice, just an unrecorded one. Named here
+/// (unlike the bare literals they replace) purely so the next person
+/// tuning interior acoustics (#847) has a greppable, revisitable baseline
+/// instead of an invisible one, not because the values themselves are
+/// validated against any reference. `f64` to match
+/// `ReverbBuilder::feedback`/`damping`/`stereo_width`'s own `Value<f64>`
+/// parameter type.
+const REVERB_FEEDBACK: f64 = 0.85;
+const REVERB_DAMPING: f64 = 0.6;
+const REVERB_STEREO_WIDTH: f64 = 1.0;
+
 /// Convert a world position from Bethesda units into the metre-scaled space
 /// kira reasons in. **This is the one and only unit seam for audio.**
 ///
@@ -462,9 +483,9 @@ impl AudioWorld {
         let reverb_send = manager.as_mut().and_then(|mgr| {
             let builder = SendTrackBuilder::new().with_effect(
                 ReverbBuilder::new()
-                    .feedback(0.85)
-                    .damping(0.6)
-                    .stereo_width(1.0)
+                    .feedback(REVERB_FEEDBACK)
+                    .damping(REVERB_DAMPING)
+                    .stereo_width(REVERB_STEREO_WIDTH)
                     .mix(Mix::WET),
             );
             match mgr.add_send_track(builder) {

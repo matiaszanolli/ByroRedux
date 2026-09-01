@@ -490,6 +490,9 @@ mod sparse_footprint_tests {
 
         assert_eq!(s.len(), 0);
         assert!(s.dense.is_empty());
-        assert!(s.sparse.is_empty(), "empty storage must stay untouched, not grow `sparse` to probe absent victims");
+        assert!(
+            s.sparse.is_empty(),
+            "empty storage must stay untouched, not grow `sparse` to probe absent victims"
+        );
     }
 }

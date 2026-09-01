@@ -129,7 +129,10 @@ mod canonical_key_tests {
 /// while identical records (same path, same form id revisited across
 /// cells) still share one parse.
 pub(crate) fn spt_cache_key(model_path: &str, tree_form_id: u32) -> String {
-    format!("{}#{tree_form_id:08x}", canonical_model_path_key(model_path))
+    format!(
+        "{}#{tree_form_id:08x}",
+        canonical_model_path_key(model_path)
+    )
 }
 
 #[cfg(test)]

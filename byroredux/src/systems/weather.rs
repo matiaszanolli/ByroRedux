@@ -308,13 +308,12 @@ fn apply_neutral_exterior_fallback(cell_lit: &mut CellLightingRes) {
     // arc rather than installing a zero sun. `CellLightingRes::default` is
     // `[0, 1, 0]`, so this only fires on a resource built with an explicitly
     // zeroed or non-finite direction.
-    let sun_dir = if installed_dir.iter().all(|c| c.is_finite())
-        && installed_dir.iter().any(|c| *c != 0.0)
-    {
-        installed_dir
-    } else {
-        compute_sun_arc(DEFAULT_TOD_HOURS[0], DEFAULT_TOD_HOURS).0
-    };
+    let sun_dir =
+        if installed_dir.iter().all(|c| c.is_finite()) && installed_dir.iter().any(|c| *c != 0.0) {
+            installed_dir
+        } else {
+            compute_sun_arc(DEFAULT_TOD_HOURS[0], DEFAULT_TOD_HOURS).0
+        };
     *cell_lit = crate::env_translate::procedural_fallback_cell_lighting(sun_dir);
 }
 

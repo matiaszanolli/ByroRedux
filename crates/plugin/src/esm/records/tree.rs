@@ -288,13 +288,20 @@ mod tests {
             sub(b"MODL", b"trees\\pine01.spt\0"),
             sub(b"MODB", &1.2f32.to_le_bytes()),
             sub(b"ICON", b"trees\\pine_leaf.tga\0"),
-            sub(b"CNAM", &cnam_bytes(&[0.4, 0.9, 0.6, 1.8, 1.0, 0.3, 0.2, 1.0])),
+            sub(
+                b"CNAM",
+                &cnam_bytes(&[0.4, 0.9, 0.6, 1.8, 1.0, 0.3, 0.2, 1.0]),
+            ),
             sub(b"BNAM", &cnam_bytes(&[96.0, 192.0])),
         ];
         let tree = parse_tree(0x00000042, &subs, &None);
         assert_eq!(tree.editor_id, "TreePine01");
         assert!(tree.has_speedtree_binary());
-        assert_eq!(tree.canopy_params.len(), 8, "CNAM is 8 × f32 on all three games");
+        assert_eq!(
+            tree.canopy_params.len(),
+            8,
+            "CNAM is 8 × f32 on all three games"
+        );
         assert_eq!(
             tree.billboard_size,
             Some((96.0, 192.0)),

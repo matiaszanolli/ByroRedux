@@ -108,7 +108,10 @@ pub fn parse_uvd_header(data: &[u8]) -> io::Result<UvdHeader> {
     }
     let magic = read_u32_le(data, 0)?;
     if magic != UVD_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "uvd: magic mismatch"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "uvd: magic mismatch",
+        ));
     }
     let content_hash = read_u32_le(data, 4)?;
     let self_size = read_u32_le(data, 8)?;
@@ -120,7 +123,10 @@ pub fn parse_uvd_header(data: &[u8]) -> io::Result<UvdHeader> {
     let table_offset = read_u32_le(data, 0x30)?;
     let entry_count = read_u32_le(data, 0x38)?;
     let debug_bytes = &data[0xB0..0x100];
-    let nul = debug_bytes.iter().position(|&b| b == 0).unwrap_or(debug_bytes.len());
+    let nul = debug_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(debug_bytes.len());
     let debug_string = String::from_utf8_lossy(&debug_bytes[..nul]).into_owned();
 
     Ok(UvdHeader {

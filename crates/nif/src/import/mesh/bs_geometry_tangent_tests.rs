@@ -222,7 +222,10 @@ fn placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis() {
     assert_eq!(mesh.normals.len(), 3);
     for n in &mesh.normals {
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        assert!((len - 1.0).abs() < 1e-5, "derived normals must be unit, got {n:?}");
+        assert!(
+            (len - 1.0).abs() < 1e-5,
+            "derived normals must be unit, got {n:?}"
+        );
     }
     assert!(
         mesh.tangents.is_empty(),

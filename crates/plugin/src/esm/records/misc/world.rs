@@ -380,7 +380,10 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             }
             b"NVCA" => {
                 out.cover_triangles = rows_exact(data, 2)
-                    .map(|it| it.map(|r| u16::from_le_bytes([r[0], r[1]])).collect::<Vec<_>>())
+                    .map(|it| {
+                        it.map(|r| u16::from_le_bytes([r[0], r[1]]))
+                            .collect::<Vec<_>>()
+                    })
                     .filter(|v| data_words.is_none_or(|w| w[4] as usize == v.len()))
                     .unwrap_or_default();
             }

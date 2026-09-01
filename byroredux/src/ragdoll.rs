@@ -1758,8 +1758,8 @@ mod tests {
             constraints: vec![hinge_constraint(0, 1)],
         };
 
-        let template = template_from_imported(&imported, &skel_map, &rest_poses)
-            .expect("both bodies resolve");
+        let template =
+            template_from_imported(&imported, &skel_map, &rest_poses).expect("both bodies resolve");
 
         assert!(
             (template.bodies[0].local_translation - spine_local_t).length() < 1e-4,

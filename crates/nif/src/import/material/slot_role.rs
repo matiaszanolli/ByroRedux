@@ -273,10 +273,7 @@ const fn is_tint_family(shader_type: u32) -> bool {
 /// at the boundary, which is where NIFAL requires it — the shader's unit
 /// default now remains reachable only for the BGSM lane, which genuinely
 /// authors no companion texture.
-pub fn slot_to_colocated_role(
-    context: TextureSlotContext,
-    slot: u32,
-) -> Option<TextureRole> {
+pub fn slot_to_colocated_role(context: TextureSlotContext, slot: u32) -> Option<TextureRole> {
     match (context.layout, slot) {
         (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 2)
             if is_tint_family(context.shader_type)
@@ -523,24 +520,15 @@ mod tests {
     fn skyrim_feature_flags_route_soft_rim_and_back_lighting_maps() {
         let mut context = skyrim(0, false, false);
         context.soft_lighting = true;
-        assert_eq!(
-            slot_to_role(context, 2),
-            Some(TextureRole::LightingMask)
-        );
+        assert_eq!(slot_to_role(context, 2), Some(TextureRole::LightingMask));
 
         context.soft_lighting = false;
         context.rim_lighting = true;
-        assert_eq!(
-            slot_to_role(context, 2),
-            Some(TextureRole::LightingMask)
-        );
+        assert_eq!(slot_to_role(context, 2), Some(TextureRole::LightingMask));
 
         context.rim_lighting = false;
         context.back_lighting = true;
-        assert_eq!(
-            slot_to_role(context, 7),
-            Some(TextureRole::BackLighting)
-        );
+        assert_eq!(slot_to_role(context, 7), Some(TextureRole::BackLighting));
     }
 
     /// #3458 — the test above builds its context with `skyrim(0, ..)`, i.e.

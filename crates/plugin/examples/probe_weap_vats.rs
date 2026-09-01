@@ -133,11 +133,7 @@ fn main() -> anyhow::Result<()> {
             .take(14)
             .map(|(v, n)| format!("{v}×{n}"))
             .collect();
-        println!(
-            "  {label}: {} distinct, {}",
-            bucket.len(),
-            head.join(" ")
-        );
+        println!("  {label}: {} distinct, {}", bucket.len(), head.join(" "));
     }
     println!("  slot 16 (u8): {slot16:?}");
     for s in &samples {
