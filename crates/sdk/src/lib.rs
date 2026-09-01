@@ -20,6 +20,7 @@ pub mod manifest;
 pub mod packages;
 pub mod perks;
 pub mod projection;
+pub mod reputation;
 pub mod service;
 pub mod settings;
 pub mod spatial;

@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use byroredux_core::character::Perks;
+use byroredux_core::character::{FactionReputation, Perks};
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::components::{
     ActorValues, EquipmentSlots, FactionRanks, FormIdComponent, GlobalTransform, Inventory,
@@ -53,6 +53,10 @@ use byroredux_sdk::packages::{
 };
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot, MAX_PERKS_PER_ENTITY};
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
+use byroredux_sdk::reputation::{
+    ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
+    MAX_REPUTATIONS_PER_ENTITY,
+};
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, CONSOLE_REGISTER_CAPABILITY, EQUIPMENT_EVENT,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
@@ -80,6 +84,7 @@ const MAX_PENDING_SETTING_WRITES: usize = 256;
 const MAX_PENDING_ACTOR_VALUE_WRITES: usize = 256;
 const MAX_PENDING_PACKAGE_EVALUATIONS: usize = 256;
 const MAX_PENDING_ANIMATION_COMMANDS: usize = 256;
+const MAX_PENDING_REPUTATION_WRITES: usize = 256;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -267,6 +272,7 @@ pub(crate) struct ExtensionHost {
     pending_actor_value_writes: Vec<ActorValueCommand>,
     pending_package_evaluations: Vec<EvaluatePackageCommand>,
     pending_animation_commands: Vec<PlayIdleCommand>,
+    pending_reputation_writes: Vec<ReputationCommand>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
@@ -294,6 +300,7 @@ impl ExtensionHost {
             pending_actor_value_writes: Vec::new(),
             pending_package_evaluations: Vec::new(),
             pending_animation_commands: Vec::new(),
+            pending_reputation_writes: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
@@ -544,6 +551,7 @@ impl ExtensionHost {
                 pending_actor_value_writes: &mut self.pending_actor_value_writes,
                 pending_package_evaluations: &mut self.pending_package_evaluations,
                 pending_animation_commands: &mut self.pending_animation_commands,
+                pending_reputation_writes: &mut self.pending_reputation_writes,
                 diagnostics: &mut self.diagnostics,
                 stats: &mut stats,
             },
@@ -738,6 +746,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -823,6 +832,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -912,6 +922,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -984,6 +995,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1052,6 +1064,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1117,6 +1130,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1257,6 +1271,7 @@ impl ExtensionHost {
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
                         pending_package_evaluations: &mut self.pending_package_evaluations,
                         pending_animation_commands: &mut self.pending_animation_commands,
+                        pending_reputation_writes: &mut self.pending_reputation_writes,
                         diagnostics: &mut self.diagnostics,
                         stats: &mut stats,
                     },
@@ -1332,6 +1347,7 @@ impl ExtensionHost {
                     pending_actor_value_writes: &mut self.pending_actor_value_writes,
                     pending_package_evaluations: &mut self.pending_package_evaluations,
                     pending_animation_commands: &mut self.pending_animation_commands,
+                    pending_reputation_writes: &mut self.pending_reputation_writes,
                     diagnostics: &mut self.diagnostics,
                     stats: &mut stats,
                 },
@@ -1677,6 +1693,27 @@ impl ExtensionHost {
             })
             .collect()
     }
+
+    fn take_resolved_reputation_writes(&mut self) -> Result<Vec<ResolvedReputationWrite>, String> {
+        let commands = std::mem::take(&mut self.pending_reputation_writes);
+        commands
+            .into_iter()
+            .map(|command| {
+                let entity = self.handles.resolve(command.entity()).ok_or_else(|| {
+                    format!(
+                        "reputation command targeted stale entity {:?}",
+                        command.entity()
+                    )
+                })?;
+                Ok(ResolvedReputationWrite {
+                    entity,
+                    reputation: command.reputation(),
+                    operation: command.operation(),
+                    points: command.points(),
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1693,6 +1730,14 @@ struct ResolvedPlayIdle {
     idle: FormRef,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedReputationWrite {
+    entity: EntityId,
+    reputation: FormRef,
+    operation: ReputationOperation,
+    points: u16,
+}
+
 struct DeliveryCommitContext<'a> {
     state: &'a mut ExtensionComponentStore,
     principal_storage: &'a mut PrincipalStorageStore,
@@ -1701,6 +1746,7 @@ struct DeliveryCommitContext<'a> {
     pending_actor_value_writes: &'a mut Vec<ActorValueCommand>,
     pending_package_evaluations: &'a mut Vec<EvaluatePackageCommand>,
     pending_animation_commands: &'a mut Vec<PlayIdleCommand>,
+    pending_reputation_writes: &'a mut Vec<ReputationCommand>,
     diagnostics: &'a mut Vec<ExtensionDiagnostic>,
     stats: &'a mut ExtensionDispatchStats,
 }
@@ -1720,6 +1766,7 @@ fn apply_delivery_result(
         pending_actor_value_writes,
         pending_package_evaluations,
         pending_animation_commands,
+        pending_reputation_writes,
         diagnostics,
         stats,
     } = context;
@@ -1743,12 +1790,14 @@ fn apply_delivery_result(
     let mut actor_value_writes = Vec::new();
     let mut package_evaluations = Vec::new();
     let mut animation_commands = Vec::new();
+    let mut reputation_writes = Vec::new();
     for command in commands {
         match command {
             HostCommand::ActorValue(command) => actor_value_writes.push(command),
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::EvaluatePackage(command) => package_evaluations.push(command),
             HostCommand::PlayIdle(command) => animation_commands.push(command),
+            HostCommand::Reputation(command) => reputation_writes.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
             HostCommand::PublishEvent(command) => published_events.push(command),
             HostCommand::Setting(command) => setting_writes.push(command),
@@ -1820,6 +1869,15 @@ fn apply_delivery_result(
                 "pending animation command limit of {MAX_PENDING_ANIMATION_COMMANDS} exceeded"
             ));
         }
+        let next_reputation_write_count = pending_reputation_writes
+            .len()
+            .checked_add(reputation_writes.len())
+            .ok_or_else(|| "pending reputation write count overflow".to_owned())?;
+        if next_reputation_write_count > MAX_PENDING_REPUTATION_WRITES {
+            return Err(format!(
+                "pending reputation write limit of {MAX_PENDING_REPUTATION_WRITES} exceeded"
+            ));
+        }
         let next_event_count = pending_custom_events
             .len()
             .checked_add(staged_events.len())
@@ -1874,6 +1932,7 @@ fn apply_delivery_result(
             pending_actor_value_writes.extend(actor_value_writes);
             pending_package_evaluations.extend(package_evaluations);
             pending_animation_commands.extend(animation_commands);
+            pending_reputation_writes.extend(reputation_writes);
             stats.commands_applied += command_count;
         }
     }
@@ -1932,6 +1991,7 @@ struct RawEntityProjection {
     perks: Option<PerkSnapshot>,
     packages: Option<PackageSnapshot>,
     animation: Option<AnimationSnapshot>,
+    reputation: Option<ReputationSnapshot>,
 }
 
 fn entity_projection(
@@ -1968,8 +2028,12 @@ fn entity_projection(
         Some(packages) => projection.with_packages(packages),
         None => projection,
     };
-    match raw.and_then(|projection| projection.animation) {
+    let projection = match raw.and_then(|projection| projection.animation) {
         Some(animation) => projection.with_animation(animation),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.reputation.clone()) {
+        Some(reputation) => projection.with_reputation(reputation),
         None => projection,
     }
 }
@@ -3269,6 +3333,49 @@ fn capture_entity_projections(
             );
         }
     }
+    if let (Some(reputations), Some(resolver)) = (
+        world.query::<FactionReputation>(),
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
+    ) {
+        for (entity, projection) in &mut projections {
+            let Some(reputation) = reputations.get(*entity) else {
+                continue;
+            };
+            let mut truncated = false;
+            let mut entries = BTreeMap::<FormRef, (u16, u16)>::new();
+            for standing in &reputation.entries {
+                let Some(identity) = resolver.resolve(standing.repu_form_id).map(form_ref) else {
+                    truncated = true;
+                    continue;
+                };
+                if identity.local() == 0 {
+                    truncated = true;
+                    continue;
+                }
+                if let std::collections::btree_map::Entry::Vacant(entry) = entries.entry(identity) {
+                    entry.insert((standing.fame, standing.infamy));
+                } else {
+                    truncated = true;
+                }
+            }
+            let mut entries = entries
+                .into_iter()
+                .filter_map(|(reputation, (fame, infamy))| {
+                    ReputationEntry::new(reputation, fame, infamy)
+                        .map_err(|_| truncated = true)
+                        .ok()
+                })
+                .collect::<Vec<_>>();
+            if entries.len() > MAX_REPUTATIONS_PER_ENTITY {
+                entries.truncate(MAX_REPUTATIONS_PER_ENTITY);
+                truncated = true;
+            }
+            projection.reputation = Some(
+                ReputationSnapshot::new(entries, truncated)
+                    .expect("live reputation capture enforces SDK bounds and ordering"),
+            );
+        }
+    }
     if let Some(resolver) =
         world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
     {
@@ -3575,10 +3682,67 @@ fn apply_pending_animation_commands(world: &World, host: &mut ExtensionHost) {
     }
 }
 
+fn apply_pending_reputation_writes(world: &World, host: &mut ExtensionHost) {
+    let commands = match host.take_resolved_reputation_writes() {
+        Ok(commands) => commands,
+        Err(error) => {
+            host.record_host_fault(format!("deferred reputation batch rejected: {error}"));
+            return;
+        }
+    };
+    if commands.is_empty() {
+        return;
+    }
+    let apply = (|| -> Result<(), String> {
+        let resolver = world
+            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
+        let live = world
+            .query::<FactionReputation>()
+            .ok_or_else(|| "FactionReputation storage is unavailable".to_owned())?;
+        let mut staged = BTreeMap::<EntityId, FactionReputation>::new();
+        for command in commands {
+            let reputation = resolver
+                .global_form_id(command.reputation)
+                .ok_or_else(|| "portable REPU identity is not loaded".to_owned())?;
+            let state = if let Some(state) = staged.get_mut(&command.entity) {
+                state
+            } else {
+                let state = live
+                    .get(command.entity)
+                    .cloned()
+                    .ok_or_else(|| "reputation target no longer carries state".to_owned())?;
+                staged.entry(command.entity).or_insert(state)
+            };
+            match command.operation {
+                ReputationOperation::AddFame => state.add_fame(reputation, command.points),
+                ReputationOperation::AddInfamy => state.add_infamy(reputation, command.points),
+                ReputationOperation::Reset => state.reset(reputation),
+            }
+        }
+        drop(live);
+        drop(resolver);
+        let mut live = world
+            .query_mut::<FactionReputation>()
+            .ok_or_else(|| "FactionReputation storage disappeared before commit".to_owned())?;
+        for (entity, state) in staged {
+            let target = live
+                .get_mut(entity)
+                .ok_or_else(|| "reputation target disappeared before commit".to_owned())?;
+            *target = state;
+        }
+        Ok(())
+    })();
+    if let Err(error) = apply {
+        host.record_host_fault(format!("deferred reputation batch rejected: {error}"));
+    }
+}
+
 fn apply_pending_world_commands(world: &World, host: &mut ExtensionHost) {
     apply_pending_actor_value_writes(world, host);
     apply_pending_package_evaluations(world, host);
     apply_pending_animation_commands(world, host);
+    apply_pending_reputation_writes(world, host);
 }
 
 fn entities_by_form(world: &World) -> BTreeMap<FormRef, EntityId> {
@@ -4811,6 +4975,7 @@ mod tests {
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
                 pending_package_evaluations: &mut host.pending_package_evaluations,
                 pending_animation_commands: &mut host.pending_animation_commands,
+                pending_reputation_writes: &mut host.pending_reputation_writes,
                 diagnostics: &mut host.diagnostics,
                 stats: &mut stats,
             },
@@ -5716,6 +5881,66 @@ mod tests {
             .unwrap();
         assert_eq!(state.requested_idle_form_id, Some(0x55));
         assert_eq!(state.idle_request_serial, 4);
+    }
+
+    #[test]
+    fn reputation_projection_and_writes_share_canonical_actor_state() {
+        let mut world = World::new();
+        world.register::<FactionReputation>();
+        let actor = world.spawn();
+        let mut reputation = FactionReputation::default();
+        reputation.add_fame(0x44, 12);
+        reputation.add_infamy(0x44, 4);
+        world.insert(actor, reputation);
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["FalloutNV.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].reputation.as_ref().unwrap();
+        assert!(!snapshot.truncated());
+        let repu = FormRef::new(
+            PluginId::from_filename("FalloutNV.esm").0.to_be_bytes(),
+            0x44,
+        );
+        assert_eq!(snapshot.get(repu).unwrap().fame(), 12);
+        assert_eq!(snapshot.get(repu).unwrap().infamy(), 4);
+
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let handle = host.bind_entity(actor, None).unwrap();
+        host.pending_reputation_writes
+            .push(ReputationCommand::new(handle, repu, ReputationOperation::AddInfamy, 3).unwrap());
+        apply_pending_world_commands(&world, &mut host);
+        let state = world.get::<FactionReputation>(actor).unwrap();
+        assert_eq!(state.fame(0x44), 12);
+        assert_eq!(state.infamy(0x44), 7);
+        drop(state);
+
+        host.pending_reputation_writes
+            .push(ReputationCommand::new(handle, repu, ReputationOperation::AddFame, 9).unwrap());
+        host.pending_reputation_writes.push(
+            ReputationCommand::new(
+                handle,
+                FormRef::new([99; 16], 1),
+                ReputationOperation::AddInfamy,
+                1,
+            )
+            .unwrap(),
+        );
+        apply_pending_world_commands(&world, &mut host);
+        let state = world.get::<FactionReputation>(actor).unwrap();
+        assert_eq!(state.fame(0x44), 12, "an unresolved REPU rejects the batch");
+        assert_eq!(state.infamy(0x44), 7);
+        assert!(host.take_diagnostics().iter().any(|diagnostic| matches!(
+            diagnostic,
+            ExtensionDiagnostic::Fault { message, .. }
+                if message.contains("deferred reputation batch rejected")
+        )));
     }
 
     #[test]

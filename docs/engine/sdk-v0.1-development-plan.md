@@ -686,8 +686,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   equipment have a capability-gated, read-only aggregated snapshot with item
   names, categories, values, weights, and explicit truncation; mutation and the
   remaining gameplay domains are pending. Portable faction membership/rank
-  reads are implemented separately; reputation and inter-faction relations
-  remain pending. Ranked perk reads are implemented from the canonical live
+  reads are implemented separately. REPU-backed fame/infamy reads plus atomic,
+  capability-gated add/reset mutations are implemented against the canonical
+  actor component; inter-faction relations remain pending. Ranked perk reads are implemented from the canonical live
   component; perk mutation remains pending rank-limit and progression
   validation. Authored IDLE animation state and behavior-event generations are
   projected through portable identities; capability-gated playback requests

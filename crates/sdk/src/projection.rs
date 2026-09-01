@@ -11,6 +11,7 @@ use crate::identity::{EntityRef, FormRef};
 use crate::inventory::InventorySnapshot;
 use crate::packages::PackageSnapshot;
 use crate::perks::PerkSnapshot;
+use crate::reputation::ReputationSnapshot;
 
 /// Maximum UTF-8 bytes exposed for one entity display name.
 pub const MAX_ENTITY_NAME_BYTES: usize = 1_024;
@@ -75,6 +76,7 @@ pub struct EntityProjection {
     perks: Option<PerkSnapshot>,
     packages: Option<PackageSnapshot>,
     animation: Option<AnimationSnapshot>,
+    reputation: Option<ReputationSnapshot>,
 }
 
 impl EntityProjection {
@@ -103,6 +105,7 @@ impl EntityProjection {
             perks: None,
             packages: None,
             animation: None,
+            reputation: None,
         })
     }
 
@@ -190,6 +193,15 @@ impl EntityProjection {
 
     pub const fn animation(&self) -> Option<AnimationSnapshot> {
         self.animation
+    }
+
+    pub fn with_reputation(mut self, reputation: ReputationSnapshot) -> Self {
+        self.reputation = Some(reputation);
+        self
+    }
+
+    pub fn reputation(&self) -> Option<&ReputationSnapshot> {
+        self.reputation.as_ref()
     }
 }
 

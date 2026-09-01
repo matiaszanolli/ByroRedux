@@ -29,6 +29,10 @@ The current public surface includes:
 - `FactionSnapshot` exposes deterministic callback-local FACT memberships and
   signed ranks through portable identities, with explicit truncation. It does
   not conflate membership with REPU fame/infamy or faction relationships.
+- `ReputationSnapshot` keeps Fallout-style fame and infamy separate from FACT
+  membership and keys each bounded entry by portable REPU identity. Deferred
+  add-fame, add-infamy, and reset commands use the canonical capped actor
+  component and commit atomically after guest execution.
 - `PerkSnapshot` exposes bounded, deterministic owned perk ranks through
   portable identities, with explicit truncation for invalid or unresolved
   live entries. Perk mutation remains closed pending rank-limit and progression
@@ -98,6 +102,8 @@ read/write grants. It also projects capability-gated inventory and worn
 equipment summaries by portable base form, faction memberships, and the latest
 bounded spatial snapshot of live authored references. Ranked actor perks are
 also projected read-only from the canonical live character component.
+REPU-backed fame and infamy are projected and mutated through their own
+capability-gated service; unresolved forms reject the complete deferred batch.
 Ambient and scene package state is projected together, while capability-gated
 reevaluation is deferred to the existing selectors used by native scripting.
 Authored animation state is projected separately, and capability-gated IDLE

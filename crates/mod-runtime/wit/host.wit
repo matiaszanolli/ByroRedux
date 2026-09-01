@@ -345,6 +345,36 @@ interface animation {
     queue-play-idle: func(entity: entity-ref, idle: form-ref);
 }
 
+/// Canonical fame and infamy axes keyed by authored REPU records.
+interface reputation {
+    use state.{entity-ref, form-ref};
+
+    record reputation-entry {
+        reputation: form-ref,
+        fame: u16,
+        infamy: u16,
+    }
+
+    record reputation-snapshot {
+        entries: list<reputation-entry>,
+        truncated: bool,
+    }
+
+    enum operation {
+        add-fame,
+        add-infamy,
+        reset,
+    }
+
+    get: func(entity: entity-ref) -> option<reputation-snapshot>;
+    queue: func(
+        entity: entity-ref,
+        reputation: form-ref,
+        operation: operation,
+        points: u16,
+    );
+}
+
 /// Bounded spatial queries over live authored references. Results use
 /// portable form identities and never expose ECS slots or engine pointers.
 interface world-spatial {
@@ -390,6 +420,7 @@ world extension {
     import perks;
     import packages;
     import animation;
+    import reputation;
     import world-spatial;
     import console;
 

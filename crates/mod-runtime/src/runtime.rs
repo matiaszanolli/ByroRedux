@@ -1,6 +1,7 @@
 use crate::bindings::byro::mod_host::{
     actor_values, animation, console, content_catalog, context, events, factions, inventory,
-    logging, packages, perks, state, storage as wit_storage, world_spatial, world_state,
+    logging, packages, perks, reputation, state, storage as wit_storage, world_spatial,
+    world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -29,6 +30,9 @@ use byroredux_sdk::packages::{
 };
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot};
 use byroredux_sdk::projection::EntityProjection;
+use byroredux_sdk::reputation::{
+    ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
+};
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     ACTOR_VALUES_READ_CAPABILITY, ACTOR_VALUES_SERVICE, ACTOR_VALUES_WRITE_CAPABILITY,
@@ -40,7 +44,8 @@ use byroredux_sdk::service::{
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
     INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY, PACKAGES_READ_CAPABILITY,
     PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
-    SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    REPUTATION_READ_CAPABILITY, REPUTATION_SERVICE, REPUTATION_WRITE_CAPABILITY, SESSION_EVENT,
+    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
     SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
     UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
     WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
@@ -271,6 +276,14 @@ impl SandboxRuntime {
                 "Request authored IDLE playback for callback-visible actors",
             ),
             (
+                REPUTATION_READ_CAPABILITY,
+                "Read canonical fame and infamy axes from callback-visible actors",
+            ),
+            (
+                REPUTATION_WRITE_CAPABILITY,
+                "Queue bounded canonical fame and infamy mutations",
+            ),
+            (
                 INVENTORY_READ_CAPABILITY,
                 "Read portable inventory and equipment summaries from callback-visible entities",
             ),
@@ -374,6 +387,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(ANIMATION_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(REPUTATION_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(REPUTATION_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1981,6 +2005,64 @@ impl animation::Host for HostState {
     }
 }
 
+impl reputation::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+    ) -> wasmtime::Result<Option<reputation::ReputationSnapshot>> {
+        self.require_reputation_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::reputation)
+            .map(wit_reputation_snapshot))
+    }
+
+    fn queue(
+        &mut self,
+        entity: state::EntityRef,
+        reputation: state::FormRef,
+        operation: reputation::Operation,
+        points: u16,
+    ) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("reputation mutations are only accepted during a callback");
+        }
+        if !self.grants.contains(REPUTATION_WRITE_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {REPUTATION_WRITE_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let entity = sdk_entity_ref(entity)?;
+        if self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::reputation)
+            .is_none()
+        {
+            wasmtime::bail!("reputation target is not visible or has no reputation state");
+        }
+        let operation = match operation {
+            reputation::Operation::AddFame => ReputationOperation::AddFame,
+            reputation::Operation::AddInfamy => ReputationOperation::AddInfamy,
+            reputation::Operation::Reset => ReputationOperation::Reset,
+        };
+        let command = ReputationCommand::new(entity, sdk_form_ref(reputation), operation, points)
+            .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
+        self.pending_commands.push(HostCommand::Reputation(command));
+        Ok(())
+    }
+}
+
 impl world_spatial::Host for HostState {
     fn nearby(
         &mut self,
@@ -2205,6 +2287,26 @@ fn wit_animation_event(event: AnimationEvent) -> animation::AnimationEvent {
     }
 }
 
+fn wit_reputation_snapshot(snapshot: &ReputationSnapshot) -> reputation::ReputationSnapshot {
+    reputation::ReputationSnapshot {
+        entries: snapshot
+            .entries()
+            .iter()
+            .copied()
+            .map(wit_reputation_entry)
+            .collect(),
+        truncated: snapshot.truncated(),
+    }
+}
+
+fn wit_reputation_entry(entry: ReputationEntry) -> reputation::ReputationEntry {
+    reputation::ReputationEntry {
+        reputation: wit_form_ref(entry.reputation()),
+        fame: entry.fame(),
+        infamy: entry.infamy(),
+    }
+}
+
 fn wit_spatial_query_result(result: &SpatialQueryResult) -> world_spatial::SpatialQueryResult {
     world_spatial::SpatialQueryResult {
         hits: result.hits().iter().copied().map(wit_spatial_hit).collect(),
@@ -2322,6 +2424,16 @@ impl HostState {
         if !self.grants.contains(ANIMATION_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {ANIMATION_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_reputation_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(REPUTATION_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {REPUTATION_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -3110,6 +3222,68 @@ mod projection_tests {
             <HostState as animation::Host>::queue_play_idle(&mut denied, wit_entity, wit_idle)
                 .unwrap_err();
         assert!(error.to_string().contains(ANIMATION_PLAY_CAPABILITY));
+    }
+
+    #[test]
+    fn reputation_is_portable_deferred_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let repu = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let snapshot =
+            ReputationSnapshot::new(vec![ReputationEntry::new(repu, 12, 4).unwrap()], true)
+                .unwrap();
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_reputation(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+        let wit_repu = wit_form_ref(repu);
+
+        let mut state = content_host_state(false);
+        state.grants.grant(REPUTATION_READ_CAPABILITY).unwrap();
+        state.grants.grant(REPUTATION_WRITE_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as reputation::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(sdk_form_ref(snapshot.entries[0].reputation), repu);
+        assert_eq!(
+            (snapshot.entries[0].fame, snapshot.entries[0].infamy),
+            (12, 4)
+        );
+        <HostState as reputation::Host>::queue(
+            &mut state,
+            wit_entity,
+            wit_repu,
+            reputation::Operation::AddInfamy,
+            3,
+        )
+        .unwrap();
+        let [HostCommand::Reputation(command)] = state.pending_commands.as_slice() else {
+            panic!("expected one reputation command")
+        };
+        assert_eq!(command.entity(), entity);
+        assert_eq!(command.reputation(), repu);
+        assert_eq!(command.operation(), ReputationOperation::AddInfamy);
+        assert_eq!(command.points(), 3);
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        let error = <HostState as reputation::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(REPUTATION_READ_CAPABILITY));
+        let error = <HostState as reputation::Host>::queue(
+            &mut denied,
+            wit_entity,
+            wit_repu,
+            reputation::Operation::Reset,
+            0,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(REPUTATION_WRITE_CAPABILITY));
     }
 
     #[test]
