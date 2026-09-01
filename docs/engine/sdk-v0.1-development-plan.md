@@ -525,17 +525,18 @@ rejects catalogs that cannot be represented by the classic 8-bit load order.
 Numeric indices are callback-local compatibility values; portable forms
 continue to use stable source identity. Version probes deliberately remain
 feature-discovery evidence instead of returning a fake extender version.
-At live SCPT attachment, supported `Set` statements and nested `if`/`else`
-branches now translate into one static ECS statement tree. Preserved `SCTX` is
-preferred; source-less `SCDA` accepts exact `Begin`/`Set`/`If`/`Else`/`EndIf`/
-`End` framing, resolves target indices through `SLSD`, and accepts only a single
-complete supported command-expression token on each right-hand side or
-condition. `GameMode`, `OnLoad`, and `OnActivate` dispatch synchronously against
-the same live content-catalog snapshot exposed to sandbox extensions and write
-results into the existing save-backed `ScriptVariables` component. Nesting is
-capped at 32; a handler containing any unsupported statement, expression tail,
-event filter, `elseif`, or malformed branch is rejected as a unit, so partial
-translation cannot reorder or accidentally expose its body.
+At live SCPT attachment, supported `Set` statements and nested
+`if`/`elseif`/`else` branches now translate into one static ECS statement tree.
+Preserved `SCTX` is preferred; source-less `SCDA` accepts exact `Begin`/`Set`/
+`If`/`ElseIf`/`Else`/`EndIf`/`End` framing, resolves target indices through
+`SLSD`, and accepts only a single complete supported command-expression token
+on each right-hand side or condition. `GameMode`, `OnLoad`, and `OnActivate`
+dispatch synchronously against the same live content-catalog snapshot exposed
+to sandbox extensions and write results into the existing save-backed
+`ScriptVariables` component. Nesting and
+`elseif` chain length are capped at 32; a handler containing any unsupported
+statement, expression tail, event filter, or malformed branch is rejected as a
+unit, so partial translation cannot reorder or accidentally expose its body.
 `GetSourceModIndex`, reference construction, and all other xNVSE/OBSE commands
 remain explicit gaps. Command names and legacy result contracts are anchored
 to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)
@@ -837,8 +838,8 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   content catalog, and unrecognized `GetNVSE*`/`GetOBSE*` probes are reported
   as unsupported. Eager scanning of every script in the full load-order
   archives, broader command-pack classification, non-literal SCDA argument
-  evaluation, comparisons/operators, `elseif`, and general ObScript execution
-  remain pending. The load-order subset is executable end to end both as typed
+  evaluation, comparisons/operators, and general ObScript execution remain
+  pending. The load-order subset is executable end to end both as typed
   compiled-call semantics and as live conditional `SCTX` or source-less `SCDA`
   event handlers against the engine content catalog.**
 - Real-mod conformance suites per game; each facility is considered covered

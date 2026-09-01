@@ -250,15 +250,15 @@ inert components — they defer to M47.2's VMAD decode. Unregistered scripts are
 the common case (vanilla FO3 ships ~1257 SCPT records; M47.0 hand-translates a
 handful). Before that fallback, the loader now conservatively translates
 pre-Skyrim handlers containing engine-native load-order assignments and nested
-`if`/`else` branches. It prefers preserved `SCTX`, then applies the same boundary
-to source-less `SCDA`: exact statement framing, local indices resolved through
-`SLSD` metadata, and one complete supported command expression per assignment
-or condition. `GameMode`, `OnLoad`, and `OnActivate` execute in the ECS schedule
-against the live immutable content catalog; numeric results land in save-backed
-`ScriptVariables`. Nesting is capped at 32. Any unsupported statement,
-expression tail, event filter, `elseif`, or malformed branch rejects the whole
-handler. A registry miss is therefore silent only when neither path can attach
-behavior.
+`if`/`elseif`/`else` branches. It prefers preserved `SCTX`, then applies the same
+boundary to source-less `SCDA`: exact statement framing, local indices resolved
+through `SLSD` metadata, and one complete supported command expression per
+assignment or condition. `GameMode`, `OnLoad`, and `OnActivate` execute in the
+ECS schedule against the live immutable content catalog; numeric results land
+in save-backed `ScriptVariables`. Nesting and `elseif` chain length are capped at 32. Any
+unsupported statement, expression tail, event filter, or malformed branch
+rejects the whole handler. A registry miss is therefore silent only when
+neither path can attach behavior.
 
 ### The R5 demo translations (`papyrus_demo/`)
 
