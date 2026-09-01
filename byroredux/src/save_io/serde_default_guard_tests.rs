@@ -361,8 +361,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Fragment provider barriers now retain that same owner through saved
     // quest/scene continuations, making v13 intentionally incompatible with
     // v12 rather than restoring those calls into a global namespace.
-    const BASELINE_MAJOR: u16 = 13;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xba27_849f_2821_97ba;
+    // In-progress ModEvent builders are now nested in extension save state so
+    // latent scripts can resume without losing principal ownership. The new
+    // serialized field makes v14 intentionally incompatible with v13.
+    const BASELINE_MAJOR: u16 = 14;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4ed4_b348_b28f_f141;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

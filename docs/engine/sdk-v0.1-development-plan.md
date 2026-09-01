@@ -565,15 +565,15 @@ The first event adapter covers fixed-arity
 `Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
 name to the shared engine-owned compatibility bus and preserves the string,
 float, and stable sender form synchronously without an SKSE DLL. The lower-level
-`ModEvent.Create/Push*/Send/Release` family now uses an engine-owned transient
-typed builder: handles are non-zero and bounded per adapter, bool/int/float/
+`ModEvent.Create/Push*/Send/Release` family now uses an engine-owned,
+save-persistent typed builder: handles are non-zero and bounded per adapter, bool/int/float/
 string/Form arguments retain order and type, oversized pushes are ignored like
 the legacy void-return calls, and Send atomically releases into the shared bus.
 The eight exact static aliases are published by the zero-package engine catalog
 and execute under the authenticated archive-script principal; each principal
 has an isolated handle registry even though successfully sent event channels
 are deliberately shared. Dynamic Papyrus receiver registration and arbitrary
-typed callback delivery remain the next compatibility boundary.
+typed callback delivery are handled by the Papyrus provider runtime.
 Runtime `RegisterForModEvent`, `UnregisterForModEvent`, and
 `UnregisterForAllModEvents` adapters now queue capability-gated subscription
 mutations in the same atomic callback batch. Successful registration exposes
@@ -1245,6 +1245,17 @@ isolated per archive-script package, and successful sends enqueue the existing
 bounded shared compatibility event bus. Invalid handles preserve SKSE's false
 or no-op behavior. Papyrus-side dynamic registration/callback dispatch and
 builder save persistence remain explicit follow-up work.
+
+Checkpoint commit: `feat(scripting): deliver Papyrus ModEvent callbacks`.
+
+Delivered dynamic per-script-instance registration for source and decompiled
+Papyrus, arbitrary callback event names, exact bool/int/float/string/Form
+parameter projection, unregister/all behavior, and cross-principal delivery
+through the same bounded shared bus used by hosted extensions. Registrations
+remain transient because they contain live entity identities and are refreshed
+from `OnInit`/`OnLoad`; unfinished builder handles and their typed arguments now
+round-trip in extension save format 4 so a latent script can safely resume and
+send after load.
 
 ### 14.4 Exit gate
 

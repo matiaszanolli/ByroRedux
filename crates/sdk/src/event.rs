@@ -89,7 +89,7 @@ pub struct LegacySkseModEventPayload {
 }
 
 /// One typed argument pushed through SKSE's handle-based `ModEvent` API.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LegacySkseModEventValue {
     Bool(bool),
     Int(i32),
@@ -229,14 +229,14 @@ impl LegacySkseVariadicModEventPayload {
 }
 
 /// One in-progress handle event.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct LegacySkseModEventBuilder {
     event: EventId,
     arguments: Vec<LegacySkseModEventValue>,
 }
 
 /// Engine-owned replacement for SKSE's transient ModEvent handle registry.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LegacySkseModEventBuilders {
     next_handle: u32,
     builders: BTreeMap<u32, LegacySkseModEventBuilder>,
@@ -317,6 +317,29 @@ impl LegacySkseModEventBuilders {
     pub fn is_empty(&self) -> bool {
         self.builders.is_empty()
     }
+
+    /// Validate restored builder bounds and reversible shared event IDs.
+    pub fn is_valid(&self) -> bool {
+        self.builders.len() <= MAX_LEGACY_SKSE_MOD_EVENT_BUILDERS
+            && self.builders.iter().all(|(handle, builder)| {
+                *handle != 0
+                    && is_legacy_skse_mod_event_id(&builder.event)
+                    && builder.arguments.len() <= MAX_LEGACY_SKSE_MOD_EVENT_ARGUMENTS
+                    && LegacySkseVariadicModEventPayload {
+                        arguments: builder.arguments.clone(),
+                    }
+                    .encode()
+                    .is_some()
+            })
+    }
+}
+
+/// One principal's in-progress ModEvent builders embedded in engine saves.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedLegacyModEventBuilders {
+    pub principal: PrincipalId,
+    pub builders: LegacySkseModEventBuilders,
 }
 
 impl LegacySkseModEventPayload {

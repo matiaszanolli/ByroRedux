@@ -5,12 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::event::PersistedLegacyModEventBuilders;
 use crate::identity::{ComponentFieldId, ComponentSchemaId, EntityRef, FormRef, PrincipalId};
 use crate::legacy_containers::PersistedLegacyContainers;
 use crate::storage::PersistedPrincipalStorage;
 
 /// Current engine-owned extension-state payload format.
-pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 3;
+pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 4;
 
 /// Oldest extension-state payload accepted by this SDK. Version 2 predates
 /// legacy container records, which deserialize as an empty list.
@@ -110,6 +111,8 @@ pub struct ExtensionStateSnapshot {
     pub principal_storage: Vec<PersistedPrincipalStorage>,
     #[serde(default)]
     pub legacy_containers: Vec<PersistedLegacyContainers>,
+    #[serde(default)]
+    pub legacy_mod_event_builders: Vec<PersistedLegacyModEventBuilders>,
 }
 
 impl Default for ExtensionStateSnapshot {
@@ -119,6 +122,7 @@ impl Default for ExtensionStateSnapshot {
             rows: Vec::new(),
             principal_storage: Vec::new(),
             legacy_containers: Vec::new(),
+            legacy_mod_event_builders: Vec::new(),
         }
     }
 }

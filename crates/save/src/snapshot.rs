@@ -112,7 +112,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// compatibility storage into an unauthenticated global namespace.
 /// Version 13 extends the same ownership requirement to provider barriers
 /// embedded in saved quest/scene fragment continuations.
-pub const FORMAT_MAJOR: u16 = 13;
+/// Version 14 adds principal-owned, in-progress ModEvent builder handles to
+/// extension state so a suspended Papyrus handler can resume them safely.
+pub const FORMAT_MAJOR: u16 = 14;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

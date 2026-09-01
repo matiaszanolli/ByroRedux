@@ -24,6 +24,10 @@ use byroredux_sdk::{
         PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
     },
+    event::{
+        CustomEvent, LegacyModEventSubscriptionCommand, LegacySkseModEventValue,
+        LegacySkseVariadicModEventPayload,
+    },
     identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
@@ -38,6 +42,8 @@ use crate::recurring_update::OnUpdateEvent;
 
 const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
 const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
+const MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS: usize = 4_096;
+const MAX_PENDING_PAPYRUS_MOD_EVENTS: usize = 256;
 
 /// Host callback shared by Papyrus handlers after all ECS guards are dropped.
 pub type PapyrusProviderCallback =
@@ -132,6 +138,7 @@ pub fn set_papyrus_provider_runtime(
 pub(crate) fn register(world: &mut World) {
     world.insert_resource(PapyrusProviderRuntime::default());
     world.insert_resource(PapyrusProviderContinuationQueue::default());
+    world.insert_resource(PapyrusModEventRuntime::default());
     world.register::<PapyrusProviderProgram>();
 }
 
@@ -669,6 +676,14 @@ pub enum PapyrusProviderStatement {
         call: PapyrusProviderInvocation,
     },
     Call(PapyrusProviderInvocation),
+    RegisterModEvent {
+        event_name: String,
+        callback: String,
+    },
+    UnregisterModEvent {
+        event_name: String,
+    },
+    UnregisterAllModEvents,
     Wait {
         seconds: f32,
     },
@@ -677,6 +692,18 @@ pub enum PapyrusProviderStatement {
         then_branch: Vec<PapyrusProviderStatement>,
         else_branch: Vec<PapyrusProviderStatement>,
     },
+}
+
+#[derive(Clone, Debug)]
+enum PapyrusModEventRegistrationAction {
+    Register {
+        event_name: String,
+        callback: String,
+    },
+    Unregister {
+        event_name: String,
+    },
+    UnregisterAll,
 }
 
 #[derive(Clone, Debug)]
@@ -704,6 +731,34 @@ impl PapyrusProviderContinuationQueue {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+/// Transient per-script-instance SKSE-compatible ModEvent registrations and
+/// deliveries. Scripts refresh registrations from `OnInit`/`OnLoad` after a
+/// world replacement, matching the lifecycle contract documented by SKSE.
+#[derive(Clone, Debug, Default)]
+pub struct PapyrusModEventRuntime {
+    registrations: BTreeMap<(EntityId, PrincipalId, byroredux_sdk::identity::EventId), String>,
+    pending: Vec<CustomEvent>,
+}
+
+impl Resource for PapyrusModEventRuntime {}
+
+/// Queue one already-validated shared ModEvent for Papyrus delivery.
+pub fn queue_papyrus_mod_event(world: &World, event: CustomEvent) {
+    if !event.is_valid() {
+        log::warn!("invalid Papyrus ModEvent delivery was rejected");
+        return;
+    }
+    if let Some(mut runtime) = world.try_resource_mut::<PapyrusModEventRuntime>() {
+        if runtime.pending.len() < MAX_PENDING_PAPYRUS_MOD_EVENTS {
+            runtime.pending.push(event);
+        } else {
+            log::warn!(
+                "Papyrus ModEvent delivery limit of {MAX_PENDING_PAPYRUS_MOD_EVENTS} exceeded"
+            );
+        }
     }
 }
 
@@ -749,6 +804,7 @@ pub enum PapyrusProviderComparison {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PapyrusProviderProgram {
     handlers: BTreeMap<PapyrusProviderEvent, Vec<PapyrusProviderHandler>>,
+    custom_handlers: BTreeMap<String, Vec<PapyrusProviderHandler>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -772,6 +828,10 @@ enum PapyrusProviderParameterSource {
     SneakAttack,
     BashAttack,
     Blocked,
+    ModEventArgument {
+        index: usize,
+        value_type: ScriptValueType,
+    },
 }
 
 #[derive(Default)]
@@ -796,7 +856,7 @@ impl PapyrusProviderProgram {
 
     /// Whether no supported handler was present in the source unit.
     pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
+        self.handlers.is_empty() && self.custom_handlers.is_empty()
     }
 
     fn handlers_for(
@@ -813,10 +873,21 @@ impl PapyrusProviderProgram {
                 .or_default()
                 .append(&mut handlers);
         }
+        for (callback, mut handlers) in std::mem::take(&mut other.custom_handlers) {
+            self.custom_handlers
+                .entry(callback)
+                .or_default()
+                .append(&mut handlers);
+        }
     }
 
     fn set_principal(&mut self, principal: PrincipalId) {
         for handlers in self.handlers.values_mut() {
+            for handler in handlers {
+                handler.principal = Some(principal.clone());
+            }
+        }
+        for handlers in self.custom_handlers.values_mut() {
             for handler in handlers {
                 handler.principal = Some(principal.clone());
             }
@@ -856,6 +927,7 @@ impl PapyrusProviderHandler {
                     hit.is_some_and(|hit| hit.bash_attack)
                 }
                 PapyrusProviderParameterSource::Blocked => hit.is_some_and(|hit| hit.blocked),
+                PapyrusProviderParameterSource::ModEventArgument { .. } => continue,
             };
             projected
                 .values
@@ -863,12 +935,49 @@ impl PapyrusProviderHandler {
         }
         projected
     }
+
+    fn projected_mod_event_locals(
+        &self,
+        payload: &LegacySkseVariadicModEventPayload,
+    ) -> Option<BTreeMap<String, ScriptValue>> {
+        let mut locals = BTreeMap::new();
+        for parameter in &self.parameters {
+            let PapyrusProviderParameterSource::ModEventArgument { index, value_type } =
+                parameter.source
+            else {
+                return None;
+            };
+            let argument = payload.arguments.get(index)?;
+            let value = match (argument, value_type) {
+                (LegacySkseModEventValue::Bool(value), ScriptValueType::Boolean) => {
+                    ScriptValue::Boolean(*value)
+                }
+                (LegacySkseModEventValue::Int(value), ScriptValueType::Integer) => {
+                    ScriptValue::Integer(i64::from(*value))
+                }
+                (LegacySkseModEventValue::FloatBits(bits), ScriptValueType::Float) => {
+                    ScriptValue::Float(f32::from_bits(*bits))
+                }
+                (LegacySkseModEventValue::String(value), ScriptValueType::String) => {
+                    ScriptValue::String(value.clone())
+                }
+                (LegacySkseModEventValue::Form(Some(value)), ScriptValueType::Form) => {
+                    ScriptValue::Form(*value)
+                }
+                (LegacySkseModEventValue::Form(None), ScriptValueType::Form) => ScriptValue::None,
+                _ => return None,
+            };
+            locals.insert(parameter.name.clone(), value);
+        }
+        (payload.arguments.len() == self.parameters.len()).then_some(locals)
+    }
 }
 
 /// Whole-handler rejection reason. A known provider is never partially run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PapyrusProviderProgramError {
     DuplicateHandler(PapyrusProviderEvent),
+    DuplicateCustomHandler(String),
     NestingTooDeep,
     UnsupportedStatement,
     UnsupportedLocal(String),
@@ -910,23 +1019,23 @@ fn lower_event_into(
     program: &mut PapyrusProviderProgram,
 ) -> Result<(), PapyrusProviderProgramError> {
     let canonical = if event.name.node.eq_ignore_case("OnInit") {
-        PapyrusProviderEvent::OnInit
+        Some(PapyrusProviderEvent::OnInit)
     } else if event.name.node.eq_ignore_case("OnLoad") {
-        PapyrusProviderEvent::OnLoad
+        Some(PapyrusProviderEvent::OnLoad)
     } else if event.name.node.eq_ignore_case("OnActivate") {
-        PapyrusProviderEvent::OnActivate
+        Some(PapyrusProviderEvent::OnActivate)
     } else if event.name.node.eq_ignore_case("OnHit") {
-        PapyrusProviderEvent::OnHit
+        Some(PapyrusProviderEvent::OnHit)
     } else if event.name.node.eq_ignore_case("OnObjectEquipped") {
-        PapyrusProviderEvent::OnObjectEquipped
+        Some(PapyrusProviderEvent::OnObjectEquipped)
     } else if event.name.node.eq_ignore_case("OnObjectUnequipped") {
-        PapyrusProviderEvent::OnObjectUnequipped
+        Some(PapyrusProviderEvent::OnObjectUnequipped)
     } else if event.name.node.eq_ignore_case("OnTriggerEnter") {
-        PapyrusProviderEvent::OnTriggerEnter
+        Some(PapyrusProviderEvent::OnTriggerEnter)
     } else if event.name.node.eq_ignore_case("OnUpdate") {
-        PapyrusProviderEvent::OnUpdate
+        Some(PapyrusProviderEvent::OnUpdate)
     } else {
-        return Ok(());
+        None
     };
     if !event
         .body
@@ -935,13 +1044,16 @@ fn lower_event_into(
     {
         return Ok(());
     }
-    if program.handlers.contains_key(&canonical) {
-        return Err(PapyrusProviderProgramError::DuplicateHandler(canonical));
-    }
     let mut locals = BTreeMap::new();
-    let mut parameters = lower_event_parameters(canonical, event, &mut locals);
+    let mut parameters = if let Some(canonical) = canonical {
+        lower_event_parameters(canonical, event, &mut locals)
+    } else {
+        lower_mod_event_parameters(event, &mut locals)?
+    };
     let statements = lower_statements(&event.body, catalog, &mut locals, 0)?;
-    parameters.retain(|parameter| statements_reference_local(&statements, &parameter.name));
+    if canonical.is_some() {
+        parameters.retain(|parameter| statements_reference_local(&statements, &parameter.name));
+    }
     if parameters
         .iter()
         .any(|parameter| parameter.source == PapyrusProviderParameterSource::Entity)
@@ -949,15 +1061,58 @@ fn lower_event_into(
     {
         return Err(PapyrusProviderProgramError::UnsupportedStatement);
     }
-    program.handlers.insert(
-        canonical,
-        vec![PapyrusProviderHandler {
-            statements,
-            parameters,
-            principal: None,
-        }],
-    );
+    if statements_contain_wait(&statements)
+        && statements_contain_mod_event_registration(&statements)
+    {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    }
+    let handler = PapyrusProviderHandler {
+        statements,
+        parameters,
+        principal: None,
+    };
+    if let Some(canonical) = canonical {
+        if program.handlers.contains_key(&canonical) {
+            return Err(PapyrusProviderProgramError::DuplicateHandler(canonical));
+        }
+        program.handlers.insert(canonical, vec![handler]);
+    } else {
+        let callback = event.name.node.0.to_ascii_lowercase();
+        if program.custom_handlers.contains_key(&callback) {
+            return Err(PapyrusProviderProgramError::DuplicateCustomHandler(
+                event.name.node.0.clone(),
+            ));
+        }
+        program.custom_handlers.insert(callback, vec![handler]);
+    }
     Ok(())
+}
+
+fn lower_mod_event_parameters(
+    event: &Event,
+    locals: &mut BTreeMap<String, ScriptValueType>,
+) -> Result<Vec<PapyrusProviderParameterBinding>, PapyrusProviderProgramError> {
+    event
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            let value_type = match &parameter.ty.node {
+                Type::Bool => ScriptValueType::Boolean,
+                Type::Int => ScriptValueType::Integer,
+                Type::Float => ScriptValueType::Float,
+                Type::String => ScriptValueType::String,
+                Type::Object(_) => ScriptValueType::Form,
+                _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
+            };
+            let name = parameter.name.node.0.to_ascii_lowercase();
+            locals.insert(name.clone(), value_type);
+            Ok(PapyrusProviderParameterBinding {
+                name,
+                source: PapyrusProviderParameterSource::ModEventArgument { index, value_type },
+            })
+        })
+        .collect()
 }
 
 fn lower_event_parameters(
@@ -1023,7 +1178,11 @@ fn lower_event_parameters(
 
 fn statements_reference_local(statements: &[PapyrusProviderStatement], name: &str) -> bool {
     statements.iter().any(|statement| match statement {
-        PapyrusProviderStatement::Declare { .. } | PapyrusProviderStatement::Wait { .. } => false,
+        PapyrusProviderStatement::Declare { .. }
+        | PapyrusProviderStatement::Wait { .. }
+        | PapyrusProviderStatement::RegisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterAllModEvents => false,
         PapyrusProviderStatement::AssignCall { call, .. }
         | PapyrusProviderStatement::Call(call) => invocation_references_local(call, name),
         PapyrusProviderStatement::If {
@@ -1048,7 +1207,27 @@ fn statements_contain_wait(statements: &[PapyrusProviderStatement]) -> bool {
         } => statements_contain_wait(then_branch) || statements_contain_wait(else_branch),
         PapyrusProviderStatement::Declare { .. }
         | PapyrusProviderStatement::AssignCall { .. }
-        | PapyrusProviderStatement::Call(_) => false,
+        | PapyrusProviderStatement::Call(_)
+        | PapyrusProviderStatement::RegisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterAllModEvents => false,
+    })
+}
+
+fn statements_contain_mod_event_registration(statements: &[PapyrusProviderStatement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        PapyrusProviderStatement::RegisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterModEvent { .. }
+        | PapyrusProviderStatement::UnregisterAllModEvents => true,
+        PapyrusProviderStatement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            statements_contain_mod_event_registration(then_branch)
+                || statements_contain_mod_event_registration(else_branch)
+        }
+        _ => false,
     })
 }
 
@@ -1133,6 +1312,10 @@ fn lower_statements(
                     lowered.push(PapyrusProviderStatement::Wait { seconds });
                     continue;
                 }
+                if let Some(registration) = lower_mod_event_registration(&expression.node)? {
+                    lowered.push(registration);
+                    continue;
+                }
                 let call = lower_provider_invocation(&expression.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
@@ -1179,6 +1362,61 @@ fn lower_statements(
         }
     }
     Ok(lowered)
+}
+
+fn lower_mod_event_registration(
+    expression: &Expr,
+) -> Result<Option<PapyrusProviderStatement>, PapyrusProviderProgramError> {
+    let Expr::Call { callee, args } = expression else {
+        return Ok(None);
+    };
+    let function = match &callee.node {
+        Expr::Ident(identifier) => &identifier.0,
+        Expr::MemberAccess { member, .. } => &member.node.0,
+        _ => return Ok(None),
+    };
+    if function.eq_ignore_ascii_case("RegisterForModEvent") {
+        let [event, callback] = args.as_slice() else {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        };
+        if event.name.is_some() || callback.name.is_some() {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        }
+        let (Expr::StringLit(event_name), Expr::StringLit(callback)) =
+            (&event.value.node, &callback.value.node)
+        else {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        };
+        LegacyModEventSubscriptionCommand::subscribe(event_name, callback.clone())
+            .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+        return Ok(Some(PapyrusProviderStatement::RegisterModEvent {
+            event_name: event_name.clone(),
+            callback: callback.to_ascii_lowercase(),
+        }));
+    }
+    if function.eq_ignore_ascii_case("UnregisterForModEvent") {
+        let [event] = args.as_slice() else {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        };
+        if event.name.is_some() {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        }
+        let Expr::StringLit(event_name) = &event.value.node else {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        };
+        LegacyModEventSubscriptionCommand::unsubscribe(event_name)
+            .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+        return Ok(Some(PapyrusProviderStatement::UnregisterModEvent {
+            event_name: event_name.clone(),
+        }));
+    }
+    if function.eq_ignore_ascii_case("UnregisterForAllModEvents") {
+        if !args.is_empty() {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        }
+        return Ok(Some(PapyrusProviderStatement::UnregisterAllModEvents));
+    }
+    Ok(None)
 }
 
 fn lower_wait(expression: &Expr) -> Result<Option<f32>, PapyrusProviderProgramError> {
@@ -1486,6 +1724,14 @@ fn expression_mentions_provider(
                         Expr::Ident(provider)
                             if is_known_provider_call(&provider.0, &member.node.0, catalog)
                     )
+            ) || matches!(
+                &callee.node,
+                Expr::Ident(function)
+                    if byroredux_sdk::compatibility::method_source_alias(&function.0).is_some()
+            ) || matches!(
+                &callee.node,
+                Expr::MemberAccess { member, .. }
+                    if byroredux_sdk::compatibility::method_source_alias(&member.node.0).is_some()
             );
             direct
                 || expression_mentions_provider(&callee.node, catalog, depth + 1)
@@ -1565,6 +1811,20 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         let mut queue = world.resource_mut::<PapyrusProviderContinuationQueue>();
         std::mem::take(&mut queue.pending)
     };
+    let (mod_event_registrations, pending_mod_events) = {
+        let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
+        (
+            runtime.registrations.clone(),
+            std::mem::take(&mut runtime.pending),
+        )
+    };
+    let pending_mod_events = pending_mod_events
+        .into_iter()
+        .filter_map(|event| {
+            LegacySkseVariadicModEventPayload::decode(&event.payload)
+                .map(|payload| (event, payload))
+        })
+        .collect::<Vec<_>>();
     let mut still_pending = Vec::new();
     let mut handlers = Vec::new();
     for mut continuation in pending {
@@ -1582,6 +1842,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 Vec::new(),
                 Vec::new(),
                 continuation.principal,
+                None,
             ));
         }
     }
@@ -1671,6 +1932,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                     projected.entities,
                     projected.forms,
                     handler.principal.clone(),
+                    Some(entity),
                 ));
             }
         };
@@ -1719,10 +1981,41 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if updated.contains(&entity) {
             enqueue(PapyrusProviderEvent::OnUpdate, None, None, None);
         }
+        for (event, payload) in &pending_mod_events {
+            for ((registered_entity, principal, registered_event), callback_name) in
+                &mod_event_registrations
+            {
+                if *registered_entity != entity || registered_event != &event.event {
+                    continue;
+                }
+                let Some(custom_handlers) = program.custom_handlers.get(callback_name) else {
+                    continue;
+                };
+                for handler in custom_handlers {
+                    if handler.principal.as_ref() != Some(principal) {
+                        continue;
+                    }
+                    let Some(locals) = handler.projected_mod_event_locals(payload) else {
+                        log::warn!(
+                            "Papyrus ModEvent callback {callback_name} rejected a mismatched typed payload"
+                        );
+                        continue;
+                    };
+                    handlers.push((
+                        handler.statements.clone(),
+                        locals,
+                        Vec::new(),
+                        Vec::new(),
+                        handler.principal.clone(),
+                        Some(entity),
+                    ));
+                }
+            }
+        }
     }
     drop(programs);
 
-    for (statements, mut locals, entity_locals, form_locals, principal) in handlers {
+    for (statements, mut locals, entity_locals, form_locals, principal, owner) in handlers {
         if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
             log::warn!("Papyrus provider handler aborted before dispatch: {error}");
             continue;
@@ -1768,11 +2061,13 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if projection_failed {
             continue;
         }
+        let mut registrations = Vec::new();
         match execute_statements(
             &statements,
             callback.as_ref(),
             principal.as_ref(),
             &mut locals,
+            &mut registrations,
         ) {
             Ok(Some((remaining_seconds, statements))) => {
                 still_pending.push(PendingPapyrusProviderContinuation {
@@ -1782,7 +2077,9 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                     principal,
                 });
             }
-            Ok(None) => {}
+            Ok(None) => {
+                apply_mod_event_registrations(world, owner, principal.as_ref(), registrations)
+            }
             Err(error) => log::warn!("Papyrus provider handler aborted: {error}"),
         }
     }
@@ -1797,6 +2094,63 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         .pending = still_pending;
 }
 
+fn apply_mod_event_registrations(
+    world: &World,
+    owner: Option<EntityId>,
+    principal: Option<&PrincipalId>,
+    actions: Vec<PapyrusModEventRegistrationAction>,
+) {
+    if actions.is_empty() {
+        return;
+    }
+    let (Some(owner), Some(principal)) = (owner, principal) else {
+        log::warn!("Papyrus ModEvent registration ignored without an owned script instance");
+        return;
+    };
+    let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
+    for action in actions {
+        match action {
+            PapyrusModEventRegistrationAction::Register {
+                event_name,
+                callback,
+            } => {
+                let Some(LegacyModEventSubscriptionCommand::Subscribe { event, .. }) =
+                    LegacyModEventSubscriptionCommand::subscribe(&event_name, callback.clone())
+                else {
+                    continue;
+                };
+                let key = (owner, principal.clone(), event);
+                if runtime.registrations.contains_key(&key)
+                    || runtime.registrations.len() < MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS
+                {
+                    runtime.registrations.insert(key, callback);
+                } else {
+                    log::warn!(
+                        "Papyrus ModEvent registration limit of {MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS} exceeded"
+                    );
+                }
+            }
+            PapyrusModEventRegistrationAction::Unregister { event_name } => {
+                let Some(LegacyModEventSubscriptionCommand::Unsubscribe { event }) =
+                    LegacyModEventSubscriptionCommand::unsubscribe(&event_name)
+                else {
+                    continue;
+                };
+                runtime
+                    .registrations
+                    .remove(&(owner, principal.clone(), event));
+            }
+            PapyrusModEventRegistrationAction::UnregisterAll => {
+                runtime
+                    .registrations
+                    .retain(|(entity, owner_principal, _), _| {
+                        *entity != owner || owner_principal != principal
+                    });
+            }
+        }
+    }
+}
+
 fn validate_provider_statements(
     statements: &[PapyrusProviderStatement],
     catalog: &PapyrusProviderCatalog,
@@ -1807,7 +2161,19 @@ fn validate_provider_statements(
     }
     for statement in statements {
         match statement {
-            PapyrusProviderStatement::Declare { .. } => {}
+            PapyrusProviderStatement::Declare { .. }
+            | PapyrusProviderStatement::UnregisterAllModEvents => {}
+            PapyrusProviderStatement::RegisterModEvent {
+                event_name,
+                callback,
+            } => {
+                LegacyModEventSubscriptionCommand::subscribe(event_name, callback.clone())
+                    .ok_or_else(|| "saved ModEvent registration is invalid".to_owned())?;
+            }
+            PapyrusProviderStatement::UnregisterModEvent { event_name } => {
+                LegacyModEventSubscriptionCommand::unsubscribe(event_name)
+                    .ok_or_else(|| "saved ModEvent unregistration is invalid".to_owned())?;
+            }
             PapyrusProviderStatement::AssignCall { call, .. }
             | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog)?,
             PapyrusProviderStatement::Wait { seconds } => {
@@ -1893,6 +2259,8 @@ fn validate_provider_call(
         .map_err(|_| "saved StorageUtil call has an invalid exact signature".to_owned())?;
     validate_legacy_container_arity(call.route.qualified_name(), call.arguments.len())
         .map_err(|_| "saved JContainers call has an invalid exact signature".to_owned())?;
+    validate_mod_event_arity(call.route.qualified_name(), call.arguments.len())
+        .map_err(|_| "saved ModEvent call has an invalid exact signature".to_owned())?;
     Ok(())
 }
 
@@ -1975,6 +2343,7 @@ fn execute_statements(
     callback: &PapyrusProviderCallback,
     principal: Option<&PrincipalId>,
     locals: &mut BTreeMap<String, ScriptValue>,
+    registrations: &mut Vec<PapyrusModEventRegistrationAction>,
 ) -> Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String> {
     for (index, statement) in statements.iter().enumerate() {
         match statement {
@@ -1989,6 +2358,21 @@ fn execute_statements(
             PapyrusProviderStatement::Call(call) => {
                 let arguments = materialize_provider_arguments(call, locals)?;
                 callback(principal, call.route.qualified_name(), &arguments)?;
+            }
+            PapyrusProviderStatement::RegisterModEvent {
+                event_name,
+                callback,
+            } => registrations.push(PapyrusModEventRegistrationAction::Register {
+                event_name: event_name.clone(),
+                callback: callback.clone(),
+            }),
+            PapyrusProviderStatement::UnregisterModEvent { event_name } => {
+                registrations.push(PapyrusModEventRegistrationAction::Unregister {
+                    event_name: event_name.clone(),
+                });
+            }
+            PapyrusProviderStatement::UnregisterAllModEvents => {
+                registrations.push(PapyrusModEventRegistrationAction::UnregisterAll);
             }
             PapyrusProviderStatement::Wait { seconds } => {
                 return Ok(Some((*seconds, statements[index + 1..].to_vec())));
@@ -2007,7 +2391,13 @@ fn execute_statements(
                     Vec::with_capacity(selected.len() + statements.len().saturating_sub(index + 1));
                 ordered_tail.extend_from_slice(selected);
                 ordered_tail.extend_from_slice(&statements[index + 1..]);
-                return execute_statements(&ordered_tail, callback, principal, locals);
+                return execute_statements(
+                    &ordered_tail,
+                    callback,
+                    principal,
+                    locals,
+                    registrations,
+                );
             }
         }
     }
@@ -2622,6 +3012,88 @@ mod tests {
                 ScriptValue::String("initialized".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn dynamic_mod_event_registration_delivers_typed_callback_and_unregisters() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnInit()
+                RegisterForModEvent("ByroReady", "OnByroReady")
+            EndEvent
+            Event OnByroReady(String status, Int count)
+                WeatherNative.WeatherAt(count, status)
+                UnregisterForModEvent("ByroReady")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+        let principal = PrincipalId::new("legacy.scripts.receiver").unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::String("clear".to_owned()))
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_owned_papyrus_provider_program(&mut world, entity, program, principal);
+        papyrus_provider_system(&world, 0.0);
+        crate::event_cleanup_system(&world, 0.0);
+
+        let sender = PrincipalId::new("legacy.scripts.sender").unwrap();
+        let mut malformed = byroredux_sdk::event::LegacySkseModEventBuilders::new();
+        let malformed_handle = malformed.create("ByroReady");
+        malformed.push(malformed_handle, LegacySkseModEventValue::Int(7));
+        let malformed = malformed.send(malformed_handle).unwrap();
+        queue_papyrus_mod_event(
+            &world,
+            CustomEvent {
+                event: malformed.event,
+                sender: sender.clone(),
+                payload: malformed.payload,
+            },
+        );
+        papyrus_provider_system(&world, 0.0);
+        assert!(calls.lock().unwrap().is_empty());
+
+        let mut builders = byroredux_sdk::event::LegacySkseModEventBuilders::new();
+        let handle = builders.create("ByroReady");
+        builders.push(handle, LegacySkseModEventValue::String("ready".to_owned()));
+        builders.push(handle, LegacySkseModEventValue::Int(7));
+        let command = builders.send(handle).unwrap();
+        let event = CustomEvent {
+            event: command.event,
+            sender,
+            payload: command.payload,
+        };
+        queue_papyrus_mod_event(&world, event.clone());
+        papyrus_provider_system(&world, 0.0);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(
+                "ext.org.example.weather.weather-at".to_owned(),
+                vec![
+                    ScriptValue::Integer(7),
+                    ScriptValue::String("ready".to_owned()),
+                ],
+            )]
+        );
+
+        queue_papyrus_mod_event(&world, event);
+        papyrus_provider_system(&world, 0.0);
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     #[test]

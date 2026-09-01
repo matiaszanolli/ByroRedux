@@ -57,7 +57,8 @@ use byroredux_sdk::event::{
     custom_event_publishable_by, is_custom_event_id, is_legacy_skse_mod_event_id, ActivationEvent,
     CellLoadEvent, CustomEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
     InputActionEvent, InputPhase, LegacyModEventSubscriptionCommand, LegacySkseModEventBuilders,
-    LegacySkseModEventValue, SessionEvent, SessionPhase, UpdateEvent,
+    LegacySkseModEventValue, PersistedLegacyModEventBuilders, SessionEvent, SessionPhase,
+    UpdateEvent,
 };
 use byroredux_sdk::factions::{FactionMembership, FactionSnapshot, MAX_FACTIONS_PER_ENTITY};
 use byroredux_sdk::identity::{
@@ -161,6 +162,10 @@ pub(crate) enum ExtensionHostError {
     },
     #[error("saved extension state repeats legacy containers for principal {0}")]
     DuplicateLegacyContainerPrincipal(PrincipalId),
+    #[error("saved extension state repeats ModEvent builders for principal {0}")]
+    DuplicateLegacyModEventBuilderPrincipal(PrincipalId),
+    #[error("saved extension state contains invalid ModEvent builders for principal {0}")]
+    InvalidLegacyModEventBuilders(PrincipalId),
     #[error(
         "{count} extension row(s) target transient entities without stable form identity; refusing a lossy save"
     )]
@@ -2400,6 +2405,19 @@ impl ExtensionHost {
             }
             record.registry.validate()?;
         }
+        let mut builder_principals = BTreeSet::new();
+        for record in &saved.legacy_mod_event_builders {
+            if !builder_principals.insert(record.principal.clone()) {
+                return Err(ExtensionHostError::DuplicateLegacyModEventBuilderPrincipal(
+                    record.principal.clone(),
+                ));
+            }
+            if !record.builders.is_valid() {
+                return Err(ExtensionHostError::InvalidLegacyModEventBuilders(
+                    record.principal.clone(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -2462,11 +2480,20 @@ impl ExtensionHost {
                 },
             );
         }
+        let legacy_mod_event_builders = self
+            .legacy_mod_event_builders
+            .iter()
+            .map(|(principal, builders)| PersistedLegacyModEventBuilders {
+                principal: principal.clone(),
+                builders: builders.clone(),
+            })
+            .collect();
         let saved = ExtensionStateSnapshot {
             format_version: EXTENSION_STATE_FORMAT_VERSION,
             rows: rows.into_values().collect(),
             principal_storage: principal_storage.into_values().collect(),
             legacy_containers: legacy_containers.into_values().collect(),
+            legacy_mod_event_builders,
         };
         self.validate_saved_state(&saved)?;
         Ok(saved)
@@ -2534,6 +2561,17 @@ impl ExtensionHost {
                 .entry(principal.clone())
                 .or_default();
         }
+        let mut active_mod_event_builders = BTreeMap::new();
+        for record in &saved.legacy_mod_event_builders {
+            if active.contains(&record.principal) {
+                active_mod_event_builders.insert(record.principal.clone(), record.builders.clone());
+            }
+        }
+        for principal in &self.legacy_script_principals {
+            active_mod_event_builders
+                .entry(principal.clone())
+                .or_default();
+        }
         self.handles = staged_handles;
         self.state = staged_state;
         self.principal_storage = staged_storage;
@@ -2541,6 +2579,7 @@ impl ExtensionHost {
         self.retained_storage = retained_storage;
         self.legacy_containers = active_legacy_containers;
         self.retained_legacy_containers = retained_legacy_containers;
+        self.legacy_mod_event_builders = active_mod_event_builders;
         Ok(generation)
     }
 
@@ -3256,10 +3295,19 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     host.set_spatial_snapshot(spatial_snapshot);
+    let papyrus_mod_events = host
+        .pending_custom_events
+        .iter()
+        .filter(|event| is_legacy_skse_mod_event_id(&event.event))
+        .cloned()
+        .collect::<Vec<_>>();
     let stats = host.dispatch_pending_custom_events();
     apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
+    for event in papyrus_mod_events {
+        byroredux_scripting::queue_papyrus_mod_event(world, event);
+    }
     emit_diagnostics(diagnostics);
     if stats.faults > 0 {
         log::warn!(
@@ -6914,6 +6962,55 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_mod_event_builder_survives_extension_save_round_trip() {
+        let principal = PrincipalId::new("legacy.scripts.saved-mod-event").unwrap();
+        let mut source =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        source
+            .register_legacy_script_principal(principal.clone())
+            .unwrap();
+        let route = |name: &str| format!("{PAPYRUS_MOD_EVENT_ROUTE_PREFIX}mod-event-{name}");
+        let handle = source
+            .invoke_owned_papyrus_provider(
+                Some(&principal),
+                &route("create"),
+                &[ScriptValue::String("SavedEvent".to_owned())],
+            )
+            .unwrap();
+        source
+            .invoke_owned_papyrus_provider(
+                Some(&principal),
+                &route("push-string"),
+                &[handle.clone(), ScriptValue::String("restored".to_owned())],
+            )
+            .unwrap();
+        let saved = source.capture_saved_state(&BTreeMap::new()).unwrap();
+
+        let mut restored =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        restored
+            .register_legacy_script_principal(principal.clone())
+            .unwrap();
+        restored
+            .restore_saved_state(&saved, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            restored
+                .invoke_owned_papyrus_provider(Some(&principal), &route("send"), &[handle],)
+                .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        let payload = byroredux_sdk::event::LegacySkseVariadicModEventPayload::decode(
+            &restored.pending_custom_events[0].payload,
+        )
+        .unwrap();
+        assert_eq!(
+            payload.arguments,
+            [LegacySkseModEventValue::String("restored".to_owned())]
+        );
+    }
+
+    #[test]
     fn pre_container_extension_state_remains_loadable() {
         let mut version_two = ExtensionStateSnapshot::default();
         version_two.format_version = MIN_EXTENSION_STATE_FORMAT_VERSION;
@@ -7369,6 +7466,101 @@ mod tests {
                 LegacySkseModEventValue::Int(7),
             ]
         );
+    }
+
+    #[test]
+    fn mod_event_bus_delivers_across_legacy_script_principals() {
+        let sender = PrincipalId::new("legacy.scripts.mod-event-sender").unwrap();
+        let receiver = PrincipalId::new("legacy.scripts.mod-event-receiver").unwrap();
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .register_legacy_script_principal(sender.clone())
+            .unwrap();
+        extension_host
+            .register_legacy_script_principal(receiver.clone())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+
+        let source = r#"
+            ScriptName ModEventReceiver
+            Event OnLoad()
+                RegisterForModEvent("ByroReady", "OnByroReady")
+            EndEvent
+            Event OnByroReady(String status, Int count)
+                StorageUtil.SetStringValue(None, "event-status", status)
+                StorageUtil.SetIntValue(None, "event-count", count)
+            EndEvent
+        "#;
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let catalog = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog();
+        let program = byroredux_scripting::lower_provider_program(&script, &catalog)
+            .unwrap()
+            .unwrap();
+        let entity = world.spawn();
+        byroredux_scripting::attach_owned_papyrus_provider_program(
+            &mut world,
+            entity,
+            program,
+            receiver.clone(),
+        );
+        world.insert(entity, byroredux_scripting::OnCellLoadEvent);
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+
+        let route = |name: &str| format!("{PAPYRUS_MOD_EVENT_ROUTE_PREFIX}mod-event-{name}");
+        {
+            let mut host = live_host.lock().unwrap();
+            let handle = host
+                .invoke_owned_papyrus_provider(
+                    Some(&sender),
+                    &route("create"),
+                    &[ScriptValue::String("ByroReady".to_owned())],
+                )
+                .unwrap();
+            for (operation, value) in [
+                ("push-string", ScriptValue::String("ready".to_owned())),
+                ("push-int", ScriptValue::Integer(7)),
+            ] {
+                host.invoke_owned_papyrus_provider(
+                    Some(&sender),
+                    &route(operation),
+                    &[handle.clone(), value],
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                host.invoke_owned_papyrus_provider(Some(&sender), &route("send"), &[handle],)
+                    .unwrap(),
+                ScriptValue::Boolean(true)
+            );
+        }
+
+        extension_custom_event_dispatch_system(&world, 0.0);
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+
+        let host = live_host.lock().unwrap();
+        let receiver_values = host.principal_storage.values(&receiver).unwrap();
+        assert_eq!(
+            receiver_values.get(&StorageKey::new("storageutil.string:event-status").unwrap()),
+            Some(&PrincipalStorageValue::String("ready".to_owned()))
+        );
+        assert_eq!(
+            receiver_values.get(&StorageKey::new("storageutil.int:event-count").unwrap()),
+            Some(&PrincipalStorageValue::I64(7))
+        );
+        assert!(host
+            .principal_storage
+            .values(&sender)
+            .is_none_or(BTreeMap::is_empty));
     }
 
     #[test]

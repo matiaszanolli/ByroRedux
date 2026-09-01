@@ -243,6 +243,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("PapyrusProviderProgram", "write-once source/PEX translation attached from static script content on load; only suspended mutable tails live in the saved PapyrusProviderContinuationQueue"),
+        ("PapyrusModEventRuntime", "transient per-instance extender-compatible registrations and same-frame delivery queue; scripts refresh registrations from OnInit/OnLoad after world replacement, and raw EntityIds must not cross saves"),
         ("PapyrusProviderRuntime", "process-local live provider catalog plus authenticated host callback rebuilt after extension activation; callback pointers are not save state"),
         ("PendingFragmentActivations", "one-frame handoff queue (#2654) drained every frame by fragment_activation_flush_system; deliberately transient for the same reason ActivateEvent above is — it holds raw EntityIds, which a live in-session reload churns (the SAVE-D6-01 / #1696 / #2380 hazard class), and persisting a queue whose only output marker is itself unsaved would be incoherent. Worst case is one queued scripted activation lost if a save lands in the single frame between fragment dispatch and the next frame's flush"),
         ("PackageRegistry", "populated once from parsed PACK records, only ever read afterward"),

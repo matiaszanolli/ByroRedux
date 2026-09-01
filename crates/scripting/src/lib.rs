@@ -97,14 +97,14 @@ pub use package::{
 };
 pub use papyrus_provider::{
     attach_owned_papyrus_provider_program, attach_papyrus_provider_program, lower_provider_call,
-    lower_provider_program, papyrus_provider_system, set_papyrus_provider_entity_resolver,
-    set_papyrus_provider_form_resolver, set_papyrus_provider_runtime, PapyrusProviderArgument,
-    PapyrusProviderCallback, PapyrusProviderCatalog, PapyrusProviderCatalogError,
-    PapyrusProviderCondition, PapyrusProviderContinuationQueue, PapyrusProviderEntityResolver,
-    PapyrusProviderEvent, PapyrusProviderFormResolver, PapyrusProviderInvocation,
-    PapyrusProviderLowerError, PapyrusProviderProgram, PapyrusProviderProgramError,
-    PapyrusProviderRoute, PapyrusProviderRuntime, PapyrusProviderStatement,
-    TypedPapyrusProviderCall,
+    lower_provider_program, papyrus_provider_system, queue_papyrus_mod_event,
+    set_papyrus_provider_entity_resolver, set_papyrus_provider_form_resolver,
+    set_papyrus_provider_runtime, PapyrusProviderArgument, PapyrusProviderCallback,
+    PapyrusProviderCatalog, PapyrusProviderCatalogError, PapyrusProviderCondition,
+    PapyrusProviderContinuationQueue, PapyrusProviderEntityResolver, PapyrusProviderEvent,
+    PapyrusProviderFormResolver, PapyrusProviderInvocation, PapyrusProviderLowerError,
+    PapyrusProviderProgram, PapyrusProviderProgramError, PapyrusProviderRoute,
+    PapyrusProviderRuntime, PapyrusProviderStatement, TypedPapyrusProviderCall,
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
