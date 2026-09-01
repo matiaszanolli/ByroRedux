@@ -189,6 +189,22 @@ pub const PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE: &str =
     "byro.content.catalog.get-light-mod-dependency-count";
 pub const PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE: &str =
     "byro.content.catalog.get-nth-light-mod-dependency";
+pub const PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.get-int-value";
+pub const PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.has-int-value";
+pub const PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.set-int-value";
+pub const PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.unset-int-value";
+pub const PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.get-string-value";
+pub const PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.has-string-value";
+pub const PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.set-string-value";
+pub const PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE: &str =
+    "byro.storage.compat.storage-util.unset-string-value";
 
 pub const PAPYRUS_GAME_LIGHT_MOD_OFFSET: i32 = 0x100;
 pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
@@ -319,6 +335,130 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             ],
             ScriptValueType::Integer,
             "Return the regular mod index of a light plugin's nth master",
+        ),
+    ]
+}
+
+fn papyrus_storage_util_declaration(
+    route: &'static str,
+    id: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+    result: ScriptValueType,
+) -> EnginePapyrusFunctionDeclaration {
+    EnginePapyrusFunctionDeclaration {
+        route,
+        declaration: ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new(id).expect("built-in StorageUtil function ID is valid"),
+            component: ComponentId::new("principal-storage")
+                .expect("built-in StorageUtil component ID is valid"),
+            parameters: parameters
+                .iter()
+                .cloned()
+                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
+                    id: ScriptParameterId::new(id)
+                        .expect("built-in StorageUtil parameter ID is valid"),
+                    value_type,
+                    optional,
+                })
+                .collect(),
+            result: Some(ScriptResultDeclaration {
+                value_type: result,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "StorageUtil".to_owned(),
+                function: function.to_owned(),
+            }),
+            description: "Engine-owned principal-private PapyrusUtil scalar compatibility"
+                .to_owned(),
+        },
+    }
+}
+
+/// Exact global scalar `StorageUtil` calls backed by principal-private engine
+/// storage. The object key accepts only `None`; the host rejects every Form.
+pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    let object_and_key = [
+        ("object", ScriptValueType::Form, true),
+        // `optional` is also the SDK's nullable marker. Because Papyrus puts
+        // nullable ObjKey before required parameters, all following fields
+        // must use that representation too; the scripting/host adapters
+        // enforce the exact legacy arity independently.
+        ("key", ScriptValueType::String, true),
+    ];
+    vec![
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+            "storage-util-get-int-value",
+            "GetIntValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::Integer, true),
+            ],
+            ScriptValueType::Integer,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+            "storage-util-has-int-value",
+            "HasIntValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+            "storage-util-set-int-value",
+            "SetIntValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("value", ScriptValueType::Integer, true),
+            ],
+            ScriptValueType::Integer,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+            "storage-util-unset-int-value",
+            "UnsetIntValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+            "storage-util-get-string-value",
+            "GetStringValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("missing", ScriptValueType::String, true),
+            ],
+            ScriptValueType::String,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+            "storage-util-has-string-value",
+            "HasStringValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+            "storage-util-set-string-value",
+            "SetStringValue",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("value", ScriptValueType::String, true),
+            ],
+            ScriptValueType::String,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+            "storage-util-unset-string-value",
+            "UnsetStringValue",
+            &object_and_key,
+            ScriptValueType::Boolean,
         ),
     ]
 }

@@ -34,11 +34,16 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
     adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
     adapt_papyrus_game_get_nth_light_mod_dependency, adapt_papyrus_game_is_plugin_installed,
+    adapt_storage_util_global_scalar, StorageUtilScalarCall, StorageUtilScalarResult,
     PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
     PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
     PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
     PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
     PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -699,10 +704,13 @@ impl ExtensionHost {
 
     fn invoke_owned_papyrus_provider(
         &mut self,
-        _principal: Option<&PrincipalId>,
+        principal: Option<&PrincipalId>,
         qualified_name: &str,
         arguments: &[ScriptValue],
     ) -> Result<ScriptValue, ExtensionHostError> {
+        if qualified_name.starts_with("byro.storage.compat.storage-util.") {
+            return self.invoke_storage_util(principal, qualified_name, arguments);
+        }
         let value = match (qualified_name, arguments) {
             (PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
                 adapt_papyrus_game_get_mod_count(&self.content_catalog),
@@ -772,6 +780,118 @@ impl ExtensionHost {
             _ => return self.invoke_script_function(qualified_name, arguments),
         };
         Ok(value)
+    }
+
+    fn invoke_storage_util(
+        &mut self,
+        principal: Option<&PrincipalId>,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
+            function: qualified_name.to_owned(),
+            reason,
+        };
+        let principal = principal.ok_or_else(|| {
+            unavailable("StorageUtil call has no authenticated legacy-script principal".to_owned())
+        })?;
+        let integer = |value: i64| {
+            i32::try_from(value).map_err(|_| {
+                unavailable(
+                    "StorageUtil integer argument is outside the Papyrus i32 range".to_owned(),
+                )
+            })
+        };
+        let (key_name, call) = match (qualified_name, arguments) {
+            (
+                PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::GetInt { missing: 0 }),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::GetInt {
+                    missing: integer(*missing)?,
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::HasInt),
+            (
+                PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(value)],
+            ) => (
+                key,
+                StorageUtilScalarCall::SetInt {
+                    value: integer(*value)?,
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::UnsetInt),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (
+                key,
+                StorageUtilScalarCall::GetString {
+                    missing: String::new(),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::String(missing)],
+            ) => (
+                key,
+                StorageUtilScalarCall::GetString {
+                    missing: missing.clone(),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::HasString),
+            (
+                PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::String(value)],
+            ) => (
+                key,
+                StorageUtilScalarCall::SetString {
+                    value: value.clone(),
+                },
+            ),
+            (
+                PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+                [ScriptValue::None, ScriptValue::String(key)],
+            ) => (key, StorageUtilScalarCall::UnsetString),
+            _ => {
+                return Err(unavailable(
+                    "StorageUtil supports only global ObjKey=None scalar calls with exact typed arguments"
+                        .to_owned(),
+                ));
+            }
+        };
+        let probe = adapt_storage_util_global_scalar(key_name, call.clone(), None)
+            .map_err(|error| unavailable(error.to_string()))?;
+        let current = self
+            .principal_storage
+            .values(principal)
+            .and_then(|values| values.get(&probe.key))
+            .cloned();
+        let adaptation = adapt_storage_util_global_scalar(key_name, call, current.as_ref())
+            .map_err(|error| unavailable(error.to_string()))?;
+        if let Some(command) = adaptation.command {
+            self.principal_storage.apply_batch(principal, &[command])?;
+        }
+        Ok(match adaptation.result {
+            StorageUtilScalarResult::Int(value) => ScriptValue::Integer(i64::from(value)),
+            StorageUtilScalarResult::Bool(value) => ScriptValue::Boolean(value),
+            StorageUtilScalarResult::String(value) => ScriptValue::String(value),
+        })
     }
 
     /// Invoke a principal-namespaced typed function and publish its result
@@ -6112,6 +6232,85 @@ mod tests {
     }
 
     #[test]
+    fn storage_util_aliases_are_case_folded_principal_private_and_reject_object_keys() {
+        let first = PrincipalId::new("legacy.scripts.first-storage-util").unwrap();
+        let second = PrincipalId::new("legacy.scripts.second-storage-util").unwrap();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.register_legacy_script_principal(first.clone())
+            .unwrap();
+        host.register_legacy_script_principal(second.clone())
+            .unwrap();
+
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("Score".to_owned()),
+                    ScriptValue::Integer(7),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Integer(7)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("sCoRe".to_owned()),
+                    ScriptValue::Integer(-1),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Integer(7)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&second),
+                PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("score".to_owned()),
+                    ScriptValue::Integer(-1),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Integer(-1)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+                &[ScriptValue::None, ScriptValue::String("score".to_owned()),],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+
+        let object = ScriptValue::Form(FormRef::new([9; 16], 1));
+        assert!(matches!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+                &[object, ScriptValue::String("score".to_owned())],
+            ),
+            Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
+        ));
+        assert!(matches!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+                &[ScriptValue::None, ScriptValue::String("score".to_owned()),],
+            ),
+            Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
+        ));
+    }
+
+    #[test]
     fn legacy_container_objects_are_principal_local_and_save_persistent() {
         let principal = PrincipalId::new("org.example.storage").unwrap();
         let mut source = host_with_storage_package(principal.as_str());
@@ -6431,6 +6630,66 @@ mod tests {
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn source_papyrus_runs_principal_private_storage_util_across_wait() {
+        let principal = PrincipalId::new("legacy.scripts.storage-util-source").unwrap();
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .register_legacy_script_principal(principal.clone())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+
+        let source = r#"
+            ScriptName StorageFixture
+            Event OnLoad()
+                StorageUtil.SetIntValue(None, "Count", 3)
+                Utility.Wait(0.0)
+                Int value
+                value = StorageUtil.GetIntValue(None, "count", -1)
+                If value == 3
+                    StorageUtil.SetStringValue(None, "Status", "ready")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let catalog = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog();
+        let program = byroredux_scripting::lower_provider_program(&script, &catalog)
+            .unwrap()
+            .unwrap();
+        let entity = world.spawn();
+        byroredux_scripting::attach_owned_papyrus_provider_program(
+            &mut world,
+            entity,
+            program,
+            principal.clone(),
+        );
+        world.insert(entity, byroredux_scripting::OnCellLoadEvent);
+
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+
+        let host = live_host.lock().unwrap();
+        let values = host.principal_storage.values(&principal).unwrap();
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.int:count").unwrap()),
+            Some(&PrincipalStorageValue::I64(3))
+        );
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.string:status").unwrap()),
+            Some(&PrincipalStorageValue::String("ready".to_owned()))
         );
     }
 

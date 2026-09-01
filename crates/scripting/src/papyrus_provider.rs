@@ -14,7 +14,13 @@ use byroredux_papyrus::ast::{
     AssignOp, BinaryOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type, UnaryOp,
 };
 use byroredux_sdk::{
-    compatibility::{classify_static_call, papyrus_game_content_declarations},
+    compatibility::{
+        classify_static_call, papyrus_game_content_declarations, papyrus_storage_util_declarations,
+        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    },
     identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
@@ -163,6 +169,11 @@ impl PapyrusProviderCatalog {
                 .insert_route(function.route.to_owned(), &function.declaration, false)
                 .expect("built-in Papyrus compatibility declaration is valid");
         }
+        for function in papyrus_storage_util_declarations() {
+            catalog
+                .insert_route(function.route.to_owned(), &function.declaration, false)
+                .expect("built-in StorageUtil compatibility declaration is valid");
+        }
         catalog
     }
 
@@ -297,11 +308,71 @@ pub fn lower_provider_call(
     };
 
     let arguments = lower_arguments(args, route.declaration())?;
+    validate_storage_util_literals(route.qualified_name(), &arguments)?;
     Ok(Some(TypedPapyrusProviderCall {
         route: route.clone(),
         arguments,
         result: route.declaration().result,
     }))
+}
+
+fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
+    match route {
+        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE | PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE => {
+            Some((2, 3))
+        }
+        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE | PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE => {
+            Some((3, 3))
+        }
+        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE
+        | PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE => Some((2, 2)),
+        _ => None,
+    }
+}
+
+fn validate_storage_util_literals(
+    route: &str,
+    arguments: &[ScriptValue],
+) -> Result<(), PapyrusProviderLowerError> {
+    let Some((minimum, maximum)) = storage_util_arity(route) else {
+        return Ok(());
+    };
+    if !(minimum..=maximum).contains(&arguments.len()) {
+        return Err(PapyrusProviderLowerError::MissingParameter(
+            "StorageUtil exact signature".to_owned(),
+        ));
+    }
+    if arguments.first() != Some(&ScriptValue::None) {
+        return Err(PapyrusProviderLowerError::UnsupportedArgument {
+            parameter: "object".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_storage_util_arguments(
+    route: &str,
+    arguments: &[PapyrusProviderArgument],
+) -> Result<(), PapyrusProviderLowerError> {
+    let Some((minimum, maximum)) = storage_util_arity(route) else {
+        return Ok(());
+    };
+    if !(minimum..=maximum).contains(&arguments.len()) {
+        return Err(PapyrusProviderLowerError::MissingParameter(
+            "StorageUtil exact signature".to_owned(),
+        ));
+    }
+    if !matches!(
+        arguments.first(),
+        Some(PapyrusProviderArgument::Literal(ScriptValue::None))
+    ) {
+        return Err(PapyrusProviderLowerError::UnsupportedArgument {
+            parameter: "object".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn is_known_provider_call(
@@ -449,6 +520,7 @@ fn lower_provider_invocation(
             parameter.id.as_str().to_owned(),
         ));
     }
+    validate_storage_util_arguments(route.qualified_name(), &arguments)?;
     Ok(Some(PapyrusProviderInvocation {
         route: route.clone(),
         arguments,
@@ -465,10 +537,33 @@ fn lower_literal(
         (Expr::NoneLit, _) if optional => Some(ScriptValue::None),
         (Expr::BoolLit(value), ScriptValueType::Boolean) => Some(ScriptValue::Boolean(*value)),
         (Expr::IntLit(value), ScriptValueType::Integer) => Some(ScriptValue::Integer(*value)),
+        (
+            Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            },
+            ScriptValueType::Integer,
+        ) => match &operand.node {
+            Expr::IntLit(value) => value.checked_neg().map(ScriptValue::Integer),
+            _ => None,
+        },
         (Expr::FloatLit(value), ScriptValueType::Float) => {
             let value = *value as f32;
             value.is_finite().then_some(ScriptValue::Float(value))
         }
+        (
+            Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            },
+            ScriptValueType::Float,
+        ) => match &operand.node {
+            Expr::FloatLit(value) => {
+                let value = -(*value as f32);
+                value.is_finite().then_some(ScriptValue::Float(value))
+            }
+            _ => None,
+        },
         (Expr::StringLit(value), ScriptValueType::String) => {
             Some(ScriptValue::String(value.clone()))
         }
@@ -1722,6 +1817,8 @@ fn validate_provider_call(
     {
         return Err("saved provider call omits a required argument".to_owned());
     }
+    validate_storage_util_arguments(call.route.qualified_name(), &call.arguments)
+        .map_err(|_| "saved StorageUtil call has an invalid exact signature".to_owned())?;
     Ok(())
 }
 
@@ -2292,7 +2389,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_compatibility_catalog_lowers_only_the_exact_game_alias() {
+    fn engine_compatibility_catalog_lowers_exact_game_and_storage_util_aliases() {
         let mut catalog = PapyrusProviderCatalog::engine_compatibility();
         assert!(PapyrusProviderRuntime::default()
             .catalog()
@@ -2312,6 +2409,24 @@ mod tests {
         assert_eq!(
             lower_provider_call(&expression("Game.GetPlayer()"), &catalog),
             Ok(None)
+        );
+        let storage = lower_provider_call(
+            &expression("StorageUtil.GetIntValue(None, \"Score\", -1)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            storage.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE
+        );
+        assert_eq!(
+            storage.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Score".to_owned()),
+                ScriptValue::Integer(-1),
+            ]
         );
         assert!(matches!(
             catalog.insert(
