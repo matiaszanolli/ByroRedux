@@ -376,7 +376,7 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
 fn papyrus_storage_util_list_declarations(
     object_and_key: &[(&str, ScriptValueType, bool); 2],
 ) -> Vec<EnginePapyrusFunctionDeclaration> {
-    let mut declarations = Vec::with_capacity(66);
+    let mut declarations = Vec::with_capacity(70);
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
         ("float", "Float", ScriptValueType::Float),
@@ -429,6 +429,7 @@ fn papyrus_storage_util_list_declarations(
             ),
             ("shift", "Shift", value_type, object_and_key.to_vec()),
             ("pop", "Pop", value_type, object_and_key.to_vec()),
+            ("random", "Random", value_type, object_and_key.to_vec()),
             (
                 "count",
                 "Count",
@@ -1435,6 +1436,9 @@ pub enum StorageUtilListCall {
     },
     Shift,
     Pop,
+    Random {
+        selector: u64,
+    },
     Count,
     Clear,
     RemoveAt {
@@ -1495,6 +1499,7 @@ pub enum StorageUtilListOperation {
     Pluck,
     Shift,
     Pop,
+    Random,
     Count,
     Clear,
     RemoveAt,
@@ -1692,6 +1697,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("IntListPluck", "storage.array-get+queue-remove", "signed"),
         ("IntListShift", "storage.array-get+queue-remove", "signed"),
         ("IntListPop", "storage.array-get+queue-remove", "signed"),
+        ("IntListRandom", "storage.array-get", "signed"),
         ("IntListCount", "storage.array-get", "signed"),
         ("IntListClear", "storage.array-get+queue-delete", "signed"),
         ("IntListRemoveAt", "storage.array-get+queue-remove", "bool"),
@@ -1709,6 +1715,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("FloatListPluck", "storage.array-get+queue-remove", "float"),
         ("FloatListShift", "storage.array-get+queue-remove", "float"),
         ("FloatListPop", "storage.array-get+queue-remove", "float"),
+        ("FloatListRandom", "storage.array-get", "float"),
         ("FloatListCount", "storage.array-get", "signed"),
         ("FloatListClear", "storage.array-get+queue-delete", "signed"),
         (
@@ -1738,6 +1745,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("StringListPluck", "storage.array-get+queue-remove", "text"),
         ("StringListShift", "storage.array-get+queue-remove", "text"),
         ("StringListPop", "storage.array-get+queue-remove", "text"),
+        ("StringListRandom", "storage.array-get", "text"),
         ("StringListCount", "storage.array-get", "signed"),
         (
             "StringListClear",
@@ -1774,6 +1782,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("FormListPluck", "storage.array-get+queue-remove", "form"),
         ("FormListShift", "storage.array-get+queue-remove", "form"),
         ("FormListPop", "storage.array-get+queue-remove", "form"),
+        ("FormListRandom", "storage.array-get", "form"),
         ("FormListCount", "storage.array-get", "signed"),
         ("FormListClear", "storage.array-get+queue-delete", "signed"),
         ("FormListRemoveAt", "storage.array-get+queue-remove", "bool"),
@@ -2256,6 +2265,7 @@ pub fn parse_storage_util_list_route(
         "pluck" => StorageUtilListOperation::Pluck,
         "shift" => StorageUtilListOperation::Shift,
         "pop" => StorageUtilListOperation::Pop,
+        "random" => StorageUtilListOperation::Random,
         "count" => StorageUtilListOperation::Count,
         "clear" => StorageUtilListOperation::Clear,
         "remove-at" => StorageUtilListOperation::RemoveAt,
@@ -2389,6 +2399,15 @@ pub fn adapt_storage_util_global_list(
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             });
+            StorageUtilListResult::Value(value)
+        }
+        StorageUtilListCall::Random { selector } => {
+            let value = if values.is_empty() {
+                default_storage_util_list_value(kind)
+            } else {
+                let index = (selector % values.len() as u64) as usize;
+                values[index].clone()
+            };
             StorageUtilListResult::Value(value)
         }
         StorageUtilListCall::Count => StorageUtilListResult::Int(
@@ -3239,6 +3258,12 @@ mod tests {
                 .operation,
             "storage.array-get+queue-replace"
         );
+        assert_eq!(
+            source_alias("StorageUtil", "FormListRandom")
+                .unwrap()
+                .operation,
+            "storage.array-get"
+        );
         assert!(source_alias("StorageUtil", "FormListCopy").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
@@ -3247,7 +3272,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 88);
+        assert_eq!(declarations.len(), 92);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -3584,6 +3609,42 @@ mod tests {
             ),
             Err(StorageUtilAdapterError::TypeMismatch)
         );
+    }
+
+    #[test]
+    fn storage_util_list_random_selects_a_member_and_defaults_when_empty() {
+        let current = PrincipalStorageValue::Array(vec![
+            ExtensionValue::String("zero".to_owned()),
+            ExtensionValue::String("one".to_owned()),
+            ExtensionValue::String("two".to_owned()),
+        ]);
+        let selected = adapt_storage_util_global_list(
+            "labels",
+            StorageUtilListKind::String,
+            StorageUtilListCall::Random { selector: 7 },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            selected.result,
+            StorageUtilListResult::Value(StorageUtilListValue::String("one".to_owned()))
+        );
+        assert!(selected.commands.is_empty());
+
+        let empty = adapt_storage_util_global_list(
+            "labels",
+            StorageUtilListKind::String,
+            StorageUtilListCall::Random { selector: 7 },
+            None,
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            empty.result,
+            StorageUtilListResult::Value(StorageUtilListValue::String(String::new()))
+        );
+        assert!(empty.commands.is_empty());
     }
 
     #[test]

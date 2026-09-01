@@ -385,6 +385,7 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
             | StorageUtilListOperation::Has => (3, 3),
             StorageUtilListOperation::Shift
             | StorageUtilListOperation::Pop
+            | StorageUtilListOperation::Random
             | StorageUtilListOperation::Sort
             | StorageUtilListOperation::Count
             | StorageUtilListOperation::Clear => (2, 2),
@@ -3500,6 +3501,20 @@ mod tests {
             "byro.storage.compat.storage-util.list-form-sort"
         );
         assert!(list_sort.result.is_none());
+        let list_random = lower_provider_call(
+            &expression("StorageUtil.FormListRandom(None, \"Owners\")"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_random.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-form-random"
+        );
+        assert_eq!(
+            list_random.arguments,
+            [ScriptValue::None, ScriptValue::String("Owners".to_owned()),]
+        );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
             .unwrap()
             .unwrap();

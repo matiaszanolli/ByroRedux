@@ -330,6 +330,7 @@ pub(crate) struct ExtensionHost {
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
     legacy_script_principals: BTreeSet<PrincipalId>,
+    legacy_random_state: u64,
     legacy_containers: BTreeMap<PrincipalId, LegacyContainerRegistry>,
     legacy_mod_event_builders: BTreeMap<PrincipalId, LegacySkseModEventBuilders>,
     retained_legacy_containers: Vec<PersistedLegacyContainers>,
@@ -365,6 +366,7 @@ impl ExtensionHost {
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
             legacy_script_principals: BTreeSet::new(),
+            legacy_random_state: Self::legacy_random_seed(),
             legacy_containers: BTreeMap::new(),
             legacy_mod_event_builders: BTreeMap::new(),
             retained_legacy_containers: Vec::new(),
@@ -381,6 +383,29 @@ impl ExtensionHost {
             script_functions: Vec::new(),
             papyrus_providers: PapyrusProviderCatalog::engine_compatibility(),
         })
+    }
+
+    fn legacy_random_seed() -> u64 {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let seed = (elapsed.as_nanos() as u64)
+            ^ elapsed.as_secs().rotate_left(17)
+            ^ u64::from(std::process::id());
+        if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        }
+    }
+
+    fn next_legacy_random_selector(&mut self) -> u64 {
+        let mut state = self.legacy_random_state;
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        self.legacy_random_state = state;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
     /// Compile and initialize every component of one already-resolved package.
@@ -1328,6 +1353,12 @@ impl ExtensionHost {
             (StorageUtilListOperation::Pop, [ScriptValue::None, ScriptValue::String(key)]) => {
                 (key, StorageUtilListCall::Pop)
             }
+            (StorageUtilListOperation::Random, [ScriptValue::None, ScriptValue::String(key)]) => (
+                key,
+                StorageUtilListCall::Random {
+                    selector: self.next_legacy_random_selector(),
+                },
+            ),
             (StorageUtilListOperation::Count, [ScriptValue::None, ScriptValue::String(key)]) => {
                 (key, StorageUtilListCall::Count)
             }
@@ -7987,6 +8018,8 @@ mod tests {
                 grown = StorageUtil.IntListResize(None, "numbers", 5, 9)
                 Int shrunk
                 shrunk = StorageUtil.IntListResize(None, "numbers", 4)
+                Int randomNumber
+                randomNumber = StorageUtil.IntListRandom(None, "numbers")
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -7995,7 +8028,7 @@ mod tests {
                 StorageUtil.StringListAdd(None, "Labels", "ready")
                 StorageUtil.StringListClear(None, "labels")
                 StorageUtil.FormListAdd(None, "Owners", None)
-                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent

@@ -1375,6 +1375,15 @@ and delete-on-zero behavior while also respecting the tighter configured
 engine storage limit. Both operations commit through one atomic
 `ArrayReplace` (or `Delete`) command.
 
+Checkpoint: `feat(scripting): execute StorageUtil random list aliases`.
+
+The fifth list pack adds `IntListRandom`, `FloatListRandom`,
+`StringListRandom`, and `FormListRandom`. Selection is read-only and driven by
+host-owned PRNG state, so mods receive a list member without gaining an entropy
+or timing capability. Empty and missing lists return the element type's default
+value, matching PapyrusUtil, while the bounded principal-private storage model
+remains unchanged.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the
