@@ -7,8 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use byroredux_core::ecs::sparse_set::SparseSetStorage;
+use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, World};
-use byroredux_papyrus::ast::{CallArg, Expr};
+use byroredux_papyrus::ast::{
+    AssignOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type,
+};
 use byroredux_sdk::{
     identity::ExtensionId,
     script_function::{
@@ -16,6 +20,10 @@ use byroredux_sdk::{
         ScriptValueType,
     },
 };
+
+use crate::events::{ActivateEvent, OnCellLoadEvent};
+
+const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
 
 /// Host callback shared by Papyrus handlers after all ECS guards are dropped.
 pub type PapyrusProviderCallback =
@@ -57,6 +65,7 @@ pub fn set_papyrus_provider_runtime(
 /// Register the provider runtime resource before any extension is loaded.
 pub(crate) fn register(world: &mut World) {
     world.insert_resource(PapyrusProviderRuntime::default());
+    world.register::<PapyrusProviderProgram>();
 }
 
 /// One manifest-published route addressable by Papyrus source or PEX.
@@ -267,8 +276,496 @@ fn lower_literal(
     }
 }
 
+/// Canonical event subset currently executable by the provider runtime.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum PapyrusProviderEvent {
+    OnLoad,
+    OnActivate,
+}
+
+/// One conservative instruction in a translated Papyrus handler.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PapyrusProviderStatement {
+    Declare {
+        name: String,
+        value: ScriptValue,
+    },
+    AssignCall {
+        name: String,
+        call: TypedPapyrusProviderCall,
+    },
+    Call(TypedPapyrusProviderCall),
+    If {
+        condition: PapyrusProviderCondition,
+        then_branch: Vec<PapyrusProviderStatement>,
+        else_branch: Vec<PapyrusProviderStatement>,
+    },
+}
+
+/// Boolean expression subset used to select a translated branch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PapyrusProviderCondition {
+    Literal(bool),
+    Local(String),
+    Call(TypedPapyrusProviderCall),
+}
+
+/// Static translated handlers attached to one scripted entity.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PapyrusProviderProgram {
+    handlers: BTreeMap<PapyrusProviderEvent, Vec<PapyrusProviderStatement>>,
+}
+
+impl Component for PapyrusProviderProgram {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl PapyrusProviderProgram {
+    /// Instructions for one canonical event.
+    pub fn handler(&self, event: PapyrusProviderEvent) -> &[PapyrusProviderStatement] {
+        self.handlers.get(&event).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether no supported handler was present in the source unit.
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+}
+
+/// Whole-handler rejection reason. A known provider is never partially run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PapyrusProviderProgramError {
+    DuplicateHandler(PapyrusProviderEvent),
+    NestingTooDeep,
+    UnsupportedStatement,
+    UnsupportedLocal(String),
+    UnknownLocal(String),
+    ResultTypeMismatch(String),
+    Call(PapyrusProviderLowerError),
+}
+
+/// Lower supported provider-bearing handlers from source or decompiled PEX.
+/// Handlers without a known provider remain available to existing recognizers.
+pub fn lower_provider_program(
+    script: &Script,
+    catalog: &PapyrusProviderCatalog,
+) -> Result<Option<PapyrusProviderProgram>, PapyrusProviderProgramError> {
+    let mut program = PapyrusProviderProgram::default();
+    for item in &script.body {
+        match &item.node {
+            ScriptItem::Event(event) => lower_event_into(event, catalog, &mut program)?,
+            ScriptItem::State(state) => {
+                for item in &state.body {
+                    if let StateItem::Event(event) = &item.node {
+                        lower_event_into(event, catalog, &mut program)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if program.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(program))
+    }
+}
+
+fn lower_event_into(
+    event: &Event,
+    catalog: &PapyrusProviderCatalog,
+    program: &mut PapyrusProviderProgram,
+) -> Result<(), PapyrusProviderProgramError> {
+    let canonical = if event.name.node.eq_ignore_case("OnLoad") {
+        PapyrusProviderEvent::OnLoad
+    } else if event.name.node.eq_ignore_case("OnActivate") {
+        PapyrusProviderEvent::OnActivate
+    } else {
+        return Ok(());
+    };
+    if !event
+        .body
+        .iter()
+        .any(|statement| statement_mentions_provider(&statement.node, catalog, 0))
+    {
+        return Ok(());
+    }
+    if program.handlers.contains_key(&canonical) {
+        return Err(PapyrusProviderProgramError::DuplicateHandler(canonical));
+    }
+    let mut locals = BTreeMap::new();
+    let statements = lower_statements(&event.body, catalog, &mut locals, 0)?;
+    program.handlers.insert(canonical, statements);
+    Ok(())
+}
+
+fn lower_statements(
+    statements: &[byroredux_papyrus::span::Spanned<Stmt>],
+    catalog: &PapyrusProviderCatalog,
+    locals: &mut BTreeMap<String, ScriptValueType>,
+    depth: usize,
+) -> Result<Vec<PapyrusProviderStatement>, PapyrusProviderProgramError> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err(PapyrusProviderProgramError::NestingTooDeep);
+    }
+    let mut lowered = Vec::with_capacity(statements.len());
+    for statement in statements {
+        match &statement.node {
+            Stmt::VarDecl(variable) => {
+                let Some(value_type) = sdk_type(&variable.ty.node) else {
+                    return Err(PapyrusProviderProgramError::UnsupportedLocal(
+                        variable.name.node.0.clone(),
+                    ));
+                };
+                let value = if let Some(initial) = &variable.initial_value {
+                    lower_literal(&initial.node, value_type, false).ok_or_else(|| {
+                        PapyrusProviderProgramError::UnsupportedLocal(variable.name.node.0.clone())
+                    })?
+                } else {
+                    default_value(value_type)
+                };
+                let key = variable.name.node.0.to_ascii_lowercase();
+                locals.insert(key.clone(), value_type);
+                lowered.push(PapyrusProviderStatement::Declare { name: key, value });
+            }
+            Stmt::Assign { target, op, value } if *op == AssignOp::Eq => {
+                let Expr::Ident(target) = &target.node else {
+                    return Err(PapyrusProviderProgramError::UnsupportedStatement);
+                };
+                let key = target.0.to_ascii_lowercase();
+                let expected = locals
+                    .get(&key)
+                    .copied()
+                    .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(target.0.clone()))?;
+                let call = lower_provider_call(&value.node, catalog)
+                    .map_err(PapyrusProviderProgramError::Call)?
+                    .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+                require_result(&call, expected, &target.0)?;
+                lowered.push(PapyrusProviderStatement::AssignCall { name: key, call });
+            }
+            Stmt::ExprStmt(expression) => {
+                let call = lower_provider_call(&expression.node, catalog)
+                    .map_err(PapyrusProviderProgramError::Call)?
+                    .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+                lowered.push(PapyrusProviderStatement::Call(call));
+            }
+            Stmt::If {
+                condition,
+                body,
+                elseif_clauses,
+                else_body,
+            } => {
+                let condition = lower_condition(&condition.node, catalog, locals)?;
+                let mut branch_locals = locals.clone();
+                let then_branch = lower_statements(body, catalog, &mut branch_locals, depth + 1)?;
+                let mut else_branch = if let Some(body) = else_body {
+                    let mut branch_locals = locals.clone();
+                    lower_statements(body, catalog, &mut branch_locals, depth + 1)?
+                } else {
+                    Vec::new()
+                };
+                for (condition, body) in elseif_clauses.iter().rev() {
+                    let condition = lower_condition(&condition.node, catalog, locals)?;
+                    let mut branch_locals = locals.clone();
+                    let then_branch =
+                        lower_statements(body, catalog, &mut branch_locals, depth + 1)?;
+                    else_branch = vec![PapyrusProviderStatement::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    }];
+                }
+                lowered.push(PapyrusProviderStatement::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                });
+            }
+            _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
+        }
+    }
+    Ok(lowered)
+}
+
+fn lower_condition(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, ScriptValueType>,
+) -> Result<PapyrusProviderCondition, PapyrusProviderProgramError> {
+    match expression {
+        Expr::BoolLit(value) => Ok(PapyrusProviderCondition::Literal(*value)),
+        Expr::Ident(identifier) => {
+            let key = identifier.0.to_ascii_lowercase();
+            if locals.get(&key) == Some(&ScriptValueType::Boolean) {
+                Ok(PapyrusProviderCondition::Local(key))
+            } else {
+                Err(PapyrusProviderProgramError::UnknownLocal(
+                    identifier.0.clone(),
+                ))
+            }
+        }
+        _ => {
+            let call = lower_provider_call(expression, catalog)
+                .map_err(PapyrusProviderProgramError::Call)?
+                .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+            require_result(&call, ScriptValueType::Boolean, "if condition")?;
+            Ok(PapyrusProviderCondition::Call(call))
+        }
+    }
+}
+
+fn require_result(
+    call: &TypedPapyrusProviderCall,
+    expected: ScriptValueType,
+    target: &str,
+) -> Result<(), PapyrusProviderProgramError> {
+    if call.result.is_some_and(|result| {
+        result.value_type == expected
+            && (!result.optional
+                || matches!(expected, ScriptValueType::Form | ScriptValueType::Entity))
+    }) {
+        Ok(())
+    } else {
+        Err(PapyrusProviderProgramError::ResultTypeMismatch(
+            target.to_owned(),
+        ))
+    }
+}
+
+fn sdk_type(value: &Type) -> Option<ScriptValueType> {
+    match value {
+        Type::Bool => Some(ScriptValueType::Boolean),
+        Type::Int => Some(ScriptValueType::Integer),
+        Type::Float => Some(ScriptValueType::Float),
+        Type::String => Some(ScriptValueType::String),
+        _ => None,
+    }
+}
+
+fn default_value(value_type: ScriptValueType) -> ScriptValue {
+    match value_type {
+        ScriptValueType::Boolean => ScriptValue::Boolean(false),
+        ScriptValueType::Integer => ScriptValue::Integer(0),
+        ScriptValueType::Float => ScriptValue::Float(0.0),
+        ScriptValueType::String => ScriptValue::String(String::new()),
+        ScriptValueType::Form | ScriptValueType::Entity => ScriptValue::None,
+    }
+}
+
+fn statement_mentions_provider(
+    statement: &Stmt,
+    catalog: &PapyrusProviderCatalog,
+    depth: usize,
+) -> bool {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return true;
+    }
+    match statement {
+        Stmt::Assign { target, value, .. } => {
+            expression_mentions_provider(&target.node, catalog, depth + 1)
+                || expression_mentions_provider(&value.node, catalog, depth + 1)
+        }
+        Stmt::Return(value) => value
+            .as_ref()
+            .is_some_and(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+        Stmt::If {
+            condition,
+            body,
+            elseif_clauses,
+            else_body,
+        } => {
+            expression_mentions_provider(&condition.node, catalog, depth + 1)
+                || body
+                    .iter()
+                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                || elseif_clauses.iter().any(|(condition, body)| {
+                    expression_mentions_provider(&condition.node, catalog, depth + 1)
+                        || body
+                            .iter()
+                            .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                })
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                })
+        }
+        Stmt::While { condition, body } => {
+            expression_mentions_provider(&condition.node, catalog, depth + 1)
+                || body
+                    .iter()
+                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+        }
+        Stmt::ExprStmt(expression) => {
+            expression_mentions_provider(&expression.node, catalog, depth + 1)
+        }
+        Stmt::VarDecl(variable) => variable
+            .initial_value
+            .as_ref()
+            .is_some_and(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+    }
+}
+
+fn expression_mentions_provider(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    depth: usize,
+) -> bool {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return true;
+    }
+    match expression {
+        Expr::Call { callee, args } => {
+            let direct = matches!(
+                &callee.node,
+                Expr::MemberAccess { object, .. }
+                    if matches!(&object.node, Expr::Ident(provider) if catalog.contains_provider(&provider.0))
+            );
+            direct
+                || expression_mentions_provider(&callee.node, catalog, depth + 1)
+                || args
+                    .iter()
+                    .any(|arg| expression_mentions_provider(&arg.value.node, catalog, depth + 1))
+        }
+        Expr::MemberAccess { object, .. } => {
+            expression_mentions_provider(&object.node, catalog, depth + 1)
+        }
+        Expr::Index { object, index } => {
+            expression_mentions_provider(&object.node, catalog, depth + 1)
+                || expression_mentions_provider(&index.node, catalog, depth + 1)
+        }
+        Expr::UnaryOp { operand, .. } => {
+            expression_mentions_provider(&operand.node, catalog, depth + 1)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expression_mentions_provider(&left.node, catalog, depth + 1)
+                || expression_mentions_provider(&right.node, catalog, depth + 1)
+        }
+        Expr::Cast { expr, .. } => expression_mentions_provider(&expr.node, catalog, depth + 1),
+        Expr::New { size, .. } => expression_mentions_provider(&size.node, catalog, depth + 1),
+        Expr::ArrayLit(values) => values
+            .iter()
+            .any(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+        _ => false,
+    }
+}
+
+/// Attach one already-lowered static program to its scripted entity.
+pub fn attach_papyrus_provider_program(
+    world: &mut World,
+    entity: EntityId,
+    program: PapyrusProviderProgram,
+) {
+    world.insert(entity, program);
+}
+
+/// Execute provider handlers only after snapshotting programs and event
+/// markers. No ECS query or resource guard survives the host callback.
+pub fn papyrus_provider_system(world: &World, _dt: f32) {
+    let callback = world
+        .try_resource::<PapyrusProviderRuntime>()
+        .and_then(|runtime| runtime.callback());
+    let Some(callback) = callback else {
+        return;
+    };
+    let loaded = world
+        .query::<OnCellLoadEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let activated = world
+        .query::<ActivateEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let Some(programs) = world.query::<PapyrusProviderProgram>() else {
+        return;
+    };
+    let mut handlers = Vec::new();
+    for (entity, program) in programs.iter() {
+        if loaded.contains(&entity) {
+            handlers.push(program.handler(PapyrusProviderEvent::OnLoad).to_vec());
+        }
+        if activated.contains(&entity) {
+            handlers.push(program.handler(PapyrusProviderEvent::OnActivate).to_vec());
+        }
+    }
+    drop(programs);
+
+    for statements in handlers {
+        let mut locals = BTreeMap::new();
+        if let Err(error) = execute_statements(&statements, callback.as_ref(), &mut locals) {
+            log::warn!("Papyrus provider handler aborted: {error}");
+        }
+    }
+}
+
+fn execute_statements(
+    statements: &[PapyrusProviderStatement],
+    callback: &PapyrusProviderCallback,
+    locals: &mut BTreeMap<String, ScriptValue>,
+) -> Result<(), String> {
+    for statement in statements {
+        match statement {
+            PapyrusProviderStatement::Declare { name, value } => {
+                locals.insert(name.clone(), value.clone());
+            }
+            PapyrusProviderStatement::AssignCall { name, call } => {
+                let value = callback(call.route.qualified_name(), &call.arguments)?;
+                locals.insert(name.clone(), value);
+            }
+            PapyrusProviderStatement::Call(call) => {
+                callback(call.route.qualified_name(), &call.arguments)?;
+            }
+            PapyrusProviderStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let selected = if evaluate_condition(condition, callback, locals)? {
+                    then_branch
+                } else {
+                    else_branch
+                };
+                execute_statements(selected, callback, locals)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn evaluate_condition(
+    condition: &PapyrusProviderCondition,
+    callback: &PapyrusProviderCallback,
+    locals: &BTreeMap<String, ScriptValue>,
+) -> Result<bool, String> {
+    let value = match condition {
+        PapyrusProviderCondition::Literal(value) => return Ok(*value),
+        PapyrusProviderCondition::Local(name) => locals
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("translated local {name} was not initialized"))?,
+        PapyrusProviderCondition::Call(call) => {
+            callback(call.route.qualified_name(), &call.arguments)?
+        }
+    };
+    match value {
+        ScriptValue::Boolean(value) => Ok(value),
+        _ => Err("provider returned a non-boolean condition result".to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use byroredux_papyrus::{ast::ScriptItem, parse_script};
     use byroredux_sdk::{
@@ -304,6 +801,23 @@ mod tests {
         }
     }
 
+    fn boolean_declaration() -> ScriptFunctionDeclaration {
+        ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("is-storm").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: Vec::new(),
+            result: Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::Boolean,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "WeatherNative".to_owned(),
+                function: "IsStorm".to_owned(),
+            }),
+            description: "Whether the current weather is a storm".to_owned(),
+        }
+    }
+
     fn expression(source: &str) -> Expr {
         let source = format!("ScriptName Fixture\nEvent OnInit()\n  {source}\nEndEvent\n");
         let (script, errors) = parse_script(&source).unwrap();
@@ -323,6 +837,12 @@ mod tests {
             .insert(
                 &ExtensionId::new("org.example.weather").unwrap(),
                 &declaration(),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                &ExtensionId::new("org.example.weather").unwrap(),
+                &boolean_declaration(),
             )
             .unwrap();
         catalog
@@ -390,5 +910,78 @@ mod tests {
             error,
             PapyrusProviderCatalogError::DuplicateAlias { .. }
         ));
+    }
+
+    #[test]
+    fn source_handler_assigns_a_typed_result_and_selects_one_branch() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Bool storm
+                storm = WeatherNative.IsStorm()
+                If storm
+                    WeatherNative.WeatherAt(4, "clear")
+                Else
+                    WeatherNative.WeatherAt(5, "cloudy")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            if route.ends_with("is-storm") {
+                Ok(ScriptValue::Boolean(true))
+            } else {
+                Ok(ScriptValue::String("rain".to_owned()))
+            }
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "ext.org.example.weather.is-storm");
+        assert_eq!(calls[1].0, "ext.org.example.weather.weather-at");
+        assert_eq!(
+            calls[1].1,
+            [
+                ScriptValue::Integer(4),
+                ScriptValue::String("clear".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_bearing_handler_rejects_unsupported_statements_as_a_unit() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                While WeatherNative.IsStorm()
+                    WeatherNative.WeatherAt(4)
+                EndWhile
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            lower_provider_program(&script, &catalog()),
+            Err(PapyrusProviderProgramError::UnsupportedStatement)
+        );
     }
 }
