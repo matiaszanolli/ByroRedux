@@ -86,8 +86,12 @@ executable routes source ObScript assignments and conditions directly to this
 host without an OBSE/xNVSE DLL. Arguments use explicit `boolean:`, `integer:`,
 `float:`, or `string:` literals (plus `none`), and the interpreter snapshots
 its static statement tree before entering guest code so no ECS guard crosses
-the sandbox boundary. Compiled SCDA SDK-call encoding and the general Papyrus
-dispatcher remain open. A conservative Papyrus vertical slice is live:
+the sandbox boundary. Source-less SCDA can carry the same calls through a
+public, versioned `BYROSDK` payload behind a reserved expression opcode. The
+codec preserves bounded typed literals, rejects transient form/entity handles,
+and fails closed on malformed or unsupported versions; assignments and
+conditions enter the same guard-free host path. A conservative Papyrus vertical
+slice is live:
 manifest-declared `Provider.Function(...)` aliases lower from parsed source and
 decompiled PEX into a typed program, and `OnInit`, `OnLoad`, `OnActivate`,
 `OnHit`, `OnObjectEquipped`, `OnObjectUnequipped`, `OnTriggerEnter`, and
@@ -471,10 +475,19 @@ thread/stage rules, determinism, and failure modes.
 Translated Papyrus/SCPT calls and legacy compatibility aliases resolve into
 this catalog. Extensions expose script-callable functions only through a
 bounded typed provider interface; they cannot register a native function
-pointer. The current source-ObScript adapter enters that dispatcher only after
-snapshotting and releasing ECS guards. Guest mutations remain deferred and the
-typed result is published only after the host accepts the complete command
-batch.
+pointer. Source ObScript and the versioned compiled-SCDA SDK-call encoding
+enter that dispatcher only after snapshotting and releasing ECS guards. Guest
+mutations remain deferred and the typed result is published only after the host
+accepts the complete command batch.
+
+Checkpoint commit: `feat(scripting): encode SDK calls in legacy bytecode`.
+
+Delivered with a public, versioned SDK payload codec and reserved SCDA
+expression opcode. Source-less assignments and conditions decode the stable
+principal-qualified route plus bounded literal arguments, reject malformed or
+unknown versions as a whole handler, and reuse the authenticated guard-free
+host bridge. Raw `FormRef` and `EntityRef` literals remain excluded because a
+compiler cannot safely mint those identities.
 
 ### 6.7 Persistence
 
@@ -564,6 +577,13 @@ from the parsed game/profile boundary, and reports malformed lengths without
 guessing past damaged data. The decoder's framing was exercised across every
 compiled SCPT in the installed Fallout New Vegas and Oblivion masters. Extended
 expression-evaluator payloads and runtime variable resolution remain pending.
+For ByroRedux-native compiled scripts, a reserved `0xfffe` expression opcode
+now carries the public versioned `BYROSDK` payload: a canonical
+`ext.<principal>.<function>` route plus bounded typed literal arguments. The
+same assignment/conditional runtime used by preserved source dispatches it
+after dropping ECS guards. This does not guess arbitrary third-party opcode
+registrations; historical extender commands still require exact semantic
+adapters.
 The first shared load-order pack now executes
 `IsModLoaded`, `GetModIndex`, `GetNumLoadedMods`/`GetNumLoadedPlugins`, and
 `GetNthModName` directly against `byro.content.catalog`. The SCDA bridge decodes
@@ -866,7 +886,11 @@ proceeds by semantic domain and closes only against real mod fixtures.
   host-side argument/result validation, deferred atomic mutation, and component
   quarantine on an invalid result. Source ObScript can call the same live host
   through `ext.<extension-id>.<function>` assignments and conditions without
-  OBSE/xNVSE. Manifest-declared `Provider.Function(...)` aliases now lower
+  OBSE/xNVSE. A public SDK codec now embeds those principal-qualified routes and
+  bounded `none`/boolean/integer/finite-float/string literals in source-less
+  SCDA; the compiled runtime supports both assignments and conditions and
+  rejects an invalid payload as a whole handler. Manifest-declared
+  `Provider.Function(...)` aliases now lower
   case-insensitively from parsed Papyrus and decompiled PEX into a typed,
   guard-free event program that calls the same live host. Supported events are
   `OnInit`, `OnLoad`, `OnActivate`, `OnHit`, `OnObjectEquipped`,
@@ -890,8 +914,8 @@ four scalar `OnHit` attack/block parameters are projected under their authored
   tail. Quest, scene, and ready-continuation batches now flush every fragment
   before starting the next independent item.
   Provider-bearing event handlers now suspend across bounded `Utility.Wait`
-  calls while preserving locals and ordered branch/enclosing tails. Compiled
-  SCDA call encoding, arithmetic/string-concatenation/object expressions,
+  calls while preserving locals and ordered branch/enclosing tails.
+  Arithmetic/string-concatenation/object expressions,
   broader events, other latent primitives, and dynamic object dispatch remain
   pending. The continuation queue is registered with the save system and revalidates saved
   routes against the live catalog before resuming.
@@ -943,7 +967,9 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   evaluation, comparisons/operators, and general ObScript execution remain
   pending. The load-order subset is executable end to end both as typed
   compiled-call semantics and as live conditional `SCTX` or source-less `SCDA`
-  event handlers against the engine content catalog.**
+  event handlers against the engine content catalog. Source-less ByroRedux SDK
+  calls additionally have a versioned public binary codec and execute as typed
+  assignments or branch conditions through the authenticated extension host.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 
