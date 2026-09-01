@@ -96,7 +96,7 @@ guards are released. `OnInit` is emitted once when the
 translated program attaches, independently of cell load; trigger handlers
 preserve one dispatch per entering actor. `OnHit` projects its four boolean
 attack/block flags into typed handler locals. The subset supports scalar locals,
-literal or typed scalar-local arguments, assignments, and bounded boolean
+literal or typed scalar/event-local arguments, assignments, and bounded boolean
 branches with negation, short-circuit logical operators,
 same-type boolean/integer/float comparisons,
 and string equality/inequality. Arithmetic, string concatenation, object
@@ -870,10 +870,12 @@ proceeds by semantic domain and closes only against real mod fixtures.
   case-insensitively from parsed Papyrus and decompiled PEX into a typed,
   guard-free event program that calls the same live host. Supported events are
   `OnInit`, `OnLoad`, `OnActivate`, `OnHit`, `OnObjectEquipped`,
-  `OnObjectUnequipped`, `OnTriggerEnter`, and `OnUpdate`. Program attachment
-  emits one engine-owned initialization marker; trigger entry multiplicity and
-  ordered wearer equipment transitions are preserved. The
-  four scalar `OnHit` attack/block parameters are projected under their authored
+`OnObjectUnequipped`, `OnTriggerEnter`, and `OnUpdate`. Program attachment
+emits one engine-owned initialization marker; trigger entry multiplicity and
+ordered wearer equipment transitions are preserved. Equipment handlers receive
+the authored base item as a load-order-independent `FormRef`; that value may
+cross `Utility.Wait` and save/reload boundaries. The
+four scalar `OnHit` attack/block parameters are projected under their authored
   names. The current subset covers scalar locals, literal or typed local
   arguments, assignments, and bounded boolean branches, including negation,
   short-circuit logical operators, same-type boolean/integer/float comparisons,
@@ -1089,10 +1091,8 @@ Checkpoint commit: `feat(scripting): dispatch provider combat events`.
 Delivered for live combat `OnHit` plus actor-side `OnObjectEquipped` and
 `OnObjectUnequipped`. The provider runtime snapshots the existing engine event
 markers before guest entry and preserves every transition in a wearer-owned
-equipment batch. Form-bearing equipment payloads are not projected yet, so
-handlers that reference those forms still reject as a whole instead of
-observing a fabricated value. Entity references from activation, trigger, and
-hit-aggressor payloads are projected by the executable as opaque handles.
+equipment batch. Entity references from activation, trigger, and hit-aggressor
+payloads are projected by the executable as opaque handles.
 
 Checkpoint commit: `feat(scripting): project provider hit flags`.
 
@@ -1126,8 +1126,19 @@ drops all ECS guards, and asks the executable to mint the same opaque
 generational handles used by sandbox callbacks. Unused parameters are pruned.
 A handler that uses an entity parameter together with `Utility.Wait` rejects as
 a unit, preventing process-local handles from entering the saved continuation
-queue. Equipment/source/projectile form projection remains pending a canonical
-FormID-to-SDK-`FormRef` boundary.
+queue. Hit source/projectile projection remains pending canonical producer
+semantics; their current event fields do not reliably distinguish authored
+forms from live entities.
+
+Checkpoint commit: `feat(scripting): project stable equipment forms`.
+
+Delivered for the first `Form` parameter of `OnObjectEquipped` and
+`OnObjectUnequipped`. The wearer-owned equipment batch retains each remapped
+global FormID and the executable's live load-order resolver converts it to a
+portable SDK `FormRef` only after ECS guards are dropped. Form locals are
+save-safe and remain available after `Utility.Wait`; unresolved forms fail the
+handler before guest entry. The optional second object-reference parameter
+remains unavailable until inventory instances have stable runtime identity.
 
 ### 14.4 Exit gate
 
