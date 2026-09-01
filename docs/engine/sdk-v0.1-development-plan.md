@@ -101,8 +101,8 @@ calls from source/decompiled PEX as sequencing barriers, persist them through
 existing latent continuations, and invoke them only after fragment ECS guards
 are released. Successful calls resume later native effects in the same
 fragment, including across multiple barriers and supported conditional
-branches; failure aborts that fragment's tail. Cross-fragment barrier flushing
-remains pending.
+branches; failure aborts that fragment's tail. Quest events, scene invocations,
+and ready latent continuations flush each fragment before the next one begins.
 The first curated extender-era pack is also executable without an extension
 package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
@@ -871,7 +871,8 @@ proceeds by semantic domain and closes only against real mod fixtures.
   dispatches them only after fragment guards drop. A successful call resumes
   later native effects within that fragment, including across multiple
   barriers and supported conditional branches; failure aborts its remaining
-  tail. Cross-fragment barrier flushing remains pending.
+  tail. Quest, scene, and ready-continuation batches now flush every fragment
+  before starting the next independent item.
   Compiled SCDA call encoding, arithmetic/string/object expressions, broader
   events, latent provider calls, and dynamic object dispatch remain pending.
   Ten exact SKSE `Game` content extensions are now engine-owned
@@ -1013,8 +1014,9 @@ logical operators, and same-type boolean/integer/float comparisons. Quest/scene
 fragment PEX now uses top-level provider calls as guard-free sequencing barriers
 and resumes each successful call's native tail in order within that fragment.
 Calls selected inside supported conditional branches preserve the branch and
-enclosing tails. Failed calls abort their fragment tail; cross-fragment barrier
-flushing remains open.
+enclosing tails. Failed calls abort their fragment tail. Quest events, scene
+invocations, and ready latent continuations flush one ordered fragment at a
+time, with quest cascades reconciled through the canonical sequenced journal.
 
 ### 14.3 Source and PEX parity
 
