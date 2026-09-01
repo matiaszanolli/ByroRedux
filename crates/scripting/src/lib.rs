@@ -38,8 +38,10 @@ pub use cinematic::{
 };
 pub use cleanup::event_cleanup_system;
 pub use compatibility::{
-    analyze_pex_compatibility, analyze_source_compatibility, CompatibilityFinding,
-    CompatibilityReport, SourceCompatibilityFinding, SourceCompatibilityReport,
+    analyze_pex_compatibility, analyze_source_compatibility, classify_method_call,
+    classify_static_call, record_compatibility_report, CompatibilityDisposition,
+    CompatibilityFinding, CompatibilityMatch, CompatibilityRegistry, CompatibilityReport,
+    CompatibilitySummaryEntry, SourceCompatibilityFinding, SourceCompatibilityReport,
 };
 pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
@@ -58,10 +60,11 @@ pub use events::{
 };
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
-    populate_quest_fragments_from_pex, populate_scene_fragments_from_pex,
+    populate_quest_fragments_from_pex, populate_quest_fragments_from_pex_detailed,
+    populate_scene_fragments_from_pex, populate_scene_fragments_from_pex_detailed,
     quest_fragment_dispatch_system, scene_fragment_dispatch_system, DeferredFragmentEffects,
-    FragmentExecutionQueue, PendingFragmentActivations, QuestStageFragments, ReferenceEnableState,
-    SceneFragments,
+    FragmentExecutionQueue, FragmentPexTranslation, PendingFragmentActivations,
+    QuestStageFragments, ReferenceEnableState, SceneFragments,
 };
 pub use globals::Globals;
 pub use package::{
@@ -91,7 +94,8 @@ pub use scene::{
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
-    translate_pex, translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource,
+    translate_pex, translate_pex_detailed, translate_script, CanonicalEvent, PexTranslation,
+    RecognizeCtx, Recognized, ScriptSource,
 };
 pub use trigger::{trigger_detection_system, TriggerShape, TriggerVolume};
 pub use vm_state::{
@@ -106,6 +110,7 @@ use byroredux_core::ecs::world::World;
 /// Call during setup so that `query_mut()` works for event markers
 /// before any entity has triggered an event.
 pub fn register(world: &mut World) {
+    world.insert_resource(CompatibilityRegistry::default());
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();
     world.register::<SplashEvent>();

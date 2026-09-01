@@ -8,6 +8,43 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 
 #[test]
+fn sdk_compat_command_is_registered_and_reports_an_empty_world() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_scripting::CompatibilityRegistry::default());
+
+    let output = SdkCompatCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("0 unique script(s)"), "{output}");
+    assert!(
+        output.contains("no extender-era calls observed"),
+        "{output}"
+    );
+
+    let registry = build_command_registry();
+    assert!(registry
+        .list()
+        .iter()
+        .any(|(name, _)| *name == "sdk.compat"));
+}
+
+#[test]
+fn sdk_compat_command_formats_engine_service_mapping() {
+    let entry = byroredux_scripting::CompatibilitySummaryEntry {
+        provider: "storageutil".to_string(),
+        function: "getintvalue".to_string(),
+        compatibility: byroredux_scripting::classify_static_call("StorageUtil", "GetIntValue")
+            .expect("catalogued extender call"),
+        occurrences: 1,
+        scripts: 1,
+    };
+    let output = format_sdk_compat_entry(&entry);
+    assert!(
+        output.contains("mapped      storageutil.getintvalue"),
+        "{output}"
+    );
+    assert!(output.contains("service=byro.storage"), "{output}");
+}
+
+#[test]
 fn render_debug_command_queues_named_mode_and_bounded_probe_pixel() {
     let mut world = World::new();
     world.insert_resource(crate::components::RenderDebugControl::default());

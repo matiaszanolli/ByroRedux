@@ -1,11 +1,14 @@
 //! Extender-era Papyrus compatibility preflight over decoded PEX calls.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use byroredux_core::ecs::Resource;
 use byroredux_papyrus::{
     ast::{Event, Expr, Function, Script, ScriptItem, StateItem, Stmt, Variable},
     span::{Span, Spanned},
 };
 use byroredux_pex::{CallScope, CallSite, CallSiteDiagnostic, CallTarget, Pex};
-use byroredux_sdk::compatibility::{
+pub use byroredux_sdk::compatibility::{
     classify_method_call, classify_static_call, CompatibilityDisposition, CompatibilityMatch,
 };
 
@@ -21,6 +24,156 @@ pub struct CompatibilityFinding {
 pub struct CompatibilityReport {
     pub findings: Vec<CompatibilityFinding>,
     pub malformed_calls: Vec<CallSiteDiagnostic>,
+}
+
+pub const MAX_COMPATIBILITY_SCRIPTS: usize = 65_536;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CompatibilityScriptKey {
+    source_file: String,
+    fingerprint: u64,
+}
+
+/// Deduplicated compatibility evidence for every relevant compiled script
+/// observed in the active world generation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompatibilityRegistry {
+    scripts: BTreeMap<CompatibilityScriptKey, CompatibilityReport>,
+    truncated: bool,
+}
+
+impl Resource for CompatibilityRegistry {}
+
+/// One provider/function aggregate across unique compiled scripts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompatibilitySummaryEntry {
+    pub provider: String,
+    pub function: String,
+    pub compatibility: CompatibilityMatch,
+    pub occurrences: usize,
+    pub scripts: usize,
+}
+
+impl CompatibilityRegistry {
+    /// Record one parsed PEX report. Returns true only for a new relevant
+    /// script; repeated attachment of the same bytes is a no-op.
+    pub fn record(&mut self, fingerprint: u64, report: CompatibilityReport) -> bool {
+        let source_file = report
+            .findings
+            .first()
+            .map(|finding| finding.call.source_file.clone())
+            .or_else(|| {
+                report
+                    .malformed_calls
+                    .first()
+                    .map(|diagnostic| diagnostic.source_file.clone())
+            });
+        let Some(source_file) = source_file else {
+            return false;
+        };
+        let key = CompatibilityScriptKey {
+            source_file,
+            fingerprint,
+        };
+        if self.scripts.contains_key(&key) {
+            return false;
+        }
+        if self.scripts.len() == MAX_COMPATIBILITY_SCRIPTS {
+            self.truncated = true;
+            return false;
+        }
+        self.scripts.insert(key, report);
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.scripts.clear();
+        self.truncated = false;
+    }
+
+    pub fn script_count(&self) -> usize {
+        self.scripts.len()
+    }
+
+    pub fn finding_count(&self) -> usize {
+        self.scripts
+            .values()
+            .map(|report| report.findings.len())
+            .sum()
+    }
+
+    pub fn malformed_count(&self) -> usize {
+        self.scripts
+            .values()
+            .map(|report| report.malformed_calls.len())
+            .sum()
+    }
+
+    pub const fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub fn summary(&self) -> Vec<CompatibilitySummaryEntry> {
+        #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+        struct SummaryKey {
+            provider: String,
+            function: String,
+            disposition: CompatibilityDisposition,
+            service: Option<&'static str>,
+        }
+
+        let mut entries =
+            BTreeMap::<SummaryKey, (CompatibilityMatch, usize, BTreeSet<(&str, u64)>)>::new();
+        for (script, report) in &self.scripts {
+            for finding in &report.findings {
+                let provider = match &finding.call.target {
+                    CallTarget::StaticType(provider) | CallTarget::ParentType(provider) => {
+                        provider.clone()
+                    }
+                    CallTarget::Receiver(_) => "<instance>".to_owned(),
+                };
+                let key = SummaryKey {
+                    provider: provider.to_ascii_lowercase(),
+                    function: finding.call.function.to_ascii_lowercase(),
+                    disposition: finding.compatibility.disposition,
+                    service: finding.compatibility.service,
+                };
+                let entry = entries
+                    .entry(key)
+                    .or_insert_with(|| (finding.compatibility, 0, BTreeSet::new()));
+                entry.1 += 1;
+                entry.2.insert((&script.source_file, script.fingerprint));
+            }
+        }
+        entries
+            .into_iter()
+            .map(
+                |(key, (compatibility, occurrences, scripts))| CompatibilitySummaryEntry {
+                    provider: key.provider,
+                    function: key.function,
+                    compatibility,
+                    occurrences,
+                    scripts: scripts.len(),
+                },
+            )
+            .collect()
+    }
+}
+
+/// Publish one detailed translation result into the world's compatibility
+/// registry. Missing registries and reports are clean no-ops so standalone
+/// translation users do not need engine setup.
+pub fn record_compatibility_report(
+    world: &byroredux_core::ecs::World,
+    fingerprint: u64,
+    report: Option<CompatibilityReport>,
+) -> bool {
+    let Some(report) = report else {
+        return false;
+    };
+    world
+        .try_resource_mut::<CompatibilityRegistry>()
+        .is_some_and(|mut registry| registry.record(fingerprint, report))
 }
 
 /// One extender-era call found directly in Papyrus source.
@@ -545,6 +698,58 @@ EndEvent
         assert_eq!(
             json.compatibility.disposition,
             CompatibilityDisposition::Unsupported
+        );
+    }
+
+    #[test]
+    fn registry_deduplicates_attachments_and_aggregates_script_variants() {
+        let pex = Pex {
+            script_type: ScriptType::Skyrim,
+            header: Header {
+                source_file_name: "ExtenderFixture.psc".to_owned(),
+                ..Default::default()
+            },
+            string_table: Vec::new(),
+            debug_info: DebugInfo::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "ExtenderFixture".to_owned(),
+                states: vec![State {
+                    functions: vec![Function {
+                        name: "OnInit".to_owned(),
+                        instructions: vec![
+                            static_call("StorageUtil", "GetIntValue"),
+                            static_call("JsonUtil", "Load"),
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let report = analyze_pex_compatibility(&pex);
+        let mut registry = CompatibilityRegistry::default();
+
+        assert!(registry.record(10, report.clone()));
+        assert!(!registry.record(10, report.clone()));
+        assert!(registry.record(11, report));
+        assert_eq!(registry.script_count(), 2);
+        assert_eq!(registry.finding_count(), 4);
+        assert_eq!(registry.malformed_count(), 0);
+
+        let summary = registry.summary();
+        assert_eq!(summary.len(), 2);
+        let storage = summary
+            .iter()
+            .find(|entry| entry.provider == "storageutil")
+            .unwrap();
+        assert_eq!(storage.function, "getintvalue");
+        assert_eq!(storage.occurrences, 2);
+        assert_eq!(storage.scripts, 2);
+        assert_eq!(
+            storage.compatibility.disposition,
+            CompatibilityDisposition::Mapped
         );
     }
 }

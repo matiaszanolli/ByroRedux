@@ -351,7 +351,14 @@ pub(super) fn attach_vmad_scripts(
         };
         // `script_instance` borrows `index` / the placed ref (not
         // `world`), so it stays valid across the `&mut World` spawn.
-        match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
+        let translation =
+            byroredux_scripting::translate_pex_detailed(&bytes, game, Some(script_instance), None);
+        byroredux_scripting::record_compatibility_report(
+            world,
+            translation.fingerprint,
+            translation.compatibility,
+        );
+        match translation.recognized {
             Some(recognized) => {
                 log::debug!(
                     "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",

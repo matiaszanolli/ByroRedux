@@ -732,9 +732,12 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   StorageUtil/mod-event calls, an unsupported JsonUtil call, vararg counts,
   and debug source-line attribution through the real decoder. Parsed Papyrus
   source can now be scanned through the same catalog with recursive AST
-  coverage, byte spans, source lines, scopes, and argument counts.
-  Whole-load-order launch reporting and ObScript/xNVSE/OBSE scanning remain
-  pending.**
+  coverage, byte spans, source lines, scopes, and argument counts. Live VMAD,
+  quest-fragment, and scene-fragment attachment now feed a bounded,
+  fingerprint-deduplicated world registry without reparsing PEX; `sdk.compat`
+  exposes its deterministic aggregate to operators. Eager scanning of every
+  script in the full load-order archives and ObScript/xNVSE/OBSE scanning
+  remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 

@@ -97,18 +97,56 @@ pub fn translate_pex(
     script_instance: Option<&ScriptInstanceData>,
     owning_quest: Option<u32>,
 ) -> Option<Recognized> {
+    translate_pex_detailed(pex_bytes, game, script_instance, owning_quest).recognized
+}
+
+/// Result of one parse/decompile/recognize pass, including compatibility data
+/// for an engine-owned load-order registry. This avoids parsing every PEX a
+/// second time merely to aggregate extender calls.
+pub struct PexTranslation {
+    pub recognized: Option<Recognized>,
+    pub compatibility: Option<crate::compatibility::CompatibilityReport>,
+    pub fingerprint: u64,
+}
+
+pub fn translate_pex_detailed(
+    pex_bytes: &[u8],
+    game: GameKind,
+    script_instance: Option<&ScriptInstanceData>,
+    owning_quest: Option<u32>,
+) -> PexTranslation {
+    let fingerprint = pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
         Ok(p) => p,
         Err(e) => {
             log::debug!("translate_pex: .pex parse failed: {e}");
-            return None;
+            return PexTranslation {
+                recognized: None,
+                compatibility: None,
+                fingerprint,
+            };
         }
     };
     let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
     crate::compatibility::log_compatibility_report(&compatibility);
-    let script = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))?;
-    let source = ScriptSource::PapyrusSource(&script);
-    translate_script(&source, game, script_instance, owning_quest)
+    let recognized = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))
+        .and_then(|script| {
+            let source = ScriptSource::PapyrusSource(&script);
+            translate_script(&source, game, script_instance, owning_quest)
+        });
+    PexTranslation {
+        recognized,
+        compatibility: Some(compatibility),
+        fingerprint,
+    }
+}
+
+pub(crate) fn pex_fingerprint(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
 }
 
 /// Run a decompile and flatten both failure modes — a returned `Err` and an

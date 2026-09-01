@@ -145,6 +145,64 @@ impl ConsoleCommand for SystemsCommand {
         }
     }
 }
+
+/// `sdk.compat` — aggregate extender-era calls found in compiled scripts
+/// actually observed by the current engine world.
+pub(crate) struct SdkCompatCommand;
+impl ConsoleCommand for SdkCompatCommand {
+    fn name(&self) -> &str {
+        "sdk.compat"
+    }
+
+    fn description(&self) -> &str {
+        "Show engine-level compatibility for observed extender-era PEX calls"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        const MAX_ROWS: usize = 256;
+        let Some(registry) = world.try_resource::<byroredux_scripting::CompatibilityRegistry>()
+        else {
+            return CommandOutput::line("CompatibilityRegistry resource not present");
+        };
+        let summary = registry.summary();
+        let mut lines = vec![format!(
+            "SDK compatibility: {} unique script(s), {} call(s), {} malformed call(s), truncated={}",
+            registry.script_count(),
+            registry.finding_count(),
+            registry.malformed_count(),
+            registry.truncated(),
+        )];
+        if summary.is_empty() {
+            lines.push("  no extender-era calls observed in loaded compiled scripts".to_string());
+            return CommandOutput::lines(lines);
+        }
+        for entry in summary.iter().take(MAX_ROWS) {
+            lines.push(format_sdk_compat_entry(entry));
+        }
+        if summary.len() > MAX_ROWS {
+            lines.push(format!(
+                "  ... {} additional aggregate(s) omitted",
+                summary.len() - MAX_ROWS
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+pub(crate) fn format_sdk_compat_entry(
+    entry: &byroredux_scripting::CompatibilitySummaryEntry,
+) -> String {
+    let disposition = match entry.compatibility.disposition {
+        byroredux_scripting::CompatibilityDisposition::Native => "native",
+        byroredux_scripting::CompatibilityDisposition::Mapped => "mapped",
+        byroredux_scripting::CompatibilityDisposition::Unsupported => "unsupported",
+    };
+    let service = entry.compatibility.service.unwrap_or("none");
+    format!(
+        "  {disposition:<11} {}.{}: {} occurrence(s) in {} script(s), service={service}",
+        entry.provider, entry.function, entry.occurrences, entry.scripts,
+    )
+}
 /// `ctx.scratch` — print per-Vec capacity / len / heap-bytes for every
 /// persistent CPU-side scratch buffer in the renderer (R6).
 ///

@@ -83,6 +83,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
     registry.register(SystemsCommand);
+    registry.register(SdkCompatCommand);
     registry.register(TexMissingCommand);
     registry.register(TexLoadedCommand);
     registry.register(MeshInfoCommand);

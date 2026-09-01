@@ -147,12 +147,20 @@ pub(crate) fn populate_quest_fragments(
                 );
                 continue;
             };
-            let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
-            total += byroredux_scripting::populate_quest_fragments_from_pex(
-                &mut frags,
-                byroredux_scripting::QuestFormId(form_id),
-                &bytes,
-                &bindings,
+            let translation = {
+                let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+                byroredux_scripting::populate_quest_fragments_from_pex_detailed(
+                    &mut frags,
+                    byroredux_scripting::QuestFormId(form_id),
+                    &bytes,
+                    &bindings,
+                )
+            };
+            total += translation.inserted;
+            byroredux_scripting::record_compatibility_report(
+                world,
+                translation.fingerprint,
+                translation.compatibility,
             );
         }
     }
@@ -208,14 +216,22 @@ fn populate_scene_fragments(
                 );
                 continue;
             };
-            let mut fragments = world.resource_mut::<byroredux_scripting::SceneFragments>();
-            total += byroredux_scripting::populate_scene_fragments_from_pex(
-                &mut fragments,
-                scene_form_id,
-                byroredux_scripting::QuestFormId(quest_form_id),
-                scene.script_instance.as_ref(),
-                &bytes,
-                &bindings,
+            let translation = {
+                let mut fragments = world.resource_mut::<byroredux_scripting::SceneFragments>();
+                byroredux_scripting::populate_scene_fragments_from_pex_detailed(
+                    &mut fragments,
+                    scene_form_id,
+                    byroredux_scripting::QuestFormId(quest_form_id),
+                    scene.script_instance.as_ref(),
+                    &bytes,
+                    &bindings,
+                )
+            };
+            total += translation.inserted;
+            byroredux_scripting::record_compatibility_report(
+                world,
+                translation.fingerprint,
+                translation.compatibility,
             );
         }
     }
@@ -275,9 +291,18 @@ fn populate_quest_trigger_approaches(
             let Some(bytes) = bytes else {
                 continue;
             };
-            let Some(recognized) =
-                byroredux_scripting::translate_pex(&bytes, index.game, Some(&instance), None)
-            else {
+            let translation = byroredux_scripting::translate_pex_detailed(
+                &bytes,
+                index.game,
+                Some(&instance),
+                None,
+            );
+            byroredux_scripting::record_compatibility_report(
+                world,
+                translation.fingerprint,
+                translation.compatibility,
+            );
+            let Some(recognized) = translation.recognized else {
                 continue;
             };
             let probe = world.spawn();

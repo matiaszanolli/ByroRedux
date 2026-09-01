@@ -696,6 +696,16 @@ unsupported or malformed call makes the compatibility gate fail. Mapped calls
 remain visible but do not fail the command because they have a documented
 engine-service migration target.
 
+The engine also records compatibility evidence while it loads ordinary VMAD
+scripts, quest fragments, and scene fragments. Each boundary reuses its
+existing PEX parse, fingerprints the bytes, and publishes only relevant calls
+to a bounded `CompatibilityRegistry`; attaching the same compiled script to
+many references therefore counts it once. Operators can run `sdk.compat` in
+`byro-dbg` to see deterministic provider/function aggregates, occurrence and
+unique-script counts, mapped engine services, malformed-call totals, and
+whether the registry hit its budget. This is an observed-script report for the
+current engine world, not yet an eager scan of every PEX in every archive.
+
 ### Fragments → Triggered Systems
 
 Papyrus fragments are inline script snippets that run at specific moments:
