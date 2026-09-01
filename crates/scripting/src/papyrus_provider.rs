@@ -39,7 +39,7 @@ use byroredux_sdk::{
     identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
-        ScriptValueType,
+        ScriptValueType, MAX_SCRIPT_ARRAY_ELEMENTS,
     },
 };
 
@@ -382,7 +382,8 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
             StorageUtilListOperation::Pluck
             | StorageUtilListOperation::Remove
             | StorageUtilListOperation::CountValue
-            | StorageUtilListOperation::Resize => (3, 4),
+            | StorageUtilListOperation::Resize
+            | StorageUtilListOperation::Slice => (3, 4),
             StorageUtilListOperation::Get
             | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
@@ -734,6 +735,32 @@ fn lower_literal(
         (Expr::StringLit(value), ScriptValueType::String) => {
             Some(ScriptValue::String(value.clone()))
         }
+        (Expr::New { ty, size }, expected) => {
+            let Expr::IntLit(size) = &size.node else {
+                return None;
+            };
+            let size = usize::try_from(*size)
+                .ok()
+                .filter(|size| *size <= MAX_SCRIPT_ARRAY_ELEMENTS)?;
+            match (&ty.node, expected) {
+                (Type::Bool, ScriptValueType::BooleanArray) => {
+                    Some(ScriptValue::BooleanArray(vec![false; size]))
+                }
+                (Type::Int, ScriptValueType::IntegerArray) => {
+                    Some(ScriptValue::IntegerArray(vec![0; size]))
+                }
+                (Type::Float, ScriptValueType::FloatArray) => {
+                    Some(ScriptValue::FloatArray(vec![0.0; size]))
+                }
+                (Type::String, ScriptValueType::StringArray) => {
+                    Some(ScriptValue::StringArray(vec![String::new(); size]))
+                }
+                (Type::Object(_), ScriptValueType::FormArray) => {
+                    Some(ScriptValue::FormArray(vec![None; size]))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -760,6 +787,13 @@ pub enum PapyrusProviderStatement {
         value: ScriptValue,
     },
     AssignCall {
+        name: String,
+        call: PapyrusProviderInvocation,
+    },
+    /// Execute a native void call whose Papyrus array parameter is mutated by
+    /// reference. The host callback returns the filled array as an internal
+    /// transport value, which is written back to the named local.
+    ArrayWritebackCall {
         name: String,
         call: PapyrusProviderInvocation,
     },
@@ -1310,6 +1344,7 @@ fn statements_reference_local(statements: &[PapyrusProviderStatement], name: &st
                 || argument_references_local(number_arg, name)
         }
         PapyrusProviderStatement::AssignCall { call, .. }
+        | PapyrusProviderStatement::ArrayWritebackCall { call, .. }
         | PapyrusProviderStatement::Call(call) => invocation_references_local(call, name),
         PapyrusProviderStatement::If {
             condition,
@@ -1333,6 +1368,7 @@ fn statements_contain_wait(statements: &[PapyrusProviderStatement]) -> bool {
         } => statements_contain_wait(then_branch) || statements_contain_wait(else_branch),
         PapyrusProviderStatement::Declare { .. }
         | PapyrusProviderStatement::AssignCall { .. }
+        | PapyrusProviderStatement::ArrayWritebackCall { .. }
         | PapyrusProviderStatement::Call(_)
         | PapyrusProviderStatement::RegisterModEvent { .. }
         | PapyrusProviderStatement::UnregisterModEvent { .. }
@@ -1460,7 +1496,20 @@ fn lower_statements(
                 let call = lower_provider_invocation(&expression.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
-                lowered.push(PapyrusProviderStatement::Call(call));
+                if parse_storage_util_list_route(call.route.qualified_name())
+                    .is_some_and(|(_, operation)| operation == StorageUtilListOperation::Slice)
+                {
+                    let Some(PapyrusProviderArgument::Local { name, .. }) = call.arguments.get(2)
+                    else {
+                        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+                    };
+                    lowered.push(PapyrusProviderStatement::ArrayWritebackCall {
+                        name: name.clone(),
+                        call,
+                    });
+                } else {
+                    lowered.push(PapyrusProviderStatement::Call(call));
+                }
             }
             Stmt::If {
                 condition,
@@ -2528,6 +2577,7 @@ fn validate_provider_statements(
                 validate_mod_event_send_argument(number_arg, ScriptValueType::Float)?;
             }
             PapyrusProviderStatement::AssignCall { call, .. }
+            | PapyrusProviderStatement::ArrayWritebackCall { call, .. }
             | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog)?,
             PapyrusProviderStatement::Wait { seconds } => {
                 if !seconds.is_finite() || *seconds < 0.0 {
@@ -2724,6 +2774,23 @@ fn execute_statements(
             PapyrusProviderStatement::AssignCall { name, call } => {
                 let arguments = materialize_provider_arguments(call, locals)?;
                 let value = callback(principal, call.route.qualified_name(), &arguments)?;
+                locals.insert(name.clone(), value);
+            }
+            PapyrusProviderStatement::ArrayWritebackCall { name, call } => {
+                let arguments = materialize_provider_arguments(call, locals)?;
+                let value = callback(principal, call.route.qualified_name(), &arguments)?;
+                let expected = call
+                    .route
+                    .declaration()
+                    .parameters
+                    .get(2)
+                    .map(|parameter| parameter.value_type)
+                    .ok_or_else(|| "StorageUtil ListSlice array parameter is missing".to_owned())?;
+                if !value.matches(expected, false) {
+                    return Err(
+                        "StorageUtil ListSlice callback returned an invalid array type".to_owned(),
+                    );
+                }
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::Call(call) => {

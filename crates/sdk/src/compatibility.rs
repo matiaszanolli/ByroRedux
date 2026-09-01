@@ -379,7 +379,7 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
 fn papyrus_storage_util_list_declarations(
     object_and_key: &[(&str, ScriptValueType, bool); 2],
 ) -> Vec<EnginePapyrusFunctionDeclaration> {
-    let mut declarations = Vec::with_capacity(78);
+    let mut declarations = Vec::with_capacity(82);
     for (kind, suffix, value_type, array_type) in [
         (
             "int",
@@ -584,6 +584,20 @@ fn papyrus_storage_util_list_declarations(
                 result,
             ));
         }
+        let function = format!("{suffix}ListSlice");
+        let id = format!("storage-util-{kind}-list-slice");
+        let route = format!("{PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX}{kind}-slice");
+        declarations.push(papyrus_storage_util_void_declaration(
+            &route,
+            &id,
+            &function,
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("slice", array_type, true),
+                ("start-index", ScriptValueType::Integer, true),
+            ],
+        ));
     }
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
@@ -1547,6 +1561,10 @@ pub enum StorageUtilListCall {
     Copy {
         values: Vec<StorageUtilListValue>,
     },
+    Slice {
+        values: Vec<StorageUtilListValue>,
+        start_index: i32,
+    },
     ToArray,
     Find {
         value: StorageUtilListValue,
@@ -1594,6 +1612,7 @@ pub enum StorageUtilListOperation {
     Sort,
     Resize,
     Copy,
+    Slice,
     ToArray,
     Find,
     Has,
@@ -1854,6 +1873,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("IntListPop", "storage.array-get+queue-remove", "signed"),
         ("IntListRandom", "storage.array-get", "signed"),
         ("IntListCopy", "storage.array-get+queue-replace", "bool"),
+        ("IntListSlice", "storage.array-get+array-fill", "none"),
         ("IntListToArray", "storage.array-get", "signed-array"),
         ("IntListCount", "storage.array-get", "signed"),
         ("IntListClear", "storage.array-get+queue-delete", "signed"),
@@ -1874,6 +1894,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("FloatListPop", "storage.array-get+queue-remove", "float"),
         ("FloatListRandom", "storage.array-get", "float"),
         ("FloatListCopy", "storage.array-get+queue-replace", "bool"),
+        ("FloatListSlice", "storage.array-get+array-fill", "none"),
         ("FloatListToArray", "storage.array-get", "float-array"),
         ("FloatListCount", "storage.array-get", "signed"),
         ("FloatListClear", "storage.array-get+queue-delete", "signed"),
@@ -1906,6 +1927,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("StringListPop", "storage.array-get+queue-remove", "text"),
         ("StringListRandom", "storage.array-get", "text"),
         ("StringListCopy", "storage.array-get+queue-replace", "bool"),
+        ("StringListSlice", "storage.array-get+array-fill", "none"),
         ("StringListToArray", "storage.array-get", "text-array"),
         ("StringListCount", "storage.array-get", "signed"),
         (
@@ -1945,6 +1967,7 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("FormListPop", "storage.array-get+queue-remove", "form"),
         ("FormListRandom", "storage.array-get", "form"),
         ("FormListCopy", "storage.array-get+queue-replace", "bool"),
+        ("FormListSlice", "storage.array-get+array-fill", "none"),
         ("FormListToArray", "storage.array-get", "form-array"),
         ("FormListCount", "storage.array-get", "signed"),
         ("FormListClear", "storage.array-get+queue-delete", "signed"),
@@ -2439,6 +2462,7 @@ pub fn parse_storage_util_list_route(
         "sort" => StorageUtilListOperation::Sort,
         "resize" => StorageUtilListOperation::Resize,
         "copy" => StorageUtilListOperation::Copy,
+        "slice" => StorageUtilListOperation::Slice,
         "to-array" => StorageUtilListOperation::ToArray,
         "find" => StorageUtilListOperation::Find,
         "has" => StorageUtilListOperation::Has,
@@ -2875,6 +2899,21 @@ pub fn adapt_storage_util_global_list(
                 });
                 StorageUtilListResult::Bool(true)
             }
+        }
+        StorageUtilListCall::Slice {
+            values: mut replacement,
+            start_index,
+        } => {
+            encode_storage_util_list_values(kind, &replacement)?;
+            if let Ok(start) = usize::try_from(start_index) {
+                for (offset, target) in replacement.iter_mut().enumerate() {
+                    let Some(source) = values.get(start.saturating_add(offset)) else {
+                        break;
+                    };
+                    *target = source.clone();
+                }
+            }
+            StorageUtilListResult::Array(replacement)
         }
         StorageUtilListCall::ToArray => StorageUtilListResult::Array(values),
         StorageUtilListCall::Find { value } => {
@@ -3543,16 +3582,34 @@ mod tests {
             "storage.array-get+queue-replace"
         );
         assert_eq!(
+            source_alias("StorageUtil", "IntListSlice")
+                .unwrap()
+                .value_kind,
+            "none"
+        );
+        assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 118);
+        assert_eq!(declarations.len(), 122);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
+        let slice = declarations
+            .iter()
+            .find(|function| {
+                function
+                    .declaration
+                    .papyrus
+                    .as_ref()
+                    .is_some_and(|alias| alias.function == "IntListSlice")
+            })
+            .expect("IntListSlice declaration");
+        assert_eq!(slice.declaration.result, None);
+        assert_eq!(slice.declaration.parameters.len(), 4);
     }
 
     #[test]
@@ -3971,6 +4028,55 @@ mod tests {
         .unwrap();
         assert_eq!(too_large.result, StorageUtilListResult::Bool(false));
         assert!(too_large.commands.is_empty());
+    }
+
+    #[test]
+    fn storage_util_list_slice_fills_existing_typed_array_without_storage_mutation() {
+        let current = PrincipalStorageValue::Array(vec![
+            ExtensionValue::I64(1),
+            ExtensionValue::I64(2),
+            ExtensionValue::I64(6),
+            ExtensionValue::I64(9),
+        ]);
+        let slice = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Slice {
+                values: vec![StorageUtilListValue::Int(0); 2],
+                start_index: 1,
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            slice.result,
+            StorageUtilListResult::Array(vec![
+                StorageUtilListValue::Int(2),
+                StorageUtilListValue::Int(6),
+            ])
+        );
+        assert!(slice.commands.is_empty());
+
+        let negative = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Slice {
+                values: vec![StorageUtilListValue::Int(7); 2],
+                start_index: -1,
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            negative.result,
+            StorageUtilListResult::Array(vec![
+                StorageUtilListValue::Int(7),
+                StorageUtilListValue::Int(7),
+            ])
+        );
+        assert!(negative.commands.is_empty());
     }
 
     #[test]

@@ -1405,6 +1405,16 @@ finite and per-string validation. Copy replaces one principal-private list
 atomically and returns false when the configured storage bound is exceeded;
 to-array returns an independent typed value without mutation.
 
+Checkpoint: `feat(scripting): preserve StorageUtil list slice writeback`.
+
+The next array-valued alias, `*ListSlice`, preserves PapyrusUtil's void
+signature and by-reference destination-array behavior. A provider-local
+writeback instruction lets the engine callback fill a bounded typed array
+without exposing an internal result through the public declaration. Negative
+start indices leave the destination unchanged, out-of-range source elements
+leave the remaining destination defaults intact, and the operation never
+mutates the source list.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

@@ -1514,6 +1514,26 @@ impl ExtensionHost {
                     values: list_values(values)?,
                 },
             ),
+            (
+                StorageUtilListOperation::Slice,
+                [ScriptValue::None, ScriptValue::String(key), values],
+            ) => (
+                key,
+                StorageUtilListCall::Slice {
+                    values: list_values(values)?,
+                    start_index: 0,
+                },
+            ),
+            (
+                StorageUtilListOperation::Slice,
+                [ScriptValue::None, ScriptValue::String(key), values, ScriptValue::Integer(start_index)],
+            ) => (
+                key,
+                StorageUtilListCall::Slice {
+                    values: list_values(values)?,
+                    start_index: integer(*start_index)?,
+                },
+            ),
             (StorageUtilListOperation::ToArray, [ScriptValue::None, ScriptValue::String(key)]) => {
                 (key, StorageUtilListCall::ToArray)
             }
@@ -8152,6 +8172,12 @@ mod tests {
                 copiedNumbers = StorageUtil.IntListCopy(None, "numbers-copy", numberCopy)
                 Int copiedNumberCount
                 copiedNumberCount = StorageUtil.IntListCount(None, "numbers-copy")
+                Int[] numberSlice = new Int[2]
+                StorageUtil.IntListSlice(None, "numbers", numberSlice, 1)
+                Bool slicedNumbers
+                slicedNumbers = StorageUtil.IntListCopy(None, "numbers-slice", numberSlice)
+                Int slicedNumberCount
+                slicedNumberCount = StorageUtil.IntListCount(None, "numbers-slice")
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -8173,7 +8199,7 @@ mod tests {
                 clearedPrefix = StorageUtil.ClearAllPrefix("pack.")
                 Int prefixAfter
                 prefixAfter = StorageUtil.CountAllPrefix("pack.")
-                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9 && copiedNumbers && copiedNumberCount == 4 && prefixCount == 3 && clearedInts == 1 && prefixRemaining == 2 && clearedPrefix == 2 && prefixAfter == 0
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9 && copiedNumbers && copiedNumberCount == 4 && slicedNumbers && slicedNumberCount == 2 && prefixCount == 3 && clearedInts == 1 && prefixRemaining == 2 && clearedPrefix == 2 && prefixAfter == 0
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent
@@ -8239,6 +8265,13 @@ mod tests {
                 ExtensionValue::I64(2),
                 ExtensionValue::I64(6),
                 ExtensionValue::I64(9),
+            ]))
+        );
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.list.int:numbers-slice").unwrap()),
+            Some(&PrincipalStorageValue::Array(vec![
+                ExtensionValue::I64(2),
+                ExtensionValue::I64(6),
             ]))
         );
         assert_eq!(
