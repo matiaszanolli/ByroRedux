@@ -220,8 +220,9 @@ pub enum Effect {
         actors: Vec<ActorRef>,
         poll_seconds: f32,
     },
-    /// A manifest or engine-owned static provider call at fragment tail.
-    /// Runtime dispatch occurs only after quest/object ECS guards are released.
+    /// A manifest or engine-owned static provider call used as a sequencing
+    /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
+    /// released, then resumes the remaining top-level effects in order.
     ProviderCall(FragmentProviderCall),
 }
 
@@ -306,9 +307,9 @@ pub fn lower_fragment_with_quest_properties(
     lower_fragment_with_quest_properties_and_providers(body, quest_property_names, None)
 }
 
-/// Lower a fragment with an exact provider catalog. Provider calls are
-/// accepted only as an ordered top-level tail so deferred host dispatch cannot
-/// reorder them around later native effects.
+/// Lower a fragment with an exact provider catalog. Top-level provider calls
+/// become sequencing barriers; the runtime resumes later effects only after
+/// guard-free host dispatch completes.
 pub fn lower_fragment_with_quest_properties_and_providers(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
@@ -318,16 +319,7 @@ pub fn lower_fragment_with_quest_properties_and_providers(
         known_quest_properties: quest_property_names.clone(),
         ..Scope::default()
     };
-    let effects = lower_statements(body, &mut scope, providers)?;
-    let mut provider_tail_started = false;
-    for effect in &effects {
-        if matches!(effect, Effect::ProviderCall(_)) {
-            provider_tail_started = true;
-        } else if provider_tail_started {
-            return None;
-        }
-    }
-    Some(effects)
+    lower_statements(body, &mut scope, providers)
 }
 
 fn lower_statements(
@@ -1389,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_calls_lower_only_as_an_ordered_fragment_tail() {
+    fn provider_calls_preserve_top_level_fragment_order() {
         let providers = PapyrusProviderCatalog::engine_compatibility();
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
@@ -1425,14 +1417,17 @@ mod tests {
              Self.SetStage(10)\n\
              EndFunction\n",
         );
-        assert_eq!(
-            lower_fragment_with_quest_properties_and_providers(
-                &reordered,
-                &HashSet::new(),
-                Some(&providers),
-            ),
-            None
-        );
+        let reordered_effects = lower_fragment_with_quest_properties_and_providers(
+            &reordered,
+            &HashSet::new(),
+            Some(&providers),
+        )
+        .unwrap();
+        assert!(matches!(reordered_effects[0], Effect::ProviderCall(_)));
+        assert!(matches!(
+            reordered_effects[1],
+            Effect::SetStage { stage: 10, .. }
+        ));
     }
 
     #[test]

@@ -251,6 +251,7 @@ enum FragmentResumeCondition {
 /// on the order of tenths of a second, so 30s is generous headroom while
 /// still guaranteeing every entry eventually leaves the queue.
 const MAX_ACTORS_3D_LOADED_WAIT_SECONDS: f32 = 30.0;
+const MAX_PROVIDER_FRAGMENT_BARRIERS: usize = 64;
 
 /// Runtime queue for latent time waits and bounded-work `Is3DLoaded` polling
 /// continuations.
@@ -545,7 +546,15 @@ pub struct DeferredFragmentEffects {
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
     reference_enable_changes: Vec<(u32, bool)>,
-    provider_calls: Vec<crate::translate::effects::FragmentProviderCall>,
+    provider_steps: Vec<DeferredProviderFragmentStep>,
+}
+
+#[derive(Debug)]
+struct DeferredProviderFragmentStep {
+    call: crate::translate::effects::FragmentProviderCall,
+    context: QuestFormId,
+    vmad: Option<ScriptInstanceData>,
+    tail: Vec<Effect>,
 }
 
 impl DeferredFragmentEffects {
@@ -575,19 +584,29 @@ impl DeferredFragmentEffects {
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
             reference_enable_changes: Vec::new(),
-            provider_calls: Vec::new(),
+            provider_steps: Vec::new(),
         }
     }
 
     /// Apply queued mutations after releasing the `QuestStageState` /
     /// `QuestObjectiveState` guards passed to [`apply_effects`].
-    pub fn apply(self, world: &World) {
+    pub fn apply(self, world: &World) -> Vec<QuestStageAdvanced> {
+        self.apply_at_depth(world, 0)
+    }
+
+    fn apply_at_depth(mut self, world: &World, depth: usize) -> Vec<QuestStageAdvanced> {
+        if depth >= MAX_PROVIDER_FRAGMENT_BARRIERS {
+            log::warn!(
+                "fragment provider continuation exceeded {MAX_PROVIDER_FRAGMENT_BARRIERS} barriers"
+            );
+            return Vec::new();
+        }
         if self.scene_actor_bindings_dirty {
             crate::scene::mark_scene_actor_bindings_dirty(world);
         }
         if !self.activations.is_empty() {
             match world.try_resource_mut::<PendingFragmentActivations>() {
-                Some(mut pending) => pending.0.extend(self.activations),
+                Some(mut pending) => pending.0.append(&mut self.activations),
                 None => log::debug!(
                     "fragment Activate dropped: PendingFragmentActivations is unavailable"
                 ),
@@ -595,14 +614,14 @@ impl DeferredFragmentEffects {
         }
         if !self.reference_enable_changes.is_empty() {
             if let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() {
-                for (form_id, enabled) in self.reference_enable_changes {
+                for (form_id, enabled) in self.reference_enable_changes.drain(..) {
                     state.set_enabled(form_id, enabled);
                 }
             }
         }
         if !self.cinematic_presentation.is_empty() {
             if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                for effect in self.cinematic_presentation {
+                for effect in self.cinematic_presentation.drain(..) {
                     match effect {
                         DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
                             state.sitting_rotation_degrees = degrees;
@@ -622,23 +641,44 @@ impl DeferredFragmentEffects {
                 }
             }
         }
-        if !self.provider_calls.is_empty() {
-            let callback = world
-                .try_resource::<crate::PapyrusProviderRuntime>()
-                .and_then(|runtime| runtime.callback());
-            if let Some(callback) = callback {
-                for call in self.provider_calls {
-                    if let Err(error) = callback(&call.route, &call.arguments) {
-                        log::warn!("deferred fragment provider call aborted: {error}");
-                        break;
-                    }
-                }
-            } else {
-                log::warn!(
-                    "deferred fragment provider calls dropped: provider host is unavailable"
-                );
-            }
+        if self.provider_steps.is_empty() {
+            return Vec::new();
         }
+        let Some(callback) = world
+            .try_resource::<crate::PapyrusProviderRuntime>()
+            .and_then(|runtime| runtime.callback())
+        else {
+            log::warn!("deferred fragment provider calls dropped: provider host is unavailable");
+            return Vec::new();
+        };
+
+        let mut advances = Vec::new();
+        for step in std::mem::take(&mut self.provider_steps) {
+            if let Err(error) = callback(&step.call.route, &step.call.arguments) {
+                log::warn!("deferred fragment provider call aborted: {error}");
+                continue;
+            }
+            if step.tail.is_empty() {
+                continue;
+            }
+            let mut deferred = Self::new(world);
+            let resumed = {
+                let (mut stages, mut objectives) =
+                    world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+                apply_effects(
+                    &step.tail,
+                    step.context,
+                    step.vmad.as_ref(),
+                    world,
+                    &mut stages,
+                    &mut objectives,
+                    &mut deferred,
+                )
+            };
+            advances.extend(resumed);
+            advances.extend(deferred.apply_at_depth(world, depth + 1));
+        }
+        advances
     }
 }
 
@@ -1192,10 +1232,6 @@ fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
-        Effect::ProviderCall(call) => {
-            deferred.provider_calls.push(call.clone());
-            None
-        }
         Effect::Conditional { .. } => {
             unreachable!("conditional effects are expanded by apply_effects")
         }
@@ -1390,6 +1426,15 @@ pub fn apply_effects(
 ) -> Vec<QuestStageAdvanced> {
     let mut advances = Vec::new();
     for (index, effect) in effects.iter().enumerate() {
+        if let Effect::ProviderCall(call) = effect {
+            deferred.provider_steps.push(DeferredProviderFragmentStep {
+                call: call.clone(),
+                context,
+                vmad: vmad.cloned(),
+                tail: effects[index + 1..].to_vec(),
+            });
+            break;
+        }
         if let Effect::Conditional {
             guards,
             then_effects,
@@ -1550,7 +1595,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         };
         emitted.extend(advances);
     }
-    deferred.apply(world);
+    emitted.extend(deferred.apply(world));
 
     if emitted.is_empty() {
         return;
@@ -2105,7 +2150,7 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
             ));
         }
     }
-    deferred.apply(world);
+    advances.extend(deferred.apply(world));
     if advances.is_empty() {
         return;
     }
@@ -2258,7 +2303,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         stages.acknowledge_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
     }
 
-    deferred.apply(world);
+    chained.extend(deferred.apply(world));
 
     // Emit markers for the chained advances so other consumers (journal
     // UI, further-frame dispatch) observe them. Co-opts the same

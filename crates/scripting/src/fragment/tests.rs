@@ -114,7 +114,7 @@ fn apply_effects_writes_stage_and_objectives() {
 }
 
 #[test]
-fn provider_call_tail_waits_for_deferred_fragment_apply() {
+fn provider_barrier_resumes_native_fragment_tail_after_host_call() {
     use std::sync::{Arc, Mutex};
 
     use crate::translate::effects::FragmentProviderCall;
@@ -135,10 +135,25 @@ fn provider_call_tail_waits_for_deferred_fragment_apply() {
         Arc::new(crate::PapyrusProviderCatalog::default()),
         Some(callback),
     );
-    let effects = [Effect::ProviderCall(FragmentProviderCall {
-        route: "byro.content.catalog.get-mod-count".to_owned(),
-        arguments: Vec::new(),
-    })];
+    let effects = [
+        Effect::ProviderCall(FragmentProviderCall {
+            route: "byro.content.catalog.get-mod-count".to_owned(),
+            arguments: Vec::new(),
+        }),
+        Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 20,
+        },
+        Effect::ProviderCall(FragmentProviderCall {
+            route: "byro.content.catalog.is-plugin-installed".to_owned(),
+            arguments: vec![ScriptValue::String("Update.esm".to_owned())],
+        }),
+        Effect::SetObjectiveCompleted {
+            quest: QuestRef::SelfRef,
+            objective: 5,
+            completed: true,
+        },
+    ];
     let mut stages = QuestStageState::default();
     let mut objectives = QuestObjectiveState::default();
     let mut deferred = DeferredFragmentEffects::new(&world);
@@ -153,12 +168,66 @@ fn provider_call_tail_waits_for_deferred_fragment_apply() {
         &mut deferred,
     );
     assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0);
 
-    deferred.apply(&world);
+    let advances = deferred.apply(&world);
     assert_eq!(
         calls.lock().unwrap().as_slice(),
-        &[("byro.content.catalog.get-mod-count".to_owned(), Vec::new())]
+        &[
+            ("byro.content.catalog.get-mod-count".to_owned(), Vec::new()),
+            (
+                "byro.content.catalog.is-plugin-installed".to_owned(),
+                vec![ScriptValue::String("Update.esm".to_owned())],
+            ),
+        ]
     );
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(world.resource::<QuestObjectiveState>().get(Q, 5).completed);
+    assert_eq!(advances.len(), 1);
+}
+
+#[test]
+fn failed_provider_barrier_aborts_its_native_fragment_tail() {
+    use std::sync::Arc;
+
+    use crate::translate::effects::FragmentProviderCall;
+
+    let world = fixture();
+    let callback = Arc::new(
+        |_route: &str, _arguments: &[byroredux_sdk::script_function::ScriptValue]| {
+            Err("provider failed".to_owned())
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+    let effects = [
+        Effect::ProviderCall(FragmentProviderCall {
+            route: "ext.example.fail".to_owned(),
+            arguments: Vec::new(),
+        }),
+        Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 20,
+        },
+    ];
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+
+    apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    assert!(deferred.apply(&world).is_empty());
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0);
 }
 
 #[test]
@@ -672,7 +741,7 @@ fn end_to_end_lower_then_dispatch() {
 }
 
 #[test]
-fn provider_aware_fragment_population_dispatches_native_tail() {
+fn provider_aware_fragment_population_resumes_after_native_call() {
     use std::sync::{Arc, Mutex};
 
     use byroredux_papyrus::parse_script;
@@ -681,8 +750,8 @@ fn provider_aware_fragment_population_dispatches_native_tail() {
     let (script, errors) = parse_script(
         "ScriptName QF_Test extends Quest\n\
          Function Fragment_0()\n\
-         Self.SetStage(20)\n\
          Game.GetModCount()\n\
+         Self.SetStage(20)\n\
          EndFunction\n",
     )
     .unwrap();
