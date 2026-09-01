@@ -1405,7 +1405,7 @@ finite and per-string validation. Copy replaces one principal-private list
 atomically and returns false when the configured storage bound is exceeded;
 to-array returns an independent typed value without mutation.
 
-Checkpoint: `feat(scripting): preserve StorageUtil list slice writeback`.
+Checkpoint commit: `feat(scripting): preserve StorageUtil list slice writeback`.
 
 The next array-valued alias, `*ListSlice`, preserves PapyrusUtil's void
 signature and by-reference destination-array behavior. A provider-local
