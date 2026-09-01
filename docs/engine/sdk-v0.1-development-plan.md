@@ -88,8 +88,8 @@ host without an OBSE/xNVSE DLL. Arguments use explicit `boolean:`, `integer:`,
 its static statement tree before entering guest code so no ECS guard crosses
 the sandbox boundary. Source-less SCDA can carry the same calls through a
 public, versioned `BYROSDK` payload behind a reserved expression opcode. The
-codec preserves bounded typed literals, rejects transient form/entity handles,
-and fails closed on malformed or unsupported versions; assignments and
+codec preserves bounded typed literals including portable forms, rejects live
+entity handles, and fails closed on malformed or unsupported versions; assignments and
 conditions enter the same guard-free host path. A conservative Papyrus vertical
 slice is live:
 manifest-declared `Provider.Function(...)` aliases lower from parsed source and
@@ -486,8 +486,9 @@ Delivered with a public, versioned SDK payload codec and reserved SCDA
 expression opcode. Source-less assignments and conditions decode the stable
 principal-qualified route plus bounded literal arguments, reject malformed or
 unknown versions as a whole handler, and reuse the authenticated guard-free
-host bridge. Raw `FormRef` and `EntityRef` literals remain excluded because a
-compiler cannot safely mint those identities.
+host bridge. Portable `FormRef` literals retain source/local identity; opaque
+`EntityRef` literals remain excluded because a compiler cannot safely mint a
+live world handle.
 
 ### 6.7 Persistence
 
@@ -887,7 +888,7 @@ proceeds by semantic domain and closes only against real mod fixtures.
   quarantine on an invalid result. Source ObScript can call the same live host
   through `ext.<extension-id>.<function>` assignments and conditions without
   OBSE/xNVSE. A public SDK codec now embeds those principal-qualified routes and
-  bounded `none`/boolean/integer/finite-float/string literals in source-less
+  bounded `none`/boolean/integer/finite-float/string/form literals in source-less
   SCDA; the compiled runtime supports both assignments and conditions and
   rejects an invalid payload as a whole handler. Manifest-declared
   `Provider.Function(...)` aliases now lower
