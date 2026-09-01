@@ -11,6 +11,7 @@
 
 pub mod cinematic;
 pub mod cleanup;
+pub mod compatibility;
 pub mod condition;
 pub mod dialogue;
 pub mod equipment;
@@ -36,6 +37,7 @@ pub use cinematic::{
     ImageSpaceModifierFrame, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
+pub use compatibility::{analyze_pex_compatibility, CompatibilityFinding, CompatibilityReport};
 pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
     ConditionFunction,

@@ -56,6 +56,10 @@ The current public surface includes:
 - `ServiceCatalog` provides pre-compilation SDK/capability compatibility checks
   and validates that effective grants are supported and were actually
   requested.
+- `compatibility` classifies recognized SKSE/F4SE, PapyrusUtil,
+  JContainers, input, event, and UI calls as engine-native, mapped to a
+  semantic service, or explicitly unsupported with migration guidance. It
+  never treats a recognized provider as proof that an unknown function works.
 - `ExtensionComponentStore` registers typed schemas under authenticated
   principals and applies bounded command batches atomically. Identical schema
   IDs owned by different principals cannot observe or mutate one another.

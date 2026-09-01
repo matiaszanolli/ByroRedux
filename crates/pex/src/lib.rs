@@ -23,11 +23,13 @@
 //!
 //! See `docs/engine/m47-2-design.md` for where this sits in the pipeline.
 
+mod call_sites;
 pub mod decompile;
 mod model;
 mod opcode;
 mod reader;
 
+pub use call_sites::*;
 pub use model::*;
 pub use opcode::{OpCode, MAX_OPCODE};
 

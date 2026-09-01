@@ -104,6 +104,8 @@ pub fn translate_pex(
             return None;
         }
     };
+    let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
+    crate::compatibility::log_compatibility_report(&compatibility);
     let script = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))?;
     let source = ScriptSource::PapyrusSource(&script);
     translate_script(&source, game, script_instance, owning_quest)

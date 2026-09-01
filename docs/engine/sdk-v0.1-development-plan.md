@@ -717,7 +717,12 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
 - Curated SKSE, F4SE, xNVSE, and OBSE script API aliases backed by the common
   service catalog.
 - Automated source/PEX scans that report supported, mapped, and unsupported
-  calls before launch.
+  calls before launch. **Decoded PEX call-site extraction and compatibility
+  classification are implemented, including full-property bodies, optional
+  source lines, engine-service mappings, and explicit sandbox-policy
+  diagnostics. Translation invokes this preflight before decompilation.
+  Whole-load-order launch reporting, source scans, and ObScript/xNVSE/OBSE
+  scanning remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 

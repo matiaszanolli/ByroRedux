@@ -661,6 +661,21 @@ The state is visible data. Any system can read it. No hidden VM state machine.
 Papyrus's runtime `GoToState("active")` string lookup (which couldn't catch
 typos until the branch fired) becomes a compile-time-exhaustive `match`.
 
+### PEX Extender Compatibility Preflight
+
+Before a compiled Papyrus script is decompiled, `Pex::call_sites()` walks
+state functions and full-property accessors in bytecode order. Static,
+instance, and parent calls retain their script object, lexical scope,
+instruction offset, argument count, and debug source line when present.
+
+The scripting compatibility pass classifies recognized extender-era calls
+against the SDK service catalog. Calls with an engine semantic destination
+(for example, StorageUtil collections or mod events) report the target service
+and required migration; unsafe facilities such as arbitrary JSON file access,
+physical-key injection, and raw Scaleform access produce explicit policy
+diagnostics. Vanilla and unknown mod calls are left alone, while malformed call
+metadata is reported rather than silently omitted.
+
 ### Fragments → Triggered Systems
 
 Papyrus fragments are inline script snippets that run at specific moments:

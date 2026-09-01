@@ -9,6 +9,7 @@
 
 pub mod actor_values;
 pub mod animation;
+pub mod compatibility;
 pub mod component;
 pub mod console;
 pub mod content;
