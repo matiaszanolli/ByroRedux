@@ -460,6 +460,7 @@ fn manifest_with_log(required: bool) -> ExtensionManifest {
         subscriptions: Vec::new(),
         component_schemas: Vec::new(),
         console_commands: Vec::new(),
+        script_functions: Vec::new(),
         settings: Vec::new(),
         principal_storage_schema: None,
     }

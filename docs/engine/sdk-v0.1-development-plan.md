@@ -808,8 +808,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   manifest-local function/parameter identities, ordered typed parameters,
   optional suffix rules, finite scalar and portable form/entity values, bounded
   strings/calls, result validation, and principal-qualified names. Manifest
-  publication, WIT callback dispatch, and Papyrus/SCPT call adapters remain
-  pending.**
+  publication is also implemented with bounded unique declarations, component
+  target validation, and TOML conformance. WIT callback dispatch and
+  Papyrus/SCPT call adapters remain pending.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.

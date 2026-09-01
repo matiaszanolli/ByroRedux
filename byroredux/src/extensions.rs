@@ -4588,6 +4588,7 @@ mod tests {
                 }],
             }],
             console_commands: Vec::new(),
+            script_functions: Vec::new(),
             settings: Vec::new(),
             principal_storage_schema: None,
         }

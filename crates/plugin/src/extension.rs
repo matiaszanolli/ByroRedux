@@ -202,6 +202,7 @@ mod tests {
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
             console_commands: Vec::new(),
+            script_functions: Vec::new(),
             settings: Vec::new(),
             principal_storage_schema: None,
         }
@@ -245,10 +246,25 @@ world_version = "^0.1"
 [[capabilities]]
 id = "byro.log.write"
 required = false
+
+[[script_functions]]
+id = "weather-at"
+component = "runtime"
+description = "Return the weather at a location"
+
+[[script_functions.parameters]]
+id = "location"
+value_type = "form"
+
+[script_functions.result]
+value_type = "string"
+optional = false
 "#;
         let manifest = ResolvedExtensionSet::parse_manifest(source).unwrap();
         assert_eq!(manifest.id.as_str(), "org.example.weather");
         assert_eq!(manifest.components[0].path, "code/weather.wasm");
+        assert_eq!(manifest.script_functions[0].id.as_str(), "weather-at");
+        assert_eq!(manifest.script_functions[0].parameters.len(), 1);
     }
 
     #[test]

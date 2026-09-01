@@ -17,6 +17,7 @@ use crate::event::{
 use crate::identity::{
     CapabilityId, ComponentId, ComponentSchemaId, EventId, ExtensionId, ServiceId,
 };
+use crate::script_function::{ScriptFunctionDeclaration, MAX_SCRIPT_FUNCTIONS};
 use crate::settings::{SettingDeclaration, MAX_EXTENSION_SETTINGS, MAX_SETTING_KEY_BYTES};
 
 /// The only manifest schema understood by this SDK release.
@@ -80,6 +81,9 @@ pub struct ExtensionManifest {
     /// Principal-namespaced engine-console commands routed to components.
     #[serde(default)]
     pub console_commands: Vec<ConsoleCommandDeclaration>,
+    /// Typed functions published to built-in and translated engine scripts.
+    #[serde(default)]
+    pub script_functions: Vec<ScriptFunctionDeclaration>,
     /// Principal-namespaced settings registered in the native settings model.
     #[serde(default)]
     pub settings: Vec<SettingDeclaration>,
@@ -247,6 +251,15 @@ pub enum ManifestError {
     /// Console help text must be safe for terminals and non-empty.
     #[error("console command {0} has an invalid description")]
     InvalidConsoleDescription(crate::identity::ConsoleCommandId),
+    /// A script function named a component not declared by this package.
+    #[error("script function {function} targets unknown component {component}")]
+    UnknownScriptFunctionComponent {
+        function: crate::identity::ScriptFunctionId,
+        component: ComponentId,
+    },
+    /// A script-function declaration violated its typed bounded contract.
+    #[error("script function {0} has invalid metadata or signature")]
+    InvalidScriptFunction(crate::identity::ScriptFunctionId),
     /// A setting declaration has mismatched types, unsafe text, or invalid bounds.
     #[error("setting {0} has invalid metadata, type, default, or bounds")]
     InvalidSetting(crate::identity::SettingId),
@@ -281,6 +294,11 @@ impl ExtensionManifest {
             "console commands",
             self.console_commands.len(),
             MAX_CONSOLE_COMMANDS,
+        )?;
+        check_len(
+            "script functions",
+            self.script_functions.len(),
+            MAX_SCRIPT_FUNCTIONS,
         )?;
         check_len("settings", self.settings.len(), MAX_EXTENSION_SETTINGS)?;
         if self.components.is_empty() {
@@ -320,6 +338,20 @@ impl ExtensionManifest {
                 || command.description.len() > MAX_CONSOLE_DESCRIPTION_BYTES
             {
                 return Err(ManifestError::InvalidConsoleDescription(command.id.clone()));
+            }
+        }
+
+        let mut script_functions = BTreeSet::new();
+        for function in &self.script_functions {
+            insert_unique(&mut script_functions, "script function", &function.id)?;
+            if !components.contains(&function.component) {
+                return Err(ManifestError::UnknownScriptFunctionComponent {
+                    function: function.id.clone(),
+                    component: function.component.clone(),
+                });
+            }
+            if function.validate().is_err() {
+                return Err(ManifestError::InvalidScriptFunction(function.id.clone()));
             }
         }
 
@@ -527,6 +559,7 @@ mod tests {
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
             console_commands: Vec::new(),
+            script_functions: Vec::new(),
             settings: Vec::new(),
             principal_storage_schema: Some(1),
         }
@@ -575,6 +608,47 @@ mod tests {
         assert!(matches!(
             unsafe_help.validate(),
             Err(ManifestError::InvalidConsoleDescription(_))
+        ));
+    }
+
+    #[test]
+    fn script_functions_are_typed_unique_and_target_declared_components() {
+        let declaration = ScriptFunctionDeclaration {
+            id: crate::identity::ScriptFunctionId::new("weather-at").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![crate::script_function::ScriptParameterDeclaration {
+                id: crate::identity::ScriptParameterId::new("location").unwrap(),
+                value_type: crate::script_function::ScriptValueType::Form,
+                optional: false,
+            }],
+            result: Some(crate::script_function::ScriptResultDeclaration {
+                value_type: crate::script_function::ScriptValueType::String,
+                optional: false,
+            }),
+            description: "Return the active weather name at a location".to_owned(),
+        };
+        let mut valid = manifest();
+        valid.script_functions.push(declaration.clone());
+        valid.validate().unwrap();
+        assert_eq!(
+            declaration.qualified_name(&valid.id),
+            "ext.org.example.weather.weather-at"
+        );
+
+        let mut duplicate = valid.clone();
+        duplicate.script_functions.push(declaration);
+        assert!(matches!(
+            duplicate.validate(),
+            Err(ManifestError::DuplicateId {
+                kind: "script function",
+                ..
+            })
+        ));
+
+        valid.script_functions[0].component = ComponentId::new("missing").unwrap();
+        assert!(matches!(
+            valid.validate(),
+            Err(ManifestError::UnknownScriptFunctionComponent { .. })
         ));
     }
 
