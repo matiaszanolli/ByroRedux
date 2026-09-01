@@ -122,15 +122,10 @@ pub(crate) enum ExtensionHostError {
     InvalidHitDamage(f32),
     #[error("component-store command budget is smaller than the sandbox entry budget")]
     IncompatibleCommandBudgets,
-    // Public routing seam for the Papyrus/ObScript adapters; those adapters
-    // land after the sandbox/host contract is stabilized.
-    #[allow(dead_code)]
     #[error("script function {0} is not registered")]
     UnknownScriptFunction(String),
-    #[allow(dead_code)]
     #[error("script function {function} is unavailable: {reason}")]
     ScriptFunctionUnavailable { function: String, reason: String },
-    #[allow(dead_code)]
     #[error("deferred command batch from script function {0} was rejected")]
     ScriptFunctionCommandBatchRejected(String),
     #[error("extension-state format {actual} is unsupported; this engine supports {expected}")]
@@ -252,7 +247,6 @@ struct HostedConsoleCommand {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 struct HostedScriptFunction {
     name: String,
     extension: ExtensionId,
@@ -661,7 +655,6 @@ impl ExtensionHost {
 
     /// Invoke a principal-namespaced typed function and publish its result
     /// only after every deferred side effect commits atomically.
-    #[allow(dead_code)]
     pub(crate) fn invoke_script_function(
         &mut self,
         qualified_name: &str,
@@ -2442,6 +2435,21 @@ impl ExtensionHostSlot {
     }
 }
 
+fn sync_extension_script_function_invoker(world: &World) {
+    let host = world
+        .try_resource::<ExtensionHostSlot>()
+        .and_then(|slot| slot.host());
+    let callback = host.map(|host| {
+        Arc::new(move |name: &str, arguments: &[ScriptValue]| {
+            host.lock()
+                .map_err(|_| "extension host mutex was poisoned".to_owned())?
+                .invoke_script_function(name, arguments)
+                .map_err(|error| error.to_string())
+        }) as Arc<byroredux_scripting::ExtensionScriptFunctionCallback>
+    });
+    byroredux_scripting::set_extension_script_function_invoker(world, callback);
+}
+
 struct ExtensionConsoleCommand {
     route: HostedConsoleCommand,
     host: std::sync::Weak<Mutex<ExtensionHost>>,
@@ -3348,6 +3356,7 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
         let mut slot = world.resource_mut::<ExtensionHostSlot>();
         slot.replace_host(staged_host);
     }
+    sync_extension_script_function_invoker(world);
     log::info!(
         "activated {package_count} executable extension packages ({component_count} components)"
     );
@@ -4256,6 +4265,7 @@ mod tests {
     use super::*;
     use byroredux_core::form_id::{LocalFormId, PluginId};
     use byroredux_core::math::{Quat, Vec3};
+    use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRecord};
     use byroredux_sdk::component::{ComponentFieldDeclaration, ExtensionValue, ExtensionValueType};
     use byroredux_sdk::identity::{
         CapabilityId, ComponentFieldId, ComponentSchemaId, EventId, ScriptFunctionId,
@@ -5998,6 +6008,67 @@ mod tests {
         assert!(error.to_string().contains("invalid value or type"));
         assert_eq!(
             host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn source_obscript_calls_typed_function_without_a_script_extender() {
+        let id = "org.example.functions";
+        let manifest = script_function_manifest(id);
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(script_function_component()).unwrap(),
+        );
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .install_package(&manifest, &artifacts, script_function_grants())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+
+        let source = r#"
+            begin GameMode
+                set answer to ext.org.example.functions.answer integer:7
+            end
+        "#;
+        let script = ScriptRecord {
+            source: Some(source.to_owned()),
+            locals: vec![ScriptLocalVar {
+                index: 0,
+                var_type: 2,
+                name: "answer".to_owned(),
+            }],
+            ..Default::default()
+        };
+        let entity = world.spawn();
+        assert!(byroredux_scripting::attach_legacy_obscript_program(
+            &mut world, entity, &script, None,
+        ));
+        byroredux_scripting::legacy_obscript_load_order_system(&world, 0.0);
+
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("answer"),
+            Some(42.0)
+        );
+        let principal = PrincipalId::new(id).unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        assert_eq!(
+            live_host
+                .lock()
+                .unwrap()
+                .principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(1))

@@ -16,6 +16,7 @@ use byroredux_sdk::compatibility::{
     adapt_legacy_obscript_load_order, LegacyObscriptLoadOrderCall, LegacyObscriptLoadOrderResult,
 };
 use byroredux_sdk::content::ContentCatalog;
+use byroredux_sdk::script_function::{ScriptValue, MAX_SCRIPT_CALL_BYTES, MAX_SCRIPT_STRING_BYTES};
 
 use crate::events::{ActivateEvent, OnCellLoadEvent};
 use crate::obscript::{decode_exact_load_order_expression, ObscriptDialect};
@@ -43,24 +44,33 @@ pub enum LegacyObscriptEvent {
     OnActivate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LegacyObscriptAssignment {
     pub target: String,
-    pub call: LegacyObscriptLoadOrderCall,
+    pub call: LegacyObscriptCall,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum LegacyObscriptCall {
+    LoadOrder(LegacyObscriptLoadOrderCall),
+    Extension {
+        qualified_name: String,
+        arguments: Vec<ScriptValue>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum LegacyObscriptStatement {
     Assignment(LegacyObscriptAssignment),
     If {
-        condition: LegacyObscriptLoadOrderCall,
+        condition: LegacyObscriptCall,
         then_branch: Vec<LegacyObscriptStatement>,
         else_branch: Vec<LegacyObscriptStatement>,
     },
 }
 
 /// Static translated behavior attached to one legacy scripted entity.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LegacyObscriptProgram {
     handlers: BTreeMap<LegacyObscriptEvent, Vec<LegacyObscriptStatement>>,
 }
@@ -85,6 +95,25 @@ pub struct LegacyObscriptContentCatalog(pub Arc<ContentCatalog>);
 
 impl Resource for LegacyObscriptContentCatalog {}
 
+pub type ExtensionScriptFunctionCallback =
+    dyn Fn(&str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
+
+/// Engine-installed bridge from source ObScript into principal-qualified SDK
+/// functions. The callback owns no ECS guards and may enter the sandbox.
+#[derive(Clone, Default)]
+pub struct ExtensionScriptFunctionInvoker(Option<Arc<ExtensionScriptFunctionCallback>>);
+
+impl Resource for ExtensionScriptFunctionInvoker {}
+
+pub fn set_extension_script_function_invoker(
+    world: &World,
+    callback: Option<Arc<ExtensionScriptFunctionCallback>>,
+) {
+    if let Some(mut invoker) = world.try_resource_mut::<ExtensionScriptFunctionInvoker>() {
+        invoker.0 = callback;
+    }
+}
+
 pub fn set_legacy_obscript_content_catalog(world: &World, catalog: Arc<ContentCatalog>) {
     if let Some(mut current) = world.try_resource_mut::<LegacyObscriptContentCatalog>() {
         if !Arc::ptr_eq(&current.0, &catalog) && *current.0 != *catalog {
@@ -96,6 +125,7 @@ pub fn set_legacy_obscript_content_catalog(world: &World, catalog: Arc<ContentCa
 pub fn register(world: &mut World) {
     world.register::<LegacyObscriptProgram>();
     world.insert_resource(LegacyObscriptContentCatalog::default());
+    world.insert_resource(ExtensionScriptFunctionInvoker::default());
 }
 
 /// Translate supported source handlers and attach their static program plus
@@ -188,11 +218,11 @@ struct CompiledLine<'a> {
     payload: &'a [u8],
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum StatementTerminator {
     End,
     Else,
-    ElseIf(LegacyObscriptLoadOrderCall),
+    ElseIf(LegacyObscriptCall),
     EndIf,
 }
 
@@ -226,7 +256,7 @@ fn parse_compiled_sequence(
                 lines,
                 cursor,
                 depth,
-                parse_compiled_condition(line.payload, dialect)?,
+                LegacyObscriptCall::LoadOrder(parse_compiled_condition(line.payload, dialect)?),
             )?),
             ELSE if line.payload.len() == 2 => {
                 return Some((statements, StatementTerminator::Else));
@@ -237,7 +267,9 @@ fn parse_compiled_sequence(
             ELSE_IF => {
                 return Some((
                     statements,
-                    StatementTerminator::ElseIf(parse_compiled_condition(line.payload, dialect)?),
+                    StatementTerminator::ElseIf(LegacyObscriptCall::LoadOrder(
+                        parse_compiled_condition(line.payload, dialect)?,
+                    )),
                 ));
             }
             _ => return None,
@@ -252,7 +284,7 @@ fn parse_compiled_conditional(
     lines: &[CompiledLine<'_>],
     cursor: &mut usize,
     depth: usize,
-    condition: LegacyObscriptLoadOrderCall,
+    condition: LegacyObscriptCall,
 ) -> Option<LegacyObscriptStatement> {
     if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
         return None;
@@ -338,7 +370,10 @@ fn parse_compiled_assignment(
         .locals
         .iter()
         .find(|local| local.index == local_index)?;
-    let call = decode_exact_load_order_expression(&payload[5..expression_end], dialect)?;
+    let call = LegacyObscriptCall::LoadOrder(decode_exact_load_order_expression(
+        &payload[5..expression_end],
+        dialect,
+    )?);
     Some(LegacyObscriptAssignment {
         target: local.name.clone(),
         call,
@@ -464,7 +499,7 @@ fn parse_source_conditional(
     lines: &[Vec<String>],
     cursor: &mut usize,
     depth: usize,
-    condition: LegacyObscriptLoadOrderCall,
+    condition: LegacyObscriptCall,
 ) -> Option<LegacyObscriptStatement> {
     if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
         return None;
@@ -523,20 +558,71 @@ fn parse_assignment(script: &ScriptRecord, tokens: &[String]) -> Option<LegacyOb
     })
 }
 
-fn parse_source_call(tokens: &[String]) -> Option<LegacyObscriptLoadOrderCall> {
+fn parse_source_call(tokens: &[String]) -> Option<LegacyObscriptCall> {
     let command = tokens.first()?;
     if command.eq_ignore_ascii_case("IsModLoaded") && tokens.len() == 2 {
-        Some(LegacyObscriptLoadOrderCall::IsModLoaded {
-            plugin: tokens[1].clone(),
-        })
+        Some(LegacyObscriptCall::LoadOrder(
+            LegacyObscriptLoadOrderCall::IsModLoaded {
+                plugin: tokens[1].clone(),
+            },
+        ))
     } else if command.eq_ignore_ascii_case("GetModIndex") && tokens.len() == 2 {
-        Some(LegacyObscriptLoadOrderCall::GetModIndex {
-            plugin: tokens[1].clone(),
-        })
+        Some(LegacyObscriptCall::LoadOrder(
+            LegacyObscriptLoadOrderCall::GetModIndex {
+                plugin: tokens[1].clone(),
+            },
+        ))
     } else if command.eq_ignore_ascii_case("GetNumLoadedMods") && tokens.len() == 1 {
-        Some(LegacyObscriptLoadOrderCall::GetNumLoadedMods)
+        Some(LegacyObscriptCall::LoadOrder(
+            LegacyObscriptLoadOrderCall::GetNumLoadedMods,
+        ))
     } else if command.eq_ignore_ascii_case("GetNumLoadedPlugins") && tokens.len() == 1 {
-        Some(LegacyObscriptLoadOrderCall::GetNumLoadedPlugins)
+        Some(LegacyObscriptCall::LoadOrder(
+            LegacyObscriptLoadOrderCall::GetNumLoadedPlugins,
+        ))
+    } else if command.starts_with("ext.") {
+        let arguments = tokens[1..]
+            .iter()
+            .map(|token| parse_extension_argument(token))
+            .collect::<Option<Vec<_>>>()?;
+        let bytes = arguments.iter().fold(0usize, |bytes, value| {
+            bytes.saturating_add(match value {
+                ScriptValue::String(value) => value.len(),
+                _ => 0,
+            })
+        });
+        (bytes <= MAX_SCRIPT_CALL_BYTES).then(|| LegacyObscriptCall::Extension {
+            qualified_name: command.clone(),
+            arguments,
+        })
+    } else {
+        None
+    }
+}
+
+fn parse_extension_argument(token: &str) -> Option<ScriptValue> {
+    if token.eq_ignore_ascii_case("none") {
+        return Some(ScriptValue::None);
+    }
+    let (kind, value) = token.split_once(':')?;
+    if kind.eq_ignore_ascii_case("boolean") {
+        if value.eq_ignore_ascii_case("true") {
+            Some(ScriptValue::Boolean(true))
+        } else if value.eq_ignore_ascii_case("false") {
+            Some(ScriptValue::Boolean(false))
+        } else {
+            None
+        }
+    } else if kind.eq_ignore_ascii_case("integer") {
+        value.parse().ok().map(ScriptValue::Integer)
+    } else if kind.eq_ignore_ascii_case("float") {
+        value
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(ScriptValue::Float)
+    } else if kind.eq_ignore_ascii_case("string") && value.len() <= MAX_SCRIPT_STRING_BYTES {
+        Some(ScriptValue::String(value.to_owned()))
     } else {
         None
     }
@@ -584,6 +670,9 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
         Some(catalog) => Arc::clone(&catalog.0),
         None => return,
     };
+    let extension_functions = world
+        .try_resource::<ExtensionScriptFunctionInvoker>()
+        .and_then(|invoker| invoker.0.clone());
     let loaded = world
         .query::<OnCellLoadEvent>()
         .map(|events| events.iter().map(|(entity, _)| entity).collect::<Vec<_>>())
@@ -600,6 +689,7 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
     for (entity, program) in programs.iter() {
         collect_writes(
             &catalog,
+            extension_functions.as_deref(),
             entity,
             program.handler(LegacyObscriptEvent::GameMode),
             &mut writes,
@@ -607,6 +697,7 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
         if loaded.contains(&entity) {
             collect_writes(
                 &catalog,
+                extension_functions.as_deref(),
                 entity,
                 program.handler(LegacyObscriptEvent::OnLoad),
                 &mut writes,
@@ -615,6 +706,7 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
         if activated.contains(&entity) {
             collect_writes(
                 &catalog,
+                extension_functions.as_deref(),
                 entity,
                 program.handler(LegacyObscriptEvent::OnActivate),
                 &mut writes,
@@ -635,6 +727,7 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
 
 fn collect_writes(
     catalog: &ContentCatalog,
+    extension_functions: Option<&ExtensionScriptFunctionCallback>,
     entity: EntityId,
     statements: &[LegacyObscriptStatement],
     writes: &mut Vec<(EntityId, String, f32)>,
@@ -642,8 +735,8 @@ fn collect_writes(
     for statement in statements {
         match statement {
             LegacyObscriptStatement::Assignment(assignment) => {
-                let Some(value) = evaluate_load_order_call(catalog, &assignment.call)
-                    .and_then(load_order_result_number)
+                let Some(value) = evaluate_call(catalog, extension_functions, &assignment.call)
+                    .and_then(script_value_number)
                 else {
                     continue;
                 };
@@ -654,39 +747,75 @@ fn collect_writes(
                 then_branch,
                 else_branch,
             } => {
-                let branch = if evaluate_load_order_call(catalog, condition)
-                    .is_some_and(load_order_result_truthy)
+                let branch = if evaluate_call(catalog, extension_functions, condition)
+                    .is_some_and(script_value_truthy)
                 {
                     then_branch
                 } else {
                     else_branch
                 };
-                collect_writes(catalog, entity, branch, writes);
+                collect_writes(catalog, extension_functions, entity, branch, writes);
             }
         }
     }
 }
 
-fn evaluate_load_order_call(
+fn evaluate_call(
     catalog: &ContentCatalog,
-    call: &LegacyObscriptLoadOrderCall,
-) -> Option<LegacyObscriptLoadOrderResult> {
-    adapt_legacy_obscript_load_order(catalog, call.clone()).ok()
-}
-
-fn load_order_result_number(result: LegacyObscriptLoadOrderResult) -> Option<f32> {
-    match result {
-        LegacyObscriptLoadOrderResult::Bool(value) => Some(f32::from(value)),
-        LegacyObscriptLoadOrderResult::Integer(value) => Some(value as f32),
-        LegacyObscriptLoadOrderResult::String(_) => None,
+    extension_functions: Option<&ExtensionScriptFunctionCallback>,
+    call: &LegacyObscriptCall,
+) -> Option<ScriptValue> {
+    match call {
+        LegacyObscriptCall::LoadOrder(call) => {
+            adapt_legacy_obscript_load_order(catalog, call.clone())
+                .ok()
+                .map(|result| match result {
+                    LegacyObscriptLoadOrderResult::Bool(value) => ScriptValue::Boolean(value),
+                    LegacyObscriptLoadOrderResult::Integer(value) => {
+                        ScriptValue::Integer(i64::from(value))
+                    }
+                    LegacyObscriptLoadOrderResult::String(value) => ScriptValue::String(value),
+                })
+        }
+        LegacyObscriptCall::Extension {
+            qualified_name,
+            arguments,
+        } => {
+            let Some(invoke) = extension_functions else {
+                log::warn!("ObScript SDK function {qualified_name} has no live extension host");
+                return None;
+            };
+            match invoke(qualified_name, arguments) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    log::warn!("ObScript SDK function {qualified_name} failed: {error}");
+                    None
+                }
+            }
+        }
     }
 }
 
-fn load_order_result_truthy(result: LegacyObscriptLoadOrderResult) -> bool {
+fn script_value_number(result: ScriptValue) -> Option<f32> {
     match result {
-        LegacyObscriptLoadOrderResult::Bool(value) => value,
-        LegacyObscriptLoadOrderResult::Integer(value) => value != 0,
-        LegacyObscriptLoadOrderResult::String(value) => !value.is_empty(),
+        ScriptValue::Boolean(value) => Some(f32::from(value)),
+        ScriptValue::Integer(value) => Some(value as f32),
+        ScriptValue::Float(value) => Some(value),
+        ScriptValue::None
+        | ScriptValue::String(_)
+        | ScriptValue::Form(_)
+        | ScriptValue::Entity(_) => None,
+    }
+}
+
+fn script_value_truthy(result: ScriptValue) -> bool {
+    match result {
+        ScriptValue::None => false,
+        ScriptValue::Boolean(value) => value,
+        ScriptValue::Integer(value) => value != 0,
+        ScriptValue::Float(value) => value != 0.0,
+        ScriptValue::String(value) => !value.is_empty(),
+        ScriptValue::Form(_) | ScriptValue::Entity(_) => true,
     }
 }
 
@@ -695,6 +824,7 @@ mod tests {
     use super::*;
     use byroredux_plugin::esm::records::ScriptLocalVar;
     use byroredux_sdk::content::{PluginInfo, PluginKind};
+    use std::sync::Mutex;
 
     fn script(source: &str) -> ScriptRecord {
         ScriptRecord {
@@ -885,6 +1015,58 @@ mod tests {
         }
         chain.push_str("endif\nend\n");
         assert!(compile_legacy_obscript_program(&script(&chain), &chain).is_none());
+    }
+
+    #[test]
+    fn source_obscript_invokes_typed_principal_qualified_sdk_function() {
+        let source = r#"
+            begin GameMode
+                set index to ext.org.example.math.answer integer:7 string:hello
+            end
+        "#;
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        set_extension_script_function_invoker(
+            &world,
+            Some(Arc::new(move |name, arguments| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((name.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::Float(42.5))
+            })),
+        );
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &script(source),
+            None,
+        ));
+
+        legacy_obscript_load_order_system(&world, 0.0);
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(42.5)
+        );
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [(
+                "ext.org.example.math.answer".to_owned(),
+                vec![
+                    ScriptValue::Integer(7),
+                    ScriptValue::String("hello".to_owned()),
+                ],
+            )]
+        );
+
+        let ambiguous = source.replace("integer:7", "7");
+        assert!(compile_legacy_obscript_program(&script(&ambiguous), &ambiguous).is_none());
     }
 
     #[test]
