@@ -617,15 +617,21 @@ fn material_survives_save_load_round_trip() {
 /// silently dropped the pending `SetHudCartMode` the wait was gating.
 #[test]
 fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
+    use std::sync::{Arc, Mutex};
+
     use byroredux_scripting::papyrus_demo::PlayerEntity;
     use byroredux_scripting::quest_stages::{QuestStageAdvancedBatch, QuestStageState};
-    use byroredux_scripting::translate::effects::Effect;
+    use byroredux_scripting::translate::effects::{Effect, FragmentProviderCall};
     use byroredux_scripting::{
         fragment_continuation_system, quest_fragment_dispatch_system, FragmentExecutionQueue,
+        PapyrusProviderCallback, PapyrusProviderCatalog, PapyrusProviderRuntime,
         PlayerControlState, QuestFormId, QuestStageFragments,
     };
+    use byroredux_sdk::identity::PrincipalId;
+    use byroredux_sdk::script_function::ScriptValue;
 
     const Q: QuestFormId = QuestFormId(0x0001_2345);
+    let principal = PrincipalId::new("legacy.scripts.saved-fragment").unwrap();
 
     let reg = build_save_registry();
     let mut src = World::new();
@@ -643,6 +649,12 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
             10,
             vec![
                 Effect::Wait { seconds: 5.0 },
+                Effect::ProviderCall(FragmentProviderCall {
+                    route: byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE
+                        .to_owned(),
+                    arguments: Vec::new(),
+                    principal: Some(principal.clone()),
+                }),
                 Effect::SetHudCartMode { cart_mode: true },
             ],
         );
@@ -676,6 +688,23 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     let mut dst = World::new();
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
+    dst.insert_resource(PapyrusProviderRuntime::default());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(
+        move |principal: Option<&PrincipalId>, route: &str, _arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((principal.map(ToString::to_string), route.to_owned()));
+            Ok(ScriptValue::Integer(1))
+        },
+    ) as Arc<PapyrusProviderCallback>;
+    byroredux_scripting::set_papyrus_provider_runtime(
+        &dst,
+        Arc::new(PapyrusProviderCatalog::engine_compatibility()),
+        Some(callback),
+    );
 
     assert_eq!(
         dst.resource::<FragmentExecutionQueue>().len(),
@@ -690,6 +719,14 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     assert!(
         dst.resource::<PlayerControlState>().hud_cart_mode,
         "the queued SetHudCartMode effect must still fire after restore"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![(
+            Some(principal.to_string()),
+            byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE.to_owned(),
+        )],
+        "the restored fragment provider call must retain its script owner"
     );
 }
 

@@ -202,11 +202,11 @@ pub(crate) fn populate_quest_fragments(
         for (script_name, bindings) in by_script {
             // Scope the provider borrow: extract owned `.pex` bytes, then
             // drop the resource read before the `&mut` resource access.
-            let bytes = {
+            let resolved = {
                 let provider = world.resource::<ScriptProvider>();
-                provider.extract_pex(script_name)
+                provider.resolve_pex(script_name)
             };
-            let Some(bytes) = bytes else {
+            let Some(resolved) = resolved else {
                 log::trace!(
                     "M47.2 quest-fragment: .pex '{script_name}' not in archive (quest {form_id:08X})"
                 );
@@ -214,12 +214,15 @@ pub(crate) fn populate_quest_fragments(
             };
             let translation = {
                 let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
-                byroredux_scripting::populate_quest_fragments_from_pex_detailed_with_providers(
+                byroredux_scripting::populate_owned_quest_fragments_from_pex_detailed_with_providers(
                     &mut frags,
                     byroredux_scripting::QuestFormId(form_id),
-                    &bytes,
+                    &resolved.bytes,
                     &bindings,
-                    &providers,
+                    byroredux_scripting::OwnedFragmentProviders::new(
+                        &providers,
+                        &resolved.principal,
+                    ),
                 )
             };
             total += translation.inserted;
@@ -275,11 +278,11 @@ fn populate_scene_fragments(
                 .push((fragment.event, fragment.fragment_name.as_str()));
         }
         for (script_name, bindings) in by_script {
-            let bytes = {
+            let resolved = {
                 let provider = world.resource::<ScriptProvider>();
-                provider.extract_pex(script_name)
+                provider.resolve_pex(script_name)
             };
-            let Some(bytes) = bytes else {
+            let Some(resolved) = resolved else {
                 log::trace!(
                     "scene-fragment: .pex '{script_name}' not in archive (scene {scene_form_id:08X})"
                 );
@@ -287,14 +290,17 @@ fn populate_scene_fragments(
             };
             let translation = {
                 let mut fragments = world.resource_mut::<byroredux_scripting::SceneFragments>();
-                byroredux_scripting::populate_scene_fragments_from_pex_detailed_with_providers(
+                byroredux_scripting::populate_owned_scene_fragments_from_pex_detailed_with_providers(
                     &mut fragments,
                     scene_form_id,
                     byroredux_scripting::QuestFormId(quest_form_id),
                     scene.script_instance.as_ref(),
-                    &bytes,
+                    &resolved.bytes,
                     &bindings,
-                    &providers,
+                    byroredux_scripting::OwnedFragmentProviders::new(
+                        &providers,
+                        &resolved.principal,
+                    ),
                 )
             };
             total += translation.inserted;

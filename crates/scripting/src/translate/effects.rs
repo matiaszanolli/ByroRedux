@@ -64,6 +64,29 @@ pub struct StageDoneGuard {
 pub struct FragmentProviderCall {
     pub route: String,
     pub arguments: Vec<byroredux_sdk::script_function::ScriptValue>,
+    pub principal: Option<byroredux_sdk::identity::PrincipalId>,
+}
+
+/// Attribute every provider barrier in a lowered fragment, including calls in
+/// nested conditional branches, to the archive package that supplied its PEX.
+pub(crate) fn attribute_provider_calls(
+    effects: &mut [Effect],
+    principal: &byroredux_sdk::identity::PrincipalId,
+) {
+    for effect in effects {
+        match effect {
+            Effect::ProviderCall(call) => call.principal = Some(principal.clone()),
+            Effect::Conditional {
+                then_effects,
+                else_effects,
+                ..
+            } => {
+                attribute_provider_calls(then_effects, principal);
+                attribute_provider_calls(else_effects, principal);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A canonical effect a fragment statement lowers to. The runtime applies
@@ -509,6 +532,7 @@ fn classify_effect_with_providers(
                 return Some(Effect::ProviderCall(FragmentProviderCall {
                     route: call.route.qualified_name().to_owned(),
                     arguments: call.arguments,
+                    principal: None,
                 }));
             }
             Ok(None) => {}

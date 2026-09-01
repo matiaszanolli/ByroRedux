@@ -143,6 +143,7 @@ fn provider_barrier_resumes_native_fragment_tail_after_host_call() {
         Effect::ProviderCall(FragmentProviderCall {
             route: "byro.content.catalog.get-mod-count".to_owned(),
             arguments: Vec::new(),
+            principal: None,
         }),
         Effect::SetStage {
             quest: QuestRef::SelfRef,
@@ -151,6 +152,7 @@ fn provider_barrier_resumes_native_fragment_tail_after_host_call() {
         Effect::ProviderCall(FragmentProviderCall {
             route: "byro.content.catalog.is-plugin-installed".to_owned(),
             arguments: vec![ScriptValue::String("Update.esm".to_owned())],
+            principal: None,
         }),
         Effect::SetObjectiveCompleted {
             quest: QuestRef::SelfRef,
@@ -224,6 +226,7 @@ fn branch_provider_barrier_resumes_branch_and_outer_tails_in_order() {
                 Effect::ProviderCall(FragmentProviderCall {
                     route: "ext.example.branch".to_owned(),
                     arguments: Vec::new(),
+                    principal: None,
                 }),
                 Effect::SetStage {
                     quest: QuestRef::SelfRef,
@@ -238,6 +241,7 @@ fn branch_provider_barrier_resumes_branch_and_outer_tails_in_order() {
         Effect::ProviderCall(FragmentProviderCall {
             route: "ext.example.outer".to_owned(),
             arguments: Vec::new(),
+            principal: None,
         }),
         Effect::SetStage {
             quest: QuestRef::SelfRef,
@@ -296,6 +300,7 @@ fn failed_provider_barrier_aborts_its_native_fragment_tail() {
         Effect::ProviderCall(FragmentProviderCall {
             route: "ext.example.fail".to_owned(),
             arguments: Vec::new(),
+            principal: None,
         }),
         Effect::SetStage {
             quest: QuestRef::SelfRef,
@@ -348,6 +353,7 @@ fn quest_fragments_flush_provider_barriers_before_the_next_event() {
                 Effect::ProviderCall(FragmentProviderCall {
                     route: "ext.example.first-quest".to_owned(),
                     arguments: Vec::new(),
+                    principal: None,
                 }),
                 Effect::SetStage {
                     quest: QuestRef::SelfRef,
@@ -905,6 +911,7 @@ fn provider_aware_fragment_population_resumes_after_native_call() {
     let (script, errors) = parse_script(
         "ScriptName QF_Test extends Quest\n\
          Function Fragment_0()\n\
+         Utility.Wait(0.0)\n\
          Game.GetModCount()\n\
          Self.SetStage(20)\n\
          EndFunction\n",
@@ -912,17 +919,20 @@ fn provider_aware_fragment_population_resumes_after_native_call() {
     .unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     let providers = crate::PapyrusProviderCatalog::engine_compatibility();
+    let principal =
+        byroredux_sdk::identity::PrincipalId::new("legacy.scripts.quest-fragment").unwrap();
     let world = fixture();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_for_callback = Arc::clone(&calls);
     let callback = Arc::new(
-        move |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+        move |principal: Option<&byroredux_sdk::identity::PrincipalId>,
               route: &str,
               arguments: &[ScriptValue]| {
-            calls_for_callback
-                .lock()
-                .unwrap()
-                .push((route.to_owned(), arguments.to_vec()));
+            calls_for_callback.lock().unwrap().push((
+                principal.map(ToString::to_string),
+                route.to_owned(),
+                arguments.to_vec(),
+            ));
             Ok(ScriptValue::Integer(1))
         },
     ) as Arc<crate::PapyrusProviderCallback>;
@@ -930,12 +940,12 @@ fn provider_aware_fragment_population_resumes_after_native_call() {
     {
         let mut fragments = world.resource_mut::<QuestStageFragments>();
         assert_eq!(
-            populate_quest_fragments_from_script_with_providers(
+            populate_owned_quest_fragments_from_script_with_providers(
                 &mut fragments,
                 Q,
                 &script,
                 &[(10, "Fragment_0")],
-                &providers,
+                OwnedFragmentProviders::new(&providers, &principal),
             ),
             1
         );
@@ -944,11 +954,14 @@ fn provider_aware_fragment_population_resumes_after_native_call() {
     emit_advance(&world, Q, 10);
 
     quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+    fragment_continuation_system(&world, 0.0);
 
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
     assert_eq!(
         calls.lock().unwrap().as_slice(),
         &[(
+            Some(principal.to_string()),
             byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE.to_owned(),
             Vec::new(),
         )]
@@ -2701,28 +2714,49 @@ fn bootstrap_batch_larger_than_cascade_cap_dispatches_every_initial_event() {
 
 #[test]
 fn scene_phase_fragment_advances_its_owning_quest() {
+    use std::sync::{Arc, Mutex};
+
     use byroredux_papyrus::parse_script;
     use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
+    use byroredux_sdk::script_function::ScriptValue;
 
     let (script, errors) = parse_script(
         "ScriptName SF_TestScene_00000100 extends Scene\n\
-         Function Fragment_0()\n Self.GetOwningQuest().SetStage(14)\n EndFunction\n",
+         Function Fragment_0()\n Game.GetModCount()\n Self.GetOwningQuest().SetStage(14)\n EndFunction\n",
     )
     .expect("scene fragment script parses");
     assert!(errors.is_empty(), "{errors:?}");
 
     let mut world = fixture();
+    let providers = crate::PapyrusProviderCatalog::engine_compatibility();
+    let principal =
+        byroredux_sdk::identity::PrincipalId::new("legacy.scripts.scene-fragment").unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let callback = Arc::new(
+        move |principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              _route: &str,
+              _arguments: &[ScriptValue]| {
+            observed
+                .lock()
+                .unwrap()
+                .push(principal.map(ToString::to_string));
+            Ok(ScriptValue::Integer(1))
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(&world, Arc::new(providers.clone()), Some(callback));
     world.resource_mut::<QuestStageState>().start_quest(Q, None);
     let event = SceneFragmentEvent::PhaseCompletion { phase_index: 5 };
     let inserted = {
         let mut fragments = world.resource_mut::<SceneFragments>();
-        populate_scene_fragments_from_script(
+        populate_owned_scene_fragments_from_script_with_providers(
             &mut fragments,
             0x100,
             Q,
             None,
             &script,
             &[(event, "Fragment_0")],
+            OwnedFragmentProviders::new(&providers, &principal),
         )
     };
     assert_eq!(inserted, 1);
@@ -2740,6 +2774,7 @@ fn scene_phase_fragment_advances_its_owning_quest() {
     scene_fragment_dispatch_system(&world, 0.0);
 
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 14);
+    assert_eq!(*calls.lock().unwrap(), [Some(principal.to_string())]);
     let player = world.resource::<PlayerEntity>().0;
     let query = world.query::<QuestStageAdvancedBatch>().unwrap();
     let batch = query
@@ -2782,6 +2817,7 @@ fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
                 Effect::ProviderCall(FragmentProviderCall {
                     route: "ext.example.first-scene".to_owned(),
                     arguments: Vec::new(),
+                    principal: None,
                 }),
                 Effect::SetStage {
                     quest: QuestRef::SelfRef,

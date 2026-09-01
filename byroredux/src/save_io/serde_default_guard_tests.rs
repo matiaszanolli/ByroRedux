@@ -358,8 +358,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Provider continuations now retain the owning legacy-script principal so
     // a resumed stateful compatibility call cannot lose namespace isolation.
     // That required field makes v12 intentionally incompatible with v11.
-    const BASELINE_MAJOR: u16 = 12;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x03b0_1c23_c1d8_d6be;
+    // Fragment provider barriers now retain that same owner through saved
+    // quest/scene continuations, making v13 intentionally incompatible with
+    // v12 rather than restoring those calls into a global namespace.
+    const BASELINE_MAJOR: u16 = 13;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xba27_849f_2821_97ba;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

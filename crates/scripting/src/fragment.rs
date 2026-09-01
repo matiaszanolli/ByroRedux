@@ -651,7 +651,11 @@ impl DeferredFragmentEffects {
 
         let mut advances = Vec::new();
         for step in std::mem::take(&mut self.provider_steps) {
-            if let Err(error) = callback(None, &step.call.route, &step.call.arguments) {
+            if let Err(error) = callback(
+                step.call.principal.as_ref(),
+                &step.call.route,
+                &step.call.arguments,
+            ) {
                 log::warn!("deferred fragment provider call aborted: {error}");
                 continue;
             }
@@ -1807,6 +1811,29 @@ pub fn populate_quest_fragments_from_pex_detailed(
     populate_quest_fragments_from_pex_detailed_internal(frags, quest, pex_bytes, bindings, None)
 }
 
+/// Provider catalog paired with the legacy script package that supplied a
+/// quest or scene fragment.
+#[derive(Clone, Copy)]
+pub struct OwnedFragmentProviders<'a> {
+    pub catalog: &'a crate::PapyrusProviderCatalog,
+    pub principal: &'a byroredux_sdk::identity::PrincipalId,
+}
+
+impl<'a> OwnedFragmentProviders<'a> {
+    pub fn new(
+        catalog: &'a crate::PapyrusProviderCatalog,
+        principal: &'a byroredux_sdk::identity::PrincipalId,
+    ) -> Self {
+        Self { catalog, principal }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FragmentProviderScope<'a> {
+    catalog: &'a crate::PapyrusProviderCatalog,
+    principal: Option<&'a byroredux_sdk::identity::PrincipalId>,
+}
+
 /// Provider-aware quest-fragment lowering from the same decompiled PEX AST.
 pub fn populate_quest_fragments_from_pex_detailed_with_providers(
     frags: &mut QuestStageFragments,
@@ -1820,7 +1847,31 @@ pub fn populate_quest_fragments_from_pex_detailed_with_providers(
         quest,
         pex_bytes,
         bindings,
-        Some(providers),
+        Some(FragmentProviderScope {
+            catalog: providers,
+            principal: None,
+        }),
+    )
+}
+
+/// Provider-aware quest-fragment lowering attributed to the archive package
+/// that supplied the compiled PEX.
+pub fn populate_owned_quest_fragments_from_pex_detailed_with_providers(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    pex_bytes: &[u8],
+    bindings: &[(u16, &str)],
+    providers: OwnedFragmentProviders<'_>,
+) -> FragmentPexTranslation {
+    populate_quest_fragments_from_pex_detailed_internal(
+        frags,
+        quest,
+        pex_bytes,
+        bindings,
+        Some(FragmentProviderScope {
+            catalog: providers.catalog,
+            principal: Some(providers.principal),
+        }),
     )
 }
 
@@ -1829,7 +1880,7 @@ fn populate_quest_fragments_from_pex_detailed_internal(
     quest: QuestFormId,
     pex_bytes: &[u8],
     bindings: &[(u16, &str)],
-    providers: Option<&crate::PapyrusProviderCatalog>,
+    providers: Option<FragmentProviderScope<'_>>,
 ) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
@@ -1894,7 +1945,36 @@ pub fn populate_quest_fragments_from_script_with_providers(
     bindings: &[(u16, &str)],
     providers: &crate::PapyrusProviderCatalog,
 ) -> usize {
-    populate_quest_fragments_from_script_internal(frags, quest, script, bindings, Some(providers))
+    populate_quest_fragments_from_script_internal(
+        frags,
+        quest,
+        script,
+        bindings,
+        Some(FragmentProviderScope {
+            catalog: providers,
+            principal: None,
+        }),
+    )
+}
+
+/// Provider-aware AST lowering attributed to one legacy script package.
+pub fn populate_owned_quest_fragments_from_script_with_providers(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    script: &Script,
+    bindings: &[(u16, &str)],
+    providers: OwnedFragmentProviders<'_>,
+) -> usize {
+    populate_quest_fragments_from_script_internal(
+        frags,
+        quest,
+        script,
+        bindings,
+        Some(FragmentProviderScope {
+            catalog: providers.catalog,
+            principal: Some(providers.principal),
+        }),
+    )
 }
 
 fn populate_quest_fragments_from_script_internal(
@@ -1902,7 +1982,7 @@ fn populate_quest_fragments_from_script_internal(
     quest: QuestFormId,
     script: &Script,
     bindings: &[(u16, &str)],
-    providers: Option<&crate::PapyrusProviderCatalog>,
+    providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
     let mut inserted = 0;
     // A QUST stage may carry several log entries, each with its own
@@ -1929,13 +2009,16 @@ fn populate_quest_fragments_from_script_internal(
         // fully lower is skipped, not partially applied. An empty
         // fully-lowered fragment carries no effects, so it needn't occupy
         // the map (a lookup miss is equivalent to an empty entry).
-        if let Some(effects) =
+        if let Some(mut effects) =
             crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
                 body,
                 &quest_properties,
-                providers,
+                providers.map(|scope| scope.catalog),
             )
         {
+            if let Some(principal) = providers.and_then(|scope| scope.principal) {
+                crate::translate::effects::attribute_provider_calls(&mut effects, principal);
+            }
             if !effects.is_empty() {
                 if !effects_by_stage.contains_key(stage) {
                     stage_order.push(*stage);
@@ -2014,7 +2097,35 @@ pub fn populate_scene_fragments_from_pex_detailed_with_providers(
         vmad,
         pex_bytes,
         bindings,
-        Some(providers),
+        Some(FragmentProviderScope {
+            catalog: providers,
+            principal: None,
+        }),
+    )
+}
+
+/// Provider-aware scene-fragment lowering attributed to the archive package
+/// that supplied the compiled PEX.
+pub fn populate_owned_scene_fragments_from_pex_detailed_with_providers(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    pex_bytes: &[u8],
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: OwnedFragmentProviders<'_>,
+) -> FragmentPexTranslation {
+    populate_scene_fragments_from_pex_detailed_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        pex_bytes,
+        bindings,
+        Some(FragmentProviderScope {
+            catalog: providers.catalog,
+            principal: Some(providers.principal),
+        }),
     )
 }
 
@@ -2025,7 +2136,7 @@ fn populate_scene_fragments_from_pex_detailed_internal(
     vmad: Option<&ScriptInstanceData>,
     pex_bytes: &[u8],
     bindings: &[(SceneFragmentEvent, &str)],
-    providers: Option<&crate::PapyrusProviderCatalog>,
+    providers: Option<FragmentProviderScope<'_>>,
 ) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
@@ -2135,7 +2246,34 @@ pub fn populate_scene_fragments_from_script_with_providers(
         vmad,
         script,
         bindings,
-        Some(providers),
+        Some(FragmentProviderScope {
+            catalog: providers,
+            principal: None,
+        }),
+    )
+}
+
+/// Provider-aware scene AST lowering attributed to one legacy script package.
+pub fn populate_owned_scene_fragments_from_script_with_providers(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    script: &Script,
+    bindings: &[(SceneFragmentEvent, &str)],
+    providers: OwnedFragmentProviders<'_>,
+) -> usize {
+    populate_scene_fragments_from_script_internal(
+        frags,
+        scene_form_id,
+        context,
+        vmad,
+        script,
+        bindings,
+        Some(FragmentProviderScope {
+            catalog: providers.catalog,
+            principal: Some(providers.principal),
+        }),
     )
 }
 
@@ -2146,7 +2284,7 @@ fn populate_scene_fragments_from_script_internal(
     vmad: Option<&ScriptInstanceData>,
     script: &Script,
     bindings: &[(SceneFragmentEvent, &str)],
-    providers: Option<&crate::PapyrusProviderCatalog>,
+    providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
     let quest_properties = quest_property_names(script);
     let mut inserted = 0;
@@ -2157,13 +2295,16 @@ fn populate_scene_fragments_from_script_internal(
             );
             continue;
         };
-        if let Some(effects) =
+        if let Some(mut effects) =
             crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
                 body,
                 &quest_properties,
-                providers,
+                providers.map(|scope| scope.catalog),
             )
         {
+            if let Some(principal) = providers.and_then(|scope| scope.principal) {
+                crate::translate::effects::attribute_provider_calls(&mut effects, principal);
+            }
             if !effects.is_empty() {
                 frags.insert(scene_form_id, *event, context, vmad.cloned(), effects);
                 inserted += 1;

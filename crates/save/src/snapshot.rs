@@ -110,7 +110,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 12 adds the stable legacy-script principal to every suspended
 /// provider continuation. Resuming without it would collapse principal-private
 /// compatibility storage into an unauthenticated global namespace.
-pub const FORMAT_MAJOR: u16 = 12;
+/// Version 13 extends the same ownership requirement to provider barriers
+/// embedded in saved quest/scene fragment continuations.
+pub const FORMAT_MAJOR: u16 = 13;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
