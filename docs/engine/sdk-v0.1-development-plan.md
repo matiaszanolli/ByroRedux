@@ -96,10 +96,12 @@ per entering actor. The subset supports scalar locals, literal arguments,
 assignments, and bounded boolean branches with negation, short-circuit logical
 operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
 and object expressions, broader events, latent calls, and dynamic object
-dispatch remain open. Quest and scene fragments now accept ordered provider
-call tails from source/decompiled PEX, persist them through existing latent
-continuations, and invoke them only after fragment ECS guards are released;
-provider calls before later native effects or inside branches still decline.
+dispatch remain open. Quest and scene fragments now treat top-level provider
+calls from source/decompiled PEX as sequencing barriers, persist them through
+existing latent continuations, and invoke them only after fragment ECS guards
+are released. Successful calls resume later native effects in the same
+fragment, including across multiple barriers; failure aborts that fragment's
+tail. Branch-local calls and cross-fragment barrier flushing remain pending.
 The first curated extender-era pack is also executable without an extension
 package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
@@ -863,10 +865,12 @@ proceeds by semantic domain and closes only against real mod fixtures.
   operators, and same-type boolean/integer/float comparisons over locals,
   literals, and provider results. A synthetic byte-level Skyrim PEX fixture
   now exercises the production reader/decompiler/translation boundary.
-  Quest/scene fragment PEX now lowers ordered provider-call tails, preserves
-  them across the existing latent continuation queue, and dispatches them only
-  after fragment guards drop. Calls before later native effects and calls in
-  branches decline until ordered continuation semantics cover those shapes.
+  Quest/scene fragment PEX now lowers top-level provider calls as sequencing
+  barriers, preserves them across the existing latent continuation queue, and
+  dispatches them only after fragment guards drop. A successful call resumes
+  later native effects within that fragment, including across multiple
+  barriers; failure aborts its remaining tail. Branch-local calls and
+  cross-fragment barrier flushing remain pending.
   Compiled SCDA call encoding, arithmetic/string/object expressions, broader
   events, latent provider calls, and dynamic object dispatch remain pending.
   Ten exact SKSE `Game` content extensions are now engine-owned
@@ -1005,8 +1009,10 @@ result. A later event-dispatch checkpoint adds `OnTriggerEnter` with one call
 per entering actor and recurring `OnUpdate` delivery through the same guard-free
 path. Typed condition evaluation now adds bounded negation, short-circuit
 logical operators, and same-type boolean/integer/float comparisons. Quest/scene
-fragment PEX now queues ordered provider-call tails and runs them after fragment
-guards are released; non-tail and branch-local provider calls remain open.
+fragment PEX now uses top-level provider calls as guard-free sequencing barriers
+and resumes each successful call's native tail in order within that fragment.
+Failed calls abort their fragment tail; branch-local calls and cross-fragment
+barrier flushing remain open.
 
 ### 14.3 Source and PEX parity
 
