@@ -44,8 +44,12 @@ set from repeatable `--extension` arguments, applies only explicit
 markers plus rebinding-independent `ActionState` press/release edges after
 releasing ECS guards. It routes exact manifest-declared custom channels in
 stable install order, commits publication with the callback's other deferred
-commands, defers delivery to the next Late pass, and shuts components down in reverse
-order. Extension component rows now live inside the checksummed
+commands, defers delivery to the next Late pass, and shuts components down in
+reverse order. Native channels remain principal-owned. The first shared
+compatibility namespace now maps bounded SKSE ModEvent names reversibly,
+preserves case, carries the fixed `SendModEvent` string/float/Form payload in a
+versioned wire shape, and routes across principals only with publish/subscribe
+capabilities. Extension component rows now live inside the checksummed
 ByroRedux save container: transient handles translate to load-order-independent
 `FormRef` values, payloads are bounded and preflighted before world teardown,
 fresh handles are assigned after reload, and rows for missing packages or
@@ -469,6 +473,15 @@ shared calls remain deliberately unsupported until an engine service can honor
 their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
+
+The first event adapter covers fixed-arity
+`Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
+name to the shared engine-owned compatibility bus and preserves the string,
+float, and stable sender form synchronously without an SKSE DLL. The lower-level
+`ModEvent.Create/Push*/Send/Release` family is now recognized only by exact
+function name and remains mapped—not native—until its transient typed builder
+is executable. Runtime Register/Unregister adapters are the next event slice;
+manifest-static subscriptions alone do not satisfy their lifecycle contract.
 
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified

@@ -28,9 +28,11 @@ interface context {
     queue-own-setting: func(declaration-index: u32, value: setting-value);
 }
 
-/// Principal-owned, bounded custom/mod event publication and callback-local
-/// payload access. The callback receives the exact manifest subscription
-/// index, so channels never become guest-chosen numeric identifiers.
+/// Capability-gated, bounded custom/mod event publication and callback-local
+/// payload access. Native channels remain principal-owned; reserved legacy
+/// compatibility channels are shared and engine-owned. The callback receives
+/// the exact manifest subscription index, so channels never become
+/// guest-chosen numeric identifiers.
 interface events {
     publish: func(event: string, payload: list<u8>);
     current-payload-len: func() -> u32;

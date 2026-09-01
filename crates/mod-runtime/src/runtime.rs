@@ -14,7 +14,7 @@ use byroredux_sdk::console::{
 };
 use byroredux_sdk::content::{ContentCatalog, PluginKind, MAX_PLUGIN_NAME_BYTES};
 use byroredux_sdk::event::{
-    custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
+    custom_event_publishable_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
     EquipmentEvent, HitEvent, InputAction, InputActionEvent, InputPhase, PublishEventCommand,
     SessionEvent, SessionPhase, UpdateEvent,
 };
@@ -1399,9 +1399,9 @@ impl events::Host for HostState {
         }
         let event = EventId::new(event)
             .map_err(|error| wasmtime::Error::msg(format!("invalid custom event id: {error}")))?;
-        if !custom_event_owned_by(&event, self.principal.id()) {
+        if !custom_event_publishable_by(&event, self.principal.id()) {
             wasmtime::bail!(
-                "principal {} does not own custom event {}",
+                "principal {} may not publish custom event {}",
                 self.principal.id(),
                 event
             );
@@ -2867,6 +2867,44 @@ mod projection_tests {
             wit_storage::Value::Unsigned(9),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn shared_skse_mod_event_publication_is_capability_gated_and_deferred() {
+        let mut state = content_host_state(false);
+        state.grants.grant(EVENTS_PUBLISH_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 1;
+        let channel =
+            byroredux_sdk::event::legacy_skse_mod_event_id("SKICP_configManagerReady").unwrap();
+
+        <HostState as events::Host>::publish(
+            &mut state,
+            channel.as_str().to_owned(),
+            vec![1, 2, 3],
+        )
+        .unwrap();
+        assert_eq!(
+            state.pending_commands,
+            vec![HostCommand::PublishEvent(PublishEventCommand {
+                event: channel,
+                payload: vec![1, 2, 3],
+            })]
+        );
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        denied.max_commands_per_entry = 1;
+        assert!(<HostState as events::Host>::publish(
+            &mut denied,
+            byroredux_sdk::event::legacy_skse_mod_event_id("SKICP_configManagerReady")
+                .unwrap()
+                .as_str()
+                .to_owned(),
+            Vec::new(),
+        )
+        .is_err());
+        assert!(denied.pending_commands.is_empty());
     }
 
     #[test]

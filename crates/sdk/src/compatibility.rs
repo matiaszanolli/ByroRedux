@@ -5,6 +5,8 @@
 //! adapter must target, or records why the operation is intentionally absent.
 
 use crate::component::ExtensionValue;
+use crate::event::{legacy_skse_mod_event_id, LegacySkseModEventPayload, PublishEventCommand};
+use crate::identity::FormRef;
 use crate::identity::{IdentityError, StorageKey};
 use crate::service::{CONTEXT_SERVICE, EVENT_SERVICE, PRINCIPAL_STORAGE_SERVICE};
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
@@ -95,6 +97,45 @@ pub enum StorageUtilAdapterError {
     IntegerOutOfRange,
     #[error("StorageUtil adapter found an incompatible value at its type-isolated key")]
     TypeMismatch,
+}
+
+/// Failure to adapt SKSE's fixed-arity `SendModEvent` call.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum LegacyModEventAdapterError {
+    #[error("legacy mod-event name is empty or exceeds the reversible engine bound")]
+    InvalidEventName,
+    #[error("legacy mod-event payload exceeds the bounded engine event contract")]
+    PayloadTooLarge,
+}
+
+/// Adapt `Form`/`Alias`/`ActiveMagicEffect.SendModEvent` to the shared,
+/// engine-owned event service.
+pub fn adapt_legacy_send_mod_event(
+    event_name: &str,
+    string_arg: String,
+    number_arg: f32,
+    sender: Option<FormRef>,
+) -> Result<PublishEventCommand, LegacyModEventAdapterError> {
+    let event =
+        legacy_skse_mod_event_id(event_name).ok_or(LegacyModEventAdapterError::InvalidEventName)?;
+    let payload = LegacySkseModEventPayload::new(string_arg, number_arg, sender)
+        .encode()
+        .ok_or(LegacyModEventAdapterError::PayloadTooLarge)?;
+    PublishEventCommand::new(event, payload).ok_or(LegacyModEventAdapterError::PayloadTooLarge)
+}
+
+/// Exact source alias for extender-added instance calls.
+pub fn method_source_alias(function: &str) -> Option<SourceAlias> {
+    function
+        .eq_ignore_ascii_case("SendModEvent")
+        .then_some(SourceAlias {
+            provider: "Form/Alias/ActiveMagicEffect",
+            function: "SendModEvent",
+            service: EVENT_SERVICE,
+            operation: "events.publish",
+            value_kind: "legacy-skse-fixed-event",
+            constraint: "event name <=53 UTF-8 bytes; sender must have a stable FormRef",
+        })
 }
 
 /// Resolve the first engine-backed PapyrusUtil source aliases.
@@ -314,11 +355,32 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         ));
     }
     if provider.eq_ignore_ascii_case("ModEvent") {
-        return Some(mapped(
-            ExtenderFamily::Skse,
-            EVENT_SERVICE,
-            "declare a principal-owned event channel and use bounded typed payloads",
-        ));
+        return Some(
+            if matches_ignore_ascii_case(
+                function,
+                &[
+                    "Create",
+                    "Send",
+                    "Release",
+                    "PushBool",
+                    "PushInt",
+                    "PushFloat",
+                    "PushString",
+                    "PushForm",
+                ],
+            ) {
+                mapped(
+                ExtenderFamily::Skse,
+                EVENT_SERVICE,
+                "replace the transient ModEvent handle with a bounded typed event builder on the shared engine compatibility bus",
+            )
+            } else {
+                unsupported(
+                ExtenderFamily::Skse,
+                "the ModEvent provider is recognized, but this function has no exact engine mapping",
+            )
+            },
+        );
     }
     if provider.eq_ignore_ascii_case("Input") {
         return Some(
@@ -357,13 +419,19 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
 /// from a `callmethod` instruction. Exact names are used to avoid treating
 /// ordinary mod methods as compatibility calls.
 pub fn classify_method_call(function: &str) -> Option<CompatibilityMatch> {
+    if method_source_alias(function).is_some() {
+        return Some(mapped(
+            ExtenderFamily::Skse,
+            EVENT_SERVICE,
+            "an exact fixed-arity source adapter targets the shared engine ModEvent compatibility bus",
+        ));
+    }
     if matches_ignore_ascii_case(
         function,
         &[
             "RegisterForModEvent",
             "UnregisterForModEvent",
             "UnregisterForAllModEvents",
-            "SendModEvent",
         ],
     ) {
         return Some(mapped(
@@ -556,6 +624,46 @@ mod tests {
                 Some(&PrincipalStorageValue::String("wrong".to_owned())),
             ),
             Err(StorageUtilAdapterError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn fixed_mod_event_adapter_preserves_name_payload_and_sender() {
+        let sender = FormRef::new([0x2a; 16], 0x800);
+        let command = adapt_legacy_send_mod_event(
+            "SKICP_configManagerReady",
+            "page:selected".to_owned(),
+            42.5,
+            Some(sender),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::event::legacy_skse_mod_event_name(&command.event).as_deref(),
+            Some("SKICP_configManagerReady")
+        );
+        let payload = LegacySkseModEventPayload::decode(&command.payload).unwrap();
+        assert_eq!(payload.string_arg, "page:selected");
+        assert_eq!(payload.number_arg(), 42.5);
+        assert_eq!(payload.sender, Some(sender));
+        assert_eq!(
+            method_source_alias("sendmodevent").unwrap().operation,
+            "events.publish"
+        );
+    }
+
+    #[test]
+    fn mod_event_catalog_does_not_map_unknown_provider_functions() {
+        assert_eq!(
+            classify_static_call("ModEvent", "UnknownHandleOperation")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Unsupported
+        );
+        assert_eq!(
+            classify_static_call("ModEvent", "PushString")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Mapped
         );
     }
 

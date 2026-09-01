@@ -35,7 +35,7 @@ use byroredux_sdk::component::{
 use byroredux_sdk::console::ConsoleCommandResult;
 use byroredux_sdk::content::ContentCatalog;
 use byroredux_sdk::event::{
-    custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
+    custom_event_publishable_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
     EquipmentEvent, HitEvent, InputAction as SdkInputAction, InputActionEvent, InputPhase,
     SessionEvent, SessionPhase, UpdateEvent,
 };
@@ -1826,9 +1826,9 @@ fn apply_delivery_result(
     let staged_events = published_events
         .into_iter()
         .map(|command| {
-            if !custom_event_owned_by(&command.event, principal) {
+            if !custom_event_publishable_by(&command.event, principal) {
                 return Err(format!(
-                    "principal {principal} does not own custom event {}",
+                    "principal {principal} may not publish custom event {}",
                     command.event
                 ));
             }
@@ -4953,6 +4953,41 @@ mod tests {
                 events: 1,
                 ..ExtensionDispatchStats::default()
             }
+        );
+    }
+
+    #[test]
+    fn shared_skse_mod_events_route_across_principals() {
+        let subscriber = PrincipalId::new("org.example.skyui-adapter").unwrap();
+        let sender = PrincipalId::new("org.example.config-provider").unwrap();
+        let channel =
+            byroredux_sdk::event::legacy_skse_mod_event_id("SKICP_configManagerReady").unwrap();
+        let payload = byroredux_sdk::event::LegacySkseModEventPayload::new(
+            String::new(),
+            0.0,
+            Some(FormRef::new([0x42; 16], 0x800)),
+        )
+        .encode()
+        .unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_custom_event_package(subscriber.as_str(), channel.as_str());
+
+        host.pending_custom_events.push(CustomEvent {
+            event: channel,
+            sender,
+            payload,
+        });
+        let stats = host.dispatch_custom_events();
+
+        assert_eq!(stats.events, 1);
+        assert_eq!(stats.deliveries, 1);
+        assert_eq!(stats.commands_applied, 1);
+        assert_eq!(stats.faults, 0);
+        assert_eq!(
+            host.principal_storage
+                .values(&subscriber)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
         );
     }
 
