@@ -22,6 +22,7 @@ pub mod obscript;
 pub mod obscript_runtime;
 pub mod package;
 pub mod papyrus_demo;
+pub mod papyrus_provider;
 pub mod player_control;
 pub mod quest_stages;
 pub mod recurring_update;
@@ -87,6 +88,10 @@ pub use package::{
     install_package_target_positions, scene_package_system, ActiveScenePackageAction,
     EvaluatePackageRequest, PackageRegistry, PackageTargetRegistry, ScenePackageCommand,
     ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch, ScenePackagePlayback,
+};
+pub use papyrus_provider::{
+    lower_provider_call, PapyrusProviderCatalog, PapyrusProviderCatalogError,
+    PapyrusProviderLowerError, PapyrusProviderRoute, TypedPapyrusProviderCall,
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
