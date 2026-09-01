@@ -1344,6 +1344,66 @@ impl ExtensionHost {
                 },
             ),
             (
+                StorageUtilListOperation::Insert,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index), value],
+            ) => (
+                key,
+                StorageUtilListCall::Insert {
+                    index: integer(*index)?,
+                    value: list_value(value)?,
+                },
+            ),
+            (
+                StorageUtilListOperation::Remove,
+                [ScriptValue::None, ScriptValue::String(key), value],
+            ) => (
+                key,
+                StorageUtilListCall::Remove {
+                    value: list_value(value)?,
+                    all_instances: false,
+                },
+            ),
+            (
+                StorageUtilListOperation::Remove,
+                [ScriptValue::None, ScriptValue::String(key), value, ScriptValue::Boolean(all_instances)],
+            ) => (
+                key,
+                StorageUtilListCall::Remove {
+                    value: list_value(value)?,
+                    all_instances: *all_instances,
+                },
+            ),
+            (
+                StorageUtilListOperation::CountValue,
+                [ScriptValue::None, ScriptValue::String(key), value],
+            ) => (
+                key,
+                StorageUtilListCall::CountValue {
+                    value: list_value(value)?,
+                    exclude: false,
+                },
+            ),
+            (
+                StorageUtilListOperation::CountValue,
+                [ScriptValue::None, ScriptValue::String(key), value, ScriptValue::Boolean(exclude)],
+            ) => (
+                key,
+                StorageUtilListCall::CountValue {
+                    value: list_value(value)?,
+                    exclude: *exclude,
+                },
+            ),
+            (
+                StorageUtilListOperation::Adjust,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index), amount],
+            ) => (
+                key,
+                StorageUtilListCall::Adjust {
+                    index: integer(*index)?,
+                    amount: list_value(amount)?,
+                },
+            ),
+            (
                 StorageUtilListOperation::Find,
                 [ScriptValue::None, ScriptValue::String(key), value],
             ) => (
@@ -7888,6 +7948,14 @@ mod tests {
                 StorageUtil.IntListAdd(None, "numbers", 11)
                 StorageUtil.IntListPop(None, "numbers")
                 StorageUtil.IntListPluck(None, "numbers", -1, -99)
+                StorageUtil.IntListInsert(None, "numbers", 0, 5)
+                StorageUtil.IntListAdd(None, "numbers", 10)
+                Int duplicates
+                duplicates = StorageUtil.IntListCountValue(None, "numbers", 10)
+                Int adjusted
+                adjusted = StorageUtil.IntListAdjust(None, "numbers", 0, 1)
+                StorageUtil.IntListRemove(None, "numbers", 10)
+                StorageUtil.IntListRemove(None, "numbers", 10, true)
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -7896,7 +7964,7 @@ mod tests {
                 StorageUtil.StringListAdd(None, "Labels", "ready")
                 StorageUtil.StringListClear(None, "labels")
                 StorageUtil.FormListAdd(None, "Owners", None)
-                If value == 3 && visits == 2 && ratio == 1.75
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent
@@ -7948,7 +8016,7 @@ mod tests {
         assert!(!values.contains_key(&StorageKey::new("storageutil.string:onestring").unwrap()));
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.int:numbers").unwrap()),
-            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(10)]))
+            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(6)]))
         );
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.float:ratios").unwrap()),

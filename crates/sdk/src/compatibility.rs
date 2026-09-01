@@ -376,7 +376,7 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
 fn papyrus_storage_util_list_declarations(
     object_and_key: &[(&str, ScriptValueType, bool); 2],
 ) -> Vec<EnginePapyrusFunctionDeclaration> {
-    let mut declarations = Vec::with_capacity(44);
+    let mut declarations = Vec::with_capacity(58);
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
         ("float", "Float", ScriptValueType::Float),
@@ -452,6 +452,39 @@ fn papyrus_storage_util_list_declarations(
                 ],
             ),
             (
+                "insert",
+                "Insert",
+                ScriptValueType::Boolean,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("index", ScriptValueType::Integer, true),
+                    ("value", value_type, true),
+                ],
+            ),
+            (
+                "remove",
+                "Remove",
+                ScriptValueType::Integer,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("value", value_type, true),
+                    ("all-instances", ScriptValueType::Boolean, true),
+                ],
+            ),
+            (
+                "count-value",
+                "CountValue",
+                ScriptValueType::Integer,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("value", value_type, true),
+                    ("exclude", ScriptValueType::Boolean, true),
+                ],
+            ),
+            (
                 "find",
                 "Find",
                 ScriptValueType::Integer,
@@ -483,6 +516,26 @@ fn papyrus_storage_util_list_declarations(
                 result,
             ));
         }
+    }
+    for (kind, suffix, value_type) in [
+        ("int", "Int", ScriptValueType::Integer),
+        ("float", "Float", ScriptValueType::Float),
+    ] {
+        let function = format!("{suffix}ListAdjust");
+        let id = format!("storage-util-{kind}-list-adjust");
+        let route = format!("{PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX}{kind}-adjust");
+        declarations.push(papyrus_storage_util_declaration(
+            &route,
+            &id,
+            &function,
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("index", ScriptValueType::Integer, true),
+                ("amount", value_type, true),
+            ],
+            value_type,
+        ));
     }
     declarations
 }
@@ -1348,6 +1401,22 @@ pub enum StorageUtilListCall {
     RemoveAt {
         index: i32,
     },
+    Insert {
+        index: i32,
+        value: StorageUtilListValue,
+    },
+    Remove {
+        value: StorageUtilListValue,
+        all_instances: bool,
+    },
+    CountValue {
+        value: StorageUtilListValue,
+        exclude: bool,
+    },
+    Adjust {
+        index: i32,
+        amount: StorageUtilListValue,
+    },
     Find {
         value: StorageUtilListValue,
     },
@@ -1384,6 +1453,10 @@ pub enum StorageUtilListOperation {
     Count,
     Clear,
     RemoveAt,
+    Insert,
+    Remove,
+    CountValue,
+    Adjust,
     Find,
     Has,
 }
@@ -1575,6 +1648,10 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("IntListCount", "storage.array-get", "signed"),
         ("IntListClear", "storage.array-get+queue-delete", "signed"),
         ("IntListRemoveAt", "storage.array-get+queue-remove", "bool"),
+        ("IntListInsert", "storage.array-get+queue-replace", "bool"),
+        ("IntListRemove", "storage.array-get+queue-replace", "signed"),
+        ("IntListCountValue", "storage.array-get", "signed"),
+        ("IntListAdjust", "storage.array-get+queue-set", "signed"),
         ("IntListFind", "storage.array-get", "signed"),
         ("IntListHas", "storage.array-get", "bool"),
         ("FloatListAdd", "storage.array-get+queue-push", "float"),
@@ -1590,6 +1667,14 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
             "storage.array-get+queue-remove",
             "bool",
         ),
+        ("FloatListInsert", "storage.array-get+queue-replace", "bool"),
+        (
+            "FloatListRemove",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
+        ("FloatListCountValue", "storage.array-get", "signed"),
+        ("FloatListAdjust", "storage.array-get+queue-set", "float"),
         ("FloatListFind", "storage.array-get", "signed"),
         ("FloatListHas", "storage.array-get", "bool"),
         ("StringListAdd", "storage.array-get+queue-push", "text"),
@@ -1609,6 +1694,17 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
             "storage.array-get+queue-remove",
             "bool",
         ),
+        (
+            "StringListInsert",
+            "storage.array-get+queue-replace",
+            "bool",
+        ),
+        (
+            "StringListRemove",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
+        ("StringListCountValue", "storage.array-get", "signed"),
         ("StringListFind", "storage.array-get", "signed"),
         ("StringListHas", "storage.array-get", "bool"),
         ("FormListAdd", "storage.array-get+queue-push", "form"),
@@ -1620,6 +1716,13 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("FormListCount", "storage.array-get", "signed"),
         ("FormListClear", "storage.array-get+queue-delete", "signed"),
         ("FormListRemoveAt", "storage.array-get+queue-remove", "bool"),
+        ("FormListInsert", "storage.array-get+queue-replace", "bool"),
+        (
+            "FormListRemove",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
+        ("FormListCountValue", "storage.array-get", "signed"),
         ("FormListFind", "storage.array-get", "signed"),
         ("FormListHas", "storage.array-get", "bool"),
     ];
@@ -2089,6 +2192,10 @@ pub fn parse_storage_util_list_route(
         "count" => StorageUtilListOperation::Count,
         "clear" => StorageUtilListOperation::Clear,
         "remove-at" => StorageUtilListOperation::RemoveAt,
+        "insert" => StorageUtilListOperation::Insert,
+        "remove" => StorageUtilListOperation::Remove,
+        "count-value" => StorageUtilListOperation::CountValue,
+        "adjust" => StorageUtilListOperation::Adjust,
         "find" => StorageUtilListOperation::Find,
         "has" => StorageUtilListOperation::Has,
         _ => return None,
@@ -2240,6 +2347,102 @@ pub fn adapt_storage_util_global_list(
             });
             StorageUtilListResult::Bool(true)
         }
+        StorageUtilListCall::Insert { index, value } => {
+            let Some(index) = usize::try_from(index)
+                .ok()
+                .filter(|index| *index <= values.len())
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Bool(false),
+                    commands,
+                });
+            };
+            encode_storage_util_list_value(kind, &value)?;
+            if values.len() >= max_entries {
+                StorageUtilListResult::Bool(false)
+            } else {
+                let mut replacement = values.clone();
+                replacement.insert(index, value);
+                commands.push(PrincipalStorageCommand::ArrayReplace {
+                    key: key.clone(),
+                    values: encode_storage_util_list_values(kind, &replacement)?,
+                });
+                StorageUtilListResult::Bool(true)
+            }
+        }
+        StorageUtilListCall::Remove {
+            value,
+            all_instances,
+        } => {
+            encode_storage_util_list_value(kind, &value)?;
+            let mut replacement = values.clone();
+            let removed = if all_instances {
+                let previous_len = replacement.len();
+                replacement.retain(|candidate| candidate != &value);
+                previous_len - replacement.len()
+            } else if let Some(index) = replacement.iter().position(|candidate| candidate == &value)
+            {
+                replacement.remove(index);
+                1
+            } else {
+                0
+            };
+            if removed > 0 {
+                commands.push(PrincipalStorageCommand::ArrayReplace {
+                    key: key.clone(),
+                    values: encode_storage_util_list_values(kind, &replacement)?,
+                });
+            }
+            StorageUtilListResult::Int(
+                i32::try_from(removed).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            )
+        }
+        StorageUtilListCall::CountValue { value, exclude } => {
+            encode_storage_util_list_value(kind, &value)?;
+            let count = values
+                .iter()
+                .filter(|candidate| (*candidate == &value) != exclude)
+                .count();
+            StorageUtilListResult::Int(
+                i32::try_from(count).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            )
+        }
+        StorageUtilListCall::Adjust { index, amount } => {
+            encode_storage_util_list_value(kind, &amount)?;
+            let Some((index, current)) = usize::try_from(index)
+                .ok()
+                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
+                    commands,
+                });
+            };
+            let next = match (current, amount) {
+                (StorageUtilListValue::Int(current), StorageUtilListValue::Int(amount)) => {
+                    StorageUtilListValue::Int(
+                        current
+                            .checked_add(amount)
+                            .ok_or(StorageUtilAdapterError::IntegerOverflow)?,
+                    )
+                }
+                (StorageUtilListValue::Float(current), StorageUtilListValue::Float(amount)) => {
+                    let next = current + amount;
+                    validate_storage_util_float(next)?;
+                    StorageUtilListValue::Float(next)
+                }
+                _ => return Err(StorageUtilAdapterError::TypeMismatch),
+            };
+            commands.push(PrincipalStorageCommand::ArraySet {
+                key: key.clone(),
+                index: u32::try_from(index)
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+                value: encode_storage_util_list_value(kind, &next)?,
+            });
+            StorageUtilListResult::Value(next)
+        }
         StorageUtilListCall::Find { value } => {
             encode_storage_util_list_value(kind, &value)?;
             let index = values
@@ -2303,6 +2506,16 @@ fn encode_storage_util_list_value(
         }
         _ => Err(StorageUtilAdapterError::TypeMismatch),
     }
+}
+
+fn encode_storage_util_list_values(
+    kind: StorageUtilListKind,
+    values: &[StorageUtilListValue],
+) -> Result<Vec<ExtensionValue>, StorageUtilAdapterError> {
+    values
+        .iter()
+        .map(|value| encode_storage_util_list_value(kind, value))
+        .collect()
 }
 
 fn decode_storage_util_list_value(
@@ -2859,7 +3072,13 @@ mod tests {
                 .operation,
             "storage.array-get+queue-set"
         );
-        assert!(source_alias("StorageUtil", "FormListInsert").is_none());
+        assert_eq!(
+            source_alias("StorageUtil", "FormListInsert")
+                .unwrap()
+                .operation,
+            "storage.array-get+queue-replace"
+        );
+        assert!(source_alias("StorageUtil", "FormListSort").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
@@ -2867,7 +3086,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 66);
+        assert_eq!(declarations.len(), 80);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -3326,6 +3545,159 @@ mod tests {
         .unwrap();
         assert_eq!(not_removed.result, StorageUtilListResult::Bool(false));
         assert!(not_removed.commands.is_empty());
+    }
+
+    #[test]
+    fn storage_util_list_value_mutations_are_atomic_bounded_and_exact() {
+        let current = PrincipalStorageValue::Array(vec![
+            ExtensionValue::I64(2),
+            ExtensionValue::I64(4),
+            ExtensionValue::I64(2),
+        ]);
+        let insert = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Insert {
+                index: 1,
+                value: StorageUtilListValue::Int(3),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(insert.result, StorageUtilListResult::Bool(true));
+        assert_eq!(
+            insert.commands,
+            [PrincipalStorageCommand::ArrayReplace {
+                key: insert.key.clone(),
+                values: vec![
+                    ExtensionValue::I64(2),
+                    ExtensionValue::I64(3),
+                    ExtensionValue::I64(4),
+                    ExtensionValue::I64(2),
+                ],
+            }]
+        );
+
+        let full = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Insert {
+                index: 3,
+                value: StorageUtilListValue::Int(5),
+            },
+            Some(&current),
+            3,
+        )
+        .unwrap();
+        assert_eq!(full.result, StorageUtilListResult::Bool(false));
+        assert!(full.commands.is_empty());
+
+        for (all_instances, expected_count, expected_values) in [
+            (
+                false,
+                1,
+                vec![ExtensionValue::I64(4), ExtensionValue::I64(2)],
+            ),
+            (true, 2, vec![ExtensionValue::I64(4)]),
+        ] {
+            let remove = adapt_storage_util_global_list(
+                "numbers",
+                StorageUtilListKind::Int,
+                StorageUtilListCall::Remove {
+                    value: StorageUtilListValue::Int(2),
+                    all_instances,
+                },
+                Some(&current),
+                4,
+            )
+            .unwrap();
+            assert_eq!(remove.result, StorageUtilListResult::Int(expected_count));
+            assert_eq!(
+                remove.commands,
+                [PrincipalStorageCommand::ArrayReplace {
+                    key: remove.key.clone(),
+                    values: expected_values,
+                }]
+            );
+        }
+
+        for (exclude, expected) in [(false, 2), (true, 1)] {
+            assert_eq!(
+                adapt_storage_util_global_list(
+                    "numbers",
+                    StorageUtilListKind::Int,
+                    StorageUtilListCall::CountValue {
+                        value: StorageUtilListValue::Int(2),
+                        exclude,
+                    },
+                    Some(&current),
+                    4,
+                )
+                .unwrap()
+                .result,
+                StorageUtilListResult::Int(expected)
+            );
+        }
+
+        let adjust = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Adjust {
+                index: 1,
+                amount: StorageUtilListValue::Int(3),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            adjust.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(7))
+        );
+        assert_eq!(
+            adjust.commands,
+            [PrincipalStorageCommand::ArraySet {
+                key: adjust.key.clone(),
+                index: 1,
+                value: ExtensionValue::I64(7),
+            }]
+        );
+
+        let missing = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Adjust {
+                index: -1,
+                amount: StorageUtilListValue::Int(3),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            missing.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(0))
+        );
+        assert!(missing.commands.is_empty());
+
+        let float = adapt_storage_util_global_list(
+            "ratios",
+            StorageUtilListKind::Float,
+            StorageUtilListCall::Adjust {
+                index: 0,
+                amount: StorageUtilListValue::Float(0.5),
+            },
+            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::Bytes(
+                1.5_f32.to_bits().to_le_bytes().to_vec(),
+            )])),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            float.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Float(2.0))
+        );
     }
 
     #[test]

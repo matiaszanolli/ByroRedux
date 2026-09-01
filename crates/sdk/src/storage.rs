@@ -162,6 +162,10 @@ pub enum PrincipalStorageCommand {
         key: StorageKey,
         value: ExtensionValue,
     },
+    ArrayReplace {
+        key: StorageKey,
+        values: Vec<ExtensionValue>,
+    },
     ArraySet {
         key: StorageKey,
         index: u32,
@@ -421,6 +425,18 @@ impl PrincipalStorageStore {
                         });
                     }
                     array.push(value.clone());
+                }
+                PrincipalStorageCommand::ArrayReplace { key, values } => {
+                    if values.len() > self.limits.max_collection_entries {
+                        return Err(PrincipalStorageError::CollectionEntryBudgetExceeded {
+                            key: key.clone(),
+                            maximum: self.limits.max_collection_entries,
+                        });
+                    }
+                    for value in values {
+                        self.validate_scalar(key, value)?;
+                    }
+                    staged.insert(key.clone(), PrincipalStorageValue::Array(values.clone()));
                 }
                 PrincipalStorageCommand::ArraySet { key, index, value } => {
                     self.validate_scalar(key, value)?;
@@ -838,6 +854,23 @@ mod tests {
             ])))
         );
 
+        store
+            .apply_batch(
+                &owner,
+                &[PrincipalStorageCommand::ArrayReplace {
+                    key: key("history"),
+                    values: vec![ExtensionValue::I64(30), ExtensionValue::I64(40)],
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            store.values(&owner).unwrap().get(&key("history")),
+            Some(&PrincipalStorageValue::Array(vec![
+                ExtensionValue::I64(30),
+                ExtensionValue::I64(40),
+            ]))
+        );
+
         let before = store.values(&owner).unwrap().clone();
         let error = store.apply_batch(
             &owner,
@@ -895,6 +928,17 @@ mod tests {
         ];
         assert!(matches!(
             store.apply_batch(&owner, &commands),
+            Err(PrincipalStorageError::CollectionEntryBudgetExceeded { .. })
+        ));
+        assert!(store.values(&owner).is_none());
+        assert!(matches!(
+            store.apply_batch(
+                &owner,
+                &[PrincipalStorageCommand::ArrayReplace {
+                    key: key("bounded"),
+                    values: vec![ExtensionValue::Bool(true), ExtensionValue::Bool(false)],
+                }],
+            ),
             Err(PrincipalStorageError::CollectionEntryBudgetExceeded { .. })
         ));
         assert!(store.values(&owner).is_none());

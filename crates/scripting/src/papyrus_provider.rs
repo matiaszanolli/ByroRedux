@@ -372,8 +372,12 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
     if let Some((_, operation)) = parse_storage_util_list_route(route) {
         return Some(match operation {
             StorageUtilListOperation::Add => (3, 4),
-            StorageUtilListOperation::Set => (4, 4),
-            StorageUtilListOperation::Pluck => (3, 4),
+            StorageUtilListOperation::Set
+            | StorageUtilListOperation::Insert
+            | StorageUtilListOperation::Adjust => (4, 4),
+            StorageUtilListOperation::Pluck
+            | StorageUtilListOperation::Remove
+            | StorageUtilListOperation::CountValue => (3, 4),
             StorageUtilListOperation::Get
             | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
@@ -3443,6 +3447,25 @@ mod tests {
                 ScriptValue::String("Labels".to_owned()),
                 ScriptValue::Integer(2),
                 ScriptValue::String("missing".to_owned()),
+            ]
+        );
+        let list_remove = lower_provider_call(
+            &expression("StorageUtil.FormListRemove(None, \"Owners\", None, true)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_remove.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-form-remove"
+        );
+        assert_eq!(
+            list_remove.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Owners".to_owned()),
+                ScriptValue::None,
+                ScriptValue::Boolean(true),
             ]
         );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)

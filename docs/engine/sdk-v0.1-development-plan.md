@@ -1354,6 +1354,17 @@ Every successful mutation is expressed as a bounded principal-storage
 `ArraySet` or `ArrayRemove`, preserving the existing save representation and
 callback-local read-your-writes behavior.
 
+Checkpoint: `feat(scripting): expand StorageUtil list value operations`.
+
+The third list pack adds 14 aliases: insert, remove-by-value, and count-value
+for all four element kinds, plus numeric adjust for Int and Float lists. A new
+bounded `ArrayReplace` principal-storage command makes whole-list edits atomic
+without expanding one Papyrus call into an unbounded command batch. Insert
+fails without mutation for invalid or full positions; remove preserves order
+and honors the upstream first/all-instances switch; count-value supports the
+upstream exclusion mode; numeric adjustment returns the new value and rejects
+integer overflow or non-finite floats.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the
