@@ -90,8 +90,9 @@ pub use package::{
     ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch, ScenePackagePlayback,
 };
 pub use papyrus_provider::{
-    lower_provider_call, PapyrusProviderCatalog, PapyrusProviderCatalogError,
-    PapyrusProviderLowerError, PapyrusProviderRoute, TypedPapyrusProviderCall,
+    lower_provider_call, set_papyrus_provider_runtime, PapyrusProviderCallback,
+    PapyrusProviderCatalog, PapyrusProviderCatalogError, PapyrusProviderLowerError,
+    PapyrusProviderRoute, PapyrusProviderRuntime, TypedPapyrusProviderCall,
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
@@ -157,6 +158,7 @@ pub fn register(world: &mut World) {
     // dispatch consumes (the `default*Trigger` family).
     trigger::register(world);
     obscript_runtime::register(world);
+    papyrus_provider::register(world);
     recurring_update::register(world);
     quest_stages::register(world);
     // M47.2 (b2) — quest-stage fragment dispatch. Registers the

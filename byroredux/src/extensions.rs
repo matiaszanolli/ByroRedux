@@ -23,6 +23,7 @@ use byroredux_mod_runtime::{
     CapabilitySet, InstanceStatus, LifecyclePhase, LogEntry, LogLevel, ModInstance, SandboxConfig,
     SandboxError, SandboxRuntime,
 };
+use byroredux_scripting::PapyrusProviderCatalog;
 use byroredux_sdk::actor_values::{
     ActorValueCommand, ActorValueOperation, ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY,
 };
@@ -109,6 +110,8 @@ pub(crate) enum ExtensionHostError {
     LegacyContainers(#[from] LegacyContainerError),
     #[error("extension {0} is already installed")]
     AlreadyInstalled(ExtensionId),
+    #[error("Papyrus provider alias could not be published: {0}")]
+    PapyrusProviderAlias(String),
     #[error("extension {extension} is missing component artifact {component}")]
     MissingArtifact {
         extension: ExtensionId,
@@ -306,6 +309,7 @@ pub(crate) struct ExtensionHost {
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
     script_functions: Vec<HostedScriptFunction>,
+    papyrus_providers: PapyrusProviderCatalog,
 }
 
 impl ExtensionHost {
@@ -338,6 +342,7 @@ impl ExtensionHost {
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
             script_functions: Vec::new(),
+            papyrus_providers: PapyrusProviderCatalog::default(),
         })
     }
 
@@ -362,6 +367,16 @@ impl ExtensionHost {
         }
 
         let principal = PrincipalId::from(&manifest.id);
+        let mut staged_papyrus_providers = self.papyrus_providers.clone();
+        if grants.contains(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY) {
+            for function in &manifest.script_functions {
+                staged_papyrus_providers
+                    .insert(&manifest.id, function)
+                    .map_err(|error| {
+                        ExtensionHostError::PapyrusProviderAlias(format!("{error:?}"))
+                    })?;
+            }
+        }
         let mut staged_state = self.state.clone();
         let mut staged_principal_storage = self.principal_storage.clone();
         let mut staged_retained_storage = self.retained_storage.clone();
@@ -518,6 +533,7 @@ impl ExtensionHost {
         self.retained_storage = staged_retained_storage;
         self.legacy_containers = staged_legacy_containers;
         self.retained_legacy_containers = staged_retained_legacy_containers;
+        self.papyrus_providers = staged_papyrus_providers;
         self.components.extend(staged_components);
         if grants.contains(CONSOLE_REGISTER_CAPABILITY) {
             self.console_commands
@@ -559,6 +575,10 @@ impl ExtensionHost {
 
     fn console_commands(&self) -> &[HostedConsoleCommand] {
         &self.console_commands
+    }
+
+    fn papyrus_provider_catalog(&self) -> PapyrusProviderCatalog {
+        self.papyrus_providers.clone()
     }
 
     fn invoke_console_command(
@@ -2439,6 +2459,10 @@ fn sync_extension_script_function_invoker(world: &World) {
     let host = world
         .try_resource::<ExtensionHostSlot>()
         .and_then(|slot| slot.host());
+    let catalog = host
+        .as_ref()
+        .and_then(|host| host.lock().ok().map(|host| host.papyrus_provider_catalog()))
+        .unwrap_or_default();
     let callback = host.map(|host| {
         Arc::new(move |name: &str, arguments: &[ScriptValue]| {
             host.lock()
@@ -2447,7 +2471,8 @@ fn sync_extension_script_function_invoker(world: &World) {
                 .map_err(|error| error.to_string())
         }) as Arc<byroredux_scripting::ExtensionScriptFunctionCallback>
     });
-    byroredux_scripting::set_extension_script_function_invoker(world, callback);
+    byroredux_scripting::set_extension_script_function_invoker(world, callback.clone());
+    byroredux_scripting::set_papyrus_provider_runtime(world, Arc::new(catalog), callback);
 }
 
 struct ExtensionConsoleCommand {
@@ -4276,7 +4301,7 @@ mod tests {
         ExecutableComponent, EXTENSION_MANIFEST_VERSION,
     };
     use byroredux_sdk::script_function::{
-        ScriptParameterDeclaration, ScriptResultDeclaration, ScriptValueType,
+        PapyrusFunctionAlias, ScriptParameterDeclaration, ScriptResultDeclaration, ScriptValueType,
     };
     use byroredux_sdk::service::{
         COMPONENTS_WRITE_OWN_CAPABILITY, EXTENSION_WORLD_SERVICE, STORAGE_READ_OWN_CAPABILITY,
@@ -4919,7 +4944,10 @@ mod tests {
                 value_type: ScriptValueType::Integer,
                 optional: false,
             }),
-            papyrus: None,
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "ByroFixture".to_owned(),
+                function: "Answer".to_owned(),
+            }),
             description: "Return the test answer".to_owned(),
         }];
         manifest
@@ -6016,6 +6044,36 @@ mod tests {
     }
 
     #[test]
+    fn papyrus_alias_collision_rejects_the_second_principal_atomically() {
+        let first = script_function_manifest("org.example.first");
+        let second = script_function_manifest("org.example.second");
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(script_function_component()).unwrap(),
+        );
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.install_package(&first, &artifacts, script_function_grants())
+            .unwrap();
+
+        let error = host
+            .install_package(&second, &artifacts, script_function_grants())
+            .unwrap_err();
+        assert!(matches!(error, ExtensionHostError::PapyrusProviderAlias(_)));
+        assert!(host
+            .invoke_script_function("ext.org.example.first.answer", &[ScriptValue::Integer(7)],)
+            .is_ok());
+        assert!(matches!(
+            host.invoke_script_function(
+                "ext.org.example.second.answer",
+                &[ScriptValue::Integer(7)],
+            ),
+            Err(ExtensionHostError::UnknownScriptFunction(_))
+        ));
+    }
+
+    #[test]
     fn source_obscript_calls_typed_function_without_a_script_extender() {
         let id = "org.example.functions";
         let manifest = script_function_manifest(id);
@@ -6035,6 +6093,11 @@ mod tests {
         byroredux_scripting::register(&mut world);
         world.insert_resource(slot);
         sync_extension_script_function_invoker(&world);
+        assert!(world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog()
+            .resolve("byrofixture", "answer")
+            .is_some());
 
         let source = r#"
             begin GameMode

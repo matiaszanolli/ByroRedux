@@ -5,7 +5,9 @@
 //! validates literal arguments, but it never enters Wasm or touches the ECS.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
+use byroredux_core::ecs::{Resource, World};
 use byroredux_papyrus::ast::{CallArg, Expr};
 use byroredux_sdk::{
     identity::ExtensionId,
@@ -14,6 +16,48 @@ use byroredux_sdk::{
         ScriptValueType,
     },
 };
+
+/// Host callback shared by Papyrus handlers after all ECS guards are dropped.
+pub type PapyrusProviderCallback =
+    dyn Fn(&str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
+
+/// Live catalog and host callback published atomically by the executable.
+#[derive(Clone, Default)]
+pub struct PapyrusProviderRuntime {
+    catalog: Arc<PapyrusProviderCatalog>,
+    callback: Option<Arc<PapyrusProviderCallback>>,
+}
+
+impl Resource for PapyrusProviderRuntime {}
+
+impl PapyrusProviderRuntime {
+    /// Immutable manifest-backed alias catalog used during script lowering.
+    pub fn catalog(&self) -> Arc<PapyrusProviderCatalog> {
+        Arc::clone(&self.catalog)
+    }
+
+    /// Clone the live host callback for guard-free execution.
+    pub fn callback(&self) -> Option<Arc<PapyrusProviderCallback>> {
+        self.callback.clone()
+    }
+}
+
+/// Replace the live Papyrus provider surface after extension activation.
+pub fn set_papyrus_provider_runtime(
+    world: &World,
+    catalog: Arc<PapyrusProviderCatalog>,
+    callback: Option<Arc<PapyrusProviderCallback>>,
+) {
+    if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
+        runtime.catalog = catalog;
+        runtime.callback = callback;
+    }
+}
+
+/// Register the provider runtime resource before any extension is loaded.
+pub(crate) fn register(world: &mut World) {
+    world.insert_resource(PapyrusProviderRuntime::default());
+}
 
 /// One manifest-published route addressable by Papyrus source or PEX.
 #[derive(Clone, Debug, Eq, PartialEq)]
