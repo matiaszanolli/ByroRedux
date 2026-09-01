@@ -110,7 +110,13 @@ expressions, broader events, other latent primitives, and dynamic object
 dispatch remain open. Provider-bearing
 handlers support bounded `Utility.Wait` continuations that preserve locals and
 ordered branch/enclosing tails across save/load. Restored calls are reconciled
-against the live provider catalog before dispatch. Quest and scene fragments
+against the live provider catalog before dispatch. Archive-backed VMAD handlers
+also carry a deterministic `legacy.scripts.*` principal derived from the script
+archive filename. That principal is portable across installation paths,
+registered as an active engine package before save restoration, isolated in
+principal storage, and retained by latent continuations. The engine installs
+this provider host even when no external extension package is requested. Quest
+and scene fragments
 now treat top-level provider calls from source/decompiled PEX as sequencing
 barriers, persist them through existing latent continuations, and invoke them
 only after fragment ECS guards are released. Successful calls resume later
@@ -1180,6 +1186,20 @@ than replacing the entity's prior provider component. Dispatch projects event
 parameters and locals separately for each handler, preserves script attachment
 order for shared events, and keeps the established event ordering between
 `OnInit`, `OnLoad`, interaction, combat, equipment, and update delivery.
+
+Checkpoint commit: `feat(scripting): retain legacy script principals`.
+
+Delivered for archive-backed VMAD provider programs. `ScriptProvider` retains
+the winning archive's deterministic package identity alongside extracted PEX
+bytes, attachments stamp that identity onto every handler, and callback dispatch
+supplies it without changing the older ObScript callback ABI. Suspended tails
+serialize the same identity, so the save format advances to major version 12
+rather than resuming a stateful call as unauthenticated/global. The executable
+registers archive principals with private storage and container namespaces before
+save restore, and a zero-package launch still installs the engine provider host.
+Quest/scene fragment calls remain explicitly unowned; their archive provenance
+must be carried through fragment registration before principal-stateful
+`StorageUtil` or JContainers aliases are enabled there.
 
 ### 14.4 Exit gate
 
