@@ -206,6 +206,7 @@ pub const PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE: &str =
 pub const PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-string-value";
 pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
+pub const PAPYRUS_MOD_EVENT_ROUTE_PREFIX: &str = "byro.events.compat.mod-event.";
 
 pub const PAPYRUS_GAME_LIGHT_MOD_OFFSET: i32 = 0x100;
 pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
@@ -518,6 +519,89 @@ pub fn papyrus_legacy_container_declarations() -> Vec<EnginePapyrusFunctionDecla
         ));
     }
     declarations
+}
+
+fn papyrus_mod_event_declaration(
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+    result: Option<ScriptValueType>,
+) -> EnginePapyrusFunctionDeclaration {
+    let operation = match function {
+        "Create" => "create",
+        "Send" => "send",
+        "Release" => "release",
+        "PushBool" => "push-bool",
+        "PushInt" => "push-int",
+        "PushFloat" => "push-float",
+        "PushString" => "push-string",
+        "PushForm" => "push-form",
+        _ => unreachable!("ModEvent declarations are a closed built-in set"),
+    };
+    let id = format!("mod-event-{operation}");
+    EnginePapyrusFunctionDeclaration {
+        route: format!("{PAPYRUS_MOD_EVENT_ROUTE_PREFIX}{id}"),
+        declaration: ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new(&id).expect("built-in ModEvent function ID is valid"),
+            component: ComponentId::new("legacy-mod-events")
+                .expect("built-in ModEvent component ID is valid"),
+            parameters: parameters
+                .iter()
+                .cloned()
+                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
+                    id: ScriptParameterId::new(id)
+                        .expect("built-in ModEvent parameter ID is valid"),
+                    value_type,
+                    optional,
+                })
+                .collect(),
+            result: result.map(|value_type| ScriptResultDeclaration {
+                value_type,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "ModEvent".to_owned(),
+                function: function.to_owned(),
+            }),
+            description: "Engine-owned principal-private SKSE ModEvent builder compatibility"
+                .to_owned(),
+        },
+    }
+}
+
+/// Exact SKSE `ModEvent` handle-builder calls backed by the shared engine bus.
+pub fn papyrus_mod_event_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    let integer = ScriptValueType::Integer;
+    let handle = ("handle", integer, false);
+    vec![
+        papyrus_mod_event_declaration(
+            "Create",
+            &[("event-name", ScriptValueType::String, false)],
+            Some(integer),
+        ),
+        papyrus_mod_event_declaration("Send", &[handle], Some(ScriptValueType::Boolean)),
+        papyrus_mod_event_declaration("Release", &[handle], None),
+        papyrus_mod_event_declaration(
+            "PushBool",
+            &[handle, ("value", ScriptValueType::Boolean, false)],
+            None,
+        ),
+        papyrus_mod_event_declaration("PushInt", &[handle, ("value", integer, false)], None),
+        papyrus_mod_event_declaration(
+            "PushFloat",
+            &[handle, ("value", ScriptValueType::Float, false)],
+            None,
+        ),
+        papyrus_mod_event_declaration(
+            "PushString",
+            &[handle, ("value", ScriptValueType::String, false)],
+            None,
+        ),
+        papyrus_mod_event_declaration(
+            "PushForm",
+            &[handle, ("value", ScriptValueType::Form, true)],
+            None,
+        ),
+    ]
 }
 
 /// Exact global scalar `StorageUtil` calls backed by principal-private engine
@@ -1350,10 +1434,10 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
     }
     if provider.eq_ignore_ascii_case("ModEvent") {
         return Some(if source_alias(provider, function).is_some() {
-            mapped(
+            native(
                 ExtenderFamily::Skse,
                 EVENT_SERVICE,
-                "an exact transient ModEvent handle adapter targets the bounded shared engine compatibility bus",
+                "an exact engine-owned ModEvent handle adapter targets the bounded shared compatibility bus",
             )
         } else {
             unsupported(
@@ -1924,7 +2008,7 @@ mod tests {
             classify_static_call("ModEvent", "PushString")
                 .unwrap()
                 .disposition,
-            CompatibilityDisposition::Mapped
+            CompatibilityDisposition::Native
         );
         assert_eq!(
             source_alias("ModEvent", "Create").unwrap().operation,
@@ -1934,6 +2018,11 @@ mod tests {
             source_alias("ModEvent", "PushForm").unwrap().value_kind,
             "form"
         );
+        let declarations = papyrus_mod_event_declarations();
+        assert_eq!(declarations.len(), 8);
+        for declaration in declarations {
+            declaration.declaration.validate().unwrap();
+        }
     }
 
     #[test]

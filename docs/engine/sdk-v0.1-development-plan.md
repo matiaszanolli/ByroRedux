@@ -569,6 +569,11 @@ float, and stable sender form synchronously without an SKSE DLL. The lower-level
 typed builder: handles are non-zero and bounded per adapter, bool/int/float/
 string/Form arguments retain order and type, oversized pushes are ignored like
 the legacy void-return calls, and Send atomically releases into the shared bus.
+The eight exact static aliases are published by the zero-package engine catalog
+and execute under the authenticated archive-script principal; each principal
+has an isolated handle registry even though successfully sent event channels
+are deliberately shared. Dynamic Papyrus receiver registration and arbitrary
+typed callback delivery remain the next compatibility boundary.
 Runtime `RegisterForModEvent`, `UnregisterForModEvent`, and
 `UnregisterForAllModEvents` adapters now queue capability-gated subscription
 mutations in the same atomic callback batch. Successful registration exposes
@@ -1230,6 +1235,16 @@ Registries remain isolated even when two script packages receive the same
 integer handle. Ref-counted retain/tag lifetime, JDB/path solving, JSON files,
 Lua, JFormMap/JIntMap, and the larger collection API remain explicit future
 packs rather than silently falling through to an installed native extender.
+
+Checkpoint commit: `feat(scripting): execute ModEvent builder aliases`.
+
+Delivered for the eight exact `ModEvent.Create/Push*/Send/Release` static
+functions. Source and decompiled handlers lower through the built-in catalog,
+the host validates exact typed arity and principal ownership, handles are
+isolated per archive-script package, and successful sends enqueue the existing
+bounded shared compatibility event bus. Invalid handles preserve SKSE's false
+or no-op behavior. Papyrus-side dynamic registration/callback dispatch and
+builder save persistence remain explicit follow-up work.
 
 ### 14.4 Exit gate
 

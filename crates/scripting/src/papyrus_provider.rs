@@ -16,8 +16,9 @@ use byroredux_papyrus::ast::{
 use byroredux_sdk::{
     compatibility::{
         classify_static_call, papyrus_game_content_declarations,
-        papyrus_legacy_container_declarations, papyrus_storage_util_declarations,
-        PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+        papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
+        papyrus_storage_util_declarations, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
+        PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
@@ -181,6 +182,11 @@ impl PapyrusProviderCatalog {
                 .insert_route(function.route, &function.declaration, false)
                 .expect("built-in JContainers compatibility declaration is valid");
         }
+        for function in papyrus_mod_event_declarations() {
+            catalog
+                .insert_route(function.route, &function.declaration, false)
+                .expect("built-in ModEvent compatibility declaration is valid");
+        }
         catalog
     }
 
@@ -317,6 +323,7 @@ pub fn lower_provider_call(
     let arguments = lower_arguments(args, route.declaration())?;
     validate_storage_util_literals(route.qualified_name(), &arguments)?;
     validate_legacy_container_arity(route.qualified_name(), arguments.len())?;
+    validate_mod_event_arity(route.qualified_name(), arguments.len())?;
     Ok(Some(TypedPapyrusProviderCall {
         route: route.clone(),
         arguments,
@@ -409,6 +416,30 @@ fn validate_legacy_container_arity(
     if !(minimum..=maximum).contains(&argument_count) {
         return Err(PapyrusProviderLowerError::MissingParameter(
             "JContainers exact signature".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mod_event_arity(
+    route: &str,
+    argument_count: usize,
+) -> Result<(), PapyrusProviderLowerError> {
+    let Some(function) = route.strip_prefix(PAPYRUS_MOD_EVENT_ROUTE_PREFIX) else {
+        return Ok(());
+    };
+    let expected = match function {
+        "mod-event-create" | "mod-event-send" | "mod-event-release" => 1,
+        "mod-event-push-bool"
+        | "mod-event-push-int"
+        | "mod-event-push-float"
+        | "mod-event-push-string"
+        | "mod-event-push-form" => 2,
+        _ => return Ok(()),
+    };
+    if argument_count != expected {
+        return Err(PapyrusProviderLowerError::MissingParameter(
+            "ModEvent exact signature".to_owned(),
         ));
     }
     Ok(())
@@ -561,6 +592,7 @@ fn lower_provider_invocation(
     }
     validate_storage_util_arguments(route.qualified_name(), &arguments)?;
     validate_legacy_container_arity(route.qualified_name(), arguments.len())?;
+    validate_mod_event_arity(route.qualified_name(), arguments.len())?;
     Ok(Some(PapyrusProviderInvocation {
         route: route.clone(),
         arguments,
@@ -2485,6 +2517,25 @@ mod tests {
                 ScriptValue::Integer(7),
             ]
         );
+        let mod_event =
+            lower_provider_call(&expression("ModEvent.PushString(7, \"ready\")"), &catalog)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            mod_event.route.qualified_name(),
+            "byro.events.compat.mod-event.mod-event-push-string"
+        );
+        assert_eq!(
+            mod_event.arguments,
+            [
+                ScriptValue::Integer(7),
+                ScriptValue::String("ready".to_owned()),
+            ]
+        );
+        assert!(matches!(
+            lower_provider_call(&expression("ModEvent.PushForm(7)"), &catalog),
+            Err(PapyrusProviderLowerError::MissingParameter(_))
+        ));
         assert!(matches!(
             catalog.insert(
                 &ExtensionId::new("org.example.shadow").unwrap(),
