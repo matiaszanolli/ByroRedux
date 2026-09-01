@@ -718,6 +718,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         log::error!("executable extension host is disabled: {error}");
     }
     world.insert_resource(extension_host);
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
 
     world
 }
@@ -1704,6 +1705,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
+        crate::extensions::extension_session_dispatch_system,
+        Access::new()
+            .writes_resource::<crate::extensions::SessionEventQueue>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
         crate::extensions::extension_hit_dispatch_system,
         Access::new()
             .reads::<byroredux_scripting::HitEvent>()
@@ -2255,6 +2263,7 @@ mod fragment_activation_order_tests {
         let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
         let equipment = pos("crate::extensions::extension_equipment_dispatch_system");
         let input = pos("crate::extensions::extension_input_dispatch_system");
+        let session = pos("crate::extensions::extension_session_dispatch_system");
         let hit = pos("crate::extensions::extension_hit_dispatch_system");
         let update = pos("crate::extensions::extension_update_dispatch_system");
         let cleanup = pos("byroredux_scripting::event_cleanup_system");
@@ -2263,6 +2272,7 @@ mod fragment_activation_order_tests {
                 && cell_load < cleanup
                 && equipment < cleanup
                 && input < cleanup
+                && session < cleanup
                 && hit < cleanup
                 && update < cleanup,
             "extension callbacks must run before transient marker cleanup"

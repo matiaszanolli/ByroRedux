@@ -32,13 +32,14 @@ The current public surface includes:
   schema-tagged entity and principal-storage payload embedded by the engine in
   its normal save container.
 - `ActivationEvent`, `CellLoadEvent`, `EquipmentEvent`, `HitEvent`,
-  `InputActionEvent`, `UpdateEvent`, and `ExtensionCommand` form the first canonical
-  event-to-deferred-mutation contracts used by sandboxed components. Equipment
+  `InputActionEvent`, `SessionEvent`, `UpdateEvent`, and `ExtensionCommand` form
+  the first canonical event-to-deferred-mutation contracts used by sandboxed components. Equipment
   events identify the wearer with an opaque `EntityRef` and the inventory item
   with a stable `FormRef`. Input events expose rebinding-independent gameplay
   actions and press/release edges, never physical key codes. Recurring update
   subscriptions carry a validated 16 ms–1 hour interval and the engine owns
-  their cadence.
+  their cadence. Session events report new-game, committed-save, and
+  completed-load transitions with an optional numeric slot, never a host path.
 - `AssetBounds`, `BoundSphere`, and `CornellFit` provide deterministic,
   testable scene fitting.
 - `StudioSnapshot` and `ObjectSnapshot` are immutable projections for any UI.
@@ -54,8 +55,9 @@ sees that mapping or mutates the world directly.
 
 The binary also owns the first executable-extension adapter. It resolves an
 explicit manifest set, applies explicit capability grants, initializes
-sandboxed components, snapshots activation, cell-load, combat-hit, and ordered
-equipment-change and normalized-input events outside ECS guards, advances manifest-declared recurring callbacks in the
+sandboxed components, snapshots activation, cell-load, combat-hit, ordered
+equipment-change, normalized-input, and committed session-lifecycle events
+outside ECS guards, advances manifest-declared recurring callbacks in the
 late-stage scheduler, commits deferred state atomically, invalidates transient
 handles on world replacement,
 persists form-backed extension rows in normal ByroRedux saves, retains rows for

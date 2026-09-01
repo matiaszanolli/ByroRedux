@@ -25,7 +25,7 @@ use byroredux_sdk::component::{
 };
 use byroredux_sdk::event::{
     ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
-    InputActionEvent, InputPhase, UpdateEvent,
+    InputActionEvent, InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
@@ -34,7 +34,7 @@ use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
-    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, UPDATE_EVENT,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, SESSION_EVENT, UPDATE_EVENT,
 };
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
@@ -44,6 +44,7 @@ use thiserror::Error;
 
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
+const MAX_PENDING_SESSION_EVENTS: usize = 64;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -172,6 +173,8 @@ struct HostedComponent {
     receives_equipment: bool,
     receives_input: bool,
     input_actions: BTreeSet<SdkInputAction>,
+    receives_session: bool,
+    session_phases: BTreeSet<SessionPhase>,
     receives_hit: bool,
     recurring_update: Option<RecurringCadence>,
     instance: ModInstance,
@@ -329,6 +332,16 @@ impl ExtensionHost {
             .flat_map(|subscription| &subscription.filters)
             .filter_map(|filter| SdkInputAction::parse(&filter.equals))
             .collect::<BTreeSet<_>>();
+        let session_subscription = manifest
+            .subscriptions
+            .iter()
+            .find(|subscription| subscription.event.as_str() == SESSION_EVENT);
+        let receives_session = session_subscription.is_some();
+        let session_phases = session_subscription
+            .into_iter()
+            .flat_map(|subscription| &subscription.filters)
+            .filter_map(|filter| SessionPhase::parse(&filter.equals))
+            .collect::<BTreeSet<_>>();
         let recurring_update = manifest
             .subscriptions
             .iter()
@@ -357,6 +370,8 @@ impl ExtensionHost {
                 receives_equipment,
                 receives_input,
                 input_actions: input_actions.clone(),
+                receives_session,
+                session_phases: session_phases.clone(),
                 receives_hit,
                 recurring_update,
                 instance,
@@ -737,6 +752,67 @@ impl ExtensionHost {
                     hosted,
                     result,
                     LifecyclePhase::Input,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    #[cfg(test)]
+    pub fn dispatch_session_events(
+        &mut self,
+        events: impl IntoIterator<Item = SessionEvent>,
+    ) -> ExtensionDispatchStats {
+        self.dispatch_session_events_inner(events)
+    }
+
+    fn dispatch_session_events_inner(
+        &mut self,
+        events: impl IntoIterator<Item = SessionEvent>,
+    ) -> ExtensionDispatchStats {
+        let mut stats = ExtensionDispatchStats::default();
+        for event in events {
+            stats.events += 1;
+            for hosted in &mut self.components {
+                if !hosted.receives_session
+                    || (!hosted.session_phases.is_empty()
+                        && !hosted.session_phases.contains(&event.phase))
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                let result = hosted.instance.on_session_event(event);
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
+                            extension: hosted.extension.clone(),
+                            component: hosted.component.clone(),
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    LifecyclePhase::Session,
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
@@ -1403,6 +1479,40 @@ impl ExtensionHostSlot {
     }
 }
 
+/// Bounded process-local queue of committed game-session transitions.
+///
+/// Save/load producers run after the scheduler has joined. They enqueue here
+/// so guest code executes on the following Late stage, outside save registry,
+/// renderer, and ECS resource guards.
+#[derive(Default)]
+pub(crate) struct SessionEventQueue {
+    events: Vec<SessionEvent>,
+}
+
+impl Resource for SessionEventQueue {}
+
+pub(crate) fn queue_session_event(world: &World, event: SessionEvent) -> Result<(), &'static str> {
+    if !event.is_valid() {
+        return Err("invalid session event payload");
+    }
+    let Some(mut queue) = world.try_resource_mut::<SessionEventQueue>() else {
+        return Err("session event queue not installed");
+    };
+    if queue.events.len() >= MAX_PENDING_SESSION_EVENTS {
+        return Err("session event queue is full");
+    }
+    queue.events.push(event);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn pending_session_events(world: &World) -> Vec<SessionEvent> {
+    world
+        .try_resource::<SessionEventQueue>()
+        .map(|queue| queue.events.clone())
+        .unwrap_or_default()
+}
+
 /// Late-stage adapter from transient ECS markers to sandbox callbacks.
 ///
 /// Every ECS guard is dropped before the host mutex is acquired and before any
@@ -1648,6 +1758,44 @@ pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
     if stats.faults > 0 {
         log::warn!(
             "extension input dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
+}
+
+/// Late-stage delivery of committed save/load/new-game transitions.
+pub(crate) fn extension_session_dispatch_system(world: &World, _dt: f32) {
+    let events = {
+        let Some(mut queue) = world.try_resource_mut::<SessionEventQueue>() else {
+            return;
+        };
+        std::mem::take(&mut queue.events)
+    };
+    if events.is_empty() {
+        return;
+    }
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_session_events_inner(events);
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension session dispatch: events={} deliveries={} commands={} faults={}",
             stats.events,
             stats.deliveries,
             stats.commands_applied,
@@ -2211,6 +2359,8 @@ mod tests {
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+    (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+    (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
     (export "queue-increment-own-i64" (func
       (param "entity" $entity-ref-in)
       (param "schema-index" u32)
@@ -2222,6 +2372,7 @@ mod tests {
   (alias export $state "hit-details" (type $hit-details))
   (alias export $state "input-action" (type $input-action))
   (alias export $state "input-phase" (type $input-phase))
+  (alias export $state "session-phase" (type $session-phase))
   (alias export $state "queue-increment-own-i64" (func $increment))
   (core func $increment-lower (canon lower (func $increment)))
   (core module $guest
@@ -2263,6 +2414,7 @@ mod tests {
       i64.const 1
       call $increment)
     (func (export "on-input-action") (param i32 i32))
+    (func (export "on-session-event") (param i32 i32 i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2293,6 +2445,10 @@ mod tests {
     (param "action" $input-action)
     (param "phase" $input-phase)
     (canon lift (core func $guest-instance "on-input-action")))
+  (func (export "on-session-event")
+    (param "phase" $session-phase)
+    (param "slot" (option u32))
+    (canon lift (core func $guest-instance "on-session-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2325,6 +2481,8 @@ mod tests {
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+    (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+    (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
   ))
   (import "byro:mod-host/storage@0.1.0" (instance $storage
     (export "queue-increment-i64" (func
@@ -2336,6 +2494,7 @@ mod tests {
   (alias export $state "hit-details" (type $hit-details))
   (alias export $state "input-action" (type $input-action))
   (alias export $state "input-phase" (type $input-phase))
+  (alias export $state "session-phase" (type $session-phase))
   (alias export $storage "queue-increment-i64" (func $increment))
   (core module $libc
     (memory (export "memory") 1)
@@ -2382,6 +2541,26 @@ mod tests {
       i32.const 16
       i64.const 1
       call $increment)
+    (func (export "on-session-event")
+      (param $phase i32) (param $slot-tag i32) (param $slot i32)
+      local.get $phase
+      i32.const 2
+      i32.ne
+      local.get $slot-tag
+      i32.const 1
+      i32.ne
+      i32.or
+      local.get $slot
+      i32.const 7
+      i32.ne
+      i32.or
+      if
+        unreachable
+      end
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
     (func (export "on-update") (param f32)
       i32.const 0
       i32.const 16
@@ -2417,6 +2596,10 @@ mod tests {
     (param "action" $input-action)
     (param "phase" $input-phase)
     (canon lift (core func $guest-instance "on-input-action")))
+  (func (export "on-session-event")
+    (param "phase" $session-phase)
+    (param "slot" (option u32))
+    (canon lift (core func $guest-instance "on-session-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2449,6 +2632,8 @@ mod tests {
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+    (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+    (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
   ))
   (import "byro:mod-host/world-state@0.1.0" (instance $world
     (export "entity-ref" (type $entity-ref-world (eq $entity-ref-shape)))
@@ -2461,6 +2646,7 @@ mod tests {
   (alias export $state "hit-details" (type $hit-details))
   (alias export $state "input-action" (type $input-action))
   (alias export $state "input-phase" (type $input-phase))
+  (alias export $state "session-phase" (type $session-phase))
   (alias export $world "contains-entity" (func $contains))
   (core func $contains-lower (canon lower (func $contains)))
   (core module $guest
@@ -2492,6 +2678,7 @@ mod tests {
         unreachable
       end)
     (func (export "on-input-action") (param i32 i32))
+    (func (export "on-session-event") (param i32 i32 i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2522,6 +2709,10 @@ mod tests {
     (param "action" $input-action)
     (param "phase" $input-phase)
     (canon lift (core func $guest-instance "on-input-action")))
+  (func (export "on-session-event")
+    (param "phase" $session-phase)
+    (param "slot" (option u32))
+    (canon lift (core func $guest-instance "on-session-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2617,6 +2808,19 @@ mod tests {
             filters: vec![EventFilter {
                 field: ServiceId::new(byroredux_sdk::service::INPUT_ACTION_FILTER_FIELD).unwrap(),
                 equals: "activate".to_owned(),
+            }],
+            interval_millis: None,
+        }];
+        manifest
+    }
+
+    fn session_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(SESSION_EVENT).unwrap(),
+            filters: vec![EventFilter {
+                field: ServiceId::new(byroredux_sdk::service::SESSION_PHASE_FILTER_FIELD).unwrap(),
+                equals: "load-complete".to_owned(),
             }],
             interval_millis: None,
         }];
@@ -2752,6 +2956,19 @@ mod tests {
         let mut grants = storage_grants();
         grants.grant(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY).unwrap();
         host.install_package(&input_manifest(id), &artifacts, grants)
+            .unwrap();
+        host
+    }
+
+    fn host_with_session_package(id: &str) -> ExtensionHost {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        host.install_package(&session_manifest(id), &artifacts, storage_grants())
             .unwrap();
         host
     }
@@ -2979,6 +3196,33 @@ mod tests {
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&ExtensionValue::I64(2))
+        );
+    }
+
+    #[test]
+    fn live_host_applies_session_phase_filters_before_guest_delivery() {
+        let principal = PrincipalId::new("org.example.live-session").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_session_package(principal.as_str());
+        let stats = host.dispatch_session_events([
+            SessionEvent {
+                phase: SessionPhase::SaveComplete,
+                slot: Some(7),
+            },
+            SessionEvent {
+                phase: SessionPhase::LoadComplete,
+                slot: Some(7),
+            },
+        ]);
+        assert_eq!(stats.events, 2);
+        assert_eq!(stats.deliveries, 1);
+        assert_eq!(stats.commands_applied, 1);
+        assert_eq!(stats.faults, 0);
+        assert_eq!(
+            host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(1))
         );
     }
 
@@ -3332,6 +3576,81 @@ mod tests {
     }
 
     #[test]
+    fn session_adapter_drains_bounded_committed_events_outside_the_queue_guard() {
+        let principal = PrincipalId::new("org.example.session-adapter").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut world = World::new();
+        world.insert_resource(SessionEventQueue::default());
+        let slot = ExtensionHostSlot::from_host(host_with_session_package(principal.as_str()));
+        let host = slot.host().unwrap();
+        world.insert_resource(slot);
+
+        queue_session_event(
+            &world,
+            SessionEvent {
+                phase: SessionPhase::SaveComplete,
+                slot: Some(7),
+            },
+        )
+        .unwrap();
+        queue_session_event(
+            &world,
+            SessionEvent {
+                phase: SessionPhase::LoadComplete,
+                slot: Some(7),
+            },
+        )
+        .unwrap();
+        extension_session_dispatch_system(&world, 0.0);
+
+        assert_eq!(world.resource::<SessionEventQueue>().events.len(), 0);
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn session_event_queue_rejects_invalid_payloads_and_overflow() {
+        let mut world = World::new();
+        world.insert_resource(SessionEventQueue::default());
+        assert_eq!(
+            queue_session_event(
+                &world,
+                SessionEvent {
+                    phase: SessionPhase::NewGame,
+                    slot: Some(1),
+                }
+            ),
+            Err("invalid session event payload")
+        );
+        for _ in 0..MAX_PENDING_SESSION_EVENTS {
+            queue_session_event(
+                &world,
+                SessionEvent {
+                    phase: SessionPhase::NewGame,
+                    slot: None,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            queue_session_event(
+                &world,
+                SessionEvent {
+                    phase: SessionPhase::NewGame,
+                    slot: None,
+                }
+            ),
+            Err("session event queue is full")
+        );
+    }
+
+    #[test]
     fn scheduler_adapter_exposes_bounded_name_and_world_transform_projections() {
         let mut world = World::new();
         byroredux_scripting::register(&mut world);
@@ -3598,6 +3917,7 @@ mod tests {
             directory.path().to_owned(),
             4,
         ));
+        world.insert_resource(SessionEventQueue::default());
         let entity = world.spawn();
         world.insert_resource(slot);
         host.lock().unwrap().dispatch_activations([RawActivation {
@@ -3615,6 +3935,7 @@ mod tests {
         );
         assert_eq!(world.resource::<crate::save_io::SaveState>().ring.peek(), 0);
         assert!(byroredux_save::disk::list_slots(directory.path()).is_empty());
+        assert!(pending_session_events(&world).is_empty());
     }
 
     #[test]

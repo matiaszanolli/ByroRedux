@@ -189,9 +189,12 @@ world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
 - bounded callback-local entity projections with separately gated
   name/form-identity and world-transform visibility;
 - canonical activation, cell-load, combat-hit, equipment-change, normalized
-  input-action, and recurring-update delivery gated by declaration and
+  input-action, committed session-lifecycle, and recurring-update delivery gated by declaration and
   capability; input observation has an additional sensitive grant and sees
   semantic action edges after rebinding, never raw device codes;
+- new-game, save-complete, and load-complete events use validated phase filters;
+  save/load events are queued only after the transaction succeeds and disclose
+  a numeric slot rather than a filesystem path;
 - bounded own-component commands queued during callbacks and returned only
   after successful guest completion;
 - principal-isolated dynamic rows with atomic batch application;
@@ -211,7 +214,8 @@ compilation, checks requested/effective capabilities before instantiation, and
 publishes version discovery through WIT. The executable now owns a live host:
 repeatable `--extension` manifests resolve dependency-first, explicitly granted
 capabilities are applied, the complete profile stages before one atomic swap,
-live event markers are delivered outside ECS guards, manifest-declared update
+live event markers and committed session transitions are delivered outside ECS
+guards, manifest-declared update
 cadences are advanced by a late-stage engine scheduler, component state is
 applied atomically, faults remain isolated, world replacement invalidates
 transient handles, and orderly shutdown runs in reverse publication order.
@@ -793,7 +797,8 @@ tests cover all of the following:
 - Add game-feature discovery, events, immutable queries, typed handles,
   batched commands, and scheduler barriers. Activation, cell-load,
   producer-resolved combat-hit, ordered equipment-change, normalized input
-  press/release, and bounded recurring-update delivery are implemented.
+  press/release, committed session lifecycle, and bounded recurring-update
+  delivery are implemented.
 - Connect component activation to `ResolvedModSet` generation commits.
 - Prove the same component on two game definitions.
 

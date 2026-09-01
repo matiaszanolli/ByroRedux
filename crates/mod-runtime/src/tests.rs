@@ -8,7 +8,7 @@ use byroredux_sdk::component::{
 };
 use byroredux_sdk::event::{
     ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
-    InputPhase, UpdateEvent,
+    InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, FormRef, ServiceId};
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
@@ -20,8 +20,9 @@ use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
     EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY,
-    INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT,
+    SESSION_PHASE_FILTER_FIELD, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
 use semver::{Version, VersionReq};
@@ -60,6 +61,8 @@ const IMPORTS: &str = r#"
         (export "input-action" (type $input-action-in (eq $input-action-shape)))
         (type $input-phase-shape (enum "pressed" "released"))
         (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+        (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+        (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
         (export "queue-increment-own-i64" (func
             (param "entity" $entity-ref)
             (param "schema-index" u32)
@@ -71,6 +74,7 @@ const IMPORTS: &str = r#"
     (alias export $state "hit-details" (type $hit-details))
     (alias export $state "input-action" (type $input-action))
     (alias export $state "input-phase" (type $input-phase))
+    (alias export $state "session-phase" (type $session-phase))
 "#;
 
 const ON_ACTIVATE_CORE: &str = r#"
@@ -137,6 +141,17 @@ const ON_INPUT_LIFT: &str = r#"
                 (param "action" $input-action)
                 (param "phase" $input-phase)
                 (canon lift (core func $guest-instance "on-input-action")))
+"#;
+
+const ON_SESSION_CORE: &str = r#"
+                (func (export "on-session-event") (param i32 i32 i32))
+"#;
+
+const ON_SESSION_LIFT: &str = r#"
+            (func (export "on-session-event")
+                (param "phase" $session-phase)
+                (param "slot" (option u32))
+                (canon lift (core func $guest-instance "on-session-event")))
 "#;
 
 const ON_UPDATE_CORE: &str = r#"
@@ -262,6 +277,19 @@ fn input_manifest() -> ExtensionManifest {
     manifest
 }
 
+fn session_manifest() -> ExtensionManifest {
+    let mut manifest = principal_storage_manifest();
+    manifest.subscriptions = vec![EventSubscription {
+        event: byroredux_sdk::identity::EventId::new(SESSION_EVENT).unwrap(),
+        filters: vec![EventFilter {
+            field: ServiceId::new(SESSION_PHASE_FILTER_FIELD).unwrap(),
+            equals: "load-complete".to_owned(),
+        }],
+        interval_millis: None,
+    }];
+    manifest
+}
+
 fn principal_storage_manifest() -> ExtensionManifest {
     let mut manifest = manifest();
     manifest.capabilities = vec![
@@ -313,6 +341,8 @@ fn principal_storage_increment_component() -> String {
                 (export "input-action" (type $input-action-in (eq $input-action-shape)))
                 (type $input-phase-shape (enum "pressed" "released"))
                 (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+                (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+                (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
             ))
             (import "byro:mod-host/storage@0.1.0" (instance $storage
                 (export "queue-increment-i64" (func
@@ -324,6 +354,7 @@ fn principal_storage_increment_component() -> String {
             (alias export $state "hit-details" (type $hit-details))
             (alias export $state "input-action" (type $input-action))
             (alias export $state "input-phase" (type $input-phase))
+            (alias export $state "session-phase" (type $session-phase))
             (alias export $storage "queue-increment-i64" (func $increment))
             (core module $libc
                 (memory (export "memory") 1)
@@ -386,6 +417,26 @@ fn principal_storage_increment_component() -> String {
                     i32.const 16
                     i64.const 1
                     call $increment)
+                (func (export "on-session-event")
+                    (param $phase i32) (param $slot-tag i32) (param $slot i32)
+                    local.get $phase
+                    i32.const 2
+                    i32.ne
+                    local.get $slot-tag
+                    i32.const 1
+                    i32.ne
+                    i32.or
+                    local.get $slot
+                    i32.const 7
+                    i32.ne
+                    i32.or
+                    if
+                        unreachable
+                    end
+                    i32.const 0
+                    i32.const 16
+                    i64.const 1
+                    call $increment)
                 (func (export "on-update") (param f32)
                     i32.const 0
                     i32.const 16
@@ -412,6 +463,7 @@ fn principal_storage_increment_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -423,6 +475,7 @@ fn principal_storage_increment_component() -> String {
     .replace("{ON_EQUIPMENT_CORE}", ON_EQUIPMENT_CORE)
     .replace("{ON_EQUIPMENT_LIFT}", ON_EQUIPMENT_LIFT)
     .replace("{ON_INPUT_LIFT}", ON_INPUT_LIFT)
+    .replace("{ON_SESSION_LIFT}", ON_SESSION_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -453,6 +506,8 @@ fn entity_projection_component() -> String {
                 (export "input-action" (type $input-action-in (eq $input-action-shape)))
                 (type $input-phase-shape (enum "pressed" "released"))
                 (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
+                (type $session-phase-shape (enum "new-game" "save-complete" "load-complete"))
+                (export "session-phase" (type $session-phase-in (eq $session-phase-shape)))
             ))
             (import "byro:mod-host/world-state@0.1.0" (instance $world
                 (export "entity-ref" (type $entity-ref-world (eq $entity-ref-shape)))
@@ -465,6 +520,7 @@ fn entity_projection_component() -> String {
             (alias export $state "hit-details" (type $hit-details))
             (alias export $state "input-action" (type $input-action))
             (alias export $state "input-phase" (type $input-phase))
+            (alias export $state "session-phase" (type $session-phase))
             (alias export $world "contains-entity" (func $contains))
             (core func $contains-lower (canon lower (func $contains)))
             (core module $guest
@@ -475,6 +531,7 @@ fn entity_projection_component() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
@@ -499,6 +556,7 @@ fn entity_projection_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -511,6 +569,8 @@ fn entity_projection_component() -> String {
     .replace("{ON_EQUIPMENT_LIFT}", ON_EQUIPMENT_LIFT)
     .replace("{ON_INPUT_CORE}", ON_INPUT_CORE)
     .replace("{ON_INPUT_LIFT}", ON_INPUT_LIFT)
+    .replace("{ON_SESSION_CORE}", ON_SESSION_CORE)
+    .replace("{ON_SESSION_LIFT}", ON_SESSION_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -595,6 +655,7 @@ fn logging_component() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -610,6 +671,7 @@ fn logging_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -631,6 +693,7 @@ fn looping_component() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -643,6 +706,7 @@ fn looping_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -661,6 +725,7 @@ fn oversized_memory_component() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -673,6 +738,7 @@ fn oversized_memory_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -693,6 +759,7 @@ fn component_with_wasi_import() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -705,6 +772,7 @@ fn component_with_wasi_import() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -735,6 +803,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
@@ -755,6 +824,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -775,6 +845,7 @@ fn cell_load_counter_component() -> String {
                 {ON_HIT_CORE}
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-cell-load")
                     (param $world i64) (param $object i64)
@@ -798,6 +869,7 @@ fn cell_load_counter_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -866,6 +938,7 @@ fn hit_counter_component() -> String {
                     call $increment)
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -881,6 +954,7 @@ fn hit_counter_component() -> String {
             {ON_HIT_LIFT}
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -1161,6 +1235,42 @@ fn canonical_input_action_requires_sensitive_capability_and_preserves_semantics(
         Err(SandboxError::EventDeliveryDenied(_))
     ));
     assert_eq!(denied.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn canonical_session_event_preserves_committed_slot_and_rejects_invalid_shape() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = session_manifest();
+    let compiled = compile_wat_for(
+        &runtime,
+        &manifest,
+        &principal_storage_increment_component(),
+    );
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+    grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    assert_eq!(
+        instance
+            .on_session_event(SessionEvent {
+                phase: SessionPhase::LoadComplete,
+                slot: Some(7),
+            })
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        instance.on_session_event(SessionEvent {
+            phase: SessionPhase::SaveComplete,
+            slot: None,
+        }),
+        Err(SandboxError::InvalidEventPayload { .. })
+    ));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
 }
 
 #[test]

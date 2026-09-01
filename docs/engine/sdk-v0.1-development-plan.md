@@ -25,9 +25,10 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load/combat-hit/equipment/input/recurring-update payloads, and
+store, canonical activation/cell-load/combat-hit/equipment/input/session/recurring-update payloads, and
 atomic deferred command batches. The WIT world exposes `on-activate`,
-`on-cell-load`, `on-hit`, `on-equipment-change`, `on-input-action`, `on-update`, immutable name/form/world-transform
+`on-cell-load`, `on-hit`, `on-equipment-change`, `on-input-action`,
+`on-session-event`, `on-update`, immutable name/form/world-transform
 reads, and a compact own-state increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
@@ -160,10 +161,11 @@ stable API, or call a shared service catalog.
   memory/fuel/log limits, lifecycle state, and quarantine.
 - [`crates/mod-runtime/wit/host.wit`](../../crates/mod-runtime/wit/host.wit)
   exposes logging, principal context, deferred own-state mutation,
-  `initialize`, canonical `on-activate`, and `shutdown`.
+  initialization/shutdown, canonical gameplay callbacks, normalized input,
+  recurring updates, and committed session lifecycle.
 - The runtime has strong unit coverage and a first non-test engine owner for
-  manifest loading, lifecycle, diagnostics, and activation delivery. It does
-  not yet connect to save persistence, input, UI, or broader scripting events.
+  manifest loading, lifecycle, diagnostics, event delivery, input, and save
+  participation. UI contribution and broader semantic services remain open.
 
 ### 4.4 Storage and registration constraints
 
@@ -416,10 +418,10 @@ Exit gate:
 
 ### Phase 2 — extension state and event vertical slice
 
-Status: **Activation, cell-load, combat-hit, equipment-change, and bounded
-recurring-update paths, live ECS adapters, principal storage, and the first
-immutable entity projection implemented; additional projection families remain
-pending.**
+Status: **Activation, cell-load, combat-hit, equipment-change, normalized
+input, committed session-lifecycle, and bounded recurring-update paths, live
+ECS adapters, principal storage, and the first immutable entity projection
+implemented; additional projection families remain pending.**
 
 Deliverables:
 
@@ -564,7 +566,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   action filters; custom action registration remains.**
 - Namespaced console commands and settings.
 - Plugin/form/dependency introspection.
-- Save/load/new-game lifecycle events.
+- Save/load/new-game lifecycle events. **Implemented with `new-game`,
+  `save-complete`, and `load-complete` phases, validated manifest filters, a
+  bounded engine queue, and post-commit save/load production; numeric slots are
+  exposed without host filesystem paths.**
 
 ### Wave B — gameplay services
 

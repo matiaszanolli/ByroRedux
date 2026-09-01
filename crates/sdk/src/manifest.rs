@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::component::ComponentFieldDeclaration;
-use crate::event::{InputAction, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD};
+use crate::event::{
+    InputAction, SessionPhase, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, SESSION_EVENT,
+    SESSION_PHASE_FILTER_FIELD,
+};
 use crate::identity::{
     CapabilityId, ComponentId, ComponentSchemaId, EventId, ExtensionId, ServiceId,
 };
@@ -202,6 +205,15 @@ pub enum ManifestError {
     /// The same normalized action was selected more than once.
     #[error("duplicate normalized input action filter {0}")]
     DuplicateInputAction(String),
+    /// A session subscription named an unsupported filter field.
+    #[error("session event filter field {0} is unsupported")]
+    InvalidSessionFilterField(ServiceId),
+    /// A session subscription named an unknown lifecycle phase.
+    #[error("unknown session lifecycle phase {0:?}")]
+    InvalidSessionPhase(String),
+    /// The same session lifecycle phase was selected more than once.
+    #[error("duplicate session lifecycle phase filter {0}")]
+    DuplicateSessionPhase(String),
 }
 
 impl ExtensionManifest {
@@ -277,6 +289,23 @@ impl ExtensionManifest {
                     if !actions.insert(action) {
                         return Err(ManifestError::DuplicateInputAction(
                             action.as_str().to_owned(),
+                        ));
+                    }
+                }
+            }
+            if subscription.event.as_str() == SESSION_EVENT {
+                let mut phases = BTreeSet::new();
+                for filter in &subscription.filters {
+                    if filter.field.as_str() != SESSION_PHASE_FILTER_FIELD {
+                        return Err(ManifestError::InvalidSessionFilterField(
+                            filter.field.clone(),
+                        ));
+                    }
+                    let phase = SessionPhase::parse(&filter.equals)
+                        .ok_or_else(|| ManifestError::InvalidSessionPhase(filter.equals.clone()))?;
+                    if !phases.insert(phase) {
+                        return Err(ManifestError::DuplicateSessionPhase(
+                            phase.as_str().to_owned(),
                         ));
                     }
                 }
@@ -560,6 +589,50 @@ mod tests {
         assert_eq!(
             duplicate.validate(),
             Err(ManifestError::DuplicateInputAction("activate".to_owned()))
+        );
+    }
+
+    #[test]
+    fn session_filters_are_semantic_bounded_and_unique() {
+        let event = EventId::new(SESSION_EVENT).unwrap();
+        let phase_field = ServiceId::new(SESSION_PHASE_FILTER_FIELD).unwrap();
+        let mut valid = manifest();
+        valid.subscriptions.push(EventSubscription {
+            event,
+            filters: vec![
+                EventFilter {
+                    field: phase_field.clone(),
+                    equals: "new-game".to_owned(),
+                },
+                EventFilter {
+                    field: phase_field.clone(),
+                    equals: "load-complete".to_owned(),
+                },
+            ],
+            interval_millis: None,
+        });
+        valid.validate().unwrap();
+
+        let mut unknown = valid.clone();
+        unknown.subscriptions[0].filters[0].equals = "pre-load".to_owned();
+        assert_eq!(
+            unknown.validate(),
+            Err(ManifestError::InvalidSessionPhase("pre-load".to_owned()))
+        );
+
+        let mut wrong_field = valid.clone();
+        let path_field = ServiceId::new("byro.session.save-path").unwrap();
+        wrong_field.subscriptions[0].filters[0].field = path_field.clone();
+        assert_eq!(
+            wrong_field.validate(),
+            Err(ManifestError::InvalidSessionFilterField(path_field))
+        );
+
+        let mut duplicate = valid;
+        duplicate.subscriptions[0].filters[1].equals = "new-game".to_owned();
+        assert_eq!(
+            duplicate.validate(),
+            Err(ManifestError::DuplicateSessionPhase("new-game".to_owned()))
         );
     }
 }

@@ -87,6 +87,68 @@ pub const INPUT_ACTION_EVENT: &str = "byro.events.input-action";
 /// Manifest filter field selecting one or more normalized actions.
 pub const INPUT_ACTION_FILTER_FIELD: &str = "byro.input.action";
 
+/// Engine-owned session transition delivered after the operation commits.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionPhase {
+    /// A fresh game session became active without restoring a save.
+    NewGame,
+    /// A save slot was committed successfully.
+    SaveComplete,
+    /// A save slot was restored successfully, including extension state.
+    LoadComplete,
+}
+
+impl SessionPhase {
+    /// Stable manifest spelling used by `byro.session.phase` filters.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NewGame => "new-game",
+            Self::SaveComplete => "save-complete",
+            Self::LoadComplete => "load-complete",
+        }
+    }
+
+    /// Parse a stable manifest filter value.
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "new-game" => Self::NewGame,
+            "save-complete" => Self::SaveComplete,
+            "load-complete" => Self::LoadComplete,
+            _ => return None,
+        })
+    }
+}
+
+/// Payload of `byro.events.session`.
+///
+/// `slot` is present for successful save/load transitions and absent for a
+/// new game. Hosts reject any other combination before guest delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionEvent {
+    pub phase: SessionPhase,
+    pub slot: Option<u32>,
+}
+
+impl SessionEvent {
+    /// Whether phase and optional slot form one canonical engine payload.
+    pub const fn is_valid(self) -> bool {
+        matches!(
+            (self.phase, self.slot),
+            (SessionPhase::NewGame, None)
+                | (
+                    SessionPhase::SaveComplete | SessionPhase::LoadComplete,
+                    Some(_)
+                )
+        )
+    }
+}
+
+/// Canonical game-session lifecycle event identifier.
+pub const SESSION_EVENT: &str = "byro.events.session";
+/// Manifest filter field selecting one or more lifecycle phases.
+pub const SESSION_PHASE_FILTER_FIELD: &str = "byro.session.phase";
+
 /// Payload of `byro.events.activate`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActivationEvent {

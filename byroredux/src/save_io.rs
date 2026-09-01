@@ -863,6 +863,17 @@ impl ConsoleCommand for SaveCommand {
                 if is_quicksave {
                     world.resource_mut::<SaveState>().ring.advance();
                 }
+                if let Err(error) = crate::extensions::queue_session_event(
+                    world,
+                    byroredux_sdk::event::SessionEvent {
+                        phase: byroredux_sdk::event::SessionPhase::SaveComplete,
+                        slot: Some(slot),
+                    },
+                ) {
+                    log::warn!(
+                        "save slot {slot} committed, but its extension lifecycle event was not queued: {error}"
+                    );
+                }
                 CommandOutput::lines(vec![
                     format!("saved slot {slot} → {}", path.display()),
                     format!(
@@ -1431,12 +1442,12 @@ pub fn execute_pending_save_loads(
     ctx: &mut byroredux_renderer::VulkanContext,
     streaming: &mut Option<crate::streaming::WorldStreamingState>,
 ) {
-    let snapshot = {
+    let (snapshot, loaded_slot) = {
         let Some(mut slot) = world.try_resource_mut::<PendingSaveLoadSlot>() else {
             return;
         };
         match slot.snapshot.take() {
-            Some(s) => s,
+            Some(snapshot) => (snapshot, slot.slot),
             None => return,
         }
     };
@@ -1618,6 +1629,17 @@ pub fn execute_pending_save_loads(
             } else {
                 "flycam"
             },
+        );
+    }
+    if let Err(error) = crate::extensions::queue_session_event(
+        world,
+        byroredux_sdk::event::SessionEvent {
+            phase: byroredux_sdk::event::SessionPhase::LoadComplete,
+            slot: Some(loaded_slot),
+        },
+    ) {
+        log::warn!(
+            "load slot {loaded_slot} completed, but its extension lifecycle event was not queued: {error}"
         );
     }
 }

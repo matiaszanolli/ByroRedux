@@ -9,7 +9,9 @@ use thiserror::Error;
 use crate::identity::{CapabilityId, CapabilitySet, ServiceId};
 use crate::manifest::{ExtensionManifest, ManifestError};
 
-pub use crate::event::{INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD};
+pub use crate::event::{
+    INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
+};
 
 /// Capability required to emit an attributed host diagnostic.
 pub const LOG_WRITE_CAPABILITY: &str = "byro.log.write";

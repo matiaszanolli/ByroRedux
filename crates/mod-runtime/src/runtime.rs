@@ -6,7 +6,7 @@ use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
 use byroredux_sdk::event::{
     ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
-    InputPhase, UpdateEvent,
+    InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
@@ -18,9 +18,9 @@ use byroredux_sdk::service::{
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
     EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
     HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
-    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
-    WORLD_TRANSFORM_READ_CAPABILITY,
+    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand};
 use semver::Version;
@@ -57,6 +57,7 @@ pub enum LifecyclePhase {
     Hit,
     Equipment,
     Input,
+    Session,
     Update,
     Shutdown,
 }
@@ -70,6 +71,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Hit => "on-hit",
             Self::Equipment => "on-equipment-change",
             Self::Input => "on-input-action",
+            Self::Session => "on-session-event",
             Self::Update => "on-update",
             Self::Shutdown => "shutdown",
         })
@@ -405,6 +407,10 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == INPUT_ACTION_EVENT),
+            subscribed_to_session: manifest
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.event.as_str() == SESSION_EVENT),
             subscribed_to_update: manifest
                 .subscriptions
                 .iter()
@@ -714,6 +720,54 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one committed game-session transition.
+    pub fn on_session_event(&mut self, event: SessionEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::Session,
+                status: self.status.clone(),
+            });
+        }
+        let event_id =
+            EventId::new(SESSION_EVENT).expect("the engine's canonical session event id is valid");
+        if !self.store.data().subscribed_to_session {
+            return Err(SandboxError::EventNotSubscribed(event_id));
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event_id));
+        }
+        if !event.is_valid() {
+            return Err(SandboxError::InvalidEventPayload {
+                event: event_id,
+                message: format!(
+                    "phase {} requires {} slot",
+                    event.phase.as_str(),
+                    if event.phase == SessionPhase::NewGame {
+                        "no"
+                    } else {
+                        "one"
+                    }
+                ),
+            });
+        }
+        let phase = match event.phase {
+            SessionPhase::NewGame => state::SessionPhase::NewGame,
+            SessionPhase::SaveComplete => state::SessionPhase::SaveComplete,
+            SessionPhase::LoadComplete => state::SessionPhase::LoadComplete,
+        };
+        let result = self.enter(LifecyclePhase::Session, true, |bindings, store| {
+            bindings.call_on_session_event(store, phase, event.slot)
+        });
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Deliver one bounded recurring callback and return deferred commands.
     pub fn on_update(&mut self, event: UpdateEvent) -> Result<Vec<HostCommand>> {
         if self.status != InstanceStatus::Active {
@@ -880,6 +934,7 @@ struct HostState {
     subscribed_to_hit: bool,
     subscribed_to_equipment: bool,
     subscribed_to_input: bool,
+    subscribed_to_session: bool,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,

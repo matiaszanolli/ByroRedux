@@ -599,6 +599,7 @@ impl App {
         boot::install_runtime_registries(&mut world, &scheduler);
 
         let mut pending_player_messages = Vec::new();
+        let mut startup_load_queued = false;
         // Queue startup restore after the save resources exist. The request
         // drains after renderer and scene setup, sharing the F9/menu path.
         if let Some(slot) = cli_args::parse_string_arg(args, "--load") {
@@ -607,8 +608,20 @@ impl App {
                 log::warn!("startup --load: {}", output.lines.join(" | "));
             } else {
                 log::info!("startup --load: {}", output.lines.join(" | "));
+                startup_load_queued = true;
             }
             pending_player_messages.extend(output.lines);
+        }
+        if !startup_load_queued {
+            if let Err(error) = extensions::queue_session_event(
+                &world,
+                byroredux_sdk::event::SessionEvent {
+                    phase: byroredux_sdk::event::SessionPhase::NewGame,
+                    slot: None,
+                },
+            ) {
+                log::warn!("new-game extension lifecycle event was not queued: {error}");
+            }
         }
 
         // Universal settings live in core and are presented by the on-screen

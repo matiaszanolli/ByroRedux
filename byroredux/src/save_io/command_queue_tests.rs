@@ -24,6 +24,7 @@ fn save_then_load_command_queues_with_cell_context() {
     let _ = std::fs::remove_dir_all(&dir);
     world.insert_resource(SaveState::new(dir.clone(), 4));
     world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
     world.insert_resource(CurrentCellContext {
         cell_editor_id: "GSDocMitchellHouse".to_string(),
         esm_path: "FalloutNV.esm".to_string(),
@@ -322,6 +323,7 @@ fn quicksave_test_world(dir: PathBuf) -> World {
     world.insert_resource(build_save_registry());
     world.insert_resource(SaveState::new(dir, 4));
     world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
     world.insert_resource(CurrentCellContext {
         cell_editor_id: "TestCell".to_string(),
         esm_path: "Test.esm".to_string(),
@@ -348,6 +350,20 @@ fn quicksave_shares_the_console_save_command_output_contract() {
             command.replace(&command_dir.display().to_string(), "<dir>")
         );
     }
+    assert_eq!(
+        crate::extensions::pending_session_events(&quick),
+        vec![byroredux_sdk::event::SessionEvent {
+            phase: byroredux_sdk::event::SessionPhase::SaveComplete,
+            slot: Some(0),
+        }]
+    );
+    assert_eq!(
+        crate::extensions::pending_session_events(&command),
+        vec![byroredux_sdk::event::SessionEvent {
+            phase: byroredux_sdk::event::SessionPhase::SaveComplete,
+            slot: Some(0),
+        }]
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 
