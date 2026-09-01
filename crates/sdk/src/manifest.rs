@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::component::ComponentFieldDeclaration;
+use crate::console::{
+    ConsoleCommandDeclaration, MAX_CONSOLE_COMMANDS, MAX_CONSOLE_DESCRIPTION_BYTES,
+};
 use crate::event::{
     is_custom_event_id, InputAction, SessionPhase, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
     SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
@@ -73,6 +76,9 @@ pub struct ExtensionManifest {
     /// Engine-owned dynamic component schemas declared by this principal.
     #[serde(default)]
     pub component_schemas: Vec<ComponentSchemaDeclaration>,
+    /// Principal-namespaced engine-console commands routed to components.
+    #[serde(default)]
+    pub console_commands: Vec<ConsoleCommandDeclaration>,
     /// Version of principal-scoped persistent storage, when used.
     #[serde(default)]
     pub principal_storage_schema: Option<u32>,
@@ -228,6 +234,15 @@ pub enum ManifestError {
     /// Custom channels are already exact-match filters and take no field predicates.
     #[error("custom event {0} does not accept field filters")]
     CustomEventFiltersUnsupported(EventId),
+    /// A command named a component not declared by this package.
+    #[error("console command {command} targets unknown component {component}")]
+    UnknownConsoleComponent {
+        command: crate::identity::ConsoleCommandId,
+        component: ComponentId,
+    },
+    /// Console help text must be safe for terminals and non-empty.
+    #[error("console command {0} has an invalid description")]
+    InvalidConsoleDescription(crate::identity::ConsoleCommandId),
 }
 
 impl ExtensionManifest {
@@ -255,6 +270,11 @@ impl ExtensionManifest {
             self.component_schemas.len(),
             MAX_SCHEMAS,
         )?;
+        check_len(
+            "console commands",
+            self.console_commands.len(),
+            MAX_CONSOLE_COMMANDS,
+        )?;
         if self.components.is_empty() {
             return Err(ManifestError::MissingComponent);
         }
@@ -276,6 +296,23 @@ impl ExtensionManifest {
         let mut capabilities = BTreeSet::new();
         for request in &self.capabilities {
             insert_unique(&mut capabilities, "capability", &request.id)?;
+        }
+
+        let mut console_commands = BTreeSet::new();
+        for command in &self.console_commands {
+            insert_unique(&mut console_commands, "console command", &command.id)?;
+            if !components.contains(&command.component) {
+                return Err(ManifestError::UnknownConsoleComponent {
+                    command: command.id.clone(),
+                    component: command.component.clone(),
+                });
+            }
+            if command.description.trim().is_empty()
+                || command.description.chars().any(char::is_control)
+                || command.description.len() > MAX_CONSOLE_DESCRIPTION_BYTES
+            {
+                return Err(ManifestError::InvalidConsoleDescription(command.id.clone()));
+            }
         }
 
         let mut subscriptions = BTreeSet::new();
@@ -472,6 +509,7 @@ mod tests {
             }],
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
+            console_commands: Vec::new(),
             principal_storage_schema: Some(1),
         }
     }
@@ -479,6 +517,47 @@ mod tests {
     #[test]
     fn valid_manifest_is_accepted() {
         manifest().validate().unwrap();
+    }
+
+    #[test]
+    fn console_commands_are_bounded_unique_and_target_declared_components() {
+        let mut valid = manifest();
+        valid.console_commands.push(ConsoleCommandDeclaration {
+            id: crate::identity::ConsoleCommandId::new("status").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            description: "Show extension status".to_owned(),
+        });
+        valid.validate().unwrap();
+        assert_eq!(
+            valid.console_commands[0].qualified_name(&valid.id),
+            "ext.org.example.weather.status"
+        );
+
+        let mut duplicate = valid.clone();
+        duplicate
+            .console_commands
+            .push(valid.console_commands[0].clone());
+        assert!(matches!(
+            duplicate.validate(),
+            Err(ManifestError::DuplicateId {
+                kind: "console command",
+                ..
+            })
+        ));
+
+        let mut unknown = valid.clone();
+        unknown.console_commands[0].component = ComponentId::new("missing").unwrap();
+        assert!(matches!(
+            unknown.validate(),
+            Err(ManifestError::UnknownConsoleComponent { .. })
+        ));
+
+        let mut unsafe_help = valid;
+        unsafe_help.console_commands[0].description = "spoof\nnext command".to_owned();
+        assert!(matches!(
+            unsafe_help.validate(),
+            Err(ManifestError::InvalidConsoleDescription(_))
+        ));
     }
 
     #[test]

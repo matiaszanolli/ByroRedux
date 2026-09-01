@@ -1799,7 +1799,9 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     // schedule is built. Read by `sys.accesses` to surface
     // declared-access conflicts to the operator.
     world.insert_resource(byroredux_core::ecs::SchedulerAccessReport(report_snapshot));
-    world.insert_resource(build_command_registry());
+    let mut command_registry = build_command_registry();
+    crate::extensions::register_console_commands(world, &mut command_registry);
+    world.insert_resource(command_registry);
     // M45 — install the save registry + slot directory so the
     // `save` / `save.info` console commands can operate. Saves live
     // under `<cwd>/saves` (or `BYROREDUX_SAVE_DIR`, #3009); the ring keeps

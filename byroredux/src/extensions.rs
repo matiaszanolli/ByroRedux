@@ -10,6 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform, Name, Transform};
 use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
@@ -23,6 +24,7 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
+use byroredux_sdk::console::ConsoleCommandResult;
 use byroredux_sdk::content::ContentCatalog;
 use byroredux_sdk::event::{
     custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
@@ -35,8 +37,9 @@ use byroredux_sdk::identity::{
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
-    ACTIVATE_EVENT, CELL_LOAD_EVENT, EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
-    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, SESSION_EVENT, UPDATE_EVENT,
+    ACTIVATE_EVENT, CELL_LOAD_EVENT, CONSOLE_REGISTER_CAPABILITY, EQUIPMENT_EVENT,
+    EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
+    SESSION_EVENT, UPDATE_EVENT,
 };
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
@@ -185,6 +188,15 @@ struct HostedComponent {
     instance: ModInstance,
 }
 
+#[derive(Clone, Debug)]
+struct HostedConsoleCommand {
+    name: String,
+    description: String,
+    extension: ExtensionId,
+    component: ComponentId,
+    declaration_index: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RecurringCadence {
     interval_seconds: f32,
@@ -225,6 +237,7 @@ pub(crate) struct ExtensionHost {
     retained_storage: Vec<PersistedPrincipalStorage>,
     pending_custom_events: Vec<CustomEvent>,
     content_catalog: Arc<ContentCatalog>,
+    console_commands: Vec<HostedConsoleCommand>,
 }
 
 impl ExtensionHost {
@@ -246,6 +259,7 @@ impl ExtensionHost {
             retained_storage: Vec::new(),
             pending_custom_events: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
+            console_commands: Vec::new(),
         })
     }
 
@@ -399,8 +413,105 @@ impl ExtensionHost {
         self.principal_storage = staged_principal_storage;
         self.retained_storage = staged_retained_storage;
         self.components.extend(staged_components);
+        if grants.contains(CONSOLE_REGISTER_CAPABILITY) {
+            self.console_commands
+                .extend(
+                    manifest
+                        .console_commands
+                        .iter()
+                        .enumerate()
+                        .map(|(index, command)| HostedConsoleCommand {
+                            name: command.qualified_name(&manifest.id),
+                            description: command.description.clone(),
+                            extension: manifest.id.clone(),
+                            component: command.component.clone(),
+                            declaration_index: u32::try_from(index)
+                                .expect("manifest console command count is bounded below u32::MAX"),
+                        }),
+                );
+        }
         self.diagnostics.extend(staged_diagnostics);
         Ok(())
+    }
+
+    fn console_commands(&self) -> &[HostedConsoleCommand] {
+        &self.console_commands
+    }
+
+    fn invoke_console_command(
+        &mut self,
+        route: &HostedConsoleCommand,
+        args: &str,
+    ) -> ConsoleCommandResult {
+        let Some(index) = self.components.iter().position(|hosted| {
+            hosted.extension == route.extension && hosted.component == route.component
+        }) else {
+            return ConsoleCommandResult {
+                success: false,
+                lines: vec!["declared command component is unavailable".to_owned()],
+            };
+        };
+        let hosted = &mut self.components[index];
+        if hosted.instance.status() != &InstanceStatus::Active {
+            return ConsoleCommandResult {
+                success: false,
+                lines: vec![format!("component is {}", hosted.instance.status())],
+            };
+        }
+        let principal = hosted.instance.principal().id().clone();
+        let storage_snapshot = self
+            .principal_storage
+            .values(&principal)
+            .cloned()
+            .unwrap_or_default();
+        hosted
+            .instance
+            .set_principal_storage_snapshot(storage_snapshot);
+        let result = hosted
+            .instance
+            .on_console_command(route.declaration_index, args);
+        self.diagnostics
+            .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                ExtensionDiagnostic::Log {
+                    extension: hosted.extension.clone(),
+                    component: hosted.component.clone(),
+                    entry,
+                }
+            }));
+        let (output, commands) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.diagnostics.push(ExtensionDiagnostic::Fault {
+                    extension: hosted.extension.clone(),
+                    component: hosted.component.clone(),
+                    message: error.to_string(),
+                });
+                return ConsoleCommandResult {
+                    success: false,
+                    lines: vec![error.to_string()],
+                };
+            }
+        };
+        let mut stats = ExtensionDispatchStats::default();
+        apply_delivery_result(
+            hosted,
+            Ok(commands),
+            LifecyclePhase::ConsoleCommand,
+            &principal,
+            &mut self.state,
+            &mut self.principal_storage,
+            &mut self.pending_custom_events,
+            &mut self.diagnostics,
+            &mut stats,
+        );
+        if stats.faults == 0 {
+            output
+        } else {
+            ConsoleCommandResult {
+                success: false,
+                lines: vec!["deferred command batch was rejected".to_owned()],
+            }
+        }
     }
 
     fn set_content_catalog(&mut self, catalog: Arc<ContentCatalog>) {
@@ -1623,6 +1734,86 @@ impl ExtensionHostSlot {
     }
 }
 
+struct ExtensionConsoleCommand {
+    route: HostedConsoleCommand,
+    host: std::sync::Weak<Mutex<ExtensionHost>>,
+}
+
+impl ConsoleCommand for ExtensionConsoleCommand {
+    fn name(&self) -> &str {
+        &self.route.name
+    }
+
+    fn description(&self) -> &str {
+        &self.route.description
+    }
+
+    fn execute(&self, _world: &World, args: &str) -> CommandOutput {
+        let Some(host) = self.host.upgrade() else {
+            return CommandOutput::error("extension host is unavailable");
+        };
+        let (result, diagnostics) = {
+            let mut host = host
+                .lock()
+                .expect("ExtensionHost mutex poisoned by a host panic");
+            let result = host.invoke_console_command(&self.route, args);
+            let diagnostics = host.take_diagnostics();
+            (result, diagnostics)
+        };
+        emit_diagnostics(diagnostics);
+        let mut lines = result.lines;
+        if result.success {
+            if lines.is_empty() {
+                lines.push("OK".to_owned());
+            }
+        } else if let Some(first) = lines.first_mut() {
+            *first = format!("Error: {first}");
+        } else {
+            lines.push("Error: extension command failed".to_owned());
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// Publish granted manifest commands into the engine-owned console registry.
+///
+/// The bridge captures only a weak host reference and never reacquires the
+/// registry while dispatch holds its read guard.
+pub(crate) fn register_console_commands(world: &World, registry: &mut CommandRegistry) {
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let routes = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic")
+        .console_commands()
+        .to_vec();
+    let existing = registry
+        .list()
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect::<BTreeSet<_>>();
+    for route in routes {
+        if existing.contains(&route.name) {
+            log::error!(
+                "extension console command {} collides with an engine command",
+                route.name
+            );
+            continue;
+        }
+        registry.register(ExtensionConsoleCommand {
+            route,
+            host: Arc::downgrade(&host),
+        });
+    }
+}
+
 /// Bounded process-local queue of committed game-session transitions.
 ///
 /// Save/load producers run after the scheduler has joined. They enqueue here
@@ -2621,6 +2812,11 @@ mod tests {
     (func (export "on-session-event") (param i32 i32 i32))
     (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
+    (func (export "on-console-command") (param i32)
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -2660,6 +2856,9 @@ mod tests {
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
+  (func (export "on-console-command")
+    (param "command-index" u32)
+    (canon lift (core func $guest-instance "on-console-command")))
 )
 "#;
 
@@ -2785,6 +2984,11 @@ mod tests {
       i32.const 16
       i64.const 1
       call $increment)
+    (func (export "on-console-command") (param i32)
+      i32.const 0
+      i32.const 16
+      i64.const 1
+      call $increment)
   )
   (core instance $guest-instance (instantiate $guest
     (with "libc" (instance $libc))
@@ -2825,6 +3029,9 @@ mod tests {
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
+  (func (export "on-console-command")
+    (param "command-index" u32)
+    (canon lift (core func $guest-instance "on-console-command")))
 )
 "#;
 
@@ -2903,6 +3110,7 @@ mod tests {
     (func (export "on-session-event") (param i32 i32 i32))
     (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
+    (func (export "on-console-command") (param i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "contains" (func $contains-lower))))
@@ -2942,6 +3150,9 @@ mod tests {
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
+  (func (export "on-console-command")
+    (param "command-index" u32)
+    (canon lift (core func $guest-instance "on-console-command")))
 )
 "#;
 
@@ -2982,6 +3193,7 @@ mod tests {
                     value_type: ExtensionValueType::I64,
                 }],
             }],
+            console_commands: Vec::new(),
             principal_storage_schema: None,
         }
     }
@@ -3084,6 +3296,20 @@ mod tests {
         manifest
     }
 
+    fn console_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.capabilities.push(CapabilityRequest {
+            id: CapabilityId::new(CONSOLE_REGISTER_CAPABILITY).unwrap(),
+            required: true,
+        });
+        manifest.console_commands = vec![byroredux_sdk::console::ConsoleCommandDeclaration {
+            id: byroredux_sdk::identity::ConsoleCommandId::new("bump").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            description: "Increment the test counter".to_owned(),
+        }];
+        manifest
+    }
+
     fn update_manifest(id: &str) -> ExtensionManifest {
         let mut manifest = storage_manifest(id);
         manifest.subscriptions = vec![EventSubscription {
@@ -3099,6 +3325,12 @@ mod tests {
         grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
         grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
         grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+        grants
+    }
+
+    fn console_grants() -> CapabilitySet {
+        let mut grants = storage_grants();
+        grants.grant(CONSOLE_REGISTER_CAPABILITY).unwrap();
         grants
     }
 
@@ -3781,6 +4013,75 @@ mod tests {
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(2))
         );
+    }
+
+    #[test]
+    fn granted_manifest_console_command_registers_and_commits_deferred_state() {
+        let id = "org.example.console";
+        let manifest = console_manifest(id);
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .install_package(&manifest, &artifacts, console_grants())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(slot);
+        let mut registry = CommandRegistry::new();
+        register_console_commands(&world, &mut registry);
+        assert_eq!(
+            registry.list(),
+            vec![("ext.org.example.console.bump", "Increment the test counter")]
+        );
+        world.insert_resource(registry);
+
+        let output = world
+            .resource::<CommandRegistry>()
+            .execute(&world, "ext.org.example.console.bump ignored");
+        assert_eq!(output.lines, vec!["OK"]);
+        let principal = PrincipalId::new(id).unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn optional_denied_console_capability_publishes_no_engine_command() {
+        let mut manifest = console_manifest("org.example.denied-console");
+        manifest
+            .capabilities
+            .iter_mut()
+            .find(|request| request.id.as_str() == CONSOLE_REGISTER_CAPABILITY)
+            .unwrap()
+            .required = false;
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .install_package(&manifest, &artifacts, storage_grants())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let mut world = World::new();
+        world.insert_resource(slot);
+        let mut registry = CommandRegistry::new();
+        register_console_commands(&world, &mut registry);
+        assert!(registry.list().is_empty());
     }
 
     #[test]

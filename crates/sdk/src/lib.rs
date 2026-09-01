@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod component;
+pub mod console;
 pub mod content;
 pub mod event;
 pub mod identity;

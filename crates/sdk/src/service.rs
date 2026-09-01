@@ -33,6 +33,8 @@ pub const WORLD_ENTITY_READ_CAPABILITY: &str = "byro.world.entity.read";
 pub const WORLD_TRANSFORM_READ_CAPABILITY: &str = "byro.world.transform.read";
 /// Capability required to inspect the active game-content load order.
 pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
+/// Capability required to publish and execute manifest-declared console commands.
+pub const CONSOLE_REGISTER_CAPABILITY: &str = "byro.console.register";
 /// Service providing principal and host-contract discovery.
 pub const CONTEXT_SERVICE: &str = "byro.context";
 /// Service providing bounded attributed diagnostics.
@@ -47,6 +49,8 @@ pub const PRINCIPAL_STORAGE_SERVICE: &str = "byro.storage";
 pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 /// Service providing loaded plugin discovery and portable form qualification.
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
+/// Service providing bounded, principal-namespaced console callbacks.
+pub const CONSOLE_SERVICE: &str = "byro.console";
 /// WIT world implemented by executable extension components.
 pub const EXTENSION_WORLD_SERVICE: &str = "byro.mod-host.extension";
 /// Canonical activation event identifier.
@@ -291,6 +295,7 @@ mod tests {
             }],
             subscriptions: Vec::new(),
             component_schemas: Vec::new(),
+            console_commands: Vec::new(),
             principal_storage_schema: None,
         }
     }

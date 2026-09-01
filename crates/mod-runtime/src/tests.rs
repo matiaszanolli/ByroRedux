@@ -6,12 +6,13 @@ use byroredux_sdk::component::{
     ComponentFieldDeclaration, ComponentSchema, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionValue, ExtensionValueType,
 };
+use byroredux_sdk::console::ConsoleCommandDeclaration;
 use byroredux_sdk::event::{
     ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
     InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
-    CapabilityId, ComponentId, EventId, ExtensionId, FormRef, ServiceId,
+    CapabilityId, ComponentId, ConsoleCommandId, EventId, ExtensionId, FormRef, ServiceId,
 };
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
@@ -21,10 +22,11 @@ use byroredux_sdk::manifest::{
 use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
-    EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
-    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
-    LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
+    EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
+    INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -178,6 +180,16 @@ const ON_UPDATE_LIFT: &str = r#"
                 (canon lift (core func $guest-instance "on-update")))
 "#;
 
+const ON_CONSOLE_CORE: &str = r#"
+                (func (export "on-console-command") (param i32))
+"#;
+
+const ON_CONSOLE_LIFT: &str = r#"
+            (func (export "on-console-command")
+                (param "command-index" u32)
+                (canon lift (core func $guest-instance "on-console-command")))
+"#;
+
 fn custom_event_publisher_component() -> String {
     format!(
         r#"(component
@@ -219,6 +231,7 @@ fn custom_event_publisher_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -236,6 +249,7 @@ fn custom_event_publisher_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -306,6 +320,7 @@ fn persistent_collections_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -326,8 +341,97 @@ fn persistent_collections_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
+}
+
+fn console_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (import "byro:mod-host/console@0.1.0" (instance $console
+                (export "args-len" (func (result u32)))
+                (export "write-line" (func (param "message" string)))
+            ))
+            (alias export $console "args-len" (func $args-len))
+            (alias export $console "write-line" (func $write-line))
+            (core module $libc
+                (memory (export "memory") 1)
+                (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+                    i32.const 128)
+            )
+            (core instance $libc (instantiate $libc))
+            (core func $args-len-lower (canon lower (func $args-len)))
+            (core func $write-line-lower
+                (canon lower (func $write-line)
+                    (memory $libc "memory")
+                    (realloc (func $libc "realloc"))))
+            (core module $guest
+                (import "libc" "memory" (memory 1))
+                (import "host" "args-len" (func $args-len (result i32)))
+                (import "host" "write-line" (func $write-line (param i32 i32)))
+                (data (i32.const 0) "handled")
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+                (func (export "on-console-command") (param $index i32)
+                    local.get $index
+                    i32.eqz
+                    call $args-len
+                    i32.const 5
+                    i32.eq
+                    i32.and
+                    i32.eqz
+                    if
+                        unreachable
+                    end
+                    i32.const 0
+                    i32.const 7
+                    call $write-line)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "libc" (instance $libc))
+                (with "host" (instance
+                    (export "args-len" (func $args-len-lower))
+                    (export "write-line" (func $write-line-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
+        )"#
+    )
+}
+
+fn console_manifest() -> ExtensionManifest {
+    let mut manifest = manifest();
+    manifest.capabilities = vec![CapabilityRequest {
+        id: CapabilityId::new(CONSOLE_REGISTER_CAPABILITY).unwrap(),
+        required: true,
+    }];
+    manifest.console_commands = vec![ConsoleCommandDeclaration {
+        id: ConsoleCommandId::new("status").unwrap(),
+        component: ComponentId::new("runtime").unwrap(),
+        description: "Show test status".to_owned(),
+    }];
+    manifest
 }
 
 fn manifest_with_log(required: bool) -> ExtensionManifest {
@@ -350,6 +454,7 @@ fn manifest_with_log(required: bool) -> ExtensionManifest {
         }],
         subscriptions: Vec::new(),
         component_schemas: Vec::new(),
+        console_commands: Vec::new(),
         principal_storage_schema: None,
     }
 }
@@ -609,6 +714,7 @@ fn principal_storage_increment_component() -> String {
                     i32.const 16
                     i64.const 1
                     call $increment)
+                {ON_CONSOLE_CORE}
                 (func (export "on-activate")
                     (param i64 i64 i32 i64 i64)
                     i32.const 0
@@ -633,6 +739,7 @@ fn principal_storage_increment_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -647,6 +754,8 @@ fn principal_storage_increment_component() -> String {
     .replace("{ON_CUSTOM_EVENT_LIFT}", ON_CUSTOM_EVENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
+    .replace("{ON_CONSOLE_CORE}", ON_CONSOLE_CORE)
+    .replace("{ON_CONSOLE_LIFT}", ON_CONSOLE_LIFT)
 }
 
 fn entity_projection_component() -> String {
@@ -703,6 +812,7 @@ fn entity_projection_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
                     local.get $world
@@ -729,6 +839,7 @@ fn entity_projection_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
                 (param "activator" (option $entity-ref))
@@ -746,6 +857,8 @@ fn entity_projection_component() -> String {
     .replace("{ON_CUSTOM_EVENT_LIFT}", ON_CUSTOM_EVENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
+    .replace("{ON_CONSOLE_CORE}", ON_CONSOLE_CORE)
+    .replace("{ON_CONSOLE_LIFT}", ON_CONSOLE_LIFT)
 }
 
 fn entity_projection_manifest(required: bool) -> ExtensionManifest {
@@ -831,6 +944,7 @@ fn logging_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "libc" (instance $libc))
@@ -848,6 +962,7 @@ fn logging_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -871,6 +986,7 @@ fn looping_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -885,6 +1001,7 @@ fn looping_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -905,6 +1022,7 @@ fn oversized_memory_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -919,6 +1037,7 @@ fn oversized_memory_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -941,6 +1060,7 @@ fn component_with_wasi_import() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
             (func (export "initialize")
@@ -955,6 +1075,7 @@ fn component_with_wasi_import() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -987,6 +1108,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
                     (param i32 i64 i64)
@@ -1009,6 +1131,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -1031,6 +1154,7 @@ fn cell_load_counter_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
                 (func (export "on-cell-load")
                     (param $world i64) (param $object i64)
                     local.get $world
@@ -1056,6 +1180,7 @@ fn cell_load_counter_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -1126,6 +1251,7 @@ fn hit_counter_component() -> String {
                 {ON_SESSION_CORE}
                 {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
                 (with "host" (instance
@@ -1143,6 +1269,7 @@ fn hit_counter_component() -> String {
             {ON_SESSION_LIFT}
             {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
         )"#
     )
 }
@@ -1475,6 +1602,13 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY));
+    assert_eq!(
+        runtime.catalog().service_version(CONSOLE_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime
+        .catalog()
+        .supports_capability(CONSOLE_REGISTER_CAPABILITY));
 }
 
 #[test]
@@ -1577,6 +1711,85 @@ fn lifecycle_calls_are_capability_gated_and_attributed() {
         .logs()
         .iter()
         .all(|entry| entry.principal == PrincipalId::from(&manifest().id)));
+}
+
+#[test]
+fn manifest_console_callback_is_bounded_attributed_and_capability_gated() {
+    let runtime = SandboxRuntime::new(SandboxConfig::default()).unwrap();
+    let manifest = console_manifest();
+    let component = ComponentId::new("runtime").unwrap();
+    let bytes = wat::parse_str(console_component()).unwrap();
+    let compiled = runtime.compile(&manifest, &component, &bytes).unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.grant(CONSOLE_REGISTER_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    let (output, commands) = instance.on_console_command(0, "hello").unwrap();
+    assert_eq!(output.lines, vec!["handled"]);
+    assert!(output.success);
+    assert!(commands.is_empty());
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let error = instance.on_console_command(1, "hello").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("not declared for this component"));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let error = instance
+        .on_console_command(
+            0,
+            &"x".repeat(byroredux_sdk::console::MAX_CONSOLE_ARGUMENT_BYTES + 1),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("console arguments"));
+    assert_eq!(instance.status(), &InstanceStatus::Active);
+
+    let mut optional = console_manifest();
+    optional.capabilities[0].required = false;
+    let compiled = runtime.compile(&optional, &component, &bytes).unwrap();
+    let mut denied = runtime
+        .instantiate(&compiled, &optional, CapabilitySet::new())
+        .unwrap();
+    denied.initialize().unwrap();
+    let error = denied.on_console_command(0, "hello").unwrap_err();
+    assert!(error.to_string().contains(CONSOLE_REGISTER_CAPABILITY));
+    assert_eq!(denied.status(), &InstanceStatus::Active);
+}
+
+#[test]
+fn console_output_budget_quarantines_only_the_producing_component() {
+    let runtime = SandboxRuntime::new(SandboxConfig::default()).unwrap();
+    let manifest = console_manifest();
+    let component = ComponentId::new("runtime").unwrap();
+    let oversized = "x".repeat(byroredux_sdk::console::MAX_CONSOLE_OUTPUT_LINE_BYTES + 1);
+    let source = console_component()
+        .replace(
+            "(data (i32.const 0) \"handled\")",
+            &format!("(data (i32.const 0) \"{oversized}\")"),
+        )
+        .replace(
+            "i32.const 7\n                    call $write-line",
+            &format!(
+                "i32.const {}\n                    call $write-line",
+                oversized.len()
+            ),
+        );
+    let bytes = wat::parse_str(source).unwrap();
+    let compiled = runtime.compile(&manifest, &component, &bytes).unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.grant(CONSOLE_REGISTER_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+
+    assert!(instance.on_console_command(0, "hello").is_err());
+    assert!(matches!(
+        instance.status(),
+        InstanceStatus::Quarantined(info)
+            if info.phase == LifecyclePhase::ConsoleCommand
+                && info.kind == FaultKind::ConsoleOutputBudgetExhausted
+    ));
 }
 
 #[test]

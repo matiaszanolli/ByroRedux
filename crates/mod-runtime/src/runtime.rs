@@ -1,9 +1,13 @@
 use crate::bindings::byro::mod_host::{
-    content_catalog, context, events, logging, state, storage as wit_storage, world_state,
+    console, content_catalog, context, events, logging, state, storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
+use byroredux_sdk::console::{
+    ConsoleCommandResult, MAX_CONSOLE_ARGUMENT_BYTES, MAX_CONSOLE_OUTPUT_BYTES,
+    MAX_CONSOLE_OUTPUT_LINES, MAX_CONSOLE_OUTPUT_LINE_BYTES,
+};
 use byroredux_sdk::content::{ContentCatalog, PluginKind, MAX_PLUGIN_NAME_BYTES};
 use byroredux_sdk::event::{
     custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
@@ -18,9 +22,10 @@ use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE,
-    CONTENT_CATALOG_READ_CAPABILITY, CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT,
-    EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
-    HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
+    CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY,
+    CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
+    EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
     PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
@@ -63,6 +68,7 @@ pub enum LifecyclePhase {
     Session,
     CustomEvent,
     Update,
+    ConsoleCommand,
     Shutdown,
 }
 
@@ -78,6 +84,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Session => "on-session-event",
             Self::CustomEvent => "on-custom-event",
             Self::Update => "on-update",
+            Self::ConsoleCommand => "on-console-command",
             Self::Shutdown => "shutdown",
         })
     }
@@ -101,6 +108,8 @@ pub enum FaultKind {
     LogBudgetExhausted,
     /// The guest attempted to queue more mutations than one entry permits.
     CommandBudgetExhausted,
+    /// The guest exceeded the bounded console output contract.
+    ConsoleOutputBudgetExhausted,
 }
 
 impl fmt::Display for FaultKind {
@@ -109,6 +118,7 @@ impl fmt::Display for FaultKind {
             Self::Guest => "guest fault",
             Self::LogBudgetExhausted => "log budget exhausted",
             Self::CommandBudgetExhausted => "command budget exhausted",
+            Self::ConsoleOutputBudgetExhausted => "console output budget exhausted",
         })
     }
 }
@@ -229,6 +239,10 @@ impl SandboxRuntime {
                 CONTENT_CATALOG_READ_CAPABILITY,
                 "Inspect loaded game plugins and qualify portable authored forms",
             ),
+            (
+                CONSOLE_REGISTER_CAPABILITY,
+                "Publish and execute bounded principal-namespaced console commands",
+            ),
         ] {
             catalog
                 .register_capability(CapabilityDescriptor {
@@ -238,6 +252,17 @@ impl SandboxRuntime {
                 })
                 .map_err(|error| SandboxError::Link(error.to_string()))?;
         }
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(CONSOLE_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(CONSOLE_REGISTER_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
         catalog
             .register_service(ServiceDescriptor {
                 id: ServiceId::new(CONTENT_CATALOG_SERVICE)
@@ -443,6 +468,21 @@ impl SandboxRuntime {
                 .map(|subscription| subscription.event.clone())
                 .collect(),
             current_custom_event: None,
+            current_console_args: None,
+            console_command_indices: manifest
+                .console_commands
+                .iter()
+                .enumerate()
+                .filter(|(_, command)| command.component == compiled.component_id)
+                .map(|(index, _)| {
+                    u32::try_from(index)
+                        .expect("manifest console command count is bounded below u32::MAX")
+                })
+                .collect(),
+            console_output: Vec::new(),
+            console_output_bytes: 0,
+            console_failed: false,
+            console_output_budget_exhausted: false,
             subscribed_to_update: manifest
                 .subscriptions
                 .iter()
@@ -884,6 +924,77 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Invoke one manifest-declared console command by stable declaration index.
+    pub fn on_console_command(
+        &mut self,
+        command_index: u32,
+        args: &str,
+    ) -> Result<(ConsoleCommandResult, Vec<HostCommand>)> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::ConsoleCommand,
+                status: self.status.clone(),
+            });
+        }
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(CONSOLE_REGISTER_CAPABILITY)
+        {
+            return Err(SandboxError::GuestFault {
+                phase: LifecyclePhase::ConsoleCommand,
+                message: format!(
+                    "principal {} lacks capability {CONSOLE_REGISTER_CAPABILITY}",
+                    self.principal().id()
+                ),
+            });
+        }
+        if !self
+            .store
+            .data()
+            .console_command_indices
+            .contains(&command_index)
+        {
+            return Err(SandboxError::GuestFault {
+                phase: LifecyclePhase::ConsoleCommand,
+                message: format!(
+                    "console command index {command_index} is not declared for this component"
+                ),
+            });
+        }
+        if args.len() > MAX_CONSOLE_ARGUMENT_BYTES {
+            return Err(SandboxError::GuestFault {
+                phase: LifecyclePhase::ConsoleCommand,
+                message: format!(
+                    "console arguments are {} bytes, exceeding {MAX_CONSOLE_ARGUMENT_BYTES}",
+                    args.len()
+                ),
+            });
+        }
+        {
+            let state = self.store.data_mut();
+            state.current_console_args = Some(args.as_bytes().to_vec());
+            state.console_output.clear();
+            state.console_output_bytes = 0;
+            state.console_failed = false;
+            state.console_output_budget_exhausted = false;
+        }
+        let result = self.enter(LifecyclePhase::ConsoleCommand, true, |bindings, store| {
+            bindings.call_on_console_command(store, command_index)
+        });
+        self.store.data_mut().current_console_args = None;
+        result?;
+        let state = self.store.data_mut();
+        let output = ConsoleCommandResult {
+            success: !state.console_failed,
+            lines: std::mem::take(&mut state.console_output),
+        };
+        state.console_output_bytes = 0;
+        let commands = std::mem::take(&mut state.pending_commands);
+        Ok((output, commands))
+    }
+
     /// Replace the read-only principal storage snapshot visible to callbacks.
     pub fn set_principal_storage_snapshot(
         &mut self,
@@ -974,6 +1085,8 @@ impl ModInstance {
                 FaultKind::LogBudgetExhausted
             } else if std::mem::take(&mut state.command_budget_exhausted) {
                 FaultKind::CommandBudgetExhausted
+            } else if std::mem::take(&mut state.console_output_budget_exhausted) {
+                FaultKind::ConsoleOutputBudgetExhausted
             } else {
                 FaultKind::Guest
             };
@@ -1023,6 +1136,12 @@ struct HostState {
     subscribed_to_session: bool,
     custom_subscriptions: Vec<EventId>,
     current_custom_event: Option<CustomEvent>,
+    current_console_args: Option<Vec<u8>>,
+    console_command_indices: std::collections::BTreeSet<u32>,
+    console_output: Vec<String>,
+    console_output_bytes: usize,
+    console_failed: bool,
+    console_output_budget_exhausted: bool,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, PrincipalStorageValue>,
@@ -1441,6 +1560,49 @@ impl content_catalog::Host for HostState {
     }
 }
 
+impl console::Host for HostState {
+    fn args_len(&mut self) -> wasmtime::Result<u32> {
+        self.require_console_context()?;
+        Ok(
+            u32::try_from(self.current_console_args.as_ref().map_or(0, Vec::len))
+                .expect("console arguments are bounded below u32::MAX"),
+        )
+    }
+
+    fn args_byte(&mut self, index: u32) -> wasmtime::Result<Option<u8>> {
+        self.require_console_context()?;
+        Ok(self
+            .current_console_args
+            .as_ref()
+            .and_then(|args| args.get(index as usize).copied()))
+    }
+
+    fn write_line(&mut self, message: String) -> wasmtime::Result<()> {
+        self.require_console_context()?;
+        let next_bytes = self
+            .console_output_bytes
+            .checked_add(message.len())
+            .ok_or_else(|| wasmtime::Error::msg("console output byte count overflow"))?;
+        if message.len() > MAX_CONSOLE_OUTPUT_LINE_BYTES
+            || message.chars().any(char::is_control)
+            || self.console_output.len() >= MAX_CONSOLE_OUTPUT_LINES
+            || next_bytes > MAX_CONSOLE_OUTPUT_BYTES
+        {
+            self.console_output_budget_exhausted = true;
+            wasmtime::bail!("console output exceeds its bounded line or byte contract");
+        }
+        self.console_output_bytes = next_bytes;
+        self.console_output.push(message);
+        Ok(())
+    }
+
+    fn set_failed(&mut self) -> wasmtime::Result<()> {
+        self.require_console_context()?;
+        self.console_failed = true;
+        Ok(())
+    }
+}
+
 fn validate_plugin_query(name: &str) -> wasmtime::Result<()> {
     if name.is_empty()
         || name.len() > MAX_PLUGIN_NAME_BYTES
@@ -1503,6 +1665,19 @@ fn wit_form_ref(form: byroredux_sdk::identity::FormRef) -> state::FormRef {
 }
 
 impl HostState {
+    fn require_console_context(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(CONSOLE_REGISTER_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {CONSOLE_REGISTER_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.current_console_args.is_none() {
+            wasmtime::bail!("console host calls are only available during a console callback");
+        }
+        Ok(())
+    }
+
     fn require_world_entity_read(&self) -> wasmtime::Result<()> {
         if !self.grants.contains(WORLD_ENTITY_READ_CAPABILITY) {
             wasmtime::bail!(
@@ -1701,6 +1876,12 @@ mod projection_tests {
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
             current_custom_event: None,
+            current_console_args: None,
+            console_command_indices: BTreeSet::new(),
+            console_output: Vec::new(),
+            console_output_bytes: 0,
+            console_failed: false,
+            console_output_budget_exhausted: false,
             subscribed_to_update: false,
             principal_storage_schema: Some(1),
             principal_storage: BTreeMap::from([
@@ -1787,6 +1968,12 @@ mod projection_tests {
             subscribed_to_session: false,
             custom_subscriptions: Vec::new(),
             current_custom_event: None,
+            current_console_args: None,
+            console_command_indices: BTreeSet::new(),
+            console_output: Vec::new(),
+            console_output_bytes: 0,
+            console_failed: false,
+            console_output_budget_exhausted: false,
             subscribed_to_update: false,
             principal_storage_schema: None,
             principal_storage: BTreeMap::new(),

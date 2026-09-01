@@ -123,6 +123,10 @@ namespaced_id!(
     "Manifest-local identifier for one executable WebAssembly component."
 );
 namespaced_id!(
+    ConsoleCommandId,
+    "Manifest-local identifier for one engine-console command."
+);
+namespaced_id!(
     StorageKey,
     "Stable key in one principal's private persistent storage namespace."
 );

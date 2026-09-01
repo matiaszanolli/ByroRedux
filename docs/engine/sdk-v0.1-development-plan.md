@@ -60,6 +60,12 @@ case-insensitively, and qualify bounded source-local IDs into portable
 `FormRef` values. The executable projects this immutable snapshot from the
 same resolver that owns live global FormID translation before callbacks run;
 record existence and metadata queries remain open.
+Manifest-declared console commands are now engine-owned as well: granted
+packages publish only under `ext.<extension-id>.*`, route to an authenticated
+component/declaration index, receive bounded callback-local arguments, return
+bounded output, and commit mutations through the existing atomic deferred
+batch. Denial leaves no command behind and a guest fault quarantines only its
+component; settings remain the next half of this common-infrastructure slice.
 
 ## 1. Outcome
 
@@ -483,9 +489,9 @@ Exit gate:
 ### Phase 4 — save integration and first extender facilities
 
 Status: **Exact-version entity-attached and principal-storage persistence
-and the first read-only plugin/form catalog implemented; migrations, console
-registration, service aliases, record metadata queries, and real-mod fixtures
-pending.**
+and the first read-only plugin/form catalog plus manifest-declared namespaced
+console registration implemented; migrations, service aliases, record metadata
+queries, typed settings, and real-mod fixtures remain pending.**
 
 Deliverables:
 
@@ -495,7 +501,8 @@ Deliverables:
   collections.
 - Add read-only plugin/form catalog services and a namespaced console-command
   registration slice. **Plugin enumeration and portable form qualification are
-  implemented; dependency/record inspection and console registration remain.**
+  implemented. Namespaced, capability-gated console registration and bounded
+  callback dispatch are implemented; dependency/record inspection remains.**
 - Add SDK aliases for the first selected extender-script fixture, mapping it to
   semantic services rather than reproducing its implementation internals.
 - Add corrupt, missing-extension, downgrade, and migration-failure tests.
@@ -591,7 +598,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
 - Input action/control subscriptions after user rebinding. **Implemented for
   the engine's normalized action catalog with press/release edges and validated
   action filters; custom action registration remains.**
-- Namespaced console commands and settings.
+- Namespaced console commands and settings. **Manifest-declared commands are
+  implemented under the engine-owned `ext.<extension-id>.*` namespace with
+  bounded arguments/output, atomic deferred mutation, capability denial, and
+  per-component fault isolation; typed settings remain.**
 - Plugin/form/dependency introspection. **Loaded regular/light plugin
   enumeration, case-insensitive basename lookup, stable source identity, and
   bounded portable form qualification are implemented behind

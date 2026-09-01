@@ -179,6 +179,15 @@ interface content-catalog {
     qualify-form: func(plugin: string, local: u32) -> option<form-ref>;
 }
 
+/// Callback-local engine console arguments and bounded output. Commands are
+/// declared in the authenticated manifest; guests cannot choose global names.
+interface console {
+    args-len: func() -> u32;
+    args-byte: func(index: u32) -> option<u8>;
+    write-line: func(message: string);
+    set-failed: func();
+}
+
 /// Minimal lifecycle contract for the first executable-mod runtime slice.
 world extension {
     import logging;
@@ -188,6 +197,7 @@ world extension {
     import storage;
     import world-state;
     import content-catalog;
+    import console;
 
     use state.{entity-ref, form-ref, hit-details, input-action, input-phase, session-phase};
 
@@ -210,5 +220,6 @@ world extension {
     export on-session-event: func(phase: session-phase, slot: option<u32>);
     export on-custom-event: func(subscription-index: u32);
     export on-update: func(elapsed-seconds: f32);
+    export on-console-command: func(command-index: u32);
     export shutdown: func();
 }
