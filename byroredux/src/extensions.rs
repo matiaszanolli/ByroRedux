@@ -55,6 +55,7 @@ use byroredux_sdk::settings::{
     SettingControlDeclaration, SettingDeclaration, SettingValue as SdkSettingValue,
     SettingsSnapshot,
 };
+use byroredux_sdk::spatial::{SpatialReference, SpatialSnapshot, MAX_SPATIAL_REFERENCES};
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
     PrincipalStorageStore,
@@ -559,6 +560,12 @@ impl ExtensionHost {
             hosted
                 .instance
                 .set_engine_settings_snapshot(Arc::clone(&settings));
+        }
+    }
+
+    fn set_spatial_snapshot(&mut self, snapshot: Arc<SpatialSnapshot>) {
+        for hosted in &mut self.components {
+            hosted.instance.set_spatial_snapshot(Arc::clone(&snapshot));
         }
     }
 
@@ -1984,6 +1991,7 @@ pub(crate) fn pending_session_events(world: &World) -> Vec<SessionEvent> {
 /// Boot registers this before every producer-facing extension adapter. Any
 /// event published later in the frame therefore waits for the next Late pass.
 pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
+    let spatial_snapshot = Arc::new(capture_spatial_snapshot(world));
     let host = {
         let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
             return;
@@ -1996,6 +2004,7 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
     let mut host = host
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
+    host.set_spatial_snapshot(spatial_snapshot);
     let stats = host.dispatch_pending_custom_events();
     let diagnostics = host.take_diagnostics();
     drop(host);
@@ -2829,6 +2838,45 @@ fn forms_by_entity(world: &World) -> BTreeMap<EntityId, FormRef> {
             .collect(),
         _ => BTreeMap::new(),
     }
+}
+
+fn capture_spatial_snapshot(world: &World) -> SpatialSnapshot {
+    let forms = forms_by_entity(world);
+    let mut references = BTreeMap::<FormRef, SpatialReference>::new();
+    let mut truncated = false;
+    let global_transforms = world.query::<GlobalTransform>();
+    let local_transforms = world.query::<Transform>();
+    for (&entity, &form) in &forms {
+        let position = global_transforms
+            .as_ref()
+            .and_then(|transforms| transforms.get(entity))
+            .map(|transform| transform.translation.to_array())
+            .or_else(|| {
+                local_transforms
+                    .as_ref()
+                    .and_then(|transforms| transforms.get(entity))
+                    .map(|transform| transform.translation.to_array())
+            });
+        let Some(position) = position else {
+            continue;
+        };
+        let Ok(reference) = SpatialReference::new(form, position) else {
+            truncated = true;
+            continue;
+        };
+        if let std::collections::btree_map::Entry::Vacant(entry) = references.entry(form) {
+            entry.insert(reference);
+        } else {
+            truncated = true;
+        }
+    }
+    let mut references = references.into_values().collect::<Vec<_>>();
+    if references.len() > MAX_SPATIAL_REFERENCES {
+        references.truncate(MAX_SPATIAL_REFERENCES);
+        truncated = true;
+    }
+    SpatialSnapshot::new(references, truncated)
+        .expect("live spatial capture enforces SDK bounds and portable ordering")
 }
 
 fn capture_entity_projections(
@@ -5080,6 +5128,67 @@ mod tests {
         assert_eq!(snapshot.memberships().len(), 1);
         let faction = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x44);
         assert_eq!(snapshot.rank(faction), Some(-1));
+    }
+
+    #[test]
+    fn spatial_snapshot_captures_portable_authored_references_and_queries_by_distance() {
+        let mut world = World::new();
+        let near_entity = world.spawn();
+        let far_entity = world.spawn();
+        let plugin = PluginId::from_filename("Skyrim.esm");
+        let near_pair = FormIdPair {
+            plugin,
+            local: LocalFormId(1),
+        };
+        let far_pair = FormIdPair {
+            plugin,
+            local: LocalFormId(2),
+        };
+        let mut pool = FormIdPool::new();
+        let near_form = pool.intern(near_pair);
+        let far_form = pool.intern(far_pair);
+        world.insert(near_entity, FormIdComponent(near_form));
+        world.insert(far_entity, FormIdComponent(far_form));
+        world.insert(
+            near_entity,
+            GlobalTransform::new(Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            far_entity,
+            Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+        );
+        world.insert_resource(pool);
+
+        let snapshot = capture_spatial_snapshot(&world);
+        assert_eq!(snapshot.references().len(), 2);
+        assert!(!snapshot.truncated());
+        let result = snapshot.nearby([0.0; 3], 5.0, 1).unwrap();
+        assert_eq!(result.hits().len(), 1);
+        assert_eq!(result.hits()[0].reference().form(), form_ref(near_pair));
+        assert_eq!(result.hits()[0].distance(), 2.0);
+        assert!(result.truncated());
+    }
+
+    #[test]
+    fn spatial_snapshot_marks_duplicate_portable_forms_truncated() {
+        let mut world = World::new();
+        let first = world.spawn();
+        let duplicate = world.spawn();
+        let pair = FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(1),
+        };
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(pair);
+        world.insert(first, FormIdComponent(form));
+        world.insert(duplicate, FormIdComponent(form));
+        world.insert(first, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(duplicate, Transform::from_translation(Vec3::X));
+        world.insert_resource(pool);
+
+        let snapshot = capture_spatial_snapshot(&world);
+        assert_eq!(snapshot.references().len(), 1);
+        assert!(snapshot.truncated());
     }
 
     #[test]

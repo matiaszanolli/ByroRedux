@@ -101,6 +101,12 @@ membership ranks, preserves the engine's first-entry-wins rule for malformed
 duplicates, and reports unresolved or over-budget memberships explicitly.
 REPU fame/infamy and inter-faction relationship data remain separate pending
 contracts because they are not faction ranks.
+The first spatial service is live as a bounded, read-only authored-reference
+query. Capability-gated callbacks can search the latest live snapshot around
+an arbitrary finite world position, receive distance-sorted portable `FormRef`
+hits, and detect truncation. The boundary excludes raw ECS IDs and unauthored
+runtime entities; spawn/despawn remains closed until stable identity and
+lifecycle reconciliation contracts exist.
 
 ## 1. Outcome
 
@@ -667,7 +673,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   remaining gameplay domains are pending. Portable faction membership/rank
   reads are implemented separately; reputation and inter-faction relations
   remain pending.**
-- World/reference spatial queries and safe spawn/despawn operations.
+- World/reference spatial queries and safe spawn/despawn operations. **Bounded
+  radius queries over live authored references are implemented with portable
+  identities, deterministic distance ordering, explicit truncation, and no raw
+  ECS handles. Safe spawn/despawn remains pending.**
 - Typed script-callable extension functions.
 
 These services land only when the underlying engine subsystem has canonical

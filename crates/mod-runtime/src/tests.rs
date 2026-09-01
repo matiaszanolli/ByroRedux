@@ -29,6 +29,7 @@ use byroredux_sdk::service::{
     SESSION_PHASE_FILTER_FIELD, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY,
     SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -1645,6 +1646,13 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(FACTIONS_READ_CAPABILITY));
+    assert_eq!(
+        runtime.catalog().service_version(WORLD_SPATIAL_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime
+        .catalog()
+        .supports_capability(WORLD_SPATIAL_READ_CAPABILITY));
 }
 
 #[test]

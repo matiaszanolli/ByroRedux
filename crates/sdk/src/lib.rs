@@ -19,5 +19,6 @@ pub mod manifest;
 pub mod projection;
 pub mod service;
 pub mod settings;
+pub mod spatial;
 pub mod storage;
 pub mod studio;

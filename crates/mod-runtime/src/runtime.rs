@@ -1,6 +1,6 @@
 use crate::bindings::byro::mod_host::{
     actor_values, console, content_catalog, context, events, factions, inventory, logging, state,
-    storage as wit_storage, world_state,
+    storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -36,11 +36,12 @@ use byroredux_sdk::service::{
     SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
     SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
     UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
-    WORLD_TRANSFORM_READ_CAPABILITY,
+    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
 };
+use byroredux_sdk::spatial::{SpatialHit, SpatialQueryResult, SpatialSnapshot};
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand, PrincipalStorageValue};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -263,6 +264,10 @@ impl SandboxRuntime {
                 "Read portable faction membership ranks from callback-visible actors",
             ),
             (
+                WORLD_SPATIAL_READ_CAPABILITY,
+                "Query bounded live authored references by finite world position and radius",
+            ),
+            (
                 CONTENT_CATALOG_READ_CAPABILITY,
                 "Inspect loaded game plugins and qualify portable authored forms",
             ),
@@ -353,6 +358,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(FACTIONS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(WORLD_SPATIAL_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(WORLD_SPATIAL_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -519,6 +535,7 @@ impl SandboxRuntime {
             principal_storage_schema: manifest.principal_storage_schema,
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
+            spatial_snapshot: Arc::new(SpatialSnapshot::default()),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             setting_declarations: manifest.settings.clone(),
@@ -1099,6 +1116,11 @@ impl ModInstance {
             .collect();
     }
 
+    /// Replace the bounded live authored-reference snapshot used by spatial queries.
+    pub fn set_spatial_snapshot(&mut self, snapshot: Arc<SpatialSnapshot>) {
+        self.store.data_mut().spatial_snapshot = snapshot;
+    }
+
     /// Replace the immutable loaded-content catalog visible to host calls.
     pub fn set_content_catalog_snapshot(&mut self, catalog: Arc<ContentCatalog>) {
         self.store.data_mut().content_catalog = catalog;
@@ -1236,6 +1258,7 @@ struct HostState {
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, PrincipalStorageValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
+    spatial_snapshot: Arc<SpatialSnapshot>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     setting_declarations: Vec<SettingDeclaration>,
@@ -1789,6 +1812,27 @@ impl factions::Host for HostState {
     }
 }
 
+impl world_spatial::Host for HostState {
+    fn nearby(
+        &mut self,
+        x: f32,
+        y: f32,
+        z: f32,
+        radius: f32,
+        limit: u32,
+    ) -> wasmtime::Result<world_spatial::SpatialQueryResult> {
+        self.require_world_spatial_read()?;
+        if !self.accepting_commands {
+            wasmtime::bail!("spatial queries are only available during a callback");
+        }
+        let result = self
+            .spatial_snapshot
+            .nearby([x, y, z], radius, limit as usize)
+            .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
+        Ok(wit_spatial_query_result(&result))
+    }
+}
+
 impl console::Host for HostState {
     fn args_len(&mut self) -> wasmtime::Result<u32> {
         self.require_console_context()?;
@@ -1925,6 +1969,25 @@ fn wit_faction_membership(membership: FactionMembership) -> factions::FactionMem
     }
 }
 
+fn wit_spatial_query_result(result: &SpatialQueryResult) -> world_spatial::SpatialQueryResult {
+    world_spatial::SpatialQueryResult {
+        hits: result.hits().iter().copied().map(wit_spatial_hit).collect(),
+        truncated: result.truncated(),
+    }
+}
+
+fn wit_spatial_hit(hit: SpatialHit) -> world_spatial::SpatialHit {
+    let reference = hit.reference();
+    let [x, y, z] = reference.position();
+    world_spatial::SpatialHit {
+        reference: wit_form_ref(reference.form()),
+        x,
+        y,
+        z,
+        distance: hit.distance(),
+    }
+}
+
 fn wit_entity_projection(
     projection: &EntityProjection,
     include_transform: bool,
@@ -1993,6 +2056,16 @@ impl HostState {
         if !self.grants.contains(FACTIONS_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {FACTIONS_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_world_spatial_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(WORLD_SPATIAL_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {WORLD_SPATIAL_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2298,6 +2371,7 @@ mod projection_tests {
                 ),
             ]),
             entity_projections: BTreeMap::new(),
+            spatial_snapshot: Arc::new(SpatialSnapshot::default()),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             setting_declarations: Vec::new(),
@@ -2376,6 +2450,7 @@ mod projection_tests {
             principal_storage_schema: None,
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
+            spatial_snapshot: Arc::new(SpatialSnapshot::default()),
             content_catalog: Arc::new(
                 ContentCatalog::new_with_metadata(
                     vec![
@@ -2635,6 +2710,42 @@ mod projection_tests {
         let mut denied = content_host_state(false);
         let error = <HostState as factions::Host>::get(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(FACTIONS_READ_CAPABILITY));
+    }
+
+    #[test]
+    fn spatial_queries_are_callback_local_portable_bounded_and_capability_gated() {
+        let near = FormRef::new(1_u128.to_be_bytes(), 1);
+        let far = FormRef::new(2_u128.to_be_bytes(), 1);
+        let mut state = content_host_state(false);
+        state.grants.grant(WORLD_SPATIAL_READ_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.spatial_snapshot = Arc::new(
+            SpatialSnapshot::new(
+                vec![
+                    byroredux_sdk::spatial::SpatialReference::new(near, [2.0, 0.0, 0.0]).unwrap(),
+                    byroredux_sdk::spatial::SpatialReference::new(far, [5.0, 0.0, 0.0]).unwrap(),
+                ],
+                false,
+            )
+            .unwrap(),
+        );
+
+        let result =
+            <HostState as world_spatial::Host>::nearby(&mut state, 0.0, 0.0, 0.0, 5.0, 1).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(sdk_form_ref(result.hits[0].reference), near);
+        assert_eq!(result.hits[0].distance, 2.0);
+        assert!(result.truncated);
+
+        state.accepting_commands = false;
+        assert!(
+            <HostState as world_spatial::Host>::nearby(&mut state, 0.0, 0.0, 0.0, 1.0, 1,).is_err()
+        );
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        let error = <HostState as world_spatial::Host>::nearby(&mut denied, 0.0, 0.0, 0.0, 1.0, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains(WORLD_SPATIAL_READ_CAPABILITY));
     }
 
     #[test]

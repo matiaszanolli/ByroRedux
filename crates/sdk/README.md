@@ -29,6 +29,9 @@ The current public surface includes:
 - `FactionSnapshot` exposes deterministic callback-local FACT memberships and
   signed ranks through portable identities, with explicit truncation. It does
   not conflate membership with REPU fame/infamy or faction relationships.
+- `SpatialSnapshot` provides bounded, deterministic radius queries over live
+  authored references. Results carry portable `FormRef` identities and finite
+  world positions, never ECS IDs; truncation remains explicit.
 - Validated extension, principal, capability, service, event, and schema IDs
   are stable namespaced values shared by package loaders and sandbox hosts.
 - `ExtensionManifest` declares SDK/dependency ranges, executable components,
@@ -80,11 +83,12 @@ missing packages/forms, persists private principal storage, and performs
 orderly shutdown. It also snapshots names, stable form identities, world
 transforms, and bounded actor values before guest delivery, with separate
 read/write grants. It also projects capability-gated inventory and worn
-equipment summaries by portable base form. Actor-value mutations resolve
-transient entity handles and portable AVIF identities, then stage and validate
-the full batch before touching ECS state. Inventory mutation waits for a stable
-item-instance contract. Schema migrators and the broader service surface are
-still planned work.
+equipment summaries by portable base form, faction memberships, and the latest
+bounded spatial snapshot of live authored references. Actor-value mutations
+resolve transient entity handles and portable AVIF identities, then stage and
+validate the full batch before touching ECS state. Inventory mutation waits for
+a stable item-instance contract. Schema migrators and the broader service
+surface are still planned work.
 
 Run the current tool with:
 
