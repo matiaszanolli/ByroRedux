@@ -14,6 +14,7 @@ use byroredux_papyrus::ast::{
     AssignOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type,
 };
 use byroredux_sdk::{
+    compatibility::classify_static_call,
     identity::ExtensionId,
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
@@ -183,7 +184,7 @@ pub fn lower_provider_call(
         return Ok(None);
     };
     let Some(route) = catalog.resolve(&provider.0, &member.node.0) else {
-        if catalog.contains_provider(&provider.0) {
+        if is_known_provider_call(&provider.0, &member.node.0, catalog) {
             return Err(PapyrusProviderLowerError::UnknownFunction {
                 provider: provider.0.clone(),
                 function: member.node.0.clone(),
@@ -198,6 +199,14 @@ pub fn lower_provider_call(
         arguments,
         result: route.declaration().result,
     }))
+}
+
+fn is_known_provider_call(
+    provider: &str,
+    function: &str,
+    catalog: &PapyrusProviderCatalog,
+) -> bool {
+    catalog.contains_provider(provider) || classify_static_call(provider, function).is_some()
 }
 
 fn lower_arguments(
@@ -622,8 +631,12 @@ fn expression_mentions_provider(
         Expr::Call { callee, args } => {
             let direct = matches!(
                 &callee.node,
-                Expr::MemberAccess { object, .. }
-                    if matches!(&object.node, Expr::Ident(provider) if catalog.contains_provider(&provider.0))
+                Expr::MemberAccess { object, member }
+                    if matches!(
+                        &object.node,
+                        Expr::Ident(provider)
+                            if is_known_provider_call(&provider.0, &member.node.0, catalog)
+                    )
             );
             direct
                 || expression_mentions_provider(&callee.node, catalog, depth + 1)
@@ -1022,6 +1035,36 @@ mod tests {
     }
 
     #[test]
+    fn recognized_extender_call_without_an_executable_route_fails_closed() {
+        let empty = PapyrusProviderCatalog::default();
+        assert_eq!(
+            lower_provider_call(&expression("SKSE.GetVersion()"), &empty),
+            Err(PapyrusProviderLowerError::UnknownFunction {
+                provider: "SKSE".to_owned(),
+                function: "GetVersion".to_owned(),
+            })
+        );
+
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                SKSE.UnknownNative()
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            lower_provider_program(&script, &empty),
+            Err(PapyrusProviderProgramError::Call(
+                PapyrusProviderLowerError::UnknownFunction {
+                    provider: "SKSE".to_owned(),
+                    function: "UnknownNative".to_owned(),
+                }
+            ))
+        );
+    }
+
+    #[test]
     fn unrelated_calls_are_left_for_other_translators() {
         assert_eq!(
             lower_provider_call(&expression("Utility.Wait(1.0)"), &catalog()).unwrap(),
@@ -1119,11 +1162,15 @@ mod tests {
 
     #[test]
     fn byte_level_pex_static_call_lowers_to_the_same_provider_route() {
-        let pex = byroredux_pex::parse(&provider_call_pex_bytes()).unwrap();
-        let script = byroredux_pex::decompile::decompile_script(&pex).unwrap();
-        let program = lower_provider_program(&script, &catalog())
-            .unwrap()
-            .unwrap();
+        let translation = crate::translate_pex_detailed_with_providers(
+            &provider_call_pex_bytes(),
+            byroredux_plugin::esm::reader::GameKind::Skyrim,
+            None,
+            None,
+            &catalog(),
+        );
+        assert_eq!(translation.provider_error, None);
+        let program = translation.provider_program.unwrap();
         let [PapyrusProviderStatement::Call(call)] = program.handler(PapyrusProviderEvent::OnLoad)
         else {
             panic!("expected one lowered provider call");
