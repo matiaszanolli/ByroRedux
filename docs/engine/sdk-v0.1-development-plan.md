@@ -720,7 +720,10 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   calls before launch. **Decoded PEX call-site extraction and compatibility
   classification are implemented, including full-property bodies, optional
   source lines, engine-service mappings, and explicit sandbox-policy
-  diagnostics. Translation invokes this preflight before decompilation.
+  diagnostics. Translation invokes this preflight before decompilation. A
+  checked-in byte-level Skyrim PEX conformance fixture now guards mapped
+  StorageUtil/mod-event calls, an unsupported JsonUtil call, vararg counts,
+  and debug source-line attribution through the real decoder.
   Whole-load-order launch reporting, source scans, and ObScript/xNVSE/OBSE
   scanning remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered

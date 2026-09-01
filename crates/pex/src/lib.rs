@@ -469,6 +469,167 @@ mod tests {
         w.buf
     }
 
+    /// A compiled-script compatibility fixture rather than an in-memory model:
+    /// the bytecode uses extender-era Papyrus APIs that the SDK compatibility
+    /// catalog maps (StorageUtil + mod events) or rejects by policy (JsonUtil).
+    /// Keeping this at the reader boundary guards the operand ordering and
+    /// debug-line attribution consumed by the preflight pass.
+    fn build_extender_dependent_skyrim_be() -> Vec<u8> {
+        let mut w = PexWriter::new_be();
+        for s in [
+            "ByroExtenderConformance",
+            "Quest",
+            "",
+            "None",
+            "Int",
+            "OnInit",
+            "::temp0",
+            "::temp1",
+            "::nonevar",
+            "Self",
+            "StorageUtil",
+            "GetIntValue",
+            "visits",
+            "RegisterForModEvent",
+            "byro:ready",
+            "OnByroReady",
+            "JsonUtil",
+            "Load",
+            "unsafe.json",
+        ] {
+            w.intern(s);
+        }
+
+        w.magic(0xDEC0_57FA);
+        w.u8(3);
+        w.u8(2);
+        w.u16(0);
+        w.i64(1_700_000_000);
+        w.string("ByroExtenderConformance.psc");
+        w.string("byroredux");
+        w.string("conformance");
+
+        let table = w.strings.clone();
+        w.u16(table.len() as u16);
+        for s in &table {
+            w.string(s);
+        }
+
+        // Debug metadata: all four instructions belong to OnInit.
+        w.u8(1);
+        w.i64(1_700_000_000);
+        w.u16(1);
+        w.sidx("ByroExtenderConformance");
+        w.sidx("");
+        w.sidx("OnInit");
+        w.u8(0); // method/event
+        w.u16(4);
+        for line in [4, 5, 6, 7] {
+            w.u16(line);
+        }
+
+        w.u16(0); // user flags
+        w.u16(1); // objects
+        w.sidx("ByroExtenderConformance");
+        w.u32(0);
+        w.sidx("Quest");
+        w.sidx("");
+        w.u32(0);
+        w.sidx("");
+        w.u16(0); // variables
+        w.u16(0); // properties
+        w.u16(1); // states
+        w.sidx("");
+        w.u16(1); // functions
+        w.sidx("OnInit");
+        w.sidx("None");
+        w.sidx("");
+        w.u32(0);
+        w.u8(0);
+        w.u16(0); // params
+        w.u16(2); // locals
+        w.sidx("::temp0");
+        w.sidx("Int");
+        w.sidx("::temp1");
+        w.sidx("Int");
+        w.u16(4); // instructions
+
+        // StorageUtil.GetIntValue(None, "visits", 0)
+        w.u8(OpCode::CallStatic as u8);
+        for identifier in ["StorageUtil", "GetIntValue", "::temp0"] {
+            w.u8(1);
+            w.sidx(identifier);
+        }
+        w.u8(3); // three varargs
+        w.u32(3);
+        w.u8(0); // None
+        w.u8(2);
+        w.sidx("visits");
+        w.u8(3);
+        w.u32(0);
+
+        // Self.RegisterForModEvent("byro:ready", "OnByroReady")
+        w.u8(OpCode::CallMethod as u8);
+        for identifier in ["RegisterForModEvent", "Self", "::nonevar"] {
+            w.u8(1);
+            w.sidx(identifier);
+        }
+        w.u8(3); // two varargs
+        w.u32(2);
+        for string in ["byro:ready", "OnByroReady"] {
+            w.u8(2);
+            w.sidx(string);
+        }
+
+        // JsonUtil.Load("unsafe.json")
+        w.u8(OpCode::CallStatic as u8);
+        for identifier in ["JsonUtil", "Load", "::temp1"] {
+            w.u8(1);
+            w.sidx(identifier);
+        }
+        w.u8(3); // one vararg
+        w.u32(1);
+        w.u8(2);
+        w.sidx("unsafe.json");
+
+        w.u8(OpCode::Return as u8);
+        w.u8(0); // None
+
+        w.buf
+    }
+
+    #[test]
+    fn scans_compiled_extender_dependent_calls_with_debug_lines() {
+        let pex = parse(&build_extender_dependent_skyrim_be())
+            .expect("extender conformance fixture parses");
+        let scan = pex.call_sites();
+
+        assert!(scan.diagnostics.is_empty());
+        assert_eq!(scan.calls.len(), 3);
+        assert_eq!(scan.calls[0].source_file, "ByroExtenderConformance.psc");
+        assert_eq!(scan.calls[0].source_line, Some(4));
+        assert_eq!(
+            scan.calls[0].target,
+            CallTarget::StaticType("StorageUtil".to_owned())
+        );
+        assert_eq!(scan.calls[0].function, "GetIntValue");
+        assert_eq!(scan.calls[0].argument_count, 3);
+        assert_eq!(scan.calls[1].source_line, Some(5));
+        assert_eq!(
+            scan.calls[1].target,
+            CallTarget::Receiver(Some("Self".to_owned()))
+        );
+        assert_eq!(scan.calls[1].function, "RegisterForModEvent");
+        assert_eq!(scan.calls[1].argument_count, 2);
+        assert_eq!(scan.calls[2].source_line, Some(6));
+        assert_eq!(
+            scan.calls[2].target,
+            CallTarget::StaticType("JsonUtil".to_owned())
+        );
+        assert_eq!(scan.calls[2].function, "Load");
+        assert_eq!(scan.calls[2].argument_count, 1);
+    }
+
     #[test]
     fn parses_a_handbuilt_skyrim_be_pex() {
         let bytes = build_sample_skyrim_be();
