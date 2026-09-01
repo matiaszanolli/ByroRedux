@@ -853,6 +853,133 @@ mod tests {
         catalog
     }
 
+    struct PexBytes {
+        bytes: Vec<u8>,
+        strings: Vec<String>,
+    }
+
+    impl PexBytes {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                strings: Vec::new(),
+            }
+        }
+
+        fn u8(&mut self, value: u8) {
+            self.bytes.push(value);
+        }
+
+        fn u16(&mut self, value: u16) {
+            self.bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        fn u32(&mut self, value: u32) {
+            self.bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        fn i64(&mut self, value: i64) {
+            self.bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        fn string(&mut self, value: &str) {
+            self.u16(value.len() as u16);
+            self.bytes.extend_from_slice(value.as_bytes());
+        }
+
+        fn intern(&mut self, value: &str) {
+            if !self.strings.iter().any(|candidate| candidate == value) {
+                self.strings.push(value.to_owned());
+            }
+        }
+
+        fn string_index(&mut self, value: &str) {
+            let index = self
+                .strings
+                .iter()
+                .position(|candidate| candidate == value)
+                .expect("PEX fixture string was pre-interned");
+            self.u16(index as u16);
+        }
+    }
+
+    fn provider_call_pex_bytes() -> Vec<u8> {
+        use byroredux_pex::OpCode;
+
+        let mut writer = PexBytes::new();
+        for value in [
+            "ProviderFixture",
+            "ObjectReference",
+            "",
+            "None",
+            "OnLoad",
+            "WeatherNative",
+            "WeatherAt",
+            "::nonevar",
+            "clear",
+        ] {
+            writer.intern(value);
+        }
+
+        // PEX magic is always little-endian; this marker selects Skyrim's
+        // big-endian layout for every later multi-byte field.
+        writer
+            .bytes
+            .extend_from_slice(&0xDEC0_57FA_u32.to_le_bytes());
+        writer.u8(3);
+        writer.u8(2);
+        writer.u16(0);
+        writer.i64(1_700_000_000);
+        writer.string("ProviderFixture.psc");
+        writer.string("byroredux");
+        writer.string("provider conformance");
+
+        let strings = writer.strings.clone();
+        writer.u16(strings.len() as u16);
+        for value in &strings {
+            writer.string(value);
+        }
+
+        writer.u8(0); // no debug metadata
+        writer.u16(0); // no user flags
+        writer.u16(1); // one object
+        writer.string_index("ProviderFixture");
+        writer.u32(0); // ignored object size
+        writer.string_index("ObjectReference");
+        writer.string_index("");
+        writer.u32(0);
+        writer.string_index(""); // auto state
+        writer.u16(0); // variables
+        writer.u16(0); // properties
+        writer.u16(1); // states
+        writer.string_index("");
+        writer.u16(1); // functions
+        writer.string_index("OnLoad");
+        writer.string_index("None");
+        writer.string_index("");
+        writer.u32(0);
+        writer.u8(0);
+        writer.u16(0); // parameters
+        writer.u16(0); // locals
+        writer.u16(2); // instructions
+
+        writer.u8(OpCode::CallStatic as u8);
+        for value in ["WeatherNative", "WeatherAt", "::nonevar"] {
+            writer.u8(1); // identifier
+            writer.string_index(value);
+        }
+        writer.u8(3); // integer vararg count
+        writer.u32(2);
+        writer.u8(3); // integer literal
+        writer.u32(4);
+        writer.u8(2); // string literal
+        writer.string_index("clear");
+        writer.u8(OpCode::Return as u8);
+        writer.u8(0); // None
+
+        writer.bytes
+    }
+
     #[test]
     fn static_calls_resolve_case_insensitively_and_reorder_named_arguments() {
         let call = lower_provider_call(
@@ -991,47 +1118,8 @@ mod tests {
     }
 
     #[test]
-    fn decompiled_pex_static_call_lowers_to_the_same_provider_route() {
-        use byroredux_pex::{
-            Function, Header, Instruction, Object, OpCode, Pex, ScriptType, State, Value,
-        };
-
-        let pex = Pex {
-            script_type: ScriptType::Skyrim,
-            header: Header::default(),
-            string_table: Vec::new(),
-            debug_info: Default::default(),
-            user_flags: Vec::new(),
-            objects: vec![Object {
-                name: "ProviderFixture".to_owned(),
-                parent_class_name: "ObjectReference".to_owned(),
-                states: vec![State {
-                    name: String::new(),
-                    functions: vec![Function {
-                        name: "OnLoad".to_owned(),
-                        return_type_name: "None".to_owned(),
-                        instructions: vec![
-                            Instruction {
-                                op: OpCode::CallStatic,
-                                args: vec![
-                                    Value::Identifier("WeatherNative".to_owned()),
-                                    Value::Identifier("WeatherAt".to_owned()),
-                                    Value::Identifier("::nonevar".to_owned()),
-                                ],
-                                var_args: vec![Value::Integer(4), Value::Str("clear".to_owned())],
-                            },
-                            Instruction {
-                                op: OpCode::Return,
-                                args: vec![Value::None],
-                                var_args: Vec::new(),
-                            },
-                        ],
-                        ..Default::default()
-                    }],
-                }],
-                ..Default::default()
-            }],
-        };
+    fn byte_level_pex_static_call_lowers_to_the_same_provider_route() {
+        let pex = byroredux_pex::parse(&provider_call_pex_bytes()).unwrap();
         let script = byroredux_pex::decompile::decompile_script(&pex).unwrap();
         let program = lower_provider_program(&script, &catalog())
             .unwrap()
