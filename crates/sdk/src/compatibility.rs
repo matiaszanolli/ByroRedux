@@ -205,6 +205,7 @@ pub const PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.set-string-value";
 pub const PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-string-value";
+pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
 
 pub const PAPYRUS_GAME_LIGHT_MOD_OFFSET: i32 = 0x100;
 pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
@@ -212,7 +213,7 @@ pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
 /// One exact engine-owned Papyrus alias and its typed call declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnginePapyrusFunctionDeclaration {
-    pub route: &'static str,
+    pub route: String,
     pub declaration: ScriptFunctionDeclaration,
 }
 
@@ -247,7 +248,10 @@ fn papyrus_game_content_declaration(
         }),
         description: description.to_owned(),
     };
-    EnginePapyrusFunctionDeclaration { route, declaration }
+    EnginePapyrusFunctionDeclaration {
+        route: route.to_owned(),
+        declaration,
+    }
 }
 
 /// Exact SKSE `Game` functions executable through the content catalog.
@@ -347,7 +351,7 @@ fn papyrus_storage_util_declaration(
     result: ScriptValueType,
 ) -> EnginePapyrusFunctionDeclaration {
     EnginePapyrusFunctionDeclaration {
-        route,
+        route: route.to_owned(),
         declaration: ScriptFunctionDeclaration {
             id: ScriptFunctionId::new(id).expect("built-in StorageUtil function ID is valid"),
             component: ComponentId::new("principal-storage")
@@ -374,6 +378,146 @@ fn papyrus_storage_util_declaration(
                 .to_owned(),
         },
     }
+}
+
+fn legacy_container_id(provider: &str, function: &str) -> String {
+    let mut id = provider.to_ascii_lowercase();
+    id.push('-');
+    for character in function.chars() {
+        if character.is_ascii_uppercase() {
+            id.push('-');
+            id.push(character.to_ascii_lowercase());
+        } else {
+            id.push(character);
+        }
+    }
+    id
+}
+
+fn papyrus_legacy_container_declaration(
+    provider: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+    result: Option<ScriptValueType>,
+) -> EnginePapyrusFunctionDeclaration {
+    let id = legacy_container_id(provider, function);
+    EnginePapyrusFunctionDeclaration {
+        route: format!("{PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX}{id}"),
+        declaration: ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new(&id).expect("built-in JContainers function ID is valid"),
+            component: ComponentId::new("legacy-containers")
+                .expect("built-in JContainers component ID is valid"),
+            parameters: parameters
+                .iter()
+                .cloned()
+                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
+                    id: ScriptParameterId::new(id)
+                        .expect("built-in JContainers parameter ID is valid"),
+                    value_type,
+                    optional,
+                })
+                .collect(),
+            result: result.map(|value_type| ScriptResultDeclaration {
+                value_type,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: provider.to_owned(),
+                function: function.to_owned(),
+            }),
+            description: "Engine-owned principal-private JContainers compatibility".to_owned(),
+        },
+    }
+}
+
+/// Exact in-memory JValue/JArray/JMap core backed by the save-persistent,
+/// principal-private engine container registry.
+pub fn papyrus_legacy_container_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    let integer = ScriptValueType::Integer;
+    let float = ScriptValueType::Float;
+    let string = ScriptValueType::String;
+    let form = ScriptValueType::Form;
+    let boolean = ScriptValueType::Boolean;
+    let object = [("object", integer, false)];
+    let object_key = [("object", integer, false), ("key", string, false)];
+    let mut declarations = vec![
+        papyrus_legacy_container_declaration("JValue", "count", &object, Some(integer)),
+        papyrus_legacy_container_declaration("JValue", "clear", &object, None),
+        papyrus_legacy_container_declaration("JValue", "release", &object, Some(integer)),
+        papyrus_legacy_container_declaration("JArray", "object", &[], Some(integer)),
+        papyrus_legacy_container_declaration("JArray", "count", &object, Some(integer)),
+        papyrus_legacy_container_declaration("JArray", "clear", &object, None),
+        papyrus_legacy_container_declaration(
+            "JArray",
+            "eraseIndex",
+            &[("object", integer, false), ("index", integer, false)],
+            None,
+        ),
+        papyrus_legacy_container_declaration("JMap", "object", &[], Some(integer)),
+        papyrus_legacy_container_declaration("JMap", "count", &object, Some(integer)),
+        papyrus_legacy_container_declaration("JMap", "clear", &object, None),
+        papyrus_legacy_container_declaration("JMap", "hasKey", &object_key, Some(boolean)),
+        papyrus_legacy_container_declaration("JMap", "removeKey", &object_key, Some(boolean)),
+    ];
+    for (suffix, value_type, value_name, nullable) in [
+        ("Int", integer, "value", false),
+        ("Flt", float, "value", false),
+        ("Str", string, "value", false),
+        ("Form", form, "value", true),
+        ("Obj", integer, "container", false),
+    ] {
+        declarations.push(papyrus_legacy_container_declaration(
+            "JArray",
+            &format!("add{suffix}"),
+            &[
+                ("object", integer, false),
+                (value_name, value_type, nullable),
+                ("add-to-index", integer, true),
+            ],
+            None,
+        ));
+        declarations.push(papyrus_legacy_container_declaration(
+            "JArray",
+            &format!("get{suffix}"),
+            &[
+                ("object", integer, false),
+                ("index", integer, false),
+                ("default", value_type, true),
+            ],
+            Some(value_type),
+        ));
+        declarations.push(papyrus_legacy_container_declaration(
+            "JArray",
+            &format!("set{suffix}"),
+            &[
+                ("object", integer, false),
+                ("index", integer, false),
+                (value_name, value_type, nullable),
+            ],
+            None,
+        ));
+        declarations.push(papyrus_legacy_container_declaration(
+            "JMap",
+            &format!("get{suffix}"),
+            &[
+                ("object", integer, false),
+                ("key", string, false),
+                ("default", value_type, true),
+            ],
+            Some(value_type),
+        ));
+        declarations.push(papyrus_legacy_container_declaration(
+            "JMap",
+            &format!("set{suffix}"),
+            &[
+                ("object", integer, false),
+                ("key", string, false),
+                (value_name, value_type, nullable),
+            ],
+            None,
+        ));
+    }
+    declarations
 }
 
 /// Exact global scalar `StorageUtil` calls backed by principal-private engine
@@ -899,7 +1043,7 @@ fn legacy_container_source_alias(provider: &str, function: &str) -> Option<Sourc
         } else if function.eq_ignore_ascii_case("clear") {
             ("JValue", "clear", "legacy-containers.clear", "none")
         } else if function.eq_ignore_ascii_case("release") {
-            ("JValue", "release", "legacy-containers.release", "none")
+            ("JValue", "release", "legacy-containers.release", "handle")
         } else {
             return None;
         }
@@ -1619,6 +1763,27 @@ mod tests {
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Unsupported
+        );
+        let declarations = papyrus_legacy_container_declarations();
+        assert_eq!(declarations.len(), 37);
+        assert!(declarations
+            .iter()
+            .all(|function| function.declaration.validate().is_ok()));
+        let release =
+            declarations
+                .iter()
+                .find(|function| {
+                    function.declaration.papyrus.as_ref().is_some_and(|alias| {
+                        alias.provider == "JValue" && alias.function == "release"
+                    })
+                })
+                .unwrap();
+        assert_eq!(
+            release.declaration.result,
+            Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::Integer,
+                optional: false,
+            })
         );
     }
 

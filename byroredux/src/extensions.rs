@@ -40,10 +40,11 @@ use byroredux_sdk::compatibility::{
     PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
     PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
     PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -66,7 +67,7 @@ use byroredux_sdk::inventory::{
     InventoryEntry, InventorySnapshot, MAX_INVENTORY_ENTRIES_PER_ENTITY,
 };
 use byroredux_sdk::legacy_containers::{
-    LegacyContainerError, LegacyContainerRegistry, PersistedLegacyContainers,
+    LegacyContainerError, LegacyContainerRegistry, LegacyContainerValue, PersistedLegacyContainers,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::packages::{
@@ -711,6 +712,9 @@ impl ExtensionHost {
         if qualified_name.starts_with("byro.storage.compat.storage-util.") {
             return self.invoke_storage_util(principal, qualified_name, arguments);
         }
+        if qualified_name.starts_with(PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX) {
+            return self.invoke_legacy_container(principal, qualified_name, arguments);
+        }
         let value = match (qualified_name, arguments) {
             (PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
                 adapt_papyrus_game_get_mod_count(&self.content_catalog),
@@ -892,6 +896,219 @@ impl ExtensionHost {
             StorageUtilScalarResult::Bool(value) => ScriptValue::Boolean(value),
             StorageUtilScalarResult::String(value) => ScriptValue::String(value),
         })
+    }
+
+    fn invoke_legacy_container(
+        &mut self,
+        principal: Option<&PrincipalId>,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
+            function: qualified_name.to_owned(),
+            reason,
+        };
+        let principal = principal.ok_or_else(|| {
+            unavailable("JContainers call has no authenticated legacy-script principal".to_owned())
+        })?;
+        let operation = qualified_name
+            .strip_prefix(PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX)
+            .ok_or_else(|| unavailable("invalid JContainers engine route".to_owned()))?;
+        let integer = |value: i64| {
+            i32::try_from(value).map_err(|_| {
+                unavailable("JContainers integer is outside the Papyrus i32 range".to_owned())
+            })
+        };
+        let registry = self.legacy_containers.get_mut(principal).ok_or_else(|| {
+            unavailable("JContainers principal has no registered private registry".to_owned())
+        })?;
+
+        let value_from_script = |kind: &str, value: &ScriptValue| {
+            Ok(match (kind, value) {
+                ("int", ScriptValue::Integer(value)) => LegacyContainerValue::Int(integer(*value)?),
+                ("flt", ScriptValue::Float(value)) => {
+                    LegacyContainerValue::FloatBits(value.to_bits())
+                }
+                ("str", ScriptValue::String(value)) => LegacyContainerValue::String(value.clone()),
+                ("form", ScriptValue::Form(value)) => LegacyContainerValue::Form(Some(*value)),
+                ("form", ScriptValue::None) => LegacyContainerValue::Form(None),
+                ("obj", ScriptValue::Integer(value)) => {
+                    LegacyContainerValue::Object(integer(*value)?)
+                }
+                _ => {
+                    return Err(unavailable(
+                        "JContainers value has the wrong exact type".to_owned(),
+                    ))
+                }
+            })
+        };
+        let default_value = |kind: &str, value: Option<&ScriptValue>| {
+            Ok(match (kind, value) {
+                ("int", None) => ScriptValue::Integer(0),
+                ("flt", None) => ScriptValue::Float(0.0),
+                ("str", None) => ScriptValue::String(String::new()),
+                ("form", None) | ("form", Some(ScriptValue::None)) => ScriptValue::None,
+                ("obj", None) => ScriptValue::Integer(0),
+                ("int", Some(ScriptValue::Integer(value))) => {
+                    ScriptValue::Integer(i64::from(integer(*value)?))
+                }
+                ("flt", Some(ScriptValue::Float(value))) => ScriptValue::Float(*value),
+                ("str", Some(ScriptValue::String(value))) => ScriptValue::String(value.clone()),
+                ("form", Some(ScriptValue::Form(value))) => ScriptValue::Form(*value),
+                ("obj", Some(ScriptValue::Integer(value))) => {
+                    ScriptValue::Integer(i64::from(integer(*value)?))
+                }
+                _ => {
+                    return Err(unavailable(
+                        "JContainers default has the wrong exact type".to_owned(),
+                    ))
+                }
+            })
+        };
+        let value_to_script = |kind: &str,
+                               value: Option<&LegacyContainerValue>,
+                               default: ScriptValue| match (
+            kind, value,
+        ) {
+            ("int", Some(LegacyContainerValue::Int(value))) => {
+                ScriptValue::Integer(i64::from(*value))
+            }
+            ("int", Some(LegacyContainerValue::FloatBits(value))) => {
+                ScriptValue::Integer(i64::from(f32::from_bits(*value) as i32))
+            }
+            ("flt", Some(LegacyContainerValue::FloatBits(value))) => {
+                ScriptValue::Float(f32::from_bits(*value))
+            }
+            ("flt", Some(LegacyContainerValue::Int(value))) => ScriptValue::Float(*value as f32),
+            ("str", Some(LegacyContainerValue::String(value))) => {
+                ScriptValue::String(value.clone())
+            }
+            ("form", Some(LegacyContainerValue::Form(Some(value)))) => ScriptValue::Form(*value),
+            ("form", Some(LegacyContainerValue::Form(None))) => ScriptValue::None,
+            ("obj", Some(LegacyContainerValue::Object(value))) => {
+                ScriptValue::Integer(i64::from(*value))
+            }
+            _ => default,
+        };
+        let read_index = |handle: i32, index: i32, registry: &LegacyContainerRegistry| {
+            if index >= 0 {
+                index
+            } else {
+                registry.count(handle).saturating_add(index)
+            }
+        };
+        let write_index = |handle: i32, index: i32, registry: &LegacyContainerRegistry| {
+            if index == -1 {
+                None
+            } else {
+                let index = if index >= 0 {
+                    index
+                } else {
+                    registry
+                        .count(handle)
+                        .saturating_add(index)
+                        .saturating_add(1)
+                };
+                u32::try_from(index).ok()
+            }
+        };
+
+        let result = match (operation, arguments) {
+            ("jarray-object", []) => ScriptValue::Integer(i64::from(registry.create_array())),
+            ("jmap-object", []) => ScriptValue::Integer(i64::from(registry.create_map())),
+            ("jvalue-count" | "jarray-count" | "jmap-count", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Integer(i64::from(registry.count(integer(*handle)?)))
+            }
+            ("jvalue-clear" | "jarray-clear" | "jmap-clear", [ScriptValue::Integer(handle)]) => {
+                registry.clear(integer(*handle)?);
+                ScriptValue::None
+            }
+            ("jvalue-release", [ScriptValue::Integer(handle)]) => {
+                registry.release(integer(*handle)?);
+                ScriptValue::Integer(0)
+            }
+            ("jarray-erase-index", [ScriptValue::Integer(handle), ScriptValue::Integer(index)]) => {
+                let handle = integer(*handle)?;
+                registry.array_erase(handle, read_index(handle, integer(*index)?, registry));
+                ScriptValue::None
+            }
+            ("jmap-has-key", [ScriptValue::Integer(handle), ScriptValue::String(key)]) => {
+                ScriptValue::Boolean(
+                    !key.is_empty() && registry.map_has_key(integer(*handle)?, key),
+                )
+            }
+            ("jmap-remove-key", [ScriptValue::Integer(handle), ScriptValue::String(key)]) => {
+                ScriptValue::Boolean(!key.is_empty() && registry.map_remove(integer(*handle)?, key))
+            }
+            (operation, [ScriptValue::Integer(handle), value])
+                if operation.starts_with("jarray-add-") =>
+            {
+                let handle = integer(*handle)?;
+                let kind = operation.trim_start_matches("jarray-add-");
+                registry.array_add(handle, value_from_script(kind, value)?, None);
+                ScriptValue::None
+            }
+            (operation, [ScriptValue::Integer(handle), value, ScriptValue::Integer(index)])
+                if operation.starts_with("jarray-add-") =>
+            {
+                let handle = integer(*handle)?;
+                let kind = operation.trim_start_matches("jarray-add-");
+                if let Some(index) = write_index(handle, integer(*index)?, registry) {
+                    registry.array_add(handle, value_from_script(kind, value)?, Some(index));
+                } else if *index == -1 {
+                    registry.array_add(handle, value_from_script(kind, value)?, None);
+                }
+                ScriptValue::None
+            }
+            (operation, [ScriptValue::Integer(handle), ScriptValue::Integer(index), rest @ ..])
+                if operation.starts_with("jarray-get-") && rest.len() <= 1 =>
+            {
+                let handle = integer(*handle)?;
+                let kind = operation.trim_start_matches("jarray-get-");
+                let default = default_value(kind, rest.first())?;
+                let index = read_index(handle, integer(*index)?, registry);
+                value_to_script(kind, registry.array_get(handle, index), default)
+            }
+            (operation, [ScriptValue::Integer(handle), ScriptValue::Integer(index), value])
+                if operation.starts_with("jarray-set-") =>
+            {
+                let handle = integer(*handle)?;
+                let kind = operation.trim_start_matches("jarray-set-");
+                let index = read_index(handle, integer(*index)?, registry);
+                registry.array_set(handle, index, value_from_script(kind, value)?);
+                ScriptValue::None
+            }
+            (operation, [ScriptValue::Integer(handle), ScriptValue::String(key), rest @ ..])
+                if operation.starts_with("jmap-get-") && rest.len() <= 1 =>
+            {
+                let handle = integer(*handle)?;
+                let kind = operation.trim_start_matches("jmap-get-");
+                let default = default_value(kind, rest.first())?;
+                let value = (!key.is_empty())
+                    .then(|| registry.map_get(handle, key))
+                    .flatten();
+                value_to_script(kind, value, default)
+            }
+            (operation, [ScriptValue::Integer(handle), ScriptValue::String(key), value])
+                if operation.starts_with("jmap-set-") =>
+            {
+                let kind = operation.trim_start_matches("jmap-set-");
+                if !key.is_empty() {
+                    registry.map_set(
+                        integer(*handle)?,
+                        key.clone(),
+                        value_from_script(kind, value)?,
+                    );
+                }
+                ScriptValue::None
+            }
+            _ => {
+                return Err(unavailable(
+                    "JContainers alias received invalid exact typed arguments".to_owned(),
+                ));
+            }
+        };
+        Ok(result)
     }
 
     /// Invoke a principal-namespaced typed function and publish its result
@@ -6311,6 +6528,101 @@ mod tests {
     }
 
     #[test]
+    fn jcontainers_aliases_cover_typed_nested_values_negative_indices_and_isolation() {
+        let first = PrincipalId::new("legacy.scripts.first-jcontainers").unwrap();
+        let second = PrincipalId::new("legacy.scripts.second-jcontainers").unwrap();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.register_legacy_script_principal(first.clone())
+            .unwrap();
+        host.register_legacy_script_principal(second.clone())
+            .unwrap();
+        let route = |name: &str| format!("{PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX}{name}");
+
+        let array = host
+            .invoke_owned_papyrus_provider(Some(&first), &route("jarray-object"), &[])
+            .unwrap();
+        assert_eq!(array, ScriptValue::Integer(1));
+        for value in [10, 20] {
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jarray-add-int"),
+                &[array.clone(), ScriptValue::Integer(value)],
+            )
+            .unwrap();
+        }
+        host.invoke_owned_papyrus_provider(
+            Some(&first),
+            &route("jarray-add-int"),
+            &[
+                array.clone(),
+                ScriptValue::Integer(15),
+                ScriptValue::Integer(-2),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jarray-get-int"),
+                &[array.clone(), ScriptValue::Integer(-1)],
+            )
+            .unwrap(),
+            ScriptValue::Integer(20)
+        );
+
+        let map = host
+            .invoke_owned_papyrus_provider(Some(&first), &route("jmap-object"), &[])
+            .unwrap();
+        let form = FormRef::new([4; 16], 0x55);
+        for (suffix, value) in [
+            ("int", ScriptValue::Integer(7)),
+            ("flt", ScriptValue::Float(2.5)),
+            ("str", ScriptValue::String("ready".to_owned())),
+            ("form", ScriptValue::Form(form)),
+            ("obj", array.clone()),
+        ] {
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route(&format!("jmap-set-{suffix}")),
+                &[map.clone(), ScriptValue::String(suffix.to_owned()), value],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jmap-get-form"),
+                &[map.clone(), ScriptValue::String("form".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Form(form)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jmap-get-obj"),
+                &[map.clone(), ScriptValue::String("obj".to_owned())],
+            )
+            .unwrap(),
+            array
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&second),
+                &route("jvalue-count"),
+                &[ScriptValue::Integer(1)],
+            )
+            .unwrap(),
+            ScriptValue::Integer(0)
+        );
+        assert!(matches!(
+            host.invoke_owned_papyrus_provider(None, &route("jarray-object"), &[]),
+            Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
+        ));
+    }
+
+    #[test]
     fn legacy_container_objects_are_principal_local_and_save_persistent() {
         let principal = PrincipalId::new("org.example.storage").unwrap();
         let mut source = host_with_storage_package(principal.as_str());
@@ -6690,6 +7002,72 @@ mod tests {
         assert_eq!(
             values.get(&StorageKey::new("storageutil.string:status").unwrap()),
             Some(&PrincipalStorageValue::String("ready".to_owned()))
+        );
+    }
+
+    #[test]
+    fn source_papyrus_runs_principal_private_jcontainers_across_wait() {
+        let principal = PrincipalId::new("legacy.scripts.jcontainers-source").unwrap();
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .register_legacy_script_principal(principal.clone())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+
+        let source = r#"
+            ScriptName ContainerFixture
+            Event OnLoad()
+                Int values
+                values = JArray.object()
+                JArray.addInt(values, 10)
+                JArray.addInt(values, 20)
+                JArray.addInt(values, 15, -2)
+                Int tail
+                tail = JArray.getInt(values, -1, -1)
+                Int container
+                container = JMap.object()
+                JMap.setInt(container, "tail", tail)
+                Utility.Wait(0.0)
+                Int restored
+                restored = JMap.getInt(container, "tail", -1)
+                If restored == 20
+                    JMap.setStr(container, "status", "ready")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let catalog = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog();
+        let program = byroredux_scripting::lower_provider_program(&script, &catalog)
+            .unwrap()
+            .unwrap();
+        let entity = world.spawn();
+        byroredux_scripting::attach_owned_papyrus_provider_program(
+            &mut world,
+            entity,
+            program,
+            principal.clone(),
+        );
+        world.insert(entity, byroredux_scripting::OnCellLoadEvent);
+
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+
+        let host = live_host.lock().unwrap();
+        let registry = host.legacy_containers.get(&principal).unwrap();
+        assert_eq!(registry.count(1), 3);
+        assert_eq!(
+            registry.map_get(2, "status"),
+            Some(&LegacyContainerValue::String("ready".to_owned()))
         );
     }
 

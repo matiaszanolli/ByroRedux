@@ -15,11 +15,13 @@ use byroredux_papyrus::ast::{
 };
 use byroredux_sdk::{
     compatibility::{
-        classify_static_call, papyrus_game_content_declarations, papyrus_storage_util_declarations,
-        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+        classify_static_call, papyrus_game_content_declarations,
+        papyrus_legacy_container_declarations, papyrus_storage_util_declarations,
+        PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
     },
     identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
@@ -174,6 +176,11 @@ impl PapyrusProviderCatalog {
                 .insert_route(function.route.to_owned(), &function.declaration, false)
                 .expect("built-in StorageUtil compatibility declaration is valid");
         }
+        for function in papyrus_legacy_container_declarations() {
+            catalog
+                .insert_route(function.route, &function.declaration, false)
+                .expect("built-in JContainers compatibility declaration is valid");
+        }
         catalog
     }
 
@@ -309,6 +316,7 @@ pub fn lower_provider_call(
 
     let arguments = lower_arguments(args, route.declaration())?;
     validate_storage_util_literals(route.qualified_name(), &arguments)?;
+    validate_legacy_container_arity(route.qualified_name(), arguments.len())?;
     Ok(Some(TypedPapyrusProviderCall {
         route: route.clone(),
         arguments,
@@ -371,6 +379,37 @@ fn validate_storage_util_arguments(
         return Err(PapyrusProviderLowerError::UnsupportedArgument {
             parameter: "object".to_owned(),
         });
+    }
+    Ok(())
+}
+
+fn legacy_container_arity(route: &str) -> Option<(usize, usize)> {
+    let function = route.strip_prefix(PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX)?;
+    Some(match function {
+        "jarray-object" | "jmap-object" => (0, 0),
+        "jvalue-count" | "jvalue-clear" | "jvalue-release" | "jarray-count" | "jarray-clear"
+        | "jmap-count" | "jmap-clear" => (1, 1),
+        "jarray-erase-index" | "jmap-has-key" | "jmap-remove-key" => (2, 2),
+        function if function.starts_with("jarray-add-") => (2, 3),
+        function if function.starts_with("jarray-get-") => (2, 3),
+        function if function.starts_with("jarray-set-") => (3, 3),
+        function if function.starts_with("jmap-get-") => (2, 3),
+        function if function.starts_with("jmap-set-") => (3, 3),
+        _ => return None,
+    })
+}
+
+fn validate_legacy_container_arity(
+    route: &str,
+    argument_count: usize,
+) -> Result<(), PapyrusProviderLowerError> {
+    let Some((minimum, maximum)) = legacy_container_arity(route) else {
+        return Ok(());
+    };
+    if !(minimum..=maximum).contains(&argument_count) {
+        return Err(PapyrusProviderLowerError::MissingParameter(
+            "JContainers exact signature".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -521,6 +560,7 @@ fn lower_provider_invocation(
         ));
     }
     validate_storage_util_arguments(route.qualified_name(), &arguments)?;
+    validate_legacy_container_arity(route.qualified_name(), arguments.len())?;
     Ok(Some(PapyrusProviderInvocation {
         route: route.clone(),
         arguments,
@@ -1819,6 +1859,8 @@ fn validate_provider_call(
     }
     validate_storage_util_arguments(call.route.qualified_name(), &call.arguments)
         .map_err(|_| "saved StorageUtil call has an invalid exact signature".to_owned())?;
+    validate_legacy_container_arity(call.route.qualified_name(), call.arguments.len())
+        .map_err(|_| "saved JContainers call has an invalid exact signature".to_owned())?;
     Ok(())
 }
 
@@ -2389,7 +2431,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_compatibility_catalog_lowers_exact_game_and_storage_util_aliases() {
+    fn engine_compatibility_catalog_lowers_exact_game_storage_and_container_aliases() {
         let mut catalog = PapyrusProviderCatalog::engine_compatibility();
         assert!(PapyrusProviderRuntime::default()
             .catalog()
@@ -2426,6 +2468,21 @@ mod tests {
                 ScriptValue::None,
                 ScriptValue::String("Score".to_owned()),
                 ScriptValue::Integer(-1),
+            ]
+        );
+        let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            container.route.qualified_name(),
+            "byro.legacy-containers.compat.jarray-get-int"
+        );
+        assert_eq!(
+            container.arguments,
+            [
+                ScriptValue::Integer(4),
+                ScriptValue::Integer(-1),
+                ScriptValue::Integer(7),
             ]
         );
         assert!(matches!(
