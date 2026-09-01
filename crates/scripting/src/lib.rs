@@ -93,11 +93,12 @@ pub use package::{
 };
 pub use papyrus_provider::{
     attach_papyrus_provider_program, lower_provider_call, lower_provider_program,
-    papyrus_provider_system, set_papyrus_provider_runtime, PapyrusProviderCallback,
-    PapyrusProviderCatalog, PapyrusProviderCatalogError, PapyrusProviderCondition,
-    PapyrusProviderContinuationQueue, PapyrusProviderEvent, PapyrusProviderLowerError,
-    PapyrusProviderProgram, PapyrusProviderProgramError, PapyrusProviderRoute,
-    PapyrusProviderRuntime, PapyrusProviderStatement, TypedPapyrusProviderCall,
+    papyrus_provider_system, set_papyrus_provider_runtime, PapyrusProviderArgument,
+    PapyrusProviderCallback, PapyrusProviderCatalog, PapyrusProviderCatalogError,
+    PapyrusProviderCondition, PapyrusProviderContinuationQueue, PapyrusProviderEvent,
+    PapyrusProviderInvocation, PapyrusProviderLowerError, PapyrusProviderProgram,
+    PapyrusProviderProgramError, PapyrusProviderRoute, PapyrusProviderRuntime,
+    PapyrusProviderStatement, TypedPapyrusProviderCall,
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{

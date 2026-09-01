@@ -185,6 +185,28 @@ pub struct TypedPapyrusProviderCall {
     pub result: Option<ScriptResultDeclaration>,
 }
 
+/// One handler argument resolved either at translation time or from a typed
+/// local when the event executes.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum PapyrusProviderArgument {
+    Literal(ScriptValue),
+    Local {
+        name: String,
+        value_type: ScriptValueType,
+    },
+}
+
+/// A provider call embedded in an event handler. Fragment calls continue to
+/// use [`TypedPapyrusProviderCall`] and therefore remain literal-only.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct PapyrusProviderInvocation {
+    pub route: PapyrusProviderRoute,
+    pub arguments: Vec<PapyrusProviderArgument>,
+    pub result: Option<ScriptResultDeclaration>,
+}
+
 /// Catalog construction failure detected before scripts are attached.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PapyrusProviderCatalogError {
@@ -251,7 +273,30 @@ fn lower_arguments(
     args: &[CallArg],
     declaration: &ScriptFunctionDeclaration,
 ) -> Result<Vec<ScriptValue>, PapyrusProviderLowerError> {
-    let mut values = vec![None; declaration.parameters.len()];
+    let ordered = lower_ordered_arguments(args, declaration, |expression, parameter| {
+        lower_literal(expression, parameter.value_type, parameter.optional).ok_or_else(|| {
+            PapyrusProviderLowerError::UnsupportedArgument {
+                parameter: parameter.id.as_str().to_owned(),
+            }
+        })
+    })?;
+    declaration
+        .validate_arguments(&ordered)
+        .map_err(PapyrusProviderLowerError::InvalidArguments)?;
+    Ok(ordered)
+}
+
+fn lower_ordered_arguments<T>(
+    args: &[CallArg],
+    declaration: &ScriptFunctionDeclaration,
+    mut lower: impl FnMut(
+        &Expr,
+        &byroredux_sdk::script_function::ScriptParameterDeclaration,
+    ) -> Result<T, PapyrusProviderLowerError>,
+) -> Result<Vec<T>, PapyrusProviderLowerError> {
+    let mut values = (0..declaration.parameters.len())
+        .map(|_| None)
+        .collect::<Vec<Option<T>>>();
     let mut positional = 0usize;
     let mut named_seen = false;
     for arg in args {
@@ -278,13 +323,7 @@ fn lower_arguments(
                 parameter.id.as_str().to_owned(),
             ));
         }
-        values[index] = Some(
-            lower_literal(&arg.value.node, parameter.value_type, parameter.optional).ok_or_else(
-                || PapyrusProviderLowerError::UnsupportedArgument {
-                    parameter: parameter.id.as_str().to_owned(),
-                },
-            )?,
-        );
+        values[index] = Some(lower(&arg.value.node, parameter)?);
     }
 
     let last = values.iter().rposition(Option::is_some);
@@ -297,10 +336,65 @@ fn lower_arguments(
             })?);
         }
     }
-    declaration
-        .validate_arguments(&ordered)
-        .map_err(PapyrusProviderLowerError::InvalidArguments)?;
     Ok(ordered)
+}
+
+fn lower_provider_invocation(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, ScriptValueType>,
+) -> Result<Option<PapyrusProviderInvocation>, PapyrusProviderLowerError> {
+    let Expr::Call { callee, args } = expression else {
+        return Ok(None);
+    };
+    let Expr::MemberAccess { object, member } = &callee.node else {
+        return Ok(None);
+    };
+    let Expr::Ident(provider) = &object.node else {
+        return Ok(None);
+    };
+    let Some(route) = catalog.resolve(&provider.0, &member.node.0) else {
+        if is_known_provider_call(&provider.0, &member.node.0, catalog) {
+            return Err(PapyrusProviderLowerError::UnknownFunction {
+                provider: provider.0.clone(),
+                function: member.node.0.clone(),
+            });
+        }
+        return Ok(None);
+    };
+    let declaration = route.declaration();
+    let arguments = lower_ordered_arguments(args, declaration, |expression, parameter| {
+        if let Some(value) = lower_literal(expression, parameter.value_type, parameter.optional) {
+            return Ok(PapyrusProviderArgument::Literal(value));
+        }
+        if let Expr::Ident(identifier) = expression {
+            let name = identifier.0.to_ascii_lowercase();
+            if locals.get(&name) == Some(&parameter.value_type) {
+                return Ok(PapyrusProviderArgument::Local {
+                    name,
+                    value_type: parameter.value_type,
+                });
+            }
+        }
+        Err(PapyrusProviderLowerError::UnsupportedArgument {
+            parameter: parameter.id.as_str().to_owned(),
+        })
+    })?;
+    let validation_arguments = arguments
+        .iter()
+        .map(|argument| match argument {
+            PapyrusProviderArgument::Literal(value) => value.clone(),
+            PapyrusProviderArgument::Local { value_type, .. } => default_value(*value_type),
+        })
+        .collect::<Vec<_>>();
+    declaration
+        .validate_arguments(&validation_arguments)
+        .map_err(PapyrusProviderLowerError::InvalidArguments)?;
+    Ok(Some(PapyrusProviderInvocation {
+        route: route.clone(),
+        arguments,
+        result: declaration.result,
+    }))
 }
 
 fn lower_literal(
@@ -346,9 +440,9 @@ pub enum PapyrusProviderStatement {
     },
     AssignCall {
         name: String,
-        call: TypedPapyrusProviderCall,
+        call: PapyrusProviderInvocation,
     },
-    Call(TypedPapyrusProviderCall),
+    Call(PapyrusProviderInvocation),
     Wait {
         seconds: f32,
     },
@@ -392,7 +486,7 @@ impl PapyrusProviderContinuationQueue {
 pub enum PapyrusProviderCondition {
     Literal(bool),
     Local(String),
-    Call(TypedPapyrusProviderCall),
+    Call(PapyrusProviderInvocation),
     Not(Box<PapyrusProviderCondition>),
     And(Box<PapyrusProviderCondition>, Box<PapyrusProviderCondition>),
     Or(Box<PapyrusProviderCondition>, Box<PapyrusProviderCondition>),
@@ -409,7 +503,7 @@ pub enum PapyrusProviderCondition {
 pub enum PapyrusProviderValue {
     Literal(ScriptValue),
     Local(String),
-    Call(TypedPapyrusProviderCall),
+    Call(PapyrusProviderInvocation),
 }
 
 /// Same-type comparison operations executable by the provider runtime.
@@ -638,7 +732,7 @@ fn lower_statements(
                     .get(&key)
                     .copied()
                     .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(target.0.clone()))?;
-                let call = lower_provider_call(&value.node, catalog)
+                let call = lower_provider_invocation(&value.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
                 require_result(&call, expected, &target.0)?;
@@ -649,7 +743,7 @@ fn lower_statements(
                     lowered.push(PapyrusProviderStatement::Wait { seconds });
                     continue;
                 }
-                let call = lower_provider_call(&expression.node, catalog)
+                let call = lower_provider_invocation(&expression.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
                 lowered.push(PapyrusProviderStatement::Call(call));
@@ -812,7 +906,7 @@ fn lower_condition_at_depth(
             })
         }
         _ => {
-            let call = lower_provider_call(expression, catalog)
+            let call = lower_provider_invocation(expression, catalog, locals)
                 .map_err(PapyrusProviderProgramError::Call)?
                 .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
             require_result(&call, ScriptValueType::Boolean, "if condition")?;
@@ -851,7 +945,7 @@ fn lower_condition_value(
             .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(identifier.0.clone()))?;
         return Ok((PapyrusProviderValue::Local(key), value_type));
     }
-    let call = lower_provider_call(expression, catalog)
+    let call = lower_provider_invocation(expression, catalog, locals)
         .map_err(PapyrusProviderProgramError::Call)?
         .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
     let result = call
@@ -894,7 +988,7 @@ fn comparison_is_supported(
 }
 
 fn require_result(
-    call: &TypedPapyrusProviderCall,
+    call: &PapyrusProviderInvocation,
     expected: ScriptValueType,
     target: &str,
 ) -> Result<(), PapyrusProviderProgramError> {
@@ -1264,7 +1358,7 @@ fn validate_provider_statements(
 }
 
 fn validate_provider_call(
-    call: &TypedPapyrusProviderCall,
+    call: &PapyrusProviderInvocation,
     catalog: &PapyrusProviderCatalog,
 ) -> Result<(), String> {
     let alias = call
@@ -1288,9 +1382,76 @@ fn validate_provider_call(
     {
         return Err("saved provider route does not match the live catalog".to_owned());
     }
+    let arguments = call
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            let parameter = current
+                .parameters
+                .get(index)
+                .ok_or_else(|| "saved provider call has too many arguments".to_owned())?;
+            match argument {
+                PapyrusProviderArgument::Literal(value) => {
+                    if !value.matches(parameter.value_type, parameter.optional) {
+                        return Err("saved provider literal argument changed type".to_owned());
+                    }
+                    Ok(value.clone())
+                }
+                PapyrusProviderArgument::Local { name, value_type } => {
+                    if name.is_empty()
+                        || *name != name.to_ascii_lowercase()
+                        || *value_type != parameter.value_type
+                    {
+                        return Err("saved provider local argument is invalid".to_owned());
+                    }
+                    Ok(default_value(*value_type))
+                }
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     current
-        .validate_arguments(&call.arguments)
+        .validate_arguments(&arguments)
         .map_err(|error| format!("saved provider arguments are invalid: {error:?}"))
+}
+
+fn materialize_provider_arguments(
+    call: &PapyrusProviderInvocation,
+    locals: &BTreeMap<String, ScriptValue>,
+) -> Result<Vec<ScriptValue>, String> {
+    let mut arguments = Vec::with_capacity(call.arguments.len());
+    for (index, argument) in call.arguments.iter().enumerate() {
+        let parameter = call
+            .route
+            .declaration()
+            .parameters
+            .get(index)
+            .ok_or_else(|| "provider call has too many arguments".to_owned())?;
+        let value = match argument {
+            PapyrusProviderArgument::Literal(value) => value.clone(),
+            PapyrusProviderArgument::Local { name, value_type } => {
+                if *value_type != parameter.value_type {
+                    return Err("provider local argument declaration changed type".to_owned());
+                }
+                locals
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("translated local {name} was not initialized"))?
+            }
+        };
+        if !value.matches(parameter.value_type, parameter.optional) {
+            return Err(format!(
+                "translated argument {} changed type at execution",
+                parameter.id.as_str()
+            ));
+        }
+        arguments.push(value);
+    }
+    call.route
+        .declaration()
+        .validate_arguments(&arguments)
+        .map_err(|error| format!("provider arguments are invalid at execution: {error:?}"))?;
+    Ok(arguments)
 }
 
 fn validate_provider_condition(
@@ -1339,11 +1500,13 @@ fn execute_statements(
                 locals.insert(name.clone(), value.clone());
             }
             PapyrusProviderStatement::AssignCall { name, call } => {
-                let value = callback(call.route.qualified_name(), &call.arguments)?;
+                let arguments = materialize_provider_arguments(call, locals)?;
+                let value = callback(call.route.qualified_name(), &arguments)?;
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::Call(call) => {
-                callback(call.route.qualified_name(), &call.arguments)?;
+                let arguments = materialize_provider_arguments(call, locals)?;
+                callback(call.route.qualified_name(), &arguments)?;
             }
             PapyrusProviderStatement::Wait { seconds } => {
                 return Ok(Some((*seconds, statements[index + 1..].to_vec())));
@@ -1404,7 +1567,8 @@ fn evaluate_condition(
             .cloned()
             .ok_or_else(|| format!("translated local {name} was not initialized"))?,
         PapyrusProviderCondition::Call(call) => {
-            callback(call.route.qualified_name(), &call.arguments)?
+            let arguments = materialize_provider_arguments(call, locals)?;
+            callback(call.route.qualified_name(), &arguments)?
         }
         PapyrusProviderCondition::Not(_)
         | PapyrusProviderCondition::And(_, _)
@@ -1428,7 +1592,10 @@ fn evaluate_condition_value(
             .get(name)
             .cloned()
             .ok_or_else(|| format!("translated local {name} was not initialized")),
-        PapyrusProviderValue::Call(call) => callback(call.route.qualified_name(), &call.arguments),
+        PapyrusProviderValue::Call(call) => {
+            let arguments = materialize_provider_arguments(call, locals)?;
+            callback(call.route.qualified_name(), &arguments)
+        }
     }
 }
 
@@ -1996,10 +2163,11 @@ mod tests {
             ScriptName Fixture
             Event OnLoad()
                 Bool storm
+                String branchLabel = "after-branch-wait"
                 storm = WeatherNative.IsStorm()
                 If storm
                     Utility.Wait(0.5)
-                    WeatherNative.WeatherAt(4, "after-branch-wait")
+                    WeatherNative.WeatherAt(4, branchLabel)
                 EndIf
                 WeatherNative.WeatherAt(5, "handler-tail")
             EndEvent
@@ -2050,6 +2218,10 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1].1[0], ScriptValue::Integer(4));
+        assert_eq!(
+            calls[1].1[1],
+            ScriptValue::String("after-branch-wait".to_owned())
+        );
         assert_eq!(calls[2].1[0], ScriptValue::Integer(5));
         assert!(world
             .resource::<PapyrusProviderContinuationQueue>()
@@ -2122,7 +2294,7 @@ mod tests {
                 String weather
                 weather = WeatherNative.WeatherAt(0, "probe")
                 If weather == "rain"
-                    WeatherNative.WeatherAt(7, "string-matched")
+                    WeatherNative.WeatherAt(7, weather)
                 EndIf
             EndEvent
         "#;
@@ -2172,6 +2344,7 @@ mod tests {
         assert_eq!(calls[3].1[0], ScriptValue::Integer(6));
         assert_eq!(calls[4].1[0], ScriptValue::Integer(0));
         assert_eq!(calls[5].1[0], ScriptValue::Integer(7));
+        assert_eq!(calls[5].1[1], ScriptValue::String("rain".to_owned()));
         assert!(calls.iter().all(|(_, arguments)| arguments.first()
             != Some(&ScriptValue::String("MustNotRun.esp".to_owned()))));
     }
@@ -2266,8 +2439,8 @@ mod tests {
         assert_eq!(
             call.arguments,
             [
-                ScriptValue::Integer(4),
-                ScriptValue::String("clear".to_owned())
+                PapyrusProviderArgument::Literal(ScriptValue::Integer(4)),
+                PapyrusProviderArgument::Literal(ScriptValue::String("clear".to_owned()))
             ]
         );
     }

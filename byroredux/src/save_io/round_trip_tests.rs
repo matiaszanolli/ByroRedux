@@ -709,9 +709,10 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
     let (script, errors) = parse_script(
         "ScriptName SaveFixture\n\
          Event OnLoad()\n\
+           String pluginName = \"Update.esm\"\n\
            Game.GetModCount()\n\
            Utility.Wait(5.0)\n\
-           Game.IsPluginInstalled(\"Update.esm\")\n\
+           Game.IsPluginInstalled(pluginName)\n\
          EndEvent\n",
     )
     .unwrap();
@@ -746,11 +747,11 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
 
     let resumed_calls = Arc::new(Mutex::new(Vec::new()));
     let resumed_calls_for_callback = Arc::clone(&resumed_calls);
-    let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
+    let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
         resumed_calls_for_callback
             .lock()
             .unwrap()
-            .push(route.to_owned());
+            .push((route.to_owned(), arguments.to_vec()));
         Ok(ScriptValue::None)
     }) as Arc<PapyrusProviderCallback>;
     set_papyrus_provider_runtime(&dst, catalog, Some(callback));
@@ -761,7 +762,10 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
         .is_empty());
     assert_eq!(
         resumed_calls.lock().unwrap().as_slice(),
-        &[byroredux_sdk::compatibility::PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE.to_owned()]
+        &[(
+            byroredux_sdk::compatibility::PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE.to_owned(),
+            vec![ScriptValue::String("Update.esm".to_owned())],
+        )]
     );
 }
 

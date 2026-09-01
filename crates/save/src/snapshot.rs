@@ -103,7 +103,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// judgement is only safe while the field's meaning never changes. Recorded
 /// here so a future migrator chain can reclassify this one as compatible
 /// rather than re-derive whether it was.
-pub const FORMAT_MAJOR: u16 = 10;
+/// Version 11 changes saved `PapyrusProviderContinuationQueue` calls from a
+/// flat vector of already-resolved values to typed literal/local argument
+/// expressions. The old flat JSON shape does not deserialize into the tagged
+/// argument enum, and no migrator exists yet, so pre-v11 saves are rejected.
+pub const FORMAT_MAJOR: u16 = 11;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

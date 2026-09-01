@@ -352,8 +352,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // resource rather than changing an existing serialized type. The save
     // registry fingerprint already rejects a snapshot produced without that
     // resource schema, so FORMAT_MAJOR does not need to duplicate that gate.
-    const BASELINE_MAJOR: u16 = 10;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb765_acf9_8016_e742;
+    // Provider invocation arguments now preserve literal-vs-local identity in
+    // the already-saved continuation queue. That changes an existing nested
+    // on-disk type, so v11 deliberately rejects older suspended handlers.
+    const BASELINE_MAJOR: u16 = 11;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb3e_cd3a_2c11_7d9e;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
