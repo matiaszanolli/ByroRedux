@@ -94,9 +94,10 @@ through the same authenticated Wasm host after ECS guards are released. It
 currently supports scalar locals, literal arguments, assignments, and bounded
 boolean branches; broader expressions, events, fragments, latent calls, and
 dynamic object dispatch remain open. The first curated extender-era pack is
-also executable without an extension package: nine SKSE `Game` content calls
+also executable without an extension package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
-plugin and dependency-count queries. They preserve SKSE's exact `255` missing sentinel,
+plugin, dependency-count, and light-plugin master queries. They preserve
+SKSE's exact `255` missing sentinel,
 `0x100 + lightIndex` combined-index encoding, and `0xffff` missing-light
 sentinel. Engine aliases cannot be shadowed by a package, while unrelated
 vanilla `Game` calls remain available to other translators.
@@ -853,12 +854,13 @@ proceeds by semantic domain and closes only against real mod fixtures.
   bounded boolean branches. A synthetic byte-level Skyrim PEX fixture now
   exercises the production reader/decompiler/translation boundary. Compiled
   SCDA call encoding, fragment scheduling, broader expressions/events, latent
-  calls, and dynamic object dispatch remain pending. Nine exact SKSE `Game`
+  calls, and dynamic object dispatch remain pending. Ten exact SKSE `Game`
   content extensions are now engine-owned catalog aliases: `GetModCount`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
-  `GetLightModByName`, `GetLightModName`, `GetModDependencyCount`, and
-  `GetLightModDependencyCount`. They need neither a Wasm package nor an
-  extender DLL and preserve regular/light SKSE index encodings.**
+  `GetLightModByName`, `GetLightModName`, `GetModDependencyCount`,
+  `GetLightModDependencyCount`, and `GetNthLightModDependency`. They need
+  neither a Wasm package nor an extender DLL and preserve regular/light SKSE
+  index encodings.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
@@ -874,9 +876,9 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
 ### Wave D — per-game compatibility packs
 
 - Curated SKSE, F4SE, xNVSE, and OBSE script API aliases backed by the common
-  service catalog. **The first exact SKSE pack is live: nine `Game` regular
-  and light-plugin discovery and dependency-count calls route through
-  `byro.content.catalog.*`;
+  service catalog. **The first exact SKSE pack is live: ten `Game` regular
+  and light-plugin discovery, dependency-count, and master-lookup calls route
+  through `byro.content.catalog.*`;
   engine-owned aliases are reserved against package shadowing. Broader
   compatibility packs remain.**
 - Automated source/PEX scans that report supported, mapped, and unsupported
@@ -1005,9 +1007,9 @@ same typed lowering and runtime. Tests cover a source handler invoking a real
 Wasm component and a synthetic byte-level Skyrim PEX fixture through the
 production reader/decompiler/translation boundary. Recognized extender calls
 without an executable route now reject the whole provider-bearing handler
-instead of being silently skipped. Nine SKSE `Game` content-discovery and
-dependency-count calls
-form the first real extender-era pack backed by a completed semantic service;
+instead of being silently skipped. Ten SKSE `Game` content-discovery,
+dependency-count, and light-plugin master-lookup calls form the first real
+extender-era pack backed by a completed semantic service;
 they execute against the live immutable content catalog without an extension
 package. Broader compatibility aliases and conformance remain open.
 

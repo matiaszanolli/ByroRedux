@@ -71,10 +71,10 @@ The current public surface includes:
   the same authenticated host without an extender DLL. Recognized extender
   calls that do not yet have an executable route reject their complete handler
   with an attributed translation error rather than disappearing silently. The
-  first exact engine-owned compatibility pack is nine SKSE `Game`
+  first exact engine-owned compatibility pack is ten SKSE `Game`
   content-discovery calls covering regular/light counts, lookup in both
-  directions, active-plugin checks, and regular/light dependency counts. The
-  immutable catalog adapter preserves
+  directions, active-plugin checks, regular/light dependency counts, and
+  light-plugin master lookup. The immutable catalog adapter preserves
   SKSE's `255`, `0x100 + lightIndex`, and `0xffff` index conventions; packages
   cannot shadow these routes.
 - `compatibility` classifies recognized SKSE/F4SE, PapyrusUtil,
