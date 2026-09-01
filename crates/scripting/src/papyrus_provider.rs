@@ -17,7 +17,8 @@ use byroredux_sdk::{
     compatibility::{
         adapt_legacy_send_mod_event, classify_static_call, papyrus_game_content_declarations,
         papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
-        papyrus_storage_util_declarations, parse_storage_util_list_route, StorageUtilListOperation,
+        papyrus_storage_util_declarations, parse_storage_util_list_route,
+        parse_storage_util_prefix_route, StorageUtilListOperation,
         PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
         PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
@@ -369,6 +370,9 @@ pub fn lower_provider_call(
 }
 
 fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
+    if parse_storage_util_prefix_route(route).is_some() {
+        return Some((1, 1));
+    }
     if let Some((_, operation)) = parse_storage_util_list_route(route) {
         return Some(match operation {
             StorageUtilListOperation::Add => (3, 4),
@@ -430,7 +434,9 @@ fn validate_storage_util_literals(
             "StorageUtil exact signature".to_owned(),
         ));
     }
-    if arguments.first() != Some(&ScriptValue::None) {
+    if parse_storage_util_prefix_route(route).is_none()
+        && arguments.first() != Some(&ScriptValue::None)
+    {
         return Err(PapyrusProviderLowerError::UnsupportedArgument {
             parameter: "object".to_owned(),
         });
@@ -450,10 +456,12 @@ fn validate_storage_util_arguments(
             "StorageUtil exact signature".to_owned(),
         ));
     }
-    if !matches!(
-        arguments.first(),
-        Some(PapyrusProviderArgument::Literal(ScriptValue::None))
-    ) {
+    if parse_storage_util_prefix_route(route).is_none()
+        && !matches!(
+            arguments.first(),
+            Some(PapyrusProviderArgument::Literal(ScriptValue::None))
+        )
+    {
         return Err(PapyrusProviderLowerError::UnsupportedArgument {
             parameter: "object".to_owned(),
         });
@@ -3514,6 +3522,23 @@ mod tests {
         assert_eq!(
             list_random.arguments,
             [ScriptValue::None, ScriptValue::String("Owners".to_owned()),]
+        );
+        let prefix_route = catalog.resolve("StorageUtil", "CountAllPrefix").unwrap();
+        assert_eq!(
+            prefix_route.declaration().parameters[0].id.as_str(),
+            "prefix"
+        );
+        let prefix_expression = expression("StorageUtil.CountAllPrefix(\"my_mod.\")");
+        let prefix = lower_provider_call(&prefix_expression, &catalog)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prefix.route.qualified_name(),
+            "byro.storage.compat.storage-util.prefix-count-all"
+        );
+        assert_eq!(
+            prefix.arguments,
+            [ScriptValue::String("my_mod.".to_owned())]
         );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
             .unwrap()

@@ -1384,6 +1384,15 @@ or timing capability. Empty and missing lists return the element type's default
 value, matching PapyrusUtil, while the bounded principal-private storage model
 remains unchanged.
 
+Checkpoint: `feat(scripting): integrate StorageUtil prefix operations`.
+
+The prefix pack adds the eight type-specific and one all-type variants of both
+`Count*Prefix` and `Clear*Prefix`. Prefix matching is ASCII-case-folded like
+the existing StorageUtil keys, rejects the upstream-invalid empty prefix, and
+is limited to the authenticated principal's global scalar/list namespaces.
+Clear returns the exact number removed and applies its bounded delete batch
+atomically; unrelated principal storage is never visible or affected.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

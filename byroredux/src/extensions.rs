@@ -34,27 +34,28 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
     adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
     adapt_papyrus_game_get_nth_light_mod_dependency, adapt_papyrus_game_is_plugin_installed,
-    adapt_storage_util_global_list, adapt_storage_util_global_scalar,
-    parse_storage_util_list_route, StorageUtilListCall, StorageUtilListKind,
-    StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilScalarCall,
-    StorageUtilScalarResult, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
-    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
-    PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    adapt_storage_util_global_list, adapt_storage_util_global_prefix,
+    adapt_storage_util_global_scalar, parse_storage_util_list_route,
+    parse_storage_util_prefix_route, StorageUtilListCall, StorageUtilListKind,
+    StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind,
+    StorageUtilPrefixOperation, StorageUtilScalarCall, StorageUtilScalarResult,
+    PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+    PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
+    PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -1009,6 +1010,15 @@ impl ExtensionHost {
                 arguments,
             );
         }
+        if let Some((kind, operation)) = parse_storage_util_prefix_route(qualified_name) {
+            return self.invoke_storage_util_prefix(
+                principal,
+                qualified_name,
+                kind,
+                operation,
+                arguments,
+            );
+        }
         let principal = principal.ok_or_else(|| {
             unavailable("StorageUtil call has no authenticated legacy-script principal".to_owned())
         })?;
@@ -1239,6 +1249,40 @@ impl ExtensionHost {
             StorageUtilScalarResult::Form(Some(value)) => ScriptValue::Form(value),
             StorageUtilScalarResult::Form(None) => ScriptValue::None,
         })
+    }
+
+    fn invoke_storage_util_prefix(
+        &mut self,
+        principal: Option<&PrincipalId>,
+        qualified_name: &str,
+        kind: StorageUtilPrefixKind,
+        operation: StorageUtilPrefixOperation,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
+            function: qualified_name.to_owned(),
+            reason,
+        };
+        let principal = principal.ok_or_else(|| {
+            unavailable("StorageUtil call has no authenticated legacy-script principal".to_owned())
+        })?;
+        let [ScriptValue::String(prefix)] = arguments else {
+            return Err(unavailable(
+                "StorageUtil prefix call requires one exact String argument".to_owned(),
+            ));
+        };
+        let adaptation = adapt_storage_util_global_prefix(
+            prefix,
+            kind,
+            operation,
+            self.principal_storage.values(principal),
+        )
+        .map_err(|error| unavailable(error.to_string()))?;
+        if !adaptation.commands.is_empty() {
+            self.principal_storage
+                .apply_batch(principal, &adaptation.commands)?;
+        }
+        Ok(ScriptValue::Integer(i64::from(adaptation.result)))
     }
 
     fn invoke_storage_util_list(
@@ -8028,7 +8072,20 @@ mod tests {
                 StorageUtil.StringListAdd(None, "Labels", "ready")
                 StorageUtil.StringListClear(None, "labels")
                 StorageUtil.FormListAdd(None, "Owners", None)
-                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9
+                StorageUtil.SetIntValue(None, "Pack.Score", 1)
+                StorageUtil.SetStringValue(None, "Pack.Note", "ready")
+                StorageUtil.IntListAdd(None, "Pack.Items", 3)
+                Int prefixCount
+                prefixCount = StorageUtil.CountAllPrefix("PACK.")
+                Int clearedInts
+                clearedInts = StorageUtil.ClearIntValuePrefix("pack.")
+                Int prefixRemaining
+                prefixRemaining = StorageUtil.CountAllPrefix("pack.")
+                Int clearedPrefix
+                clearedPrefix = StorageUtil.ClearAllPrefix("pack.")
+                Int prefixAfter
+                prefixAfter = StorageUtil.CountAllPrefix("pack.")
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9 && prefixCount == 3 && clearedInts == 1 && prefixRemaining == 2 && clearedPrefix == 2 && prefixAfter == 0
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent

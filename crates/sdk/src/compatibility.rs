@@ -19,6 +19,7 @@ use crate::service::{
     PRINCIPAL_STORAGE_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
+use std::collections::BTreeMap;
 
 /// Extender ecosystem that introduced a recognized Papyrus provider/call.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -234,6 +235,8 @@ pub const PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE: &str =
 pub const PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-form-value";
 pub const PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX: &str = "byro.storage.compat.storage-util.list-";
+pub const PAPYRUS_STORAGE_UTIL_PREFIX_ROUTE_PREFIX: &str =
+    "byro.storage.compat.storage-util.prefix-";
 pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
 pub const PAPYRUS_MOD_EVENT_ROUTE_PREFIX: &str = "byro.events.compat.mod-event.";
 
@@ -557,6 +560,35 @@ fn papyrus_storage_util_list_declarations(
             ],
             value_type,
         ));
+    }
+    declarations
+}
+
+fn papyrus_storage_util_prefix_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    let mut declarations = Vec::with_capacity(18);
+    for (kind, suffix) in [
+        ("int-value", "IntValue"),
+        ("float-value", "FloatValue"),
+        ("string-value", "StringValue"),
+        ("form-value", "FormValue"),
+        ("int-list", "IntList"),
+        ("float-list", "FloatList"),
+        ("string-list", "StringList"),
+        ("form-list", "FormList"),
+        ("all", "All"),
+    ] {
+        for (operation, function_operation) in [("count", "Count"), ("clear", "Clear")] {
+            let function = format!("{function_operation}{suffix}Prefix");
+            let id = format!("storage-util-{operation}-{kind}-prefix");
+            let route = format!("{PAPYRUS_STORAGE_UTIL_PREFIX_ROUTE_PREFIX}{operation}-{kind}");
+            declarations.push(papyrus_storage_util_declaration(
+                &route,
+                &id,
+                &function,
+                &[("prefix", ScriptValueType::String, false)],
+                ScriptValueType::Integer,
+            ));
+        }
     }
     declarations
 }
@@ -1091,6 +1123,7 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
         ),
     ];
     declarations.extend(papyrus_storage_util_list_declarations(&object_and_key));
+    declarations.extend(papyrus_storage_util_prefix_declarations());
     declarations
 }
 
@@ -1388,6 +1421,8 @@ pub enum StorageUtilAdapterError {
         "StorageUtil key cannot be represented by the portable principal-storage grammar: {0}"
     )]
     InvalidKey(#[from] IdentityError),
+    #[error("StorageUtil prefix cannot be empty")]
+    EmptyPrefix,
     #[error("StorageUtil integer value is outside the Papyrus i32 range")]
     IntegerOutOfRange,
     #[error("StorageUtil integer adjustment overflowed the Papyrus i32 range")]
@@ -1513,6 +1548,34 @@ pub enum StorageUtilListOperation {
     Has,
 }
 
+/// Type namespace selected by a global `StorageUtil` prefix operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageUtilPrefixKind {
+    IntValue,
+    FloatValue,
+    StringValue,
+    FormValue,
+    IntList,
+    FloatList,
+    StringList,
+    FormList,
+    All,
+}
+
+/// Read-only count or atomic clear over one principal-private prefix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageUtilPrefixOperation {
+    Count,
+    Clear,
+}
+
+/// Bounded result and deferred mutations for a global prefix call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageUtilPrefixAdaptation {
+    pub result: i32,
+    pub commands: Vec<PrincipalStorageCommand>,
+}
+
 /// Failure to adapt SKSE's fixed-arity `SendModEvent` call.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum LegacyModEventAdapterError {
@@ -1632,6 +1695,9 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     if let Some(alias) = storage_util_list_source_alias(function) {
         return Some(alias);
     }
+    if let Some(alias) = storage_util_prefix_source_alias(function) {
+        return Some(alias);
+    }
     let (function, operation, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
         ("GetIntValue", "storage.get", "signed")
     } else if function.eq_ignore_ascii_case("PluckIntValue") {
@@ -1687,6 +1753,44 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         value_kind,
         constraint: "ObjKey must be None; portable key; principal-private (no cross-mod sharing)",
     })
+}
+
+fn storage_util_prefix_source_alias(function: &str) -> Option<SourceAlias> {
+    let aliases = [
+        "CountIntValuePrefix",
+        "CountFloatValuePrefix",
+        "CountStringValuePrefix",
+        "CountFormValuePrefix",
+        "CountIntListPrefix",
+        "CountFloatListPrefix",
+        "CountStringListPrefix",
+        "CountFormListPrefix",
+        "CountAllPrefix",
+        "ClearIntValuePrefix",
+        "ClearFloatValuePrefix",
+        "ClearStringValuePrefix",
+        "ClearFormValuePrefix",
+        "ClearIntListPrefix",
+        "ClearFloatListPrefix",
+        "ClearStringListPrefix",
+        "ClearFormListPrefix",
+        "ClearAllPrefix",
+    ];
+    aliases
+        .into_iter()
+        .find(|candidate| function.eq_ignore_ascii_case(candidate))
+        .map(|function| SourceAlias {
+            provider: "StorageUtil",
+            function,
+            service: PRINCIPAL_STORAGE_SERVICE,
+            operation: if function.starts_with("Count") {
+                "storage.prefix-count"
+            } else {
+                "storage.prefix-clear"
+            },
+            value_kind: "signed",
+            constraint: "non-empty case-folded prefix; principal-private global values only",
+        })
 }
 
 fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
@@ -2280,6 +2384,87 @@ pub fn parse_storage_util_list_route(
         _ => return None,
     };
     Some((kind, operation))
+}
+
+/// Decode a built-in global `StorageUtil` prefix route.
+pub fn parse_storage_util_prefix_route(
+    route: &str,
+) -> Option<(StorageUtilPrefixKind, StorageUtilPrefixOperation)> {
+    let suffix = route.strip_prefix(PAPYRUS_STORAGE_UTIL_PREFIX_ROUTE_PREFIX)?;
+    let (operation, kind) = suffix.split_once('-')?;
+    let operation = match operation {
+        "count" => StorageUtilPrefixOperation::Count,
+        "clear" => StorageUtilPrefixOperation::Clear,
+        _ => return None,
+    };
+    let kind = match kind {
+        "int-value" => StorageUtilPrefixKind::IntValue,
+        "float-value" => StorageUtilPrefixKind::FloatValue,
+        "string-value" => StorageUtilPrefixKind::StringValue,
+        "form-value" => StorageUtilPrefixKind::FormValue,
+        "int-list" => StorageUtilPrefixKind::IntList,
+        "float-list" => StorageUtilPrefixKind::FloatList,
+        "string-list" => StorageUtilPrefixKind::StringList,
+        "form-list" => StorageUtilPrefixKind::FormList,
+        "all" => StorageUtilPrefixKind::All,
+        _ => return None,
+    };
+    Some((kind, operation))
+}
+
+/// Count or clear case-folded global keys inside one authenticated principal.
+pub fn adapt_storage_util_global_prefix(
+    prefix: &str,
+    kind: StorageUtilPrefixKind,
+    operation: StorageUtilPrefixOperation,
+    values: Option<&BTreeMap<StorageKey, PrincipalStorageValue>>,
+) -> Result<StorageUtilPrefixAdaptation, StorageUtilAdapterError> {
+    if prefix.is_empty() {
+        return Err(StorageUtilAdapterError::EmptyPrefix);
+    }
+    let prefix = prefix.to_ascii_lowercase();
+    let namespaces: &[&str] = match kind {
+        StorageUtilPrefixKind::IntValue => &["storageutil.int:"],
+        StorageUtilPrefixKind::FloatValue => &["storageutil.float:"],
+        StorageUtilPrefixKind::StringValue => &["storageutil.string:"],
+        StorageUtilPrefixKind::FormValue => &["storageutil.form:"],
+        StorageUtilPrefixKind::IntList => &["storageutil.list.int:"],
+        StorageUtilPrefixKind::FloatList => &["storageutil.list.float:"],
+        StorageUtilPrefixKind::StringList => &["storageutil.list.string:"],
+        StorageUtilPrefixKind::FormList => &["storageutil.list.form:"],
+        StorageUtilPrefixKind::All => &[
+            "storageutil.int:",
+            "storageutil.float:",
+            "storageutil.string:",
+            "storageutil.form:",
+            "storageutil.list.int:",
+            "storageutil.list.float:",
+            "storageutil.list.string:",
+            "storageutil.list.form:",
+        ],
+    };
+    let keys = values
+        .into_iter()
+        .flat_map(BTreeMap::keys)
+        .filter(|key| {
+            namespaces.iter().any(|namespace| {
+                key.as_str()
+                    .strip_prefix(namespace)
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let result =
+        i32::try_from(keys.len()).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
+    let commands = if operation == StorageUtilPrefixOperation::Clear {
+        keys.into_iter()
+            .map(|key| PrincipalStorageCommand::Delete { key })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(StorageUtilPrefixAdaptation { result, commands })
 }
 
 /// Adapt one exact global `StorageUtil` list call to bounded principal storage.
@@ -3264,6 +3449,18 @@ mod tests {
                 .operation,
             "storage.array-get"
         );
+        assert_eq!(
+            source_alias("StorageUtil", "CountAllPrefix")
+                .unwrap()
+                .operation,
+            "storage.prefix-count"
+        );
+        assert_eq!(
+            source_alias("StorageUtil", "ClearFormListPrefix")
+                .unwrap()
+                .operation,
+            "storage.prefix-clear"
+        );
         assert!(source_alias("StorageUtil", "FormListCopy").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
@@ -3272,7 +3469,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 92);
+        assert_eq!(declarations.len(), 110);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -3645,6 +3842,60 @@ mod tests {
             StorageUtilListResult::Value(StorageUtilListValue::String(String::new()))
         );
         assert!(empty.commands.is_empty());
+    }
+
+    #[test]
+    fn storage_util_prefix_operations_are_type_scoped_case_folded_and_atomic() {
+        let values = BTreeMap::from([
+            (
+                StorageKey::new("storageutil.int:mod.score").unwrap(),
+                PrincipalStorageValue::I64(3),
+            ),
+            (
+                StorageKey::new("storageutil.int:other.score").unwrap(),
+                PrincipalStorageValue::I64(4),
+            ),
+            (
+                StorageKey::new("storageutil.list.string:mod.labels").unwrap(),
+                PrincipalStorageValue::Array(vec![ExtensionValue::String("a".to_owned())]),
+            ),
+            (
+                StorageKey::new("unrelated").unwrap(),
+                PrincipalStorageValue::I64(5),
+            ),
+        ]);
+        let typed = adapt_storage_util_global_prefix(
+            "MOD.",
+            StorageUtilPrefixKind::IntValue,
+            StorageUtilPrefixOperation::Count,
+            Some(&values),
+        )
+        .unwrap();
+        assert_eq!(typed.result, 1);
+        assert!(typed.commands.is_empty());
+
+        let all = adapt_storage_util_global_prefix(
+            "mod.",
+            StorageUtilPrefixKind::All,
+            StorageUtilPrefixOperation::Clear,
+            Some(&values),
+        )
+        .unwrap();
+        assert_eq!(all.result, 2);
+        assert_eq!(all.commands.len(), 2);
+        assert!(all.commands.iter().all(|command| matches!(
+            command,
+            PrincipalStorageCommand::Delete { key } if key.as_str().contains(":mod.")
+        )));
+        assert_eq!(
+            adapt_storage_util_global_prefix(
+                "",
+                StorageUtilPrefixKind::All,
+                StorageUtilPrefixOperation::Count,
+                Some(&values),
+            ),
+            Err(StorageUtilAdapterError::EmptyPrefix)
+        );
     }
 
     #[test]
