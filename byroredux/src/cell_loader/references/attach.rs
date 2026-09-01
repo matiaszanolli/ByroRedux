@@ -249,6 +249,21 @@ fn attach_scpt_script(
         );
         return false;
     };
+    if let Some(source) = script.source.as_deref() {
+        let report = byroredux_scripting::compatibility::analyze_obscript_compatibility(
+            &script.editor_id,
+            source,
+        );
+        let fingerprint =
+            byroredux_scripting::compatibility::legacy_script_fingerprint(&script.compiled)
+                ^ byroredux_scripting::compatibility::legacy_script_fingerprint(source.as_bytes())
+                    .rotate_left(1);
+        byroredux_scripting::compatibility::record_compatibility_report(
+            world,
+            fingerprint,
+            Some(report),
+        );
+    }
     // Scope the registry borrow tightly — the spawn fn that comes back
     // is a function pointer (Copy), so we can drop the borrow before
     // invoking the spawner with `&mut World`.
@@ -286,6 +301,64 @@ fn attach_scpt_script(
         script_form_id,
     );
     true
+}
+
+#[cfg(test)]
+mod scpt_compatibility_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::{ActiRecord, EsmIndex, ScriptRecord};
+    use byroredux_scripting::{CompatibilityDisposition, CompatibilityRegistry};
+
+    #[test]
+    fn scpt_source_records_xnvse_probe_before_runtime_attachment() {
+        const BASE_FORM_ID: u32 = 0x0100_0001;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0002;
+
+        let mut index = EsmIndex::default();
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord {
+                form_id: BASE_FORM_ID,
+                script_form_id: SCRIPT_FORM_ID,
+                ..Default::default()
+            },
+        );
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "VersionGate".to_owned(),
+                source: Some("if GetNVSEVersion >= 6\r\nendif\r\n".to_owned()),
+                compiled: vec![0x01, 0x02, 0x03],
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        world.insert_resource(CompatibilityRegistry::default());
+        let entity = world.spawn();
+
+        assert!(!attach_scpt_script(
+            &mut world,
+            entity,
+            BASE_FORM_ID,
+            &index
+        ));
+        let registry = world.resource::<CompatibilityRegistry>();
+        assert_eq!(registry.script_count(), 1);
+        let summary = registry.summary();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].provider, "xnvse");
+        assert_eq!(summary[0].function, "getnvseversion");
+        assert_eq!(
+            summary[0].compatibility.disposition,
+            CompatibilityDisposition::Mapped
+        );
+        assert_eq!(
+            summary[0].compatibility.service,
+            Some(byroredux_sdk::service::CONTEXT_SERVICE)
+        );
+    }
 }
 
 /// Skyrim+ path: for each script named in the record's `VMAD`, fetch its

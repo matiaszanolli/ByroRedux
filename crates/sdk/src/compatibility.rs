@@ -18,9 +18,55 @@ use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 pub enum ExtenderFamily {
     Skse,
     F4se,
+    Xnvse,
+    Obse,
     PapyrusUtil,
     JContainers,
     Shared,
+}
+
+/// Classify extender commands embedded in Oblivion/FO3/FNV ObScript source.
+/// Version probes map to semantic feature discovery rather than pretending an
+/// external loader is installed.
+pub fn classify_obscript_command(command: &str) -> Option<CompatibilityMatch> {
+    if command.eq_ignore_ascii_case("GetNVSEVersion")
+        || command.eq_ignore_ascii_case("GetNVSERevision")
+        || command.eq_ignore_ascii_case("GetNVSEBeta")
+    {
+        return Some(mapped(
+            ExtenderFamily::Xnvse,
+            CONTEXT_SERVICE,
+            "replace xNVSE version gates with SDK/service feature discovery",
+        ));
+    }
+    if command
+        .get(.."GetNVSE".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("GetNVSE"))
+    {
+        return Some(unsupported(
+            ExtenderFamily::Xnvse,
+            "the xNVSE command namespace is recognized, but this command has no engine semantic mapping",
+        ));
+    }
+    if command.eq_ignore_ascii_case("GetOBSEVersion")
+        || command.eq_ignore_ascii_case("GetOBSERevision")
+    {
+        return Some(mapped(
+            ExtenderFamily::Obse,
+            CONTEXT_SERVICE,
+            "replace OBSE version gates with SDK/service feature discovery",
+        ));
+    }
+    if command
+        .get(.."GetOBSE".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("GetOBSE"))
+    {
+        return Some(unsupported(
+            ExtenderFamily::Obse,
+            "the OBSE command namespace is recognized, but this command has no engine semantic mapping",
+        ));
+    }
+    None
 }
 
 /// Current source-compatibility disposition.
@@ -663,6 +709,24 @@ mod tests {
         assert_eq!(storage.service, Some(PRINCIPAL_STORAGE_SERVICE));
         let event = classify_method_call("RegisterForModEvent").unwrap();
         assert_eq!(event.service, Some(EVENT_SERVICE));
+    }
+
+    #[test]
+    fn legacy_obscript_version_probes_map_to_context_discovery() {
+        let nvse = classify_obscript_command("getnvseversion").unwrap();
+        assert_eq!(nvse.family, ExtenderFamily::Xnvse);
+        assert_eq!(nvse.service, Some(CONTEXT_SERVICE));
+        assert_eq!(nvse.disposition, CompatibilityDisposition::Mapped);
+        let obse = classify_obscript_command("GetOBSERevision").unwrap();
+        assert_eq!(obse.family, ExtenderFamily::Obse);
+        assert_eq!(obse.service, Some(CONTEXT_SERVICE));
+        assert_eq!(
+            classify_obscript_command("GetNVSEUnknown")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Unsupported
+        );
+        assert!(classify_obscript_command("GetActorValue").is_none());
     }
 
     #[test]

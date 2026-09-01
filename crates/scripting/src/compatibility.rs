@@ -9,8 +9,8 @@ use byroredux_papyrus::{
 };
 use byroredux_pex::{CallScope, CallSite, CallSiteDiagnostic, CallTarget, Pex};
 pub use byroredux_sdk::compatibility::{
-    classify_method_call, classify_static_call, source_alias, CompatibilityDisposition,
-    CompatibilityMatch, SourceAlias,
+    classify_method_call, classify_obscript_command, classify_static_call, source_alias,
+    CompatibilityDisposition, CompatibilityMatch, ExtenderFamily, SourceAlias,
 };
 
 /// One recognized extender-era call and its engine-level disposition.
@@ -175,6 +175,79 @@ pub fn record_compatibility_report(
     world
         .try_resource_mut::<CompatibilityRegistry>()
         .is_some_and(|mut registry| registry.record(fingerprint, report))
+}
+
+/// Scan preserved Oblivion/FO3/FNV `SCTX` text for recognized extender
+/// commands and express the result through the common compatibility report.
+pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> CompatibilityReport {
+    let mut findings = Vec::new();
+    let mut byte_offset = 0usize;
+    for (line_index, raw_line) in source_text.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let bytes = line.as_bytes();
+        let mut index = 0usize;
+        let mut quoted = false;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => {
+                    quoted = !quoted;
+                    index += 1;
+                }
+                b';' if !quoted => break,
+                byte if !quoted && (byte.is_ascii_alphabetic() || byte == b'_') => {
+                    let start = index;
+                    index += 1;
+                    while index < bytes.len()
+                        && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+                    {
+                        index += 1;
+                    }
+                    let command = &line[start..index];
+                    let Some(compatibility) = classify_obscript_command(command) else {
+                        continue;
+                    };
+                    let provider = match compatibility.family {
+                        ExtenderFamily::Xnvse => "xNVSE",
+                        ExtenderFamily::Obse => "OBSE",
+                        _ => unreachable!("ObScript classifier returned a non-ObScript family"),
+                    };
+                    findings.push(CompatibilityFinding {
+                        call: CallSite {
+                            source_file: source_file.to_owned(),
+                            object: "<obscript>".to_owned(),
+                            scope: CallScope::StateFunction {
+                                state: "ObScript".to_owned(),
+                                function: "<script>".to_owned(),
+                            },
+                            instruction_index: byte_offset + start,
+                            source_line: u16::try_from(line_index + 1).ok(),
+                            target: CallTarget::StaticType(provider.to_owned()),
+                            function: command.to_owned(),
+                            argument_count: 0,
+                        },
+                        compatibility,
+                    });
+                }
+                _ => index += 1,
+            }
+        }
+        byte_offset = byte_offset.saturating_add(raw_line.len());
+    }
+    CompatibilityReport {
+        findings,
+        malformed_calls: Vec::new(),
+    }
+}
+
+/// Stable fingerprint for preserved legacy script source/bytecode evidence.
+pub fn legacy_script_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// One extender-era call found directly in Papyrus source.
@@ -699,6 +772,42 @@ EndEvent
         assert_eq!(
             json.compatibility.disposition,
             CompatibilityDisposition::Unsupported
+        );
+    }
+
+    #[test]
+    fn legacy_obscript_scanner_finds_probes_but_ignores_comments_and_strings() {
+        let source = r#"scn VersionGate
+Begin GameMode
+  if GetNVSEVersion >= 6
+    let revision := GetNVSERevision
+  endif
+  ; GetOBSEVersion in a comment
+  Print "GetNVSEBeta in a string"
+  if GetOBSERevision > 0
+  endif
+End"#;
+        let report = analyze_obscript_compatibility("VersionGate", source);
+        assert_eq!(report.findings.len(), 3);
+        assert_eq!(report.findings[0].call.function, "GetNVSEVersion");
+        assert_eq!(report.findings[0].call.source_line, Some(3));
+        assert_eq!(report.findings[1].call.function, "GetNVSERevision");
+        assert_eq!(report.findings[2].call.function, "GetOBSERevision");
+        assert!(report.findings.iter().all(|finding| {
+            finding.compatibility.disposition == CompatibilityDisposition::Mapped
+                && finding.compatibility.service == Some(byroredux_sdk::service::CONTEXT_SERVICE)
+        }));
+        assert_eq!(
+            legacy_script_fingerprint(source.as_bytes()),
+            legacy_script_fingerprint(source.as_bytes())
+        );
+
+        let crlf =
+            analyze_obscript_compatibility("CrlfGate", "if GetNVSEVersion\r\n  GetOBSEVersion\r\n");
+        assert_eq!(crlf.findings[1].call.source_line, Some(2));
+        assert_eq!(
+            crlf.findings[1].call.instruction_index,
+            "if GetNVSEVersion\r\n".len() + 2
         );
     }
 

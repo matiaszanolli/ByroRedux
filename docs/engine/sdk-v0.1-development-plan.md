@@ -2,7 +2,7 @@
 
 Status: **In progress**
 
-Date: 2026-08-31
+Date: 2026-09-01
 
 Implementation progress: the first Phase 1 boundary is live in the working
 tree. `ObjectId` is public SDK identity, while `StudioSession` and its
@@ -502,6 +502,16 @@ mutations in the same atomic callback batch. Successful registration exposes
 the bounded callback identifier during delivery; registrations remain
 transient and are refreshed after load, matching SKSE's lifecycle contract.
 
+The first pre-Skyrim compatibility ingestion path is live at the SCPT attach
+boundary. Preserved `SCTX` source is scanned without treating identifiers in
+comments or strings as calls, and xNVSE `GetNVSEVersion`/
+`GetNVSERevision`/`GetNVSEBeta` plus OBSE `GetOBSEVersion`/
+`GetOBSERevision` probes map to `byro.context` feature discovery in the same
+bounded, fingerprint-deduplicated registry used by PEX. This is preflight and
+porting evidence, not an ObScript interpreter: source-less records containing
+only opaque `SCDA` bytecode remain unclassified until the engine has a verified
+opcode decoder, and all other xNVSE/OBSE commands remain explicit gaps.
+
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified
 compiled Fallout 4 scripts: its F4SE version probes map to `byro.context`,
@@ -792,9 +802,12 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   coverage, byte spans, source lines, scopes, and argument counts. Live VMAD,
   quest-fragment, and scene-fragment attachment now feed a bounded,
   fingerprint-deduplicated world registry without reparsing PEX; `sdk.compat`
-  exposes its deterministic aggregate to operators. Eager scanning of every
-  script in the full load-order archives and ObScript/xNVSE/OBSE scanning
-  remain pending.**
+  exposes its deterministic aggregate to operators. Preserved SCPT `SCTX`
+  source is now scanned at live attachment too: xNVSE/OBSE version probes map
+  to context feature discovery and unrecognized `GetNVSE*`/`GetOBSE*` probes
+  are reported as unsupported. Eager scanning of every script in the full
+  load-order archives, broader command-pack classification, and decoding
+  source-less `SCDA` ObScript bytecode remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 
