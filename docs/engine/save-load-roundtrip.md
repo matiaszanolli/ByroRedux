@@ -287,3 +287,6 @@ There's no versioned migrator chain for save-schema changes — a
 `FORMAT_MAJOR` version bump is the only sanctioned path when a saved
 struct's shape changes, enforced by a source-scanning tripwire test that
 fails CI if `#[serde(default)]` is added to a saved struct without one.
+The current major version is 11: provider continuations now persist tagged
+literal/local argument expressions, an incompatible nested-shape change that
+is rejected rather than guessed in the absence of a migrator.

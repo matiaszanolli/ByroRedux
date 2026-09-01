@@ -96,8 +96,9 @@ guards are released. `OnInit` is emitted once when the
 translated program attaches, independently of cell load; trigger handlers
 preserve one dispatch per entering actor. `OnHit` projects its four boolean
 attack/block flags into typed handler locals. The subset supports scalar locals,
-literal arguments, assignments, and bounded boolean branches with negation,
-short-circuit logical operators, same-type boolean/integer/float comparisons,
+literal or typed scalar-local arguments, assignments, and bounded boolean
+branches with negation, short-circuit logical operators,
+same-type boolean/integer/float comparisons,
 and string equality/inequality. Arithmetic, string concatenation, object
 expressions, broader events, other latent primitives, and dynamic object
 dispatch remain open. Provider-bearing
@@ -873,10 +874,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   emits one engine-owned initialization marker; trigger entry multiplicity and
   ordered wearer equipment transitions are preserved. The
   four scalar `OnHit` attack/block parameters are projected under their authored
-  names. The current subset covers scalar locals, literal arguments, assignments, and
-  bounded boolean branches, including negation, short-circuit logical
-  operators, same-type boolean/integer/float comparisons, and string
-  equality/inequality over locals, literals, and provider results. A synthetic
+  names. The current subset covers scalar locals, literal or typed local
+  arguments, assignments, and bounded boolean branches, including negation,
+  short-circuit logical operators, same-type boolean/integer/float comparisons,
+  and string equality/inequality over locals, literals, and provider results. A synthetic
   byte-level Skyrim PEX fixture now exercises the production
   reader/decompiler/translation boundary.
   Quest/scene fragment PEX now lowers top-level provider calls as sequencing
@@ -1105,6 +1106,16 @@ Checkpoint commit: `feat(scripting): compare provider string results`.
 Delivered for equality and inequality between same-typed string literals,
 locals, and provider results. Ordered string comparisons remain rejected, and
 no implicit numeric/string coercion or concatenation was introduced.
+
+Checkpoint commit: `feat(scripting): pass typed locals to providers`.
+
+Delivered with a handler-specific invocation IR that distinguishes literals
+from typed local references. Locals are materialized and revalidated directly
+before authenticated dispatch, remain available after `Utility.Wait`, and
+round-trip through the saved continuation queue. Quest/scene fragment calls
+retain their narrower literal-only IR. Because this changes an existing nested
+save shape, the container format advances to major version 11 rather than
+silently defaulting or misreading suspended calls.
 
 ### 14.4 Exit gate
 
