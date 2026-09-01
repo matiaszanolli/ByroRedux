@@ -266,6 +266,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SceneRegistry", "populated once per plugin/cell install from static SCEN records, only ever read afterward"),
         ("SceneStartRequest", "one-shot request drained every tick"),
         ("SceneStopRequest", "one-shot request drained every tick"),
+        ("LegacyObscriptContentCatalog", "immutable load-order snapshot republished from GlobalFormIdResolver before every legacy-script tick"),
+        ("LegacyObscriptProgram", "write-once source translation attached from static SCPT/SCTX data on every content load; mutable numeric locals live in the separately saved ScriptVariables component"),
         ("ScriptRegistry", "static editor_id-to-function-pointer map populated only by explicit .register() calls at boot; function pointers aren't meaningfully serializable"),
         ("StartGameQuestRegistry", "populated once from ESM QUST records; its own doc states repeated cell loads are idempotent by design"),
         ("TimerExpired", "one-shot event marker drained every frame by event_cleanup_system"),

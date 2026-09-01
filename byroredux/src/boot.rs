@@ -1664,7 +1664,22 @@ pub(crate) fn build_scheduler() -> Scheduler {
         crate::extensions::extension_content_catalog_sync_system,
         Access::new()
             .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .writes_resource::<byroredux_scripting::LegacyObscriptContentCatalog>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
+    // Run translated OBSE/xNVSE load-order handlers after their shared live
+    // catalog snapshot is published and before transient OnLoad/OnActivate
+    // markers are drained. The program component is static translated data;
+    // numeric results land in the existing save-backed ScriptVariables.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        byroredux_scripting::legacy_obscript_load_order_system,
+        Access::new()
+            .reads_resource::<byroredux_scripting::LegacyObscriptContentCatalog>()
+            .reads::<byroredux_scripting::LegacyObscriptProgram>()
+            .reads::<byroredux_scripting::OnCellLoadEvent>()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .writes::<byroredux_scripting::ScriptVariables>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
@@ -2293,6 +2308,7 @@ mod fragment_activation_order_tests {
 
         let settings = pos("crate::extensions::extension_engine_settings_sync_system");
         let catalog = pos("crate::extensions::extension_content_catalog_sync_system");
+        let legacy = pos("byroredux_scripting::legacy_obscript_load_order_system");
         let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
         let activation = pos("crate::extensions::extension_activation_dispatch_system");
         let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
@@ -2306,6 +2322,8 @@ mod fragment_activation_order_tests {
         assert!(
             settings < custom
                 && catalog < custom
+                && catalog < legacy
+                && legacy < cleanup
                 && custom < activation
                 && custom < cleanup
                 && activation < cleanup

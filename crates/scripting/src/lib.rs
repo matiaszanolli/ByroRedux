@@ -19,6 +19,7 @@ pub mod events;
 pub mod fragment;
 pub mod globals;
 pub mod obscript;
+pub mod obscript_runtime;
 pub mod package;
 pub mod papyrus_demo;
 pub mod player_control;
@@ -72,6 +73,12 @@ pub use globals::Globals;
 pub use obscript::{
     decode_extender_calls, legacy_load_order_call, ObscriptArgument, ObscriptCall, ObscriptDecode,
     ObscriptDialect, ObscriptLoadOrderCallError,
+};
+pub use obscript_runtime::{
+    attach_legacy_obscript_program, compile_legacy_obscript_program,
+    legacy_obscript_load_order_system, set_legacy_obscript_content_catalog,
+    LegacyObscriptAssignment, LegacyObscriptContentCatalog, LegacyObscriptEvent,
+    LegacyObscriptProgram,
 };
 pub use package::{
     install_package_linked_references, install_package_records, install_package_target_directions,
@@ -142,6 +149,7 @@ pub fn register(world: &mut World) {
     // emits `OnTriggerEnterEvent` on player entry, which the quest-advance
     // dispatch consumes (the `default*Trigger` family).
     trigger::register(world);
+    obscript_runtime::register(world);
     recurring_update::register(world);
     quest_stages::register(world);
     // M47.2 (b2) — quest-stage fragment dispatch. Registers the

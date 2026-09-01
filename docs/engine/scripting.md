@@ -242,13 +242,20 @@ records sharing an editor_id (e.g. `defaultRumbleOnActivate`) resolve to the
 same spawner without per-plugin registration. Re-registering an editor_id
 overrides the prior spawner (the intended mod-override path).
 
-Today exactly **one** spawner is registered: `defaultRumbleOnActivate`
+Today exactly **one** hand-written spawner is registered: `defaultRumbleOnActivate`
 (`register_spawners` in [`papyrus_demo/mod.rs`](../../crates/scripting/src/papyrus_demo/mod.rs)).
 The other three R5 demos carry per-instance properties that live in Skyrim+
 `VMAD` subrecords the parser doesn't decode yet, so spawning them would attach
 inert components — they defer to M47.2's VMAD decode. Unregistered scripts are
 the common case (vanilla FO3 ships ~1257 SCPT records; M47.0 hand-translates a
-handful); the cell loader treats a registry miss as a silent "no consumer yet".
+handful). Before that fallback, the loader now conservatively translates pure
+pre-Skyrim `SCTX` handlers whose only executable statements assign engine-
+native load-order queries. `GameMode`, `OnLoad`, and `OnActivate` execute in
+the ECS schedule against the live immutable content catalog; numeric results
+land in save-backed `ScriptVariables`. Any unsupported statement or control
+flow rejects the whole handler, and compiled-only SCDA handler lowering is
+still pending. A registry miss is therefore silent only when neither path can
+attach behavior.
 
 ### The R5 demo translations (`papyrus_demo/`)
 

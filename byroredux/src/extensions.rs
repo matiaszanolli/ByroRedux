@@ -2460,6 +2460,10 @@ pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
         };
         (resolver.content_catalog(), resolver.faction_relationships())
     };
+    // Built-in legacy scripts consume the same immutable snapshot as sandbox
+    // guests. Publish it even when no ExtensionHost is configured so OBSE/
+    // xNVSE-compatible engine behavior never depends on an external runtime.
+    byroredux_scripting::set_legacy_obscript_content_catalog(world, Arc::clone(&catalog));
     let host = {
         let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
             return;
@@ -6621,6 +6625,28 @@ mod tests {
             .unwrap();
         assert_eq!(relationship.modifier(), 25);
         assert_eq!(relationship.combat_reaction_raw(), 3);
+    }
+
+    #[test]
+    fn content_catalog_sync_feeds_builtin_obscript_without_extension_host() {
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["FalloutNV.esm".into(), "Companion.esp".into()],
+            vec![
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(1),
+            ],
+        );
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        extension_content_catalog_sync_system(&world, 0.0);
+
+        let catalog = world.resource::<byroredux_scripting::LegacyObscriptContentCatalog>();
+        assert_eq!(catalog.0.len(), 2);
+        assert_eq!(catalog.0.find("companion.ESP").unwrap().0, 1);
     }
 
     #[test]

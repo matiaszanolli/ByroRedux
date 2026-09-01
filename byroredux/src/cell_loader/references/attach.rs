@@ -227,9 +227,10 @@ pub(super) fn attach_container_inventory(
     true
 }
 
-/// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
-/// to its SCPT editor id, look up a hand-written M47.0 spawner in the
-/// [`ScriptRegistry`], and run it. Returns `true` when a spawner ran.
+/// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id,
+/// translate the conservative engine-native ObScript subset, then optionally
+/// layer an existing hand-written M47.0 spawner on top. Returns `true` when
+/// either path attached behavior.
 fn attach_scpt_script(
     world: &mut byroredux_core::ecs::world::World,
     entity: byroredux_core::ecs::EntityId,
@@ -289,6 +290,7 @@ fn attach_scpt_script(
             Some(report),
         );
     }
+    let translated = byroredux_scripting::attach_legacy_obscript_program(world, entity, script);
     // Scope the registry borrow tightly — the spawn fn that comes back
     // is a function pointer (Copy), so we can drop the borrow before
     // invoking the spawner with `&mut World`.
@@ -303,7 +305,7 @@ fn attach_scpt_script(
                  byroredux_scripting::register and ScriptRegistry init \
                  must run before cell load. Script attach disabled."
             );
-            return false;
+            return translated;
         };
         registry.lookup(&script.editor_id)
     };
@@ -317,7 +319,7 @@ fn attach_scpt_script(
             script.editor_id,
             script_form_id,
         );
-        return false;
+        return translated;
     };
     spawn_fn(world, entity);
     log::debug!(
@@ -332,7 +334,7 @@ fn attach_scpt_script(
 mod scpt_compatibility_tests {
     use super::*;
     use byroredux_core::character::CharacterRulesProfile;
-    use byroredux_plugin::esm::records::{ActiRecord, EsmIndex, ScriptRecord};
+    use byroredux_plugin::esm::records::{ActiRecord, EsmIndex, ScriptLocalVar, ScriptRecord};
     use byroredux_scripting::{CompatibilityDisposition, CompatibilityRegistry};
 
     #[test]
@@ -384,6 +386,44 @@ mod scpt_compatibility_tests {
             summary[0].compatibility.service,
             Some(byroredux_sdk::service::CONTEXT_SERVICE)
         );
+    }
+
+    #[test]
+    fn pure_load_order_handler_attaches_without_a_hand_written_spawner() {
+        const BASE_FORM_ID: u32 = 0x0100_0003;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0004;
+        let mut index = EsmIndex::default();
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord {
+                form_id: BASE_FORM_ID,
+                script_form_id: SCRIPT_FORM_ID,
+                ..Default::default()
+            },
+        );
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "NativeLoadOrderGate".to_owned(),
+                source: Some(
+                    "begin OnLoad\nset modIndex to GetModIndex \"Companion.esp\"\nend\n".to_owned(),
+                ),
+                locals: vec![ScriptLocalVar {
+                    index: 0,
+                    var_type: 2,
+                    name: "modIndex".to_owned(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let entity = world.spawn();
+        assert!(attach_scpt_script(&mut world, entity, BASE_FORM_ID, &index));
+        assert!(world.has::<byroredux_scripting::LegacyObscriptProgram>(entity));
+        assert!(world.has::<byroredux_scripting::ScriptVariables>(entity));
     }
 
     #[test]
