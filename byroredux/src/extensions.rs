@@ -2912,13 +2912,14 @@ fn capture_entity_projections(
         world.query::<Inventory>(),
         world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
     ) {
+        let item_catalog = world.try_resource::<crate::inventory::InventoryCatalog>();
         for (entity, projection) in &mut projections {
             let Some(inventory) = inventories.get(*entity) else {
                 continue;
             };
             let equipment = equipment_by_entity.get(entity);
             let mut truncated = false;
-            let mut summaries = BTreeMap::<FormRef, (u64, u32, bool)>::new();
+            let mut summaries = BTreeMap::new();
             for (raw_index, stack) in inventory.items.iter().enumerate() {
                 let Some(item) = resolver.resolve(stack.base_form_id).map(form_ref) else {
                     truncated = true;
@@ -2947,7 +2948,12 @@ fn capture_entity_projections(
                         })
                 });
                 let weapon_equipped = equipment.is_some_and(|slots| slots.weapon == Some(index));
-                let summary = summaries.entry(item).or_default();
+                let metadata = item_catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.sdk_metadata(stack.base_form_id));
+                let summary = summaries
+                    .entry(item)
+                    .or_insert_with(|| (0_u64, 0_u32, false, metadata.clone()));
                 summary.0 = summary
                     .0
                     .checked_add(u64::from(stack.count))
@@ -2957,11 +2963,14 @@ fn capture_entity_projections(
                     });
                 summary.1 |= biped_slots;
                 summary.2 |= weapon_equipped;
+                if summary.3.is_none() {
+                    summary.3 = metadata;
+                }
             }
             let mut entries = summaries
                 .into_iter()
-                .map(|(item, (count, biped_slots, weapon_equipped))| {
-                    InventoryEntry::new(item, count, biped_slots, weapon_equipped)
+                .map(|(item, (count, biped_slots, weapon_equipped, metadata))| {
+                    InventoryEntry::new(item, count, biped_slots, weapon_equipped, metadata)
                         .expect("resolved inventory forms are non-null")
                 })
                 .collect::<Vec<_>>();

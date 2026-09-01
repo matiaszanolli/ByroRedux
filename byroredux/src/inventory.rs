@@ -11,6 +11,7 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
+use byroredux_sdk::inventory::{ItemCategory, ItemMetadata};
 use rustc_hash::FxHashMap;
 
 use crate::npc_spawn::effective_actor_level;
@@ -72,6 +73,33 @@ pub(crate) struct InventoryItemDefinition {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InventoryCatalog {
     entries: FxHashMap<u32, InventoryItemDefinition>,
+}
+
+impl InventoryCatalog {
+    pub(crate) fn sdk_metadata(&self, form_id: u32) -> Option<ItemMetadata> {
+        let definition = self.entries.get(&form_id)?;
+        let category = match definition.category {
+            "Misc" => ItemCategory::Misc,
+            "Junk" => ItemCategory::Junk,
+            "Mods" => ItemCategory::Mod,
+            "Book" => ItemCategory::Book,
+            "Note" => ItemCategory::Note,
+            "Ingredient" => ItemCategory::Ingredient,
+            "Aid" => ItemCategory::Aid,
+            "Key" => ItemCategory::Key,
+            "Ammo" => ItemCategory::Ammo,
+            "Armor" => ItemCategory::Armor,
+            "Weapon" => ItemCategory::Weapon,
+            _ => return None,
+        };
+        ItemMetadata::new(
+            definition.name.clone(),
+            category,
+            definition.value,
+            definition.weight,
+        )
+        .ok()
+    }
 }
 
 impl Resource for InventoryCatalog {}
@@ -706,6 +734,13 @@ mod tests {
         assert!(armor.equipped);
         assert!(armor.equippable);
         assert_eq!(snapshot.total_weight, 38.0);
+        let metadata = world
+            .resource::<InventoryCatalog>()
+            .sdk_metadata(0x1234)
+            .unwrap();
+        assert_eq!(metadata.name(), "Iron Armor");
+        assert_eq!(metadata.category(), ItemCategory::Armor);
+        assert_eq!((metadata.value(), metadata.weight()), (125, 30.0));
     }
 
     #[test]

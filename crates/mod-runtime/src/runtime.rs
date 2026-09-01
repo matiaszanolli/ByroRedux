@@ -20,7 +20,7 @@ use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, FormRef, PrincipalId, ServiceId,
     StorageKey,
 };
-use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot};
+use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot, ItemCategory, ItemMetadata};
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
@@ -1838,22 +1838,40 @@ fn wit_actor_value_state(value: ActorValueState) -> actor_values::ActorValueStat
 
 fn wit_inventory_snapshot(snapshot: &InventorySnapshot) -> inventory::InventorySnapshot {
     inventory::InventorySnapshot {
-        entries: snapshot
-            .entries()
-            .iter()
-            .copied()
-            .map(wit_inventory_entry)
-            .collect(),
+        entries: snapshot.entries().iter().map(wit_inventory_entry).collect(),
         truncated: snapshot.truncated(),
     }
 }
 
-fn wit_inventory_entry(entry: InventoryEntry) -> inventory::InventoryEntry {
+fn wit_inventory_entry(entry: &InventoryEntry) -> inventory::InventoryEntry {
     inventory::InventoryEntry {
         item: wit_form_ref(entry.item()),
         count: entry.count(),
         biped_slots: entry.biped_slots(),
         weapon_equipped: entry.weapon_equipped(),
+        metadata: entry.metadata().map(wit_item_metadata),
+    }
+}
+
+fn wit_item_metadata(metadata: &ItemMetadata) -> inventory::ItemMetadata {
+    let category = match metadata.category() {
+        ItemCategory::Misc => inventory::ItemCategory::Misc,
+        ItemCategory::Junk => inventory::ItemCategory::Junk,
+        ItemCategory::Mod => inventory::ItemCategory::Mod,
+        ItemCategory::Book => inventory::ItemCategory::Book,
+        ItemCategory::Note => inventory::ItemCategory::Note,
+        ItemCategory::Ingredient => inventory::ItemCategory::Ingredient,
+        ItemCategory::Aid => inventory::ItemCategory::Aid,
+        ItemCategory::Key => inventory::ItemCategory::Key,
+        ItemCategory::Ammo => inventory::ItemCategory::Ammo,
+        ItemCategory::Armor => inventory::ItemCategory::Armor,
+        ItemCategory::Weapon => inventory::ItemCategory::Weapon,
+    };
+    inventory::ItemMetadata {
+        name: metadata.name().to_owned(),
+        category,
+        value: metadata.value(),
+        weight: metadata.weight(),
     }
 }
 
@@ -2484,7 +2502,17 @@ mod projection_tests {
         let entity = EntityRef::new(1, 9).unwrap();
         let item = FormRef::new(1_u128.to_be_bytes(), 0x1234);
         let snapshot = InventorySnapshot::new(
-            vec![InventoryEntry::new(item, 7, 0b101, true).unwrap()],
+            vec![InventoryEntry::new(
+                item,
+                7,
+                0b101,
+                true,
+                Some(
+                    ItemMetadata::new("Iron Sword".to_owned(), ItemCategory::Weapon, 25, 9.0)
+                        .unwrap(),
+                ),
+            )
+            .unwrap()],
             true,
         )
         .unwrap();
@@ -2509,6 +2537,10 @@ mod projection_tests {
         assert_eq!(entry.biped_slots, 0b101);
         assert!(entry.weapon_equipped);
         assert_eq!(sdk_form_ref(entry.item), item);
+        let metadata = entry.metadata.as_ref().unwrap();
+        assert_eq!(metadata.name, "Iron Sword");
+        assert!(matches!(metadata.category, inventory::ItemCategory::Weapon));
+        assert_eq!((metadata.value, metadata.weight), (25, 9.0));
 
         let mut denied = content_host_state(false);
         let error = <HostState as inventory::Host>::get(&mut denied, wit_entity).unwrap_err();

@@ -23,7 +23,9 @@ The current public surface includes:
   numeric global FormIDs.
 - `InventorySnapshot` exposes a bounded, sorted summary by portable base form,
   with 64-bit counts, biped-slot occupancy, weapon equip state, and an explicit
-  truncation bit. It deliberately does not invent stable per-instance handles.
+  truncation bit. Optional validated metadata carries the resolved item name,
+  semantic category, value, and non-negative finite weight. The contract
+  deliberately does not invent stable per-instance handles.
 - Validated extension, principal, capability, service, event, and schema IDs
   are stable namespaced values shared by package loaders and sandbox hosts.
 - `ExtensionManifest` declares SDK/dependency ranges, executable components,

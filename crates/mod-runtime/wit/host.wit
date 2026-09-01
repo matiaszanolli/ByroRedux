@@ -225,11 +225,33 @@ interface actor-values {
 interface inventory {
     use state.{entity-ref, form-ref};
 
+    enum item-category {
+        misc,
+        junk,
+        mod,
+        book,
+        note,
+        ingredient,
+        aid,
+        key,
+        ammo,
+        armor,
+        weapon,
+    }
+
+    record item-metadata {
+        name: string,
+        category: item-category,
+        value: u32,
+        weight: f32,
+    }
+
     record inventory-entry {
         item: form-ref,
         count: u64,
         biped-slots: u32,
         weapon-equipped: bool,
+        metadata: option<item-metadata>,
     }
 
     record inventory-snapshot {
