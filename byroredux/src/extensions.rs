@@ -1325,6 +1325,30 @@ impl ExtensionHost {
                 "StorageUtil list call has an invalid typed value".to_owned(),
             )),
         };
+        let list_values = |value: &ScriptValue| match (kind, value) {
+            (StorageUtilListKind::Int, ScriptValue::IntegerArray(values)) => values
+                .iter()
+                .map(|value| Ok(StorageUtilListValue::Int(integer(*value)?)))
+                .collect::<Result<Vec<_>, ExtensionHostError>>(),
+            (StorageUtilListKind::Float, ScriptValue::FloatArray(values)) => Ok(values
+                .iter()
+                .copied()
+                .map(StorageUtilListValue::Float)
+                .collect()),
+            (StorageUtilListKind::String, ScriptValue::StringArray(values)) => Ok(values
+                .iter()
+                .cloned()
+                .map(StorageUtilListValue::String)
+                .collect()),
+            (StorageUtilListKind::Form, ScriptValue::FormArray(values)) => Ok(values
+                .iter()
+                .copied()
+                .map(StorageUtilListValue::Form)
+                .collect()),
+            _ => Err(unavailable(
+                "StorageUtil list call has an invalid typed array".to_owned(),
+            )),
+        };
         let default_value = || match kind {
             StorageUtilListKind::Int => StorageUtilListValue::Int(0),
             StorageUtilListKind::Float => StorageUtilListValue::Float(0.0),
@@ -1482,6 +1506,18 @@ impl ExtensionHost {
                 (key, StorageUtilListCall::Sort)
             }
             (
+                StorageUtilListOperation::Copy,
+                [ScriptValue::None, ScriptValue::String(key), values],
+            ) => (
+                key,
+                StorageUtilListCall::Copy {
+                    values: list_values(values)?,
+                },
+            ),
+            (StorageUtilListOperation::ToArray, [ScriptValue::None, ScriptValue::String(key)]) => {
+                (key, StorageUtilListCall::ToArray)
+            }
+            (
                 StorageUtilListOperation::Resize,
                 [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(to_length)],
             ) => (
@@ -1558,6 +1594,52 @@ impl ExtensionHost {
                 ScriptValue::Form(value)
             }
             StorageUtilListResult::Value(StorageUtilListValue::Form(None)) => ScriptValue::None,
+            StorageUtilListResult::Array(values) => match kind {
+                StorageUtilListKind::Int => ScriptValue::IntegerArray(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let StorageUtilListValue::Int(value) = value else {
+                                unreachable!("decoded StorageUtil Int array is homogeneous")
+                            };
+                            i64::from(value)
+                        })
+                        .collect(),
+                ),
+                StorageUtilListKind::Float => ScriptValue::FloatArray(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let StorageUtilListValue::Float(value) = value else {
+                                unreachable!("decoded StorageUtil Float array is homogeneous")
+                            };
+                            value
+                        })
+                        .collect(),
+                ),
+                StorageUtilListKind::String => ScriptValue::StringArray(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let StorageUtilListValue::String(value) = value else {
+                                unreachable!("decoded StorageUtil String array is homogeneous")
+                            };
+                            value
+                        })
+                        .collect(),
+                ),
+                StorageUtilListKind::Form => ScriptValue::FormArray(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let StorageUtilListValue::Form(value) = value else {
+                                unreachable!("decoded StorageUtil Form array is homogeneous")
+                            };
+                            value
+                        })
+                        .collect(),
+                ),
+            },
         })
     }
 
@@ -8064,6 +8146,12 @@ mod tests {
                 shrunk = StorageUtil.IntListResize(None, "numbers", 4)
                 Int randomNumber
                 randomNumber = StorageUtil.IntListRandom(None, "numbers")
+                Int[] numberCopy
+                numberCopy = StorageUtil.IntListToArray(None, "numbers")
+                Bool copiedNumbers
+                copiedNumbers = StorageUtil.IntListCopy(None, "numbers-copy", numberCopy)
+                Int copiedNumberCount
+                copiedNumberCount = StorageUtil.IntListCount(None, "numbers-copy")
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -8085,7 +8173,7 @@ mod tests {
                 clearedPrefix = StorageUtil.ClearAllPrefix("pack.")
                 Int prefixAfter
                 prefixAfter = StorageUtil.CountAllPrefix("pack.")
-                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9 && prefixCount == 3 && clearedInts == 1 && prefixRemaining == 2 && clearedPrefix == 2 && prefixAfter == 0
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0 && randomNumber >= 1 && randomNumber <= 9 && copiedNumbers && copiedNumberCount == 4 && prefixCount == 3 && clearedInts == 1 && prefixRemaining == 2 && clearedPrefix == 2 && prefixAfter == 0
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent
@@ -8137,6 +8225,15 @@ mod tests {
         assert!(!values.contains_key(&StorageKey::new("storageutil.string:onestring").unwrap()));
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.int:numbers").unwrap()),
+            Some(&PrincipalStorageValue::Array(vec![
+                ExtensionValue::I64(1),
+                ExtensionValue::I64(2),
+                ExtensionValue::I64(6),
+                ExtensionValue::I64(9),
+            ]))
+        );
+        assert_eq!(
+            values.get(&StorageKey::new("storageutil.list.int:numbers-copy").unwrap()),
             Some(&PrincipalStorageValue::Array(vec![
                 ExtensionValue::I64(1),
                 ExtensionValue::I64(2),

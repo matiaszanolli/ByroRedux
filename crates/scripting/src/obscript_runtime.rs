@@ -827,7 +827,13 @@ fn script_value_number(result: ScriptValue) -> Option<f32> {
         ScriptValue::None
         | ScriptValue::String(_)
         | ScriptValue::Form(_)
-        | ScriptValue::Entity(_) => None,
+        | ScriptValue::Entity(_)
+        | ScriptValue::BooleanArray(_)
+        | ScriptValue::IntegerArray(_)
+        | ScriptValue::FloatArray(_)
+        | ScriptValue::StringArray(_)
+        | ScriptValue::FormArray(_)
+        | ScriptValue::EntityArray(_) => None,
     }
 }
 
@@ -839,6 +845,12 @@ fn script_value_truthy(result: ScriptValue) -> bool {
         ScriptValue::Float(value) => value != 0.0,
         ScriptValue::String(value) => !value.is_empty(),
         ScriptValue::Form(_) | ScriptValue::Entity(_) => true,
+        ScriptValue::BooleanArray(values) => !values.is_empty(),
+        ScriptValue::IntegerArray(values) => !values.is_empty(),
+        ScriptValue::FloatArray(values) => !values.is_empty(),
+        ScriptValue::StringArray(values) => !values.is_empty(),
+        ScriptValue::FormArray(values) => !values.is_empty(),
+        ScriptValue::EntityArray(values) => !values.is_empty(),
     }
 }
 

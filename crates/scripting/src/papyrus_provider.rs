@@ -386,10 +386,12 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
             StorageUtilListOperation::Get
             | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
-            | StorageUtilListOperation::Has => (3, 3),
+            | StorageUtilListOperation::Has
+            | StorageUtilListOperation::Copy => (3, 3),
             StorageUtilListOperation::Shift
             | StorageUtilListOperation::Pop
             | StorageUtilListOperation::Random
+            | StorageUtilListOperation::ToArray
             | StorageUtilListOperation::Sort
             | StorageUtilListOperation::Count
             | StorageUtilListOperation::Clear => (2, 2),
@@ -1855,7 +1857,14 @@ fn comparison_is_supported(
             operator,
             PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
         ),
-        ScriptValueType::Form | ScriptValueType::Entity => false,
+        ScriptValueType::Form
+        | ScriptValueType::Entity
+        | ScriptValueType::BooleanArray
+        | ScriptValueType::IntegerArray
+        | ScriptValueType::FloatArray
+        | ScriptValueType::StringArray
+        | ScriptValueType::FormArray
+        | ScriptValueType::EntityArray => false,
     }
 }
 
@@ -1883,6 +1892,14 @@ fn sdk_type(value: &Type) -> Option<ScriptValueType> {
         Type::Int => Some(ScriptValueType::Integer),
         Type::Float => Some(ScriptValueType::Float),
         Type::String => Some(ScriptValueType::String),
+        Type::Array(element) => match element.as_ref() {
+            Type::Bool => Some(ScriptValueType::BooleanArray),
+            Type::Int => Some(ScriptValueType::IntegerArray),
+            Type::Float => Some(ScriptValueType::FloatArray),
+            Type::String => Some(ScriptValueType::StringArray),
+            Type::Object(_) => Some(ScriptValueType::FormArray),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1894,6 +1911,12 @@ fn default_value(value_type: ScriptValueType) -> ScriptValue {
         ScriptValueType::Float => ScriptValue::Float(0.0),
         ScriptValueType::String => ScriptValue::String(String::new()),
         ScriptValueType::Form | ScriptValueType::Entity => ScriptValue::None,
+        ScriptValueType::BooleanArray => ScriptValue::BooleanArray(Vec::new()),
+        ScriptValueType::IntegerArray => ScriptValue::IntegerArray(Vec::new()),
+        ScriptValueType::FloatArray => ScriptValue::FloatArray(Vec::new()),
+        ScriptValueType::StringArray => ScriptValue::StringArray(Vec::new()),
+        ScriptValueType::FormArray => ScriptValue::FormArray(Vec::new()),
+        ScriptValueType::EntityArray => ScriptValue::EntityArray(Vec::new()),
     }
 }
 
@@ -3522,6 +3545,20 @@ mod tests {
         assert_eq!(
             list_random.arguments,
             [ScriptValue::None, ScriptValue::String("Owners".to_owned()),]
+        );
+        let list_array = lower_provider_call(
+            &expression("StorageUtil.IntListToArray(None, \"Numbers\")"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_array.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-int-to-array"
+        );
+        assert_eq!(
+            list_array.result.unwrap().value_type,
+            ScriptValueType::IntegerArray
         );
         let prefix_route = catalog.resolve("StorageUtil", "CountAllPrefix").unwrap();
         assert_eq!(

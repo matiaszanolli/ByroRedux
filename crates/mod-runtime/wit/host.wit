@@ -481,6 +481,12 @@ interface script-functions {
         text,
         form,
         entity,
+        boolean-array,
+        integer-array,
+        float-array,
+        string-array,
+        form-array,
+        entity-array,
     }
 
     argument-count: func() -> u32;
@@ -491,6 +497,12 @@ interface script-functions {
     argument-string: func(index: u32) -> option<string>;
     argument-form: func(index: u32) -> option<form-ref>;
     argument-entity: func(index: u32) -> option<entity-ref>;
+    argument-boolean-array: func(index: u32) -> option<list<bool>>;
+    argument-integer-array: func(index: u32) -> option<list<s64>>;
+    argument-float-array: func(index: u32) -> option<list<f32>>;
+    argument-string-array: func(index: u32) -> option<list<string>>;
+    argument-form-array: func(index: u32) -> option<list<option<form-ref>>>;
+    argument-entity-array: func(index: u32) -> option<list<option<entity-ref>>>;
 
     set-result-none: func();
     set-result-boolean: func(value: bool);
@@ -499,6 +511,12 @@ interface script-functions {
     set-result-string: func(value: string);
     set-result-form: func(value: form-ref);
     set-result-entity: func(value: entity-ref);
+    set-result-boolean-array: func(value: list<bool>);
+    set-result-integer-array: func(value: list<s64>);
+    set-result-float-array: func(value: list<f32>);
+    set-result-string-array: func(value: list<string>);
+    set-result-form-array: func(value: list<option<form-ref>>);
+    set-result-entity-array: func(value: list<option<entity-ref>>);
 }
 
 /// Minimal lifecycle contract for the first executable-mod runtime slice.

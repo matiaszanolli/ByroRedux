@@ -19,6 +19,8 @@ pub const MAX_SCRIPT_FUNCTION_DESCRIPTION_BYTES: usize = 256;
 pub const MAX_PAPYRUS_IDENTIFIER_BYTES: usize = 128;
 /// Maximum UTF-8 bytes in one string argument or result.
 pub const MAX_SCRIPT_STRING_BYTES: usize = 4 * 1024;
+/// Maximum homogeneous elements in one Papyrus/SDK array value.
+pub const MAX_SCRIPT_ARRAY_ELEMENTS: usize = 512;
 /// Maximum aggregate variable-width payload for one call.
 pub const MAX_SCRIPT_CALL_BYTES: usize = 32 * 1024;
 
@@ -32,6 +34,12 @@ pub enum ScriptValueType {
     String,
     Form,
     Entity,
+    BooleanArray,
+    IntegerArray,
+    FloatArray,
+    StringArray,
+    FormArray,
+    EntityArray,
 }
 
 /// One bounded callback value. `None` is valid only for optional parameters or
@@ -46,6 +54,12 @@ pub enum ScriptValue {
     String(String),
     Form(FormRef),
     Entity(EntityRef),
+    BooleanArray(Vec<bool>),
+    IntegerArray(Vec<i64>),
+    FloatArray(Vec<f32>),
+    StringArray(Vec<String>),
+    FormArray(Vec<Option<FormRef>>),
+    EntityArray(Vec<Option<EntityRef>>),
 }
 
 impl ScriptValue {
@@ -61,12 +75,48 @@ impl ScriptValue {
             }
             Self::Form(_) => value_type == ScriptValueType::Form,
             Self::Entity(_) => value_type == ScriptValueType::Entity,
+            Self::BooleanArray(values) => {
+                value_type == ScriptValueType::BooleanArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+            }
+            Self::IntegerArray(values) => {
+                value_type == ScriptValueType::IntegerArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+            }
+            Self::FloatArray(values) => {
+                value_type == ScriptValueType::FloatArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+                    && values.iter().all(|value| value.is_finite())
+            }
+            Self::StringArray(values) => {
+                value_type == ScriptValueType::StringArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+                    && values
+                        .iter()
+                        .all(|value| value.len() <= MAX_SCRIPT_STRING_BYTES)
+            }
+            Self::FormArray(values) => {
+                value_type == ScriptValueType::FormArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+            }
+            Self::EntityArray(values) => {
+                value_type == ScriptValueType::EntityArray
+                    && values.len() <= MAX_SCRIPT_ARRAY_ELEMENTS
+            }
         }
     }
 
     fn variable_bytes(&self) -> usize {
         match self {
             Self::String(value) => value.len(),
+            Self::BooleanArray(values) => values.len(),
+            Self::IntegerArray(values) => values.len().saturating_mul(size_of::<i64>()),
+            Self::FloatArray(values) => values.len().saturating_mul(size_of::<f32>()),
+            Self::StringArray(values) => values
+                .iter()
+                .fold(0usize, |bytes, value| bytes.saturating_add(value.len())),
+            Self::FormArray(values) => values.len().saturating_mul(20),
+            Self::EntityArray(values) => values.len().saturating_mul(16),
             _ => 0,
         }
     }
@@ -361,6 +411,46 @@ mod tests {
         declaration.validate_result(&ScriptValue::None).unwrap();
         assert!(declaration
             .validate_result(&ScriptValue::String("wrong".to_owned()))
+            .is_err());
+    }
+
+    #[test]
+    fn homogeneous_arrays_are_typed_finite_and_bounded() {
+        let declaration = ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("copy-values").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![ScriptParameterDeclaration {
+                id: ScriptParameterId::new("values").unwrap(),
+                value_type: ScriptValueType::FloatArray,
+                optional: false,
+            }],
+            result: Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::StringArray,
+                optional: false,
+            }),
+            papyrus: None,
+            description: "Copy bounded array values".to_owned(),
+        };
+        declaration
+            .validate_arguments(&[ScriptValue::FloatArray(vec![1.0, 2.5])])
+            .unwrap();
+        assert!(declaration
+            .validate_arguments(&[ScriptValue::FloatArray(vec![f32::NAN])])
+            .is_err());
+        assert!(declaration
+            .validate_arguments(&[ScriptValue::FloatArray(vec![
+                0.0;
+                MAX_SCRIPT_ARRAY_ELEMENTS + 1
+            ])])
+            .is_err());
+        declaration
+            .validate_result(&ScriptValue::StringArray(vec![
+                "a".to_owned(),
+                "b".to_owned(),
+            ]))
+            .unwrap();
+        assert!(declaration
+            .validate_result(&ScriptValue::IntegerArray(vec![1, 2]))
             .is_err());
     }
 }

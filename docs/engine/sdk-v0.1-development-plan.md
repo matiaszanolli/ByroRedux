@@ -1393,6 +1393,18 @@ is limited to the authenticated principal's global scalar/list namespaces.
 Clear returns the exact number removed and applies its bounded delete batch
 atomically; unrelated principal storage is never visible or affected.
 
+Checkpoint: `feat(scripting): add StorageUtil list array transfers`.
+
+The first array-valued pack adds `*ListCopy` and `*ListToArray` for Int, Float,
+String, and Form lists. The shared SDK script-value contract now carries
+bounded homogeneous arrays across declarations, serialized continuations, and
+the component-model `script-functions` interface instead of hiding arrays in a
+StorageUtil-only side channel. Arrays are capped at 512 elements and the
+existing 32 KiB aggregate call budget; float/string elements retain their
+finite and per-string validation. Copy replaces one principal-private list
+atomically and returns false when the configured storage bound is exceeded;
+to-array returns an independent typed value without mutation.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the
