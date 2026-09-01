@@ -75,7 +75,20 @@ packages publish only under `ext.<extension-id>.*`, route to an authenticated
 component/declaration index, receive bounded callback-local arguments, return
 bounded output, and commit mutations through the existing atomic deferred
 batch. Denial leaves no command behind and a guest fault quarantines only its
-component. Typed settings reads are now engine-owned too:
+component.
+Manifest-declared script functions are live through the same principal and
+capability boundary. Packages publish bounded typed signatures under
+`ext.<extension-id>.<function>`. The component-model world exposes a
+callback-local typed argument/result interface, validates host arguments before
+guest entry, quarantines a guest that omits or returns the wrong result type,
+and withholds the result until its deferred command batch is accepted. The
+executable routes source ObScript assignments and conditions directly to this
+host without an OBSE/xNVSE DLL. Arguments use explicit `boolean:`, `integer:`,
+`float:`, or `string:` literals (plus `none`), and the interpreter snapshots
+its static statement tree before entering guest code so no ECS guard crosses
+the sandbox boundary. Compiled SCDA SDK-call encoding and a general Papyrus
+native-call dispatcher remain open.
+Typed settings reads are now engine-owned too:
 `byro.settings.read` projects the same persisted universal `SettingsRegistry`
 consumed by native menus into bounded bool/number/choice values, is available
 during component initialization, and refreshes before later callbacks.
@@ -424,10 +437,12 @@ layout. Each service declares its request/response schema, required capability,
 thread/stage rules, determinism, and failure modes.
 
 Translated Papyrus/SCPT calls and legacy compatibility aliases resolve into
-this catalog. Extensions may expose script-callable functions only through a
-bounded provider interface; they cannot register a native function pointer.
-Script-to-extension calls use queued requests to avoid nested guest execution
-and partial world mutation.
+this catalog. Extensions expose script-callable functions only through a
+bounded typed provider interface; they cannot register a native function
+pointer. The current source-ObScript adapter enters that dispatcher only after
+snapshotting and releasing ECS guards. Guest mutations remain deferred and the
+typed result is published only after the host accepts the complete command
+batch.
 
 ### 6.7 Persistence
 
@@ -538,6 +553,12 @@ to sandbox extensions and write results into the existing save-backed
 `elseif` chain length are capped at 32; a handler containing any unsupported
 statement, expression tail, event filter, or malformed branch is rejected as a
 unit, so partial translation cannot reorder or accidentally expose its body.
+Source handlers may additionally assign or branch on a manifest-declared
+`ext.<extension-id>.<function>` call. Scalar/string literals are explicitly
+typed, declaration validation happens before guest entry, and numeric results
+write through the same save-backed `ScriptVariables` path. This is an
+engine-level provider call, not an emulated extender version or injected
+native function.
 `GetSourceModIndex`, reference construction, and all other xNVSE/OBSE commands
 remain explicit gaps. Command names and legacy result contracts are anchored
 to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)

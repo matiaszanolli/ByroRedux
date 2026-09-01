@@ -682,38 +682,42 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
         .map(|events| events.iter().map(|(entity, _)| entity).collect::<Vec<_>>())
         .unwrap_or_default();
 
-    let mut writes = Vec::new();
     let Some(programs) = world.query::<LegacyObscriptProgram>() else {
         return;
     };
+    let mut handlers = Vec::new();
     for (entity, program) in programs.iter() {
+        handlers.push((
+            entity,
+            program.handler(LegacyObscriptEvent::GameMode).to_vec(),
+        ));
+        if loaded.contains(&entity) {
+            handlers.push((
+                entity,
+                program.handler(LegacyObscriptEvent::OnLoad).to_vec(),
+            ));
+        }
+        if activated.contains(&entity) {
+            handlers.push((
+                entity,
+                program.handler(LegacyObscriptEvent::OnActivate).to_vec(),
+            ));
+        }
+    }
+    drop(programs);
+
+    // Guest entry may call engine services, so snapshot the static program
+    // first and hold no ECS query/resource guard across the host callback.
+    let mut writes = Vec::new();
+    for (entity, statements) in handlers {
         collect_writes(
             &catalog,
             extension_functions.as_deref(),
             entity,
-            program.handler(LegacyObscriptEvent::GameMode),
+            &statements,
             &mut writes,
         );
-        if loaded.contains(&entity) {
-            collect_writes(
-                &catalog,
-                extension_functions.as_deref(),
-                entity,
-                program.handler(LegacyObscriptEvent::OnLoad),
-                &mut writes,
-            );
-        }
-        if activated.contains(&entity) {
-            collect_writes(
-                &catalog,
-                extension_functions.as_deref(),
-                entity,
-                program.handler(LegacyObscriptEvent::OnActivate),
-                &mut writes,
-            );
-        }
     }
-    drop(programs);
 
     let Some(mut variables) = world.query_mut::<ScriptVariables>() else {
         return;
