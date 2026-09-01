@@ -377,13 +377,15 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
             | StorageUtilListOperation::Adjust => (4, 4),
             StorageUtilListOperation::Pluck
             | StorageUtilListOperation::Remove
-            | StorageUtilListOperation::CountValue => (3, 4),
+            | StorageUtilListOperation::CountValue
+            | StorageUtilListOperation::Resize => (3, 4),
             StorageUtilListOperation::Get
             | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
             | StorageUtilListOperation::Has => (3, 3),
             StorageUtilListOperation::Shift
             | StorageUtilListOperation::Pop
+            | StorageUtilListOperation::Sort
             | StorageUtilListOperation::Count
             | StorageUtilListOperation::Clear => (2, 2),
         });
@@ -3468,6 +3470,36 @@ mod tests {
                 ScriptValue::Boolean(true),
             ]
         );
+        let list_resize = lower_provider_call(
+            &expression("StorageUtil.FloatListResize(None, \"Ratios\", 4, 1.5)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_resize.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-float-resize"
+        );
+        assert_eq!(
+            list_resize.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Ratios".to_owned()),
+                ScriptValue::Integer(4),
+                ScriptValue::Float(1.5),
+            ]
+        );
+        let list_sort = lower_provider_call(
+            &expression("StorageUtil.FormListSort(None, \"Owners\")"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_sort.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-form-sort"
+        );
+        assert!(list_sort.result.is_none());
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
             .unwrap()
             .unwrap();

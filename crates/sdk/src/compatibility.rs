@@ -376,7 +376,7 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
 fn papyrus_storage_util_list_declarations(
     object_and_key: &[(&str, ScriptValueType, bool); 2],
 ) -> Vec<EnginePapyrusFunctionDeclaration> {
-    let mut declarations = Vec::with_capacity(58);
+    let mut declarations = Vec::with_capacity(66);
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
         ("float", "Float", ScriptValueType::Float),
@@ -485,6 +485,17 @@ fn papyrus_storage_util_list_declarations(
                 ],
             ),
             (
+                "resize",
+                "Resize",
+                ScriptValueType::Integer,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("to-length", ScriptValueType::Integer, true),
+                    ("filler", value_type, true),
+                ],
+            ),
+            (
                 "find",
                 "Find",
                 ScriptValueType::Integer,
@@ -516,6 +527,15 @@ fn papyrus_storage_util_list_declarations(
                 result,
             ));
         }
+        let function = format!("{suffix}ListSort");
+        let id = format!("storage-util-{kind}-list-sort");
+        let route = format!("{PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX}{kind}-sort");
+        declarations.push(papyrus_storage_util_void_declaration(
+            &route,
+            &id,
+            &function,
+            object_and_key,
+        ));
     }
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
@@ -547,6 +567,25 @@ fn papyrus_storage_util_declaration(
     parameters: &[(&str, ScriptValueType, bool)],
     result: ScriptValueType,
 ) -> EnginePapyrusFunctionDeclaration {
+    papyrus_storage_util_declaration_with_result(route, id, function, parameters, Some(result))
+}
+
+fn papyrus_storage_util_void_declaration(
+    route: &str,
+    id: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+) -> EnginePapyrusFunctionDeclaration {
+    papyrus_storage_util_declaration_with_result(route, id, function, parameters, None)
+}
+
+fn papyrus_storage_util_declaration_with_result(
+    route: &str,
+    id: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+    result: Option<ScriptValueType>,
+) -> EnginePapyrusFunctionDeclaration {
     EnginePapyrusFunctionDeclaration {
         route: route.to_owned(),
         declaration: ScriptFunctionDeclaration {
@@ -563,8 +602,8 @@ fn papyrus_storage_util_declaration(
                     optional,
                 })
                 .collect(),
-            result: Some(ScriptResultDeclaration {
-                value_type: result,
+            result: result.map(|value_type| ScriptResultDeclaration {
+                value_type,
                 optional: false,
             }),
             papyrus: Some(PapyrusFunctionAlias {
@@ -1417,6 +1456,11 @@ pub enum StorageUtilListCall {
         index: i32,
         amount: StorageUtilListValue,
     },
+    Sort,
+    Resize {
+        to_length: i32,
+        filler: StorageUtilListValue,
+    },
     Find {
         value: StorageUtilListValue,
     },
@@ -1428,6 +1472,7 @@ pub enum StorageUtilListCall {
 /// Papyrus-visible result of one core `StorageUtil` list operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StorageUtilListResult {
+    None,
     Value(StorageUtilListValue),
     Int(i32),
     Bool(bool),
@@ -1457,6 +1502,8 @@ pub enum StorageUtilListOperation {
     Remove,
     CountValue,
     Adjust,
+    Sort,
+    Resize,
     Find,
     Has,
 }
@@ -1652,6 +1699,8 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ("IntListRemove", "storage.array-get+queue-replace", "signed"),
         ("IntListCountValue", "storage.array-get", "signed"),
         ("IntListAdjust", "storage.array-get+queue-set", "signed"),
+        ("IntListSort", "storage.array-get+queue-replace", "none"),
+        ("IntListResize", "storage.array-get+queue-replace", "signed"),
         ("IntListFind", "storage.array-get", "signed"),
         ("IntListHas", "storage.array-get", "bool"),
         ("FloatListAdd", "storage.array-get+queue-push", "float"),
@@ -1675,6 +1724,12 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ),
         ("FloatListCountValue", "storage.array-get", "signed"),
         ("FloatListAdjust", "storage.array-get+queue-set", "float"),
+        ("FloatListSort", "storage.array-get+queue-replace", "none"),
+        (
+            "FloatListResize",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
         ("FloatListFind", "storage.array-get", "signed"),
         ("FloatListHas", "storage.array-get", "bool"),
         ("StringListAdd", "storage.array-get+queue-push", "text"),
@@ -1705,6 +1760,12 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
             "signed",
         ),
         ("StringListCountValue", "storage.array-get", "signed"),
+        ("StringListSort", "storage.array-get+queue-replace", "none"),
+        (
+            "StringListResize",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
         ("StringListFind", "storage.array-get", "signed"),
         ("StringListHas", "storage.array-get", "bool"),
         ("FormListAdd", "storage.array-get+queue-push", "form"),
@@ -1723,6 +1784,12 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
             "signed",
         ),
         ("FormListCountValue", "storage.array-get", "signed"),
+        ("FormListSort", "storage.array-get+queue-replace", "none"),
+        (
+            "FormListResize",
+            "storage.array-get+queue-replace",
+            "signed",
+        ),
         ("FormListFind", "storage.array-get", "signed"),
         ("FormListHas", "storage.array-get", "bool"),
     ];
@@ -2196,6 +2263,8 @@ pub fn parse_storage_util_list_route(
         "remove" => StorageUtilListOperation::Remove,
         "count-value" => StorageUtilListOperation::CountValue,
         "adjust" => StorageUtilListOperation::Adjust,
+        "sort" => StorageUtilListOperation::Sort,
+        "resize" => StorageUtilListOperation::Resize,
         "find" => StorageUtilListOperation::Find,
         "has" => StorageUtilListOperation::Has,
         _ => return None,
@@ -2211,6 +2280,8 @@ pub fn adapt_storage_util_global_list(
     current: Option<&PrincipalStorageValue>,
     max_entries: usize,
 ) -> Result<StorageUtilListAdaptation, StorageUtilAdapterError> {
+    const PAPYRUS_UTIL_LIST_RESIZE_LIMIT: usize = 500;
+
     let kind_name = match kind {
         StorageUtilListKind::Int => "int",
         StorageUtilListKind::Float => "float",
@@ -2442,6 +2513,90 @@ pub fn adapt_storage_util_global_list(
                 value: encode_storage_util_list_value(kind, &next)?,
             });
             StorageUtilListResult::Value(next)
+        }
+        StorageUtilListCall::Sort => {
+            let mut replacement = values.clone();
+            match kind {
+                StorageUtilListKind::Int => replacement.sort_by(|left, right| {
+                    let (StorageUtilListValue::Int(left), StorageUtilListValue::Int(right)) =
+                        (left, right)
+                    else {
+                        unreachable!("decoded StorageUtil Int list is homogeneous")
+                    };
+                    left.cmp(right)
+                }),
+                StorageUtilListKind::Float => replacement.sort_by(|left, right| {
+                    let (StorageUtilListValue::Float(left), StorageUtilListValue::Float(right)) =
+                        (left, right)
+                    else {
+                        unreachable!("decoded StorageUtil Float list is homogeneous")
+                    };
+                    left.total_cmp(right)
+                }),
+                StorageUtilListKind::String => replacement.sort_by(|left, right| {
+                    let (StorageUtilListValue::String(left), StorageUtilListValue::String(right)) =
+                        (left, right)
+                    else {
+                        unreachable!("decoded StorageUtil String list is homogeneous")
+                    };
+                    left.cmp(right)
+                }),
+                StorageUtilListKind::Form => replacement.sort_by(|left, right| {
+                    let (StorageUtilListValue::Form(left), StorageUtilListValue::Form(right)) =
+                        (left, right)
+                    else {
+                        unreachable!("decoded StorageUtil Form list is homogeneous")
+                    };
+                    match (left, right) {
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                        (Some(left), Some(right)) => left
+                            .source()
+                            .cmp(&right.source())
+                            .then_with(|| left.local().cmp(&right.local())),
+                    }
+                }),
+            }
+            if current.is_some() {
+                commands.push(PrincipalStorageCommand::ArrayReplace {
+                    key: key.clone(),
+                    values: encode_storage_util_list_values(kind, &replacement)?,
+                });
+            }
+            StorageUtilListResult::None
+        }
+        StorageUtilListCall::Resize { to_length, filler } => {
+            encode_storage_util_list_value(kind, &filler)?;
+            let Some(target) = usize::try_from(to_length).ok().filter(|target| {
+                *target <= PAPYRUS_UTIL_LIST_RESIZE_LIMIT && *target <= max_entries
+            }) else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Int(0),
+                    commands,
+                });
+            };
+            let delta = i64::try_from(target)
+                .and_then(|target| i64::try_from(values.len()).map(|length| target - length))
+                .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
+            let delta =
+                i32::try_from(delta).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
+            if target != values.len() {
+                if target == 0 {
+                    if current.is_some() {
+                        commands.push(PrincipalStorageCommand::Delete { key: key.clone() });
+                    }
+                } else {
+                    let mut replacement = values.clone();
+                    replacement.resize(target, filler);
+                    commands.push(PrincipalStorageCommand::ArrayReplace {
+                        key: key.clone(),
+                        values: encode_storage_util_list_values(kind, &replacement)?,
+                    });
+                }
+            }
+            StorageUtilListResult::Int(delta)
         }
         StorageUtilListCall::Find { value } => {
             encode_storage_util_list_value(kind, &value)?;
@@ -3078,7 +3233,13 @@ mod tests {
                 .operation,
             "storage.array-get+queue-replace"
         );
-        assert!(source_alias("StorageUtil", "FormListSort").is_none());
+        assert_eq!(
+            source_alias("StorageUtil", "FormListSort")
+                .unwrap()
+                .operation,
+            "storage.array-get+queue-replace"
+        );
+        assert!(source_alias("StorageUtil", "FormListCopy").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
@@ -3086,7 +3247,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 80);
+        assert_eq!(declarations.len(), 88);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -3697,6 +3858,143 @@ mod tests {
         assert_eq!(
             float.result,
             StorageUtilListResult::Value(StorageUtilListValue::Float(2.0))
+        );
+    }
+
+    #[test]
+    fn storage_util_list_sort_and_resize_preserve_upstream_bounds_and_deltas() {
+        let current = PrincipalStorageValue::Array(vec![
+            ExtensionValue::I64(3),
+            ExtensionValue::I64(1),
+            ExtensionValue::I64(2),
+        ]);
+        let sorted = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Sort,
+            Some(&current),
+            600,
+        )
+        .unwrap();
+        assert_eq!(sorted.result, StorageUtilListResult::None);
+        assert_eq!(
+            sorted.commands,
+            [PrincipalStorageCommand::ArrayReplace {
+                key: sorted.key.clone(),
+                values: vec![
+                    ExtensionValue::I64(1),
+                    ExtensionValue::I64(2),
+                    ExtensionValue::I64(3),
+                ],
+            }]
+        );
+
+        let grown = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Resize {
+                to_length: 5,
+                filler: StorageUtilListValue::Int(9),
+            },
+            Some(&current),
+            600,
+        )
+        .unwrap();
+        assert_eq!(grown.result, StorageUtilListResult::Int(2));
+        assert_eq!(
+            grown.commands,
+            [PrincipalStorageCommand::ArrayReplace {
+                key: grown.key.clone(),
+                values: vec![
+                    ExtensionValue::I64(3),
+                    ExtensionValue::I64(1),
+                    ExtensionValue::I64(2),
+                    ExtensionValue::I64(9),
+                    ExtensionValue::I64(9),
+                ],
+            }]
+        );
+
+        let shrunk = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Resize {
+                to_length: 1,
+                filler: StorageUtilListValue::Int(0),
+            },
+            Some(&current),
+            600,
+        )
+        .unwrap();
+        assert_eq!(shrunk.result, StorageUtilListResult::Int(-2));
+        assert_eq!(
+            shrunk.commands,
+            [PrincipalStorageCommand::ArrayReplace {
+                key: shrunk.key.clone(),
+                values: vec![ExtensionValue::I64(3)],
+            }]
+        );
+
+        let cleared = adapt_storage_util_global_list(
+            "numbers",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Resize {
+                to_length: 0,
+                filler: StorageUtilListValue::Int(0),
+            },
+            Some(&current),
+            600,
+        )
+        .unwrap();
+        assert_eq!(cleared.result, StorageUtilListResult::Int(-3));
+        assert_eq!(
+            cleared.commands,
+            [PrincipalStorageCommand::Delete {
+                key: cleared.key.clone(),
+            }]
+        );
+
+        for invalid_length in [-1, 501] {
+            let invalid = adapt_storage_util_global_list(
+                "numbers",
+                StorageUtilListKind::Int,
+                StorageUtilListCall::Resize {
+                    to_length: invalid_length,
+                    filler: StorageUtilListValue::Int(0),
+                },
+                Some(&current),
+                600,
+            )
+            .unwrap();
+            assert_eq!(invalid.result, StorageUtilListResult::Int(0));
+            assert!(invalid.commands.is_empty());
+        }
+
+        let first = FormRef::new([1; 16], 1);
+        let second = FormRef::new([1; 16], 2);
+        let forms = PrincipalStorageValue::Array(vec![
+            ExtensionValue::Bytes(encode_storage_util_form(second)),
+            ExtensionValue::Bytes(Vec::new()),
+            ExtensionValue::Bytes(encode_storage_util_form(first)),
+        ]);
+        let sorted_forms = adapt_storage_util_global_list(
+            "owners",
+            StorageUtilListKind::Form,
+            StorageUtilListCall::Sort,
+            Some(&forms),
+            600,
+        )
+        .unwrap();
+        assert_eq!(
+            sorted_forms.commands,
+            [PrincipalStorageCommand::ArrayReplace {
+                key: sorted_forms.key.clone(),
+                values: vec![
+                    ExtensionValue::Bytes(Vec::new()),
+                    ExtensionValue::Bytes(encode_storage_util_form(first)),
+                    ExtensionValue::Bytes(encode_storage_util_form(second)),
+                ],
+            }]
         );
     }
 

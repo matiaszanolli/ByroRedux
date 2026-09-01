@@ -1365,6 +1365,16 @@ and honors the upstream first/all-instances switch; count-value supports the
 upstream exclusion mode; numeric adjustment returns the new value and rejects
 integer overflow or non-finite floats.
 
+Checkpoint: `feat(scripting): execute StorageUtil list sort and resize`.
+
+The fourth list pack adds sort and resize for every element kind. Sort follows
+ascending scalar order; Form lists use stable portable Form identity order with
+`None` first rather than transient load-order indices. Resize preserves
+PapyrusUtil's signed delta result, hard 500-element ceiling, default fillers,
+and delete-on-zero behavior while also respecting the tighter configured
+engine storage limit. Both operations commit through one atomic
+`ArrayReplace` (or `Delete`) command.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

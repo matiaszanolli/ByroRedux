@@ -1403,6 +1403,29 @@ impl ExtensionHost {
                     amount: list_value(amount)?,
                 },
             ),
+            (StorageUtilListOperation::Sort, [ScriptValue::None, ScriptValue::String(key)]) => {
+                (key, StorageUtilListCall::Sort)
+            }
+            (
+                StorageUtilListOperation::Resize,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(to_length)],
+            ) => (
+                key,
+                StorageUtilListCall::Resize {
+                    to_length: integer(*to_length)?,
+                    filler: default_value(),
+                },
+            ),
+            (
+                StorageUtilListOperation::Resize,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(to_length), filler],
+            ) => (
+                key,
+                StorageUtilListCall::Resize {
+                    to_length: integer(*to_length)?,
+                    filler: list_value(filler)?,
+                },
+            ),
             (
                 StorageUtilListOperation::Find,
                 [ScriptValue::None, ScriptValue::String(key), value],
@@ -1444,6 +1467,7 @@ impl ExtensionHost {
                 .apply_batch(principal, &adaptation.commands)?;
         }
         Ok(match adaptation.result {
+            StorageUtilListResult::None => ScriptValue::None,
             StorageUtilListResult::Int(value) => ScriptValue::Integer(i64::from(value)),
             StorageUtilListResult::Bool(value) => ScriptValue::Boolean(value),
             StorageUtilListResult::Value(StorageUtilListValue::Int(value)) => {
@@ -7956,6 +7980,13 @@ mod tests {
                 adjusted = StorageUtil.IntListAdjust(None, "numbers", 0, 1)
                 StorageUtil.IntListRemove(None, "numbers", 10)
                 StorageUtil.IntListRemove(None, "numbers", 10, true)
+                StorageUtil.IntListAdd(None, "numbers", 2)
+                StorageUtil.IntListAdd(None, "numbers", 1)
+                StorageUtil.IntListSort(None, "numbers")
+                Int grown
+                grown = StorageUtil.IntListResize(None, "numbers", 5, 9)
+                Int shrunk
+                shrunk = StorageUtil.IntListResize(None, "numbers", 4)
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -7964,7 +7995,7 @@ mod tests {
                 StorageUtil.StringListAdd(None, "Labels", "ready")
                 StorageUtil.StringListClear(None, "labels")
                 StorageUtil.FormListAdd(None, "Owners", None)
-                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6
+                If value == 3 && visits == 2 && ratio == 1.75 && duplicates == 2 && adjusted == 6 && grown == 2 && shrunk < 0
                     StorageUtil.SetStringValue(None, "Status", "ready")
                 EndIf
             EndEvent
@@ -8016,7 +8047,12 @@ mod tests {
         assert!(!values.contains_key(&StorageKey::new("storageutil.string:onestring").unwrap()));
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.int:numbers").unwrap()),
-            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(6)]))
+            Some(&PrincipalStorageValue::Array(vec![
+                ExtensionValue::I64(1),
+                ExtensionValue::I64(2),
+                ExtensionValue::I64(6),
+                ExtensionValue::I64(9),
+            ]))
         );
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.float:ratios").unwrap()),
