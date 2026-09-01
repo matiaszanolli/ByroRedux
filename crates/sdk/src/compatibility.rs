@@ -178,11 +178,15 @@ pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
 pub const PAPYRUS_GAME_GET_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-mod-count";
 pub const PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE: &str = "byro.content.catalog.get-mod-by-name";
 pub const PAPYRUS_GAME_GET_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-mod-name";
+pub const PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE: &str =
+    "byro.content.catalog.get-mod-dependency-count";
 pub const PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE: &str = "byro.content.catalog.is-plugin-installed";
 pub const PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-light-mod-count";
 pub const PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE: &str =
     "byro.content.catalog.get-light-mod-by-name";
 pub const PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-light-mod-name";
+pub const PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE: &str =
+    "byro.content.catalog.get-light-mod-dependency-count";
 
 pub const PAPYRUS_GAME_LIGHT_MOD_OFFSET: i32 = 0x100;
 pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
@@ -255,6 +259,14 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             "Return the regular or offset-light plugin name at an SKSE mod index",
         ),
         papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
+            "get-mod-dependency-count",
+            "GetModDependencyCount",
+            Some(("index", ScriptValueType::Integer)),
+            ScriptValueType::Integer,
+            "Return the master count for a regular or offset-light plugin index",
+        ),
+        papyrus_game_content_declaration(
             PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
             "is-plugin-installed",
             "IsPluginInstalled",
@@ -285,6 +297,14 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             Some(("index", ScriptValueType::Integer)),
             ScriptValueType::String,
             "Return the light-plugin name at an index or an empty string",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
+            "get-light-mod-dependency-count",
+            "GetLightModDependencyCount",
+            Some(("index", ScriptValueType::Integer)),
+            ScriptValueType::Integer,
+            "Return the master count for a light-plugin index",
         ),
     ]
 }
@@ -320,6 +340,13 @@ pub fn adapt_papyrus_game_get_mod_name(catalog: &ContentCatalog, index: i64) -> 
     }
 }
 
+pub fn adapt_papyrus_game_get_mod_dependency_count(catalog: &ContentCatalog, index: i64) -> i32 {
+    i32::try_from(
+        plugin_at_mod_index(catalog, index).map_or(0, |plugin| plugin.dependencies().len()),
+    )
+    .expect("content catalog dependency count fits i32")
+}
+
 pub fn adapt_papyrus_game_is_plugin_installed(catalog: &ContentCatalog, plugin: &str) -> bool {
     catalog.find(plugin).is_some()
 }
@@ -339,6 +366,17 @@ pub fn adapt_papyrus_game_get_light_mod_name(catalog: &ContentCatalog, index: i6
     i32::try_from(index).ok().map_or_else(String::new, |index| {
         plugin_name(catalog, PluginKind::Light, index)
     })
+}
+
+pub fn adapt_papyrus_game_get_light_mod_dependency_count(
+    catalog: &ContentCatalog,
+    index: i64,
+) -> i32 {
+    let count = i32::try_from(index)
+        .ok()
+        .and_then(|index| plugin_at(catalog, PluginKind::Light, index))
+        .map_or(0, |plugin| plugin.dependencies().len());
+    i32::try_from(count).expect("content catalog dependency count fits i32")
 }
 
 fn plugin_count(catalog: &ContentCatalog, kind: PluginKind) -> i32 {
@@ -373,6 +411,34 @@ fn plugin_name(catalog: &ContentCatalog, kind: PluginKind, index: i32) -> String
         .filter(|plugin| plugin.kind() == kind)
         .nth(index)
         .map_or_else(String::new, |plugin| plugin.name().to_owned())
+}
+
+fn plugin_at_mod_index(
+    catalog: &ContentCatalog,
+    index: i64,
+) -> Option<&crate::content::PluginInfo> {
+    let index = i32::try_from(index).ok()?;
+    if index > LEGACY_OBSCRIPT_MISSING_MOD_INDEX {
+        plugin_at(
+            catalog,
+            PluginKind::Light,
+            index.checked_sub(PAPYRUS_GAME_LIGHT_MOD_OFFSET)?,
+        )
+    } else {
+        plugin_at(catalog, PluginKind::Regular, index)
+    }
+}
+
+fn plugin_at(
+    catalog: &ContentCatalog,
+    kind: PluginKind,
+    index: i32,
+) -> Option<&crate::content::PluginInfo> {
+    let index = usize::try_from(index).ok()?;
+    catalog
+        .iter()
+        .filter(|plugin| plugin.kind() == kind)
+        .nth(index)
 }
 
 /// Typed load-order operation recovered from extender-era ObScript.
@@ -870,10 +936,12 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
                 "GetModCount",
                 "GetModByName",
                 "GetModName",
+                "GetModDependencyCount",
                 "IsPluginInstalled",
                 "GetLightModCount",
                 "GetLightModByName",
                 "GetLightModName",
+                "GetLightModDependencyCount",
             ],
         )
     {
@@ -1167,11 +1235,14 @@ mod tests {
 
     #[test]
     fn papyrus_game_content_aliases_preserve_regular_and_light_indices() {
-        let catalog = ContentCatalog::new(vec![
-            PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
-            PluginInfo::new("Patch.esl", 2_u128.to_be_bytes(), PluginKind::Light).unwrap(),
-            PluginInfo::new("Update.esm", 3_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
-        ])
+        let catalog = ContentCatalog::new_with_dependencies(
+            vec![
+                PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
+                PluginInfo::new("Patch.esl", 2_u128.to_be_bytes(), PluginKind::Light).unwrap(),
+                PluginInfo::new("Update.esm", 3_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
+            ],
+            vec![vec![], vec![0], vec![0]],
+        )
         .unwrap();
 
         assert_eq!(
@@ -1193,6 +1264,12 @@ mod tests {
             "Patch.esl"
         );
         assert_eq!(adapt_papyrus_game_get_mod_name(&catalog, 255), "");
+        assert_eq!(adapt_papyrus_game_get_mod_dependency_count(&catalog, 1), 1);
+        assert_eq!(
+            adapt_papyrus_game_get_mod_dependency_count(&catalog, 0x100),
+            1
+        );
+        assert_eq!(adapt_papyrus_game_get_mod_dependency_count(&catalog, -1), 0);
         assert!(adapt_papyrus_game_is_plugin_installed(
             &catalog,
             "patch.ESL"
@@ -1211,8 +1288,16 @@ mod tests {
             "Patch.esl"
         );
         assert_eq!(adapt_papyrus_game_get_light_mod_name(&catalog, -1), "");
+        assert_eq!(
+            adapt_papyrus_game_get_light_mod_dependency_count(&catalog, 0),
+            1
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_light_mod_dependency_count(&catalog, 1),
+            0
+        );
         let declarations = papyrus_game_content_declarations();
-        assert_eq!(declarations.len(), 7);
+        assert_eq!(declarations.len(), 9);
         for declaration in declarations {
             declaration.declaration.validate().unwrap();
         }

@@ -30,11 +30,13 @@ use byroredux_sdk::actor_values::{
 use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
 use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_light_mod_by_name, adapt_papyrus_game_get_light_mod_count,
-    adapt_papyrus_game_get_light_mod_name, adapt_papyrus_game_get_mod_by_name,
-    adapt_papyrus_game_get_mod_count, adapt_papyrus_game_get_mod_name,
+    adapt_papyrus_game_get_light_mod_dependency_count, adapt_papyrus_game_get_light_mod_name,
+    adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
+    adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
     adapt_papyrus_game_is_plugin_installed, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
-    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
     PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
 };
 use byroredux_sdk::component::{
@@ -705,6 +707,12 @@ impl ExtensionHost {
                     *index,
                 ))
             }
+            (PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, [ScriptValue::Integer(index)]) => {
+                ScriptValue::Integer(i64::from(adapt_papyrus_game_get_mod_dependency_count(
+                    &self.content_catalog,
+                    *index,
+                )))
+            }
             (PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, [ScriptValue::String(plugin)]) => {
                 ScriptValue::Boolean(adapt_papyrus_game_is_plugin_installed(
                     &self.content_catalog,
@@ -724,6 +732,14 @@ impl ExtensionHost {
                 ScriptValue::String(adapt_papyrus_game_get_light_mod_name(
                     &self.content_catalog,
                     *index,
+                ))
+            }
+            (PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, [ScriptValue::Integer(index)]) => {
+                ScriptValue::Integer(i64::from(
+                    adapt_papyrus_game_get_light_mod_dependency_count(
+                        &self.content_catalog,
+                        *index,
+                    ),
                 ))
             }
             (route, _) if route.starts_with("byro.content.catalog.") => {
@@ -6261,26 +6277,29 @@ mod tests {
 
     #[test]
     fn game_content_aliases_run_without_an_extension_package() {
-        let catalog = ContentCatalog::new(vec![
-            byroredux_sdk::content::PluginInfo::new(
-                "Skyrim.esm",
-                1_u128.to_be_bytes(),
-                byroredux_sdk::content::PluginKind::Regular,
-            )
-            .unwrap(),
-            byroredux_sdk::content::PluginInfo::new(
-                "Patch.esl",
-                2_u128.to_be_bytes(),
-                byroredux_sdk::content::PluginKind::Light,
-            )
-            .unwrap(),
-            byroredux_sdk::content::PluginInfo::new(
-                "Update.esm",
-                3_u128.to_be_bytes(),
-                byroredux_sdk::content::PluginKind::Regular,
-            )
-            .unwrap(),
-        ])
+        let catalog = ContentCatalog::new_with_dependencies(
+            vec![
+                byroredux_sdk::content::PluginInfo::new(
+                    "Skyrim.esm",
+                    1_u128.to_be_bytes(),
+                    byroredux_sdk::content::PluginKind::Regular,
+                )
+                .unwrap(),
+                byroredux_sdk::content::PluginInfo::new(
+                    "Patch.esl",
+                    2_u128.to_be_bytes(),
+                    byroredux_sdk::content::PluginKind::Light,
+                )
+                .unwrap(),
+                byroredux_sdk::content::PluginInfo::new(
+                    "Update.esm",
+                    3_u128.to_be_bytes(),
+                    byroredux_sdk::content::PluginKind::Regular,
+                )
+                .unwrap(),
+            ],
+            vec![vec![], vec![0], vec![0]],
+        )
         .unwrap();
         let mut host =
             ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
@@ -6347,6 +6366,22 @@ mod tests {
             )
             .unwrap(),
             ScriptValue::String("Patch.esl".to_owned())
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
+                &[ScriptValue::Integer(0x100)],
+            )
+            .unwrap(),
+            ScriptValue::Integer(1)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
+                &[ScriptValue::Integer(0)],
+            )
+            .unwrap(),
+            ScriptValue::Integer(1)
         );
     }
 
