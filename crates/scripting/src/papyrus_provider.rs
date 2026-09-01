@@ -580,7 +580,7 @@ pub enum PapyrusProviderComparison {
 /// Static translated handlers attached to one scripted entity.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PapyrusProviderProgram {
-    handlers: BTreeMap<PapyrusProviderEvent, PapyrusProviderHandler>,
+    handlers: BTreeMap<PapyrusProviderEvent, Vec<PapyrusProviderHandler>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -621,6 +621,7 @@ impl PapyrusProviderProgram {
     pub fn handler(&self, event: PapyrusProviderEvent) -> &[PapyrusProviderStatement] {
         self.handlers
             .get(&event)
+            .and_then(|handlers| handlers.first())
             .map_or(&[], |handler| handler.statements.as_slice())
     }
 
@@ -629,18 +630,32 @@ impl PapyrusProviderProgram {
         self.handlers.is_empty()
     }
 
+    fn handlers_for(
+        &self,
+        event: PapyrusProviderEvent,
+    ) -> impl Iterator<Item = &PapyrusProviderHandler> {
+        self.handlers.get(&event).into_iter().flatten()
+    }
+
+    fn merge(&mut self, mut other: Self) {
+        for (event, mut handlers) in std::mem::take(&mut other.handlers) {
+            self.handlers
+                .entry(event)
+                .or_default()
+                .append(&mut handlers);
+        }
+    }
+}
+
+impl PapyrusProviderHandler {
     fn projected_locals(
         &self,
-        event_kind: PapyrusProviderEvent,
         entity: Option<EntityId>,
         hit: Option<&HitEvent>,
         form: Option<u32>,
     ) -> PapyrusProviderProjectedLocals {
         let mut projected = PapyrusProviderProjectedLocals::default();
-        let Some(handler) = self.handlers.get(&event_kind) else {
-            return projected;
-        };
-        for parameter in &handler.parameters {
+        for parameter in &self.parameters {
             let value = match parameter.source {
                 PapyrusProviderParameterSource::Entity => {
                     if let Some(entity) = entity {
@@ -759,10 +774,10 @@ fn lower_event_into(
     }
     program.handlers.insert(
         canonical,
-        PapyrusProviderHandler {
+        vec![PapyrusProviderHandler {
             statements,
             parameters,
-        },
+        }],
     );
     Ok(())
 }
@@ -1329,7 +1344,11 @@ pub fn attach_papyrus_provider_program(
     entity: EntityId,
     program: PapyrusProviderProgram,
 ) {
-    world.insert(entity, program);
+    if let Some(existing) = world.get_mut::<PapyrusProviderProgram>(entity) {
+        existing.merge(program);
+    } else {
+        world.insert(entity, program);
+    }
     world.insert(entity, OnInitEvent);
 }
 
@@ -1451,66 +1470,47 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         return;
     };
     for (entity, program) in programs.iter() {
+        let mut enqueue = |event, projected_entity, hit: Option<&HitEvent>, form| {
+            for handler in program.handlers_for(event) {
+                let projected = handler.projected_locals(projected_entity, hit, form);
+                handlers.push((
+                    handler.statements.clone(),
+                    projected.values,
+                    projected.entities,
+                    projected.forms,
+                ));
+            }
+        };
         if initialized.contains(&entity) {
-            handlers.push((
-                program.handler(PapyrusProviderEvent::OnInit).to_vec(),
-                BTreeMap::new(),
-                Vec::new(),
-                Vec::new(),
-            ));
+            enqueue(PapyrusProviderEvent::OnInit, None, None, None);
         }
         if loaded.contains(&entity) {
-            handlers.push((
-                program.handler(PapyrusProviderEvent::OnLoad).to_vec(),
-                BTreeMap::new(),
-                Vec::new(),
-                Vec::new(),
-            ));
+            enqueue(PapyrusProviderEvent::OnLoad, None, None, None);
         }
         if let Some(activator) = activated.get(&entity) {
-            let projected = program.projected_locals(
+            enqueue(
                 PapyrusProviderEvent::OnActivate,
                 Some(*activator),
                 None,
                 None,
             );
-            handlers.push((
-                program.handler(PapyrusProviderEvent::OnActivate).to_vec(),
-                projected.values,
-                projected.entities,
-                projected.forms,
-            ));
         }
         if let Some(hit) = hits.get(&entity) {
-            let projected = program.projected_locals(
+            enqueue(
                 PapyrusProviderEvent::OnHit,
                 Some(hit.aggressor),
                 Some(hit),
                 None,
             );
-            handlers.push((
-                program.handler(PapyrusProviderEvent::OnHit).to_vec(),
-                projected.values,
-                projected.entities,
-                projected.forms,
-            ));
         }
         if let Some(triggerers) = trigger_entries.get(&entity) {
             for triggerer in triggerers {
-                let projected = program.projected_locals(
+                enqueue(
                     PapyrusProviderEvent::OnTriggerEnter,
                     Some(*triggerer),
                     None,
                     None,
                 );
-                handlers.push((
-                    program
-                        .handler(PapyrusProviderEvent::OnTriggerEnter)
-                        .to_vec(),
-                    projected.values,
-                    projected.entities,
-                    projected.forms,
-                ));
             }
         }
         if let Some(changes) = equipment_changes.get(&entity) {
@@ -1520,22 +1520,11 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 } else {
                     PapyrusProviderEvent::OnObjectUnequipped
                 };
-                let projected = program.projected_locals(event, None, None, Some(*form_id));
-                handlers.push((
-                    program.handler(event).to_vec(),
-                    projected.values,
-                    projected.entities,
-                    projected.forms,
-                ));
+                enqueue(event, None, None, Some(*form_id));
             }
         }
         if updated.contains(&entity) {
-            handlers.push((
-                program.handler(PapyrusProviderEvent::OnUpdate).to_vec(),
-                BTreeMap::new(),
-                Vec::new(),
-                Vec::new(),
-            ));
+            enqueue(PapyrusProviderEvent::OnUpdate, None, None, None);
         }
     }
     drop(programs);
@@ -2372,6 +2361,76 @@ mod tests {
                 ScriptValue::Integer(4),
                 ScriptValue::String("initialized".to_owned())
             ]
+        );
+    }
+
+    #[test]
+    fn multiple_attached_scripts_preserve_handler_order_without_overwrite() {
+        let first_source = r#"
+            ScriptName FirstFixture
+            Event OnInit()
+                WeatherNative.WeatherAt(1, "first-init")
+            EndEvent
+            Event OnLoad()
+                WeatherNative.WeatherAt(2, "first-load")
+            EndEvent
+        "#;
+        let second_source = r#"
+            ScriptName SecondFixture
+            Event OnInit()
+                WeatherNative.WeatherAt(3, "second-init")
+            EndEvent
+            Event OnLoad()
+                WeatherNative.WeatherAt(4, "second-load")
+            EndEvent
+            Event OnActivate()
+                WeatherNative.WeatherAt(5, "second-activate")
+            EndEvent
+        "#;
+        let lower = |source| {
+            let (script, errors) = parse_script(source).unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            lower_provider_program(&script, &catalog())
+                .unwrap()
+                .unwrap()
+        };
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(move |_route: &str, arguments: &[ScriptValue]| {
+            observed.lock().unwrap().push(arguments.to_vec());
+            Ok(ScriptValue::String("ok".to_owned()))
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, lower(first_source));
+        attach_papyrus_provider_program(&mut world, entity, lower(second_source));
+        assert_eq!(
+            world
+                .get::<PapyrusProviderProgram>(entity)
+                .unwrap()
+                .handlers_for(PapyrusProviderEvent::OnLoad)
+                .count(),
+            2
+        );
+        world.insert(entity, OnCellLoadEvent);
+        world.insert(entity, ActivateEvent { activator: entity });
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 5);
+        assert_eq!(
+            calls
+                .iter()
+                .map(|arguments| arguments[0].clone())
+                .collect::<Vec<_>>(),
+            [1, 3, 2, 4, 5]
+                .into_iter()
+                .map(ScriptValue::Integer)
+                .collect::<Vec<_>>()
         );
     }
 
