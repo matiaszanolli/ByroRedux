@@ -105,6 +105,8 @@ pub fn translate_pex(
 /// second time merely to aggregate extender calls.
 pub struct PexTranslation {
     pub recognized: Option<Recognized>,
+    pub provider_program: Option<crate::PapyrusProviderProgram>,
+    pub provider_error: Option<crate::PapyrusProviderProgramError>,
     pub compatibility: Option<crate::compatibility::CompatibilityReport>,
     pub fingerprint: u64,
 }
@@ -115,6 +117,24 @@ pub fn translate_pex_detailed(
     script_instance: Option<&ScriptInstanceData>,
     owning_quest: Option<u32>,
 ) -> PexTranslation {
+    translate_pex_detailed_with_providers(
+        pex_bytes,
+        game,
+        script_instance,
+        owning_quest,
+        &crate::PapyrusProviderCatalog::default(),
+    )
+}
+
+/// Parse and decompile PEX once, producing both existing canonical behavior
+/// recognition and manifest-backed provider handlers from the same AST.
+pub fn translate_pex_detailed_with_providers(
+    pex_bytes: &[u8],
+    game: GameKind,
+    script_instance: Option<&ScriptInstanceData>,
+    owning_quest: Option<u32>,
+    providers: &crate::PapyrusProviderCatalog,
+) -> PexTranslation {
     let fingerprint = pex_fingerprint(pex_bytes);
     let pex = match byroredux_pex::parse(pex_bytes) {
         Ok(p) => p,
@@ -122,6 +142,8 @@ pub fn translate_pex_detailed(
             log::debug!("translate_pex: .pex parse failed: {e}");
             return PexTranslation {
                 recognized: None,
+                provider_program: None,
+                provider_error: None,
                 compatibility: None,
                 fingerprint,
             };
@@ -129,13 +151,21 @@ pub fn translate_pex_detailed(
     };
     let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
     crate::compatibility::log_compatibility_report(&compatibility);
+    let mut provider_program = None;
+    let mut provider_error = None;
     let recognized = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))
         .and_then(|script| {
+            match crate::lower_provider_program(&script, providers) {
+                Ok(program) => provider_program = program,
+                Err(error) => provider_error = Some(error),
+            }
             let source = ScriptSource::PapyrusSource(&script);
             translate_script(&source, game, script_instance, owning_quest)
         });
     PexTranslation {
         recognized,
+        provider_program,
+        provider_error,
         compatibility: Some(compatibility),
         fingerprint,
     }

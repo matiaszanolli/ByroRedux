@@ -1681,6 +1681,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_scripting::ActivateEvent>()
             .writes::<byroredux_scripting::ScriptVariables>(),
     );
+    // Manifest-published `Provider.Function(...)` calls use the same live host
+    // as ObScript, but their static Papyrus/PEX program is snapshotted before
+    // guest entry so no ECS guard crosses the sandbox boundary.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        byroredux_scripting::papyrus_provider_system,
+        Access::new()
+            .reads_resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .reads::<byroredux_scripting::PapyrusProviderProgram>()
+            .reads::<byroredux_scripting::OnCellLoadEvent>()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::extensions::extension_custom_event_dispatch_system,
@@ -2309,6 +2322,7 @@ mod fragment_activation_order_tests {
         let settings = pos("crate::extensions::extension_engine_settings_sync_system");
         let catalog = pos("crate::extensions::extension_content_catalog_sync_system");
         let legacy = pos("byroredux_scripting::legacy_obscript_load_order_system");
+        let papyrus = pos("byroredux_scripting::papyrus_provider_system");
         let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
         let activation = pos("crate::extensions::extension_activation_dispatch_system");
         let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
@@ -2324,6 +2338,8 @@ mod fragment_activation_order_tests {
                 && catalog < custom
                 && catalog < legacy
                 && legacy < cleanup
+                && legacy < papyrus
+                && papyrus < cleanup
                 && custom < activation
                 && custom < cleanup
                 && activation < cleanup

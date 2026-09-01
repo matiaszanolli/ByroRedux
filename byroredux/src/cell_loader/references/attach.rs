@@ -691,13 +691,36 @@ pub(super) fn attach_vmad_scripts(
         };
         // `script_instance` borrows `index` / the placed ref (not
         // `world`), so it stays valid across the `&mut World` spawn.
-        let translation =
-            byroredux_scripting::translate_pex_detailed(&bytes, game, Some(script_instance), None);
+        let providers = world
+            .try_resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .map(|runtime| runtime.catalog())
+            .unwrap_or_default();
+        let translation = byroredux_scripting::translate_pex_detailed_with_providers(
+            &bytes,
+            game,
+            Some(script_instance),
+            None,
+            &providers,
+        );
         byroredux_scripting::record_compatibility_report(
             world,
             translation.fingerprint,
             translation.compatibility,
         );
+        if let Some(error) = translation.provider_error {
+            log::warn!(
+                "M47.2: rejected provider handler in .pex '{}' on base {base_form_id:08X}: {error:?}",
+                script.name,
+            );
+        }
+        if let Some(program) = translation.provider_program {
+            log::debug!(
+                "M47.2: attached engine-native provider calls from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                script.name,
+            );
+            byroredux_scripting::attach_papyrus_provider_program(world, entity, program);
+            any = true;
+        }
         match translation.recognized {
             Some(recognized) => {
                 log::debug!(

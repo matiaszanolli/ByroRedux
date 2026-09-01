@@ -6140,6 +6140,61 @@ mod tests {
     }
 
     #[test]
+    fn source_papyrus_calls_manifest_provider_without_a_script_extender() {
+        let id = "org.example.functions";
+        let manifest = script_function_manifest(id);
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(script_function_component()).unwrap(),
+        );
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .install_package(&manifest, &artifacts, script_function_grants())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+
+        let source = r#"
+            ScriptName ProviderFixture
+            Event OnLoad()
+                Int answer
+                answer = ByroFixture.Answer(7)
+            EndEvent
+        "#;
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let catalog = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog();
+        let program = byroredux_scripting::lower_provider_program(&script, &catalog)
+            .unwrap()
+            .unwrap();
+        let entity = world.spawn();
+        byroredux_scripting::attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, byroredux_scripting::OnCellLoadEvent);
+
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+
+        let principal = PrincipalId::new(id).unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        assert_eq!(
+            live_host
+                .lock()
+                .unwrap()
+                .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
     fn optional_denied_console_capability_publishes_no_engine_command() {
         let mut manifest = console_manifest("org.example.denied-console");
         manifest

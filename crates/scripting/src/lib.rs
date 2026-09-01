@@ -118,8 +118,8 @@ pub use scene::{
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
-    translate_pex, translate_pex_detailed, translate_script, CanonicalEvent, PexTranslation,
-    RecognizeCtx, Recognized, ScriptSource,
+    translate_pex, translate_pex_detailed, translate_pex_detailed_with_providers, translate_script,
+    CanonicalEvent, PexTranslation, RecognizeCtx, Recognized, ScriptSource,
 };
 pub use trigger::{trigger_detection_system, TriggerShape, TriggerVolume};
 pub use vm_state::{

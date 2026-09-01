@@ -684,6 +684,7 @@ dependencies = [
  "byroredux-hkx",
  "byroredux-mod-runtime",
  "byroredux-nif",
+ "byroredux-papyrus",
  "byroredux-physics",
  "byroredux-platform",
  "byroredux-plugin",

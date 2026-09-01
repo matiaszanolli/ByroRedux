@@ -409,7 +409,7 @@ fn lower_statements(
         return Err(PapyrusProviderProgramError::NestingTooDeep);
     }
     let mut lowered = Vec::with_capacity(statements.len());
-    for statement in statements {
+    for (statement_index, statement) in statements.iter().enumerate() {
         match &statement.node {
             Stmt::VarDecl(variable) => {
                 let Some(value_type) = sdk_type(&variable.ty.node) else {
@@ -481,6 +481,11 @@ fn lower_statements(
                     else_branch,
                 });
             }
+            // The PEX decompiler preserves the compiler-emitted terminal
+            // `Return None`. It has no observable effect at handler tail, but
+            // returns inside branches remain unsupported because skipping one
+            // there would change control flow.
+            Stmt::Return(None) if depth == 0 && statement_index + 1 == statements.len() => {}
             _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
         }
     }
@@ -982,6 +987,69 @@ mod tests {
         assert_eq!(
             lower_provider_program(&script, &catalog()),
             Err(PapyrusProviderProgramError::UnsupportedStatement)
+        );
+    }
+
+    #[test]
+    fn decompiled_pex_static_call_lowers_to_the_same_provider_route() {
+        use byroredux_pex::{
+            Function, Header, Instruction, Object, OpCode, Pex, ScriptType, State, Value,
+        };
+
+        let pex = Pex {
+            script_type: ScriptType::Skyrim,
+            header: Header::default(),
+            string_table: Vec::new(),
+            debug_info: Default::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "ProviderFixture".to_owned(),
+                parent_class_name: "ObjectReference".to_owned(),
+                states: vec![State {
+                    name: String::new(),
+                    functions: vec![Function {
+                        name: "OnLoad".to_owned(),
+                        return_type_name: "None".to_owned(),
+                        instructions: vec![
+                            Instruction {
+                                op: OpCode::CallStatic,
+                                args: vec![
+                                    Value::Identifier("WeatherNative".to_owned()),
+                                    Value::Identifier("WeatherAt".to_owned()),
+                                    Value::Identifier("::nonevar".to_owned()),
+                                ],
+                                var_args: vec![Value::Integer(4), Value::Str("clear".to_owned())],
+                            },
+                            Instruction {
+                                op: OpCode::Return,
+                                args: vec![Value::None],
+                                var_args: Vec::new(),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            }],
+        };
+        let script = byroredux_pex::decompile::decompile_script(&pex).unwrap();
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+        let [PapyrusProviderStatement::Call(call)] = program.handler(PapyrusProviderEvent::OnLoad)
+        else {
+            panic!("expected one lowered provider call");
+        };
+        assert_eq!(
+            call.route.qualified_name(),
+            "ext.org.example.weather.weather-at"
+        );
+        assert_eq!(
+            call.arguments,
+            [
+                ScriptValue::Integer(4),
+                ScriptValue::String("clear".to_owned())
+            ]
         );
     }
 }
