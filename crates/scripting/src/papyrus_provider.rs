@@ -427,7 +427,27 @@ pub enum PapyrusProviderComparison {
 /// Static translated handlers attached to one scripted entity.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PapyrusProviderProgram {
-    handlers: BTreeMap<PapyrusProviderEvent, Vec<PapyrusProviderStatement>>,
+    handlers: BTreeMap<PapyrusProviderEvent, PapyrusProviderHandler>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PapyrusProviderHandler {
+    statements: Vec<PapyrusProviderStatement>,
+    parameters: Vec<PapyrusProviderParameterBinding>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PapyrusProviderParameterBinding {
+    name: String,
+    source: PapyrusProviderParameterSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PapyrusProviderParameterSource {
+    PowerAttack,
+    SneakAttack,
+    BashAttack,
+    Blocked,
 }
 
 impl Component for PapyrusProviderProgram {
@@ -437,12 +457,31 @@ impl Component for PapyrusProviderProgram {
 impl PapyrusProviderProgram {
     /// Instructions for one canonical event.
     pub fn handler(&self, event: PapyrusProviderEvent) -> &[PapyrusProviderStatement] {
-        self.handlers.get(&event).map_or(&[], Vec::as_slice)
+        self.handlers
+            .get(&event)
+            .map_or(&[], |handler| handler.statements.as_slice())
     }
 
     /// Whether no supported handler was present in the source unit.
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
+    }
+
+    fn hit_locals(&self, event: &HitEvent) -> BTreeMap<String, ScriptValue> {
+        let mut locals = BTreeMap::new();
+        let Some(handler) = self.handlers.get(&PapyrusProviderEvent::OnHit) else {
+            return locals;
+        };
+        for parameter in &handler.parameters {
+            let value = match parameter.source {
+                PapyrusProviderParameterSource::PowerAttack => event.power_attack,
+                PapyrusProviderParameterSource::SneakAttack => event.sneak_attack,
+                PapyrusProviderParameterSource::BashAttack => event.bash_attack,
+                PapyrusProviderParameterSource::Blocked => event.blocked,
+            };
+            locals.insert(parameter.name.clone(), ScriptValue::Boolean(value));
+        }
+        locals
     }
 }
 
@@ -520,9 +559,45 @@ fn lower_event_into(
         return Err(PapyrusProviderProgramError::DuplicateHandler(canonical));
     }
     let mut locals = BTreeMap::new();
+    let parameters = lower_event_parameters(canonical, event, &mut locals);
     let statements = lower_statements(&event.body, catalog, &mut locals, 0)?;
-    program.handlers.insert(canonical, statements);
+    program.handlers.insert(
+        canonical,
+        PapyrusProviderHandler {
+            statements,
+            parameters,
+        },
+    );
     Ok(())
+}
+
+fn lower_event_parameters(
+    event_kind: PapyrusProviderEvent,
+    event: &Event,
+    locals: &mut BTreeMap<String, ScriptValueType>,
+) -> Vec<PapyrusProviderParameterBinding> {
+    if event_kind != PapyrusProviderEvent::OnHit {
+        return Vec::new();
+    }
+    let sources = [
+        (3, PapyrusProviderParameterSource::PowerAttack),
+        (4, PapyrusProviderParameterSource::SneakAttack),
+        (5, PapyrusProviderParameterSource::BashAttack),
+        (6, PapyrusProviderParameterSource::Blocked),
+    ];
+    let mut bindings = Vec::new();
+    for (index, source) in sources {
+        let Some(parameter) = event.params.get(index) else {
+            continue;
+        };
+        if !matches!(&parameter.ty.node, Type::Bool) {
+            continue;
+        }
+        let name = parameter.name.node.0.to_ascii_lowercase();
+        locals.insert(name.clone(), ScriptValueType::Boolean);
+        bindings.push(PapyrusProviderParameterBinding { name, source });
+    }
+    bindings
 }
 
 fn lower_statements(
@@ -1019,13 +1094,13 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let hit = world
+    let hits = world
         .query::<HitEvent>()
         .map(|events| {
             events
                 .iter()
-                .map(|(entity, _)| entity)
-                .collect::<BTreeSet<_>>()
+                .map(|(entity, event)| (entity, *event))
+                .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     let equipment_changes = world
@@ -1086,10 +1161,10 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 BTreeMap::new(),
             ));
         }
-        if hit.contains(&entity) {
+        if let Some(hit) = hits.get(&entity) {
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnHit).to_vec(),
-                BTreeMap::new(),
+                program.hit_locals(hit),
             ));
         }
         if let Some(entry_count) = trigger_entries.get(&entity) {
@@ -1782,8 +1857,10 @@ mod tests {
     fn combat_and_equipment_events_dispatch_in_batch_order() {
         let source = r#"
             ScriptName Fixture
-            Event OnHit()
-                WeatherNative.WeatherAt(1, "hit")
+            Event OnHit(ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked)
+                If abPowerAttack && !abHitBlocked
+                    WeatherNative.WeatherAt(1, "hit")
+                EndIf
             EndEvent
             Event OnObjectEquipped()
                 WeatherNative.WeatherAt(2, "equipped")
@@ -1817,7 +1894,7 @@ mod tests {
                 source: aggressor,
                 projectile: 0,
                 damage: 10.0,
-                power_attack: false,
+                power_attack: true,
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
