@@ -458,15 +458,16 @@ belongs to the host, not `byroredux-sdk`.
 | Direct engine object or memory access | No equivalent; explicit semantic capability required |
 
 The first exact source-alias pack covers global (`ObjKey == None`)
-`StorageUtil` integer and string get/has calls. Each descriptor names the
-concrete `byro.storage.get` operation, expected WIT value variant, and key
-isolation constraint. The storage service now supplies callback-local
-read-your-writes for scalar set/delete/increment commands; executable
-StorageUtil write-adapter recipes remain the next compatibility step. Float,
-Form, pluck, file-backed, list, and object-scoped calls remain deliberately
-unsupported until an engine service can honor their complete semantics.
-Recognizing the provider is not enough to claim compatibility. The function
-signatures are anchored to PapyrusUtil's
+`StorageUtil` integer and string get/has/set/unset calls. Each descriptor names
+the concrete `byro.storage` recipe, expected WIT value variant, and isolation
+constraint. An executable SDK adapter case-folds and type-namespaces portable
+keys, preserves missing values and synchronous returns, maps zero/empty sets to
+deletion, and reports whether unset found a value. The storage service supplies
+the callback-local read-your-writes needed by those recipes. Adjust, Float,
+Form, pluck, file-backed, list, object-scoped, arbitrary-key, and cross-mod
+shared calls remain deliberately unsupported until an engine service can honor
+their complete semantics. Recognizing the provider is not enough to claim
+compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
 
 ## 8. v0.1 delivery phases

@@ -4,7 +4,10 @@
 //! binary ABI available. It identifies the engine semantic service a source
 //! adapter must target, or records why the operation is intentionally absent.
 
+use crate::component::ExtensionValue;
+use crate::identity::{IdentityError, StorageKey};
 use crate::service::{CONTEXT_SERVICE, EVENT_SERVICE, PRINCIPAL_STORAGE_SERVICE};
+use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 
 /// Extender ecosystem that introduced a recognized Papyrus provider/call.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -49,28 +52,82 @@ pub struct SourceAlias {
     pub constraint: &'static str,
 }
 
+/// Scalar `StorageUtil` call supported by the engine source adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StorageUtilScalarCall {
+    GetInt { missing: i32 },
+    HasInt,
+    SetInt { value: i32 },
+    UnsetInt,
+    GetString { missing: String },
+    HasString,
+    SetString { value: String },
+    UnsetString,
+}
+
+/// Papyrus-visible result produced by a scalar `StorageUtil` adapter call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StorageUtilScalarResult {
+    Int(i32),
+    Bool(bool),
+    String(String),
+}
+
+/// Executable result of adapting one global scalar `StorageUtil` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageUtilAdaptation {
+    /// Type-isolated, case-folded key in the authenticated principal namespace.
+    pub key: StorageKey,
+    /// Value returned synchronously to Papyrus.
+    pub result: StorageUtilScalarResult,
+    /// Deferred engine mutation, absent for read-only calls.
+    pub command: Option<PrincipalStorageCommand>,
+}
+
+/// Failure to preserve the supported `StorageUtil` scalar contract.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum StorageUtilAdapterError {
+    #[error(
+        "StorageUtil key cannot be represented by the portable principal-storage grammar: {0}"
+    )]
+    InvalidKey(#[from] IdentityError),
+    #[error("StorageUtil integer value is outside the Papyrus i32 range")]
+    IntegerOutOfRange,
+    #[error("StorageUtil adapter found an incompatible value at its type-isolated key")]
+    TypeMismatch,
+}
+
 /// Resolve the first engine-backed PapyrusUtil source aliases.
 ///
 /// `StorageUtil` namespaces values by `(object, key, type)`, while
 /// `byro.storage` is private to one extension principal and keys each value
 /// once. These aliases therefore cover only global (`ObjKey == None`) integer
-/// and string reads. Object-scoped values require extension components;
-/// writes are deferred by the sandbox host and cannot yet preserve
-/// StorageUtil's same-call visibility and return contract. Floats, Forms,
-/// pluck, file, and list operations likewise remain unsupported until the
-/// semantic service can honor their full contracts.
+/// and string values whose names fit the portable storage-key grammar. The
+/// executable adapter below case-folds and type-namespaces those keys. Its
+/// writes preserve synchronous return and same-callback visibility through the
+/// host transaction overlay. Object-scoped values require extension
+/// components; floats, Forms, pluck, file, list, and cross-principal sharing
+/// remain unsupported until an engine service can honor their full contracts.
 pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     if !provider.eq_ignore_ascii_case("StorageUtil") {
         return None;
     }
-    let (function, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
-        ("GetIntValue", "signed")
+    let (function, operation, value_kind) = if function.eq_ignore_ascii_case("GetIntValue") {
+        ("GetIntValue", "storage.get", "signed")
     } else if function.eq_ignore_ascii_case("HasIntValue") {
-        ("HasIntValue", "signed")
+        ("HasIntValue", "storage.get", "signed")
+    } else if function.eq_ignore_ascii_case("SetIntValue") {
+        ("SetIntValue", "storage.queue-set/delete", "signed")
+    } else if function.eq_ignore_ascii_case("UnsetIntValue") {
+        ("UnsetIntValue", "storage.get+queue-delete", "signed")
     } else if function.eq_ignore_ascii_case("GetStringValue") {
-        ("GetStringValue", "text")
+        ("GetStringValue", "storage.get", "text")
     } else if function.eq_ignore_ascii_case("HasStringValue") {
-        ("HasStringValue", "text")
+        ("HasStringValue", "storage.get", "text")
+    } else if function.eq_ignore_ascii_case("SetStringValue") {
+        ("SetStringValue", "storage.queue-set/delete", "text")
+    } else if function.eq_ignore_ascii_case("UnsetStringValue") {
+        ("UnsetStringValue", "storage.get+queue-delete", "text")
     } else {
         return None;
     };
@@ -78,10 +135,122 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         provider: "StorageUtil",
         function,
         service: PRINCIPAL_STORAGE_SERVICE,
-        operation: "storage.get",
+        operation,
         value_kind,
-        constraint: "ObjKey must be None; a key must not be shared across legacy value kinds",
+        constraint: "ObjKey must be None; portable key; principal-private (no cross-mod sharing)",
     })
+}
+
+/// Execute the engine recipe for a supported global scalar `StorageUtil` call.
+///
+/// The caller supplies the current value from the callback transaction overlay
+/// and queues the returned command through `byro.storage`. Integer and string
+/// keys are kept separate exactly as in `StorageUtil`, and names are folded to
+/// ASCII lowercase because the legacy API treats value names case-insensitively.
+pub fn adapt_storage_util_global_scalar(
+    key_name: &str,
+    call: StorageUtilScalarCall,
+    current: Option<&PrincipalStorageValue>,
+) -> Result<StorageUtilAdaptation, StorageUtilAdapterError> {
+    let integer = matches!(
+        &call,
+        StorageUtilScalarCall::GetInt { .. }
+            | StorageUtilScalarCall::HasInt
+            | StorageUtilScalarCall::SetInt { .. }
+            | StorageUtilScalarCall::UnsetInt
+    );
+    let prefix = if integer {
+        "storageutil.int:"
+    } else {
+        "storageutil.string:"
+    };
+    let key = StorageKey::new(format!("{prefix}{}", key_name.to_ascii_lowercase()))?;
+
+    let (result, command) = match call {
+        StorageUtilScalarCall::GetInt { missing } => {
+            let value = match current {
+                Some(PrincipalStorageValue::I64(value)) => {
+                    i32::try_from(*value).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?
+                }
+                Some(_) => return Err(StorageUtilAdapterError::TypeMismatch),
+                None => missing,
+            };
+            (StorageUtilScalarResult::Int(value), None)
+        }
+        StorageUtilScalarCall::HasInt => (
+            StorageUtilScalarResult::Bool(checked_int(current)?.is_some()),
+            None,
+        ),
+        StorageUtilScalarCall::SetInt { value } => {
+            let command = if value == 0 {
+                PrincipalStorageCommand::Delete { key: key.clone() }
+            } else {
+                PrincipalStorageCommand::Set {
+                    key: key.clone(),
+                    value: ExtensionValue::I64(i64::from(value)),
+                }
+            };
+            (StorageUtilScalarResult::Int(value), Some(command))
+        }
+        StorageUtilScalarCall::UnsetInt => (
+            StorageUtilScalarResult::Bool(checked_int(current)?.is_some()),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+        ),
+        StorageUtilScalarCall::GetString { missing } => {
+            let value = match current {
+                Some(PrincipalStorageValue::String(value)) => value.clone(),
+                Some(_) => return Err(StorageUtilAdapterError::TypeMismatch),
+                None => missing,
+            };
+            (StorageUtilScalarResult::String(value), None)
+        }
+        StorageUtilScalarCall::HasString => (
+            StorageUtilScalarResult::Bool(checked_string(current)?.is_some()),
+            None,
+        ),
+        StorageUtilScalarCall::SetString { value } => {
+            let command = if value.is_empty() {
+                PrincipalStorageCommand::Delete { key: key.clone() }
+            } else {
+                PrincipalStorageCommand::Set {
+                    key: key.clone(),
+                    value: ExtensionValue::String(value.clone()),
+                }
+            };
+            (StorageUtilScalarResult::String(value), Some(command))
+        }
+        StorageUtilScalarCall::UnsetString => (
+            StorageUtilScalarResult::Bool(checked_string(current)?.is_some()),
+            Some(PrincipalStorageCommand::Delete { key: key.clone() }),
+        ),
+    };
+    Ok(StorageUtilAdaptation {
+        key,
+        result,
+        command,
+    })
+}
+
+fn checked_int(
+    current: Option<&PrincipalStorageValue>,
+) -> Result<Option<i32>, StorageUtilAdapterError> {
+    match current {
+        Some(PrincipalStorageValue::I64(value)) => Ok(Some(
+            i32::try_from(*value).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+        )),
+        Some(_) => Err(StorageUtilAdapterError::TypeMismatch),
+        None => Ok(None),
+    }
+}
+
+fn checked_string(
+    current: Option<&PrincipalStorageValue>,
+) -> Result<Option<&str>, StorageUtilAdapterError> {
+    match current {
+        Some(PrincipalStorageValue::String(value)) => Ok(Some(value)),
+        Some(_) => Err(StorageUtilAdapterError::TypeMismatch),
+        None => Ok(None),
+    }
 }
 
 /// Classify a static Papyrus call by provider type and function name.
@@ -124,7 +293,7 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
             ),
             None => unsupported(
                 ExtenderFamily::PapyrusUtil,
-                "this StorageUtil function has no exact engine alias; writes are deferred, object-scoped values require extension components, and float/Form/file/list semantics remain unavailable",
+                "this StorageUtil function has no exact engine alias; object-scoped values require extension components, and adjust/float/Form/file/list/cross-principal semantics remain unavailable",
             ),
         });
     }
@@ -286,7 +455,10 @@ mod tests {
         let string = source_alias("StorageUtil", "HasStringValue").unwrap();
         assert_eq!(string.operation, "storage.get");
         assert_eq!(string.value_kind, "text");
-        assert!(source_alias("StorageUtil", "SetStringValue").is_none());
+        let set = source_alias("StorageUtil", "SetStringValue").unwrap();
+        assert_eq!(set.operation, "storage.queue-set/delete");
+        let unset = source_alias("StorageUtil", "UnsetIntValue").unwrap();
+        assert_eq!(unset.operation, "storage.get+queue-delete");
         assert!(source_alias("StorageUtil", "AdjustIntValue").is_none());
         assert!(source_alias("StorageUtil", "GetFloatValue").is_none());
         assert!(source_alias("StorageUtil", "FormListAdd").is_none());
@@ -295,6 +467,95 @@ mod tests {
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Unsupported
+        );
+    }
+
+    #[test]
+    fn storage_util_adapter_preserves_scalar_return_and_delete_contracts() {
+        let set = adapt_storage_util_global_scalar(
+            "MyMod.Score",
+            StorageUtilScalarCall::SetInt { value: 12 },
+            None,
+        )
+        .unwrap();
+        assert_eq!(set.key.as_str(), "storageutil.int:mymod.score");
+        assert_eq!(set.result, StorageUtilScalarResult::Int(12));
+        assert_eq!(
+            set.command,
+            Some(PrincipalStorageCommand::Set {
+                key: set.key.clone(),
+                value: ExtensionValue::I64(12),
+            })
+        );
+
+        let zero = adapt_storage_util_global_scalar(
+            "MYMOD.SCORE",
+            StorageUtilScalarCall::SetInt { value: 0 },
+            Some(&PrincipalStorageValue::I64(12)),
+        )
+        .unwrap();
+        assert_eq!(zero.key, set.key);
+        assert!(matches!(
+            zero.command,
+            Some(PrincipalStorageCommand::Delete { .. })
+        ));
+
+        let unset = adapt_storage_util_global_scalar(
+            "MyMod.Name",
+            StorageUtilScalarCall::UnsetString,
+            Some(&PrincipalStorageValue::String("Dragonborn".to_owned())),
+        )
+        .unwrap();
+        assert_eq!(unset.result, StorageUtilScalarResult::Bool(true));
+        assert!(matches!(
+            unset.command,
+            Some(PrincipalStorageCommand::Delete { .. })
+        ));
+    }
+
+    #[test]
+    fn storage_util_adapter_type_isolates_keys_and_honors_missing_values() {
+        let get_int = adapt_storage_util_global_scalar(
+            "SharedKey",
+            StorageUtilScalarCall::GetInt { missing: 7 },
+            None,
+        )
+        .unwrap();
+        let get_string = adapt_storage_util_global_scalar(
+            "sharedkey",
+            StorageUtilScalarCall::GetString {
+                missing: "fallback".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_ne!(get_int.key, get_string.key);
+        assert_eq!(get_int.result, StorageUtilScalarResult::Int(7));
+        assert_eq!(
+            get_string.result,
+            StorageUtilScalarResult::String("fallback".to_owned())
+        );
+        assert!(get_int.command.is_none());
+        assert!(get_string.command.is_none());
+    }
+
+    #[test]
+    fn storage_util_adapter_rejects_unrepresentable_or_corrupt_values() {
+        assert!(matches!(
+            adapt_storage_util_global_scalar(
+                "contains spaces",
+                StorageUtilScalarCall::HasInt,
+                None,
+            ),
+            Err(StorageUtilAdapterError::InvalidKey(_))
+        ));
+        assert_eq!(
+            adapt_storage_util_global_scalar(
+                "score",
+                StorageUtilScalarCall::GetInt { missing: 0 },
+                Some(&PrincipalStorageValue::String("wrong".to_owned())),
+            ),
+            Err(StorageUtilAdapterError::TypeMismatch)
         );
     }
 
