@@ -72,8 +72,11 @@ The current public surface includes:
   routes execute through the same authenticated host without an extender DLL.
   Conditions support bounded negation, short-circuit conjunction/disjunction,
   and same-type boolean/integer/float comparisons over locals, literals, and
-  provider results. Recognized extender
-  calls that do not yet have an executable route reject their complete handler
+  provider results. Quest and scene PEX fragments also lower ordered provider
+  call tails, persist them across existing latent waits, and dispatch only
+  after fragment ECS guards are released. Calls before later native effects or
+  inside branches remain fail-closed. Recognized extender calls that do not yet
+  have an executable route reject their complete handler
   with an attributed translation error rather than disappearing silently. The
   first exact engine-owned compatibility pack is ten SKSE `Game`
   content-discovery calls covering regular/light counts, lookup in both
