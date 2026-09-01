@@ -1,5 +1,5 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, console, content_catalog, context, events, logging, state,
+    actor_values, console, content_catalog, context, events, inventory, logging, state,
     storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
@@ -20,6 +20,7 @@ use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, FormRef, PrincipalId, ServiceId,
     StorageKey,
 };
+use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot};
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
@@ -29,11 +30,12 @@ use byroredux_sdk::service::{
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY,
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
-    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
-    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
+    INVENTORY_SERVICE, LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT,
+    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
+    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
+    WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
@@ -252,6 +254,10 @@ impl SandboxRuntime {
                 "Queue bounded canonical actor-value mutations",
             ),
             (
+                INVENTORY_READ_CAPABILITY,
+                "Read portable inventory and equipment summaries from callback-visible entities",
+            ),
+            (
                 CONTENT_CATALOG_READ_CAPABILITY,
                 "Inspect loaded game plugins and qualify portable authored forms",
             ),
@@ -320,6 +326,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(ACTOR_VALUES_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(INVENTORY_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(INVENTORY_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1726,6 +1743,21 @@ impl actor_values::Host for HostState {
     }
 }
 
+impl inventory::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+    ) -> wasmtime::Result<Option<inventory::InventorySnapshot>> {
+        self.require_inventory_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::inventory)
+            .map(wit_inventory_snapshot))
+    }
+}
+
 impl console::Host for HostState {
     fn args_len(&mut self) -> wasmtime::Result<u32> {
         self.require_console_context()?;
@@ -1804,6 +1836,27 @@ fn wit_actor_value_state(value: ActorValueState) -> actor_values::ActorValueStat
     }
 }
 
+fn wit_inventory_snapshot(snapshot: &InventorySnapshot) -> inventory::InventorySnapshot {
+    inventory::InventorySnapshot {
+        entries: snapshot
+            .entries()
+            .iter()
+            .copied()
+            .map(wit_inventory_entry)
+            .collect(),
+        truncated: snapshot.truncated(),
+    }
+}
+
+fn wit_inventory_entry(entry: InventoryEntry) -> inventory::InventoryEntry {
+    inventory::InventoryEntry {
+        item: wit_form_ref(entry.item()),
+        count: entry.count(),
+        biped_slots: entry.biped_slots(),
+        weapon_equipped: entry.weapon_equipped(),
+    }
+}
+
 fn wit_entity_projection(
     projection: &EntityProjection,
     include_transform: bool,
@@ -1852,6 +1905,16 @@ impl HostState {
         if !self.grants.contains(ACTOR_VALUES_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {ACTOR_VALUES_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_inventory_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(INVENTORY_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {INVENTORY_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2414,6 +2477,42 @@ mod projection_tests {
             1.0,
         )
         .is_err());
+    }
+
+    #[test]
+    fn inventory_is_callback_local_portable_bounded_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let item = FormRef::new(1_u128.to_be_bytes(), 0x1234);
+        let snapshot = InventorySnapshot::new(
+            vec![InventoryEntry::new(item, 7, 0b101, true).unwrap()],
+            true,
+        )
+        .unwrap();
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_inventory(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+
+        let mut state = content_host_state(false);
+        state.grants.grant(INVENTORY_READ_CAPABILITY).unwrap();
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as inventory::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.entries.len(), 1);
+        let entry = &snapshot.entries[0];
+        assert_eq!(entry.count, 7);
+        assert_eq!(entry.biped_slots, 0b101);
+        assert!(entry.weapon_equipped);
+        assert_eq!(sdk_form_ref(entry.item), item);
+
+        let mut denied = content_host_state(false);
+        let error = <HostState as inventory::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(INVENTORY_READ_CAPABILITY));
     }
 
     #[test]

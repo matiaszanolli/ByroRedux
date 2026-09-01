@@ -21,6 +21,9 @@ The current public surface includes:
 - `ActorValueCommand` is the validated deferred mutation contract for setting
   or modifying canonical actor-value layers without exposing native storage or
   numeric global FormIDs.
+- `InventorySnapshot` exposes a bounded, sorted summary by portable base form,
+  with 64-bit counts, biped-slot occupancy, weapon equip state, and an explicit
+  truncation bit. It deliberately does not invent stable per-instance handles.
 - Validated extension, principal, capability, service, event, and schema IDs
   are stable namespaced values shared by package loaders and sandbox hosts.
 - `ExtensionManifest` declares SDK/dependency ranges, executable components,
@@ -71,10 +74,12 @@ persists form-backed extension rows in normal ByroRedux saves, retains rows for
 missing packages/forms, persists private principal storage, and performs
 orderly shutdown. It also snapshots names, stable form identities, world
 transforms, and bounded actor values before guest delivery, with separate
-read/write grants. Actor-value mutations resolve transient entity handles and
-portable AVIF identities, then stage and validate the full batch before
-touching ECS state. Schema migrators and the broader service surface are still
-planned work.
+read/write grants. It also projects capability-gated inventory and worn
+equipment summaries by portable base form. Actor-value mutations resolve
+transient entity handles and portable AVIF identities, then stage and validate
+the full batch before touching ECS state. Inventory mutation waits for a stable
+item-instance contract. Schema migrators and the broader service surface are
+still planned work.
 
 Run the current tool with:
 

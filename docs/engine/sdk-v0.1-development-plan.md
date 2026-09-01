@@ -87,6 +87,12 @@ operations. The executable resolves opaque entity handles and portable forms,
 stages the complete batch against cloned `ActorValues`, rejects stale or
 non-finite results without partial actor mutation, and commits only after the
 callback returns.
+The first inventory slice is read-only by design: callbacks can inspect a
+bounded, deterministic summary aggregated by portable base-form identity,
+including 64-bit total counts, the union of occupied biped slots, weapon equip
+state, and an explicit truncation flag when a form cannot be resolved or the
+budget is exceeded. Per-instance mutation remains closed until item-instance
+identity and reconciliation can be made stable across callback boundaries.
 
 ## 1. Outcome
 
@@ -647,8 +653,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
 - Actor values, inventory, worn equipment, packages, factions, perks, magic,
   appearance refresh, animation requests, and relationship queries. **Actor
   values are implemented as bounded callback-local snapshots plus validated,
-  deferred semantic writes keyed by portable AVIF identity; the remaining
-  gameplay domains are pending.**
+  deferred semantic writes keyed by portable AVIF identity. Inventory and worn
+  equipment have a capability-gated, read-only aggregated snapshot with
+  explicit truncation; mutation and the remaining gameplay domains are
+  pending.**
 - World/reference spatial queries and safe spawn/despawn operations.
 - Typed script-callable extension functions.
 

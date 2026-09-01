@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::components::{
-    ActorValues, FormIdComponent, GlobalTransform, Name, Transform,
+    ActorValues, EquipmentSlots, FormIdComponent, GlobalTransform, Inventory, InventoryIndex, Name,
+    Transform,
 };
 use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
@@ -38,6 +39,9 @@ use byroredux_sdk::event::{
 };
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
+};
+use byroredux_sdk::inventory::{
+    InventoryEntry, InventorySnapshot, MAX_INVENTORY_ENTRIES_PER_ENTITY,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
@@ -1783,6 +1787,7 @@ struct RawEntityProjection {
     name: Option<String>,
     world_transform: Option<WorldTransform>,
     actor_values: Option<Vec<(FormRef, ActorValueState)>>,
+    inventory: Option<InventorySnapshot>,
 }
 
 fn entity_projection(
@@ -1797,10 +1802,14 @@ fn entity_projection(
         raw.and_then(|projection| projection.world_transform),
     )
     .expect("live projection capture enforces SDK bounds");
-    match raw.and_then(|projection| projection.actor_values.as_ref()) {
+    let projection = match raw.and_then(|projection| projection.actor_values.as_ref()) {
         Some(actor_values) => projection
             .with_actor_values(actor_values.iter().copied())
             .expect("live actor-value capture enforces SDK bounds"),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.inventory.clone()) {
+        Some(inventory) => projection.with_inventory(inventory),
         None => projection,
     }
 }
@@ -2888,6 +2897,82 @@ fn capture_entity_projections(
             values.sort_by_key(|(form, _)| *form);
             values.truncate(MAX_ACTOR_VALUES_PER_ENTITY);
             projection.actor_values = Some(values);
+        }
+    }
+    let equipment_by_entity = world
+        .query::<EquipmentSlots>()
+        .map(|equipment| {
+            projections
+                .keys()
+                .filter_map(|&entity| equipment.get(entity).cloned().map(|slots| (entity, slots)))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    if let (Some(inventories), Some(resolver)) = (
+        world.query::<Inventory>(),
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
+    ) {
+        for (entity, projection) in &mut projections {
+            let Some(inventory) = inventories.get(*entity) else {
+                continue;
+            };
+            let equipment = equipment_by_entity.get(entity);
+            let mut truncated = false;
+            let mut summaries = BTreeMap::<FormRef, (u64, u32, bool)>::new();
+            for (raw_index, stack) in inventory.items.iter().enumerate() {
+                let Some(item) = resolver.resolve(stack.base_form_id).map(form_ref) else {
+                    truncated = true;
+                    continue;
+                };
+                if item.local() == 0 {
+                    truncated = true;
+                    continue;
+                }
+                let Ok(raw_index) = u32::try_from(raw_index) else {
+                    truncated = true;
+                    break;
+                };
+                let index = InventoryIndex(raw_index);
+                let biped_slots = equipment.map_or(0, |slots| {
+                    slots
+                        .occupants
+                        .iter()
+                        .enumerate()
+                        .fold(0_u32, |mask, (bit, occupant)| {
+                            if *occupant == Some(index) {
+                                mask | (1_u32 << bit)
+                            } else {
+                                mask
+                            }
+                        })
+                });
+                let weapon_equipped = equipment.is_some_and(|slots| slots.weapon == Some(index));
+                let summary = summaries.entry(item).or_default();
+                summary.0 = summary
+                    .0
+                    .checked_add(u64::from(stack.count))
+                    .unwrap_or_else(|| {
+                        truncated = true;
+                        u64::MAX
+                    });
+                summary.1 |= biped_slots;
+                summary.2 |= weapon_equipped;
+            }
+            let mut entries = summaries
+                .into_iter()
+                .map(|(item, (count, biped_slots, weapon_equipped))| {
+                    InventoryEntry::new(item, count, biped_slots, weapon_equipped)
+                        .expect("resolved inventory forms are non-null")
+                })
+                .collect::<Vec<_>>();
+            if entries.len() > MAX_INVENTORY_ENTRIES_PER_ENTITY {
+                entries.truncate(MAX_INVENTORY_ENTRIES_PER_ENTITY);
+                truncated = true;
+            }
+            projection.inventory = Some(
+                InventorySnapshot::new(entries, truncated)
+                    .expect("live inventory capture enforces SDK bounds and ordering"),
+            );
         }
     }
     projections
@@ -4869,6 +4954,55 @@ mod tests {
             ExtensionDiagnostic::Fault { message, .. }
                 if message.contains("deferred actor-value batch rejected")
         )));
+    }
+
+    #[test]
+    fn inventory_projection_aggregates_portable_forms_and_equipment_slots() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut inventory = Inventory::new();
+        let first = inventory.push(byroredux_core::ecs::components::ItemStack::new(0x1234, 2));
+        inventory.push(byroredux_core::ecs::components::ItemStack::new(0x1234, 5));
+        let weapon = inventory.push(byroredux_core::ecs::components::ItemStack::new(0x5678, 1));
+        inventory.push(byroredux_core::ecs::components::ItemStack::new(
+            0x0100_0001,
+            4,
+        ));
+        world.insert(actor, inventory);
+        let mut equipment = EquipmentSlots::new();
+        equipment.equip(0b101, first);
+        equipment.equip_weapon(weapon);
+        world.insert(actor, equipment);
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].inventory.as_ref().unwrap();
+        assert!(
+            snapshot.truncated(),
+            "unresolved forms are reported, not hidden"
+        );
+        assert_eq!(snapshot.entries().len(), 2);
+        let armor = snapshot
+            .entries()
+            .iter()
+            .find(|entry| entry.item().local() == 0x1234)
+            .unwrap();
+        assert_eq!(armor.count(), 7);
+        assert_eq!(armor.biped_slots(), 0b101);
+        assert!(!armor.weapon_equipped());
+        let weapon = snapshot
+            .entries()
+            .iter()
+            .find(|entry| entry.item().local() == 0x5678)
+            .unwrap();
+        assert_eq!(weapon.count(), 1);
+        assert!(weapon.weapon_equipped());
     }
 
     #[test]

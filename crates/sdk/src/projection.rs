@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::actor_values::{ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY};
 use crate::identity::{EntityRef, FormRef};
+use crate::inventory::InventorySnapshot;
 
 /// Maximum UTF-8 bytes exposed for one entity display name.
 pub const MAX_ENTITY_NAME_BYTES: usize = 1_024;
@@ -65,6 +66,7 @@ pub struct EntityProjection {
     name: Option<String>,
     world_transform: Option<WorldTransform>,
     actor_values: Option<BTreeMap<FormRef, ActorValueState>>,
+    inventory: Option<InventorySnapshot>,
 }
 
 impl EntityProjection {
@@ -88,6 +90,7 @@ impl EntityProjection {
             name,
             world_transform,
             actor_values: None,
+            inventory: None,
         })
     }
 
@@ -129,6 +132,16 @@ impl EntityProjection {
 
     pub fn actor_value(&self, actor_value: FormRef) -> Option<ActorValueState> {
         self.actor_values.as_ref()?.get(&actor_value).copied()
+    }
+
+    /// Attach a complete or explicitly truncated inventory summary.
+    pub fn with_inventory(mut self, inventory: InventorySnapshot) -> Self {
+        self.inventory = Some(inventory);
+        self
+    }
+
+    pub fn inventory(&self) -> Option<&InventorySnapshot> {
+        self.inventory.as_ref()
     }
 }
 

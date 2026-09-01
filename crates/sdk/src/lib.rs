@@ -13,6 +13,7 @@ pub mod console;
 pub mod content;
 pub mod event;
 pub mod identity;
+pub mod inventory;
 pub mod manifest;
 pub mod projection;
 pub mod service;

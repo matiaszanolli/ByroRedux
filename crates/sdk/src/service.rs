@@ -35,6 +35,8 @@ pub const WORLD_TRANSFORM_READ_CAPABILITY: &str = "byro.world.transform.read";
 pub const ACTOR_VALUES_READ_CAPABILITY: &str = "byro.actor-values.read";
 /// Capability required to queue canonical actor-value mutations.
 pub const ACTOR_VALUES_WRITE_CAPABILITY: &str = "byro.actor-values.write";
+/// Capability required to read callback-local inventory/equipment summaries.
+pub const INVENTORY_READ_CAPABILITY: &str = "byro.inventory.read";
 /// Capability required to inspect the active game-content load order.
 pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 /// Capability required to publish and execute manifest-declared console commands.
@@ -59,6 +61,8 @@ pub const PRINCIPAL_STORAGE_SERVICE: &str = "byro.storage";
 pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 /// Service providing canonical actor-value reads and deferred mutations.
 pub const ACTOR_VALUES_SERVICE: &str = "byro.actor-values";
+/// Service providing callback-local portable inventory/equipment summaries.
+pub const INVENTORY_SERVICE: &str = "byro.inventory";
 /// Service providing loaded plugin discovery and portable form qualification.
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// Service providing bounded, principal-namespaced console callbacks.
