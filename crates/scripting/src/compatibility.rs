@@ -9,8 +9,8 @@ use byroredux_papyrus::{
 };
 use byroredux_pex::{CallScope, CallSite, CallSiteDiagnostic, CallTarget, Pex};
 pub use byroredux_sdk::compatibility::{
-    classify_method_call, classify_obscript_command, classify_static_call, source_alias,
-    CompatibilityDisposition, CompatibilityMatch, ExtenderFamily, SourceAlias,
+    classify_method_call, classify_obscript_command, classify_static_call, obscript_source_alias,
+    source_alias, CompatibilityDisposition, CompatibilityMatch, ExtenderFamily, SourceAlias,
 };
 
 /// One recognized extender-era call and its engine-level disposition.
@@ -210,6 +210,7 @@ pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> C
                     let provider = match compatibility.family {
                         ExtenderFamily::Xnvse => "xNVSE",
                         ExtenderFamily::Obse => "OBSE",
+                        ExtenderFamily::Shared => "xNVSE/OBSE",
                         _ => unreachable!("ObScript classifier returned a non-ObScript family"),
                     };
                     findings.push(CompatibilityFinding {
@@ -809,6 +810,21 @@ End"#;
             crlf.findings[1].call.instruction_index,
             "if GetNVSEVersion\r\n".len() + 2
         );
+    }
+
+    #[test]
+    fn legacy_obscript_scanner_reports_shared_load_order_recipes() {
+        let report = analyze_obscript_compatibility(
+            "LoadOrderGate",
+            "if IsModLoaded \"Companion.esp\"\n  set index to GetModIndex \"Companion.esp\"\nendif\n",
+        );
+        assert_eq!(report.findings.len(), 2);
+        assert!(report.findings.iter().all(|finding| {
+            finding.compatibility.family == ExtenderFamily::Shared
+                && finding.compatibility.service
+                    == Some(byroredux_sdk::service::CONTENT_CATALOG_SERVICE)
+                && finding.call.target == CallTarget::StaticType("xNVSE/OBSE".to_owned())
+        }));
     }
 
     #[test]

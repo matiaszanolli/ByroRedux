@@ -510,7 +510,14 @@ comments or strings as calls, and xNVSE `GetNVSEVersion`/
 bounded, fingerprint-deduplicated registry used by PEX. This is preflight and
 porting evidence, not an ObScript interpreter: source-less records containing
 only opaque `SCDA` bytecode remain unclassified until the engine has a verified
-opcode decoder, and all other xNVSE/OBSE commands remain explicit gaps.
+opcode decoder. The first shared load-order pack maps `IsModLoaded`,
+`GetModIndex`, `GetNumLoadedMods`/`GetNumLoadedPlugins`, and `GetNthModName` to
+exact `byro.content.catalog` lookup/count/name recipes. Numeric indices are
+callback-local compatibility values; portable forms continue to use stable
+source identity. `GetSourceModIndex`, reference construction, and all other
+xNVSE/OBSE commands remain explicit gaps. Command names and legacy result
+contracts are anchored to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)
+and [OBSE command reference](https://obse.silverlock.org/obse_command_doc.html).
 
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified
@@ -804,10 +811,11 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   fingerprint-deduplicated world registry without reparsing PEX; `sdk.compat`
   exposes its deterministic aggregate to operators. Preserved SCPT `SCTX`
   source is now scanned at live attachment too: xNVSE/OBSE version probes map
-  to context feature discovery and unrecognized `GetNVSE*`/`GetOBSE*` probes
-  are reported as unsupported. Eager scanning of every script in the full
-  load-order archives, broader command-pack classification, and decoding
-  source-less `SCDA` ObScript bytecode remain pending.**
+  to context feature discovery, shared plugin/load-order queries map to the
+  content catalog, and unrecognized `GetNVSE*`/`GetOBSE*` probes are reported
+  as unsupported. Eager scanning of every script in the full load-order
+  archives, broader command-pack classification, and decoding source-less
+  `SCDA` ObScript bytecode remain pending.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 

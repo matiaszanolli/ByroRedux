@@ -9,7 +9,8 @@ use crate::event::{legacy_skse_mod_event_id, LegacySkseModEventPayload, PublishE
 use crate::identity::FormRef;
 use crate::identity::{IdentityError, StorageKey};
 use crate::service::{
-    CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
+    CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE,
+    PRINCIPAL_STORAGE_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 
@@ -25,10 +26,70 @@ pub enum ExtenderFamily {
     Shared,
 }
 
+/// Exact source recipe for load-order discovery commands shared by OBSE and
+/// xNVSE. Numeric indices are callback-local compatibility values; portable
+/// authored identity remains [`FormRef`].
+pub fn obscript_source_alias(command: &str) -> Option<SourceAlias> {
+    let (function, operation, value_kind, constraint) =
+        if command.eq_ignore_ascii_case("IsModLoaded") {
+            (
+                "IsModLoaded",
+                "content.find",
+                "bool",
+                "plugin basename is case-insensitive and includes its extension",
+            )
+        } else if command.eq_ignore_ascii_case("GetModIndex") {
+            (
+                "GetModIndex",
+                "content.find-index",
+                "signed",
+                "index is callback-local; missing xNVSE plugins use the legacy 255 sentinel",
+            )
+        } else if command.eq_ignore_ascii_case("GetNumLoadedMods") {
+            (
+                "GetNumLoadedMods",
+                "content.count",
+                "signed",
+                "legacy xNVSE name; the catalog order is immutable for the callback",
+            )
+        } else if command.eq_ignore_ascii_case("GetNumLoadedPlugins") {
+            (
+                "GetNumLoadedPlugins",
+                "content.count",
+                "signed",
+                "legacy OBSE name; the catalog order is immutable for the callback",
+            )
+        } else if command.eq_ignore_ascii_case("GetNthModName") {
+            (
+                "GetNthModName",
+                "content.plugin-name",
+                "text",
+                "index is callback-local; use stable source identity outside the adapter",
+            )
+        } else {
+            return None;
+        };
+    Some(SourceAlias {
+        provider: "xNVSE/OBSE",
+        function,
+        service: CONTENT_CATALOG_SERVICE,
+        operation,
+        value_kind,
+        constraint,
+    })
+}
+
 /// Classify extender commands embedded in Oblivion/FO3/FNV ObScript source.
 /// Version probes map to semantic feature discovery rather than pretending an
 /// external loader is installed.
 pub fn classify_obscript_command(command: &str) -> Option<CompatibilityMatch> {
+    if obscript_source_alias(command).is_some() {
+        return Some(mapped(
+            ExtenderFamily::Shared,
+            CONTENT_CATALOG_SERVICE,
+            "an exact legacy load-order recipe targets the immutable engine content catalog",
+        ));
+    }
     if command.eq_ignore_ascii_case("GetNVSEVersion")
         || command.eq_ignore_ascii_case("GetNVSERevision")
         || command.eq_ignore_ascii_case("GetNVSEBeta")
@@ -727,6 +788,38 @@ mod tests {
             CompatibilityDisposition::Unsupported
         );
         assert!(classify_obscript_command("GetActorValue").is_none());
+    }
+
+    #[test]
+    fn legacy_load_order_commands_map_to_content_catalog_recipes() {
+        let loaded = obscript_source_alias("ismodloaded").unwrap();
+        assert_eq!(loaded.service, CONTENT_CATALOG_SERVICE);
+        assert_eq!(loaded.operation, "content.find");
+        assert_eq!(loaded.value_kind, "bool");
+
+        let index = obscript_source_alias("GetModIndex").unwrap();
+        assert_eq!(index.operation, "content.find-index");
+        assert!(index.constraint.contains("255 sentinel"));
+
+        assert_eq!(
+            obscript_source_alias("GetNumLoadedMods").unwrap().operation,
+            "content.count"
+        );
+        assert_eq!(
+            obscript_source_alias("GetNumLoadedPlugins")
+                .unwrap()
+                .operation,
+            "content.count"
+        );
+        assert_eq!(
+            obscript_source_alias("GetNthModName").unwrap().operation,
+            "content.plugin-name"
+        );
+        assert_eq!(
+            classify_obscript_command("IsModLoaded").unwrap().service,
+            Some(CONTENT_CATALOG_SERVICE)
+        );
+        assert!(obscript_source_alias("GetSourceModIndex").is_none());
     }
 
     #[test]
