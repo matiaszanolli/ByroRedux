@@ -71,10 +71,11 @@ The current public surface includes:
   the same authenticated host without an extender DLL. Recognized extender
   calls that do not yet have an executable route reject their complete handler
   with an attributed translation error rather than disappearing silently. The
-  first exact engine-owned compatibility alias is SKSE's
-  `Game.GetModByName`, backed by the immutable content catalog with regular
-  plugin indices and the legacy `255` missing sentinel; packages cannot shadow
-  it.
+  first exact engine-owned compatibility pack is seven SKSE `Game`
+  content-discovery calls covering regular/light counts, lookup in both
+  directions, and active-plugin checks. The immutable catalog adapter preserves
+  SKSE's `255`, `0x100 + lightIndex`, and `0xffff` index conventions; packages
+  cannot shadow these routes.
 - `compatibility` classifies recognized SKSE/F4SE, PapyrusUtil,
   JContainers, input, event, and UI calls as engine-native, mapped to a
   semantic service, or explicitly unsupported with migration guidance. It
