@@ -1217,6 +1217,20 @@ engine host routes calls through principal-private storage with case-folded type
 keys and synchronous legacy return values, and source handlers preserve their
 owner across `Utility.Wait`. Object-scoped and cross-principal calls fail closed.
 
+Checkpoint commit: `feat(scripting): execute JContainers core aliases`.
+
+Delivered for the 37 in-memory `JValue`, `JArray`, and `JMap` functions already
+mapped by the compatibility catalog. The zero-package engine host creates and
+mutates each archive principal's bounded, save-persistent registry; typed
+integer/float/string/Form/object values, defaulted getters, numeric reads,
+negative array indices, nested handles, map membership/removal, clear, and
+release are callable from ordinary source handlers across `Utility.Wait`.
+Exact arity is revalidated during source/PEX lowering and continuation restore.
+Registries remain isolated even when two script packages receive the same
+integer handle. Ref-counted retain/tag lifetime, JDB/path solving, JSON files,
+Lua, JFormMap/JIntMap, and the larger collection API remain explicit future
+packs rather than silently falling through to an installed native extender.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the
