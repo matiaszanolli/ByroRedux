@@ -62,10 +62,12 @@ use byroredux_sdk::reputation::{
     ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
     MAX_REPUTATIONS_PER_ENTITY,
 };
+use byroredux_sdk::script_function::{ScriptFunctionDeclaration, ScriptValue};
 use byroredux_sdk::service::{
     ACTIVATE_EVENT, CELL_LOAD_EVENT, CONSOLE_REGISTER_CAPABILITY, EQUIPMENT_EVENT,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    SESSION_EVENT, SETTINGS_REGISTER_CAPABILITY, UPDATE_EVENT,
+    SCRIPT_FUNCTIONS_REGISTER_CAPABILITY, SESSION_EVENT, SETTINGS_REGISTER_CAPABILITY,
+    UPDATE_EVENT,
 };
 use byroredux_sdk::settings::{
     SettingControlDeclaration, SettingDeclaration, SettingValue as SdkSettingValue,
@@ -120,6 +122,17 @@ pub(crate) enum ExtensionHostError {
     InvalidHitDamage(f32),
     #[error("component-store command budget is smaller than the sandbox entry budget")]
     IncompatibleCommandBudgets,
+    // Public routing seam for the Papyrus/ObScript adapters; those adapters
+    // land after the sandbox/host contract is stabilized.
+    #[allow(dead_code)]
+    #[error("script function {0} is not registered")]
+    UnknownScriptFunction(String),
+    #[allow(dead_code)]
+    #[error("script function {function} is unavailable: {reason}")]
+    ScriptFunctionUnavailable { function: String, reason: String },
+    #[allow(dead_code)]
+    #[error("deferred command batch from script function {0} was rejected")]
+    ScriptFunctionCommandBatchRejected(String),
     #[error("extension-state format {actual} is unsupported; this engine supports {expected}")]
     UnsupportedStateFormat { actual: u32, expected: u32 },
     #[error("extension state contains {actual} rows, exceeding the limit of {maximum}")]
@@ -238,6 +251,16 @@ struct HostedConsoleCommand {
     declaration_index: u32,
 }
 
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct HostedScriptFunction {
+    name: String,
+    extension: ExtensionId,
+    component: ComponentId,
+    declaration_index: u32,
+    declaration: ScriptFunctionDeclaration,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RecurringCadence {
     interval_seconds: f32,
@@ -288,6 +311,7 @@ pub(crate) struct ExtensionHost {
     faction_relationships: Arc<FactionRelationshipCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
+    script_functions: Vec<HostedScriptFunction>,
 }
 
 impl ExtensionHost {
@@ -319,6 +343,7 @@ impl ExtensionHost {
             faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
+            script_functions: Vec::new(),
         })
     }
 
@@ -517,6 +542,23 @@ impl ExtensionHost {
                         }),
                 );
         }
+        if grants.contains(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY) {
+            self.script_functions
+                .extend(
+                    manifest
+                        .script_functions
+                        .iter()
+                        .enumerate()
+                        .map(|(index, function)| HostedScriptFunction {
+                            name: function.qualified_name(&manifest.id),
+                            extension: manifest.id.clone(),
+                            component: function.component.clone(),
+                            declaration_index: u32::try_from(index)
+                                .expect("manifest script function count is bounded below u32::MAX"),
+                            declaration: function.clone(),
+                        }),
+                );
+        }
         self.diagnostics.extend(staged_diagnostics);
         Ok(())
     }
@@ -614,6 +656,109 @@ impl ExtensionHost {
                 success: false,
                 lines: vec!["deferred command batch was rejected".to_owned()],
             }
+        }
+    }
+
+    /// Invoke a principal-namespaced typed function and publish its result
+    /// only after every deferred side effect commits atomically.
+    #[allow(dead_code)]
+    pub(crate) fn invoke_script_function(
+        &mut self,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        let route = self
+            .script_functions
+            .iter()
+            .find(|route| route.name == qualified_name)
+            .cloned()
+            .ok_or_else(|| ExtensionHostError::UnknownScriptFunction(qualified_name.to_owned()))?;
+        route
+            .declaration
+            .validate_arguments(arguments)
+            .map_err(|error| ExtensionHostError::ScriptFunctionUnavailable {
+                function: qualified_name.to_owned(),
+                reason: error.to_string(),
+            })?;
+        let index = self
+            .components
+            .iter()
+            .position(|hosted| {
+                hosted.extension == route.extension && hosted.component == route.component
+            })
+            .ok_or_else(|| ExtensionHostError::ScriptFunctionUnavailable {
+                function: qualified_name.to_owned(),
+                reason: "declared component is unavailable".to_owned(),
+            })?;
+        let hosted = &mut self.components[index];
+        if hosted.instance.status() != &InstanceStatus::Active {
+            return Err(ExtensionHostError::ScriptFunctionUnavailable {
+                function: qualified_name.to_owned(),
+                reason: format!("component is {}", hosted.instance.status()),
+            });
+        }
+        let principal = hosted.instance.principal().id().clone();
+        let storage_snapshot = self
+            .principal_storage
+            .values(&principal)
+            .cloned()
+            .unwrap_or_default();
+        hosted
+            .instance
+            .set_principal_storage_snapshot(storage_snapshot);
+        let legacy_container_snapshot = self
+            .legacy_containers
+            .get(&principal)
+            .cloned()
+            .unwrap_or_default();
+        hosted
+            .instance
+            .set_legacy_container_snapshot(legacy_container_snapshot);
+        let result = hosted
+            .instance
+            .on_script_function(route.declaration_index, arguments);
+        self.diagnostics
+            .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                ExtensionDiagnostic::Log {
+                    extension: hosted.extension.clone(),
+                    component: hosted.component.clone(),
+                    entry,
+                }
+            }));
+        let (value, commands) = result.map_err(|error| {
+            self.diagnostics.push(ExtensionDiagnostic::Fault {
+                extension: hosted.extension.clone(),
+                component: hosted.component.clone(),
+                message: error.to_string(),
+            });
+            ExtensionHostError::Sandbox(error)
+        })?;
+        let mut stats = ExtensionDispatchStats::default();
+        apply_delivery_result(
+            hosted,
+            Ok(commands),
+            LifecyclePhase::ScriptFunction,
+            &principal,
+            DeliveryCommitContext {
+                state: &mut self.state,
+                principal_storage: &mut self.principal_storage,
+                legacy_containers: &mut self.legacy_containers,
+                pending_custom_events: &mut self.pending_custom_events,
+                pending_setting_writes: &mut self.pending_setting_writes,
+                pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                pending_package_evaluations: &mut self.pending_package_evaluations,
+                pending_animation_commands: &mut self.pending_animation_commands,
+                pending_reputation_writes: &mut self.pending_reputation_writes,
+                diagnostics: &mut self.diagnostics,
+                stats: &mut stats,
+            },
+        );
+        if stats.faults == 0 {
+            Ok(value)
+        } else {
+            Err(ExtensionHostError::ScriptFunctionCommandBatchRejected(
+                qualified_name.to_owned(),
+            ))
         }
     }
 
@@ -4113,11 +4258,15 @@ mod tests {
     use byroredux_core::math::{Quat, Vec3};
     use byroredux_sdk::component::{ComponentFieldDeclaration, ExtensionValue, ExtensionValueType};
     use byroredux_sdk::identity::{
-        CapabilityId, ComponentFieldId, ComponentSchemaId, EventId, ServiceId, StorageKey,
+        CapabilityId, ComponentFieldId, ComponentSchemaId, EventId, ScriptFunctionId,
+        ScriptParameterId, ServiceId, StorageKey,
     };
     use byroredux_sdk::manifest::{
         CapabilityRequest, ComponentSchemaDeclaration, EventFilter, EventSubscription,
         ExecutableComponent, EXTENSION_MANIFEST_VERSION,
+    };
+    use byroredux_sdk::script_function::{
+        ScriptParameterDeclaration, ScriptResultDeclaration, ScriptValueType,
     };
     use byroredux_sdk::service::{
         COMPONENTS_WRITE_OWN_CAPABILITY, EXTENSION_WORLD_SERVICE, STORAGE_READ_OWN_CAPABILITY,
@@ -4211,6 +4360,7 @@ mod tests {
     (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
     (func (export "on-console-command") (param i32))
+    (func (export "on-script-function") (param i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "increment" (func $increment-lower))))
@@ -4253,6 +4403,9 @@ mod tests {
   (func (export "on-console-command")
     (param "command-index" u32)
     (canon lift (core func $guest-instance "on-console-command")))
+  (func (export "on-script-function")
+    (param "function-index" u32)
+    (canon lift (core func $guest-instance "on-script-function")))
 )
 "#;
 
@@ -4383,6 +4536,7 @@ mod tests {
       i32.const 16
       i64.const 1
       call $increment)
+    (func (export "on-script-function") (param i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "libc" (instance $libc))
@@ -4426,8 +4580,35 @@ mod tests {
   (func (export "on-console-command")
     (param "command-index" u32)
     (canon lift (core func $guest-instance "on-console-command")))
+  (func (export "on-script-function")
+    (param "function-index" u32)
+    (canon lift (core func $guest-instance "on-script-function")))
 )
 "#;
+
+    fn script_function_component() -> String {
+        STORAGE_COMPONENT
+            .replace(
+                "(component\n  (import \"byro:mod-host/state@0.1.0\"",
+                "(component\n  (import \"byro:mod-host/script-functions@0.1.0\" (instance $functions\n    (export \"set-result-integer\" (func (param \"value\" s64)))\n  ))\n  (import \"byro:mod-host/state@0.1.0\"",
+            )
+            .replace(
+                "  (alias export $state \"entity-ref\" (type $entity-ref))",
+                "  (alias export $functions \"set-result-integer\" (func $set-result))\n  (core func $set-result-lower (canon lower (func $set-result)))\n  (alias export $state \"entity-ref\" (type $entity-ref))",
+            )
+            .replace(
+                "    (import \"libc\" \"memory\" (memory 1))",
+                "    (import \"libc\" \"memory\" (memory 1))\n    (import \"host\" \"set-result\" (func $set-result (param i64)))",
+            )
+            .replace(
+                "    (func (export \"on-script-function\") (param i32))",
+                "    (func (export \"on-script-function\") (param $index i32)\n      local.get $index\n      i32.eqz\n      i32.eqz\n      if unreachable end\n      i32.const 0\n      i32.const 16\n      i64.const 1\n      call $increment\n      i64.const 42\n      call $set-result)",
+            )
+            .replace(
+                "    (with \"host\" (instance (export \"increment\" (func $increment-lower))))",
+                "    (with \"host\" (instance\n      (export \"increment\" (func $increment-lower))\n      (export \"set-result\" (func $set-result-lower))))",
+            )
+    }
 
     const PROJECTION_COMPONENT: &str = r#"
 (component
@@ -4505,6 +4686,7 @@ mod tests {
     (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
     (func (export "on-console-command") (param i32))
+    (func (export "on-script-function") (param i32))
   )
   (core instance $guest-instance (instantiate $guest
     (with "host" (instance (export "contains" (func $contains-lower))))
@@ -4547,6 +4729,9 @@ mod tests {
   (func (export "on-console-command")
     (param "command-index" u32)
     (canon lift (core func $guest-instance "on-console-command")))
+  (func (export "on-script-function")
+    (param "function-index" u32)
+    (canon lift (core func $guest-instance "on-script-function")))
 )
 "#;
 
@@ -4706,6 +4891,29 @@ mod tests {
         manifest
     }
 
+    fn script_function_manifest(id: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.capabilities.push(CapabilityRequest {
+            id: CapabilityId::new(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap(),
+            required: true,
+        });
+        manifest.script_functions = vec![ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("answer").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![ScriptParameterDeclaration {
+                id: ScriptParameterId::new("input").unwrap(),
+                value_type: ScriptValueType::Integer,
+                optional: false,
+            }],
+            result: Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::Integer,
+                optional: false,
+            }),
+            description: "Return the test answer".to_owned(),
+        }];
+        manifest
+    }
+
     fn update_manifest(id: &str) -> ExtensionManifest {
         let mut manifest = storage_manifest(id);
         manifest.subscriptions = vec![EventSubscription {
@@ -4727,6 +4935,12 @@ mod tests {
     fn console_grants() -> CapabilitySet {
         let mut grants = storage_grants();
         grants.grant(CONSOLE_REGISTER_CAPABILITY).unwrap();
+        grants
+    }
+
+    fn script_function_grants() -> CapabilitySet {
+        let mut grants = storage_grants();
+        grants.grant(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap();
         grants
     }
 
@@ -5739,6 +5953,51 @@ mod tests {
             host.lock()
                 .unwrap()
                 .principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn granted_typed_script_function_commits_side_effects_before_publishing_result() {
+        let id = "org.example.functions";
+        let manifest = script_function_manifest(id);
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(script_function_component()).unwrap(),
+        );
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.install_package(&manifest, &artifacts, script_function_grants())
+            .unwrap();
+
+        let value = host
+            .invoke_script_function(
+                "ext.org.example.functions.answer",
+                &[ScriptValue::Integer(7)],
+            )
+            .unwrap();
+        assert_eq!(value, ScriptValue::Integer(42));
+        let principal = PrincipalId::new(id).unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        assert_eq!(
+            host.principal_storage
+                .values(&principal)
+                .and_then(|values| values.get(&key)),
+            Some(&PrincipalStorageValue::I64(1))
+        );
+
+        let error = host
+            .invoke_script_function(
+                "ext.org.example.functions.answer",
+                &[ScriptValue::Boolean(true)],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid value or type"));
+        assert_eq!(
+            host.principal_storage
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(1))
