@@ -1446,10 +1446,19 @@ pub fn apply_effects(
                     .is_some_and(|quest| stages.get_stage_done(quest, guard.stage) == guard.done)
             });
             let branch = if passes { then_effects } else { else_effects };
+            let mut ordered_tail = Vec::with_capacity(branch.len() + effects.len() - index - 1);
+            ordered_tail.extend_from_slice(branch);
+            ordered_tail.extend_from_slice(&effects[index + 1..]);
             advances.extend(apply_effects(
-                branch, context, vmad, world, stages, objectives, deferred,
+                &ordered_tail,
+                context,
+                vmad,
+                world,
+                stages,
+                objectives,
+                deferred,
             ));
-            continue;
+            break;
         }
         let suspension = match effect {
             Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),

@@ -187,6 +187,85 @@ fn provider_barrier_resumes_native_fragment_tail_after_host_call() {
 }
 
 #[test]
+fn branch_provider_barrier_resumes_branch_and_outer_tails_in_order() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::translate::effects::FragmentProviderCall;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let world = fixture();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
+        calls_for_callback.lock().unwrap().push(route.to_owned());
+        Ok(ScriptValue::Integer(1))
+    }) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+    let effects = [
+        Effect::Conditional {
+            guards: vec![StageDoneGuard {
+                quest: QuestRef::SelfRef,
+                stage: 2,
+                done: false,
+            }],
+            then_effects: vec![
+                Effect::ProviderCall(FragmentProviderCall {
+                    route: "ext.example.branch".to_owned(),
+                    arguments: Vec::new(),
+                }),
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10,
+                },
+            ],
+            else_effects: vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 99,
+            }],
+        },
+        Effect::ProviderCall(FragmentProviderCall {
+            route: "ext.example.outer".to_owned(),
+            arguments: Vec::new(),
+        }),
+        Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 20,
+        },
+    ];
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+
+    let immediate = apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    assert!(immediate.is_empty());
+    assert_eq!(stages.get_stage(Q), 0);
+    assert!(calls.lock().unwrap().is_empty());
+
+    let advances = deferred.apply(&world);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[
+            "ext.example.branch".to_owned(),
+            "ext.example.outer".to_owned()
+        ]
+    );
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(advances.len(), 2);
+}
+
+#[test]
 fn failed_provider_barrier_aborts_its_native_fragment_tail() {
     use std::sync::Arc;
 

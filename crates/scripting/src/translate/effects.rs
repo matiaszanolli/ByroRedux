@@ -385,10 +385,10 @@ fn lower_statements(
                     })
                     .collect::<Option<Vec<_>>>()?;
                 let mut then_scope = scope.clone();
-                let then_effects = lower_statements(body, &mut then_scope, None)?;
+                let then_effects = lower_statements(body, &mut then_scope, providers)?;
                 let mut else_scope = scope.clone();
                 let else_effects = match else_body.as_deref() {
-                    Some(body) => lower_statements(body, &mut else_scope, None)?,
+                    Some(body) => lower_statements(body, &mut else_scope, providers)?,
                     None => Vec::new(),
                 };
                 let has_latent = |branch: &[Effect]| {
@@ -1427,6 +1427,43 @@ mod tests {
         assert!(matches!(
             reordered_effects[1],
             Effect::SetStage { stage: 10, .. }
+        ));
+
+        let conditional = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             If Self.GetStageDone(2) == false\n\
+               Game.GetModCount()\n\
+               Self.SetStage(10)\n\
+             Else\n\
+               Game.IsPluginInstalled(\"Update.esm\")\n\
+             EndIf\n\
+             Self.SetStage(20)\n\
+             EndFunction\n",
+        );
+        let conditional_effects = lower_fragment_with_quest_properties_and_providers(
+            &conditional,
+            &HashSet::new(),
+            Some(&providers),
+        )
+        .unwrap();
+        let Effect::Conditional {
+            then_effects,
+            else_effects,
+            ..
+        } = &conditional_effects[0]
+        else {
+            panic!("expected conditional effect");
+        };
+        assert!(matches!(then_effects[0], Effect::ProviderCall(_)));
+        assert!(matches!(
+            then_effects[1],
+            Effect::SetStage { stage: 10, .. }
+        ));
+        assert!(matches!(else_effects[0], Effect::ProviderCall(_)));
+        assert!(matches!(
+            conditional_effects[1],
+            Effect::SetStage { stage: 20, .. }
         ));
     }
 
