@@ -15,7 +15,7 @@ use byroredux_papyrus::ast::{
 };
 use byroredux_sdk::{
     compatibility::{classify_static_call, papyrus_game_content_declarations},
-    identity::ExtensionId,
+    identity::{EntityRef, ExtensionId},
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
         ScriptValueType,
@@ -34,11 +34,17 @@ const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
 pub type PapyrusProviderCallback =
     dyn Fn(&str, &[ScriptValue]) -> Result<ScriptValue, String> + Send + Sync;
 
+/// Executable-owned conversion from a raw ECS identity to the same opaque,
+/// generational handle used by sandbox callbacks.
+pub type PapyrusProviderEntityResolver =
+    dyn Fn(EntityId) -> Result<EntityRef, String> + Send + Sync;
+
 /// Live catalog and host callback published atomically by the executable.
 #[derive(Clone)]
 pub struct PapyrusProviderRuntime {
     catalog: Arc<PapyrusProviderCatalog>,
     callback: Option<Arc<PapyrusProviderCallback>>,
+    entity_resolver: Option<Arc<PapyrusProviderEntityResolver>>,
 }
 
 impl Resource for PapyrusProviderRuntime {}
@@ -48,6 +54,7 @@ impl Default for PapyrusProviderRuntime {
         Self {
             catalog: Arc::new(PapyrusProviderCatalog::engine_compatibility()),
             callback: None,
+            entity_resolver: None,
         }
     }
 }
@@ -61,6 +68,21 @@ impl PapyrusProviderRuntime {
     /// Clone the live host callback for guard-free execution.
     pub fn callback(&self) -> Option<Arc<PapyrusProviderCallback>> {
         self.callback.clone()
+    }
+
+    pub fn entity_resolver(&self) -> Option<Arc<PapyrusProviderEntityResolver>> {
+        self.entity_resolver.clone()
+    }
+}
+
+/// Install the executable's opaque-handle converter independently of the
+/// provider callback so test and headless runtimes can omit reference payloads.
+pub fn set_papyrus_provider_entity_resolver(
+    world: &World,
+    resolver: Option<Arc<PapyrusProviderEntityResolver>>,
+) {
+    if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
+        runtime.entity_resolver = resolver;
     }
 }
 
@@ -380,16 +402,32 @@ fn lower_provider_invocation(
             parameter: parameter.id.as_str().to_owned(),
         })
     })?;
-    let validation_arguments = arguments
+    for (index, argument) in arguments.iter().enumerate() {
+        let parameter = &declaration.parameters[index];
+        let valid = match argument {
+            PapyrusProviderArgument::Literal(value) => {
+                value.matches(parameter.value_type, parameter.optional)
+            }
+            PapyrusProviderArgument::Local { value_type, .. } => {
+                *value_type == parameter.value_type
+            }
+        };
+        if !valid {
+            return Err(PapyrusProviderLowerError::UnsupportedArgument {
+                parameter: parameter.id.as_str().to_owned(),
+            });
+        }
+    }
+    if let Some(parameter) = declaration
+        .parameters
         .iter()
-        .map(|argument| match argument {
-            PapyrusProviderArgument::Literal(value) => value.clone(),
-            PapyrusProviderArgument::Local { value_type, .. } => default_value(*value_type),
-        })
-        .collect::<Vec<_>>();
-    declaration
-        .validate_arguments(&validation_arguments)
-        .map_err(PapyrusProviderLowerError::InvalidArguments)?;
+        .skip(arguments.len())
+        .find(|parameter| !parameter.optional)
+    {
+        return Err(PapyrusProviderLowerError::MissingParameter(
+            parameter.id.as_str().to_owned(),
+        ));
+    }
     Ok(Some(PapyrusProviderInvocation {
         route: route.clone(),
         arguments,
@@ -538,6 +576,7 @@ struct PapyrusProviderParameterBinding {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PapyrusProviderParameterSource {
+    Entity,
     PowerAttack,
     SneakAttack,
     BashAttack,
@@ -561,21 +600,39 @@ impl PapyrusProviderProgram {
         self.handlers.is_empty()
     }
 
-    fn hit_locals(&self, event: &HitEvent) -> BTreeMap<String, ScriptValue> {
+    fn projected_locals(
+        &self,
+        event_kind: PapyrusProviderEvent,
+        entity: Option<EntityId>,
+        hit: Option<&HitEvent>,
+    ) -> (BTreeMap<String, ScriptValue>, Vec<(String, EntityId)>) {
         let mut locals = BTreeMap::new();
-        let Some(handler) = self.handlers.get(&PapyrusProviderEvent::OnHit) else {
-            return locals;
+        let mut entities = Vec::new();
+        let Some(handler) = self.handlers.get(&event_kind) else {
+            return (locals, entities);
         };
         for parameter in &handler.parameters {
             let value = match parameter.source {
-                PapyrusProviderParameterSource::PowerAttack => event.power_attack,
-                PapyrusProviderParameterSource::SneakAttack => event.sneak_attack,
-                PapyrusProviderParameterSource::BashAttack => event.bash_attack,
-                PapyrusProviderParameterSource::Blocked => event.blocked,
+                PapyrusProviderParameterSource::Entity => {
+                    if let Some(entity) = entity {
+                        entities.push((parameter.name.clone(), entity));
+                    }
+                    continue;
+                }
+                PapyrusProviderParameterSource::PowerAttack => {
+                    hit.is_some_and(|hit| hit.power_attack)
+                }
+                PapyrusProviderParameterSource::SneakAttack => {
+                    hit.is_some_and(|hit| hit.sneak_attack)
+                }
+                PapyrusProviderParameterSource::BashAttack => {
+                    hit.is_some_and(|hit| hit.bash_attack)
+                }
+                PapyrusProviderParameterSource::Blocked => hit.is_some_and(|hit| hit.blocked),
             };
             locals.insert(parameter.name.clone(), ScriptValue::Boolean(value));
         }
-        locals
+        (locals, entities)
     }
 }
 
@@ -653,8 +710,16 @@ fn lower_event_into(
         return Err(PapyrusProviderProgramError::DuplicateHandler(canonical));
     }
     let mut locals = BTreeMap::new();
-    let parameters = lower_event_parameters(canonical, event, &mut locals);
+    let mut parameters = lower_event_parameters(canonical, event, &mut locals);
     let statements = lower_statements(&event.body, catalog, &mut locals, 0)?;
+    parameters.retain(|parameter| statements_reference_local(&statements, &parameter.name));
+    if parameters
+        .iter()
+        .any(|parameter| parameter.source == PapyrusProviderParameterSource::Entity)
+        && statements_contain_wait(&statements)
+    {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    }
     program.handlers.insert(
         canonical,
         PapyrusProviderHandler {
@@ -670,8 +735,26 @@ fn lower_event_parameters(
     event: &Event,
     locals: &mut BTreeMap<String, ScriptValueType>,
 ) -> Vec<PapyrusProviderParameterBinding> {
+    let mut bindings = Vec::new();
+    if matches!(
+        event_kind,
+        PapyrusProviderEvent::OnActivate
+            | PapyrusProviderEvent::OnHit
+            | PapyrusProviderEvent::OnTriggerEnter
+    ) {
+        if let Some(parameter) = event.params.first() {
+            if matches!(&parameter.ty.node, Type::Object(_)) {
+                let name = parameter.name.node.0.to_ascii_lowercase();
+                locals.insert(name.clone(), ScriptValueType::Entity);
+                bindings.push(PapyrusProviderParameterBinding {
+                    name,
+                    source: PapyrusProviderParameterSource::Entity,
+                });
+            }
+        }
+    }
     if event_kind != PapyrusProviderEvent::OnHit {
-        return Vec::new();
+        return bindings;
     }
     let sources = [
         (3, PapyrusProviderParameterSource::PowerAttack),
@@ -679,7 +762,6 @@ fn lower_event_parameters(
         (5, PapyrusProviderParameterSource::BashAttack),
         (6, PapyrusProviderParameterSource::Blocked),
     ];
-    let mut bindings = Vec::new();
     for (index, source) in sources {
         let Some(parameter) = event.params.get(index) else {
             continue;
@@ -692,6 +774,69 @@ fn lower_event_parameters(
         bindings.push(PapyrusProviderParameterBinding { name, source });
     }
     bindings
+}
+
+fn statements_reference_local(statements: &[PapyrusProviderStatement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        PapyrusProviderStatement::Declare { .. } | PapyrusProviderStatement::Wait { .. } => false,
+        PapyrusProviderStatement::AssignCall { call, .. }
+        | PapyrusProviderStatement::Call(call) => invocation_references_local(call, name),
+        PapyrusProviderStatement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            condition_references_local(condition, name)
+                || statements_reference_local(then_branch, name)
+                || statements_reference_local(else_branch, name)
+        }
+    })
+}
+
+fn statements_contain_wait(statements: &[PapyrusProviderStatement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        PapyrusProviderStatement::Wait { .. } => true,
+        PapyrusProviderStatement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => statements_contain_wait(then_branch) || statements_contain_wait(else_branch),
+        PapyrusProviderStatement::Declare { .. }
+        | PapyrusProviderStatement::AssignCall { .. }
+        | PapyrusProviderStatement::Call(_) => false,
+    })
+}
+
+fn invocation_references_local(call: &PapyrusProviderInvocation, name: &str) -> bool {
+    call.arguments.iter().any(|argument| {
+        matches!(
+            argument,
+            PapyrusProviderArgument::Local { name: local, .. } if local == name
+        )
+    })
+}
+
+fn condition_references_local(condition: &PapyrusProviderCondition, name: &str) -> bool {
+    match condition {
+        PapyrusProviderCondition::Literal(_) => false,
+        PapyrusProviderCondition::Local(local) => local == name,
+        PapyrusProviderCondition::Call(call) => invocation_references_local(call, name),
+        PapyrusProviderCondition::Not(condition) => condition_references_local(condition, name),
+        PapyrusProviderCondition::And(left, right) | PapyrusProviderCondition::Or(left, right) => {
+            condition_references_local(left, name) || condition_references_local(right, name)
+        }
+        PapyrusProviderCondition::Compare { left, right, .. } => {
+            value_references_local(left, name) || value_references_local(right, name)
+        }
+    }
+}
+
+fn value_references_local(value: &PapyrusProviderValue, name: &str) -> bool {
+    match value {
+        PapyrusProviderValue::Literal(_) => false,
+        PapyrusProviderValue::Local(local) => local == name,
+        PapyrusProviderValue::Call(call) => invocation_references_local(call, name),
+    }
 }
 
 fn lower_statements(
@@ -1144,9 +1289,9 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         .and_then(|runtime| {
             runtime
                 .callback()
-                .map(|callback| (runtime.catalog(), callback))
+                .map(|callback| (runtime.catalog(), callback, runtime.entity_resolver()))
         });
-    let Some((catalog, callback)) = runtime else {
+    let Some((catalog, callback, entity_resolver)) = runtime else {
         return;
     };
     let pending = {
@@ -1164,7 +1309,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if continuation.remaining_seconds > 0.0 {
             still_pending.push(continuation);
         } else {
-            handlers.push((continuation.statements, continuation.locals));
+            handlers.push((continuation.statements, continuation.locals, Vec::new()));
         }
     }
 
@@ -1191,8 +1336,8 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         .map(|events| {
             events
                 .iter()
-                .map(|(entity, _)| entity)
-                .collect::<BTreeSet<_>>()
+                .map(|(entity, event)| (entity, event.activator))
+                .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     let hits = world
@@ -1227,7 +1372,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         .map(|events| {
             events
                 .iter()
-                .map(|(entity, event)| (entity, event.triggerers.len()))
+                .map(|(entity, event)| (entity, event.triggerers.clone()))
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
@@ -1248,33 +1393,50 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnInit).to_vec(),
                 BTreeMap::new(),
+                Vec::new(),
             ));
         }
         if loaded.contains(&entity) {
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnLoad).to_vec(),
                 BTreeMap::new(),
+                Vec::new(),
             ));
         }
-        if activated.contains(&entity) {
+        if let Some(activator) = activated.get(&entity) {
+            let (locals, entities) =
+                program.projected_locals(PapyrusProviderEvent::OnActivate, Some(*activator), None);
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnActivate).to_vec(),
-                BTreeMap::new(),
+                locals,
+                entities,
             ));
         }
         if let Some(hit) = hits.get(&entity) {
+            let (locals, entities) = program.projected_locals(
+                PapyrusProviderEvent::OnHit,
+                Some(hit.aggressor),
+                Some(hit),
+            );
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnHit).to_vec(),
-                program.hit_locals(hit),
+                locals,
+                entities,
             ));
         }
-        if let Some(entry_count) = trigger_entries.get(&entity) {
-            for _ in 0..*entry_count {
+        if let Some(triggerers) = trigger_entries.get(&entity) {
+            for triggerer in triggerers {
+                let (locals, entities) = program.projected_locals(
+                    PapyrusProviderEvent::OnTriggerEnter,
+                    Some(*triggerer),
+                    None,
+                );
                 handlers.push((
                     program
                         .handler(PapyrusProviderEvent::OnTriggerEnter)
                         .to_vec(),
-                    BTreeMap::new(),
+                    locals,
+                    entities,
                 ));
             }
         }
@@ -1285,21 +1447,43 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 } else {
                     PapyrusProviderEvent::OnObjectUnequipped
                 };
-                handlers.push((program.handler(event).to_vec(), BTreeMap::new()));
+                handlers.push((program.handler(event).to_vec(), BTreeMap::new(), Vec::new()));
             }
         }
         if updated.contains(&entity) {
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnUpdate).to_vec(),
                 BTreeMap::new(),
+                Vec::new(),
             ));
         }
     }
     drop(programs);
 
-    for (statements, mut locals) in handlers {
+    for (statements, mut locals, entity_locals) in handlers {
         if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
             log::warn!("Papyrus provider handler aborted before dispatch: {error}");
+            continue;
+        }
+        let mut projection_failed = false;
+        for (name, entity) in entity_locals {
+            let Some(resolver) = entity_resolver.as_ref() else {
+                log::warn!("Papyrus provider handler aborted: entity resolver is unavailable");
+                projection_failed = true;
+                break;
+            };
+            match resolver(entity) {
+                Ok(entity) => {
+                    locals.insert(name, ScriptValue::Entity(entity));
+                }
+                Err(error) => {
+                    log::warn!("Papyrus provider handler aborted: {error}");
+                    projection_failed = true;
+                    break;
+                }
+            }
+        }
+        if projection_failed {
             continue;
         }
         match execute_statements(&statements, callback.as_ref(), &mut locals) {
@@ -1382,8 +1566,7 @@ fn validate_provider_call(
     {
         return Err("saved provider route does not match the live catalog".to_owned());
     }
-    let arguments = call
-        .arguments
+    call.arguments
         .iter()
         .enumerate()
         .map(|(index, argument)| {
@@ -1396,7 +1579,7 @@ fn validate_provider_call(
                     if !value.matches(parameter.value_type, parameter.optional) {
                         return Err("saved provider literal argument changed type".to_owned());
                     }
-                    Ok(value.clone())
+                    Ok(())
                 }
                 PapyrusProviderArgument::Local { name, value_type } => {
                     if name.is_empty()
@@ -1405,14 +1588,20 @@ fn validate_provider_call(
                     {
                         return Err("saved provider local argument is invalid".to_owned());
                     }
-                    Ok(default_value(*value_type))
+                    Ok(())
                 }
             }
         })
         .collect::<Result<Vec<_>, String>>()?;
-    current
-        .validate_arguments(&arguments)
-        .map_err(|error| format!("saved provider arguments are invalid: {error:?}"))
+    if current
+        .parameters
+        .iter()
+        .skip(call.arguments.len())
+        .any(|parameter| !parameter.optional)
+    {
+        return Err("saved provider call omits a required argument".to_owned());
+    }
+    Ok(())
 }
 
 fn materialize_provider_arguments(
@@ -1696,6 +1885,27 @@ mod tests {
         }
     }
 
+    fn entity_declaration() -> ScriptFunctionDeclaration {
+        ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("inspect-entity").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![ScriptParameterDeclaration {
+                id: ScriptParameterId::new("target").unwrap(),
+                value_type: ScriptValueType::Entity,
+                optional: false,
+            }],
+            result: Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::String,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "WeatherNative".to_owned(),
+                function: "InspectEntity".to_owned(),
+            }),
+            description: "Inspect one opaque entity handle".to_owned(),
+        }
+    }
+
     fn expression(source: &str) -> Expr {
         let source = format!("ScriptName Fixture\nEvent OnInit()\n  {source}\nEndEvent\n");
         let (script, errors) = parse_script(&source).unwrap();
@@ -1721,6 +1931,12 @@ mod tests {
             .insert(
                 &ExtensionId::new("org.example.weather").unwrap(),
                 &boolean_declaration(),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                &ExtensionId::new("org.example.weather").unwrap(),
+                &entity_declaration(),
             )
             .unwrap();
         catalog
@@ -2354,7 +2570,7 @@ mod tests {
         let source = r#"
             ScriptName Fixture
             Event OnTriggerEnter(ObjectReference akActionRef)
-                WeatherNative.WeatherAt(7, "trigger")
+                WeatherNative.InspectEntity(akActionRef)
             EndEvent
             Event OnUpdate()
                 WeatherNative.WeatherAt(8, "update")
@@ -2378,6 +2594,10 @@ mod tests {
             Ok(ScriptValue::String("ok".to_owned()))
         }) as Arc<PapyrusProviderCallback>;
         set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let resolver = Arc::new(|entity: EntityId| {
+            EntityRef::new(9, u64::from(entity) + 1).ok_or_else(|| "invalid test entity".to_owned())
+        }) as Arc<PapyrusProviderEntityResolver>;
+        set_papyrus_provider_entity_resolver(&world, Some(resolver));
         let entity = world.spawn();
         let first_triggerer = world.spawn();
         let second_triggerer = world.spawn();
@@ -2394,8 +2614,14 @@ mod tests {
 
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[0].1[0], ScriptValue::Integer(7));
-        assert_eq!(calls[1].1[0], ScriptValue::Integer(7));
+        assert_eq!(
+            calls[0].1[0],
+            ScriptValue::Entity(EntityRef::new(9, u64::from(first_triggerer) + 1).unwrap())
+        );
+        assert_eq!(
+            calls[1].1[0],
+            ScriptValue::Entity(EntityRef::new(9, u64::from(second_triggerer) + 1).unwrap())
+        );
         assert_eq!(calls[2].1[0], ScriptValue::Integer(8));
     }
 
@@ -2407,6 +2633,24 @@ mod tests {
                 While WeatherNative.IsStorm()
                     WeatherNative.WeatherAt(4)
                 EndWhile
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            lower_provider_program(&script, &catalog()),
+            Err(PapyrusProviderProgramError::UnsupportedStatement)
+        );
+    }
+
+    #[test]
+    fn reference_event_parameters_do_not_cross_latent_waits() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnTriggerEnter(ObjectReference akActionRef)
+                WeatherNative.InspectEntity(akActionRef)
+                Utility.Wait(1.0)
+                WeatherNative.WeatherAt(1, "after")
             EndEvent
         "#;
         let (script, errors) = parse_script(source).unwrap();

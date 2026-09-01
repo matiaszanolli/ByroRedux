@@ -2553,7 +2553,8 @@ fn sync_extension_script_function_invoker(world: &World) {
         .as_ref()
         .and_then(|host| host.lock().ok().map(|host| host.papyrus_provider_catalog()))
         .unwrap_or_default();
-    let callback = host.map(|host| {
+    let callback = host.as_ref().map(|host| {
+        let host = Arc::clone(host);
         Arc::new(move |name: &str, arguments: &[ScriptValue]| {
             host.lock()
                 .map_err(|_| "extension host mutex was poisoned".to_owned())?
@@ -2561,8 +2562,18 @@ fn sync_extension_script_function_invoker(world: &World) {
                 .map_err(|error| error.to_string())
         }) as Arc<byroredux_scripting::ExtensionScriptFunctionCallback>
     });
+    let entity_resolver = host.map(|host| {
+        Arc::new(move |entity: EntityId| {
+            host.lock()
+                .map_err(|_| "extension host mutex was poisoned".to_owned())?
+                .handles
+                .handle_for(entity)
+                .map_err(|error| error.to_string())
+        }) as Arc<byroredux_scripting::PapyrusProviderEntityResolver>
+    });
     byroredux_scripting::set_extension_script_function_invoker(world, callback.clone());
     byroredux_scripting::set_papyrus_provider_runtime(world, Arc::new(catalog), callback);
+    byroredux_scripting::set_papyrus_provider_entity_resolver(world, entity_resolver);
 }
 
 struct ExtensionConsoleCommand {
@@ -6249,6 +6260,16 @@ mod tests {
         byroredux_scripting::register(&mut world);
         world.insert_resource(slot);
         sync_extension_script_function_invoker(&world);
+        let projected_entity = world.spawn();
+        let projected_handle = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .entity_resolver()
+            .unwrap()(projected_entity)
+        .unwrap();
+        assert_eq!(
+            live_host.lock().unwrap().handles.by_entity[&projected_entity],
+            projected_handle
+        );
 
         let source = r#"
             ScriptName ProviderFixture
