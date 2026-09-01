@@ -279,6 +279,19 @@ interface factions {
     get: func(entity: entity-ref) -> option<faction-snapshot>;
 }
 
+/// Directional authored FACT relationship data from the resolved load order.
+interface faction-relationships {
+    use state.{form-ref};
+
+    record faction-relationship {
+        modifier: s32,
+        combat-reaction: u32,
+    }
+
+    get: func(source: form-ref, target: form-ref) -> option<faction-relationship>;
+    truncated: func() -> bool;
+}
+
 /// Callback-local owned perk ranks keyed by portable PERK identity.
 interface perks {
     use state.{entity-ref, form-ref};
@@ -417,6 +430,7 @@ world extension {
     import actor-values;
     import inventory;
     import factions;
+    import faction-relationships;
     import perks;
     import packages;
     import animation;

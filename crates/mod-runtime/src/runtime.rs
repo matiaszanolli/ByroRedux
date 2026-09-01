@@ -1,7 +1,7 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, animation, console, content_catalog, context, events, factions, inventory,
-    logging, packages, perks, reputation, state, storage as wit_storage, world_spatial,
-    world_state,
+    actor_values, animation, console, content_catalog, context, events, faction_relationships,
+    factions, inventory, logging, packages, perks, reputation, state, storage as wit_storage,
+    world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -30,6 +30,7 @@ use byroredux_sdk::packages::{
 };
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot};
 use byroredux_sdk::projection::EntityProjection;
+use byroredux_sdk::relationships::FactionRelationshipCatalog;
 use byroredux_sdk::reputation::{
     ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
 };
@@ -40,7 +41,8 @@ use byroredux_sdk::service::{
     COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONSOLE_REGISTER_CAPABILITY,
     CONSOLE_SERVICE, CONTENT_CATALOG_READ_CAPABILITY, CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE,
     EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE,
-    EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE, HIT_EVENT,
+    EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE,
+    FACTION_RELATIONSHIPS_READ_CAPABILITY, FACTION_RELATIONSHIPS_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
     INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY, PACKAGES_READ_CAPABILITY,
     PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
@@ -292,6 +294,10 @@ impl SandboxRuntime {
                 "Read portable faction membership ranks from callback-visible actors",
             ),
             (
+                FACTION_RELATIONSHIPS_READ_CAPABILITY,
+                "Read authored directional relationships between portable factions",
+            ),
+            (
                 PERKS_READ_CAPABILITY,
                 "Read portable ranked perks from callback-visible actors",
             ),
@@ -420,6 +426,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(FACTIONS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(FACTION_RELATIONSHIPS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(FACTION_RELATIONSHIPS_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -621,6 +638,7 @@ impl SandboxRuntime {
             entity_projections: BTreeMap::new(),
             spatial_snapshot: Arc::new(SpatialSnapshot::default()),
             content_catalog: Arc::new(ContentCatalog::default()),
+            faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             setting_declarations: manifest.settings.clone(),
             subscribed_to_activate: manifest
@@ -1210,6 +1228,14 @@ impl ModInstance {
         self.store.data_mut().content_catalog = catalog;
     }
 
+    /// Replace the immutable authored faction-relationship snapshot.
+    pub fn set_faction_relationships_snapshot(
+        &mut self,
+        relationships: Arc<FactionRelationshipCatalog>,
+    ) {
+        self.store.data_mut().faction_relationships = relationships;
+    }
+
     /// Replace the immutable public engine-settings snapshot.
     pub fn set_engine_settings_snapshot(&mut self, settings: Arc<SettingsSnapshot>) {
         self.store.data_mut().engine_settings = settings;
@@ -1344,6 +1370,7 @@ struct HostState {
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
     spatial_snapshot: Arc<SpatialSnapshot>,
     content_catalog: Arc<ContentCatalog>,
+    faction_relationships: Arc<FactionRelationshipCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     setting_declarations: Vec<SettingDeclaration>,
     pending_commands: Vec<HostCommand>,
@@ -1896,6 +1923,30 @@ impl factions::Host for HostState {
     }
 }
 
+impl faction_relationships::Host for HostState {
+    fn get(
+        &mut self,
+        source: state::FormRef,
+        target: state::FormRef,
+    ) -> wasmtime::Result<Option<faction_relationships::FactionRelationship>> {
+        self.require_faction_relationships_read()?;
+        let source = sdk_form_ref(source);
+        let target = sdk_form_ref(target);
+        Ok(self
+            .faction_relationships
+            .relationship(source, target)
+            .map(|relationship| faction_relationships::FactionRelationship {
+                modifier: relationship.modifier(),
+                combat_reaction: relationship.combat_reaction_raw(),
+            }))
+    }
+
+    fn truncated(&mut self) -> wasmtime::Result<bool> {
+        self.require_faction_relationships_read()?;
+        Ok(self.faction_relationships.truncated())
+    }
+}
+
 impl perks::Host for HostState {
     fn get(&mut self, entity: state::EntityRef) -> wasmtime::Result<Option<perks::PerkSnapshot>> {
         self.require_perks_read()?;
@@ -2400,6 +2451,16 @@ impl HostState {
         Ok(())
     }
 
+    fn require_faction_relationships_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(FACTION_RELATIONSHIPS_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {FACTION_RELATIONSHIPS_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
     fn require_perks_read(&self) -> wasmtime::Result<()> {
         if !self.grants.contains(PERKS_READ_CAPABILITY) {
             wasmtime::bail!(
@@ -2751,6 +2812,7 @@ mod projection_tests {
             entity_projections: BTreeMap::new(),
             spatial_snapshot: Arc::new(SpatialSnapshot::default()),
             content_catalog: Arc::new(ContentCatalog::default()),
+            faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             setting_declarations: Vec::new(),
             pending_commands: Vec::new(),
@@ -2845,6 +2907,7 @@ mod projection_tests {
                 )
                 .unwrap(),
             ),
+            faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
             engine_settings: Arc::new(
                 SettingsSnapshot::new([
                     ("render.vsync".to_owned(), SettingValue::Boolean(false)),
@@ -3088,6 +3151,55 @@ mod projection_tests {
         let mut denied = content_host_state(false);
         let error = <HostState as factions::Host>::get(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(FACTIONS_READ_CAPABILITY));
+    }
+
+    #[test]
+    fn faction_relationships_are_directional_portable_and_capability_gated() {
+        use byroredux_sdk::relationships::{FactionRelationship, FactionRelationshipCatalog};
+
+        let source = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let target = FormRef::new(2_u128.to_be_bytes(), 0x55);
+        let relationship = FactionRelationship::new(source, target, -35, 1).unwrap();
+        let mut state = content_host_state(false);
+        state
+            .grants
+            .grant(FACTION_RELATIONSHIPS_READ_CAPABILITY)
+            .unwrap();
+        state.faction_relationships =
+            Arc::new(FactionRelationshipCatalog::new([relationship], false).unwrap());
+
+        let got = <HostState as faction_relationships::Host>::get(
+            &mut state,
+            wit_form_ref(source),
+            wit_form_ref(target),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(got.modifier, -35);
+        assert_eq!(got.combat_reaction, 1);
+        assert!(!<HostState as faction_relationships::Host>::truncated(&mut state).unwrap());
+        assert!(<HostState as faction_relationships::Host>::get(
+            &mut state,
+            wit_form_ref(target),
+            wit_form_ref(source),
+        )
+        .unwrap()
+        .is_none());
+
+        let mut denied = content_host_state(false);
+        let error = <HostState as faction_relationships::Host>::get(
+            &mut denied,
+            wit_form_ref(source),
+            wit_form_ref(target),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(FACTION_RELATIONSHIPS_READ_CAPABILITY));
+        let error = <HostState as faction_relationships::Host>::truncated(&mut denied).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(FACTION_RELATIONSHIPS_READ_CAPABILITY));
     }
 
     #[test]

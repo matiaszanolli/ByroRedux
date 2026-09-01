@@ -53,6 +53,7 @@ use byroredux_sdk::packages::{
 };
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot, MAX_PERKS_PER_ENTITY};
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
+use byroredux_sdk::relationships::FactionRelationshipCatalog;
 use byroredux_sdk::reputation::{
     ReputationCommand, ReputationEntry, ReputationOperation, ReputationSnapshot,
     MAX_REPUTATIONS_PER_ENTITY,
@@ -274,6 +275,7 @@ pub(crate) struct ExtensionHost {
     pending_animation_commands: Vec<PlayIdleCommand>,
     pending_reputation_writes: Vec<ReputationCommand>,
     content_catalog: Arc<ContentCatalog>,
+    faction_relationships: Arc<FactionRelationshipCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
 }
@@ -302,6 +304,7 @@ impl ExtensionHost {
             pending_animation_commands: Vec::new(),
             pending_reputation_writes: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
+            faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
         })
@@ -428,6 +431,7 @@ impl ExtensionHost {
                 .runtime
                 .instantiate(&compiled, manifest, grants.clone())?;
             instance.set_content_catalog_snapshot(Arc::clone(&self.content_catalog));
+            instance.set_faction_relationships_snapshot(Arc::clone(&self.faction_relationships));
             instance.set_engine_settings_snapshot(Arc::clone(&self.engine_settings));
             instance.initialize()?;
             staged_diagnostics.extend(instance.take_logs().into_iter().map(|entry| {
@@ -575,6 +579,20 @@ impl ExtensionHost {
             hosted
                 .instance
                 .set_content_catalog_snapshot(Arc::clone(&catalog));
+        }
+    }
+
+    fn set_faction_relationships(&mut self, relationships: Arc<FactionRelationshipCatalog>) {
+        if Arc::ptr_eq(&self.faction_relationships, &relationships)
+            || *self.faction_relationships == *relationships
+        {
+            return;
+        }
+        self.faction_relationships = Arc::clone(&relationships);
+        for hosted in &mut self.components {
+            hosted
+                .instance
+                .set_faction_relationships_snapshot(Arc::clone(&relationships));
         }
     }
 
@@ -2238,13 +2256,13 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
 /// The resolver owns the immutable catalog, so the common path is one Arc
 /// clone plus a pointer comparison and never rebuilds plugin metadata.
 pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
-    let catalog = {
+    let (catalog, faction_relationships) = {
         let Some(resolver) =
             world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
         else {
             return;
         };
-        resolver.content_catalog()
+        (resolver.content_catalog(), resolver.faction_relationships())
     };
     let host = {
         let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
@@ -2255,9 +2273,11 @@ pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
     let Some(host) = host else {
         return;
     };
-    host.lock()
-        .expect("ExtensionHost mutex poisoned by a host panic")
-        .set_content_catalog(catalog);
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    host.set_content_catalog(catalog);
+    host.set_faction_relationships(faction_relationships);
 }
 
 /// Publish public engine configuration before sandbox callbacks run.
@@ -6052,11 +6072,34 @@ mod tests {
                 byroredux_plugin::esm::reader::GlobalSlot::Light(3),
             ],
         );
-        let resolver =
-            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records(
-                &order,
-                &std::collections::HashMap::from([(0xFE00_3ABC, *b"STAT")]),
-            );
+        let faction = |form_id, relations| byroredux_plugin::esm::records::FactionRecord {
+            form_id,
+            editor_id: format!("Faction{form_id:08X}"),
+            full_name: String::new(),
+            flags: 0,
+            relations,
+            ranks: Vec::new(),
+            reputation: None,
+        };
+        let factions = std::collections::HashMap::from([
+            (
+                0x0000_0100,
+                faction(
+                    0x0000_0100,
+                    vec![byroredux_plugin::esm::records::FactionRelation {
+                        other_faction: 0x0000_0200,
+                        modifier: 25,
+                        combat_reaction: 3,
+                    }],
+                ),
+            ),
+            (0x0000_0200, faction(0x0000_0200, Vec::new())),
+        ]);
+        let resolver = crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
+            &order,
+            &std::collections::HashMap::from([(0xFE00_3ABC, *b"STAT")]),
+            &factions,
+        );
         let slot = ExtensionHostSlot::initialize_default();
         let host = slot.host().unwrap();
         let mut world = World::new();
@@ -6079,6 +6122,24 @@ mod tests {
             host.content_catalog.record(form).unwrap().record_type(),
             *b"STAT"
         );
+        let source = FormRef::new(
+            byroredux_core::form_id::PluginId::from_filename("Skyrim.esm")
+                .0
+                .to_be_bytes(),
+            0x100,
+        );
+        let target = FormRef::new(
+            byroredux_core::form_id::PluginId::from_filename("Skyrim.esm")
+                .0
+                .to_be_bytes(),
+            0x200,
+        );
+        let relationship = host
+            .faction_relationships
+            .relationship(source, target)
+            .unwrap();
+        assert_eq!(relationship.modifier(), 25);
+        assert_eq!(relationship.combat_reaction_raw(), 3);
     }
 
     #[test]

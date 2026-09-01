@@ -962,9 +962,10 @@ pub(crate) fn assemble_exterior_streaming(
         &wctx.record_index,
     )));
     world.insert_resource(
-        cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records(
+        cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
             &wctx.load_order,
             &wctx.record_index.record_types,
+            &wctx.record_index.factions,
         ),
     );
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);

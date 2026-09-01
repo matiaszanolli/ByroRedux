@@ -15,7 +15,10 @@ use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_plugin::esm;
 use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
 use byroredux_sdk::identity::FormRef;
-use std::collections::HashMap;
+use byroredux_sdk::relationships::{
+    FactionRelationship, FactionRelationshipCatalog, MAX_FACTION_RELATIONSHIPS,
+};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -114,6 +117,7 @@ impl std::ops::Deref for LoadOrder {
 pub(crate) struct GlobalFormIdResolver {
     owners: Vec<(esm::reader::GlobalSlot, PluginId)>,
     content_catalog: Arc<ContentCatalog>,
+    faction_relationships: Arc<FactionRelationshipCatalog>,
 }
 
 impl GlobalFormIdResolver {
@@ -122,9 +126,18 @@ impl GlobalFormIdResolver {
         Self::from_load_order_with_records(load_order, &HashMap::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn from_load_order_with_records(
         load_order: &LoadOrder,
         record_types: &HashMap<u32, [u8; 4]>,
+    ) -> Self {
+        Self::from_load_order_with_records_and_factions(load_order, record_types, &HashMap::new())
+    }
+
+    pub(crate) fn from_load_order_with_records_and_factions(
+        load_order: &LoadOrder,
+        record_types: &HashMap<u32, [u8; 4]>,
+        factions: &HashMap<u32, esm::records::FactionRecord>,
     ) -> Self {
         let owners = load_order
             .slots
@@ -171,14 +184,78 @@ impl GlobalFormIdResolver {
                 Arc::new(ContentCatalog::default())
             }
         };
-        Self {
+        let mut resolver = Self {
             owners,
             content_catalog,
-        }
+            faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
+        };
+        resolver.faction_relationships = resolver.build_faction_relationships(factions);
+        resolver
     }
 
     pub(crate) fn content_catalog(&self) -> Arc<ContentCatalog> {
         Arc::clone(&self.content_catalog)
+    }
+
+    pub(crate) fn faction_relationships(&self) -> Arc<FactionRelationshipCatalog> {
+        Arc::clone(&self.faction_relationships)
+    }
+
+    fn build_faction_relationships(
+        &self,
+        factions: &HashMap<u32, esm::records::FactionRecord>,
+    ) -> Arc<FactionRelationshipCatalog> {
+        let mut relationships = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut truncated = false;
+        let mut faction_ids = factions.keys().copied().collect::<Vec<_>>();
+        faction_ids.sort_unstable();
+        for faction_id in faction_ids {
+            let faction = &factions[&faction_id];
+            let Some(source) = self.resolve(faction.form_id).map(portable_form_ref) else {
+                truncated = true;
+                continue;
+            };
+            for relation in &faction.relations {
+                if relationships.len() == MAX_FACTION_RELATIONSHIPS {
+                    truncated = true;
+                    break;
+                }
+                if !factions.contains_key(&relation.other_faction) {
+                    truncated = true;
+                    continue;
+                }
+                let Some(target) = self.resolve(relation.other_faction).map(portable_form_ref)
+                else {
+                    truncated = true;
+                    continue;
+                };
+                if !seen.insert((source, target)) {
+                    truncated = true;
+                    continue;
+                }
+                match FactionRelationship::new(
+                    source,
+                    target,
+                    relation.modifier,
+                    relation.combat_reaction,
+                ) {
+                    Ok(relationship) => relationships.push(relationship),
+                    Err(error) => {
+                        truncated = true;
+                        log::warn!(
+                            "SDK faction relationship {:08X}->{:08X} rejected: {error}",
+                            faction.form_id,
+                            relation.other_faction
+                        );
+                    }
+                }
+            }
+        }
+        Arc::new(
+            FactionRelationshipCatalog::new(relationships, truncated)
+                .expect("live relationship projection enforces bounds and uniqueness"),
+        )
     }
 
     pub(crate) fn resolve(&self, form_id: u32) -> Option<FormIdPair> {
@@ -207,6 +284,10 @@ impl GlobalFormIdResolver {
         };
         valid.then(|| slot.compose(local))
     }
+}
+
+fn portable_form_ref(pair: FormIdPair) -> FormRef {
+    FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
 }
 
 impl Resource for GlobalFormIdResolver {}
@@ -587,6 +668,57 @@ mod tests {
             )),
             Some(0x0112_3456)
         );
+    }
+
+    #[test]
+    fn global_form_resolver_projects_directional_faction_relationships_once() {
+        let order = LoadOrder::new(
+            vec!["FalloutNV.esm".into()],
+            vec![esm::reader::GlobalSlot::Regular(0)],
+        );
+        let faction = |form_id, relations| esm::records::FactionRecord {
+            form_id,
+            editor_id: format!("Faction{form_id:08X}"),
+            full_name: String::new(),
+            flags: 0,
+            relations,
+            ranks: Vec::new(),
+            reputation: None,
+        };
+        let factions = HashMap::from([
+            (
+                0x0000_0100,
+                faction(
+                    0x0000_0100,
+                    vec![esm::records::FactionRelation {
+                        other_faction: 0x0000_0200,
+                        modifier: -40,
+                        combat_reaction: 9,
+                    }],
+                ),
+            ),
+            (0x0000_0200, faction(0x0000_0200, Vec::new())),
+        ]);
+        let resolver = GlobalFormIdResolver::from_load_order_with_records_and_factions(
+            &order,
+            &HashMap::new(),
+            &factions,
+        );
+        let source = FormRef::new(
+            PluginId::from_filename("FalloutNV.esm").0.to_be_bytes(),
+            0x100,
+        );
+        let target = FormRef::new(
+            PluginId::from_filename("FalloutNV.esm").0.to_be_bytes(),
+            0x200,
+        );
+        let catalog = resolver.faction_relationships();
+        let relationship = catalog.relationship(source, target).unwrap();
+
+        assert_eq!(relationship.modifier(), -40);
+        assert_eq!(relationship.combat_reaction_raw(), 9);
+        assert!(catalog.relationship(target, source).is_none());
+        assert!(!catalog.truncated());
     }
 
     #[test]

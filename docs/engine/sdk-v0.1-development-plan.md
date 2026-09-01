@@ -99,8 +99,12 @@ Faction membership reads are also live as a separate semantic service. A
 bounded callback-local snapshot exposes portable FACT identities and signed
 membership ranks, preserves the engine's first-entry-wins rule for malformed
 duplicates, and reports unresolved or over-budget memberships explicitly.
-REPU fame/infamy and inter-faction relationship data remain separate pending
-contracts because they are not faction ranks.
+REPU fame/infamy remains a separate actor service. Authored inter-faction
+relationships are now a separate immutable service as well: the load-order
+resolver projects merged FACT `XNAM` edges once into portable asymmetric
+source/target identities, preserves modifier and raw combat reaction, and
+reports lossy projection explicitly. Capability-gated WIT lookup never exposes
+numeric global FormIDs.
 Ranked perk reads are live from the canonical `Perks` component used by actor
 spawning and condition evaluation. The callback-local snapshot is bounded,
 portable, deterministically ordered, and explicit about invalid or unresolved
@@ -688,7 +692,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   remaining gameplay domains are pending. Portable faction membership/rank
   reads are implemented separately. REPU-backed fame/infamy reads plus atomic,
   capability-gated add/reset mutations are implemented against the canonical
-  actor component; inter-faction relations remain pending. Ranked perk reads are implemented from the canonical live
+  actor component. Directional inter-faction FACT relationships are implemented
+  as a bounded immutable load-order snapshot with portable identities, exact
+  modifier/raw-reaction preservation, explicit truncation, and a separate read
+  capability. Ranked perk reads are implemented from the canonical live
   component; perk mutation remains pending rank-limit and progression
   validation. Authored IDLE animation state and behavior-event generations are
   projected through portable identities; capability-gated playback requests

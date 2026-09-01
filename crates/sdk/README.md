@@ -29,6 +29,10 @@ The current public surface includes:
 - `FactionSnapshot` exposes deterministic callback-local FACT memberships and
   signed ranks through portable identities, with explicit truncation. It does
   not conflate membership with REPU fame/infamy or faction relationships.
+- `FactionRelationshipCatalog` exposes the resolved load order's directional
+  FACT `XNAM` edges through portable source/target identities. It preserves
+  signed modifiers and unknown raw combat-reaction values, and explicitly
+  reports omitted invalid, unresolved, duplicate, or over-budget edges.
 - `ReputationSnapshot` keeps Fallout-style fame and infamy separate from FACT
   membership and keys each bounded entry by portable REPU identity. Deferred
   add-fame, add-infamy, and reset commands use the canonical capped actor

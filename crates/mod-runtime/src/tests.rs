@@ -23,7 +23,8 @@ use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
-    EVENTS_SUBSCRIBE_CAPABILITY, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE, HIT_EVENT,
+    EVENTS_SUBSCRIBE_CAPABILITY, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE,
+    FACTION_RELATIONSHIPS_READ_CAPABILITY, FACTION_RELATIONSHIPS_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
     INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
     PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
@@ -1656,6 +1657,15 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(FACTIONS_READ_CAPABILITY));
+    assert_eq!(
+        runtime
+            .catalog()
+            .service_version(FACTION_RELATIONSHIPS_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime
+        .catalog()
+        .supports_capability(FACTION_RELATIONSHIPS_READ_CAPABILITY));
     assert_eq!(
         runtime.catalog().service_version(WORLD_SPATIAL_SERVICE),
         Some(&Version::new(0, 1, 0))

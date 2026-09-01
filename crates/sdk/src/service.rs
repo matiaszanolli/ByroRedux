@@ -47,6 +47,8 @@ pub const REPUTATION_WRITE_CAPABILITY: &str = "byro.reputation.write";
 pub const INVENTORY_READ_CAPABILITY: &str = "byro.inventory.read";
 /// Capability required to read callback-local faction memberships.
 pub const FACTIONS_READ_CAPABILITY: &str = "byro.factions.read";
+/// Capability required to inspect authored directional faction relationships.
+pub const FACTION_RELATIONSHIPS_READ_CAPABILITY: &str = "byro.faction-relationships.read";
 /// Capability required to read callback-local ranked actor perks.
 pub const PERKS_READ_CAPABILITY: &str = "byro.perks.read";
 /// Capability required to inspect live ambient and scene package selections.
@@ -87,6 +89,8 @@ pub const REPUTATION_SERVICE: &str = "byro.reputation";
 pub const INVENTORY_SERVICE: &str = "byro.inventory";
 /// Service providing callback-local portable faction memberships.
 pub const FACTIONS_SERVICE: &str = "byro.factions";
+/// Service providing authored directional faction relationships.
+pub const FACTION_RELATIONSHIPS_SERVICE: &str = "byro.faction-relationships";
 /// Service providing callback-local portable actor perk ranks.
 pub const PERKS_SERVICE: &str = "byro.perks";
 /// Service providing live package selection state and semantic reevaluation.

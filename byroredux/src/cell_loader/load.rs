@@ -675,10 +675,12 @@ pub fn load_cell_with_masters(
     // `index` so the exterior arm can share its existing `Arc` instead of
     // deep-cloning the cell maps — see `LoadedCellIndex`'s own doc. This is
     // a move, not a clone, so the interior cost is unchanged.
-    let form_resolver = super::load_order::GlobalFormIdResolver::from_load_order_with_records(
-        &load_order,
-        &index.record_types,
-    );
+    let form_resolver =
+        super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
+            &load_order,
+            &index.record_types,
+            &index.factions,
+        );
     world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
     world.insert_resource(form_resolver);
 
