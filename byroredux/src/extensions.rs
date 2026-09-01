@@ -57,8 +57,8 @@ use byroredux_sdk::event::{
     custom_event_publishable_by, is_custom_event_id, is_legacy_skse_mod_event_id, ActivationEvent,
     CellLoadEvent, CustomEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
     InputActionEvent, InputPhase, LegacyModEventSubscriptionCommand, LegacySkseModEventBuilders,
-    LegacySkseModEventValue, PersistedLegacyModEventBuilders, SessionEvent, SessionPhase,
-    UpdateEvent,
+    LegacySkseModEventValue, PersistedLegacyModEventBuilders, PublishEventCommand, SessionEvent,
+    SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::factions::{FactionMembership, FactionSnapshot, MAX_FACTIONS_PER_ENTITY};
 use byroredux_sdk::identity::{
@@ -796,6 +796,55 @@ impl ExtensionHost {
         Ok(value)
     }
 
+    fn enqueue_published_event(
+        &mut self,
+        principal: &PrincipalId,
+        command: PublishEventCommand,
+        function: &str,
+    ) -> Result<(), ExtensionHostError> {
+        let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
+            function: function.to_owned(),
+            reason,
+        };
+        if !custom_event_publishable_by(&command.event, principal) {
+            return Err(unavailable(
+                "event channel is not publishable by this principal".to_owned(),
+            ));
+        }
+        let event = CustomEvent {
+            event: command.event,
+            sender: principal.clone(),
+            payload: command.payload,
+        };
+        if !event.is_valid() {
+            return Err(unavailable("published event is invalid".to_owned()));
+        }
+        let next_count = self
+            .pending_custom_events
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| unavailable("pending custom event count overflow".to_owned()))?;
+        if next_count > MAX_PENDING_CUSTOM_EVENTS {
+            return Err(unavailable(format!(
+                "pending custom event limit of {MAX_PENDING_CUSTOM_EVENTS} exceeded"
+            )));
+        }
+        let next_bytes = self
+            .pending_custom_events
+            .iter()
+            .try_fold(event.payload.len(), |total, pending| {
+                total.checked_add(pending.payload.len())
+            })
+            .ok_or_else(|| unavailable("pending custom event byte count overflow".to_owned()))?;
+        if next_bytes > MAX_PENDING_CUSTOM_EVENT_BYTES {
+            return Err(unavailable(format!(
+                "pending custom event payload limit of {MAX_PENDING_CUSTOM_EVENT_BYTES} bytes exceeded"
+            )));
+        }
+        self.pending_custom_events.push(event);
+        Ok(())
+    }
+
     fn invoke_mod_event(
         &mut self,
         principal: Option<&PrincipalId>,
@@ -845,41 +894,7 @@ impl ExtensionHost {
                         .insert(principal.clone(), builders);
                     return Ok(ScriptValue::Boolean(false));
                 };
-                let event = CustomEvent {
-                    event: command.event,
-                    sender: principal.clone(),
-                    payload: command.payload,
-                };
-                if !event.is_valid() {
-                    return Err(unavailable(
-                        "ModEvent builder produced an invalid event".to_owned(),
-                    ));
-                }
-                let next_count = self
-                    .pending_custom_events
-                    .len()
-                    .checked_add(1)
-                    .ok_or_else(|| unavailable("pending custom event count overflow".to_owned()))?;
-                if next_count > MAX_PENDING_CUSTOM_EVENTS {
-                    return Err(unavailable(format!(
-                        "pending custom event limit of {MAX_PENDING_CUSTOM_EVENTS} exceeded"
-                    )));
-                }
-                let next_bytes = self
-                    .pending_custom_events
-                    .iter()
-                    .try_fold(event.payload.len(), |total, pending| {
-                        total.checked_add(pending.payload.len())
-                    })
-                    .ok_or_else(|| {
-                        unavailable("pending custom event byte count overflow".to_owned())
-                    })?;
-                if next_bytes > MAX_PENDING_CUSTOM_EVENT_BYTES {
-                    return Err(unavailable(format!(
-                        "pending custom event payload limit of {MAX_PENDING_CUSTOM_EVENT_BYTES} bytes exceeded"
-                    )));
-                }
-                self.pending_custom_events.push(event);
+                self.enqueue_published_event(principal, command, qualified_name)?;
                 ScriptValue::Boolean(true)
             }
             (
@@ -3127,6 +3142,17 @@ fn sync_extension_script_function_invoker(world: &World) {
             },
         ) as Arc<byroredux_scripting::PapyrusProviderCallback>
     });
+    let mod_event_publisher = host.as_ref().map(|host| {
+        let host = Arc::clone(host);
+        Arc::new(
+            move |principal: &PrincipalId, command: PublishEventCommand| {
+                host.lock()
+                    .map_err(|_| "extension host mutex was poisoned".to_owned())?
+                    .enqueue_published_event(principal, command, "SendModEvent")
+                    .map_err(|error| error.to_string())
+            },
+        ) as Arc<byroredux_scripting::PapyrusProviderModEventPublisher>
+    });
     let entity_resolver = host.map(|host| {
         Arc::new(move |entity: EntityId| {
             host.lock()
@@ -3139,6 +3165,7 @@ fn sync_extension_script_function_invoker(world: &World) {
     byroredux_scripting::set_extension_script_function_invoker(world, callback);
     byroredux_scripting::set_papyrus_provider_runtime(world, Arc::new(catalog), provider_callback);
     byroredux_scripting::set_papyrus_provider_entity_resolver(world, entity_resolver);
+    byroredux_scripting::set_papyrus_provider_mod_event_publisher(world, mod_event_publisher);
 }
 
 /// Register archive-backed legacy script packages as active engine principals.
@@ -7466,6 +7493,74 @@ mod tests {
                 LegacySkseModEventValue::Int(7),
             ]
         );
+    }
+
+    #[test]
+    fn alias_send_mod_event_uses_owning_quest_form_on_shared_bus() {
+        let principal = PrincipalId::new("legacy.scripts.alias-source").unwrap();
+        let mut extension_host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        extension_host
+            .register_legacy_script_principal(principal.clone())
+            .unwrap();
+        let slot = ExtensionHostSlot::from_host(extension_host);
+        let live_host = slot.host().unwrap();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let mut form_ids = FormIdPool::new();
+        let quest_form = form_ids.intern(FormIdPair {
+            plugin: byroredux_core::form_id::PluginId::from_filename("Fixture.esm"),
+            local: byroredux_core::form_id::LocalFormId(0x1234),
+        });
+        world.insert_resource(form_ids);
+        world.insert_resource(slot);
+        sync_extension_script_function_invoker(&world);
+        let expected_sender = FormRef::new([4; 16], 0x1234);
+        byroredux_scripting::set_papyrus_provider_form_resolver(
+            &world,
+            Some(Arc::new(move |_form_id| Ok(expected_sender))),
+        );
+
+        let source = r#"
+            ScriptName AliasFixture extends Alias
+            Event OnLoad()
+                Utility.Wait(0.0)
+                SendModEvent("AliasReady", "ready", 3.5)
+            EndEvent
+        "#;
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let catalog = world
+            .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .catalog();
+        let program = byroredux_scripting::lower_provider_program(&script, &catalog)
+            .unwrap()
+            .unwrap();
+        // Alias programs are attached to the owning quest entity; this is the
+        // same owner Form SKSE places in the callback's sender slot.
+        let quest = world.spawn();
+        world.insert(quest, FormIdComponent(quest_form));
+        byroredux_scripting::attach_owned_papyrus_provider_program(
+            &mut world,
+            quest,
+            program,
+            principal.clone(),
+        );
+        world.insert(quest, byroredux_scripting::OnCellLoadEvent);
+
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        byroredux_scripting::papyrus_provider_system(&world, 0.0);
+
+        let host = live_host.lock().unwrap();
+        assert_eq!(host.pending_custom_events.len(), 1);
+        let event = &host.pending_custom_events[0];
+        assert_eq!(event.sender, principal);
+        let payload =
+            byroredux_sdk::event::LegacySkseModEventPayload::decode(&event.payload).unwrap();
+        assert_eq!(payload.string_arg, "ready");
+        assert_eq!(payload.number_arg(), 3.5);
+        assert_eq!(payload.sender, Some(expected_sender));
     }
 
     #[test]

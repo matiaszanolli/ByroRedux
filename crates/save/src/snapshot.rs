@@ -114,7 +114,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// embedded in saved quest/scene fragment continuations.
 /// Version 14 adds principal-owned, in-progress ModEvent builder handles to
 /// extension state so a suspended Papyrus handler can resume them safely.
-pub const FORMAT_MAJOR: u16 = 14;
+/// Version 15 adds fixed SendModEvent statements with a resolved portable
+/// sender to saved provider tails. Pre-v15 continuations cannot represent that
+/// tagged instruction and are rejected rather than resumed anonymously.
+pub const FORMAT_MAJOR: u16 = 15;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

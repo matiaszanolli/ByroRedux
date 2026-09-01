@@ -15,7 +15,7 @@ use byroredux_papyrus::ast::{
 };
 use byroredux_sdk::{
     compatibility::{
-        classify_static_call, papyrus_game_content_declarations,
+        adapt_legacy_send_mod_event, classify_static_call, papyrus_game_content_declarations,
         papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
         papyrus_storage_util_declarations, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
         PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
@@ -26,7 +26,7 @@ use byroredux_sdk::{
     },
     event::{
         CustomEvent, LegacyModEventSubscriptionCommand, LegacySkseModEventValue,
-        LegacySkseVariadicModEventPayload,
+        LegacySkseVariadicModEventPayload, PublishEventCommand,
     },
     identity::{EntityRef, ExtensionId, FormRef, PrincipalId},
     script_function::{
@@ -58,6 +58,12 @@ pub type PapyrusProviderEntityResolver =
 /// identity. Unlike entity handles, resolved forms are safe to persist.
 pub type PapyrusProviderFormResolver = dyn Fn(u32) -> Result<FormRef, String> + Send + Sync;
 
+/// Executable-owned bridge into the shared custom-event queue. The command is
+/// already shaped as the engine SDK event contract; the callback only adds the
+/// authenticated legacy-script principal and enforces host queue limits.
+pub type PapyrusProviderModEventPublisher =
+    dyn Fn(&PrincipalId, PublishEventCommand) -> Result<(), String> + Send + Sync;
+
 /// Live catalog and host callback published atomically by the executable.
 #[derive(Clone)]
 pub struct PapyrusProviderRuntime {
@@ -65,6 +71,7 @@ pub struct PapyrusProviderRuntime {
     callback: Option<Arc<PapyrusProviderCallback>>,
     entity_resolver: Option<Arc<PapyrusProviderEntityResolver>>,
     form_resolver: Option<Arc<PapyrusProviderFormResolver>>,
+    mod_event_publisher: Option<Arc<PapyrusProviderModEventPublisher>>,
 }
 
 impl Resource for PapyrusProviderRuntime {}
@@ -76,6 +83,7 @@ impl Default for PapyrusProviderRuntime {
             callback: None,
             entity_resolver: None,
             form_resolver: None,
+            mod_event_publisher: None,
         }
     }
 }
@@ -98,6 +106,10 @@ impl PapyrusProviderRuntime {
     pub fn form_resolver(&self) -> Option<Arc<PapyrusProviderFormResolver>> {
         self.form_resolver.clone()
     }
+
+    pub fn mod_event_publisher(&self) -> Option<Arc<PapyrusProviderModEventPublisher>> {
+        self.mod_event_publisher.clone()
+    }
 }
 
 /// Install the executable's opaque-handle converter independently of the
@@ -119,6 +131,17 @@ pub fn set_papyrus_provider_form_resolver(
 ) {
     if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
         runtime.form_resolver = resolver;
+    }
+}
+
+/// Install the executable's shared ModEvent publisher independently of static
+/// provider dispatch so headless runtimes can intentionally omit event I/O.
+pub fn set_papyrus_provider_mod_event_publisher(
+    world: &World,
+    publisher: Option<Arc<PapyrusProviderModEventPublisher>>,
+) {
+    if let Some(mut runtime) = world.try_resource_mut::<PapyrusProviderRuntime>() {
+        runtime.mod_event_publisher = publisher;
     }
 }
 
@@ -684,6 +707,12 @@ pub enum PapyrusProviderStatement {
         event_name: String,
     },
     UnregisterAllModEvents,
+    SendModEvent {
+        event_name: PapyrusProviderArgument,
+        string_arg: PapyrusProviderArgument,
+        number_arg: PapyrusProviderArgument,
+        sender: PapyrusModEventSender,
+    },
     Wait {
         seconds: f32,
     },
@@ -692,6 +721,16 @@ pub enum PapyrusProviderStatement {
         then_branch: Vec<PapyrusProviderStatement>,
         else_branch: Vec<PapyrusProviderStatement>,
     },
+}
+
+/// Sender projection required by SKSE's three instance-owned SendModEvent
+/// surfaces. Form and Alias resolve through the attached entity; an active
+/// magic effect intentionally publishes `None`, matching SKSE.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum PapyrusModEventSender {
+    Owner,
+    Resolved(Option<FormRef>),
 }
 
 #[derive(Clone, Debug)]
@@ -993,13 +1032,24 @@ pub fn lower_provider_program(
     catalog: &PapyrusProviderCatalog,
 ) -> Result<Option<PapyrusProviderProgram>, PapyrusProviderProgramError> {
     let mut program = PapyrusProviderProgram::default();
+    let mod_event_sender = if script
+        .parent
+        .as_ref()
+        .is_some_and(|parent| parent.node.0.eq_ignore_ascii_case("ActiveMagicEffect"))
+    {
+        PapyrusModEventSender::Resolved(None)
+    } else {
+        PapyrusModEventSender::Owner
+    };
     for item in &script.body {
         match &item.node {
-            ScriptItem::Event(event) => lower_event_into(event, catalog, &mut program)?,
+            ScriptItem::Event(event) => {
+                lower_event_into(event, catalog, &mut program, &mod_event_sender)?
+            }
             ScriptItem::State(state) => {
                 for item in &state.body {
                     if let StateItem::Event(event) = &item.node {
-                        lower_event_into(event, catalog, &mut program)?;
+                        lower_event_into(event, catalog, &mut program, &mod_event_sender)?;
                     }
                 }
             }
@@ -1017,6 +1067,7 @@ fn lower_event_into(
     event: &Event,
     catalog: &PapyrusProviderCatalog,
     program: &mut PapyrusProviderProgram,
+    mod_event_sender: &PapyrusModEventSender,
 ) -> Result<(), PapyrusProviderProgramError> {
     let canonical = if event.name.node.eq_ignore_case("OnInit") {
         Some(PapyrusProviderEvent::OnInit)
@@ -1050,7 +1101,7 @@ fn lower_event_into(
     } else {
         lower_mod_event_parameters(event, &mut locals)?
     };
-    let statements = lower_statements(&event.body, catalog, &mut locals, 0)?;
+    let statements = lower_statements(&event.body, catalog, &mut locals, mod_event_sender, 0)?;
     if canonical.is_some() {
         parameters.retain(|parameter| statements_reference_local(&statements, &parameter.name));
     }
@@ -1183,6 +1234,16 @@ fn statements_reference_local(statements: &[PapyrusProviderStatement], name: &st
         | PapyrusProviderStatement::RegisterModEvent { .. }
         | PapyrusProviderStatement::UnregisterModEvent { .. }
         | PapyrusProviderStatement::UnregisterAllModEvents => false,
+        PapyrusProviderStatement::SendModEvent {
+            event_name,
+            string_arg,
+            number_arg,
+            ..
+        } => {
+            argument_references_local(event_name, name)
+                || argument_references_local(string_arg, name)
+                || argument_references_local(number_arg, name)
+        }
         PapyrusProviderStatement::AssignCall { call, .. }
         | PapyrusProviderStatement::Call(call) => invocation_references_local(call, name),
         PapyrusProviderStatement::If {
@@ -1210,7 +1271,8 @@ fn statements_contain_wait(statements: &[PapyrusProviderStatement]) -> bool {
         | PapyrusProviderStatement::Call(_)
         | PapyrusProviderStatement::RegisterModEvent { .. }
         | PapyrusProviderStatement::UnregisterModEvent { .. }
-        | PapyrusProviderStatement::UnregisterAllModEvents => false,
+        | PapyrusProviderStatement::UnregisterAllModEvents
+        | PapyrusProviderStatement::SendModEvent { .. } => false,
     })
 }
 
@@ -1240,6 +1302,13 @@ fn invocation_references_local(call: &PapyrusProviderInvocation, name: &str) -> 
     })
 }
 
+fn argument_references_local(argument: &PapyrusProviderArgument, name: &str) -> bool {
+    matches!(
+        argument,
+        PapyrusProviderArgument::Local { name: local, .. } if local == name
+    )
+}
+
 fn condition_references_local(condition: &PapyrusProviderCondition, name: &str) -> bool {
     match condition {
         PapyrusProviderCondition::Literal(_) => false,
@@ -1267,6 +1336,7 @@ fn lower_statements(
     statements: &[byroredux_papyrus::span::Spanned<Stmt>],
     catalog: &PapyrusProviderCatalog,
     locals: &mut BTreeMap<String, ScriptValueType>,
+    mod_event_sender: &PapyrusModEventSender,
     depth: usize,
 ) -> Result<Vec<PapyrusProviderStatement>, PapyrusProviderProgramError> {
     if depth > MAX_PROVIDER_HANDLER_NESTING {
@@ -1316,6 +1386,12 @@ fn lower_statements(
                     lowered.push(registration);
                     continue;
                 }
+                if let Some(send) =
+                    lower_send_mod_event(&expression.node, locals, mod_event_sender)?
+                {
+                    lowered.push(send);
+                    continue;
+                }
                 let call = lower_provider_invocation(&expression.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
@@ -1329,18 +1405,35 @@ fn lower_statements(
             } => {
                 let condition = lower_condition(&condition.node, catalog, locals)?;
                 let mut branch_locals = locals.clone();
-                let then_branch = lower_statements(body, catalog, &mut branch_locals, depth + 1)?;
+                let then_branch = lower_statements(
+                    body,
+                    catalog,
+                    &mut branch_locals,
+                    mod_event_sender,
+                    depth + 1,
+                )?;
                 let mut else_branch = if let Some(body) = else_body {
                     let mut branch_locals = locals.clone();
-                    lower_statements(body, catalog, &mut branch_locals, depth + 1)?
+                    lower_statements(
+                        body,
+                        catalog,
+                        &mut branch_locals,
+                        mod_event_sender,
+                        depth + 1,
+                    )?
                 } else {
                     Vec::new()
                 };
                 for (condition, body) in elseif_clauses.iter().rev() {
                     let condition = lower_condition(&condition.node, catalog, locals)?;
                     let mut branch_locals = locals.clone();
-                    let then_branch =
-                        lower_statements(body, catalog, &mut branch_locals, depth + 1)?;
+                    let then_branch = lower_statements(
+                        body,
+                        catalog,
+                        &mut branch_locals,
+                        mod_event_sender,
+                        depth + 1,
+                    )?;
                     else_branch = vec![PapyrusProviderStatement::If {
                         condition: Box::new(condition),
                         then_branch,
@@ -1417,6 +1510,94 @@ fn lower_mod_event_registration(
         return Ok(Some(PapyrusProviderStatement::UnregisterAllModEvents));
     }
     Ok(None)
+}
+
+fn lower_send_mod_event(
+    expression: &Expr,
+    locals: &BTreeMap<String, ScriptValueType>,
+    sender: &PapyrusModEventSender,
+) -> Result<Option<PapyrusProviderStatement>, PapyrusProviderProgramError> {
+    let Expr::Call { callee, args } = expression else {
+        return Ok(None);
+    };
+    let is_send = match &callee.node {
+        Expr::Ident(function) => function.0.eq_ignore_ascii_case("SendModEvent"),
+        Expr::MemberAccess { object, member } => {
+            member.node.0.eq_ignore_ascii_case("SendModEvent")
+                && matches!(&object.node, Expr::Ident(receiver) if receiver.0.eq_ignore_ascii_case("self"))
+        }
+        _ => false,
+    };
+    if !is_send {
+        return Ok(None);
+    }
+
+    let mut ordered: [Option<&CallArg>; 3] = [None, None, None];
+    let mut next_positional = 0;
+    for argument in args {
+        let index = if let Some(name) = &argument.name {
+            ["eventName", "strArg", "numArg"]
+                .iter()
+                .position(|candidate| name.node.0.eq_ignore_ascii_case(candidate))
+                .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?
+        } else {
+            while next_positional < ordered.len() && ordered[next_positional].is_some() {
+                next_positional += 1;
+            }
+            if next_positional == ordered.len() {
+                return Err(PapyrusProviderProgramError::UnsupportedStatement);
+            }
+            let index = next_positional;
+            next_positional += 1;
+            index
+        };
+        if ordered[index].replace(argument).is_some() {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        }
+    }
+    let event_name = ordered[0]
+        .ok_or(PapyrusProviderProgramError::UnsupportedStatement)
+        .and_then(|argument| {
+            lower_mod_event_argument(&argument.value.node, ScriptValueType::String, locals)
+        })?;
+    let string_arg = ordered[1].map_or_else(
+        || {
+            Ok(PapyrusProviderArgument::Literal(ScriptValue::String(
+                String::new(),
+            )))
+        },
+        |argument| lower_mod_event_argument(&argument.value.node, ScriptValueType::String, locals),
+    )?;
+    let number_arg = ordered[2].map_or_else(
+        || Ok(PapyrusProviderArgument::Literal(ScriptValue::Float(0.0))),
+        |argument| lower_mod_event_argument(&argument.value.node, ScriptValueType::Float, locals),
+    )?;
+    Ok(Some(PapyrusProviderStatement::SendModEvent {
+        event_name,
+        string_arg,
+        number_arg,
+        sender: sender.clone(),
+    }))
+}
+
+fn lower_mod_event_argument(
+    expression: &Expr,
+    expected: ScriptValueType,
+    locals: &BTreeMap<String, ScriptValueType>,
+) -> Result<PapyrusProviderArgument, PapyrusProviderProgramError> {
+    if let Some(value) = lower_literal(expression, expected, false) {
+        return Ok(PapyrusProviderArgument::Literal(value));
+    }
+    if let Expr::Ident(identifier) = expression {
+        let name = identifier.0.to_ascii_lowercase();
+        if locals.get(&name) == Some(&expected) {
+            return Ok(PapyrusProviderArgument::Local {
+                name,
+                value_type: expected,
+            });
+        }
+    }
+    Err(PapyrusProviderProgramError::UnsupportedStatement)
 }
 
 fn lower_wait(expression: &Expr) -> Result<Option<f32>, PapyrusProviderProgramError> {
@@ -1789,6 +1970,42 @@ pub fn attach_owned_papyrus_provider_program(
     attach_papyrus_provider_program(world, entity, program);
 }
 
+fn statements_need_owner_sender(statements: &[PapyrusProviderStatement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        PapyrusProviderStatement::SendModEvent {
+            sender: PapyrusModEventSender::Owner,
+            ..
+        } => true,
+        PapyrusProviderStatement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => statements_need_owner_sender(then_branch) || statements_need_owner_sender(else_branch),
+        _ => false,
+    })
+}
+
+fn resolve_mod_event_senders(statements: &mut [PapyrusProviderStatement], owner: Option<FormRef>) {
+    for statement in statements {
+        match statement {
+            PapyrusProviderStatement::SendModEvent { sender, .. }
+                if matches!(sender, PapyrusModEventSender::Owner) =>
+            {
+                *sender = PapyrusModEventSender::Resolved(owner);
+            }
+            PapyrusProviderStatement::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                resolve_mod_event_senders(then_branch, owner);
+                resolve_mod_event_senders(else_branch, owner);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Execute provider handlers only after snapshotting programs and event
 /// markers. No ECS query or resource guard survives the host callback.
 pub fn papyrus_provider_system(world: &World, dt: f32) {
@@ -1801,10 +2018,12 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                     callback,
                     runtime.entity_resolver(),
                     runtime.form_resolver(),
+                    runtime.mod_event_publisher(),
                 )
             })
         });
-    let Some((catalog, callback, entity_resolver, form_resolver)) = runtime else {
+    let Some((catalog, callback, entity_resolver, form_resolver, mod_event_publisher)) = runtime
+    else {
         return;
     };
     let pending = {
@@ -1919,6 +2138,23 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    let owner_form_ids = {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::FormIdPool;
+
+        match (
+            world.query::<FormIdComponent>(),
+            world.try_resource::<FormIdPool>(),
+        ) {
+            (Some(forms), Some(pool)) => forms
+                .iter()
+                .filter_map(|(entity, form)| {
+                    pool.resolve(form.0).map(|pair| (entity, pair.local.0))
+                })
+                .collect::<BTreeMap<_, _>>(),
+            _ => BTreeMap::new(),
+        }
+    };
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
     };
@@ -2015,7 +2251,26 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     }
     drop(programs);
 
-    for (statements, mut locals, entity_locals, form_locals, principal, owner) in handlers {
+    for (mut statements, mut locals, entity_locals, form_locals, principal, owner) in handlers {
+        if statements_need_owner_sender(&statements) {
+            let Some(owner_form_id) = owner.and_then(|owner| owner_form_ids.get(&owner).copied())
+            else {
+                log::warn!("Papyrus SendModEvent aborted: script owner has no stable FormID");
+                continue;
+            };
+            let Some(resolver) = form_resolver.as_ref() else {
+                log::warn!("Papyrus SendModEvent aborted: form resolver is unavailable");
+                continue;
+            };
+            let owner_form = match resolver(owner_form_id) {
+                Ok(form) => form,
+                Err(error) => {
+                    log::warn!("Papyrus SendModEvent aborted: {error}");
+                    continue;
+                }
+            };
+            resolve_mod_event_senders(&mut statements, Some(owner_form));
+        }
         if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
             log::warn!("Papyrus provider handler aborted before dispatch: {error}");
             continue;
@@ -2065,11 +2320,13 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         match execute_statements(
             &statements,
             callback.as_ref(),
+            mod_event_publisher.as_deref(),
             principal.as_ref(),
             &mut locals,
             &mut registrations,
         ) {
             Ok(Some((remaining_seconds, statements))) => {
+                apply_mod_event_registrations(world, owner, principal.as_ref(), registrations);
                 still_pending.push(PendingPapyrusProviderContinuation {
                     remaining_seconds,
                     statements,
@@ -2174,6 +2431,16 @@ fn validate_provider_statements(
                 LegacyModEventSubscriptionCommand::unsubscribe(event_name)
                     .ok_or_else(|| "saved ModEvent unregistration is invalid".to_owned())?;
             }
+            PapyrusProviderStatement::SendModEvent {
+                event_name,
+                string_arg,
+                number_arg,
+                sender: _,
+            } => {
+                validate_mod_event_send_argument(event_name, ScriptValueType::String)?;
+                validate_mod_event_send_argument(string_arg, ScriptValueType::String)?;
+                validate_mod_event_send_argument(number_arg, ScriptValueType::Float)?;
+            }
             PapyrusProviderStatement::AssignCall { call, .. }
             | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog)?,
             PapyrusProviderStatement::Wait { seconds } => {
@@ -2193,6 +2460,23 @@ fn validate_provider_statements(
         }
     }
     Ok(())
+}
+
+fn validate_mod_event_send_argument(
+    argument: &PapyrusProviderArgument,
+    expected: ScriptValueType,
+) -> Result<(), String> {
+    match argument {
+        PapyrusProviderArgument::Literal(value) if value.matches(expected, false) => Ok(()),
+        PapyrusProviderArgument::Local { name, value_type }
+            if !name.is_empty()
+                && *name == name.to_ascii_lowercase()
+                && *value_type == expected =>
+        {
+            Ok(())
+        }
+        _ => Err("saved SendModEvent argument is invalid".to_owned()),
+    }
 }
 
 fn validate_provider_call(
@@ -2341,6 +2625,7 @@ fn validate_provider_value(
 fn execute_statements(
     statements: &[PapyrusProviderStatement],
     callback: &PapyrusProviderCallback,
+    mod_event_publisher: Option<&PapyrusProviderModEventPublisher>,
     principal: Option<&PrincipalId>,
     locals: &mut BTreeMap<String, ScriptValue>,
     registrations: &mut Vec<PapyrusModEventRegistrationAction>,
@@ -2374,6 +2659,45 @@ fn execute_statements(
             PapyrusProviderStatement::UnregisterAllModEvents => {
                 registrations.push(PapyrusModEventRegistrationAction::UnregisterAll);
             }
+            PapyrusProviderStatement::SendModEvent {
+                event_name,
+                string_arg,
+                number_arg,
+                sender,
+            } => {
+                let Some(principal) = principal else {
+                    return Err(
+                        "SendModEvent has no authenticated legacy-script principal".to_owned()
+                    );
+                };
+                let Some(publisher) = mod_event_publisher else {
+                    return Err("SendModEvent publisher is unavailable".to_owned());
+                };
+                let ScriptValue::String(event_name) =
+                    materialize_mod_event_argument(event_name, ScriptValueType::String, locals)?
+                else {
+                    unreachable!("validated SendModEvent event name type")
+                };
+                let ScriptValue::String(string_arg) =
+                    materialize_mod_event_argument(string_arg, ScriptValueType::String, locals)?
+                else {
+                    unreachable!("validated SendModEvent string argument type")
+                };
+                let ScriptValue::Float(number_arg) =
+                    materialize_mod_event_argument(number_arg, ScriptValueType::Float, locals)?
+                else {
+                    unreachable!("validated SendModEvent number argument type")
+                };
+                let PapyrusModEventSender::Resolved(sender) = sender else {
+                    return Err("SendModEvent sender was not resolved before execution".to_owned());
+                };
+                let command =
+                    adapt_legacy_send_mod_event(&event_name, string_arg, number_arg, *sender)
+                        .map_err(|error| {
+                            format!("SendModEvent arguments are invalid: {error:?}")
+                        })?;
+                publisher(principal, command)?;
+            }
             PapyrusProviderStatement::Wait { seconds } => {
                 return Ok(Some((*seconds, statements[index + 1..].to_vec())));
             }
@@ -2394,6 +2718,7 @@ fn execute_statements(
                 return execute_statements(
                     &ordered_tail,
                     callback,
+                    mod_event_publisher,
                     principal,
                     locals,
                     registrations,
@@ -2402,6 +2727,29 @@ fn execute_statements(
         }
     }
     Ok(None)
+}
+
+fn materialize_mod_event_argument(
+    argument: &PapyrusProviderArgument,
+    expected: ScriptValueType,
+    locals: &BTreeMap<String, ScriptValue>,
+) -> Result<ScriptValue, String> {
+    let value = match argument {
+        PapyrusProviderArgument::Literal(value) => value.clone(),
+        PapyrusProviderArgument::Local { name, value_type } => {
+            if *value_type != expected {
+                return Err("SendModEvent local declaration changed type".to_owned());
+            }
+            locals
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("translated local {name} was not initialized"))?
+        }
+    };
+    value
+        .matches(expected, false)
+        .then_some(value)
+        .ok_or_else(|| "SendModEvent argument changed type at execution".to_owned())
 }
 
 fn evaluate_condition(
@@ -2781,6 +3129,79 @@ mod tests {
         writer.bytes
     }
 
+    fn send_mod_event_pex_bytes() -> Vec<u8> {
+        use byroredux_pex::OpCode;
+
+        let mut writer = PexBytes::new();
+        for value in [
+            "SendFixture",
+            "ObjectReference",
+            "",
+            "None",
+            "OnLoad",
+            "SendModEvent",
+            "self",
+            "::nonevar",
+            "ByroReady",
+        ] {
+            writer.intern(value);
+        }
+
+        writer
+            .bytes
+            .extend_from_slice(&0xDEC0_57FA_u32.to_le_bytes());
+        writer.u8(3);
+        writer.u8(2);
+        writer.u16(0);
+        writer.i64(1_700_000_000);
+        writer.string("SendFixture.psc");
+        writer.string("byroredux");
+        writer.string("instance ModEvent conformance");
+
+        let strings = writer.strings.clone();
+        writer.u16(strings.len() as u16);
+        for value in &strings {
+            writer.string(value);
+        }
+
+        writer.u8(0);
+        writer.u16(0);
+        writer.u16(1);
+        writer.string_index("SendFixture");
+        writer.u32(0);
+        writer.string_index("ObjectReference");
+        writer.string_index("");
+        writer.u32(0);
+        writer.string_index("");
+        writer.u16(0);
+        writer.u16(0);
+        writer.u16(1);
+        writer.string_index("");
+        writer.u16(1);
+        writer.string_index("OnLoad");
+        writer.string_index("None");
+        writer.string_index("");
+        writer.u32(0);
+        writer.u8(0);
+        writer.u16(0);
+        writer.u16(0);
+        writer.u16(2);
+
+        writer.u8(OpCode::CallMethod as u8);
+        for value in ["SendModEvent", "self", "::nonevar"] {
+            writer.u8(1);
+            writer.string_index(value);
+        }
+        writer.u8(3);
+        writer.u32(1);
+        writer.u8(2);
+        writer.string_index("ByroReady");
+        writer.u8(OpCode::Return as u8);
+        writer.u8(0);
+
+        writer.bytes
+    }
+
     #[test]
     fn static_calls_resolve_case_insensitively_and_reorder_named_arguments() {
         let call = lower_provider_call(
@@ -3094,6 +3515,124 @@ mod tests {
         queue_papyrus_mod_event(&world, event);
         papyrus_provider_system(&world, 0.0);
         assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn form_send_mod_event_preserves_stable_sender_across_wait() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        let source = r#"
+            ScriptName Fixture extends Quest
+            Event OnInit()
+                String eventName = "ByroReady"
+                Utility.Wait(1.0)
+                self.SendModEvent(eventName, "ready", 7.0)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+        let principal = PrincipalId::new("legacy.scripts.sender").unwrap();
+        let expected_sender = FormRef::new([9; 16], 0x1234);
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut pool = FormIdPool::new();
+        let form_id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Fixture.esm"),
+            local: LocalFormId(0x1234),
+        });
+        world.insert_resource(pool);
+        let callback = Arc::new(
+            |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+                Ok(ScriptValue::None)
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        set_papyrus_provider_form_resolver(
+            &world,
+            Some(Arc::new(move |_form_id| Ok(expected_sender))),
+        );
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&published);
+        set_papyrus_provider_mod_event_publisher(
+            &world,
+            Some(Arc::new(move |principal, command| {
+                observed.lock().unwrap().push((principal.clone(), command));
+                Ok(())
+            })),
+        );
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(form_id));
+        attach_owned_papyrus_provider_program(&mut world, entity, program, principal.clone());
+
+        papyrus_provider_system(&world, 0.0);
+        crate::event_cleanup_system(&world, 0.0);
+        assert!(published.lock().unwrap().is_empty());
+        papyrus_provider_system(&world, 1.0);
+
+        let published = published.lock().unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].0, principal);
+        let payload =
+            byroredux_sdk::event::LegacySkseModEventPayload::decode(&published[0].1.payload)
+                .unwrap();
+        assert_eq!(payload.string_arg, "ready");
+        assert_eq!(payload.number_arg(), 7.0);
+        assert_eq!(payload.sender, Some(expected_sender));
+    }
+
+    #[test]
+    fn active_magic_effect_send_mod_event_uses_none_sender_and_defaults() {
+        let source = r#"
+            ScriptName Fixture extends ActiveMagicEffect
+            Event OnInit()
+                SendModEvent("EffectReady")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let callback = Arc::new(
+            |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+                Ok(ScriptValue::None)
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&published);
+        set_papyrus_provider_mod_event_publisher(
+            &world,
+            Some(Arc::new(move |_principal, command| {
+                observed.lock().unwrap().push(command);
+                Ok(())
+            })),
+        );
+        let entity = world.spawn();
+        attach_owned_papyrus_provider_program(
+            &mut world,
+            entity,
+            program,
+            PrincipalId::new("legacy.scripts.effect").unwrap(),
+        );
+
+        papyrus_provider_system(&world, 0.0);
+
+        let published = published.lock().unwrap();
+        assert_eq!(published.len(), 1);
+        let payload =
+            byroredux_sdk::event::LegacySkseModEventPayload::decode(&published[0].payload).unwrap();
+        assert_eq!(payload.string_arg, "");
+        assert_eq!(payload.number_arg(), 0.0);
+        assert_eq!(payload.sender, None);
     }
 
     #[test]
@@ -3728,5 +4267,40 @@ mod tests {
                 PapyrusProviderArgument::Literal(ScriptValue::String("clear".to_owned()))
             ]
         );
+    }
+
+    #[test]
+    fn byte_level_pex_instance_send_mod_event_lowers_with_defaults() {
+        let translation = crate::translate_pex_detailed_with_providers(
+            &send_mod_event_pex_bytes(),
+            byroredux_plugin::esm::reader::GameKind::Skyrim,
+            None,
+            None,
+            &catalog(),
+        );
+        assert_eq!(translation.provider_error, None);
+        let program = translation.provider_program.unwrap();
+        let [PapyrusProviderStatement::SendModEvent {
+            event_name,
+            string_arg,
+            number_arg,
+            sender,
+        }] = program.handler(PapyrusProviderEvent::OnLoad)
+        else {
+            panic!("expected one lowered instance SendModEvent call");
+        };
+        assert_eq!(
+            event_name,
+            &PapyrusProviderArgument::Literal(ScriptValue::String("ByroReady".to_owned()))
+        );
+        assert_eq!(
+            string_arg,
+            &PapyrusProviderArgument::Literal(ScriptValue::String(String::new()))
+        );
+        assert_eq!(
+            number_arg,
+            &PapyrusProviderArgument::Literal(ScriptValue::Float(0.0))
+        );
+        assert_eq!(sender, &PapyrusModEventSender::Owner);
     }
 }

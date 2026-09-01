@@ -364,8 +364,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // In-progress ModEvent builders are now nested in extension save state so
     // latent scripts can resume without losing principal ownership. The new
     // serialized field makes v14 intentionally incompatible with v13.
-    const BASELINE_MAJOR: u16 = 14;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4ed4_b348_b28f_f141;
+    // Fixed SendModEvent statements now retain their resolved portable sender
+    // through saved provider tails. The new tagged statement shape makes v15
+    // intentionally incompatible with v14 rather than dropping sender identity.
+    const BASELINE_MAJOR: u16 = 15;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9295_0be7_8d8f_b13f;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

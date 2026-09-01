@@ -737,19 +737,24 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
     use byroredux_papyrus::parse_script;
     use byroredux_scripting::{
         attach_owned_papyrus_provider_program, lower_provider_program, papyrus_provider_system,
+        set_papyrus_provider_form_resolver, set_papyrus_provider_mod_event_publisher,
         set_papyrus_provider_runtime, OnCellLoadEvent, PapyrusProviderCallback,
         PapyrusProviderCatalog, PapyrusProviderContinuationQueue,
     };
-    use byroredux_sdk::{identity::PrincipalId, script_function::ScriptValue};
+    use byroredux_sdk::{
+        identity::{FormRef, PrincipalId},
+        script_function::ScriptValue,
+    };
 
     let reg = build_save_registry();
     let (script, errors) = parse_script(
-        "ScriptName SaveFixture\n\
+        "ScriptName SaveFixture extends Quest\n\
          Event OnLoad()\n\
            String pluginName = \"Update.esm\"\n\
            Game.GetModCount()\n\
            Utility.Wait(5.0)\n\
            Game.IsPluginInstalled(pluginName)\n\
+           SendModEvent(\"SaveReady\", \"resumed\", 5.0)\n\
          EndEvent\n",
     )
     .unwrap();
@@ -761,7 +766,12 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
 
     let mut src = World::new();
     src.insert_resource(StringPool::new());
-    src.insert_resource(FormIdPool::new());
+    let mut form_ids = FormIdPool::new();
+    let owner_id = form_ids.intern(byroredux_core::form_id::FormIdPair {
+        plugin: byroredux_core::form_id::PluginId::from_filename("Fixture.esm"),
+        local: byroredux_core::form_id::LocalFormId(0x1234),
+    });
+    src.insert_resource(form_ids);
     byroredux_scripting::register(&mut src);
     let callback = Arc::new(
         |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
@@ -769,7 +779,13 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
          _arguments: &[ScriptValue]| Ok(ScriptValue::None),
     ) as Arc<PapyrusProviderCallback>;
     set_papyrus_provider_runtime(&src, Arc::clone(&catalog), Some(callback));
+    let expected_sender = FormRef::new([5; 16], 0x1234);
+    set_papyrus_provider_form_resolver(&src, Some(Arc::new(move |_form_id| Ok(expected_sender))));
     let entity = src.spawn();
+    src.insert(
+        entity,
+        byroredux_core::ecs::components::FormIdComponent(owner_id),
+    );
     let principal = PrincipalId::new("legacy.scripts.save-fixture").unwrap();
     attach_owned_papyrus_provider_program(&mut src, entity, program, principal.clone());
     src.insert(entity, OnCellLoadEvent);
@@ -801,6 +817,18 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
         },
     ) as Arc<PapyrusProviderCallback>;
     set_papyrus_provider_runtime(&dst, catalog, Some(callback));
+    let resumed_events = Arc::new(Mutex::new(Vec::new()));
+    let resumed_events_for_callback = Arc::clone(&resumed_events);
+    set_papyrus_provider_mod_event_publisher(
+        &dst,
+        Some(Arc::new(move |principal, command| {
+            resumed_events_for_callback
+                .lock()
+                .unwrap()
+                .push((principal.clone(), command));
+            Ok(())
+        })),
+    );
     papyrus_provider_system(&dst, 5.0);
 
     assert!(dst
@@ -814,6 +842,15 @@ fn provider_continuation_queue_survives_save_load_and_resumes() {
             vec![ScriptValue::String("Update.esm".to_owned())],
         )]
     );
+    let resumed_events = resumed_events.lock().unwrap();
+    assert_eq!(resumed_events.len(), 1);
+    assert_eq!(resumed_events[0].0, principal);
+    let payload =
+        byroredux_sdk::event::LegacySkseModEventPayload::decode(&resumed_events[0].1.payload)
+            .unwrap();
+    assert_eq!(payload.string_arg, "resumed");
+    assert_eq!(payload.number_arg(), 5.0);
+    assert_eq!(payload.sender, Some(expected_sender));
 }
 
 /// Regression: #2380 (SAVE-D1-15) — the MQ101 cinematic fragment-effect

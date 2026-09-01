@@ -564,7 +564,18 @@ classified as compatible merely because their provider name is recognized.
 The first event adapter covers fixed-arity
 `Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
 name to the shared engine-owned compatibility bus and preserves the string,
-float, and stable sender form synchronously without an SKSE DLL. The lower-level
+float, and stable sender form synchronously without an SKSE DLL. `Form` uses
+the attached form, `Alias` uses the owning quest form, and
+`ActiveMagicEffect` deliberately sends `None`, matching SKSE's three native
+implementations. Optional string/float arguments retain their original empty/
+zero defaults. Sender identities are resolved to portable `FormRef` values
+before latent tails are persisted, so a resumed send cannot silently become
+anonymous. The identity split is anchored to upstream SKSE's
+[`PapyrusForm.cpp`](https://github.com/ianpatt/skse64/blob/master/skse64/PapyrusForm.cpp),
+[`PapyrusAlias.cpp`](https://github.com/ianpatt/skse64/blob/master/skse64/PapyrusAlias.cpp),
+and
+[`PapyrusActiveMagicEffect.cpp`](https://github.com/ianpatt/skse64/blob/master/skse64/PapyrusActiveMagicEffect.cpp).
+The lower-level
 `ModEvent.Create/Push*/Send/Release` family now uses an engine-owned,
 save-persistent typed builder: handles are non-zero and bounded per adapter, bool/int/float/
 string/Form arguments retain order and type, oversized pushes are ignored like
@@ -1256,6 +1267,18 @@ remain transient because they contain live entity identities and are refreshed
 from `OnInit`/`OnLoad`; unfinished builder handles and their typed arguments now
 round-trip in extension save format 4 so a latent script can safely resume and
 send after load.
+
+Checkpoint commit: `feat(scripting): execute instance SendModEvent calls`.
+
+Delivered bare and `self.SendModEvent` calls from source and decompiled PEX,
+including named arguments, optional defaults, locals, conditional branches,
+and latent tails. Form scripts publish their attached stable form, Alias
+scripts publish the attached owning quest form, and ActiveMagicEffect scripts
+publish `None`. Calls enter the same bounded host queue used by static ModEvent
+builders, so hosted extensions and Papyrus registrations observe one shared
+channel. Save format 15 records the resolved portable sender in suspended
+provider statements and intentionally rejects older tails that cannot express
+that instruction.
 
 ### 14.4 Exit gate
 
