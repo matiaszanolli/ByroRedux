@@ -470,6 +470,13 @@ their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
 
+The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
+archives. An opt-in real-mod gate scans Workshop Framework's unmodified
+compiled Fallout 4 scripts: its F4SE version probes map to `byro.context`,
+while `UI.IsMenuRegistered` and `Input.GetMappedKey` remain explicit policy
+gaps. This keeps compatibility claims tied to shipping mod bytecode without
+checking third-party assets into the repository.
+
 ## 8. v0.1 delivery phases
 
 Each phase lands independently with tests and documentation. A plan update is

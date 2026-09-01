@@ -1,10 +1,12 @@
-//! Report extender-era calls in loose Papyrus source or compiled scripts.
+//! Report extender-era calls in loose Papyrus source, compiled scripts, or
+//! game/mod script archives.
 //!
 //! Usage:
-//! `cargo run -p byroredux-scripting --example extender_preflight -- script.psc script.pex`
+//! `cargo run -p byroredux-scripting --example extender_preflight -- script.psc script.pex mod.ba2`
 
 use std::{env, fs, path::Path, process::ExitCode};
 
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_pex::{CallScope, CallTarget};
 use byroredux_scripting::{analyze_pex_compatibility, analyze_source_compatibility};
 use byroredux_sdk::compatibility::{CompatibilityDisposition, CompatibilityMatch};
@@ -36,8 +38,13 @@ fn main() -> ExitCode {
         {
             Some("psc") => scan_source(path, &mut totals),
             Some("pex") => scan_compiled(path, &mut totals),
+            Some("bsa") => scan_bsa(path, &mut totals),
+            Some("ba2") => scan_ba2(path, &mut totals),
             _ => {
-                eprintln!("{}: expected a .psc or .pex input", path.display());
+                eprintln!(
+                    "{}: expected a .psc, .pex, .bsa, or .ba2 input",
+                    path.display()
+                );
                 totals.input_errors += 1;
             }
         }
@@ -111,10 +118,65 @@ fn scan_compiled(path: &Path, totals: &mut Totals) {
             return;
         }
     };
-    let pex = match byroredux_pex::parse(&bytes) {
+    scan_compiled_bytes(&path.display().to_string(), &bytes, totals);
+}
+
+fn scan_bsa(path: &Path, totals: &mut Totals) {
+    match BsaArchive::open(path) {
+        Ok(archive) => scan_archive(
+            path,
+            archive.list_files(),
+            |name| archive.extract(name),
+            totals,
+        ),
+        Err(error) => archive_error(path, error, totals),
+    }
+}
+
+fn scan_ba2(path: &Path, totals: &mut Totals) {
+    match Ba2Archive::open(path) {
+        Ok(archive) => scan_archive(
+            path,
+            archive.list_files(),
+            |name| archive.extract(name),
+            totals,
+        ),
+        Err(error) => archive_error(path, error, totals),
+    }
+}
+
+fn scan_archive(
+    path: &Path,
+    files: Vec<&str>,
+    mut extract: impl FnMut(&str) -> std::io::Result<Vec<u8>>,
+    totals: &mut Totals,
+) {
+    for name in files
+        .into_iter()
+        .filter(|name| name.to_ascii_lowercase().ends_with(".pex"))
+    {
+        match extract(name) {
+            Ok(bytes) => {
+                scan_compiled_bytes(&format!("{}::{name}", path.display()), &bytes, totals)
+            }
+            Err(error) => {
+                eprintln!("{}::{name}: {error}", path.display());
+                totals.input_errors += 1;
+            }
+        }
+    }
+}
+
+fn archive_error(path: &Path, error: std::io::Error, totals: &mut Totals) {
+    eprintln!("{}: {error}", path.display());
+    totals.input_errors += 1;
+}
+
+fn scan_compiled_bytes(label: &str, bytes: &[u8], totals: &mut Totals) {
+    let pex = match byroredux_pex::parse(bytes) {
         Ok(pex) => pex,
         Err(error) => {
-            eprintln!("{}: {error}", path.display());
+            eprintln!("{label}: {error}");
             totals.input_errors += 1;
             return;
         }
@@ -137,7 +199,7 @@ fn scan_compiled(path: &Path, totals: &mut Totals) {
             CallTarget::Receiver(receiver) => receiver.as_deref(),
         };
         print_finding(
-            &format!("{}:{line} [{scope}]", path.display()),
+            &format!("{label}:{line} [{scope}]"),
             provider,
             &finding.call.function,
             finding.call.argument_count,
@@ -150,8 +212,7 @@ fn scan_compiled(path: &Path, totals: &mut Totals) {
             |line| line.to_string(),
         );
         eprintln!(
-            "{}:{line} [{}]: malformed: {}",
-            path.display(),
+            "{label}:{line} [{}]: malformed: {}",
             scope_label(&diagnostic.scope),
             diagnostic.message
         );
