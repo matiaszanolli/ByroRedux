@@ -26,6 +26,7 @@ use crate::events::{ActivateEvent, OnCellLoadEvent, OnTriggerEnterEvent};
 use crate::recurring_update::OnUpdateEvent;
 
 const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
+const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
 
 /// Host callback shared by Papyrus handlers after all ECS guards are dropped.
 pub type PapyrusProviderCallback =
@@ -76,6 +77,7 @@ pub fn set_papyrus_provider_runtime(
 /// Register the provider runtime resource before any extension is loaded.
 pub(crate) fn register(world: &mut World) {
     world.insert_resource(PapyrusProviderRuntime::default());
+    world.insert_resource(PapyrusProviderContinuationQueue::default());
     world.register::<PapyrusProviderProgram>();
 }
 
@@ -338,11 +340,39 @@ pub enum PapyrusProviderStatement {
         call: TypedPapyrusProviderCall,
     },
     Call(TypedPapyrusProviderCall),
+    Wait {
+        seconds: f32,
+    },
     If {
         condition: Box<PapyrusProviderCondition>,
         then_branch: Vec<PapyrusProviderStatement>,
         else_branch: Vec<PapyrusProviderStatement>,
     },
+}
+
+#[derive(Clone, Debug)]
+struct PendingPapyrusProviderContinuation {
+    remaining_seconds: f32,
+    statements: Vec<PapyrusProviderStatement>,
+    locals: BTreeMap<String, ScriptValue>,
+}
+
+/// Bounded latent tails for provider-bearing Papyrus event handlers.
+#[derive(Clone, Debug, Default)]
+pub struct PapyrusProviderContinuationQueue {
+    pending: Vec<PendingPapyrusProviderContinuation>,
+}
+
+impl Resource for PapyrusProviderContinuationQueue {}
+
+impl PapyrusProviderContinuationQueue {
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
 }
 
 /// Boolean expression subset used to select a translated branch.
@@ -518,6 +548,10 @@ fn lower_statements(
                 lowered.push(PapyrusProviderStatement::AssignCall { name: key, call });
             }
             Stmt::ExprStmt(expression) => {
+                if let Some(seconds) = lower_wait(&expression.node)? {
+                    lowered.push(PapyrusProviderStatement::Wait { seconds });
+                    continue;
+                }
                 let call = lower_provider_call(&expression.node, catalog)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
@@ -564,6 +598,36 @@ fn lower_statements(
         }
     }
     Ok(lowered)
+}
+
+fn lower_wait(expression: &Expr) -> Result<Option<f32>, PapyrusProviderProgramError> {
+    let Expr::Call { callee, args } = expression else {
+        return Ok(None);
+    };
+    let Expr::MemberAccess { object, member } = &callee.node else {
+        return Ok(None);
+    };
+    let Expr::Ident(provider) = &object.node else {
+        return Ok(None);
+    };
+    if !provider.0.eq_ignore_ascii_case("Utility") || !member.node.0.eq_ignore_ascii_case("Wait") {
+        return Ok(None);
+    }
+    let [argument] = args.as_slice() else {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    };
+    if argument.name.is_some() {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    }
+    let seconds = match &argument.value.node {
+        Expr::IntLit(value) => *value as f32,
+        Expr::FloatLit(value) => *value as f32,
+        _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
+    };
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    }
+    Ok(Some(seconds))
 }
 
 fn lower_condition(
@@ -875,13 +939,28 @@ pub fn attach_papyrus_provider_program(
 
 /// Execute provider handlers only after snapshotting programs and event
 /// markers. No ECS query or resource guard survives the host callback.
-pub fn papyrus_provider_system(world: &World, _dt: f32) {
+pub fn papyrus_provider_system(world: &World, dt: f32) {
     let callback = world
         .try_resource::<PapyrusProviderRuntime>()
         .and_then(|runtime| runtime.callback());
     let Some(callback) = callback else {
         return;
     };
+    let pending = {
+        let mut queue = world.resource_mut::<PapyrusProviderContinuationQueue>();
+        std::mem::take(&mut queue.pending)
+    };
+    let mut still_pending = Vec::new();
+    let mut handlers = Vec::new();
+    for mut continuation in pending {
+        continuation.remaining_seconds -= dt.max(0.0);
+        if continuation.remaining_seconds > 0.0 {
+            still_pending.push(continuation);
+        } else {
+            handlers.push((continuation.statements, continuation.locals));
+        }
+    }
+
     let loaded = world
         .query::<OnCellLoadEvent>()
         .map(|events| {
@@ -921,43 +1000,68 @@ pub fn papyrus_provider_system(world: &World, _dt: f32) {
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
     };
-    let mut handlers = Vec::new();
     for (entity, program) in programs.iter() {
         if loaded.contains(&entity) {
-            handlers.push(program.handler(PapyrusProviderEvent::OnLoad).to_vec());
+            handlers.push((
+                program.handler(PapyrusProviderEvent::OnLoad).to_vec(),
+                BTreeMap::new(),
+            ));
         }
         if activated.contains(&entity) {
-            handlers.push(program.handler(PapyrusProviderEvent::OnActivate).to_vec());
+            handlers.push((
+                program.handler(PapyrusProviderEvent::OnActivate).to_vec(),
+                BTreeMap::new(),
+            ));
         }
         if let Some(entry_count) = trigger_entries.get(&entity) {
             for _ in 0..*entry_count {
-                handlers.push(
+                handlers.push((
                     program
                         .handler(PapyrusProviderEvent::OnTriggerEnter)
                         .to_vec(),
-                );
+                    BTreeMap::new(),
+                ));
             }
         }
         if updated.contains(&entity) {
-            handlers.push(program.handler(PapyrusProviderEvent::OnUpdate).to_vec());
+            handlers.push((
+                program.handler(PapyrusProviderEvent::OnUpdate).to_vec(),
+                BTreeMap::new(),
+            ));
         }
     }
     drop(programs);
 
-    for statements in handlers {
-        let mut locals = BTreeMap::new();
-        if let Err(error) = execute_statements(&statements, callback.as_ref(), &mut locals) {
-            log::warn!("Papyrus provider handler aborted: {error}");
+    for (statements, mut locals) in handlers {
+        match execute_statements(&statements, callback.as_ref(), &mut locals) {
+            Ok(Some((remaining_seconds, statements))) => {
+                still_pending.push(PendingPapyrusProviderContinuation {
+                    remaining_seconds,
+                    statements,
+                    locals,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("Papyrus provider handler aborted: {error}"),
         }
     }
+    if still_pending.len() > MAX_PROVIDER_CONTINUATIONS {
+        log::warn!(
+            "Papyrus provider continuation queue exceeded {MAX_PROVIDER_CONTINUATIONS}; dropping newest tails"
+        );
+        still_pending.truncate(MAX_PROVIDER_CONTINUATIONS);
+    }
+    world
+        .resource_mut::<PapyrusProviderContinuationQueue>()
+        .pending = still_pending;
 }
 
 fn execute_statements(
     statements: &[PapyrusProviderStatement],
     callback: &PapyrusProviderCallback,
     locals: &mut BTreeMap<String, ScriptValue>,
-) -> Result<(), String> {
-    for statement in statements {
+) -> Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String> {
+    for (index, statement) in statements.iter().enumerate() {
         match statement {
             PapyrusProviderStatement::Declare { name, value } => {
                 locals.insert(name.clone(), value.clone());
@@ -969,6 +1073,9 @@ fn execute_statements(
             PapyrusProviderStatement::Call(call) => {
                 callback(call.route.qualified_name(), &call.arguments)?;
             }
+            PapyrusProviderStatement::Wait { seconds } => {
+                return Ok(Some((*seconds, statements[index + 1..].to_vec())));
+            }
             PapyrusProviderStatement::If {
                 condition,
                 then_branch,
@@ -979,11 +1086,15 @@ fn execute_statements(
                 } else {
                     else_branch
                 };
-                execute_statements(selected, callback, locals)?;
+                let mut ordered_tail =
+                    Vec::with_capacity(selected.len() + statements.len().saturating_sub(index + 1));
+                ordered_tail.extend_from_slice(selected);
+                ordered_tail.extend_from_slice(&statements[index + 1..]);
+                return execute_statements(&ordered_tail, callback, locals);
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn evaluate_condition(
@@ -1483,6 +1594,72 @@ mod tests {
                 ScriptValue::String("clear".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn latent_wait_preserves_locals_and_branch_and_handler_tails() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Bool storm
+                storm = WeatherNative.IsStorm()
+                If storm
+                    Utility.Wait(0.5)
+                    WeatherNative.WeatherAt(4, "after-branch-wait")
+                EndIf
+                WeatherNative.WeatherAt(5, "handler-tail")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let provider_catalog = catalog();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            if route.ends_with("is-storm") {
+                Ok(ScriptValue::Boolean(true))
+            } else {
+                Ok(ScriptValue::String("ok".to_owned()))
+            }
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            world.resource::<PapyrusProviderContinuationQueue>().len(),
+            1
+        );
+        world.query_mut::<OnCellLoadEvent>().unwrap().remove(entity);
+
+        papyrus_provider_system(&world, 0.25);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            world.resource::<PapyrusProviderContinuationQueue>().len(),
+            1
+        );
+
+        papyrus_provider_system(&world, 0.25);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1].1[0], ScriptValue::Integer(4));
+        assert_eq!(calls[2].1[0], ScriptValue::Integer(5));
+        assert!(world
+            .resource::<PapyrusProviderContinuationQueue>()
+            .is_empty());
     }
 
     #[test]
