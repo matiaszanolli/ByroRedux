@@ -844,9 +844,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   case-insensitively from parsed Papyrus and decompiled PEX into a typed,
   guard-free `OnLoad`/`OnActivate` program that calls the same live host. The
   current subset covers scalar locals, literal arguments, assignments, and
-  bounded boolean branches. Compiled SCDA call encoding, byte-level PEX
-  conformance, fragment scheduling, broader expressions/events, latent calls,
-  and dynamic object dispatch remain pending.**
+  bounded boolean branches. A synthetic byte-level Skyrim PEX fixture now
+  exercises the production reader/decompiler/translation boundary. Compiled
+  SCDA call encoding, fragment scheduling, broader expressions/events, latent
+  calls, and dynamic object dispatch remain pending.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
@@ -986,9 +987,11 @@ Checkpoint commit: `feat(scripting): run providers from source and PEX`.
 
 Delivered as the first live subset. Parsed source and decompiled PEX share the
 same typed lowering and runtime. Tests cover a source handler invoking a real
-Wasm component and an equivalent decompiled static-call model. A checked-in
-byte-level PEX fixture, a real extender-era compatibility alias backed by a
-completed semantic service, and broader diagnostics/conformance remain open.
+Wasm component and a synthetic byte-level Skyrim PEX fixture through the
+production reader/decompiler/translation boundary. Recognized extender calls
+without an executable route now reject the whole provider-bearing handler
+instead of being silently skipped. A real extender-era compatibility alias
+backed by a completed semantic service and broader conformance remain open.
 
 ### 14.4 Exit gate
 

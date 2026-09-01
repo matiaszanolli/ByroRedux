@@ -68,7 +68,9 @@ The current public surface includes:
   call granted providers as `ext.<extension-id>.<function>`, while the first
   Papyrus runtime slice lowers manifest aliases from source and decompiled PEX
   for non-latent `OnLoad`/`OnActivate` handlers. Both routes execute through
-  the same authenticated host without an extender DLL.
+  the same authenticated host without an extender DLL. Recognized extender
+  calls that do not yet have an executable route reject their complete handler
+  with an attributed translation error rather than disappearing silently.
 - `compatibility` classifies recognized SKSE/F4SE, PapyrusUtil,
   JContainers, input, event, and UI calls as engine-native, mapped to a
   semantic service, or explicitly unsupported with migration guidance. It
