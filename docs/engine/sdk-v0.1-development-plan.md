@@ -89,16 +89,18 @@ its static statement tree before entering guest code so no ECS guard crosses
 the sandbox boundary. Source-less SCDA can carry the same calls through a
 public, versioned `BYROSDK` payload behind a reserved expression opcode. The
 codec preserves bounded typed literals including portable forms, rejects live
-entity handles, and fails closed on malformed or unsupported versions; assignments and
-conditions enter the same guard-free host path. A conservative Papyrus vertical
-slice is live:
+entity handles, and fails closed on malformed or unsupported versions;
+assignments and conditions enter the same guard-free host path. A conservative
+Papyrus vertical slice is live:
 manifest-declared `Provider.Function(...)` aliases lower from parsed source and
 decompiled PEX into a typed program, and `OnInit`, `OnLoad`, `OnActivate`,
 `OnHit`, `OnObjectEquipped`, `OnObjectUnequipped`, `OnTriggerEnter`, and
 `OnUpdate` handlers execute through the same authenticated Wasm host after ECS
 guards are released. `OnInit` is emitted once when the
 translated program attaches, independently of cell load; trigger handlers
-preserve one dispatch per entering actor. `OnHit` projects its four boolean
+preserve one dispatch per entering actor. References with multiple
+provider-bearing VMAD scripts retain every independently lowered handler in
+attachment order, including when scripts share the same event. `OnHit` projects its four boolean
 attack/block flags into typed handler locals. The subset supports scalar locals,
 literal or typed scalar/event-local arguments, assignments, and bounded boolean
 branches with negation, short-circuit logical operators,
@@ -896,10 +898,13 @@ proceeds by semantic domain and closes only against real mod fixtures.
   guard-free event program that calls the same live host. Supported events are
   `OnInit`, `OnLoad`, `OnActivate`, `OnHit`, `OnObjectEquipped`,
 `OnObjectUnequipped`, `OnTriggerEnter`, and `OnUpdate`. Program attachment
-emits one engine-owned initialization marker; trigger entry multiplicity and
-ordered wearer equipment transitions are preserved. Equipment handlers receive
-the authored base item as a load-order-independent `FormRef`; that value may
-cross `Utility.Wait` and save/reload boundaries. The
+composes independently lowered handlers from every VMAD script on the entity
+instead of replacing the previous component, and emits one engine-owned
+initialization marker. Same-event handlers preserve script attachment order;
+trigger entry multiplicity and ordered wearer equipment transitions are
+preserved. Equipment handlers receive the authored base item as a
+load-order-independent `FormRef`; that value may cross `Utility.Wait` and
+save/reload boundaries. The
 four scalar `OnHit` attack/block parameters are projected under their authored
   names. The current subset covers scalar locals, literal or typed local
   arguments, assignments, and bounded boolean branches, including negation,
@@ -1166,6 +1171,15 @@ portable SDK `FormRef` only after ECS guards are dropped. Form locals are
 save-safe and remain available after `Utility.Wait`; unresolved forms fail the
 handler before guest entry. The optional second object-reference parameter
 remains unavailable until inventory instances have stable runtime identity.
+
+Checkpoint commit: `fix(scripting): compose provider script handlers`.
+
+Delivered for references carrying multiple provider-bearing VMAD scripts.
+Attachment appends independently lowered handlers per canonical event rather
+than replacing the entity's prior provider component. Dispatch projects event
+parameters and locals separately for each handler, preserves script attachment
+order for shared events, and keeps the established event ordering between
+`OnInit`, `OnLoad`, interaction, combat, equipment, and update delivery.
 
 ### 14.4 Exit gate
 
