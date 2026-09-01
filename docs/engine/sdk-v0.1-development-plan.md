@@ -86,8 +86,14 @@ executable routes source ObScript assignments and conditions directly to this
 host without an OBSE/xNVSE DLL. Arguments use explicit `boolean:`, `integer:`,
 `float:`, or `string:` literals (plus `none`), and the interpreter snapshots
 its static statement tree before entering guest code so no ECS guard crosses
-the sandbox boundary. Compiled SCDA SDK-call encoding and a general Papyrus
-native-call dispatcher remain open.
+the sandbox boundary. Compiled SCDA SDK-call encoding and the general Papyrus
+dispatcher remain open. A conservative Papyrus vertical slice is live:
+manifest-declared `Provider.Function(...)` aliases lower from parsed source and
+decompiled PEX into a typed program, and `OnLoad`/`OnActivate` handlers execute
+through the same authenticated Wasm host after ECS guards are released. It
+currently supports scalar locals, literal arguments, assignments, and bounded
+boolean branches; broader expressions, events, fragments, latent calls, and
+dynamic object dispatch remain open.
 Typed settings reads are now engine-owned too:
 `byro.settings.read` projects the same persisted universal `SettingsRegistry`
 consumed by native menus into bounded bool/number/choice values, is available
@@ -834,8 +840,13 @@ proceeds by semantic domain and closes only against real mod fixtures.
   host-side argument/result validation, deferred atomic mutation, and component
   quarantine on an invalid result. Source ObScript can call the same live host
   through `ext.<extension-id>.<function>` assignments and conditions without
-  OBSE/xNVSE. Compiled SCDA call encoding and the general Papyrus/source-PEX
-  provider dispatcher remain pending.**
+  OBSE/xNVSE. Manifest-declared `Provider.Function(...)` aliases now lower
+  case-insensitively from parsed Papyrus and decompiled PEX into a typed,
+  guard-free `OnLoad`/`OnActivate` program that calls the same live host. The
+  current subset covers scalar locals, literal arguments, assignments, and
+  bounded boolean branches. Compiled SCDA call encoding, byte-level PEX
+  conformance, fragment scheduling, broader expressions/events, latent calls,
+  and dynamic object dispatch remain pending.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
@@ -918,9 +929,9 @@ on.
 
 ## 14. Next implementation slice — Papyrus provider dispatch
 
-The next slice makes the shared semantic service catalog executable from
-Papyrus source and decompiled PEX. It remains a conservative translator, not a
-general stack VM, and it does not load extender DLLs.
+Status: **In progress.** The first non-latent source/decompiled-PEX vertical
+slice is executable in the live engine. It remains a conservative translator,
+not a general stack VM, and it does not load extender DLLs.
 
 ### 14.1 Provider-call intermediate representation
 
@@ -934,6 +945,10 @@ general stack VM, and it does not load extender DLLs.
   not silently run a partial translation.
 
 Checkpoint commit: `feat(scripting): lower typed Papyrus provider calls`.
+
+Delivered. Manifest aliases resolve case-insensitively to authenticated,
+principal-qualified SDK routes. Typed lowering validates named/positional
+arguments and rejects an unsupported provider-bearing handler as a unit.
 
 ### 14.2 Guard-free runtime dispatch
 
@@ -950,6 +965,11 @@ Checkpoint commit: `feat(scripting): lower typed Papyrus provider calls`.
 
 Checkpoint commit: `feat(scripting): execute deferred Papyrus provider calls`.
 
+Delivered for entity-attached `OnLoad` and `OnActivate` programs. The runtime
+snapshots programs and event IDs, releases ECS guards, invokes the existing
+extension host, and resumes assignment/branch evaluation only from a validated
+result. Quest/scene fragment queue integration remains open.
+
 ### 14.3 Source and PEX parity
 
 - Cover one non-latent event handler shape from parsed `.psc` and the equivalent
@@ -962,7 +982,13 @@ Checkpoint commit: `feat(scripting): execute deferred Papyrus provider calls`.
 - Emit an attributed diagnostic for recognized-but-unsupported providers and
   unknown functions.
 
-Checkpoint commit: `feat(scripting): run provider calls from source and PEX`.
+Checkpoint commit: `feat(scripting): run providers from source and PEX`.
+
+Delivered as the first live subset. Parsed source and decompiled PEX share the
+same typed lowering and runtime. Tests cover a source handler invoking a real
+Wasm component and an equivalent decompiled static-call model. A checked-in
+byte-level PEX fixture, a real extender-era compatibility alias backed by a
+completed semantic service, and broader diagnostics/conformance remain open.
 
 ### 14.4 Exit gate
 
