@@ -5,6 +5,7 @@
 //! adapter must target, or records why the operation is intentionally absent.
 
 use crate::component::ExtensionValue;
+use crate::content::ContentCatalog;
 use crate::event::{legacy_skse_mod_event_id, LegacySkseModEventPayload, PublishEventCommand};
 use crate::identity::FormRef;
 use crate::identity::{IdentityError, StorageKey};
@@ -84,10 +85,10 @@ pub fn obscript_source_alias(command: &str) -> Option<SourceAlias> {
 /// external loader is installed.
 pub fn classify_obscript_command(command: &str) -> Option<CompatibilityMatch> {
     if obscript_source_alias(command).is_some() {
-        return Some(mapped(
+        return Some(native(
             ExtenderFamily::Shared,
             CONTENT_CATALOG_SERVICE,
-            "an exact legacy load-order recipe targets the immutable engine content catalog",
+            "an exact engine adapter executes the legacy load-order query against the immutable content catalog",
         ));
     }
     if command.eq_ignore_ascii_case("GetNVSEVersion")
@@ -161,6 +162,84 @@ pub struct SourceAlias {
     pub operation: &'static str,
     pub value_kind: &'static str,
     pub constraint: &'static str,
+}
+
+/// Largest plugin count representable by the classic OBSE/xNVSE load order.
+/// Indices `0..=254` are valid and `255` is reserved as the missing sentinel.
+pub const LEGACY_OBSCRIPT_PLUGIN_LIMIT: usize = 255;
+pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
+
+/// Typed load-order operation recovered from extender-era ObScript.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyObscriptLoadOrderCall {
+    IsModLoaded { plugin: String },
+    GetModIndex { plugin: String },
+    GetNumLoadedMods,
+    GetNumLoadedPlugins,
+    GetNthModName { index: i32 },
+}
+
+/// ObScript-visible scalar produced by a load-order compatibility call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyObscriptLoadOrderResult {
+    Bool(bool),
+    Integer(i32),
+    String(String),
+}
+
+/// Failure to represent the active catalog through the classic 8-bit ABI.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum LegacyObscriptLoadOrderError {
+    #[error(
+        "active catalog has {actual} plugins, exceeding the classic ObScript limit of {maximum}"
+    )]
+    PluginBudgetExceeded { actual: usize, maximum: usize },
+}
+
+/// Execute an OBSE/xNVSE load-order query against the immutable engine
+/// content snapshot without loading an external script extender.
+///
+/// This deliberately preserves the classic `0xff` missing-index sentinel and
+/// empty-string nth-name behavior. Catalog ordinals remain callback-local and
+/// must not be persisted as authored identity.
+pub fn adapt_legacy_obscript_load_order(
+    catalog: &ContentCatalog,
+    call: LegacyObscriptLoadOrderCall,
+) -> Result<LegacyObscriptLoadOrderResult, LegacyObscriptLoadOrderError> {
+    if catalog.len() > LEGACY_OBSCRIPT_PLUGIN_LIMIT {
+        return Err(LegacyObscriptLoadOrderError::PluginBudgetExceeded {
+            actual: catalog.len(),
+            maximum: LEGACY_OBSCRIPT_PLUGIN_LIMIT,
+        });
+    }
+
+    let result = match call {
+        LegacyObscriptLoadOrderCall::IsModLoaded { plugin } => {
+            LegacyObscriptLoadOrderResult::Bool(catalog.find(&plugin).is_some())
+        }
+        LegacyObscriptLoadOrderCall::GetModIndex { plugin } => {
+            let index = catalog
+                .find(&plugin)
+                .map_or(LEGACY_OBSCRIPT_MISSING_MOD_INDEX, |(index, _)| {
+                    i32::try_from(index).expect("classic content catalog index fits i32")
+                });
+            LegacyObscriptLoadOrderResult::Integer(index)
+        }
+        LegacyObscriptLoadOrderCall::GetNumLoadedMods
+        | LegacyObscriptLoadOrderCall::GetNumLoadedPlugins => {
+            LegacyObscriptLoadOrderResult::Integer(
+                i32::try_from(catalog.len()).expect("classic content catalog length fits i32"),
+            )
+        }
+        LegacyObscriptLoadOrderCall::GetNthModName { index } => {
+            let name = u32::try_from(index)
+                .ok()
+                .and_then(|index| catalog.plugin(index))
+                .map_or_else(String::new, |plugin| plugin.name().to_owned());
+            LegacyObscriptLoadOrderResult::String(name)
+        }
+    };
+    Ok(result)
 }
 
 /// Scalar `StorageUtil` call supported by the engine source adapter.
@@ -732,6 +811,19 @@ const fn mapped(
     }
 }
 
+const fn native(
+    family: ExtenderFamily,
+    service: &'static str,
+    guidance: &'static str,
+) -> CompatibilityMatch {
+    CompatibilityMatch {
+        family,
+        disposition: CompatibilityDisposition::Native,
+        service: Some(service),
+        guidance,
+    }
+}
+
 const fn unsupported(family: ExtenderFamily, guidance: &'static str) -> CompatibilityMatch {
     CompatibilityMatch {
         family,
@@ -762,6 +854,25 @@ fn is_extender_version_probe(function: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{PluginInfo, PluginKind};
+
+    fn classic_catalog(names: &[&str]) -> ContentCatalog {
+        ContentCatalog::new(
+            names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    PluginInfo::new(
+                        *name,
+                        (index as u128 + 1).to_be_bytes(),
+                        PluginKind::Regular,
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn storage_and_events_map_to_existing_semantic_services() {
@@ -819,7 +930,71 @@ mod tests {
             classify_obscript_command("IsModLoaded").unwrap().service,
             Some(CONTENT_CATALOG_SERVICE)
         );
+        assert_eq!(
+            classify_obscript_command("IsModLoaded")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Native
+        );
         assert!(obscript_source_alias("GetSourceModIndex").is_none());
+    }
+
+    #[test]
+    fn legacy_load_order_adapter_preserves_classic_results() {
+        let catalog = classic_catalog(&["FalloutNV.esm", "Companion.esp"]);
+        assert_eq!(
+            adapt_legacy_obscript_load_order(
+                &catalog,
+                LegacyObscriptLoadOrderCall::IsModLoaded {
+                    plugin: "companion.ESP".to_owned(),
+                },
+            ),
+            Ok(LegacyObscriptLoadOrderResult::Bool(true))
+        );
+        assert_eq!(
+            adapt_legacy_obscript_load_order(
+                &catalog,
+                LegacyObscriptLoadOrderCall::GetModIndex {
+                    plugin: "missing.esp".to_owned(),
+                },
+            ),
+            Ok(LegacyObscriptLoadOrderResult::Integer(255))
+        );
+        assert_eq!(
+            adapt_legacy_obscript_load_order(
+                &catalog,
+                LegacyObscriptLoadOrderCall::GetNthModName { index: 1 },
+            ),
+            Ok(LegacyObscriptLoadOrderResult::String(
+                "Companion.esp".to_owned()
+            ))
+        );
+        assert_eq!(
+            adapt_legacy_obscript_load_order(
+                &catalog,
+                LegacyObscriptLoadOrderCall::GetNthModName { index: -1 },
+            ),
+            Ok(LegacyObscriptLoadOrderResult::String(String::new()))
+        );
+    }
+
+    #[test]
+    fn legacy_load_order_adapter_rejects_unrepresentable_catalogs() {
+        let names = (0..=LEGACY_OBSCRIPT_PLUGIN_LIMIT)
+            .map(|index| format!("Plugin{index}.esp"))
+            .collect::<Vec<_>>();
+        let refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let catalog = classic_catalog(&refs);
+        assert_eq!(
+            adapt_legacy_obscript_load_order(
+                &catalog,
+                LegacyObscriptLoadOrderCall::GetNumLoadedMods,
+            ),
+            Err(LegacyObscriptLoadOrderError::PluginBudgetExceeded {
+                actual: 256,
+                maximum: 255,
+            })
+        );
     }
 
     #[test]

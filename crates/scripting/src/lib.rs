@@ -69,7 +69,10 @@ pub use fragment::{
     QuestStageFragments, ReferenceEnableState, SceneFragments,
 };
 pub use globals::Globals;
-pub use obscript::{decode_extender_calls, ObscriptDecode, ObscriptDialect};
+pub use obscript::{
+    decode_extender_calls, legacy_load_order_call, ObscriptArgument, ObscriptCall, ObscriptDecode,
+    ObscriptDialect, ObscriptLoadOrderCallError,
+};
 pub use package::{
     install_package_linked_references, install_package_records, install_package_target_directions,
     install_package_target_positions, scene_package_system, ActiveScenePackageAction,

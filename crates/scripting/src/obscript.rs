@@ -9,6 +9,8 @@
 //! `CommandTable.cpp` sources. Keep the dialect tables separate: the same
 //! numeric opcode can name unrelated FOSE/xNVSE/OBSE commands.
 
+use byroredux_sdk::compatibility::LegacyObscriptLoadOrderCall;
+
 const SET_TO: u16 = 0x15;
 const IF: u16 = 0x16;
 const ELSE_IF: u16 = 0x18;
@@ -20,11 +22,49 @@ pub enum ObscriptDialect {
     Obse,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObscriptCall {
     pub command: &'static str,
     pub byte_offset: usize,
+    pub arguments: Vec<ObscriptArgument>,
 }
+
+/// Literal argument recovered from the default ObScript command encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObscriptArgument {
+    String(String),
+    Integer(i32),
+    FloatBits(u64),
+    /// A runtime variable/reference expression that cannot be resolved by the
+    /// source-less structural decoder alone.
+    Dynamic,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObscriptLoadOrderCallError {
+    InvalidArguments {
+        command: &'static str,
+        expected: &'static str,
+    },
+    NumericOutOfRange,
+}
+
+impl std::fmt::Display for ObscriptLoadOrderCallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidArguments { command, expected } => {
+                write!(
+                    formatter,
+                    "{command} requires exactly one {expected} literal argument"
+                )
+            }
+            Self::NumericOutOfRange => formatter
+                .write_str("GetNthModName numeric argument is outside the ObScript i32 range"),
+        }
+    }
+}
+
+impl std::error::Error for ObscriptLoadOrderCallError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObscriptDecodeDiagnostic {
@@ -78,8 +118,14 @@ pub fn decode_extender_calls(bytes: &[u8], dialect: ObscriptDialect) -> Obscript
             break;
         }
 
-        push_known_call(&mut decoded.calls, dialect, actual_opcode, command_offset);
         let payload = &bytes[payload_offset..payload_end];
+        push_known_call(
+            &mut decoded,
+            dialect,
+            actual_opcode,
+            command_offset,
+            payload,
+        );
         match actual_opcode {
             IF | ELSE_IF => scan_expression(payload, 2, payload_offset, dialect, &mut decoded),
             SET_TO => scan_set_to(payload, payload_offset, dialect, &mut decoded),
@@ -204,12 +250,6 @@ fn scan_expression(
                     );
                     return;
                 };
-                push_known_call(
-                    &mut decoded.calls,
-                    dialect,
-                    opcode,
-                    expression_base + cursor + 1,
-                );
                 let Some(next) = cursor.checked_add(5).and_then(|v| v.checked_add(data_len)) else {
                     malformed(
                         decoded,
@@ -226,6 +266,13 @@ fn scan_expression(
                     );
                     return;
                 }
+                push_known_call(
+                    decoded,
+                    dialect,
+                    opcode,
+                    expression_base + cursor + 1,
+                    &expression[cursor + 5..next],
+                );
                 cursor = next;
             }
             _ => cursor += 1,
@@ -234,10 +281,11 @@ fn scan_expression(
 }
 
 fn push_known_call(
-    calls: &mut Vec<ObscriptCall>,
+    decoded: &mut ObscriptDecode,
     dialect: ObscriptDialect,
     opcode: u16,
     byte_offset: usize,
+    payload: &[u8],
 ) {
     let command = match (dialect, opcode) {
         (ObscriptDialect::Xnvse, 0x1400) => "GetNVSEVersion",
@@ -254,10 +302,153 @@ fn push_known_call(
         (ObscriptDialect::Obse, 0x171a) => "GetNthModName",
         _ => return,
     };
-    calls.push(ObscriptCall {
+    let arguments = decode_known_arguments(command, payload, byte_offset, decoded);
+    decoded.calls.push(ObscriptCall {
         command,
         byte_offset,
+        arguments,
     });
+}
+
+fn decode_known_arguments(
+    command: &'static str,
+    payload: &[u8],
+    byte_offset: usize,
+    decoded: &mut ObscriptDecode,
+) -> Vec<ObscriptArgument> {
+    let expected = usize::from(matches!(
+        command,
+        "IsModLoaded" | "GetModIndex" | "GetNthModName"
+    ));
+    if payload.is_empty() && expected == 0 {
+        return Vec::new();
+    }
+    let Some(count) = read_u16(payload, 0).map(usize::from) else {
+        malformed(
+            decoded,
+            byte_offset,
+            "truncated SCDA command argument count",
+        );
+        return Vec::new();
+    };
+    if count != expected {
+        malformed(
+            decoded,
+            byte_offset,
+            "unexpected SCDA command argument count",
+        );
+        return Vec::new();
+    }
+    if expected == 0 {
+        return Vec::new();
+    }
+
+    if matches!(command, "IsModLoaded" | "GetModIndex") {
+        let Some(length) = read_u16(payload, 2).map(usize::from) else {
+            malformed(
+                decoded,
+                byte_offset,
+                "truncated SCDA string argument length",
+            );
+            return Vec::new();
+        };
+        let Some(end) = 4usize.checked_add(length) else {
+            malformed(
+                decoded,
+                byte_offset,
+                "overflowing SCDA string argument length",
+            );
+            return Vec::new();
+        };
+        let Some(bytes) = payload.get(4..end) else {
+            malformed(
+                decoded,
+                byte_offset,
+                "SCDA string argument exceeds command payload",
+            );
+            return Vec::new();
+        };
+        let Ok(value) = std::str::from_utf8(bytes) else {
+            malformed(decoded, byte_offset, "SCDA string argument is not UTF-8");
+            return Vec::new();
+        };
+        return vec![ObscriptArgument::String(value.to_owned())];
+    }
+
+    match payload.get(2).copied() {
+        Some(b'n') => {
+            let Some(bytes) = payload.get(3..7).and_then(|bytes| bytes.try_into().ok()) else {
+                malformed(decoded, byte_offset, "truncated SCDA integer literal");
+                return Vec::new();
+            };
+            vec![ObscriptArgument::Integer(i32::from_le_bytes(bytes))]
+        }
+        Some(b'z') => {
+            let Some(bytes) = payload.get(3..11).and_then(|bytes| bytes.try_into().ok()) else {
+                malformed(
+                    decoded,
+                    byte_offset,
+                    "truncated SCDA floating-point literal",
+                );
+                return Vec::new();
+            };
+            vec![ObscriptArgument::FloatBits(u64::from_le_bytes(bytes))]
+        }
+        Some(_) => vec![ObscriptArgument::Dynamic],
+        None => {
+            malformed(decoded, byte_offset, "missing SCDA numeric argument");
+            Vec::new()
+        }
+    }
+}
+
+/// Convert a decoded literal load-order probe into the SDK's executable
+/// engine-semantic call. Version probes intentionally return `Ok(None)`:
+/// callers must use SDK/service feature discovery instead of fake versions.
+pub fn legacy_load_order_call(
+    call: &ObscriptCall,
+) -> Result<Option<LegacyObscriptLoadOrderCall>, ObscriptLoadOrderCallError> {
+    let string_argument = || match call.arguments.as_slice() {
+        [ObscriptArgument::String(value)] => Ok(value.clone()),
+        _ => Err(ObscriptLoadOrderCallError::InvalidArguments {
+            command: call.command,
+            expected: "string",
+        }),
+    };
+    let result = match call.command {
+        "IsModLoaded" => LegacyObscriptLoadOrderCall::IsModLoaded {
+            plugin: string_argument()?,
+        },
+        "GetModIndex" => LegacyObscriptLoadOrderCall::GetModIndex {
+            plugin: string_argument()?,
+        },
+        "GetNumLoadedMods" => LegacyObscriptLoadOrderCall::GetNumLoadedMods,
+        "GetNthModName" => {
+            let index = match call.arguments.as_slice() {
+                [ObscriptArgument::Integer(value)] => *value,
+                [ObscriptArgument::FloatBits(bits)] => {
+                    let value = f64::from_bits(*bits);
+                    if !value.is_finite()
+                        || value.fract() != 0.0
+                        || value < f64::from(i32::MIN)
+                        || value > f64::from(i32::MAX)
+                    {
+                        return Err(ObscriptLoadOrderCallError::NumericOutOfRange);
+                    }
+                    value as i32
+                }
+                _ => {
+                    return Err(ObscriptLoadOrderCallError::InvalidArguments {
+                        command: call.command,
+                        expected: "numeric",
+                    });
+                }
+            };
+            LegacyObscriptLoadOrderCall::GetNthModName { index }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(result))
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -276,6 +467,10 @@ fn malformed(decoded: &mut ObscriptDecode, byte_offset: usize, message: &'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_sdk::compatibility::{
+        adapt_legacy_obscript_load_order, LegacyObscriptLoadOrderResult,
+    };
+    use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
 
     fn conditional(expression: &[u8]) -> Vec<u8> {
         let payload_len = 4 + expression.len();
@@ -289,9 +484,28 @@ mod tests {
     }
 
     fn expression_call(opcode: u16) -> Vec<u8> {
+        expression_call_with_args(opcode, &[])
+    }
+
+    fn expression_call_with_args(opcode: u16, arguments: &[u8]) -> Vec<u8> {
         let mut bytes = vec![b'X'];
         bytes.extend_from_slice(&opcode.to_le_bytes());
-        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(arguments);
+        bytes
+    }
+
+    fn string_arguments(value: &str) -> Vec<u8> {
+        let mut bytes = 1u16.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+        bytes
+    }
+
+    fn integer_arguments(value: i32) -> Vec<u8> {
+        let mut bytes = 1u16.to_le_bytes().to_vec();
+        bytes.push(b'n');
+        bytes.extend_from_slice(&value.to_le_bytes());
         bytes
     }
 
@@ -334,5 +548,57 @@ mod tests {
         let malformed = decode_extender_calls(&[IF as u8, 0, 9, 0], ObscriptDialect::Xnvse);
         assert!(malformed.calls.is_empty());
         assert_eq!(malformed.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn decodes_string_and_numeric_literals_without_interpreting_variables() {
+        let plugin = string_arguments("Companion.esp");
+        let decoded = decode_extender_calls(
+            &conditional(&expression_call_with_args(0x14af, &plugin)),
+            ObscriptDialect::Xnvse,
+        );
+        assert_eq!(
+            decoded.calls[0].arguments,
+            vec![ObscriptArgument::String("Companion.esp".to_owned())]
+        );
+        assert!(decoded.diagnostics.is_empty());
+
+        let index = integer_arguments(7);
+        let decoded = decode_extender_calls(
+            &conditional(&expression_call_with_args(0x1586, &index)),
+            ObscriptDialect::Xnvse,
+        );
+        assert_eq!(
+            decoded.calls[0].arguments,
+            vec![ObscriptArgument::Integer(7)]
+        );
+
+        let dynamic = [1, 0, b's', 0, 0];
+        let decoded = decode_extender_calls(
+            &conditional(&expression_call_with_args(0x1586, &dynamic)),
+            ObscriptDialect::Xnvse,
+        );
+        assert_eq!(decoded.calls[0].arguments, vec![ObscriptArgument::Dynamic]);
+        assert!(legacy_load_order_call(&decoded.calls[0]).is_err());
+    }
+
+    #[test]
+    fn compiled_get_mod_index_executes_against_engine_content_catalog() {
+        let arguments = string_arguments("Companion.esp");
+        let compiled = conditional(&expression_call_with_args(0x14af, &arguments));
+        let decoded = decode_extender_calls(&compiled, ObscriptDialect::Xnvse);
+        let call = legacy_load_order_call(&decoded.calls[0])
+            .unwrap()
+            .expect("load-order command");
+        let catalog = ContentCatalog::new(vec![
+            PluginInfo::new("FalloutNV.esm", [1; 16], PluginKind::Regular).unwrap(),
+            PluginInfo::new("Companion.esp", [2; 16], PluginKind::Regular).unwrap(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            adapt_legacy_obscript_load_order(&catalog, call),
+            Ok(LegacyObscriptLoadOrderResult::Integer(1))
+        );
     }
 }

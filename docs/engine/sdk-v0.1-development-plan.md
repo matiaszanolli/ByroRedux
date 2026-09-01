@@ -515,15 +515,20 @@ version and load-order opcodes from source-less records, selects the dialect
 from the parsed game/profile boundary, and reports malformed lengths without
 guessing past damaged data. The decoder's framing was exercised across every
 compiled SCPT in the installed Fallout New Vegas and Oblivion masters. Extended
-expression-evaluator payloads, arbitrary command arguments, and full execution
-remain pending. The first shared load-order pack maps `IsModLoaded`,
-`GetModIndex`, `GetNumLoadedMods`/`GetNumLoadedPlugins`, and `GetNthModName` to
-exact `byro.content.catalog` lookup/count/name recipes. Numeric indices are
-callback-local compatibility values; portable forms continue to use stable
-source identity. `GetSourceModIndex`, reference construction, and all other
-xNVSE/OBSE commands remain explicit gaps. Command names and legacy result
-contracts are anchored to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)
-and [OBSE command reference](https://obse.silverlock.org/obse_command_doc.html).
+expression-evaluator payloads, runtime variable resolution, and full control-
+flow execution remain pending. The first shared load-order pack now executes
+`IsModLoaded`, `GetModIndex`, `GetNumLoadedMods`/`GetNumLoadedPlugins`, and
+`GetNthModName` directly against `byro.content.catalog`. The SCDA bridge decodes
+their bounded string and numeric literals into typed SDK calls, preserves the
+classic `255` missing-index sentinel and empty-string nth-name result, and
+rejects catalogs that cannot be represented by the classic 8-bit load order.
+Numeric indices are callback-local compatibility values; portable forms
+continue to use stable source identity. Version probes deliberately remain
+feature-discovery evidence instead of returning a fake extender version.
+`GetSourceModIndex`, reference construction, and all other xNVSE/OBSE commands
+remain explicit gaps. Command names and legacy result contracts are anchored
+to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)
+and [xOBSE implementation](https://github.com/llde/xOBSE/tree/master/obse/obse).
 
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified
@@ -820,8 +825,10 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   to context feature discovery, shared plugin/load-order queries map to the
   content catalog, and unrecognized `GetNVSE*`/`GetOBSE*` probes are reported
   as unsupported. Eager scanning of every script in the full load-order
-  archives, broader command-pack classification, full SCDA argument decoding,
-  and ObScript execution remain pending.**
+  archives, broader command-pack classification, non-literal SCDA argument
+  evaluation, and general ObScript control-flow execution remain pending. The
+  load-order subset is executable end to end from compiled literal call to the
+  engine content catalog.**
 - Real-mod conformance suites per game; each facility is considered covered
   only when behavior, save persistence, and failure handling pass.
 

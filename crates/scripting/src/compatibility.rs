@@ -892,8 +892,18 @@ End"#;
 
     #[test]
     fn legacy_obscript_bytecode_maps_decoded_calls_and_diagnostics() {
-        let expression = [b'X', 0xaf, 0x14, 0x00, 0x00];
-        let mut compiled = vec![0x16, 0x00, 0x09, 0x00, 0x00, 0x00, 0x05, 0x00];
+        let plugin = b"Companion.esp";
+        let mut arguments = 1u16.to_le_bytes().to_vec();
+        arguments.extend_from_slice(&(plugin.len() as u16).to_le_bytes());
+        arguments.extend_from_slice(plugin);
+        let mut expression = vec![b'X', 0xaf, 0x14];
+        expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
+        expression.extend_from_slice(&arguments);
+        let payload_len = 4 + expression.len();
+        let mut compiled = vec![0x16, 0x00];
+        compiled.extend_from_slice(&(payload_len as u16).to_le_bytes());
+        compiled.extend_from_slice(&0u16.to_le_bytes());
+        compiled.extend_from_slice(&(expression.len() as u16).to_le_bytes());
         compiled.extend_from_slice(&expression);
         let report = analyze_obscript_bytecode_compatibility(
             "CompiledGate",
