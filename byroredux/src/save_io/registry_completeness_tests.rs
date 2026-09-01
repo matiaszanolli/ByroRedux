@@ -217,6 +217,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CameraShakeCommand", "one-shot command marker drained every frame by event_cleanup_system"),
         // CinematicPresentationState: FIXED — registered (#2380 /
         // SAVE-D1-15), no longer allowlisted here.
+        ("CompatibilityRegistry", "session diagnostic aggregate rebuilt from compatibility reports while PEX content is scanned; no gameplay authority or mutable script state"),
         ("ControllerRumbleCommand", "one-shot command marker drained every frame by event_cleanup_system"),
         ("DialogueLineCompletionBatch", "one-shot presentation-ingress batch, snapshotted+drained every tick"),
         ("DialoguePlayback", "documented #1696-style rationale on the type itself (#2294)"),
@@ -225,6 +226,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
+        ("ExtensionScriptFunctionInvoker", "process-local authenticated host callback republished after extension activation; Arc function pointers are neither portable nor save state"),
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.
         ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
@@ -239,6 +241,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("EquipmentEventBatch", "one-shot equipment transition batch drained every frame by event_cleanup_system"),
         ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("PapyrusProviderProgram", "write-once source/PEX translation attached from static script content on load; only suspended mutable tails live in the saved PapyrusProviderContinuationQueue"),
+        ("PapyrusProviderRuntime", "process-local live provider catalog plus authenticated host callback rebuilt after extension activation; callback pointers are not save state"),
         ("PendingFragmentActivations", "one-frame handoff queue (#2654) drained every frame by fragment_activation_flush_system; deliberately transient for the same reason ActivateEvent above is — it holds raw EntityIds, which a live in-session reload churns (the SAVE-D6-01 / #1696 / #2380 hazard class), and persisting a queue whose only output marker is itself unsaved would be incoherent. Worst case is one queued scripted activation lost if a save lands in the single frame between fragment dispatch and the next frame's flush"),
         ("PackageRegistry", "populated once from parsed PACK records, only ever read afterward"),
         ("PackageTargetRegistry", "populated once from placed-REFR positions, only ever read afterward"),

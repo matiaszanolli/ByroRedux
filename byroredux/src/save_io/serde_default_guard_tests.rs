@@ -348,8 +348,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // the `FactionRanks` class). No on-disk column gained, lost or changed a
     // field, so no existing save is invalidated and there is nothing for a
     // major bump to protect.
+    // Provider continuation persistence adds a new independently-keyed
+    // resource rather than changing an existing serialized type. The save
+    // registry fingerprint already rejects a snapshot produced without that
+    // resource schema, so FORMAT_MAJOR does not need to duplicate that gate.
     const BASELINE_MAJOR: u16 = 10;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc39f_7251_ef48_023d;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb765_acf9_8016_e742;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

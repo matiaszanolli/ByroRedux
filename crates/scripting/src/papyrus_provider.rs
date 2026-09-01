@@ -83,6 +83,7 @@ pub(crate) fn register(world: &mut World) {
 
 /// One manifest-published route addressable by Papyrus source or PEX.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PapyrusProviderRoute {
     qualified_name: String,
     declaration: ScriptFunctionDeclaration,
@@ -175,6 +176,7 @@ impl PapyrusProviderCatalog {
 
 /// A fully resolved, typed SDK call safe to hand to the extension host.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct TypedPapyrusProviderCall {
     pub route: PapyrusProviderRoute,
     pub arguments: Vec<ScriptValue>,
@@ -330,6 +332,7 @@ pub enum PapyrusProviderEvent {
 
 /// One conservative instruction in a translated Papyrus handler.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum PapyrusProviderStatement {
     Declare {
         name: String,
@@ -351,6 +354,7 @@ pub enum PapyrusProviderStatement {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 struct PendingPapyrusProviderContinuation {
     remaining_seconds: f32,
     statements: Vec<PapyrusProviderStatement>,
@@ -359,6 +363,7 @@ struct PendingPapyrusProviderContinuation {
 
 /// Bounded latent tails for provider-bearing Papyrus event handlers.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PapyrusProviderContinuationQueue {
     pending: Vec<PendingPapyrusProviderContinuation>,
 }
@@ -377,6 +382,7 @@ impl PapyrusProviderContinuationQueue {
 
 /// Boolean expression subset used to select a translated branch.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum PapyrusProviderCondition {
     Literal(bool),
     Local(String),
@@ -393,6 +399,7 @@ pub enum PapyrusProviderCondition {
 
 /// Scalar expression accepted on either side of a translated comparison.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum PapyrusProviderValue {
     Literal(ScriptValue),
     Local(String),
@@ -401,6 +408,7 @@ pub enum PapyrusProviderValue {
 
 /// Same-type comparison operations executable by the provider runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum PapyrusProviderComparison {
     Equal,
     NotEqual,
@@ -940,10 +948,14 @@ pub fn attach_papyrus_provider_program(
 /// Execute provider handlers only after snapshotting programs and event
 /// markers. No ECS query or resource guard survives the host callback.
 pub fn papyrus_provider_system(world: &World, dt: f32) {
-    let callback = world
+    let runtime = world
         .try_resource::<PapyrusProviderRuntime>()
-        .and_then(|runtime| runtime.callback());
-    let Some(callback) = callback else {
+        .and_then(|runtime| {
+            runtime
+                .callback()
+                .map(|callback| (runtime.catalog(), callback))
+        });
+    let Some((catalog, callback)) = runtime else {
         return;
     };
     let pending = {
@@ -953,6 +965,10 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     let mut still_pending = Vec::new();
     let mut handlers = Vec::new();
     for mut continuation in pending {
+        if !continuation.remaining_seconds.is_finite() || continuation.remaining_seconds < 0.0 {
+            log::warn!("Papyrus provider continuation dropped: invalid remaining wait");
+            continue;
+        }
         continuation.remaining_seconds -= dt.max(0.0);
         if continuation.remaining_seconds > 0.0 {
             still_pending.push(continuation);
@@ -1033,6 +1049,10 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     drop(programs);
 
     for (statements, mut locals) in handlers {
+        if let Err(error) = validate_provider_statements(&statements, catalog.as_ref(), 0) {
+            log::warn!("Papyrus provider handler aborted before dispatch: {error}");
+            continue;
+        }
         match execute_statements(&statements, callback.as_ref(), &mut locals) {
             Ok(Some((remaining_seconds, statements))) => {
                 still_pending.push(PendingPapyrusProviderContinuation {
@@ -1054,6 +1074,103 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     world
         .resource_mut::<PapyrusProviderContinuationQueue>()
         .pending = still_pending;
+}
+
+fn validate_provider_statements(
+    statements: &[PapyrusProviderStatement],
+    catalog: &PapyrusProviderCatalog,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("saved provider continuation nesting exceeds the runtime bound".to_owned());
+    }
+    for statement in statements {
+        match statement {
+            PapyrusProviderStatement::Declare { .. } => {}
+            PapyrusProviderStatement::AssignCall { call, .. }
+            | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog)?,
+            PapyrusProviderStatement::Wait { seconds } => {
+                if !seconds.is_finite() || *seconds < 0.0 {
+                    return Err("saved provider continuation contains an invalid wait".to_owned());
+                }
+            }
+            PapyrusProviderStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                validate_provider_condition(condition, catalog, depth + 1)?;
+                validate_provider_statements(then_branch, catalog, depth + 1)?;
+                validate_provider_statements(else_branch, catalog, depth + 1)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_call(
+    call: &TypedPapyrusProviderCall,
+    catalog: &PapyrusProviderCatalog,
+) -> Result<(), String> {
+    let alias = call
+        .route
+        .declaration
+        .papyrus
+        .as_ref()
+        .ok_or_else(|| "saved provider route has no Papyrus alias".to_owned())?;
+    let live = catalog
+        .resolve(&alias.provider, &alias.function)
+        .ok_or_else(|| "saved provider route is no longer published".to_owned())?;
+    let saved = call.route.declaration();
+    let current = live.declaration();
+    if live.qualified_name() != call.route.qualified_name()
+        || saved.id != current.id
+        || saved.component != current.component
+        || saved.parameters != current.parameters
+        || saved.result != current.result
+        || saved.papyrus != current.papyrus
+        || call.result != current.result
+    {
+        return Err("saved provider route does not match the live catalog".to_owned());
+    }
+    current
+        .validate_arguments(&call.arguments)
+        .map_err(|error| format!("saved provider arguments are invalid: {error:?}"))
+}
+
+fn validate_provider_condition(
+    condition: &PapyrusProviderCondition,
+    catalog: &PapyrusProviderCatalog,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("saved provider condition nesting exceeds the runtime bound".to_owned());
+    }
+    match condition {
+        PapyrusProviderCondition::Literal(_) | PapyrusProviderCondition::Local(_) => Ok(()),
+        PapyrusProviderCondition::Call(call) => validate_provider_call(call, catalog),
+        PapyrusProviderCondition::Not(condition) => {
+            validate_provider_condition(condition, catalog, depth + 1)
+        }
+        PapyrusProviderCondition::And(left, right) | PapyrusProviderCondition::Or(left, right) => {
+            validate_provider_condition(left, catalog, depth + 1)?;
+            validate_provider_condition(right, catalog, depth + 1)
+        }
+        PapyrusProviderCondition::Compare { left, right, .. } => {
+            validate_provider_value(left, catalog)?;
+            validate_provider_value(right, catalog)
+        }
+    }
+}
+
+fn validate_provider_value(
+    value: &PapyrusProviderValue,
+    catalog: &PapyrusProviderCatalog,
+) -> Result<(), String> {
+    match value {
+        PapyrusProviderValue::Call(call) => validate_provider_call(call, catalog),
+        PapyrusProviderValue::Literal(_) | PapyrusProviderValue::Local(_) => Ok(()),
+    }
 }
 
 fn execute_statements(
@@ -1657,6 +1774,54 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1].1[0], ScriptValue::Integer(4));
         assert_eq!(calls[2].1[0], ScriptValue::Integer(5));
+        assert!(world
+            .resource::<PapyrusProviderContinuationQueue>()
+            .is_empty());
+    }
+
+    #[test]
+    fn restored_continuation_rejects_a_route_not_in_the_live_catalog() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Game.GetModCount()
+                Utility.Wait(0.0)
+                Game.IsPluginInstalled("Update.esm")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
+            calls_for_callback.lock().unwrap().push(route.to_owned());
+            Ok(ScriptValue::None)
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+        world.query_mut::<OnCellLoadEvent>().unwrap().remove(entity);
+        {
+            let mut queue = world.resource_mut::<PapyrusProviderContinuationQueue>();
+            let PapyrusProviderStatement::Call(call) = &mut queue.pending[0].statements[0] else {
+                panic!("expected saved provider call tail");
+            };
+            call.route.qualified_name = "ext.attacker.privileged".to_owned();
+        }
+
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(calls.lock().unwrap().len(), 1);
         assert!(world
             .resource::<PapyrusProviderContinuationQueue>()
             .is_empty());

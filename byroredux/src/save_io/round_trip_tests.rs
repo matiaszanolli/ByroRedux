@@ -693,6 +693,78 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     );
 }
 
+#[test]
+fn provider_continuation_queue_survives_save_load_and_resumes() {
+    use std::sync::{Arc, Mutex};
+
+    use byroredux_papyrus::parse_script;
+    use byroredux_scripting::{
+        attach_papyrus_provider_program, lower_provider_program, papyrus_provider_system,
+        set_papyrus_provider_runtime, OnCellLoadEvent, PapyrusProviderCallback,
+        PapyrusProviderCatalog, PapyrusProviderContinuationQueue,
+    };
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let reg = build_save_registry();
+    let (script, errors) = parse_script(
+        "ScriptName SaveFixture\n\
+         Event OnLoad()\n\
+           Game.GetModCount()\n\
+           Utility.Wait(5.0)\n\
+           Game.IsPluginInstalled(\"Update.esm\")\n\
+         EndEvent\n",
+    )
+    .unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let catalog = Arc::new(PapyrusProviderCatalog::engine_compatibility());
+    let program = lower_provider_program(&script, catalog.as_ref())
+        .unwrap()
+        .unwrap();
+
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::None))
+        as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&src, Arc::clone(&catalog), Some(callback));
+    let entity = src.spawn();
+    attach_papyrus_provider_program(&mut src, entity, program);
+    src.insert(entity, OnCellLoadEvent);
+    papyrus_provider_system(&src, 0.0);
+    assert_eq!(src.resource::<PapyrusProviderContinuationQueue>().len(), 1);
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.resource::<PapyrusProviderContinuationQueue>().len(), 1);
+
+    let resumed_calls = Arc::new(Mutex::new(Vec::new()));
+    let resumed_calls_for_callback = Arc::clone(&resumed_calls);
+    let callback = Arc::new(move |route: &str, _arguments: &[ScriptValue]| {
+        resumed_calls_for_callback
+            .lock()
+            .unwrap()
+            .push(route.to_owned());
+        Ok(ScriptValue::None)
+    }) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&dst, catalog, Some(callback));
+    papyrus_provider_system(&dst, 5.0);
+
+    assert!(dst
+        .resource::<PapyrusProviderContinuationQueue>()
+        .is_empty());
+    assert_eq!(
+        resumed_calls.lock().unwrap().as_slice(),
+        &[byroredux_sdk::compatibility::PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE.to_owned()]
+    );
+}
+
 /// Regression: #2380 (SAVE-D1-15) — the MQ101 cinematic fragment-effect
 /// state must survive a save/load round trip. Pre-fix,
 /// `ActorCinematicState`/`HorseTetherState`/`CinematicPresentationState`
