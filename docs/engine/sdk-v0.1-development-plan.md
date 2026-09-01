@@ -830,8 +830,12 @@ proceeds by semantic domain and closes only against real mod fixtures.
   optional suffix rules, finite scalar and portable form/entity values, bounded
   strings/calls, result validation, and principal-qualified names. Manifest
   publication is also implemented with bounded unique declarations, component
-  target validation, and TOML conformance. WIT callback dispatch and
-  Papyrus/SCPT call adapters remain pending.**
+  target validation, and TOML conformance. WIT callback dispatch is live with
+  host-side argument/result validation, deferred atomic mutation, and component
+  quarantine on an invalid result. Source ObScript can call the same live host
+  through `ext.<extension-id>.<function>` assignments and conditions without
+  OBSE/xNVSE. Compiled SCDA call encoding and the general Papyrus/source-PEX
+  provider dispatcher remain pending.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
@@ -911,3 +915,65 @@ Begin with Phases 0 and 1, then prove Phase 2 with one activation fixture:
 This slice establishes stable identity, authority, state ownership, and event
 delivery—the four boundaries every later extender-equivalent service depends
 on.
+
+## 14. Next implementation slice — Papyrus provider dispatch
+
+The next slice makes the shared semantic service catalog executable from
+Papyrus source and decompiled PEX. It remains a conservative translator, not a
+general stack VM, and it does not load extender DLLs.
+
+### 14.1 Provider-call intermediate representation
+
+- Add a typed provider-call instruction shared by source and decompiled PEX
+  lowering.
+- Resolve provider/function names case-insensitively using Papyrus rules, but
+  preserve the authenticated extension principal selected by the manifest.
+- Validate arity and scalar/form/entity types against the published SDK
+  declaration before a handler is installed.
+- Reject an unsupported executable statement as a whole handler or unit; do
+  not silently run a partial translation.
+
+Checkpoint commit: `feat(scripting): lower typed Papyrus provider calls`.
+
+### 14.2 Guard-free runtime dispatch
+
+- Snapshot the handler program and callback-local projections while ECS reads
+  are held, then release every query/resource guard before entering Wasm.
+- Route calls through the existing `ExtensionHost::invoke_script_function`
+  path so capability checks, budgets, quarantine, and atomic command batches
+  are not reimplemented in the scripting crate.
+- Queue provider calls from quest/scene fragment execution rather than invoking
+  guests inside `apply_effects`, whose paired mutable resource guards are
+  intentionally live during native effect evaluation.
+- Resume assignments or conditions only after the typed result has been
+  validated and the guest's command batch has committed.
+
+Checkpoint commit: `feat(scripting): execute deferred Papyrus provider calls`.
+
+### 14.3 Source and PEX parity
+
+- Cover one non-latent event handler shape from parsed `.psc` and the equivalent
+  decompiled `.pex` AST.
+- Start with literals, local assignment, return values, and bounded
+  `if`/`elseif` conditions; defer loops, latent calls, object-method dispatch,
+  and arbitrary dynamic invocation.
+- Add a compatibility adapter for one real extender-era provider call only
+  after its canonical engine service has executable semantics.
+- Emit an attributed diagnostic for recognized-but-unsupported providers and
+  unknown functions.
+
+Checkpoint commit: `feat(scripting): run provider calls from source and PEX`.
+
+### 14.4 Exit gate
+
+- The same fixture executes from source and byte-level PEX and produces the
+  same typed result and deferred world mutation.
+- A bad argument, stale handle, missing result, wrong result type, trap, or
+  denied capability leaves the world unchanged and affects only the owning
+  component.
+- Tests prove no ECS guard crosses guest execution and no rejected handler is
+  partially installed.
+- `byroredux-sdk`, `byroredux-mod-runtime`, and `byroredux-scripting` tests and
+  strict Clippy pass for files touched by the slice.
+
+Checkpoint commit: `test(scripting): cover Papyrus SDK provider conformance`.
