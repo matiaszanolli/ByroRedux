@@ -22,7 +22,8 @@ use byroredux_sdk::{
     },
 };
 
-use crate::events::{ActivateEvent, OnCellLoadEvent};
+use crate::events::{ActivateEvent, OnCellLoadEvent, OnTriggerEnterEvent};
+use crate::recurring_update::OnUpdateEvent;
 
 const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
 
@@ -312,6 +313,8 @@ fn lower_literal(
 pub enum PapyrusProviderEvent {
     OnLoad,
     OnActivate,
+    OnTriggerEnter,
+    OnUpdate,
 }
 
 /// One conservative instruction in a translated Papyrus handler.
@@ -411,6 +414,10 @@ fn lower_event_into(
         PapyrusProviderEvent::OnLoad
     } else if event.name.node.eq_ignore_case("OnActivate") {
         PapyrusProviderEvent::OnActivate
+    } else if event.name.node.eq_ignore_case("OnTriggerEnter") {
+        PapyrusProviderEvent::OnTriggerEnter
+    } else if event.name.node.eq_ignore_case("OnUpdate") {
+        PapyrusProviderEvent::OnUpdate
     } else {
         return Ok(());
     };
@@ -725,6 +732,24 @@ pub fn papyrus_provider_system(world: &World, _dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    let trigger_entries = world
+        .query::<OnTriggerEnterEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, event)| (entity, event.triggerers.len()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let updated = world
+        .query::<OnUpdateEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
     };
@@ -735,6 +760,18 @@ pub fn papyrus_provider_system(world: &World, _dt: f32) {
         }
         if activated.contains(&entity) {
             handlers.push(program.handler(PapyrusProviderEvent::OnActivate).to_vec());
+        }
+        if let Some(entry_count) = trigger_entries.get(&entity) {
+            for _ in 0..*entry_count {
+                handlers.push(
+                    program
+                        .handler(PapyrusProviderEvent::OnTriggerEnter)
+                        .to_vec(),
+                );
+            }
+        }
+        if updated.contains(&entity) {
+            handlers.push(program.handler(PapyrusProviderEvent::OnUpdate).to_vec());
         }
     }
     drop(programs);
@@ -1196,6 +1233,56 @@ mod tests {
                 ScriptValue::String("clear".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn trigger_enter_and_update_events_dispatch_provider_handlers() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnTriggerEnter(ObjectReference akActionRef)
+                WeatherNative.WeatherAt(7, "trigger")
+            EndEvent
+            Event OnUpdate()
+                WeatherNative.WeatherAt(8, "update")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            Ok(ScriptValue::String("ok".to_owned()))
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+        let first_triggerer = world.spawn();
+        let second_triggerer = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(
+            entity,
+            OnTriggerEnterEvent {
+                triggerers: vec![first_triggerer, second_triggerer],
+            },
+        );
+        world.insert(entity, OnUpdateEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].1[0], ScriptValue::Integer(7));
+        assert_eq!(calls[1].1[0], ScriptValue::Integer(7));
+        assert_eq!(calls[2].1[0], ScriptValue::Integer(8));
     }
 
     #[test]
