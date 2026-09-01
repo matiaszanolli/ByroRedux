@@ -14,10 +14,7 @@ use byroredux_papyrus::ast::{
     AssignOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type,
 };
 use byroredux_sdk::{
-    compatibility::{
-        classify_static_call, papyrus_game_get_mod_by_name_declaration,
-        PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
-    },
+    compatibility::{classify_static_call, papyrus_game_content_declarations},
     identity::ExtensionId,
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
@@ -103,13 +100,11 @@ impl PapyrusProviderCatalog {
     /// Catalog of exact extender-era aliases implemented by engine services.
     pub fn engine_compatibility() -> Self {
         let mut catalog = Self::default();
-        catalog
-            .insert_route(
-                PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE.to_owned(),
-                &papyrus_game_get_mod_by_name_declaration(),
-                false,
-            )
-            .expect("built-in Papyrus compatibility declaration is valid");
+        for function in papyrus_game_content_declarations() {
+            catalog
+                .insert_route(function.route.to_owned(), &function.declaration, false)
+                .expect("built-in Papyrus compatibility declaration is valid");
+        }
         catalog
     }
 
@@ -1099,7 +1094,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             call.route.qualified_name(),
-            PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE
+            byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE
         );
         assert_eq!(
             call.arguments,
@@ -1112,7 +1107,14 @@ mod tests {
         assert!(matches!(
             catalog.insert(
                 &ExtensionId::new("org.example.shadow").unwrap(),
-                &papyrus_game_get_mod_by_name_declaration(),
+                &papyrus_game_content_declarations()
+                    .into_iter()
+                    .find(|function| {
+                        function.route
+                            == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE
+                    })
+                    .unwrap()
+                    .declaration,
             ),
             Err(PapyrusProviderCatalogError::DuplicateAlias { .. })
         ));

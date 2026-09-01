@@ -29,7 +29,13 @@ use byroredux_sdk::actor_values::{
 };
 use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
 use byroredux_sdk::compatibility::{
-    adapt_papyrus_game_get_mod_by_name, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+    adapt_papyrus_game_get_light_mod_by_name, adapt_papyrus_game_get_light_mod_count,
+    adapt_papyrus_game_get_light_mod_name, adapt_papyrus_game_get_mod_by_name,
+    adapt_papyrus_game_get_mod_count, adapt_papyrus_game_get_mod_name,
+    adapt_papyrus_game_is_plugin_installed, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -683,18 +689,53 @@ impl ExtensionHost {
         qualified_name: &str,
         arguments: &[ScriptValue],
     ) -> Result<ScriptValue, ExtensionHostError> {
-        if qualified_name == PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE {
-            let [ScriptValue::String(plugin)] = arguments else {
+        let value = match (qualified_name, arguments) {
+            (PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
+                adapt_papyrus_game_get_mod_count(&self.content_catalog),
+            )),
+            (PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, [ScriptValue::String(plugin)]) => {
+                ScriptValue::Integer(i64::from(adapt_papyrus_game_get_mod_by_name(
+                    &self.content_catalog,
+                    plugin,
+                )))
+            }
+            (PAPYRUS_GAME_GET_MOD_NAME_ROUTE, [ScriptValue::Integer(index)]) => {
+                ScriptValue::String(adapt_papyrus_game_get_mod_name(
+                    &self.content_catalog,
+                    *index,
+                ))
+            }
+            (PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, [ScriptValue::String(plugin)]) => {
+                ScriptValue::Boolean(adapt_papyrus_game_is_plugin_installed(
+                    &self.content_catalog,
+                    plugin,
+                ))
+            }
+            (PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
+                adapt_papyrus_game_get_light_mod_count(&self.content_catalog),
+            )),
+            (PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, [ScriptValue::String(plugin)]) => {
+                ScriptValue::Integer(i64::from(adapt_papyrus_game_get_light_mod_by_name(
+                    &self.content_catalog,
+                    plugin,
+                )))
+            }
+            (PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, [ScriptValue::Integer(index)]) => {
+                ScriptValue::String(adapt_papyrus_game_get_light_mod_name(
+                    &self.content_catalog,
+                    *index,
+                ))
+            }
+            (route, _) if route.starts_with("byro.content.catalog.") => {
                 return Err(ExtensionHostError::ScriptFunctionUnavailable {
                     function: qualified_name.to_owned(),
-                    reason: "Game.GetModByName requires one string plugin basename".to_owned(),
+                    reason: "engine content-catalog alias received invalid typed arguments"
+                        .to_owned(),
                 });
-            };
-            return Ok(ScriptValue::Integer(i64::from(
-                adapt_papyrus_game_get_mod_by_name(&self.content_catalog, plugin),
-            )));
-        }
-        self.invoke_script_function(qualified_name, arguments)
+            }
+            _ => return self.invoke_script_function(qualified_name, arguments),
+        };
+        Ok(value)
     }
 
     /// Invoke a principal-namespaced typed function and publish its result
@@ -6219,7 +6260,7 @@ mod tests {
     }
 
     #[test]
-    fn game_get_mod_by_name_runs_without_an_extension_package() {
+    fn game_content_aliases_run_without_an_extension_package() {
         let catalog = ContentCatalog::new(vec![
             byroredux_sdk::content::PluginInfo::new(
                 "Skyrim.esm",
@@ -6263,7 +6304,49 @@ mod tests {
                 &[ScriptValue::String("Patch.esl".to_owned())],
             )
             .unwrap(),
-            ScriptValue::Integer(255)
+            ScriptValue::Integer(0x100)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, &[])
+                .unwrap(),
+            ScriptValue::Integer(2)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
+                &[ScriptValue::Integer(0x100)],
+            )
+            .unwrap(),
+            ScriptValue::String("Patch.esl".to_owned())
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+                &[ScriptValue::String("patch.ESL".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, &[])
+                .unwrap(),
+            ScriptValue::Integer(1)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
+                &[ScriptValue::String("Patch.esl".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Integer(0)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+                &[ScriptValue::Integer(0)],
+            )
+            .unwrap(),
+            ScriptValue::String("Patch.esl".to_owned())
         );
     }
 

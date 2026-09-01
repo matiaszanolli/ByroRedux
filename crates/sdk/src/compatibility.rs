@@ -174,52 +174,205 @@ pub struct SourceAlias {
 pub const LEGACY_OBSCRIPT_PLUGIN_LIMIT: usize = 255;
 pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
 
-/// Engine route backing SKSE's `Game.GetModByName` Papyrus extension.
+/// Engine routes backing SKSE's content-discovery extensions on `Game`.
+pub const PAPYRUS_GAME_GET_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-mod-count";
 pub const PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE: &str = "byro.content.catalog.get-mod-by-name";
+pub const PAPYRUS_GAME_GET_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-mod-name";
+pub const PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE: &str = "byro.content.catalog.is-plugin-installed";
+pub const PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-light-mod-count";
+pub const PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE: &str =
+    "byro.content.catalog.get-light-mod-by-name";
+pub const PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-light-mod-name";
 
-/// Typed declaration for the first engine-native extender-era Papyrus alias.
-pub fn papyrus_game_get_mod_by_name_declaration() -> ScriptFunctionDeclaration {
-    ScriptFunctionDeclaration {
-        id: ScriptFunctionId::new("get-mod-by-name")
-            .expect("built-in Papyrus function ID is valid"),
+pub const PAPYRUS_GAME_LIGHT_MOD_OFFSET: i32 = 0x100;
+pub const PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX: i32 = 0xffff;
+
+/// One exact engine-owned Papyrus alias and its typed call declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnginePapyrusFunctionDeclaration {
+    pub route: &'static str,
+    pub declaration: ScriptFunctionDeclaration,
+}
+
+fn papyrus_game_content_declaration(
+    route: &'static str,
+    id: &str,
+    function: &str,
+    parameter: Option<(&str, ScriptValueType)>,
+    result: ScriptValueType,
+    description: &str,
+) -> EnginePapyrusFunctionDeclaration {
+    let declaration = ScriptFunctionDeclaration {
+        id: ScriptFunctionId::new(id).expect("built-in Papyrus function ID is valid"),
         component: ComponentId::new("content-catalog")
             .expect("built-in Papyrus component ID is valid"),
-        parameters: vec![ScriptParameterDeclaration {
-            id: ScriptParameterId::new("plugin").expect("built-in Papyrus parameter ID is valid"),
-            value_type: ScriptValueType::String,
-            optional: false,
-        }],
+        parameters: parameter
+            .map(|(id, value_type)| ScriptParameterDeclaration {
+                id: ScriptParameterId::new(id).expect("built-in Papyrus parameter ID is valid"),
+                value_type,
+                optional: false,
+            })
+            .into_iter()
+            .collect(),
         result: Some(ScriptResultDeclaration {
-            value_type: ScriptValueType::Integer,
+            value_type: result,
             optional: false,
         }),
         papyrus: Some(PapyrusFunctionAlias {
             provider: "Game".to_owned(),
-            function: "GetModByName".to_owned(),
+            function: function.to_owned(),
         }),
-        description: "Return the classic regular-plugin index or 255 when absent".to_owned(),
-    }
+        description: description.to_owned(),
+    };
+    EnginePapyrusFunctionDeclaration { route, declaration }
+}
+
+/// Exact SKSE `Game` functions executable through the content catalog.
+pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    vec![
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+            "get-mod-count",
+            "GetModCount",
+            None,
+            ScriptValueType::Integer,
+            "Return the number of active regular plugins",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+            "get-mod-by-name",
+            "GetModByName",
+            Some(("plugin", ScriptValueType::String)),
+            ScriptValueType::Integer,
+            "Return a regular index, 0x100 plus a light index, or 0xff when absent",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
+            "get-mod-name",
+            "GetModName",
+            Some(("index", ScriptValueType::Integer)),
+            ScriptValueType::String,
+            "Return the regular or offset-light plugin name at an SKSE mod index",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+            "is-plugin-installed",
+            "IsPluginInstalled",
+            Some(("plugin", ScriptValueType::String)),
+            ScriptValueType::Boolean,
+            "Return whether a regular or light plugin is active",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
+            "get-light-mod-count",
+            "GetLightModCount",
+            None,
+            ScriptValueType::Integer,
+            "Return the number of active light plugins",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
+            "get-light-mod-by-name",
+            "GetLightModByName",
+            Some(("plugin", ScriptValueType::String)),
+            ScriptValueType::Integer,
+            "Return a light-plugin index or 0xffff when absent or regular",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+            "get-light-mod-name",
+            "GetLightModName",
+            Some(("index", ScriptValueType::Integer)),
+            ScriptValueType::String,
+            "Return the light-plugin name at an index or an empty string",
+        ),
+    ]
+}
+
+pub fn adapt_papyrus_game_get_mod_count(catalog: &ContentCatalog) -> i32 {
+    plugin_count(catalog, PluginKind::Regular)
 }
 
 /// Execute SKSE's `Game.GetModByName` against the immutable engine catalog.
-///
-/// Light plugins do not occupy classic regular-plugin indices. The sentinel
-/// is preserved for missing/light plugins and malformed over-budget catalogs.
 pub fn adapt_papyrus_game_get_mod_by_name(catalog: &ContentCatalog, plugin: &str) -> i32 {
-    let mut regular_index = 0usize;
-    for entry in catalog.iter() {
-        if entry.kind() != PluginKind::Regular {
-            continue;
-        }
-        if entry.name().eq_ignore_ascii_case(plugin) {
-            return i32::try_from(regular_index)
-                .ok()
-                .filter(|index| *index < LEGACY_OBSCRIPT_MISSING_MOD_INDEX)
-                .unwrap_or(LEGACY_OBSCRIPT_MISSING_MOD_INDEX);
-        }
-        regular_index = regular_index.saturating_add(1);
+    let Some((kind, index)) = plugin_index(catalog, plugin) else {
+        return LEGACY_OBSCRIPT_MISSING_MOD_INDEX;
+    };
+    match kind {
+        PluginKind::Regular => index,
+        PluginKind::Light => PAPYRUS_GAME_LIGHT_MOD_OFFSET.saturating_add(index),
     }
-    LEGACY_OBSCRIPT_MISSING_MOD_INDEX
+}
+
+pub fn adapt_papyrus_game_get_mod_name(catalog: &ContentCatalog, index: i64) -> String {
+    if index < 0 || index > i64::from(i32::MAX) {
+        return String::new();
+    }
+    let index = index as i32;
+    if index > LEGACY_OBSCRIPT_MISSING_MOD_INDEX {
+        plugin_name(
+            catalog,
+            PluginKind::Light,
+            index - PAPYRUS_GAME_LIGHT_MOD_OFFSET,
+        )
+    } else {
+        plugin_name(catalog, PluginKind::Regular, index)
+    }
+}
+
+pub fn adapt_papyrus_game_is_plugin_installed(catalog: &ContentCatalog, plugin: &str) -> bool {
+    catalog.find(plugin).is_some()
+}
+
+pub fn adapt_papyrus_game_get_light_mod_count(catalog: &ContentCatalog) -> i32 {
+    plugin_count(catalog, PluginKind::Light)
+}
+
+pub fn adapt_papyrus_game_get_light_mod_by_name(catalog: &ContentCatalog, plugin: &str) -> i32 {
+    match plugin_index(catalog, plugin) {
+        Some((PluginKind::Light, index)) => index,
+        _ => PAPYRUS_GAME_MISSING_LIGHT_MOD_INDEX,
+    }
+}
+
+pub fn adapt_papyrus_game_get_light_mod_name(catalog: &ContentCatalog, index: i64) -> String {
+    i32::try_from(index).ok().map_or_else(String::new, |index| {
+        plugin_name(catalog, PluginKind::Light, index)
+    })
+}
+
+fn plugin_count(catalog: &ContentCatalog, kind: PluginKind) -> i32 {
+    i32::try_from(
+        catalog
+            .iter()
+            .filter(|plugin| plugin.kind() == kind)
+            .count(),
+    )
+    .expect("content catalog count fits i32")
+}
+
+fn plugin_index(catalog: &ContentCatalog, name: &str) -> Option<(PluginKind, i32)> {
+    let target = catalog.find(name)?.1;
+    let kind = target.kind();
+    let index = catalog
+        .iter()
+        .filter(|plugin| plugin.kind() == kind)
+        .position(|plugin| std::ptr::eq(plugin, target))?;
+    Some((
+        kind,
+        i32::try_from(index).expect("content catalog index fits i32"),
+    ))
+}
+
+fn plugin_name(catalog: &ContentCatalog, kind: PluginKind, index: i32) -> String {
+    let Ok(index) = usize::try_from(index) else {
+        return String::new();
+    };
+    catalog
+        .iter()
+        .filter(|plugin| plugin.kind() == kind)
+        .nth(index)
+        .map_or_else(String::new, |plugin| plugin.name().to_owned())
 }
 
 /// Typed load-order operation recovered from extender-era ObScript.
@@ -710,11 +863,24 @@ fn checked_string(
 /// Classify a static Papyrus call by provider type and function name.
 /// Returns `None` for providers that are not known extender APIs.
 pub fn classify_static_call(provider: &str, function: &str) -> Option<CompatibilityMatch> {
-    if provider.eq_ignore_ascii_case("Game") && function.eq_ignore_ascii_case("GetModByName") {
+    if provider.eq_ignore_ascii_case("Game")
+        && matches_ignore_ascii_case(
+            function,
+            &[
+                "GetModCount",
+                "GetModByName",
+                "GetModName",
+                "IsPluginInstalled",
+                "GetLightModCount",
+                "GetLightModByName",
+                "GetLightModName",
+            ],
+        )
+    {
         return Some(native(
             ExtenderFamily::Skse,
             CONTENT_CATALOG_SERVICE,
-            "executed by the engine content catalog with the classic 255 missing sentinel",
+            "executed by the engine content catalog with exact regular/light index semantics",
         ));
     }
     if provider.eq_ignore_ascii_case("SKSE") {
@@ -1000,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn papyrus_get_mod_by_name_uses_regular_indices_and_the_legacy_sentinel() {
+    fn papyrus_game_content_aliases_preserve_regular_and_light_indices() {
         let catalog = ContentCatalog::new(vec![
             PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
             PluginInfo::new("Patch.esl", 2_u128.to_be_bytes(), PluginKind::Light).unwrap(),
@@ -1014,15 +1180,42 @@ mod tests {
         );
         assert_eq!(
             adapt_papyrus_game_get_mod_by_name(&catalog, "Patch.esl"),
-            255
+            0x100
         );
         assert_eq!(
             adapt_papyrus_game_get_mod_by_name(&catalog, "Missing.esp"),
             255
         );
-        papyrus_game_get_mod_by_name_declaration()
-            .validate()
-            .unwrap();
+        assert_eq!(adapt_papyrus_game_get_mod_count(&catalog), 2);
+        assert_eq!(adapt_papyrus_game_get_mod_name(&catalog, 1), "Update.esm");
+        assert_eq!(
+            adapt_papyrus_game_get_mod_name(&catalog, 0x100),
+            "Patch.esl"
+        );
+        assert_eq!(adapt_papyrus_game_get_mod_name(&catalog, 255), "");
+        assert!(adapt_papyrus_game_is_plugin_installed(
+            &catalog,
+            "patch.ESL"
+        ));
+        assert_eq!(adapt_papyrus_game_get_light_mod_count(&catalog), 1);
+        assert_eq!(
+            adapt_papyrus_game_get_light_mod_by_name(&catalog, "Patch.esl"),
+            0
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_light_mod_by_name(&catalog, "Skyrim.esm"),
+            0xffff
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_light_mod_name(&catalog, 0),
+            "Patch.esl"
+        );
+        assert_eq!(adapt_papyrus_game_get_light_mod_name(&catalog, -1), "");
+        let declarations = papyrus_game_content_declarations();
+        assert_eq!(declarations.len(), 7);
+        for declaration in declarations {
+            declaration.declaration.validate().unwrap();
+        }
         assert_eq!(
             classify_static_call("game", "getmodbyname")
                 .unwrap()
