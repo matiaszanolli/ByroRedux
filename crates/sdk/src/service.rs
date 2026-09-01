@@ -35,6 +35,8 @@ pub const WORLD_TRANSFORM_READ_CAPABILITY: &str = "byro.world.transform.read";
 pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 /// Capability required to publish and execute manifest-declared console commands.
 pub const CONSOLE_REGISTER_CAPABILITY: &str = "byro.console.register";
+/// Capability required to read the public engine-settings snapshot.
+pub const SETTINGS_READ_CAPABILITY: &str = "byro.settings.read";
 /// Service providing principal and host-contract discovery.
 pub const CONTEXT_SERVICE: &str = "byro.context";
 /// Service providing bounded attributed diagnostics.
@@ -51,6 +53,8 @@ pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// Service providing bounded, principal-namespaced console callbacks.
 pub const CONSOLE_SERVICE: &str = "byro.console";
+/// Service providing stable typed read-only engine settings.
+pub const SETTINGS_SERVICE: &str = "byro.settings";
 /// WIT world implemented by executable extension components.
 pub const EXTENSION_WORLD_SERVICE: &str = "byro.mod-host.extension";
 /// Canonical activation event identifier.

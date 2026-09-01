@@ -26,10 +26,11 @@ use byroredux_sdk::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
-    WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY, SETTINGS_SERVICE,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
+use byroredux_sdk::settings::{SettingValue, SettingsSnapshot, MAX_SETTING_KEY_BYTES};
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand, PrincipalStorageValue};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -243,6 +244,10 @@ impl SandboxRuntime {
                 CONSOLE_REGISTER_CAPABILITY,
                 "Publish and execute bounded principal-namespaced console commands",
             ),
+            (
+                SETTINGS_READ_CAPABILITY,
+                "Read stable typed public engine settings",
+            ),
         ] {
             catalog
                 .register_capability(CapabilityDescriptor {
@@ -252,6 +257,17 @@ impl SandboxRuntime {
                 })
                 .map_err(|error| SandboxError::Link(error.to_string()))?;
         }
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(SETTINGS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(SETTINGS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
         catalog
             .register_service(ServiceDescriptor {
                 id: ServiceId::new(CONSOLE_SERVICE)
@@ -437,6 +453,7 @@ impl SandboxRuntime {
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
+            engine_settings: Arc::new(SettingsSnapshot::default()),
             subscribed_to_activate: manifest
                 .subscriptions
                 .iter()
@@ -1019,6 +1036,11 @@ impl ModInstance {
         self.store.data_mut().content_catalog = catalog;
     }
 
+    /// Replace the immutable public engine-settings snapshot.
+    pub fn set_engine_settings_snapshot(&mut self, settings: Arc<SettingsSnapshot>) {
+        self.store.data_mut().engine_settings = settings;
+    }
+
     /// Quarantine an active instance after the host rejects its deferred
     /// command batch.
     ///
@@ -1147,6 +1169,7 @@ struct HostState {
     principal_storage: BTreeMap<StorageKey, PrincipalStorageValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
     content_catalog: Arc<ContentCatalog>,
+    engine_settings: Arc<SettingsSnapshot>,
     pending_commands: Vec<HostCommand>,
     max_commands_per_entry: usize,
     accepting_commands: bool,
@@ -1808,6 +1831,24 @@ impl context::Host for HostState {
             .service_version(&service)
             .map(ToString::to_string))
     }
+
+    fn engine_setting(&mut self, key: String) -> wasmtime::Result<Option<context::SettingValue>> {
+        if !self.grants.contains(SETTINGS_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {SETTINGS_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if key.is_empty() || key.len() > MAX_SETTING_KEY_BYTES || key.chars().any(char::is_control)
+        {
+            wasmtime::bail!("invalid engine setting key");
+        }
+        Ok(self.engine_settings.get(&key).map(|value| match value {
+            SettingValue::Boolean(value) => context::SettingValue::Boolean(*value),
+            SettingValue::Number(value) => context::SettingValue::Number(*value),
+            SettingValue::Choice(value) => context::SettingValue::Choice(value.clone()),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1903,6 +1944,7 @@ mod projection_tests {
             ]),
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
+            engine_settings: Arc::new(SettingsSnapshot::default()),
             pending_commands: Vec::new(),
             max_commands_per_entry: 1,
             accepting_commands: false,
@@ -1987,6 +2029,17 @@ mod projection_tests {
                 ])
                 .unwrap(),
             ),
+            engine_settings: Arc::new(
+                SettingsSnapshot::new([
+                    ("render.vsync".to_owned(), SettingValue::Boolean(false)),
+                    ("gameplay.fov".to_owned(), SettingValue::Number(120.0)),
+                    (
+                        "render.upscaler".to_owned(),
+                        SettingValue::Choice("taa".to_owned()),
+                    ),
+                ])
+                .unwrap(),
+            ),
             pending_commands: Vec::new(),
             max_commands_per_entry: 1,
             accepting_commands: false,
@@ -2043,5 +2096,32 @@ mod projection_tests {
             "../escape.esm".to_owned(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn engine_settings_are_typed_bounded_and_capability_gated() {
+        let mut state = content_host_state(true);
+        state.grants.grant(SETTINGS_READ_CAPABILITY).unwrap();
+        assert!(matches!(
+            <HostState as context::Host>::engine_setting(&mut state, "gameplay.fov".to_owned(),)
+                .unwrap(),
+            Some(context::SettingValue::Number(120.0))
+        ));
+        assert!(
+            <HostState as context::Host>::engine_setting(&mut state, "unknown".to_owned())
+                .unwrap()
+                .is_none()
+        );
+
+        let mut denied = content_host_state(false);
+        assert!(<HostState as context::Host>::engine_setting(
+            &mut denied,
+            "render.vsync".to_owned(),
+        )
+        .is_err());
+        assert!(
+            <HostState as context::Host>::engine_setting(&mut state, "bad\nkey".to_owned(),)
+                .is_err()
+        );
     }
 }

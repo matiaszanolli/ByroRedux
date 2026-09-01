@@ -41,6 +41,7 @@ use byroredux_sdk::service::{
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
     SESSION_EVENT, UPDATE_EVENT,
 };
+use byroredux_sdk::settings::{SettingValue as SdkSettingValue, SettingsSnapshot};
 use byroredux_sdk::storage::{
     HostCommand, PersistedPrincipalStorage, PrincipalStorageError, PrincipalStorageLimits,
     PrincipalStorageStore,
@@ -237,6 +238,7 @@ pub(crate) struct ExtensionHost {
     retained_storage: Vec<PersistedPrincipalStorage>,
     pending_custom_events: Vec<CustomEvent>,
     content_catalog: Arc<ContentCatalog>,
+    engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
 }
 
@@ -259,6 +261,7 @@ impl ExtensionHost {
             retained_storage: Vec::new(),
             pending_custom_events: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
+            engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
         })
     }
@@ -384,6 +387,7 @@ impl ExtensionHost {
                 .runtime
                 .instantiate(&compiled, manifest, grants.clone())?;
             instance.set_content_catalog_snapshot(Arc::clone(&self.content_catalog));
+            instance.set_engine_settings_snapshot(Arc::clone(&self.engine_settings));
             instance.initialize()?;
             staged_diagnostics.extend(instance.take_logs().into_iter().map(|entry| {
                 ExtensionDiagnostic::Log {
@@ -523,6 +527,18 @@ impl ExtensionHost {
             hosted
                 .instance
                 .set_content_catalog_snapshot(Arc::clone(&catalog));
+        }
+    }
+
+    fn set_engine_settings(&mut self, settings: Arc<SettingsSnapshot>) {
+        if *self.engine_settings == *settings {
+            return;
+        }
+        self.engine_settings = Arc::clone(&settings);
+        for hosted in &mut self.components {
+            hosted
+                .instance
+                .set_engine_settings_snapshot(Arc::clone(&settings));
         }
     }
 
@@ -1907,6 +1923,39 @@ pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
         .set_content_catalog(catalog);
 }
 
+/// Publish public engine configuration before sandbox callbacks run.
+pub(crate) fn extension_engine_settings_sync_system(world: &World, _dt: f32) {
+    let Some(settings) = engine_settings_snapshot(world) else {
+        return;
+    };
+    let host = world
+        .try_resource::<ExtensionHostSlot>()
+        .and_then(|slot| slot.host());
+    let Some(host) = host else {
+        return;
+    };
+    host.lock()
+        .expect("ExtensionHost mutex poisoned by a host panic")
+        .set_engine_settings(settings);
+}
+
+fn engine_settings_snapshot(world: &World) -> Option<Arc<SettingsSnapshot>> {
+    let registry = world.try_resource::<byroredux_core::settings::SettingsRegistry>()?;
+    let entries = registry.entries().map(|entry| {
+        let value = match &entry.value {
+            byroredux_core::settings::SettingValue::Bool(value) => SdkSettingValue::Boolean(*value),
+            byroredux_core::settings::SettingValue::Number(value) => {
+                SdkSettingValue::Number(*value)
+            }
+            byroredux_core::settings::SettingValue::Choice(value) => {
+                SdkSettingValue::Choice(value.clone())
+            }
+        };
+        (entry.id.clone(), value)
+    });
+    SettingsSnapshot::new(entries).ok().map(Arc::new)
+}
+
 /// Late-stage adapter from transient ECS markers to sandbox callbacks.
 ///
 /// Every ECS guard is dropped before the host mutex is acquired and before any
@@ -2371,6 +2420,9 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
 
     let mut staged_host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default())?;
+    if let Some(settings) = engine_settings_snapshot(world) {
+        staged_host.set_engine_settings(settings);
+    }
     let mut sources = BTreeMap::<ExtensionId, PathBuf>::new();
     let mut manifests = Vec::with_capacity(manifest_paths.len());
     for path in manifest_paths {
@@ -4427,6 +4479,43 @@ mod tests {
         assert_eq!(host.content_catalog.len(), 2);
         assert_eq!(host.content_catalog.plugin(0).unwrap().name(), "Skyrim.esm");
         assert_eq!(host.content_catalog.find("CREATION.ESL").unwrap().0, 1);
+    }
+
+    #[test]
+    fn engine_settings_sync_publishes_public_configuration_to_the_host() {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        let mut settings = byroredux_core::settings::SettingsRegistry::default();
+        settings
+            .register(byroredux_core::settings::SettingEntry::slider(
+                "gameplay.fov",
+                "Gameplay",
+                "FOV",
+                "test",
+                90.0,
+                45.0,
+                120.0,
+                1.0,
+                "degrees",
+            ))
+            .unwrap();
+        settings
+            .set(
+                "gameplay.fov",
+                byroredux_core::settings::SettingValue::Number(110.0),
+            )
+            .unwrap();
+        world.insert_resource(settings);
+        world.insert_resource(slot);
+
+        extension_engine_settings_sync_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        assert_eq!(
+            host.engine_settings.get("gameplay.fov"),
+            Some(&byroredux_sdk::settings::SettingValue::Number(110.0))
+        );
     }
 
     #[test]

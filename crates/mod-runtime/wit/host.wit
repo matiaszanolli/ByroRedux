@@ -14,10 +14,17 @@ interface logging {
 
 /// Read-only facts about the current sandbox principal.
 interface context {
+    variant setting-value {
+        boolean(bool),
+        number(f32),
+        choice(string),
+    }
+
     principal-id: func() -> string;
     has-capability: func(capability: string) -> bool;
     sdk-version: func() -> string;
     service-version: func(service: string) -> option<string>;
+    engine-setting: func(key: string) -> option<setting-value>;
 }
 
 /// Principal-owned, bounded custom/mod event publication and callback-local

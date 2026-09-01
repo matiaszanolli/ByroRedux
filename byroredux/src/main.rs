@@ -553,10 +553,55 @@ impl Drop for App {
     }
 }
 
+fn install_universal_settings(
+    world: &mut World,
+    args: &[String],
+    renderer_config: &mut RendererConfig,
+) {
+    // One core-owned model feeds the launcher, in-game menu, and sandbox SDK.
+    // Subsystems register entries without depending on a presentation layer.
+    let mut settings = SettingsRegistry::default();
+    byroredux_debug_ui::register_builtin_settings(&mut settings)
+        .expect("debug-UI built-in settings must be valid and unique");
+    interaction::register_input_settings(&mut settings)
+        .expect("input settings must be valid and unique");
+    let settings_persistence = settings_io::SettingsPersistence::discover();
+    settings_io::load(&mut settings, &settings_persistence);
+
+    // Explicit CLI selection wins for reproducible benchmarks; ordinary
+    // launches inherit the persisted menu value before Vulkan is created.
+    let explicit_upscaler = args
+        .iter()
+        .any(|arg| arg == "--upscaler" || arg == "--fsr-quality");
+    if explicit_upscaler {
+        let active_upscaler = renderer_config.upscaler.to_string();
+        if let Err(error) = settings.set(
+            byroredux_debug_ui::UPSCALER_SETTING_ID,
+            SettingValue::Choice(active_upscaler.clone()),
+        ) {
+            log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
+        }
+    } else if let Some(SettingValue::Choice(spec)) = settings
+        .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+        .map(|entry| &entry.value)
+    {
+        match cli_args::parse_upscaler_spec(spec) {
+            Ok(mode) => renderer_config.upscaler = mode,
+            Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
+        }
+    }
+    world.insert_resource(settings);
+    world.insert_resource(settings_persistence);
+    interaction::sync_registered_settings(world);
+}
+
 impl App {
     fn new(debug_mode: bool, args: &[String], mut renderer_config: RendererConfig) -> Self {
         // Three-phase construction (#1670) — see the helpers in `boot`.
         let mut world = boot::build_world(debug_mode, args);
+        // Install the universal typed registry before extension initialization
+        // so `initialize` observes the same persisted values as engine/UI code.
+        install_universal_settings(&mut world, args, &mut renderer_config);
         if let Err(error) = extensions::load_requested_extensions(&world, args) {
             // Executable components are an optional attachment. Reject the
             // requested code profile atomically while leaving the base engine
@@ -623,45 +668,6 @@ impl App {
                 log::warn!("new-game extension lifecycle event was not queued: {error}");
             }
         }
-
-        // Universal settings live in core and are presented by the on-screen
-        // overlay. Subsystems can register additional entries here without
-        // teaching the Settings tab about renderer/game-specific resources.
-        let mut settings = SettingsRegistry::default();
-        byroredux_debug_ui::register_builtin_settings(&mut settings)
-            .expect("debug-UI built-in settings must be valid and unique");
-        interaction::register_input_settings(&mut settings)
-            .expect("input settings must be valid and unique");
-        let settings_persistence = settings_io::SettingsPersistence::discover();
-        settings_io::load(&mut settings, &settings_persistence);
-
-        // Explicit command-line renderer selection wins for reproducible
-        // benchmarks and diagnostics. Ordinary launches inherit the persisted
-        // menu selection before VulkanContext is created, avoiding an
-        // expensive first-frame upscaler rebuild.
-        let explicit_upscaler = args
-            .iter()
-            .any(|arg| arg == "--upscaler" || arg == "--fsr-quality");
-        if explicit_upscaler {
-            let active_upscaler = renderer_config.upscaler.to_string();
-            if let Err(error) = settings.set(
-                byroredux_debug_ui::UPSCALER_SETTING_ID,
-                SettingValue::Choice(active_upscaler.clone()),
-            ) {
-                log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
-            }
-        } else if let Some(SettingValue::Choice(spec)) = settings
-            .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
-            .map(|entry| &entry.value)
-        {
-            match cli_args::parse_upscaler_spec(spec) {
-                Ok(mode) => renderer_config.upscaler = mode,
-                Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
-            }
-        }
-        world.insert_resource(settings);
-        world.insert_resource(settings_persistence);
-        interaction::sync_registered_settings(&world);
 
         Self {
             window: None,

@@ -25,8 +25,8 @@ use byroredux_sdk::service::{
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
     INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY,
+    SETTINGS_READ_CAPABILITY, SETTINGS_SERVICE, STORAGE_READ_OWN_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -1609,6 +1609,13 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(CONSOLE_REGISTER_CAPABILITY));
+    assert_eq!(
+        runtime.catalog().service_version(SETTINGS_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime
+        .catalog()
+        .supports_capability(SETTINGS_READ_CAPABILITY));
 }
 
 #[test]

@@ -65,7 +65,12 @@ packages publish only under `ext.<extension-id>.*`, route to an authenticated
 component/declaration index, receive bounded callback-local arguments, return
 bounded output, and commit mutations through the existing atomic deferred
 batch. Denial leaves no command behind and a guest fault quarantines only its
-component; settings remain the next half of this common-infrastructure slice.
+component. Typed settings reads are now engine-owned too:
+`byro.settings.read` projects the same persisted universal `SettingsRegistry`
+consumed by native menus into bounded bool/number/choice values, is available
+during component initialization, and refreshes before later callbacks.
+Manifest-declared, principal-namespaced setting registration and deferred
+writes remain.
 
 ## 1. Outcome
 
@@ -489,9 +494,10 @@ Exit gate:
 ### Phase 4 — save integration and first extender facilities
 
 Status: **Exact-version entity-attached and principal-storage persistence
-and the first read-only plugin/form catalog plus manifest-declared namespaced
-console registration implemented; migrations, service aliases, record metadata
-queries, typed settings, and real-mod fixtures remain pending.**
+and the first read-only plugin/form catalog, manifest-declared namespaced
+console registration, and typed universal-settings reads implemented;
+migrations, service aliases, record metadata queries, namespaced setting
+registration/writes, and real-mod fixtures remain pending.**
 
 Deliverables:
 
@@ -601,7 +607,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
 - Namespaced console commands and settings. **Manifest-declared commands are
   implemented under the engine-owned `ext.<extension-id>.*` namespace with
   bounded arguments/output, atomic deferred mutation, capability denial, and
-  per-component fault isolation; typed settings remain.**
+  per-component fault isolation. Capability-gated typed reads project the
+  native universal settings registry with startup-correct and live-refreshed
+  bool/number/choice values; principal-namespaced registration and deferred
+  writes remain.**
 - Plugin/form/dependency introspection. **Loaded regular/light plugin
   enumeration, case-insensitive basename lookup, stable source identity, and
   bounded portable form qualification are implemented behind

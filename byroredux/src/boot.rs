@@ -1654,6 +1654,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // boundary that prevents nested/reentrant guest execution.
     scheduler.add_exclusive_with_access(
         Stage::Late,
+        crate::extensions::extension_engine_settings_sync_system,
+        Access::new()
+            .reads_resource::<byroredux_core::settings::SettingsRegistry>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
         crate::extensions::extension_content_catalog_sync_system,
         Access::new()
             .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
@@ -2276,6 +2283,7 @@ mod fragment_activation_order_tests {
                 .unwrap_or_else(|| panic!("{needle} is no longer registered in boot.rs"))
         };
 
+        let settings = pos("crate::extensions::extension_engine_settings_sync_system");
         let catalog = pos("crate::extensions::extension_content_catalog_sync_system");
         let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
         let activation = pos("crate::extensions::extension_activation_dispatch_system");
@@ -2287,7 +2295,8 @@ mod fragment_activation_order_tests {
         let update = pos("crate::extensions::extension_update_dispatch_system");
         let cleanup = pos("byroredux_scripting::event_cleanup_system");
         assert!(
-            catalog < custom
+            settings < custom
+                && catalog < custom
                 && custom < activation
                 && custom < cleanup
                 && activation < cleanup
