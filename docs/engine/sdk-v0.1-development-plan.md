@@ -95,11 +95,13 @@ Wasm host after ECS guards are released. Trigger handlers preserve one dispatch
 per entering actor. The subset supports scalar locals, literal arguments,
 assignments, and bounded boolean branches with negation, short-circuit logical
 operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
-and object expressions, broader events, latent calls, and dynamic object
-dispatch remain open. Quest and scene fragments now treat top-level provider
-calls from source/decompiled PEX as sequencing barriers, persist them through
-existing latent continuations, and invoke them only after fragment ECS guards
-are released. Successful calls resume later native effects in the same
+and object expressions, broader events, other latent primitives, continuation
+save persistence, and dynamic object dispatch remain open. Provider-bearing
+handlers support bounded `Utility.Wait` continuations that preserve locals and
+ordered branch/enclosing tails. Quest and scene fragments now treat top-level
+provider calls from source/decompiled PEX as sequencing barriers, persist them
+through existing latent continuations, and invoke them only after fragment ECS
+guards are released. Successful calls resume later native effects in the same
 fragment, including across multiple barriers and supported conditional
 branches; failure aborts that fragment's tail. Quest events, scene invocations,
 and ready latent continuations flush each fragment before the next one begins.
@@ -873,8 +875,11 @@ proceeds by semantic domain and closes only against real mod fixtures.
   barriers and supported conditional branches; failure aborts its remaining
   tail. Quest, scene, and ready-continuation batches now flush every fragment
   before starting the next independent item.
-  Compiled SCDA call encoding, arithmetic/string/object expressions, broader
-  events, latent provider calls, and dynamic object dispatch remain pending.
+  Provider-bearing event handlers now suspend across bounded `Utility.Wait`
+  calls while preserving locals and ordered branch/enclosing tails. Compiled
+  SCDA call encoding, arithmetic/string/object expressions, broader events,
+  other latent primitives, continuation save persistence, and dynamic object
+  dispatch remain pending.
   Ten exact SKSE `Game` content extensions are now engine-owned
   catalog aliases: `GetModCount`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
@@ -968,9 +973,10 @@ on.
 
 ## 14. Next implementation slice — Papyrus provider dispatch
 
-Status: **In progress.** The first non-latent source/decompiled-PEX vertical
-slice is executable in the live engine. It remains a conservative translator,
-not a general stack VM, and it does not load extender DLLs.
+Status: **In progress.** The first source/decompiled-PEX vertical slice is
+executable in the live engine, including bounded `Utility.Wait` suspension. It
+remains a conservative translator, not a general stack VM, and it does not load
+extender DLLs.
 
 ### 14.1 Provider-call intermediate representation
 
@@ -1017,6 +1023,9 @@ Calls selected inside supported conditional branches preserve the branch and
 enclosing tails. Failed calls abort their fragment tail. Quest events, scene
 invocations, and ready latent continuations flush one ordered fragment at a
 time, with quest cascades reconciled through the canonical sequenced journal.
+Provider-bearing event handlers also suspend across `Utility.Wait`, retain
+typed locals, and resume selected branch and enclosing handler tails in order.
+The continuation queue is bounded; save/load persistence remains open.
 
 ### 14.3 Source and PEX parity
 
@@ -1042,6 +1051,13 @@ dependency-count, and light-plugin master-lookup calls form the first real
 extender-era pack backed by a completed semantic service;
 they execute against the live immutable content catalog without an extension
 package. Broader compatibility aliases and conformance remain open.
+
+Checkpoint commit: `feat(scripting): suspend provider handlers across waits`.
+
+Delivered for literal non-negative `Utility.Wait` calls in provider-bearing
+source/decompiled-PEX handlers, including waits inside supported conditional
+branches. Locals and ordered tails survive the bounded runtime continuation;
+save/load persistence and other latent primitives remain open.
 
 ### 14.4 Exit gate
 

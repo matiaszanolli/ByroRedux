@@ -67,8 +67,9 @@ The current public surface includes:
   host exposes callback-local typed arguments and results. Source ObScript can
   call granted providers as `ext.<extension-id>.<function>`, while the first
   Papyrus runtime slice lowers manifest aliases from source and decompiled PEX
-  for non-latent `OnLoad`, `OnActivate`, `OnTriggerEnter`, and `OnUpdate`
-  handlers. Trigger handlers preserve one dispatch per entering actor. All
+  for `OnLoad`, `OnActivate`, `OnTriggerEnter`, and `OnUpdate` handlers.
+  Bounded `Utility.Wait` continuations preserve locals and ordered branch/
+  handler tails; trigger handlers preserve one dispatch per entering actor. All
   routes execute through the same authenticated host without an extender DLL.
   Conditions support bounded negation, short-circuit conjunction/disjunction,
   and same-type boolean/integer/float comparisons over locals, literals, and
