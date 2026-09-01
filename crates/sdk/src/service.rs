@@ -31,6 +31,8 @@ pub const STORAGE_WRITE_OWN_CAPABILITY: &str = "byro.storage.write-own";
 pub const WORLD_ENTITY_READ_CAPABILITY: &str = "byro.world.entity.read";
 /// Capability required to include world transforms in entity projections.
 pub const WORLD_TRANSFORM_READ_CAPABILITY: &str = "byro.world.transform.read";
+/// Capability required to inspect the active game-content load order.
+pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 /// Service providing principal and host-contract discovery.
 pub const CONTEXT_SERVICE: &str = "byro.context";
 /// Service providing bounded attributed diagnostics.
@@ -43,6 +45,8 @@ pub const EVENT_SERVICE: &str = "byro.events";
 pub const PRINCIPAL_STORAGE_SERVICE: &str = "byro.storage";
 /// Service providing immutable, callback-local entity projections.
 pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
+/// Service providing loaded plugin discovery and portable form qualification.
+pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// WIT world implemented by executable extension components.
 pub const EXTENSION_WORLD_SERVICE: &str = "byro.mod-host.extension";
 /// Canonical activation event identifier.

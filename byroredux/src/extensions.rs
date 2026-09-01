@@ -23,6 +23,7 @@ use byroredux_sdk::component::{
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
     EXTENSION_STATE_FORMAT_VERSION,
 };
+use byroredux_sdk::content::ContentCatalog;
 use byroredux_sdk::event::{
     custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
     EquipmentEvent, HitEvent, InputAction as SdkInputAction, InputActionEvent, InputPhase,
@@ -223,6 +224,7 @@ pub(crate) struct ExtensionHost {
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
     pending_custom_events: Vec<CustomEvent>,
+    content_catalog: Arc<ContentCatalog>,
 }
 
 impl ExtensionHost {
@@ -243,6 +245,7 @@ impl ExtensionHost {
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
             pending_custom_events: Vec::new(),
+            content_catalog: Arc::new(ContentCatalog::default()),
         })
     }
 
@@ -366,6 +369,7 @@ impl ExtensionHost {
             let mut instance = self
                 .runtime
                 .instantiate(&compiled, manifest, grants.clone())?;
+            instance.set_content_catalog_snapshot(Arc::clone(&self.content_catalog));
             instance.initialize()?;
             staged_diagnostics.extend(instance.take_logs().into_iter().map(|entry| {
                 ExtensionDiagnostic::Log {
@@ -397,6 +401,18 @@ impl ExtensionHost {
         self.components.extend(staged_components);
         self.diagnostics.extend(staged_diagnostics);
         Ok(())
+    }
+
+    fn set_content_catalog(&mut self, catalog: Arc<ContentCatalog>) {
+        if Arc::ptr_eq(&self.content_catalog, &catalog) || *self.content_catalog == *catalog {
+            return;
+        }
+        self.content_catalog = Arc::clone(&catalog);
+        for hosted in &mut self.components {
+            hosted
+                .instance
+                .set_content_catalog_snapshot(Arc::clone(&catalog));
+        }
     }
 
     fn catalog(&self) -> &byroredux_sdk::service::ServiceCatalog {
@@ -1671,6 +1687,33 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
             stats.faults
         );
     }
+}
+
+/// Publish the active load-order snapshot before any guest callback runs.
+///
+/// The resolver owns the immutable catalog, so the common path is one Arc
+/// clone plus a pointer comparison and never rebuilds plugin metadata.
+pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
+    let catalog = {
+        let Some(resolver) =
+            world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+        else {
+            return;
+        };
+        resolver.content_catalog()
+    };
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    host.lock()
+        .expect("ExtensionHost mutex poisoned by a host panic")
+        .set_content_catalog(catalog);
 }
 
 /// Late-stage adapter from transient ECS markers to sandbox callbacks.
@@ -4058,6 +4101,31 @@ mod tests {
         let replacement = host.handles.handle_for(7).unwrap();
         assert_ne!(old, replacement);
         assert_eq!(replacement.world_generation(), 2);
+    }
+
+    #[test]
+    fn content_catalog_sync_publishes_the_live_load_order_to_the_host() {
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into(), "Creation.esl".into()],
+            vec![
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+                byroredux_plugin::esm::reader::GlobalSlot::Light(3),
+            ],
+        );
+        let resolver =
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order);
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(resolver);
+        world.insert_resource(slot);
+
+        extension_content_catalog_sync_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        assert_eq!(host.content_catalog.len(), 2);
+        assert_eq!(host.content_catalog.plugin(0).unwrap().name(), "Skyrim.esm");
+        assert_eq!(host.content_catalog.find("CREATION.ESL").unwrap().0, 1);
     }
 
     #[test]

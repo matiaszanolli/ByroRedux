@@ -13,8 +13,10 @@ use crate::asset_provider::Archive;
 use byroredux_core::ecs::Resource;
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_plugin::esm;
+use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Lowercase basename of a plugin path. Used as the global load-order
 /// key (case-insensitive on Bethesda content).
@@ -89,23 +91,50 @@ impl std::ops::Deref for LoadOrder {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GlobalFormIdResolver {
     owners: Vec<(esm::reader::GlobalSlot, PluginId)>,
+    content_catalog: Arc<ContentCatalog>,
 }
 
 impl GlobalFormIdResolver {
     pub(crate) fn from_load_order(load_order: &LoadOrder) -> Self {
+        let owners = load_order
+            .slots
+            .iter()
+            .copied()
+            .zip(
+                load_order
+                    .names
+                    .iter()
+                    .map(|name| PluginId::from_filename(name)),
+            )
+            .collect::<Vec<_>>();
+        let plugins = load_order
+            .names
+            .iter()
+            .zip(&owners)
+            .map(|(name, (slot, plugin))| {
+                let kind = match slot {
+                    esm::reader::GlobalSlot::Regular(_) => PluginKind::Regular,
+                    esm::reader::GlobalSlot::Light(_) => PluginKind::Light,
+                };
+                PluginInfo::new(name, plugin.0.to_be_bytes(), kind)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(ContentCatalog::new);
+        let content_catalog = match plugins {
+            Ok(catalog) => Arc::new(catalog),
+            Err(error) => {
+                log::error!("SDK content catalog rejected the active load order: {error}");
+                Arc::new(ContentCatalog::default())
+            }
+        };
         Self {
-            owners: load_order
-                .slots
-                .iter()
-                .copied()
-                .zip(
-                    load_order
-                        .names
-                        .iter()
-                        .map(|name| PluginId::from_filename(name)),
-                )
-                .collect(),
+            owners,
+            content_catalog,
         }
+    }
+
+    pub(crate) fn content_catalog(&self) -> Arc<ContentCatalog> {
+        Arc::clone(&self.content_catalog)
     }
 
     pub(crate) fn resolve(&self, form_id: u32) -> Option<FormIdPair> {
@@ -495,6 +524,32 @@ mod tests {
                 local: LocalFormId(0xABC),
             })
         );
+    }
+
+    #[test]
+    fn global_form_resolver_projects_regular_and_light_plugins_in_load_order() {
+        let order = LoadOrder::new(
+            vec!["Skyrim.esm".into(), "Creation.esl".into()],
+            vec![
+                esm::reader::GlobalSlot::Regular(0),
+                esm::reader::GlobalSlot::Light(5),
+            ],
+        );
+        let catalog = GlobalFormIdResolver::from_load_order(&order).content_catalog();
+
+        assert_eq!(catalog.plugin(0).unwrap().name(), "Skyrim.esm");
+        assert_eq!(catalog.plugin(0).unwrap().kind(), PluginKind::Regular);
+        assert_eq!(catalog.plugin(1).unwrap().name(), "Creation.esl");
+        assert_eq!(catalog.plugin(1).unwrap().kind(), PluginKind::Light);
+        assert_eq!(catalog.find("CREATION.ESL").unwrap().0, 1);
+        assert_eq!(
+            catalog.qualify_form("creation.esl", 0xabc),
+            Some(byroredux_sdk::identity::FormRef::new(
+                PluginId::from_filename("Creation.esl").0.to_be_bytes(),
+                0xabc,
+            ))
+        );
+        assert_eq!(catalog.qualify_form("Creation.esl", 0x1000), None);
     }
 
     /// FO3+/TES5 24-byte-header record: `type + size + flags + form_id +

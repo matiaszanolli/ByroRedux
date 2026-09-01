@@ -156,6 +156,29 @@ interface world-state {
     get-entity: func(entity: entity-ref) -> option<entity-projection>;
 }
 
+/// Read-only active game-content catalog. Numeric positions are only catalog
+/// ordinals; authored forms are always returned as portable source/local IDs.
+interface content-catalog {
+    use state.{form-ref};
+
+    enum plugin-kind {
+        regular,
+        light,
+    }
+
+    record plugin-info {
+        name: string,
+        source-high: u64,
+        source-low: u64,
+        kind: plugin-kind,
+    }
+
+    plugin-count: func() -> u32;
+    plugin-at: func(index: u32) -> option<plugin-info>;
+    find-plugin: func(name: string) -> option<u32>;
+    qualify-form: func(plugin: string, local: u32) -> option<form-ref>;
+}
+
 /// Minimal lifecycle contract for the first executable-mod runtime slice.
 world extension {
     import logging;
@@ -164,6 +187,7 @@ world extension {
     import state;
     import storage;
     import world-state;
+    import content-catalog;
 
     use state.{entity-ref, form-ref, hit-details, input-action, input-phase, session-phase};
 

@@ -1,9 +1,10 @@
 use crate::bindings::byro::mod_host::{
-    context, events, logging, state, storage as wit_storage, world_state,
+    content_catalog, context, events, logging, state, storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
+use byroredux_sdk::content::{ContentCatalog, PluginKind, MAX_PLUGIN_NAME_BYTES};
 use byroredux_sdk::event::{
     custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
     EquipmentEvent, HitEvent, InputAction, InputActionEvent, InputPhase, PublishEventCommand,
@@ -16,10 +17,11 @@ use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
-    CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
-    EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE,
-    EXTENSION_WORLD_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
+    CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE,
+    CONTENT_CATALOG_READ_CAPABILITY, CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT,
+    EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
+    HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
+    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
@@ -223,6 +225,10 @@ impl SandboxRuntime {
                 WORLD_TRANSFORM_READ_CAPABILITY,
                 "Read world transforms from callback-visible entity projections",
             ),
+            (
+                CONTENT_CATALOG_READ_CAPABILITY,
+                "Inspect loaded game plugins and qualify portable authored forms",
+            ),
         ] {
             catalog
                 .register_capability(CapabilityDescriptor {
@@ -232,6 +238,17 @@ impl SandboxRuntime {
                 })
                 .map_err(|error| SandboxError::Link(error.to_string()))?;
         }
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(CONTENT_CATALOG_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(CONTENT_CATALOG_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
         catalog
             .register_service(ServiceDescriptor {
                 id: ServiceId::new(WORLD_PROJECTION_SERVICE)
@@ -394,6 +411,7 @@ impl SandboxRuntime {
             principal_storage_schema: manifest.principal_storage_schema,
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
+            content_catalog: Arc::new(ContentCatalog::default()),
             subscribed_to_activate: manifest
                 .subscriptions
                 .iter()
@@ -885,6 +903,11 @@ impl ModInstance {
             .collect();
     }
 
+    /// Replace the immutable loaded-content catalog visible to host calls.
+    pub fn set_content_catalog_snapshot(&mut self, catalog: Arc<ContentCatalog>) {
+        self.store.data_mut().content_catalog = catalog;
+    }
+
     /// Quarantine an active instance after the host rejects its deferred
     /// command batch.
     ///
@@ -1004,6 +1027,7 @@ struct HostState {
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, PrincipalStorageValue>,
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
+    content_catalog: Arc<ContentCatalog>,
     pending_commands: Vec<HostCommand>,
     max_commands_per_entry: usize,
     accepting_commands: bool,
@@ -1370,6 +1394,64 @@ impl world_state::Host for HostState {
     }
 }
 
+impl content_catalog::Host for HostState {
+    fn plugin_count(&mut self) -> wasmtime::Result<u32> {
+        self.require_content_catalog_read()?;
+        Ok(u32::try_from(self.content_catalog.len())
+            .expect("content catalog is bounded below u32::MAX"))
+    }
+
+    fn plugin_at(&mut self, index: u32) -> wasmtime::Result<Option<content_catalog::PluginInfo>> {
+        self.require_content_catalog_read()?;
+        Ok(self.content_catalog.plugin(index).map(|plugin| {
+            let source = plugin.source();
+            content_catalog::PluginInfo {
+                name: plugin.name().to_owned(),
+                source_high: u64::from_be_bytes(
+                    source[..8].try_into().expect("eight-byte source half"),
+                ),
+                source_low: u64::from_be_bytes(
+                    source[8..].try_into().expect("eight-byte source half"),
+                ),
+                kind: match plugin.kind() {
+                    PluginKind::Regular => content_catalog::PluginKind::Regular,
+                    PluginKind::Light => content_catalog::PluginKind::Light,
+                },
+            }
+        }))
+    }
+
+    fn find_plugin(&mut self, name: String) -> wasmtime::Result<Option<u32>> {
+        self.require_content_catalog_read()?;
+        validate_plugin_query(&name)?;
+        Ok(self.content_catalog.find(&name).map(|(index, _)| index))
+    }
+
+    fn qualify_form(
+        &mut self,
+        plugin: String,
+        local: u32,
+    ) -> wasmtime::Result<Option<state::FormRef>> {
+        self.require_content_catalog_read()?;
+        validate_plugin_query(&plugin)?;
+        Ok(self
+            .content_catalog
+            .qualify_form(&plugin, local)
+            .map(wit_form_ref))
+    }
+}
+
+fn validate_plugin_query(name: &str) -> wasmtime::Result<()> {
+    if name.is_empty()
+        || name.len() > MAX_PLUGIN_NAME_BYTES
+        || name.chars().any(char::is_control)
+        || name.contains(['/', '\\'])
+    {
+        wasmtime::bail!("invalid plugin basename query");
+    }
+    Ok(())
+}
+
 fn sdk_entity_ref(
     entity: state::EntityRef,
 ) -> wasmtime::Result<byroredux_sdk::identity::EntityRef> {
@@ -1425,6 +1507,16 @@ impl HostState {
         if !self.grants.contains(WORLD_ENTITY_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {WORLD_ENTITY_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_content_catalog_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(CONTENT_CATALOG_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {CONTENT_CATALOG_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -1546,6 +1638,7 @@ impl context::Host for HostState {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+    use byroredux_sdk::content::PluginInfo;
     use byroredux_sdk::identity::FormRef;
     use byroredux_sdk::projection::WorldTransform;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1628,6 +1721,7 @@ mod projection_tests {
                 ),
             ]),
             entity_projections: BTreeMap::new(),
+            content_catalog: Arc::new(ContentCatalog::default()),
             pending_commands: Vec::new(),
             max_commands_per_entry: 1,
             accepting_commands: false,
@@ -1662,5 +1756,105 @@ mod projection_tests {
             wit_storage::Value::Unsigned(9),
         )
         .unwrap());
+    }
+
+    fn content_host_state(granted: bool) -> HostState {
+        let mut grants = CapabilitySet::new();
+        if granted {
+            grants.grant(CONTENT_CATALOG_READ_CAPABILITY).unwrap();
+        }
+        HostState {
+            principal: Principal::new(
+                PrincipalId::new("org.example.content").unwrap(),
+                "Content".to_owned(),
+            )
+            .unwrap(),
+            grants,
+            catalog: Arc::new(ServiceCatalog::new(current_sdk_version())),
+            limits: StoreLimitsBuilder::new().build(),
+            logs: Vec::new(),
+            log_bytes: 0,
+            max_log_entries: 1,
+            max_log_message_bytes: 1,
+            max_log_bytes: 1,
+            log_budget_exhausted: false,
+            schemas: Vec::new(),
+            subscribed_to_activate: false,
+            subscribed_to_cell_load: false,
+            subscribed_to_hit: false,
+            subscribed_to_equipment: false,
+            subscribed_to_input: false,
+            subscribed_to_session: false,
+            custom_subscriptions: Vec::new(),
+            current_custom_event: None,
+            subscribed_to_update: false,
+            principal_storage_schema: None,
+            principal_storage: BTreeMap::new(),
+            entity_projections: BTreeMap::new(),
+            content_catalog: Arc::new(
+                ContentCatalog::new(vec![
+                    PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular)
+                        .unwrap(),
+                    PluginInfo::new("Creation.esl", 2_u128.to_be_bytes(), PluginKind::Light)
+                        .unwrap(),
+                ])
+                .unwrap(),
+            ),
+            pending_commands: Vec::new(),
+            max_commands_per_entry: 1,
+            accepting_commands: false,
+            command_budget_exhausted: false,
+        }
+    }
+
+    #[test]
+    fn content_catalog_host_reads_are_portable_case_insensitive_and_capability_gated() {
+        let mut state = content_host_state(true);
+        assert_eq!(
+            <HostState as content_catalog::Host>::plugin_count(&mut state).unwrap(),
+            2
+        );
+        let plugin = <HostState as content_catalog::Host>::plugin_at(&mut state, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plugin.name, "Creation.esl");
+        assert!(matches!(plugin.kind, content_catalog::PluginKind::Light));
+        assert_eq!(plugin.source_high, 0);
+        assert_eq!(plugin.source_low, 2);
+        assert_eq!(
+            <HostState as content_catalog::Host>::find_plugin(
+                &mut state,
+                "CREATION.ESL".to_owned(),
+            )
+            .unwrap(),
+            Some(1)
+        );
+        let form = <HostState as content_catalog::Host>::qualify_form(
+            &mut state,
+            "creation.esl".to_owned(),
+            0xabc,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (form.source_high, form.source_low, form.local),
+            (0, 2, 0xabc)
+        );
+        assert!(<HostState as content_catalog::Host>::qualify_form(
+            &mut state,
+            "Creation.esl".to_owned(),
+            0x1000,
+        )
+        .unwrap()
+        .is_none());
+
+        let mut denied = content_host_state(false);
+        let error = <HostState as content_catalog::Host>::plugin_count(&mut denied).unwrap_err();
+        assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
+        assert!(<HostState as content_catalog::Host>::find_plugin(
+            &mut state,
+            "../escape.esm".to_owned(),
+        )
+        .is_err());
     }
 }

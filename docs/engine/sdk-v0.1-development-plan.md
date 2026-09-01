@@ -54,7 +54,12 @@ and bounded principal-private persistent storage are implemented, including
 deterministic arrays, string-keyed maps, and primitive sets with atomic
 deferred mutation and save participation; schema
 migrators, additional projection families/events, and status tooling remain
-open.
+open. The first read-only content service is also live: capability-gated guests
+can enumerate the active regular/light plugin order, look up basenames
+case-insensitively, and qualify bounded source-local IDs into portable
+`FormRef` values. The executable projects this immutable snapshot from the
+same resolver that owns live global FormID translation before callbacks run;
+record existence and metadata queries remain open.
 
 ## 1. Outcome
 
@@ -233,6 +238,7 @@ The boundary obeys these rules:
 | `service` | Requests, responses, errors, capability metadata, and service discovery |
 | `event` | Canonical event envelopes, filters, subscription declarations, and delivery cursors |
 | `component` | Dynamic extension-component schemas, rows, ownership, migrations, and query values |
+| `content` | Loaded-plugin snapshots, stable source identity, slot class, and portable form qualification |
 | `storage` | Principal-scoped persistent collections for data that is not entity-attached |
 | `document` | Studio snapshots, object capabilities, commands, history values, and persisted overrides |
 | `host` | Traits used by live and in-memory hosts; no ECS or renderer types |
@@ -477,7 +483,9 @@ Exit gate:
 ### Phase 4 — save integration and first extender facilities
 
 Status: **Exact-version entity-attached and principal-storage persistence
-implemented; migrations, service aliases, and real-mod fixtures pending.**
+and the first read-only plugin/form catalog implemented; migrations, console
+registration, service aliases, record metadata queries, and real-mod fixtures
+pending.**
 
 Deliverables:
 
@@ -486,7 +494,8 @@ Deliverables:
 - Implement typed custom/mod events and principal-scoped persistent
   collections.
 - Add read-only plugin/form catalog services and a namespaced console-command
-  registration slice.
+  registration slice. **Plugin enumeration and portable form qualification are
+  implemented; dependency/record inspection and console registration remain.**
 - Add SDK aliases for the first selected extender-script fixture, mapping it to
   semantic services rather than reproducing its implementation internals.
 - Add corrupt, missing-extension, downgrade, and migration-failure tests.
@@ -583,7 +592,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   the engine's normalized action catalog with press/release edges and validated
   action filters; custom action registration remains.**
 - Namespaced console commands and settings.
-- Plugin/form/dependency introspection.
+- Plugin/form/dependency introspection. **Loaded regular/light plugin
+  enumeration, case-insensitive basename lookup, stable source identity, and
+  bounded portable form qualification are implemented behind
+  `byro.content.catalog.read`; dependency edges and record metadata remain.**
 - Save/load/new-game lifecycle events. **Implemented with `new-game`,
   `save-complete`, and `load-complete` phases, validated manifest filters, a
   bounded engine queue, and post-commit save/load production; numeric slots are
