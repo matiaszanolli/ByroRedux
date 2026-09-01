@@ -310,6 +310,69 @@ fn failed_provider_barrier_aborts_its_native_fragment_tail() {
 }
 
 #[test]
+fn quest_fragments_flush_provider_barriers_before_the_next_event() {
+    use std::sync::Arc;
+
+    use crate::translate::effects::FragmentProviderCall;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    const Q2: QuestFormId = QuestFormId(0x0001_2346);
+
+    let world = fixture();
+    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)))
+        as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+    {
+        let mut fragments = world.resource_mut::<QuestStageFragments>();
+        fragments.insert(
+            Q,
+            1,
+            vec![
+                Effect::ProviderCall(FragmentProviderCall {
+                    route: "ext.example.first-quest".to_owned(),
+                    arguments: Vec::new(),
+                }),
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10,
+                },
+            ],
+        );
+        fragments.insert(
+            Q2,
+            1,
+            vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 20,
+            }],
+        );
+    }
+    emit_advances(&world, &[(Q, 1), (Q2, 1)]);
+
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q2), 20);
+    let player = world.resource::<PlayerEntity>().0;
+    let query = world.query::<QuestStageAdvancedBatch>().unwrap();
+    let batch = query
+        .get(player)
+        .expect("quest SetStage compatibility batch");
+    assert_eq!(
+        batch
+            .0
+            .iter()
+            .filter_map(|advance| (advance.new_stage >= 10).then_some(advance.new_stage))
+            .collect::<Vec<_>>(),
+        vec![10, 20]
+    );
+}
+
+#[test]
 fn apply_effects_selects_get_stage_done_conditional_branch() {
     let world = World::new();
     let effects = vec![Effect::Conditional {
@@ -2668,6 +2731,90 @@ fn scene_phase_fragment_advances_its_owning_quest() {
     assert_eq!(batch.0.len(), 1);
     assert_eq!(batch.0[0].quest, Q);
     assert_eq!(batch.0[0].new_stage, 14);
+}
+
+#[test]
+fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
+    use std::sync::Arc;
+
+    use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
+
+    use crate::translate::effects::FragmentProviderCall;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let mut world = fixture();
+    let callback = Arc::new(|_route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::Integer(1)))
+        as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+    let event = SceneFragmentEvent::PhaseCompletion { phase_index: 5 };
+    {
+        let mut fragments = world.resource_mut::<SceneFragments>();
+        fragments.insert(
+            0x100,
+            event,
+            Q,
+            None,
+            vec![
+                Effect::ProviderCall(FragmentProviderCall {
+                    route: "ext.example.first-scene".to_owned(),
+                    arguments: Vec::new(),
+                }),
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10,
+                },
+            ],
+        );
+        fragments.insert(
+            0x101,
+            event,
+            Q,
+            None,
+            vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 20,
+            }],
+        );
+    }
+    let scene_entity = world.spawn();
+    world.insert(
+        scene_entity,
+        crate::scene::SceneFragmentInvocationBatch(vec![
+            crate::scene::SceneFragmentInvocation {
+                scene_form_id: 0x100,
+                event,
+                script_name: "SF_First".to_owned(),
+                fragment_name: "Fragment_0".to_owned(),
+            },
+            crate::scene::SceneFragmentInvocation {
+                scene_form_id: 0x101,
+                event,
+                script_name: "SF_Second".to_owned(),
+                fragment_name: "Fragment_0".to_owned(),
+            },
+        ]),
+    );
+
+    scene_fragment_dispatch_system(&world, 0.0);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let player = world.resource::<PlayerEntity>().0;
+    let query = world.query::<QuestStageAdvancedBatch>().unwrap();
+    let batch = query
+        .get(player)
+        .expect("scene SetStage compatibility batch");
+    assert_eq!(
+        batch
+            .0
+            .iter()
+            .map(|advance| advance.new_stage)
+            .collect::<Vec<_>>(),
+        vec![10, 20]
+    );
 }
 
 /// #3493 — `1d9a5041` (the #3250 fix) inserted `copied_transform` between

@@ -560,13 +560,10 @@ struct DeferredProviderFragmentStep {
 impl DeferredFragmentEffects {
     /// Snapshot fragment resources before acquiring the quest-state guards.
     ///
-    /// Called unconditionally by every production caller of this batch,
-    /// including on frames with no quest-stage activity at all — see
-    /// [`quest_fragment_dispatch_system`]'s early-bail, which runs AFTER
-    /// this snapshot for the #2539 lock-ordering reason documented on the
-    /// struct above. `QuestDefinitionRegistry::clone()` is an O(1) `Arc`
+    /// Production callers take this snapshot before acquiring quest-state
+    /// guards. `QuestDefinitionRegistry::clone()` is an O(1) `Arc`
     /// refcount bump (#2659 / SCR-D6-NEW11-02), not a deep copy — that's
-    /// what keeps this unconditional call cheap on every load-order size.
+    /// what keeps each fragment snapshot cheap on every load-order size.
     /// `SceneActorBindings::clone()` (#2660) is a real `HashMap` clone, but
     /// the table only holds bound aliases for currently-active quests, not
     /// the whole load order — negligible next to the per-frame ECS work
@@ -680,6 +677,74 @@ impl DeferredFragmentEffects {
         }
         advances
     }
+}
+
+/// Execute one fragment as an ordered unit. Any provider barrier is flushed
+/// after releasing quest-state guards before the caller starts another
+/// independent fragment.
+fn apply_fragment_guard_free(
+    world: &World,
+    effects: &[Effect],
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) -> Vec<QuestStageAdvanced> {
+    let mut deferred = DeferredFragmentEffects::new(world);
+    let mut advances = {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            effects,
+            context,
+            vmad,
+            world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
+    };
+    advances.extend(deferred.apply(world));
+    advances
+}
+
+/// Consume quest-journal entries produced while one guard-free fragment ran.
+/// The journal supplies canonical interleaving (including any host-side stage
+/// changes); direct advances are retained only as a loss-recovery fallback.
+fn poll_fragment_generated_advances(
+    world: &World,
+    direct: Vec<QuestStageAdvanced>,
+) -> Vec<QuestStageAdvanced> {
+    let read = world
+        .resource_mut::<QuestStageState>()
+        .poll_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
+    if read.missed_events > 0 {
+        log::error!(
+            target: "scripting::quest_fragments",
+            "fragment subscriber missed {} retained quest transition(s) during guard-free execution",
+            read.missed_events
+        );
+    }
+    let mut observed = read
+        .events
+        .into_iter()
+        .map(|sequenced| sequenced.event)
+        .collect::<Vec<_>>();
+    let mut observed_counts = HashMap::new();
+    for event in &observed {
+        *observed_counts
+            .entry((event.quest, event.previous_stage, event.new_stage))
+            .or_insert(0usize) += 1;
+    }
+    for event in direct {
+        let count = observed_counts
+            .entry((event.quest, event.previous_stage, event.new_stage))
+            .or_default();
+        if *count > 0 {
+            *count -= 1;
+        } else {
+            observed.push(event);
+        }
+    }
+    observed
 }
 
 /// Read one entity's [`Transform`] as an owned copy, holding no guard on
@@ -1523,9 +1588,9 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     // #2660 (SCR-D6-NEW11-03) — constructed up front (before the resume-
     // condition loop below, which needs the `SceneActorBindings` snapshot
     // for its own `actors_3d_loaded` check) rather than only once `ready`
-    // is known non-empty. Matches `DeferredFragmentEffects::new`'s
-    // documented "called unconditionally by every production caller" rule.
-    let mut deferred = DeferredFragmentEffects::new(world);
+    // is known non-empty. This snapshot is also needed on frames where every
+    // continuation remains blocked.
+    let snapshot = DeferredFragmentEffects::new(world);
     let mut ready = Vec::new();
     let pending = {
         let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() else {
@@ -1552,7 +1617,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                     world,
                     pending.context,
                     actors,
-                    &deferred.scene_actor_bindings,
+                    &snapshot.scene_actor_bindings,
                 ) {
                     ready.push(pending);
                 } else {
@@ -1589,22 +1654,13 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
 
     let mut emitted = Vec::new();
     for pending in ready {
-        let advances = {
-            let (mut stages, mut objectives) =
-                world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
-            apply_effects(
-                &pending.effects,
-                pending.context,
-                pending.vmad.as_ref(),
-                world,
-                &mut stages,
-                &mut objectives,
-                &mut deferred,
-            )
-        };
-        emitted.extend(advances);
+        emitted.extend(apply_fragment_guard_free(
+            world,
+            &pending.effects,
+            pending.context,
+            pending.vmad.as_ref(),
+        ));
     }
-    emitted.extend(deferred.apply(world));
 
     if emitted.is_empty() {
         return;
@@ -2140,26 +2196,17 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
     }
 
     let mut advances = Vec::new();
-    let mut deferred = DeferredFragmentEffects::new(world);
-    {
-        let (mut stages, mut objectives) =
-            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
-        for invocation in invocations {
-            let Some(fragment) = fragments.get(invocation.scene_form_id, invocation.event) else {
-                continue;
-            };
-            advances.extend(apply_effects(
-                &fragment.effects,
-                fragment.context,
-                fragment.vmad.as_ref(),
-                world,
-                &mut stages,
-                &mut objectives,
-                &mut deferred,
-            ));
-        }
+    for invocation in invocations {
+        let Some(fragment) = fragments.get(invocation.scene_form_id, invocation.event) else {
+            continue;
+        };
+        advances.extend(apply_fragment_guard_free(
+            world,
+            &fragment.effects,
+            fragment.context,
+            fragment.vmad.as_ref(),
+        ));
     }
-    advances.extend(deferred.apply(world));
     if advances.is_empty() {
         return;
     }
@@ -2218,21 +2265,19 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     }
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
-    let mut deferred = DeferredFragmentEffects::new(world);
     let mut cascade_steps = 0usize;
+    // The boolean distinguishes authored ingress from a SetStage emitted
+    // by a fragment. The cascade cap must constrain only the latter: a
+    // Skyrim bootstrap can legitimately deliver hundreds of independent
+    // Start Game Enabled quest events in one tick.
+    let mut queue: VecDeque<(QuestFormId, u16, bool)> = VecDeque::new();
+    // Compatibility batches mirror journal events but carry no sequence.
+    // Count mirrors as a multiset: all sequenced journal commits remain in
+    // order, including two legitimate identical transitions, and only the
+    // corresponding unsequenced copies are suppressed.
+    let mut journal_mirrors: HashMap<(QuestFormId, u16, u16), usize> = HashMap::new();
     {
-        let (mut stages, mut objectives) =
-            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
-        // The boolean distinguishes authored ingress from a SetStage emitted
-        // by a fragment. The cascade cap must constrain only the latter: a
-        // Skyrim bootstrap can legitimately deliver hundreds of independent
-        // Start Game Enabled quest events in one tick.
-        let mut queue: VecDeque<(QuestFormId, u16, bool)> = VecDeque::new();
-        // Compatibility batches mirror journal events but carry no sequence.
-        // Count mirrors as a multiset: all sequenced journal commits remain in
-        // order, including two legitimate identical transitions, and only the
-        // corresponding unsequenced copies are suppressed.
-        let mut journal_mirrors: HashMap<(QuestFormId, u16, u16), usize> = HashMap::new();
+        let mut stages = world.resource_mut::<QuestStageState>();
         let journal_read = stages.poll_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
         if journal_read.missed_events > 0 {
             log::error!(
@@ -2259,60 +2304,45 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             }
             queue.push_back((event.quest, event.new_stage, false));
         }
-
-        if queue.is_empty() {
-            return;
-        }
-
-        while let Some((quest, stage, is_cascade)) = queue.pop_front() {
-            if is_cascade {
-                cascade_steps += 1;
-            }
-            if cascade_steps > MAX_CASCADE {
-                log::warn!(
-                    "quest fragment cascade exceeded {MAX_CASCADE} steps at quest {:?} stage {stage}; \
-                     stopping (possible cyclic SetStage)",
-                    quest
-                );
-                break;
-            }
-            let Some(effects) = frags.get(quest, stage) else {
-                continue;
-            };
-            let advances = apply_effects(
-                effects,
-                quest,
-                frags.vmad(quest),
-                world,
-                &mut stages,
-                &mut objectives,
-                &mut deferred,
-            );
-            for adv in advances {
-                // Only cascade genuine transitions (skip a no-op re-set of
-                // the same stage to avoid trivial self-loops). #2124 — this
-                // must compare `adv`'s own previous/new stage, not the
-                // *currently-dispatching* fragment's `(quest, stage)` pair:
-                // comparing against `stage` alone let a different quest's
-                // genuine transition collide (false negative, silently
-                // dropped) or a same-fragment double-`SetStage` re-queue
-                // (false positive, duplicate effect application) whenever
-                // `adv.new_stage` happened to numerically equal `stage`.
-                if adv.previous_stage != adv.new_stage {
-                    queue.push_back((adv.quest, adv.new_stage, true));
-                }
-                chained.push(adv);
-            }
-        }
-
-        // Chained SetStage calls were dispatched synchronously above while
-        // this same state lock excluded other producers. Advance only this
-        // consumer's cursor so they are not replayed next time; every other
-        // subscriber retains its independent position.
-        stages.acknowledge_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
     }
 
-    chained.extend(deferred.apply(world));
+    if queue.is_empty() {
+        return;
+    }
+
+    while let Some((quest, stage, is_cascade)) = queue.pop_front() {
+        if is_cascade {
+            cascade_steps += 1;
+        }
+        if cascade_steps > MAX_CASCADE {
+            log::warn!(
+                "quest fragment cascade exceeded {MAX_CASCADE} steps at quest {:?} stage {stage}; \
+                     stopping (possible cyclic SetStage)",
+                quest
+            );
+            break;
+        }
+        let Some(effects) = frags.get(quest, stage) else {
+            continue;
+        };
+        let direct = apply_fragment_guard_free(world, effects, quest, frags.vmad(quest));
+        let advances = poll_fragment_generated_advances(world, direct);
+        for adv in advances {
+            // Only cascade genuine transitions (skip a no-op re-set of
+            // the same stage to avoid trivial self-loops). #2124 — this
+            // must compare `adv`'s own previous/new stage, not the
+            // *currently-dispatching* fragment's `(quest, stage)` pair:
+            // comparing against `stage` alone let a different quest's
+            // genuine transition collide (false negative, silently
+            // dropped) or a same-fragment double-`SetStage` re-queue
+            // (false positive, duplicate effect application) whenever
+            // `adv.new_stage` happened to numerically equal `stage`.
+            if adv.previous_stage != adv.new_stage {
+                queue.push_back((adv.quest, adv.new_stage, true));
+            }
+            chained.push(adv);
+        }
+    }
 
     // Emit markers for the chained advances so other consumers (journal
     // UI, further-frame dispatch) observe them. Co-opts the same
