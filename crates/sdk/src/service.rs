@@ -61,6 +61,8 @@ pub const WORLD_SPATIAL_READ_CAPABILITY: &str = "byro.world.spatial.read";
 pub const CONTENT_CATALOG_READ_CAPABILITY: &str = "byro.content.catalog.read";
 /// Capability required to publish and execute manifest-declared console commands.
 pub const CONSOLE_REGISTER_CAPABILITY: &str = "byro.console.register";
+/// Capability required to publish manifest-declared typed script functions.
+pub const SCRIPT_FUNCTIONS_REGISTER_CAPABILITY: &str = "byro.scripts.functions.register";
 /// Capability required to read the public engine-settings snapshot.
 pub const SETTINGS_READ_CAPABILITY: &str = "byro.settings.read";
 /// Capability required to register manifest-declared principal settings.
@@ -103,6 +105,8 @@ pub const WORLD_SPATIAL_SERVICE: &str = "byro.world.spatial";
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// Service providing bounded, principal-namespaced console callbacks.
 pub const CONSOLE_SERVICE: &str = "byro.console";
+/// Service providing typed calls from engine scripts into sandbox components.
+pub const SCRIPT_FUNCTIONS_SERVICE: &str = "byro.scripts.functions";
 /// Service providing stable typed read-only engine settings.
 pub const SETTINGS_SERVICE: &str = "byro.settings";
 /// WIT world implemented by executable extension components.

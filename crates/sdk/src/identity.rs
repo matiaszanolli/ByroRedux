@@ -127,6 +127,14 @@ namespaced_id!(
     "Manifest-local identifier for one engine-console command."
 );
 namespaced_id!(
+    ScriptFunctionId,
+    "Manifest-local identifier for one typed function callable by engine scripts."
+);
+namespaced_id!(
+    ScriptParameterId,
+    "Manifest-local identifier for one typed script-function parameter."
+);
+namespaced_id!(
     SettingId,
     "Manifest-local identifier for one principal-owned engine setting."
 );

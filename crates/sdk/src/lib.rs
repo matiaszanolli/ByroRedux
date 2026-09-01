@@ -24,6 +24,7 @@ pub mod perks;
 pub mod projection;
 pub mod relationships;
 pub mod reputation;
+pub mod script_function;
 pub mod service;
 pub mod settings;
 pub mod spatial;

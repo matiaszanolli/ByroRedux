@@ -311,6 +311,7 @@ The boundary obeys these rules:
 | `component` | Dynamic extension-component schemas, rows, ownership, migrations, and query values |
 | `content` | Loaded-plugin snapshots, stable source identity, slot class, and portable form qualification |
 | `storage` | Principal-scoped persistent collections for data that is not entity-attached |
+| `script_function` | Typed, bounded function declarations and values shared by engine scripts and sandbox guests |
 | `document` | Studio snapshots, object capabilities, commands, history values, and persisted overrides |
 | `host` | Traits used by live and in-memory hosts; no ECS or renderer types |
 | `studio` | Bounds, fitting, picking, and temporary prototype compatibility re-exports |
@@ -803,7 +804,12 @@ proceeds by semantic domain and closes only against real mod fixtures.
   radius queries over live authored references are implemented with portable
   identities, deterministic distance ordering, explicit truncation, and no raw
   ECS handles. Safe spawn/despawn remains pending.**
-- Typed script-callable extension functions.
+- Typed script-callable extension functions. **The SDK contract is implemented:
+  manifest-local function/parameter identities, ordered typed parameters,
+  optional suffix rules, finite scalar and portable form/entity values, bounded
+  strings/calls, result validation, and principal-qualified names. Manifest
+  publication, WIT callback dispatch, and Papyrus/SCPT call adapters remain
+  pending.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
