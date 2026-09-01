@@ -554,12 +554,19 @@ string-keyed `JMap` objects, including nested object handles, stable Forms, and
 bit-preserved floats. Successful callbacks commit the bounded registry
 atomically; trapped or rejected callbacks do not. Registries round-trip in the
 engine extension-save payload and survive temporarily unavailable packages.
-The initial source aliases cover object/count/clear/release, typed array
-add/get/set/erase, and typed map get/set/has/remove calls. Each principal is
+The source aliases cover object/count/clear, `isExists`, reference-counted
+retain/release, tagged bulk release, typed array add/get/set/erase, and typed
+map get/set/has/remove calls. Nested object insertion owns the child until that
+entry is replaced, removed, or cleared, and explicit retain counts plus recovery
+tags survive the normal engine save. Zero-owner collection happens
+deterministically at the releasing mutation boundary rather than after
+JContainers' approximate ten-second grace period. Each principal is
 limited to 256 objects, 4096 aggregate entries, and 4096 UTF-8 bytes per key or
 string. `JDB`, path solving, JSON files, Lua, cross-mod global databases, and
 Form/int-keyed map providers remain explicitly unsupported instead of being
 classified as compatible merely because their provider name is recognized.
+The ownership rules and signatures are anchored to JContainers'
+[published lifetime documentation](https://github.com/SilverIce/JContainers/blob/develop/JC.md#object-lifetime-management-rules).
 
 The first event adapter covers fixed-arity
 `Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
@@ -1235,16 +1242,16 @@ owner across `Utility.Wait`. Object-scoped and cross-principal calls fail closed
 
 Checkpoint commit: `feat(scripting): execute JContainers core aliases`.
 
-Delivered for the 37 in-memory `JValue`, `JArray`, and `JMap` functions already
-mapped by the compatibility catalog. The zero-package engine host creates and
+Delivered for the initial 37 in-memory `JValue`, `JArray`, and `JMap` functions
+already mapped by the compatibility catalog. The zero-package engine host creates and
 mutates each archive principal's bounded, save-persistent registry; typed
 integer/float/string/Form/object values, defaulted getters, numeric reads,
 negative array indices, nested handles, map membership/removal, clear, and
 release are callable from ordinary source handlers across `Utility.Wait`.
 Exact arity is revalidated during source/PEX lowering and continuation restore.
 Registries remain isolated even when two script packages receive the same
-integer handle. Ref-counted retain/tag lifetime, JDB/path solving, JSON files,
-Lua, JFormMap/JIntMap, and the larger collection API remain explicit future
+integer handle. JDB/path solving, JSON files, Lua, JFormMap/JIntMap, lifetime
+pools/timed autorelease, and the larger collection API remain explicit future
 packs rather than silently falling through to an installed native extender.
 
 Checkpoint commit: `feat(scripting): execute ModEvent builder aliases`.
@@ -1279,6 +1286,19 @@ builders, so hosted extensions and Papyrus registrations observe one shared
 channel. Save format 15 records the resolved portable sender in suspended
 provider statements and intentionally rejects older tails that cannot express
 that instruction.
+
+Checkpoint commit: `feat(scripting): implement JContainers retain lifetimes`.
+
+Delivered four additional `JValue` lifetime aliases (`retain`,
+`releaseAndRetain`, `releaseObjectsWithTag`, and `isExists`) and corrected
+`release` from unconditional deletion to reference-counted ownership. Nested
+object values now increment ownership and replacements, erases, clears, and
+parent collection release it recursively. Explicit counts and tags are bounded,
+validated, principal-private, and persisted in extension state format 5; save
+format 16 rejects older registries that cannot reconstruct ownership. The
+engine deliberately collects at deterministic mutation boundaries instead of
+emulating JContainers' real-time grace timer. Pools and timed autorelease remain
+an explicit follow-up rather than a hidden behavioral claim.
 
 ### 14.4 Exit gate
 

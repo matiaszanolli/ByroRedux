@@ -442,9 +442,32 @@ pub fn papyrus_legacy_container_declarations() -> Vec<EnginePapyrusFunctionDecla
     let object = [("object", integer, false)];
     let object_key = [("object", integer, false), ("key", string, false)];
     let mut declarations = vec![
+        papyrus_legacy_container_declaration("JValue", "isExists", &object, Some(boolean)),
         papyrus_legacy_container_declaration("JValue", "count", &object, Some(integer)),
         papyrus_legacy_container_declaration("JValue", "clear", &object, None),
+        papyrus_legacy_container_declaration(
+            "JValue",
+            "retain",
+            &[("object", integer, false), ("tag", string, true)],
+            Some(integer),
+        ),
         papyrus_legacy_container_declaration("JValue", "release", &object, Some(integer)),
+        papyrus_legacy_container_declaration(
+            "JValue",
+            "releaseAndRetain",
+            &[
+                ("previous-object", integer, false),
+                ("new-object", integer, false),
+                ("tag", string, true),
+            ],
+            Some(integer),
+        ),
+        papyrus_legacy_container_declaration(
+            "JValue",
+            "releaseObjectsWithTag",
+            &[("tag", string, false)],
+            None,
+        ),
         papyrus_legacy_container_declaration("JArray", "object", &[], Some(integer)),
         papyrus_legacy_container_declaration("JArray", "count", &object, Some(integer)),
         papyrus_legacy_container_declaration("JArray", "clear", &object, None),
@@ -1122,12 +1145,30 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
 
 fn legacy_container_source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     let (provider, function, operation, value_kind) = if provider.eq_ignore_ascii_case("JValue") {
-        if function.eq_ignore_ascii_case("count") {
+        if function.eq_ignore_ascii_case("isExists") {
+            ("JValue", "isExists", "legacy-containers.is-exists", "bool")
+        } else if function.eq_ignore_ascii_case("count") {
             ("JValue", "count", "legacy-containers.count", "signed")
         } else if function.eq_ignore_ascii_case("clear") {
             ("JValue", "clear", "legacy-containers.clear", "none")
+        } else if function.eq_ignore_ascii_case("retain") {
+            ("JValue", "retain", "legacy-containers.retain", "handle")
         } else if function.eq_ignore_ascii_case("release") {
             ("JValue", "release", "legacy-containers.release", "handle")
+        } else if function.eq_ignore_ascii_case("releaseAndRetain") {
+            (
+                "JValue",
+                "releaseAndRetain",
+                "legacy-containers.release-and-retain",
+                "handle",
+            )
+        } else if function.eq_ignore_ascii_case("releaseObjectsWithTag") {
+            (
+                "JValue",
+                "releaseObjectsWithTag",
+                "legacy-containers.release-objects-with-tag",
+                "none",
+            )
         } else {
             return None;
         }
@@ -1849,7 +1890,7 @@ mod tests {
             CompatibilityDisposition::Unsupported
         );
         let declarations = papyrus_legacy_container_declarations();
-        assert_eq!(declarations.len(), 37);
+        assert_eq!(declarations.len(), 41);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -1868,6 +1909,13 @@ mod tests {
                 value_type: ScriptValueType::Integer,
                 optional: false,
             })
+        );
+        let retain = source_alias("JValue", "retain").unwrap();
+        assert_eq!(retain.operation, "legacy-containers.retain");
+        let release_tagged = source_alias("JValue", "releaseObjectsWithTag").unwrap();
+        assert_eq!(
+            release_tagged.operation,
+            "legacy-containers.release-objects-with-tag"
         );
     }
 

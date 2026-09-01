@@ -424,8 +424,17 @@ fn legacy_container_arity(route: &str) -> Option<(usize, usize)> {
     let function = route.strip_prefix(PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX)?;
     Some(match function {
         "jarray-object" | "jmap-object" => (0, 0),
-        "jvalue-count" | "jvalue-clear" | "jvalue-release" | "jarray-count" | "jarray-clear"
-        | "jmap-count" | "jmap-clear" => (1, 1),
+        "jvalue-is-exists"
+        | "jvalue-count"
+        | "jvalue-clear"
+        | "jvalue-release"
+        | "jvalue-release-objects-with-tag"
+        | "jarray-count"
+        | "jarray-clear"
+        | "jmap-count"
+        | "jmap-clear" => (1, 1),
+        "jvalue-retain" => (1, 2),
+        "jvalue-release-and-retain" => (2, 3),
         "jarray-erase-index" | "jmap-has-key" | "jmap-remove-key" => (2, 2),
         function if function.starts_with("jarray-add-") => (2, 3),
         function if function.starts_with("jarray-get-") => (2, 3),

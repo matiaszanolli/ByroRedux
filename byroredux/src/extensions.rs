@@ -1185,6 +1185,9 @@ impl ExtensionHost {
         let result = match (operation, arguments) {
             ("jarray-object", []) => ScriptValue::Integer(i64::from(registry.create_array())),
             ("jmap-object", []) => ScriptValue::Integer(i64::from(registry.create_map())),
+            ("jvalue-is-exists", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Boolean(registry.contains(integer(*handle)?))
+            }
             ("jvalue-count" | "jarray-count" | "jmap-count", [ScriptValue::Integer(handle)]) => {
                 ScriptValue::Integer(i64::from(registry.count(integer(*handle)?)))
             }
@@ -1192,9 +1195,35 @@ impl ExtensionHost {
                 registry.clear(integer(*handle)?);
                 ScriptValue::None
             }
+            ("jvalue-retain", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Integer(i64::from(registry.retain(integer(*handle)?, None)))
+            }
+            ("jvalue-retain", [ScriptValue::Integer(handle), ScriptValue::String(tag)]) => {
+                ScriptValue::Integer(i64::from(registry.retain(integer(*handle)?, Some(tag))))
+            }
             ("jvalue-release", [ScriptValue::Integer(handle)]) => {
                 registry.release(integer(*handle)?);
                 ScriptValue::Integer(0)
+            }
+            (
+                "jvalue-release-and-retain",
+                [ScriptValue::Integer(previous), ScriptValue::Integer(new)],
+            ) => ScriptValue::Integer(i64::from(registry.release_and_retain(
+                integer(*previous)?,
+                integer(*new)?,
+                None,
+            ))),
+            (
+                "jvalue-release-and-retain",
+                [ScriptValue::Integer(previous), ScriptValue::Integer(new), ScriptValue::String(tag)],
+            ) => ScriptValue::Integer(i64::from(registry.release_and_retain(
+                integer(*previous)?,
+                integer(*new)?,
+                Some(tag),
+            ))),
+            ("jvalue-release-objects-with-tag", [ScriptValue::String(tag)]) => {
+                registry.release_objects_with_tag(tag);
+                ScriptValue::None
             }
             ("jarray-erase-index", [ScriptValue::Integer(handle), ScriptValue::Integer(index)]) => {
                 let handle = integer(*handle)?;
@@ -6843,6 +6872,58 @@ mod tests {
             .unwrap(),
             ScriptValue::Integer(0)
         );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jvalue-retain"),
+                &[map.clone(), ScriptValue::String("fixture-owner".to_owned())],
+            )
+            .unwrap(),
+            map
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jvalue-release"),
+                &[array.clone()],
+            )
+            .unwrap(),
+            ScriptValue::Integer(0)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jvalue-is-exists"),
+                &[array.clone()],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jmap-remove-key"),
+                &[map.clone(), ScriptValue::String("obj".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(Some(&first), &route("jvalue-is-exists"), &[array],)
+                .unwrap(),
+            ScriptValue::Boolean(false)
+        );
+        host.invoke_owned_papyrus_provider(
+            Some(&first),
+            &route("jvalue-release-objects-with-tag"),
+            &[ScriptValue::String("fixture-owner".to_owned())],
+        )
+        .unwrap();
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(Some(&first), &route("jvalue-is-exists"), &[map],)
+                .unwrap(),
+            ScriptValue::Boolean(false)
+        );
         assert!(matches!(
             host.invoke_owned_papyrus_provider(None, &route("jarray-object"), &[]),
             Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
@@ -6948,6 +7029,7 @@ mod tests {
             "items".to_owned(),
             byroredux_sdk::legacy_containers::LegacyContainerValue::Object(array),
         ));
+        assert_eq!(registry.retain(map, Some("org.example.storage")), map);
 
         let saved = source.capture_saved_state(&BTreeMap::new()).unwrap();
         assert_eq!(saved.format_version, EXTENSION_STATE_FORMAT_VERSION);
@@ -6962,6 +7044,8 @@ mod tests {
             registry.map_get(map, "items"),
             Some(&byroredux_sdk::legacy_containers::LegacyContainerValue::Object(array))
         );
+        assert_eq!(registry.retain_count(map), 1);
+        assert_eq!(registry.retention_tag(map), Some("org.example.storage"));
 
         let mut unavailable =
             ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
@@ -7383,6 +7467,7 @@ mod tests {
             Event OnLoad()
                 Int values
                 values = JArray.object()
+                values = JValue.retain(values, "fixture-owner")
                 JArray.addInt(values, 10)
                 JArray.addInt(values, 20)
                 JArray.addInt(values, 15, -2)
@@ -7423,6 +7508,8 @@ mod tests {
         let host = live_host.lock().unwrap();
         let registry = host.legacy_containers.get(&principal).unwrap();
         assert_eq!(registry.count(1), 3);
+        assert_eq!(registry.retain_count(1), 1);
+        assert_eq!(registry.retention_tag(1), Some("fixture-owner"));
         assert_eq!(
             registry.map_get(2, "status"),
             Some(&LegacyContainerValue::String("ready".to_owned()))

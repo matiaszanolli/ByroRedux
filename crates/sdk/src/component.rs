@@ -11,7 +11,7 @@ use crate::legacy_containers::PersistedLegacyContainers;
 use crate::storage::PersistedPrincipalStorage;
 
 /// Current engine-owned extension-state payload format.
-pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 4;
+pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 5;
 
 /// Oldest extension-state payload accepted by this SDK. Version 2 predates
 /// legacy container records, which deserialize as an empty list.

@@ -117,7 +117,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 15 adds fixed SendModEvent statements with a resolved portable
 /// sender to saved provider tails. Pre-v15 continuations cannot represent that
 /// tagged instruction and are rejected rather than resumed anonymously.
-pub const FORMAT_MAJOR: u16 = 15;
+/// Version 16 adds explicit JContainers retain counts and recovery tags to the
+/// principal-private container registry. Older saves cannot reconstruct those
+/// ownership relationships without risking premature collection or leaks.
+pub const FORMAT_MAJOR: u16 = 16;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

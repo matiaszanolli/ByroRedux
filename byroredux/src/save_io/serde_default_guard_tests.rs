@@ -367,7 +367,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Fixed SendModEvent statements now retain their resolved portable sender
     // through saved provider tails. The new tagged statement shape makes v15
     // intentionally incompatible with v14 rather than dropping sender identity.
-    const BASELINE_MAJOR: u16 = 15;
+    // JContainers compatibility objects now persist explicit retain counts and
+    // recovery tags. The required registry field makes v16 intentionally
+    // incompatible with v15 rather than silently discarding ownership.
+    const BASELINE_MAJOR: u16 = 16;
     const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9295_0be7_8d8f_b13f;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,

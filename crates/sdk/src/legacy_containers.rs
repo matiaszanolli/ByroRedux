@@ -64,6 +64,18 @@ pub enum LegacyContainerError {
         "legacy container string or map key exceeds {MAX_LEGACY_CONTAINER_STRING_BYTES} bytes"
     )]
     StringTooLong,
+    #[error("legacy container retention metadata is invalid")]
+    InvalidRetention,
+    #[error("legacy container contains a missing object handle")]
+    InvalidObjectReference,
+}
+
+/// Explicit Papyrus ownership retained for one compatibility object.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyContainerRetention {
+    count: u32,
+    tag: Option<String>,
 }
 
 /// Principal-local object table replacing JContainers' native-plugin heap.
@@ -72,6 +84,7 @@ pub enum LegacyContainerError {
 pub struct LegacyContainerRegistry {
     next_handle: i32,
     containers: BTreeMap<i32, LegacyContainer>,
+    retentions: BTreeMap<i32, LegacyContainerRetention>,
 }
 
 impl Default for LegacyContainerRegistry {
@@ -85,6 +98,7 @@ impl LegacyContainerRegistry {
         Self {
             next_handle: 1,
             containers: BTreeMap::new(),
+            retentions: BTreeMap::new(),
         }
     }
 
@@ -115,16 +129,109 @@ impl LegacyContainerRegistry {
     }
 
     pub fn clear(&mut self, handle: i32) -> bool {
-        match self.containers.get_mut(&handle) {
-            Some(LegacyContainer::Array(values)) => values.clear(),
-            Some(LegacyContainer::Map(values)) => values.clear(),
+        let released = match self.containers.get_mut(&handle) {
+            Some(LegacyContainer::Array(values)) => std::mem::take(values),
+            Some(LegacyContainer::Map(values)) => std::mem::take(values).into_values().collect(),
             None => return false,
-        }
+        };
+        self.collect_released_values(released);
         true
     }
 
+    /// Add one explicit owner and optionally associate its recovery tag.
+    /// Invalid handles and bounded-state exhaustion return JContainers' zero
+    /// sentinel without changing the registry.
+    pub fn retain(&mut self, handle: i32, tag: Option<&str>) -> i32 {
+        if !self.contains(handle)
+            || tag.is_some_and(|tag| tag.len() > MAX_LEGACY_CONTAINER_STRING_BYTES)
+        {
+            return 0;
+        }
+        let retention = self
+            .retentions
+            .entry(handle)
+            .or_insert(LegacyContainerRetention {
+                count: 0,
+                tag: None,
+            });
+        let Some(count) = retention.count.checked_add(1) else {
+            return 0;
+        };
+        retention.count = count;
+        if let Some(tag) = tag.filter(|tag| !tag.is_empty()) {
+            retention.tag = Some(tag.to_owned());
+        }
+        handle
+    }
+
+    /// Release one explicit owner. An unowned object is collected immediately;
+    /// this deterministic boundary replaces JContainers' wall-clock grace
+    /// period while preserving ownership relationships.
     pub fn release(&mut self, handle: i32) -> bool {
-        self.containers.remove(&handle).is_some()
+        if !self.contains(handle) {
+            return false;
+        }
+        let remove_retention = if let Some(retention) = self.retentions.get_mut(&handle) {
+            retention.count -= 1;
+            retention.count == 0
+        } else {
+            false
+        };
+        if remove_retention {
+            self.retentions.remove(&handle);
+        }
+        self.collect_if_unowned(handle);
+        true
+    }
+
+    /// Release the previous object and retain the replacement. Equal handles
+    /// are left untouched, matching JValue's property-setter helper.
+    pub fn release_and_retain(
+        &mut self,
+        previous_handle: i32,
+        new_handle: i32,
+        tag: Option<&str>,
+    ) -> i32 {
+        if previous_handle == new_handle {
+            return if self.contains(new_handle) {
+                new_handle
+            } else {
+                0
+            };
+        }
+        if previous_handle != 0 {
+            self.release(previous_handle);
+        }
+        self.retain(new_handle, tag)
+    }
+
+    /// Complement every explicit retain on objects carrying `tag`.
+    pub fn release_objects_with_tag(&mut self, tag: &str) -> usize {
+        let handles = self
+            .retentions
+            .iter()
+            .filter_map(|(handle, retention)| {
+                (retention.tag.as_deref() == Some(tag)).then_some(*handle)
+            })
+            .collect::<Vec<_>>();
+        for handle in &handles {
+            self.retentions.remove(handle);
+            self.collect_if_unowned(*handle);
+        }
+        handles.len()
+    }
+
+    pub fn retain_count(&self, handle: i32) -> u32 {
+        self.retentions
+            .get(&handle)
+            .map(|retention| retention.count)
+            .unwrap_or(0)
+    }
+
+    pub fn retention_tag(&self, handle: i32) -> Option<&str> {
+        self.retentions
+            .get(&handle)
+            .and_then(|retention| retention.tag.as_deref())
     }
 
     /// Insert before `index`, or append when it is absent. Rejected mutations
@@ -178,7 +285,8 @@ impl LegacyContainerRegistry {
         let Some(slot) = values.get_mut(index) else {
             return false;
         };
-        *slot = value;
+        let released = std::mem::replace(slot, value);
+        self.collect_released_values([released]);
         true
     }
 
@@ -192,7 +300,8 @@ impl LegacyContainerRegistry {
         if index >= values.len() {
             return false;
         }
-        values.remove(index);
+        let released = values.remove(index);
+        self.collect_released_values([released]);
         true
     }
 
@@ -224,14 +333,23 @@ impl LegacyContainerRegistry {
         let Some(LegacyContainer::Map(values)) = self.containers.get_mut(&handle) else {
             return false;
         };
-        values.insert(key, value);
+        let released = values.insert(key, value);
+        if let Some(released) = released {
+            self.collect_released_values([released]);
+        }
         true
     }
 
     pub fn map_remove(&mut self, handle: i32, key: &str) -> bool {
-        match self.containers.get_mut(&handle) {
-            Some(LegacyContainer::Map(values)) => values.remove(key).is_some(),
-            _ => false,
+        let released = match self.containers.get_mut(&handle) {
+            Some(LegacyContainer::Map(values)) => values.remove(key),
+            _ => return false,
+        };
+        if let Some(released) = released {
+            self.collect_released_values([released]);
+            true
+        } else {
+            false
         }
     }
 
@@ -259,6 +377,15 @@ impl LegacyContainerRegistry {
         if self.next_handle <= 0 || self.containers.keys().any(|handle| *handle <= 0) {
             return Err(LegacyContainerError::InvalidHandle);
         }
+        if self.retentions.iter().any(|(handle, retention)| {
+            !self.containers.contains_key(handle)
+                || retention.count == 0
+                || retention.tag.as_ref().is_some_and(|tag| {
+                    tag.is_empty() || tag.len() > MAX_LEGACY_CONTAINER_STRING_BYTES
+                })
+        }) {
+            return Err(LegacyContainerError::InvalidRetention);
+        }
         for container in self.containers.values() {
             match container {
                 LegacyContainer::Array(values) => {
@@ -274,6 +401,11 @@ impl LegacyContainerRegistry {
                     }
                 }
             }
+        }
+        if self.containers.values().any(|container| {
+            Self::container_values(container).any(|value| !self.valid_object_value(value))
+        }) {
+            return Err(LegacyContainerError::InvalidObjectReference);
         }
         Ok(())
     }
@@ -302,6 +434,58 @@ impl LegacyContainerRegistry {
 
     fn valid_object_value(&self, value: &LegacyContainerValue) -> bool {
         !matches!(value, LegacyContainerValue::Object(handle) if *handle != 0 && !self.contains(*handle))
+    }
+
+    fn container_values(
+        container: &LegacyContainer,
+    ) -> Box<dyn Iterator<Item = &LegacyContainerValue> + '_> {
+        match container {
+            LegacyContainer::Array(values) => Box::new(values.iter()),
+            LegacyContainer::Map(values) => Box::new(values.values()),
+        }
+    }
+
+    fn inbound_owner_count(&self, handle: i32) -> usize {
+        self.containers
+            .values()
+            .flat_map(Self::container_values)
+            .filter(
+                |value| matches!(value, LegacyContainerValue::Object(value) if *value == handle),
+            )
+            .count()
+    }
+
+    fn collect_released_values<I>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = LegacyContainerValue>,
+    {
+        for value in values {
+            if let LegacyContainerValue::Object(handle) = value {
+                self.collect_if_unowned(handle);
+            }
+        }
+    }
+
+    fn collect_if_unowned(&mut self, handle: i32) {
+        let mut candidates = vec![handle];
+        while let Some(candidate) = candidates.pop() {
+            if !self.contains(candidate)
+                || self.retain_count(candidate) != 0
+                || self.inbound_owner_count(candidate) != 0
+            {
+                continue;
+            }
+            let Some(container) = self.containers.remove(&candidate) else {
+                continue;
+            };
+            self.retentions.remove(&candidate);
+            candidates.extend(
+                Self::container_values(&container).filter_map(|value| match value {
+                    LegacyContainerValue::Object(child) if *child != 0 => Some(*child),
+                    _ => None,
+                }),
+            );
+        }
     }
 }
 
@@ -380,10 +564,65 @@ mod tests {
         let mut registry = LegacyContainerRegistry::new();
         let array = registry.create_array();
         registry.array_add(array, LegacyContainerValue::float(-0.0), None);
+        assert_eq!(registry.retain(array, Some("org.example.fixture")), array);
         let bytes = serde_json::to_vec(&registry).unwrap();
         let restored: LegacyContainerRegistry = serde_json::from_slice(&bytes).unwrap();
         restored.validate().unwrap();
         assert_eq!(restored, registry);
         assert_eq!(restored.array_get(array, 0).unwrap().as_float(), Some(-0.0));
+        assert_eq!(restored.retain_count(array), 1);
+        assert_eq!(restored.retention_tag(array), Some("org.example.fixture"));
+    }
+
+    #[test]
+    fn explicit_retains_and_tags_control_object_lifetime() {
+        let mut registry = LegacyContainerRegistry::new();
+        let first = registry.create_array();
+        let second = registry.create_map();
+        assert_eq!(registry.retain(first, Some("org.example.fixture")), first);
+        assert_eq!(registry.retain(first, None), first);
+        assert_eq!(registry.retain_count(first), 2);
+        assert_eq!(registry.retention_tag(first), Some("org.example.fixture"));
+        assert_eq!(
+            registry.release_and_retain(first, first, Some("ignored")),
+            first
+        );
+        assert_eq!(registry.retain_count(first), 2);
+        assert_eq!(
+            registry.release_and_retain(first, second, Some("org.example.fixture")),
+            second
+        );
+        assert_eq!(registry.retain_count(first), 1);
+        assert_eq!(registry.retain_count(second), 1);
+        assert_eq!(registry.release_objects_with_tag("org.example.fixture"), 2);
+        assert!(!registry.contains(first));
+        assert!(!registry.contains(second));
+    }
+
+    #[test]
+    fn nested_ownership_collects_only_after_the_last_owner_leaves() {
+        let mut registry = LegacyContainerRegistry::new();
+        let parent = registry.create_map();
+        let child = registry.create_array();
+        assert!(registry.map_set(
+            parent,
+            "child".to_owned(),
+            LegacyContainerValue::Object(child),
+        ));
+        assert!(registry.release(child));
+        assert!(registry.contains(child));
+        assert!(registry.map_remove(parent, "child"));
+        assert!(!registry.contains(child));
+        assert!(registry.contains(parent));
+
+        let replacement = registry.create_array();
+        assert!(registry.map_set(
+            parent,
+            "replacement".to_owned(),
+            LegacyContainerValue::Object(replacement),
+        ));
+        assert!(registry.release(parent));
+        assert!(!registry.contains(parent));
+        assert!(!registry.contains(replacement));
     }
 }
