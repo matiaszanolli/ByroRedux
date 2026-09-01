@@ -57,7 +57,7 @@
 
 use crate::events::{
     ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
-    OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+    OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
@@ -97,14 +97,15 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<UiMessageCommand>(world);
     drain_component::<SceneEventBatch>(world);
     drain_component::<SceneFragmentInvocationBatch>(world);
-    // M47.0 Phase 5 canonical markers — all one-frame transients. Each
-    // has (or will have) an engine emit site: OnTriggerEnterEvent from
-    // `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
-    // loader's `attach_script_for_refr`, EquipmentEventBatch from equip
+    // Canonical markers — all one-frame transients. Each has an engine emit
+    // site: OnInitEvent from provider-program attachment, OnTriggerEnterEvent
+    // from `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
+    // loader's `attach_script_for_refr`, EquipmentEventBatch from the equip
     // pipeline. Without draining, a re-evaluating consumer (e.g.
     // `quest_advance_system`) re-fires every frame.
     drain_component::<OnTriggerEnterEvent>(world);
     drain_component::<OnCellLoadEvent>(world);
+    drain_component::<OnInitEvent>(world);
     drain_component::<EquipmentEventBatch>(world);
 }
 
@@ -234,7 +235,7 @@ mod tests {
     use super::*;
     use crate::events::{
         ActivateEvent, EquipmentChange, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
-        OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+        OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
     };
     use crate::scene::{
         SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
@@ -276,6 +277,7 @@ mod tests {
         let d = world.spawn();
         let e = world.spawn();
         let f = world.spawn();
+        let init = world.spawn();
         world.insert(
             d,
             OnTriggerEnterEvent {
@@ -283,6 +285,7 @@ mod tests {
             },
         );
         world.insert(e, OnCellLoadEvent);
+        world.insert(init, OnInitEvent);
         world.insert(
             f,
             EquipmentEventBatch(vec![EquipmentChange {
@@ -325,6 +328,7 @@ mod tests {
         assert!(!world.has::<TimerExpired>(c));
         assert!(!world.has::<OnTriggerEnterEvent>(d));
         assert!(!world.has::<OnCellLoadEvent>(e));
+        assert!(!world.has::<OnInitEvent>(init));
         assert!(!world.has::<EquipmentEventBatch>(f));
         assert!(!world.has::<SplashEvent>(g));
         assert!(!world.has::<RippleEvent>(g));

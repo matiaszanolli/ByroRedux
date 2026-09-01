@@ -122,6 +122,20 @@ impl Component for AnimationTextKeyEvents {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Fired once when a translated Papyrus provider program is attached to its
+/// owning entity. Replaces Papyrus `OnInit` without conflating script-instance
+/// initialization with the entity's cell `OnLoad` lifecycle.
+///
+/// Emit site: `attach_papyrus_provider_program`. This is a Pattern-A transient
+/// marker drained by `event_cleanup_system` after every script consumer has
+/// observed the newly initialized instance.
+#[derive(Debug, Clone, Copy)]
+pub struct OnInitEvent;
+
+impl Component for OnInitEvent {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M47.0 Phase 5 — fired when an entity enters a trigger volume.
 /// Replaces Papyrus `OnTriggerEnter` (Skyrim+) / `OnTrigger` (FO3/FNV).
 ///

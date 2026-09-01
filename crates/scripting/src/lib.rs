@@ -59,8 +59,8 @@ pub use dialogue::{
 pub use equipment::{emit_equipment_changes, install_equip_item_catalog, EquipItemCatalog};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
-    EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent,
-    TimerExpired,
+    EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, RippleEvent,
+    SplashEvent, TimerExpired,
 };
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
@@ -144,7 +144,7 @@ pub fn register(world: &mut World) {
     world.register::<TimerExpired>();
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();
-    // M47.0 Phase 5 — canonical event markers. OnCellLoadEvent +
+    // Canonical event markers. OnInitEvent + OnCellLoadEvent +
     // OnTriggerEnterEvent + EquipmentEventBatch join the existing
     // ActivateEvent / HitEvent / TimerExpired in the script-event
     // catalog. Emit sites land per-phase:
@@ -153,8 +153,9 @@ pub fn register(world: &mut World) {
     //   * OnTriggerEnterEvent — emitted by `trigger_detection_system`
     //     on player entry (M47.2).
     //   * EquipmentEventBatch — emitted by player and scripted equip paths.
-    // All three are one-frame transients drained by `event_cleanup_system`.
+    // All four are one-frame transients drained by `event_cleanup_system`.
     world.register::<OnCellLoadEvent>();
+    world.register::<OnInitEvent>();
     world.register::<OnTriggerEnterEvent>();
     world.register::<EquipmentEventBatch>();
     // M47.2 — trigger-volume storage. The cell loader attaches a

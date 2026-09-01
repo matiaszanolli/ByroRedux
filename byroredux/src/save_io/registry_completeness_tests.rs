@@ -238,6 +238,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
         ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),
         ("OnCellLoadEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("OnInitEvent", "one-shot script-attachment marker drained every frame by event_cleanup_system"),
         ("EquipmentEventBatch", "one-shot equipment transition batch drained every frame by event_cleanup_system"),
         ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),

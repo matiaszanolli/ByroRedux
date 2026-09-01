@@ -22,7 +22,7 @@ use byroredux_sdk::{
     },
 };
 
-use crate::events::{ActivateEvent, OnCellLoadEvent, OnTriggerEnterEvent};
+use crate::events::{ActivateEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent};
 use crate::recurring_update::OnUpdateEvent;
 
 const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
@@ -324,6 +324,7 @@ fn lower_literal(
 /// Canonical event subset currently executable by the provider runtime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PapyrusProviderEvent {
+    OnInit,
     OnLoad,
     OnActivate,
     OnTriggerEnter,
@@ -484,7 +485,9 @@ fn lower_event_into(
     catalog: &PapyrusProviderCatalog,
     program: &mut PapyrusProviderProgram,
 ) -> Result<(), PapyrusProviderProgramError> {
-    let canonical = if event.name.node.eq_ignore_case("OnLoad") {
+    let canonical = if event.name.node.eq_ignore_case("OnInit") {
+        PapyrusProviderEvent::OnInit
+    } else if event.name.node.eq_ignore_case("OnLoad") {
         PapyrusProviderEvent::OnLoad
     } else if event.name.node.eq_ignore_case("OnActivate") {
         PapyrusProviderEvent::OnActivate
@@ -943,6 +946,7 @@ pub fn attach_papyrus_provider_program(
     program: PapyrusProviderProgram,
 ) {
     world.insert(entity, program);
+    world.insert(entity, OnInitEvent);
 }
 
 /// Execute provider handlers only after snapshotting programs and event
@@ -977,6 +981,15 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         }
     }
 
+    let initialized = world
+        .query::<OnInitEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let loaded = world
         .query::<OnCellLoadEvent>()
         .map(|events| {
@@ -1017,6 +1030,12 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         return;
     };
     for (entity, program) in programs.iter() {
+        if initialized.contains(&entity) {
+            handlers.push((
+                program.handler(PapyrusProviderEvent::OnInit).to_vec(),
+                BTreeMap::new(),
+            ));
+        }
         if loaded.contains(&entity) {
             handlers.push((
                 program.handler(PapyrusProviderEvent::OnLoad).to_vec(),
@@ -1656,6 +1675,53 @@ mod tests {
             error,
             PapyrusProviderCatalogError::DuplicateAlias { .. }
         ));
+    }
+
+    #[test]
+    fn attached_program_dispatches_on_init_exactly_once() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnInit()
+                WeatherNative.WeatherAt(4, "initialized")
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap();
+        assert_eq!(program.handler(PapyrusProviderEvent::OnInit).len(), 1);
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            Ok(ScriptValue::String("clear".to_owned()))
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+        let entity = world.spawn();
+
+        attach_papyrus_provider_program(&mut world, entity, program);
+        assert!(world.has::<OnInitEvent>(entity));
+        papyrus_provider_system(&world, 0.0);
+        crate::event_cleanup_system(&world, 0.0);
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "ext.org.example.weather.weather-at");
+        assert_eq!(
+            calls[0].1,
+            [
+                ScriptValue::Integer(4),
+                ScriptValue::String("initialized".to_owned())
+            ]
+        );
     }
 
     #[test]
