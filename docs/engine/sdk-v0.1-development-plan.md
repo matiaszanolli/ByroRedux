@@ -1089,17 +1089,18 @@ Checkpoint commit: `feat(scripting): dispatch provider combat events`.
 Delivered for live combat `OnHit` plus actor-side `OnObjectEquipped` and
 `OnObjectUnequipped`. The provider runtime snapshots the existing engine event
 markers before guest entry and preserves every transition in a wearer-owned
-equipment batch. Reference-bearing event payloads are not projected yet, so
-handlers that reference object/form parameters still reject as a whole instead
-of observing a fabricated value.
+equipment batch. Form-bearing equipment payloads are not projected yet, so
+handlers that reference those forms still reject as a whole instead of
+observing a fabricated value. Entity references from activation, trigger, and
+hit-aggressor payloads are projected by the executable as opaque handles.
 
 Checkpoint commit: `feat(scripting): project provider hit flags`.
 
 Delivered for the boolean power-attack, sneak-attack, bash-attack, and blocked
 positions in the canonical `OnHit` signature. Source/PEX parameter names are
 retained as typed locals and may drive the existing bounded condition IR; the
-reference-bearing parameters remain unavailable until the executable converts
-raw ECS identities through its generational handle registry.
+hit aggressor is available through the executable's generational handle
+registry, while source/projectile form projection remains open.
 
 Checkpoint commit: `feat(scripting): compare provider string results`.
 
@@ -1116,6 +1117,17 @@ round-trip through the saved continuation queue. Quest/scene fragment calls
 retain their narrower literal-only IR. Because this changes an existing nested
 save shape, the container format advances to major version 11 rather than
 silently defaulting or misreading suspended calls.
+
+Checkpoint commit: `feat(scripting): project opaque event handles`.
+
+Delivered for `OnActivate`'s activator, `OnTriggerEnter`'s entering reference,
+and `OnHit`'s aggressor. The scripting crate snapshots raw event identities,
+drops all ECS guards, and asks the executable to mint the same opaque
+generational handles used by sandbox callbacks. Unused parameters are pruned.
+A handler that uses an entity parameter together with `Utility.Wait` rejects as
+a unit, preventing process-local handles from entering the saved continuation
+queue. Equipment/source/projectile form projection remains pending a canonical
+FormID-to-SDK-`FormRef` boundary.
 
 ### 14.4 Exit gate
 
