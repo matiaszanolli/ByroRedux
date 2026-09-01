@@ -1500,6 +1500,13 @@ impl wit_storage::Host for HostState {
         self.require_storage_write()?;
         let key = sdk_storage_key(key)?;
         let value = sdk_storage_value(value);
+        // The engine still commits the command after guest return, but the
+        // callback-local snapshot is a transaction overlay: later reads in
+        // this same callback observe accepted writes. Every entry receives a
+        // fresh committed snapshot from ExtensionHost, so a trapped callback
+        // cannot leak this speculative value into a later entry.
+        self.principal_storage
+            .insert(key.clone(), value.clone().into());
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::Set { key, value },
         ));
@@ -1509,6 +1516,7 @@ impl wit_storage::Host for HostState {
     fn queue_delete(&mut self, key: String) -> wasmtime::Result<()> {
         self.require_storage_write()?;
         let key = sdk_storage_key(key)?;
+        self.principal_storage.remove(&key);
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::Delete { key },
         ));
@@ -1518,6 +1526,16 @@ impl wit_storage::Host for HostState {
     fn queue_increment_i64(&mut self, key: String, delta: i64) -> wasmtime::Result<()> {
         self.require_storage_write()?;
         let key = sdk_storage_key(key)?;
+        let current = match self.principal_storage.get(&key) {
+            Some(PrincipalStorageValue::I64(value)) => *value,
+            Some(_) => wasmtime::bail!("storage key {key} is not a signed integer"),
+            None => 0,
+        };
+        let next = current
+            .checked_add(delta)
+            .ok_or_else(|| wasmtime::Error::msg(format!("storage key {key} overflowed i64")))?;
+        self.principal_storage
+            .insert(key.clone(), PrincipalStorageValue::I64(next));
         self.pending_commands.push(HostCommand::PrincipalStorage(
             PrincipalStorageCommand::IncrementI64 { key, delta },
         ));
@@ -2849,6 +2867,72 @@ mod projection_tests {
             wit_storage::Value::Unsigned(9),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn scalar_storage_commands_have_callback_local_read_your_writes() {
+        let mut state = content_host_state(false);
+        state.grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+        state.grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+        state.principal_storage_schema = Some(1);
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 4;
+        state.principal_storage.insert(
+            StorageKey::new("counter").unwrap(),
+            PrincipalStorageValue::I64(4),
+        );
+
+        <HostState as wit_storage::Host>::queue_increment_i64(&mut state, "counter".to_owned(), 3)
+            .unwrap();
+        assert!(matches!(
+            <HostState as wit_storage::Host>::get(&mut state, "counter".to_owned()).unwrap(),
+            Some(wit_storage::Value::Signed(7))
+        ));
+
+        <HostState as wit_storage::Host>::queue_set(
+            &mut state,
+            "name".to_owned(),
+            wit_storage::Value::Text("Dragonborn".to_owned()),
+        )
+        .unwrap();
+        assert!(matches!(
+            <HostState as wit_storage::Host>::get(&mut state, "name".to_owned()).unwrap(),
+            Some(wit_storage::Value::Text(value)) if value == "Dragonborn"
+        ));
+
+        <HostState as wit_storage::Host>::queue_delete(&mut state, "counter".to_owned()).unwrap();
+        assert!(
+            <HostState as wit_storage::Host>::get(&mut state, "counter".to_owned())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.pending_commands.len(), 3);
+    }
+
+    #[test]
+    fn rejected_scalar_storage_command_does_not_mutate_callback_overlay() {
+        let mut state = content_host_state(false);
+        state.grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+        state.grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+        state.principal_storage_schema = Some(1);
+        state.accepting_commands = true;
+        state.max_commands_per_entry = 0;
+        let key = StorageKey::new("counter").unwrap();
+        state
+            .principal_storage
+            .insert(key.clone(), PrincipalStorageValue::I64(4));
+
+        assert!(<HostState as wit_storage::Host>::queue_set(
+            &mut state,
+            "counter".to_owned(),
+            wit_storage::Value::Signed(9),
+        )
+        .is_err());
+        assert_eq!(
+            state.principal_storage.get(&key),
+            Some(&PrincipalStorageValue::I64(4))
+        );
+        assert!(state.pending_commands.is_empty());
     }
 
     fn content_host_state(granted: bool) -> HostState {

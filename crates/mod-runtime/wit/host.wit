@@ -113,6 +113,9 @@ interface storage {
 
     schema-version: func() -> option<u32>;
     get: func(key: string) -> option<value>;
+    /// Queue an atomic post-callback mutation. Accepted scalar mutations are
+    /// immediately reflected by reads in the current callback's transaction
+    /// overlay; a callback trap discards the queued mutation.
     queue-set: func(key: string, value: value);
     queue-delete: func(key: string);
     queue-increment-i64: func(key: string, delta: s64);

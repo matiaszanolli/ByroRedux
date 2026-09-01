@@ -52,7 +52,10 @@ fresh handles are assigned after reload, and rows for missing packages or
 temporarily unloaded forms are retained without a cosave. Exact-version restore
 and bounded principal-private persistent storage are implemented, including
 deterministic arrays, string-keyed maps, and primitive sets with atomic
-deferred mutation and save participation; schema
+deferred mutation and save participation. Scalar storage commands additionally
+update a callback-local transaction overlay, so later reads in the same
+callback see accepted set/delete/increment operations while traps still discard
+the external batch; schema
 migrators, additional projection families/events, and status tooling remain
 open. The first read-only content service is also live: capability-gated guests
 can enumerate the active regular/light plugin order, look up basenames
@@ -400,7 +403,9 @@ Guests never run while arbitrary ECS locks are held. The frame sequence is:
 2. Engine systems emit canonical events.
 3. The host snapshots bounded payloads and resolves subscriptions.
 4. Guest callbacks run with fuel/time/memory limits against a read snapshot.
-5. Guest mutations and publications enter a validated command buffer.
+5. Guest mutations and publications enter a validated command buffer. Scalar
+   principal-storage commands also update a callback-local overlay for
+   read-your-writes without bypassing the external commit barrier.
 6. The engine applies accepted commands atomically at a declared stage.
 7. Results and diagnostics are attributed to the principal.
 
@@ -455,12 +460,13 @@ belongs to the host, not `byroredux-sdk`.
 The first exact source-alias pack covers global (`ObjKey == None`)
 `StorageUtil` integer and string get/has calls. Each descriptor names the
 concrete `byro.storage.get` operation, expected WIT value variant, and key
-isolation constraint. Writes remain unsupported because sandbox mutations are
-deferred and cannot yet preserve StorageUtil's same-call visibility contract;
-Float, Form, pluck, file-backed, list, and object-scoped calls are also
-deliberately unsupported until an engine service can honor their complete
-semantics. Recognizing the provider is not enough to claim compatibility. The
-function signatures are anchored to PapyrusUtil's
+isolation constraint. The storage service now supplies callback-local
+read-your-writes for scalar set/delete/increment commands; executable
+StorageUtil write-adapter recipes remain the next compatibility step. Float,
+Form, pluck, file-backed, list, and object-scoped calls remain deliberately
+unsupported until an engine service can honor their complete semantics.
+Recognizing the provider is not enough to claim compatibility. The function
+signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
 
 ## 8. v0.1 delivery phases
