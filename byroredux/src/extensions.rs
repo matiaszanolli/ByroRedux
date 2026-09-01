@@ -33,11 +33,12 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_light_mod_dependency_count, adapt_papyrus_game_get_light_mod_name,
     adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
     adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
-    adapt_papyrus_game_is_plugin_installed, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+    adapt_papyrus_game_get_nth_light_mod_dependency, adapt_papyrus_game_is_plugin_installed,
+    PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -742,6 +743,14 @@ impl ExtensionHost {
                     ),
                 ))
             }
+            (
+                PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
+                [ScriptValue::Integer(mod_index), ScriptValue::Integer(dependency_index)],
+            ) => ScriptValue::Integer(i64::from(adapt_papyrus_game_get_nth_light_mod_dependency(
+                &self.content_catalog,
+                *mod_index,
+                *dependency_index,
+            ))),
             (route, _) if route.starts_with("byro.content.catalog.") => {
                 return Err(ExtensionHostError::ScriptFunctionUnavailable {
                     function: qualified_name.to_owned(),
@@ -6286,19 +6295,19 @@ mod tests {
                 )
                 .unwrap(),
                 byroredux_sdk::content::PluginInfo::new(
-                    "Patch.esl",
-                    2_u128.to_be_bytes(),
-                    byroredux_sdk::content::PluginKind::Light,
-                )
-                .unwrap(),
-                byroredux_sdk::content::PluginInfo::new(
                     "Update.esm",
                     3_u128.to_be_bytes(),
                     byroredux_sdk::content::PluginKind::Regular,
                 )
                 .unwrap(),
+                byroredux_sdk::content::PluginInfo::new(
+                    "Patch.esl",
+                    2_u128.to_be_bytes(),
+                    byroredux_sdk::content::PluginKind::Light,
+                )
+                .unwrap(),
             ],
-            vec![vec![], vec![0], vec![0]],
+            vec![vec![], vec![0], vec![1]],
         )
         .unwrap();
         let mut host =
@@ -6379,6 +6388,14 @@ mod tests {
             host.invoke_papyrus_provider(
                 PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
                 &[ScriptValue::Integer(0)],
+            )
+            .unwrap(),
+            ScriptValue::Integer(1)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
+                &[ScriptValue::Integer(0), ScriptValue::Integer(0)],
             )
             .unwrap(),
             ScriptValue::Integer(1)
