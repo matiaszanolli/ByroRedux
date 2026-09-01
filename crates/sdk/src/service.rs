@@ -41,6 +41,10 @@ pub const INVENTORY_READ_CAPABILITY: &str = "byro.inventory.read";
 pub const FACTIONS_READ_CAPABILITY: &str = "byro.factions.read";
 /// Capability required to read callback-local ranked actor perks.
 pub const PERKS_READ_CAPABILITY: &str = "byro.perks.read";
+/// Capability required to inspect live ambient and scene package selections.
+pub const PACKAGES_READ_CAPABILITY: &str = "byro.packages.read";
+/// Capability required to request deferred package reevaluation for a visible actor.
+pub const PACKAGES_EVALUATE_CAPABILITY: &str = "byro.packages.evaluate";
 /// Capability required to query bounded live authored-reference positions.
 pub const WORLD_SPATIAL_READ_CAPABILITY: &str = "byro.world.spatial.read";
 /// Capability required to inspect the active game-content load order.
@@ -73,6 +77,8 @@ pub const INVENTORY_SERVICE: &str = "byro.inventory";
 pub const FACTIONS_SERVICE: &str = "byro.factions";
 /// Service providing callback-local portable actor perk ranks.
 pub const PERKS_SERVICE: &str = "byro.perks";
+/// Service providing live package selection state and semantic reevaluation.
+pub const PACKAGES_SERVICE: &str = "byro.packages";
 /// Service providing bounded spatial queries over live authored references.
 pub const WORLD_SPATIAL_SERVICE: &str = "byro.world.spatial";
 /// Service providing loaded plugin discovery and portable form qualification.

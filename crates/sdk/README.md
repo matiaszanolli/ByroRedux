@@ -33,6 +33,10 @@ The current public surface includes:
   portable identities, with explicit truncation for invalid or unresolved
   live entries. Perk mutation remains closed pending rank-limit and progression
   semantics.
+- `PackageSnapshot` preserves ordered ambient and active scene package stacks,
+  their current winners, scene/action provenance, and template identities.
+  `EvaluatePackageCommand` requests semantic reevaluation through the shared
+  engine marker instead of manipulating AI state directly.
 - `SpatialSnapshot` provides bounded, deterministic radius queries over live
   authored references. Results carry portable `FormRef` identities and finite
   world positions, never ECS IDs; truncation remains explicit.
@@ -90,6 +94,8 @@ read/write grants. It also projects capability-gated inventory and worn
 equipment summaries by portable base form, faction memberships, and the latest
 bounded spatial snapshot of live authored references. Ranked actor perks are
 also projected read-only from the canonical live character component.
+Ambient and scene package state is projected together, while capability-gated
+reevaluation is deferred to the existing selectors used by native scripting.
 Actor-value mutations resolve transient entity handles and portable AVIF
 identities, then stage and validate the full batch before touching ECS state.
 Inventory and perk mutation wait for their stable validation contracts. Schema

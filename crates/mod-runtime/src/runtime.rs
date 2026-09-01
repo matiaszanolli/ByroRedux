@@ -1,6 +1,6 @@
 use crate::bindings::byro::mod_host::{
-    actor_values, console, content_catalog, context, events, factions, inventory, logging, perks,
-    state, storage as wit_storage, world_spatial, world_state,
+    actor_values, console, content_catalog, context, events, factions, inventory, logging,
+    packages, perks, state, storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -23,6 +23,9 @@ use byroredux_sdk::identity::{
 };
 use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot, ItemCategory, ItemMetadata};
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
+use byroredux_sdk::packages::{
+    EvaluatePackageCommand, PackageSelection, PackageSelectionSource, PackageSnapshot,
+};
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot};
 use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
@@ -33,8 +36,9 @@ use byroredux_sdk::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY,
     FACTIONS_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
-    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PERKS_READ_CAPABILITY,
-    PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
+    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
+    PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
+    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
     SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
     STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
     WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
@@ -270,6 +274,14 @@ impl SandboxRuntime {
                 "Read portable ranked perks from callback-visible actors",
             ),
             (
+                PACKAGES_READ_CAPABILITY,
+                "Read live ambient and scene package selections from callback-visible actors",
+            ),
+            (
+                PACKAGES_EVALUATE_CAPABILITY,
+                "Request deferred package reevaluation for callback-visible actors",
+            ),
+            (
                 WORLD_SPATIAL_READ_CAPABILITY,
                 "Query bounded live authored references by finite world position and radius",
             ),
@@ -375,6 +387,17 @@ impl SandboxRuntime {
                 version: Version::new(0, 1, 0),
                 required_capability: Some(
                     CapabilityId::new(PERKS_READ_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(PACKAGES_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(PACKAGES_READ_CAPABILITY)
                         .map_err(|error| SandboxError::Link(error.to_string()))?,
                 ),
             })
@@ -1841,6 +1864,54 @@ impl perks::Host for HostState {
     }
 }
 
+impl packages::Host for HostState {
+    fn get(
+        &mut self,
+        entity: state::EntityRef,
+    ) -> wasmtime::Result<Option<packages::PackageSnapshot>> {
+        self.require_packages_read()?;
+        let entity = sdk_entity_ref(entity)?;
+        Ok(self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::packages)
+            .map(wit_package_snapshot))
+    }
+
+    fn queue_evaluate(&mut self, entity: state::EntityRef) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("package reevaluation is only accepted during a callback");
+        }
+        if !self.grants.contains(PACKAGES_EVALUATE_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {PACKAGES_EVALUATE_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let entity = sdk_entity_ref(entity)?;
+        if self
+            .entity_projections
+            .get(&entity)
+            .and_then(EntityProjection::packages)
+            .is_none()
+        {
+            wasmtime::bail!("package target is not visible or has no live package state");
+        }
+        self.pending_commands
+            .push(HostCommand::EvaluatePackage(EvaluatePackageCommand::new(
+                entity,
+            )));
+        Ok(())
+    }
+}
+
 impl world_spatial::Host for HostState {
     fn nearby(
         &mut self,
@@ -2017,6 +2088,36 @@ fn wit_perk_entry(entry: PerkEntry) -> perks::PerkEntry {
     }
 }
 
+fn wit_package_snapshot(snapshot: &PackageSnapshot) -> packages::PackageSnapshot {
+    packages::PackageSnapshot {
+        selections: snapshot
+            .selections()
+            .iter()
+            .map(wit_package_selection)
+            .collect(),
+        truncated: snapshot.truncated(),
+    }
+}
+
+fn wit_package_selection(selection: &PackageSelection) -> packages::PackageSelection {
+    packages::PackageSelection {
+        source: match selection.source() {
+            PackageSelectionSource::Ambient => packages::SelectionSource::Ambient,
+            PackageSelectionSource::Scene => packages::SelectionSource::Scene,
+        },
+        scene: selection.scene().map(wit_form_ref),
+        action_index: selection.action_index(),
+        candidates: selection
+            .candidates()
+            .iter()
+            .copied()
+            .map(wit_form_ref)
+            .collect(),
+        active: selection.active().map(wit_form_ref),
+        template: selection.template().map(wit_form_ref),
+    }
+}
+
 fn wit_spatial_query_result(result: &SpatialQueryResult) -> world_spatial::SpatialQueryResult {
     world_spatial::SpatialQueryResult {
         hits: result.hits().iter().copied().map(wit_spatial_hit).collect(),
@@ -2114,6 +2215,16 @@ impl HostState {
         if !self.grants.contains(PERKS_READ_CAPABILITY) {
             wasmtime::bail!(
                 "principal {} lacks capability {PERKS_READ_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_packages_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(PACKAGES_READ_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {PACKAGES_READ_CAPABILITY}",
                 self.principal.id()
             );
         }
@@ -2797,6 +2908,55 @@ mod projection_tests {
         let mut denied = content_host_state(false);
         let error = <HostState as perks::Host>::get(&mut denied, wit_entity).unwrap_err();
         assert!(error.to_string().contains(PERKS_READ_CAPABILITY));
+    }
+
+    #[test]
+    fn packages_are_portable_deferred_bounded_and_capability_gated() {
+        let entity = EntityRef::new(1, 9).unwrap();
+        let first = FormRef::new(1_u128.to_be_bytes(), 0x44);
+        let second = FormRef::new(1_u128.to_be_bytes(), 0x45);
+        let snapshot = PackageSnapshot::new(
+            vec![PackageSelection::ambient(vec![first, second], Some(second)).unwrap()],
+            true,
+        )
+        .unwrap();
+        let projection = EntityProjection::new(entity, None, None, None)
+            .unwrap()
+            .with_packages(snapshot);
+        let wit_entity = state::EntityRef {
+            world_generation: 1,
+            object: 9,
+        };
+
+        let mut state = content_host_state(false);
+        state.grants.grant(PACKAGES_READ_CAPABILITY).unwrap();
+        state.grants.grant(PACKAGES_EVALUATE_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.entity_projections.insert(entity, projection);
+        let snapshot = <HostState as packages::Host>::get(&mut state, wit_entity)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.selections.len(), 1);
+        assert_eq!(
+            snapshot.selections[0].source,
+            packages::SelectionSource::Ambient
+        );
+        assert_eq!(snapshot.selections[0].candidates.len(), 2);
+        assert_eq!(sdk_form_ref(snapshot.selections[0].active.unwrap()), second);
+        <HostState as packages::Host>::queue_evaluate(&mut state, wit_entity).unwrap();
+        let [HostCommand::EvaluatePackage(command)] = state.pending_commands.as_slice() else {
+            panic!("expected one package reevaluation command")
+        };
+        assert_eq!(command.entity(), entity);
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        let error = <HostState as packages::Host>::get(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(PACKAGES_READ_CAPABILITY));
+        let error =
+            <HostState as packages::Host>::queue_evaluate(&mut denied, wit_entity).unwrap_err();
+        assert!(error.to_string().contains(PACKAGES_EVALUATE_CAPABILITY));
     }
 
     #[test]

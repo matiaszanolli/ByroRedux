@@ -46,6 +46,10 @@ use byroredux_sdk::inventory::{
     InventoryEntry, InventorySnapshot, MAX_INVENTORY_ENTRIES_PER_ENTITY,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
+use byroredux_sdk::packages::{
+    EvaluatePackageCommand, PackageSelection, PackageSnapshot, MAX_PACKAGE_CANDIDATES,
+    MAX_PACKAGE_REFERENCES_PER_ENTITY, MAX_PACKAGE_SELECTIONS_PER_ENTITY,
+};
 use byroredux_sdk::perks::{PerkEntry, PerkSnapshot, MAX_PERKS_PER_ENTITY};
 use byroredux_sdk::projection::{EntityProjection, WorldTransform, MAX_ENTITY_NAME_BYTES};
 use byroredux_sdk::service::{
@@ -64,6 +68,8 @@ use byroredux_sdk::storage::{
 };
 use thiserror::Error;
 
+use crate::components::AmbientPackageRuntime;
+
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
 const MAX_PENDING_SESSION_EVENTS: usize = 64;
@@ -71,6 +77,7 @@ const MAX_PENDING_CUSTOM_EVENTS: usize = 256;
 const MAX_PENDING_CUSTOM_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_SETTING_WRITES: usize = 256;
 const MAX_PENDING_ACTOR_VALUE_WRITES: usize = 256;
+const MAX_PENDING_PACKAGE_EVALUATIONS: usize = 256;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -256,6 +263,7 @@ pub(crate) struct ExtensionHost {
     pending_custom_events: Vec<CustomEvent>,
     pending_setting_writes: Vec<byroredux_sdk::settings::SettingWriteCommand>,
     pending_actor_value_writes: Vec<ActorValueCommand>,
+    pending_package_evaluations: Vec<EvaluatePackageCommand>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
@@ -281,6 +289,7 @@ impl ExtensionHost {
             pending_custom_events: Vec::new(),
             pending_setting_writes: Vec::new(),
             pending_actor_value_writes: Vec::new(),
+            pending_package_evaluations: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
@@ -523,13 +532,16 @@ impl ExtensionHost {
             Ok(commands),
             LifecyclePhase::ConsoleCommand,
             &principal,
-            &mut self.state,
-            &mut self.principal_storage,
-            &mut self.pending_custom_events,
-            &mut self.pending_setting_writes,
-            &mut self.pending_actor_value_writes,
-            &mut self.diagnostics,
-            &mut stats,
+            DeliveryCommitContext {
+                state: &mut self.state,
+                principal_storage: &mut self.principal_storage,
+                pending_custom_events: &mut self.pending_custom_events,
+                pending_setting_writes: &mut self.pending_setting_writes,
+                pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                pending_package_evaluations: &mut self.pending_package_evaluations,
+                diagnostics: &mut self.diagnostics,
+                stats: &mut stats,
+            },
         );
         if stats.faults == 0 {
             output
@@ -713,13 +725,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Activate,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -794,13 +809,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::CellLoad,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -879,13 +897,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Equipment,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -947,13 +968,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Input,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -1011,13 +1035,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Session,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -1072,13 +1099,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::CustomEvent,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -1208,13 +1238,16 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Hit,
                     &principal,
-                    &mut self.state,
-                    &mut self.principal_storage,
-                    &mut self.pending_custom_events,
-                    &mut self.pending_setting_writes,
-                    &mut self.pending_actor_value_writes,
-                    &mut self.diagnostics,
-                    &mut stats,
+                    DeliveryCommitContext {
+                        state: &mut self.state,
+                        principal_storage: &mut self.principal_storage,
+                        pending_custom_events: &mut self.pending_custom_events,
+                        pending_setting_writes: &mut self.pending_setting_writes,
+                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                        pending_package_evaluations: &mut self.pending_package_evaluations,
+                        diagnostics: &mut self.diagnostics,
+                        stats: &mut stats,
+                    },
                 );
             }
         }
@@ -1279,13 +1312,16 @@ impl ExtensionHost {
                 result,
                 LifecyclePhase::Update,
                 &principal,
-                &mut self.state,
-                &mut self.principal_storage,
-                &mut self.pending_custom_events,
-                &mut self.pending_setting_writes,
-                &mut self.pending_actor_value_writes,
-                &mut self.diagnostics,
-                &mut stats,
+                DeliveryCommitContext {
+                    state: &mut self.state,
+                    principal_storage: &mut self.principal_storage,
+                    pending_custom_events: &mut self.pending_custom_events,
+                    pending_setting_writes: &mut self.pending_setting_writes,
+                    pending_actor_value_writes: &mut self.pending_actor_value_writes,
+                    pending_package_evaluations: &mut self.pending_package_evaluations,
+                    diagnostics: &mut self.diagnostics,
+                    stats: &mut stats,
+                },
             );
         }
         stats
@@ -1594,6 +1630,21 @@ impl ExtensionHost {
             })
             .collect()
     }
+
+    fn take_resolved_package_evaluations(&mut self) -> Result<Vec<EntityId>, String> {
+        let commands = std::mem::take(&mut self.pending_package_evaluations);
+        commands
+            .into_iter()
+            .map(|command| {
+                self.handles.resolve(command.entity()).ok_or_else(|| {
+                    format!(
+                        "package reevaluation targeted stale entity {:?}",
+                        command.entity()
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1604,19 +1655,34 @@ struct ResolvedActorValueWrite {
     value: f32,
 }
 
+struct DeliveryCommitContext<'a> {
+    state: &'a mut ExtensionComponentStore,
+    principal_storage: &'a mut PrincipalStorageStore,
+    pending_custom_events: &'a mut Vec<CustomEvent>,
+    pending_setting_writes: &'a mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
+    pending_actor_value_writes: &'a mut Vec<ActorValueCommand>,
+    pending_package_evaluations: &'a mut Vec<EvaluatePackageCommand>,
+    diagnostics: &'a mut Vec<ExtensionDiagnostic>,
+    stats: &'a mut ExtensionDispatchStats,
+}
+
 fn apply_delivery_result(
     hosted: &mut HostedComponent,
     result: Result<Vec<HostCommand>, SandboxError>,
     phase: LifecyclePhase,
     principal: &PrincipalId,
-    state: &mut ExtensionComponentStore,
-    principal_storage: &mut PrincipalStorageStore,
-    pending_custom_events: &mut Vec<CustomEvent>,
-    pending_setting_writes: &mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
-    pending_actor_value_writes: &mut Vec<ActorValueCommand>,
-    diagnostics: &mut Vec<ExtensionDiagnostic>,
-    stats: &mut ExtensionDispatchStats,
+    context: DeliveryCommitContext<'_>,
 ) {
+    let DeliveryCommitContext {
+        state,
+        principal_storage,
+        pending_custom_events,
+        pending_setting_writes,
+        pending_actor_value_writes,
+        pending_package_evaluations,
+        diagnostics,
+        stats,
+    } = context;
     let commands = match result {
         Ok(commands) => commands,
         Err(error) => {
@@ -1635,10 +1701,12 @@ fn apply_delivery_result(
     let mut published_events = Vec::new();
     let mut setting_writes = Vec::new();
     let mut actor_value_writes = Vec::new();
+    let mut package_evaluations = Vec::new();
     for command in commands {
         match command {
             HostCommand::ActorValue(command) => actor_value_writes.push(command),
             HostCommand::Component(command) => component_commands.push(command),
+            HostCommand::EvaluatePackage(command) => package_evaluations.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
             HostCommand::PublishEvent(command) => published_events.push(command),
             HostCommand::Setting(command) => setting_writes.push(command),
@@ -1690,6 +1758,15 @@ fn apply_delivery_result(
         if next_actor_value_count > MAX_PENDING_ACTOR_VALUE_WRITES {
             return Err(format!(
                 "pending actor-value write limit of {MAX_PENDING_ACTOR_VALUE_WRITES} exceeded"
+            ));
+        }
+        let next_package_evaluation_count = pending_package_evaluations
+            .len()
+            .checked_add(package_evaluations.len())
+            .ok_or_else(|| "pending package reevaluation count overflow".to_owned())?;
+        if next_package_evaluation_count > MAX_PENDING_PACKAGE_EVALUATIONS {
+            return Err(format!(
+                "pending package reevaluation limit of {MAX_PENDING_PACKAGE_EVALUATIONS} exceeded"
             ));
         }
         let next_event_count = pending_custom_events
@@ -1744,6 +1821,7 @@ fn apply_delivery_result(
             pending_custom_events.extend(staged_events);
             pending_setting_writes.extend(setting_writes);
             pending_actor_value_writes.extend(actor_value_writes);
+            pending_package_evaluations.extend(package_evaluations);
             stats.commands_applied += command_count;
         }
     }
@@ -1800,6 +1878,7 @@ struct RawEntityProjection {
     inventory: Option<InventorySnapshot>,
     factions: Option<FactionSnapshot>,
     perks: Option<PerkSnapshot>,
+    packages: Option<PackageSnapshot>,
 }
 
 fn entity_projection(
@@ -1828,8 +1907,12 @@ fn entity_projection(
         Some(factions) => projection.with_factions(factions),
         None => projection,
     };
-    match raw.and_then(|projection| projection.perks.clone()) {
+    let projection = match raw.and_then(|projection| projection.perks.clone()) {
         Some(perks) => projection.with_perks(perks),
+        None => projection,
+    };
+    match raw.and_then(|projection| projection.packages.clone()) {
+        Some(packages) => projection.with_packages(packages),
         None => projection,
     }
 }
@@ -1893,7 +1976,7 @@ impl ConsoleCommand for ExtensionConsoleCommand {
         &self.route.description
     }
 
-    fn execute(&self, _world: &World, args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let Some(host) = self.host.upgrade() else {
             return CommandOutput::error("extension host is unavailable");
         };
@@ -1902,6 +1985,7 @@ impl ConsoleCommand for ExtensionConsoleCommand {
                 .lock()
                 .expect("ExtensionHost mutex poisoned by a host panic");
             let result = host.invoke_console_command(&self.route, args);
+            apply_pending_world_commands(world, &mut host);
             let diagnostics = host.take_diagnostics();
             (result, diagnostics)
         };
@@ -2013,6 +2097,7 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
         .expect("ExtensionHost mutex poisoned by a host panic");
     host.set_spatial_snapshot(spatial_snapshot);
     let stats = host.dispatch_pending_custom_events();
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2257,7 +2342,7 @@ pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_activations_with_projections(activations, &projections);
-    apply_pending_actor_value_writes(world, &mut host);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2311,7 +2396,7 @@ pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_cell_loads_with_projections(cell_loads, &projections);
-    apply_pending_actor_value_writes(world, &mut host);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2390,7 +2475,7 @@ pub(crate) fn extension_equipment_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_equipment_changes_with_projections(changes, &projections);
-    apply_pending_actor_value_writes(world, &mut host);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2444,6 +2529,7 @@ pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_input_actions_inner(events);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2482,6 +2568,7 @@ pub(crate) fn extension_session_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_session_events_inner(events);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2581,7 +2668,7 @@ pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_hits_with_projections(hits, &projections);
-    apply_pending_actor_value_writes(world, &mut host);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -2611,6 +2698,7 @@ pub(crate) fn extension_update_dispatch_system(world: &World, dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     let stats = host.dispatch_recurring_updates(dt);
+    apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
     emit_diagnostics(diagnostics);
@@ -3124,7 +3212,136 @@ fn capture_entity_projections(
             );
         }
     }
+    if let Some(resolver) =
+        world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+    {
+        let mut package_captures = projections
+            .keys()
+            .copied()
+            .map(|entity| (entity, PackageCapture::default()))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(ambient) = world.query::<AmbientPackageRuntime>() {
+            for (entity, capture) in &mut package_captures {
+                let Some(runtime) = ambient.get(*entity) else {
+                    continue;
+                };
+                let active = runtime
+                    .active_package_form_id
+                    .and_then(|form| capture_package_form(form, &resolver, capture));
+                let candidates =
+                    capture_package_candidates(&runtime.package_candidates, &resolver, capture);
+                push_package_selection(
+                    capture,
+                    PackageSelection::ambient(candidates, active)
+                        .expect("captured ambient package selection is bounded"),
+                );
+            }
+        }
+        let mut scene_actions = world
+            .query::<byroredux_scripting::ScenePackagePlayback>()
+            .map(|playbacks| {
+                playbacks
+                    .iter()
+                    .flat_map(|(_, playback)| playback.active_actions.iter().cloned())
+                    .filter(|action| package_captures.contains_key(&action.actor))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        scene_actions.sort_by_key(|action| {
+            (
+                action.actor,
+                action.scene_form_id,
+                action.action_index,
+                action.package_form_id,
+                action.template_form_id,
+            )
+        });
+        for action in scene_actions {
+            let capture = package_captures
+                .get_mut(&action.actor)
+                .expect("scene action was filtered to a disclosed actor");
+            if capture.selections.len() >= MAX_PACKAGE_SELECTIONS_PER_ENTITY {
+                capture.truncated = true;
+                continue;
+            }
+            let scene = capture_package_form(action.scene_form_id, &resolver, capture);
+            let active = capture_package_form(action.package_form_id, &resolver, capture);
+            let template = capture_package_form(action.template_form_id, &resolver, capture);
+            let candidates =
+                capture_package_candidates(&action.package_candidates, &resolver, capture);
+            push_package_selection(
+                capture,
+                PackageSelection::scene_action(
+                    scene,
+                    action.action_index,
+                    candidates,
+                    active,
+                    template,
+                )
+                .expect("captured scene package selection is bounded"),
+            );
+        }
+        for (entity, capture) in package_captures {
+            if capture.selections.is_empty() {
+                continue;
+            }
+            projections
+                .get_mut(&entity)
+                .expect("package capture is scoped to projected entities")
+                .packages = Some(
+                PackageSnapshot::new(capture.selections, capture.truncated)
+                    .expect("live package capture enforces SDK bounds"),
+            );
+        }
+    }
     projections
+}
+
+#[derive(Default)]
+struct PackageCapture {
+    selections: Vec<PackageSelection>,
+    references: usize,
+    truncated: bool,
+}
+
+fn capture_package_form(
+    global: u32,
+    resolver: &crate::cell_loader::load_order::GlobalFormIdResolver,
+    capture: &mut PackageCapture,
+) -> Option<FormRef> {
+    let Some(form) = resolver.resolve(global).map(form_ref) else {
+        capture.truncated = true;
+        return None;
+    };
+    if form.local() == 0 || capture.references >= MAX_PACKAGE_REFERENCES_PER_ENTITY {
+        capture.truncated = true;
+        return None;
+    }
+    capture.references += 1;
+    Some(form)
+}
+
+fn capture_package_candidates(
+    candidates: &[u32],
+    resolver: &crate::cell_loader::load_order::GlobalFormIdResolver,
+    capture: &mut PackageCapture,
+) -> Vec<FormRef> {
+    if candidates.len() > MAX_PACKAGE_CANDIDATES {
+        capture.truncated = true;
+    }
+    candidates
+        .iter()
+        .take(MAX_PACKAGE_CANDIDATES)
+        .filter_map(|&candidate| capture_package_form(candidate, resolver, capture))
+        .collect()
+}
+
+fn push_package_selection(capture: &mut PackageCapture, selection: PackageSelection) {
+    if capture.selections.len() >= MAX_PACKAGE_SELECTIONS_PER_ENTITY {
+        capture.truncated = true;
+    } else {
+        capture.selections.push(selection);
+    }
 }
 
 fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
@@ -3203,6 +3420,37 @@ fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
     if let Err(error) = apply {
         host.record_host_fault(format!("deferred actor-value batch rejected: {error}"));
     }
+}
+
+fn apply_pending_package_evaluations(world: &World, host: &mut ExtensionHost) {
+    let entities = match host.take_resolved_package_evaluations() {
+        Ok(entities) => entities,
+        Err(error) => {
+            host.record_host_fault(format!(
+                "deferred package reevaluation batch rejected: {error}"
+            ));
+            return;
+        }
+    };
+    if entities.is_empty() {
+        return;
+    }
+    let Some(mut requests) = world.query_mut::<byroredux_scripting::EvaluatePackageRequest>()
+    else {
+        host.record_host_fault(
+            "deferred package reevaluation batch rejected: EvaluatePackageRequest storage is unavailable"
+                .to_owned(),
+        );
+        return;
+    };
+    for entity in entities {
+        requests.insert(entity, byroredux_scripting::EvaluatePackageRequest);
+    }
+}
+
+fn apply_pending_world_commands(world: &World, host: &mut ExtensionHost) {
+    apply_pending_actor_value_writes(world, host);
+    apply_pending_package_evaluations(world, host);
 }
 
 fn entities_by_form(world: &World) -> BTreeMap<FormRef, EntityId> {
@@ -4427,13 +4675,16 @@ mod tests {
             Ok(commands),
             LifecyclePhase::Activate,
             &principal,
-            &mut host.state,
-            &mut host.principal_storage,
-            &mut host.pending_custom_events,
-            &mut host.pending_setting_writes,
-            &mut host.pending_actor_value_writes,
-            &mut host.diagnostics,
-            &mut stats,
+            DeliveryCommitContext {
+                state: &mut host.state,
+                principal_storage: &mut host.principal_storage,
+                pending_custom_events: &mut host.pending_custom_events,
+                pending_setting_writes: &mut host.pending_setting_writes,
+                pending_actor_value_writes: &mut host.pending_actor_value_writes,
+                pending_package_evaluations: &mut host.pending_package_evaluations,
+                diagnostics: &mut host.diagnostics,
+                stats: &mut stats,
+            },
         );
 
         assert_eq!(host.pending_custom_events.len(), MAX_PENDING_CUSTOM_EVENTS);
@@ -5219,6 +5470,89 @@ mod tests {
         assert_eq!(snapshot.entries().len(), 1);
         let perk = FormRef::new(PluginId::from_filename("Skyrim.esm").0.to_be_bytes(), 0x44);
         assert_eq!(snapshot.rank(perk), Some(1));
+    }
+
+    #[test]
+    fn package_projection_unifies_ambient_and_scene_state_and_defers_reevaluation() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let actor = world.spawn();
+        let scene_entity = world.spawn();
+        world.insert(
+            actor,
+            AmbientPackageRuntime {
+                package_candidates: vec![0x30, 0x31, 0x0100_0032],
+                active_package_form_id: Some(0x31),
+                actor_form_id: 0x20,
+                last_evaluated_game_minute: Some(10),
+            },
+        );
+        world.insert(
+            scene_entity,
+            byroredux_scripting::ScenePackagePlayback {
+                active_actions: vec![byroredux_scripting::ActiveScenePackageAction {
+                    scene_form_id: 0x40,
+                    action_index: 2,
+                    actor,
+                    package_candidates: vec![0x50],
+                    package_form_id: 0x50,
+                    template_form_id: 0x51,
+                    command: byroredux_scripting::ScenePackageCommand::AwaitExternal {
+                        procedure_type: "Test".to_owned(),
+                    },
+                }],
+            },
+        );
+        let order = crate::cell_loader::load_order::LoadOrder::new(
+            vec!["Skyrim.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+        );
+
+        let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+        let snapshot = projections[&actor].packages.as_ref().unwrap();
+        assert!(snapshot.truncated(), "the unresolved candidate is explicit");
+        assert_eq!(snapshot.selections().len(), 2);
+        assert_eq!(
+            snapshot.selections()[0].source(),
+            byroredux_sdk::packages::PackageSelectionSource::Ambient
+        );
+        assert_eq!(snapshot.selections()[0].candidates().len(), 2);
+        assert_eq!(snapshot.selections()[0].active().unwrap().local(), 0x31);
+        assert_eq!(
+            snapshot.selections()[1].source(),
+            byroredux_sdk::packages::PackageSelectionSource::Scene
+        );
+        assert_eq!(snapshot.selections()[1].action_index(), Some(2));
+        assert_eq!(snapshot.selections()[1].scene().unwrap().local(), 0x40);
+        assert_eq!(snapshot.selections()[1].template().unwrap().local(), 0x51);
+
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let handle = host.bind_entity(actor, None).unwrap();
+        host.pending_package_evaluations
+            .push(EvaluatePackageCommand::new(handle));
+        apply_pending_world_commands(&world, &mut host);
+        assert!(world.has::<byroredux_scripting::EvaluatePackageRequest>(actor));
+    }
+
+    #[test]
+    fn update_dispatch_flushes_world_commands_left_by_any_callback_phase() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let actor = world.spawn();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let handle = host.bind_entity(actor, None).unwrap();
+        host.pending_package_evaluations
+            .push(EvaluatePackageCommand::new(handle));
+        world.insert_resource(ExtensionHostSlot::from_host(host));
+
+        extension_update_dispatch_system(&world, 0.016);
+
+        assert!(world.has::<byroredux_scripting::EvaluatePackageRequest>(actor));
     }
 
     #[test]

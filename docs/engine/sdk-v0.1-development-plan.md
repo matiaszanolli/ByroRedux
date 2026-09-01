@@ -106,6 +106,14 @@ spawning and condition evaluation. The callback-local snapshot is bounded,
 portable, deterministically ordered, and explicit about invalid or unresolved
 entries. Grant/revoke remains closed until the host can validate each PERK's
 declared rank limit and honor progression-side effects atomically.
+AI package integration now spans both authoritative owners. Bounded snapshots
+preserve the ordered ambient candidate stack and active winner plus every live
+SCEN package action, its scene/action provenance, winner, and template through
+portable identities. `byro.packages.evaluate` queues the same deferred
+`EvaluatePackageRequest` observed by ambient and scene selectors; it never
+rewrites behavior components directly. World-command flushing now runs after
+every callback phase, including input, session, custom, recurring update, and
+console delivery, rather than leaving non-entity callback writes pending.
 The first spatial service is live as a bounded, read-only authored-reference
 query. Capability-gated callbacks can search the latest live snapshot around
 an arbitrary finite world position, receive distance-sorted portable `FormRef`
@@ -672,7 +680,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
 - Actor values, inventory, worn equipment, packages, factions, perks, magic,
   appearance refresh, animation requests, and relationship queries. **Actor
   values are implemented as bounded callback-local snapshots plus validated,
-  deferred semantic writes keyed by portable AVIF identity. Inventory and worn
+  deferred semantic writes keyed by portable AVIF identity. Ambient and active
+  scene package stacks are exposed together with capability-gated semantic
+  reevaluation through the shared engine marker. Inventory and worn
   equipment have a capability-gated, read-only aggregated snapshot with item
   names, categories, values, weights, and explicit truncation; mutation and the
   remaining gameplay domains are pending. Portable faction membership/rank

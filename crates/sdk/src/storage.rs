@@ -195,6 +195,7 @@ pub enum PrincipalStorageCommand {
 pub enum HostCommand {
     ActorValue(crate::actor_values::ActorValueCommand),
     Component(ExtensionCommand),
+    EvaluatePackage(crate::packages::EvaluatePackageCommand),
     PrincipalStorage(PrincipalStorageCommand),
     PublishEvent(PublishEventCommand),
     Setting(crate::settings::SettingWriteCommand),

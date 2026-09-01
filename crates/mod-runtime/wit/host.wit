@@ -296,6 +296,33 @@ interface perks {
     get: func(entity: entity-ref) -> option<perk-snapshot>;
 }
 
+/// Live ambient and scene package selections plus semantic reevaluation.
+interface packages {
+    use state.{entity-ref, form-ref};
+
+    enum selection-source {
+        ambient,
+        scene,
+    }
+
+    record package-selection {
+        source: selection-source,
+        scene: option<form-ref>,
+        action-index: option<u32>,
+        candidates: list<form-ref>,
+        active: option<form-ref>,
+        template: option<form-ref>,
+    }
+
+    record package-snapshot {
+        selections: list<package-selection>,
+        truncated: bool,
+    }
+
+    get: func(entity: entity-ref) -> option<package-snapshot>;
+    queue-evaluate: func(entity: entity-ref);
+}
+
 /// Bounded spatial queries over live authored references. Results use
 /// portable form identities and never expose ECS slots or engine pointers.
 interface world-spatial {
@@ -339,6 +366,7 @@ world extension {
     import inventory;
     import factions;
     import perks;
+    import packages;
     import world-spatial;
     import console;
 

@@ -25,8 +25,9 @@ use byroredux_sdk::service::{
     CONSOLE_REGISTER_CAPABILITY, CONSOLE_SERVICE, EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY,
     EVENTS_SUBSCRIBE_CAPABILITY, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
-    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PERKS_READ_CAPABILITY,
-    PERKS_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, SETTINGS_READ_CAPABILITY,
+    INVENTORY_READ_CAPABILITY, INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
+    PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
+    SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, SETTINGS_READ_CAPABILITY,
     SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
     STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
     WORLD_ENTITY_READ_CAPABILITY, WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE,
@@ -1295,6 +1296,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1361,6 +1363,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1433,6 +1436,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
         .into_iter()
         .map(|command| match command {
             HostCommand::ActorValue(_) => panic!("unexpected actor-value command"),
+            HostCommand::EvaluatePackage(_) => panic!("unexpected package command"),
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
@@ -1658,6 +1662,16 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
         Some(&Version::new(0, 1, 0))
     );
     assert!(runtime.catalog().supports_capability(PERKS_READ_CAPABILITY));
+    assert_eq!(
+        runtime.catalog().service_version(PACKAGES_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert!(runtime
+        .catalog()
+        .supports_capability(PACKAGES_READ_CAPABILITY));
+    assert!(runtime
+        .catalog()
+        .supports_capability(PACKAGES_EVALUATE_CAPABILITY));
 }
 
 #[test]
@@ -2197,6 +2211,9 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
             HostCommand::ActorValue(_) => {
                 panic!("fixture emitted an unexpected actor-value command")
             }
+            HostCommand::EvaluatePackage(_) => {
+                panic!("fixture emitted an unexpected package command")
+            }
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => {
                 panic!("fixture emitted an unexpected storage command")
@@ -2243,6 +2260,9 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
         .map(|command| match command {
             HostCommand::ActorValue(_) => {
                 panic!("fixture emitted an unexpected actor-value command")
+            }
+            HostCommand::EvaluatePackage(_) => {
+                panic!("fixture emitted an unexpected package command")
             }
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),
