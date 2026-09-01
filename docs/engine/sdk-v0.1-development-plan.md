@@ -25,10 +25,12 @@ The first Phase 2 path is now live in both the headless harness and executable.
 The SDK defines opaque
 generational `EntityRef` values, finite callback-local entity projections,
 typed extension-component schemas and values, a principal-isolated bounded
-store, canonical activation/cell-load/combat-hit/equipment/input/session/recurring-update payloads, and
-atomic deferred command batches. The WIT world exposes `on-activate`,
+store, canonical activation/cell-load/combat-hit/equipment/input/session/recurring-update payloads,
+principal-owned custom/mod events with 4 KiB opaque payloads, and atomic
+deferred command batches. The WIT world exposes `on-activate`,
 `on-cell-load`, `on-hit`, `on-equipment-change`, `on-input-action`,
-`on-session-event`, `on-update`, immutable name/form/world-transform
+`on-session-event`, `on-custom-event`, `on-update`, custom-event publication
+and callback-local payload reads, immutable name/form/world-transform
 reads, and a compact own-state increment command.
 The runtime resolves schema/field
 indices through the authenticated manifest, requires separate event,
@@ -40,7 +42,9 @@ set from repeatable `--extension` arguments, applies only explicit
 `ActivateEvent`, `OnCellLoadEvent`, producer-resolved `HitEvent`, and ordered
 `EquipmentEventBatch`
 markers plus rebinding-independent `ActionState` press/release edges after
-releasing ECS guards, and shuts components down in reverse
+releasing ECS guards. It routes exact manifest-declared custom channels in
+stable install order, commits publication with the callback's other deferred
+commands, defers delivery to the next Late pass, and shuts components down in reverse
 order. Extension component rows now live inside the checksummed
 ByroRedux save container: transient handles translate to load-order-independent
 `FormRef` values, payloads are bounded and preflighted before world teardown,
@@ -310,19 +314,23 @@ may mirror selected schemas into typed engine behavior.
 ### 6.5 Events and scheduling
 
 The canonical event catalog extends the existing ECS markers rather than
-creating a parallel hook system. Subscriptions are declared in the manifest or
-through a capability-gated runtime request. Delivery uses stable event IDs,
-bounded payloads, optional engine-defined filters, and monotonic sequence
-numbers.
+creating a parallel hook system. Subscriptions are declared in the manifest.
+Delivery uses stable event IDs, bounded payloads, and optional engine-defined
+filters. Custom channels use the exact
+`mod.<principal>.event.<channel>` shape; only the authenticated owner may
+publish them, while any explicitly subscribed principal may receive them.
+Publication requires `byro.events.publish`, is part of the callback's atomic
+deferred batch, and enters a bounded transient queue.
 
 Guests never run while arbitrary ECS locks are held. The frame sequence is:
 
-1. Engine systems emit canonical events.
-2. The host snapshots bounded payloads and resolves subscriptions.
-3. Guest callbacks run with fuel/time/memory limits against a read snapshot.
-4. Guest mutations enter a validated command buffer.
-5. The engine applies accepted commands atomically at a declared stage.
-6. Results and diagnostics are attributed to the principal.
+1. The host drains custom events committed before this scheduler pass.
+2. Engine systems emit canonical events.
+3. The host snapshots bounded payloads and resolves subscriptions.
+4. Guest callbacks run with fuel/time/memory limits against a read snapshot.
+5. Guest mutations and publications enter a validated command buffer.
+6. The engine applies accepted commands atomically at a declared stage.
+7. Results and diagnostics are attributed to the principal.
 
 This prevents guest reentrancy and preserves the scheduler's declared-access
 and lock-order invariants.
@@ -559,7 +567,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
 
 ### Wave A — common infrastructure
 
-- Custom/mod events and filtered subscriptions.
+- Custom/mod events and filtered subscriptions. **Implemented for exact,
+  manifest-declared principal channels with a separate publish capability,
+  4 KiB payloads, bounded engine queueing, atomic publication, deterministic
+  routing, and next-pass non-reentrant delivery; typed payload schemas remain.**
 - Persistent maps, arrays, sets, and entity-attached extension components.
 - Input action/control subscriptions after user rebinding. **Implemented for
   the engine's normalized action catalog with press/release edges and validated

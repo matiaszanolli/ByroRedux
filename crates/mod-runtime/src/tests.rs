@@ -10,7 +10,9 @@ use byroredux_sdk::event::{
     ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
     InputPhase, SessionEvent, SessionPhase, UpdateEvent,
 };
-use byroredux_sdk::identity::{CapabilityId, ComponentId, ExtensionId, FormRef, ServiceId};
+use byroredux_sdk::identity::{
+    CapabilityId, ComponentId, EventId, ExtensionId, FormRef, ServiceId,
+};
 use byroredux_sdk::identity::{ComponentFieldId, ComponentSchemaId, EntityRef};
 use byroredux_sdk::manifest::{
     CapabilityRequest, ComponentSchemaDeclaration, EventFilter, EventSubscription,
@@ -19,10 +21,10 @@ use byroredux_sdk::manifest::{
 use byroredux_sdk::projection::{EntityProjection, WorldTransform};
 use byroredux_sdk::service::{
     CompatibilityError, ACTIVATE_EVENT, CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY,
-    EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY,
-    INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT,
-    SESSION_PHASE_FILTER_FIELD, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
-    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT,
+    INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
+    LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD, STORAGE_READ_OWN_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageLimits, PrincipalStorageStore};
 use semver::{Version, VersionReq};
@@ -154,6 +156,16 @@ const ON_SESSION_LIFT: &str = r#"
                 (canon lift (core func $guest-instance "on-session-event")))
 "#;
 
+const ON_CUSTOM_EVENT_CORE: &str = r#"
+                (func (export "on-custom-event") (param i32))
+"#;
+
+const ON_CUSTOM_EVENT_LIFT: &str = r#"
+            (func (export "on-custom-event")
+                (param "subscription-index" u32)
+                (canon lift (core func $guest-instance "on-custom-event")))
+"#;
+
 const ON_UPDATE_CORE: &str = r#"
                 (func (export "on-update") (param f32))
 "#;
@@ -163,6 +175,68 @@ const ON_UPDATE_LIFT: &str = r#"
                 (param "elapsed-seconds" f32)
                 (canon lift (core func $guest-instance "on-update")))
 "#;
+
+fn custom_event_publisher_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (import "byro:mod-host/events@0.1.0" (instance $events
+                (export "publish" (func
+                    (param "event" string)
+                    (param "payload" (list u8))))
+            ))
+            (alias export $events "publish" (func $publish))
+            (core module $libc
+                (memory (export "memory") 1)
+                (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+                    i32.const 128)
+            )
+            (core instance $libc (instantiate $libc))
+            (core func $publish-lower
+                (canon lower (func $publish)
+                    (memory $libc "memory")
+                    (realloc (func $libc "realloc")))
+            )
+            (core module $guest
+                (import "libc" "memory" (memory 1))
+                (import "host" "publish" (func $publish (param i32 i32 i32 i32)))
+                (data (i32.const 0) "mod.org.byroredux.tests.lifecycle.event.ready")
+                (data (i32.const 64) "\01\02\03")
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                (func (export "on-activate") (param i64 i64 i32 i64 i64)
+                    i32.const 0
+                    i32.const 45
+                    i32.const 64
+                    i32.const 3
+                    call $publish)
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "libc" (instance $libc))
+                (with "host" (instance (export "publish" (func $publish-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+        )"#
+    )
+}
 
 fn manifest_with_log(required: bool) -> ExtensionManifest {
     ExtensionManifest {
@@ -437,6 +511,7 @@ fn principal_storage_increment_component() -> String {
                     i32.const 16
                     i64.const 1
                     call $increment)
+                (func (export "on-custom-event") (param i32))
                 (func (export "on-update") (param f32)
                     i32.const 0
                     i32.const 16
@@ -464,6 +539,7 @@ fn principal_storage_increment_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -476,6 +552,7 @@ fn principal_storage_increment_component() -> String {
     .replace("{ON_EQUIPMENT_LIFT}", ON_EQUIPMENT_LIFT)
     .replace("{ON_INPUT_LIFT}", ON_INPUT_LIFT)
     .replace("{ON_SESSION_LIFT}", ON_SESSION_LIFT)
+    .replace("{ON_CUSTOM_EVENT_LIFT}", ON_CUSTOM_EVENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -532,6 +609,7 @@ fn entity_projection_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64) (param i32 i64 i64)
@@ -557,6 +635,7 @@ fn entity_projection_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
             (func (export "on-activate")
                 (param "subject" $entity-ref)
@@ -570,7 +649,9 @@ fn entity_projection_component() -> String {
     .replace("{ON_INPUT_CORE}", ON_INPUT_CORE)
     .replace("{ON_INPUT_LIFT}", ON_INPUT_LIFT)
     .replace("{ON_SESSION_CORE}", ON_SESSION_CORE)
+    .replace("{ON_CUSTOM_EVENT_CORE}", ON_CUSTOM_EVENT_CORE)
     .replace("{ON_SESSION_LIFT}", ON_SESSION_LIFT)
+    .replace("{ON_CUSTOM_EVENT_LIFT}", ON_CUSTOM_EVENT_LIFT)
     .replace("{ON_UPDATE_CORE}", ON_UPDATE_CORE)
     .replace("{ON_UPDATE_LIFT}", ON_UPDATE_LIFT)
 }
@@ -656,6 +737,7 @@ fn logging_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -672,6 +754,7 @@ fn logging_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -694,6 +777,7 @@ fn looping_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -707,6 +791,7 @@ fn looping_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -726,6 +811,7 @@ fn oversized_memory_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -739,6 +825,7 @@ fn oversized_memory_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -760,6 +847,7 @@ fn component_with_wasi_import() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest))
@@ -773,6 +861,7 @@ fn component_with_wasi_import() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -804,6 +893,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-activate")
                     (param $world i64) (param $object i64)
@@ -825,6 +915,7 @@ fn activation_counter_component(queue_count: usize, trap_after_queue: bool) -> S
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -846,6 +937,7 @@ fn cell_load_counter_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
                 (func (export "on-cell-load")
                     (param $world i64) (param $object i64)
@@ -870,6 +962,7 @@ fn cell_load_counter_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -939,6 +1032,7 @@ fn hit_counter_component() -> String {
                 {ON_EQUIPMENT_CORE}
                 {ON_INPUT_CORE}
                 {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
                 {ON_UPDATE_CORE}
             )
             (core instance $guest-instance (instantiate $guest
@@ -955,6 +1049,7 @@ fn hit_counter_component() -> String {
             {ON_EQUIPMENT_LIFT}
             {ON_INPUT_LIFT}
             {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
             {ON_UPDATE_LIFT}
         )"#
     )
@@ -978,6 +1073,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
         .map(|command| match command {
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
+            HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
         })
         .collect::<Vec<_>>();
     let principal = PrincipalId::from(&manifest.id);
@@ -1041,6 +1137,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
         .map(|command| match command {
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
+            HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
         })
         .collect::<Vec<_>>();
     let principal = PrincipalId::from(&manifest.id);
@@ -1110,6 +1207,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
         .map(|command| match command {
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
+            HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
         })
         .collect::<Vec<_>>();
     storage.apply_batch(&principal, &storage_commands).unwrap();
@@ -1746,6 +1844,7 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
             HostCommand::PrincipalStorage(_) => {
                 panic!("fixture emitted an unexpected storage command")
             }
+            HostCommand::PublishEvent(_) => panic!("fixture emitted an unexpected event command"),
         })
         .collect();
     state.apply_batch(&owner, &component_commands).unwrap();
@@ -1786,6 +1885,7 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
         .map(|command| match command {
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),
+            HostCommand::PublishEvent(_) => panic!("fixture emitted an unexpected event command"),
         })
         .collect();
 
@@ -1878,6 +1978,62 @@ fn entity_projection_host_call_requires_its_explicit_capability() {
         .unwrap_err();
     assert!(matches!(error, SandboxError::GuestFault { .. }));
     assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+}
+
+#[test]
+fn custom_event_publication_is_deferred_attributed_and_capability_gated() {
+    let runtime = runtime(SandboxConfig::default());
+    let mut manifest = manifest();
+    manifest.capabilities = vec![
+        CapabilityRequest {
+            id: CapabilityId::new(EVENTS_SUBSCRIBE_CAPABILITY).unwrap(),
+            required: true,
+        },
+        CapabilityRequest {
+            id: CapabilityId::new(EVENTS_PUBLISH_CAPABILITY).unwrap(),
+            required: false,
+        },
+    ];
+    manifest.subscriptions = vec![EventSubscription {
+        event: EventId::new(ACTIVATE_EVENT).unwrap(),
+        filters: Vec::new(),
+        interval_millis: None,
+    }];
+    let compiled = compile_wat_for(&runtime, &manifest, &custom_event_publisher_component());
+
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(EVENTS_PUBLISH_CAPABILITY).unwrap();
+    let mut publisher = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    publisher.initialize().unwrap();
+    let commands = publisher
+        .on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 1).unwrap(),
+            activator: None,
+        })
+        .unwrap();
+    assert_eq!(commands.len(), 1);
+    let HostCommand::PublishEvent(command) = &commands[0] else {
+        panic!("publisher returned a non-event command");
+    };
+    assert_eq!(
+        command.event,
+        EventId::new("mod.org.byroredux.tests.lifecycle.event.ready").unwrap()
+    );
+    assert_eq!(command.payload, vec![1, 2, 3]);
+
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    let mut denied = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    denied.initialize().unwrap();
+    assert!(matches!(
+        denied.on_activate(ActivationEvent {
+            subject: EntityRef::new(1, 2).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::GuestFault { .. })
+    ));
+    assert!(matches!(denied.status(), InstanceStatus::Quarantined(_)));
 }
 
 #[test]

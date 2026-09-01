@@ -2,7 +2,108 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::{EntityRef, FormRef};
+use crate::identity::{EntityRef, EventId, FormRef, PrincipalId};
+
+/// Maximum opaque payload accepted for one custom/mod event.
+pub const MAX_CUSTOM_EVENT_PAYLOAD_BYTES: usize = 4 * 1024;
+
+/// A principal-authored event queued by one successful guest callback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublishEventCommand {
+    pub event: EventId,
+    pub payload: Vec<u8>,
+}
+
+/// Canonical custom/mod event delivered to an exact manifest subscriber.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomEvent {
+    pub event: EventId,
+    pub sender: PrincipalId,
+    pub payload: Vec<u8>,
+}
+
+/// Whether an ID follows the reserved `mod.<principal>.event.<channel>` shape.
+pub fn is_custom_event_id(event: &EventId) -> bool {
+    let Some(rest) = event.as_str().strip_prefix("mod.") else {
+        return false;
+    };
+    let Some((owner, channel)) = rest.split_once(".event.") else {
+        return false;
+    };
+    !channel.is_empty() && PrincipalId::new(owner).is_ok()
+}
+
+/// Whether the authenticated principal owns this custom event namespace.
+pub fn custom_event_owned_by(event: &EventId, principal: &PrincipalId) -> bool {
+    event
+        .as_str()
+        .strip_prefix("mod.")
+        .and_then(|rest| rest.split_once(".event."))
+        .is_some_and(|(owner, channel)| owner == principal.as_str() && !channel.is_empty())
+}
+
+impl PublishEventCommand {
+    /// Validate payload bounds; namespace ownership is checked by the host.
+    pub fn new(event: EventId, payload: Vec<u8>) -> Option<Self> {
+        (is_custom_event_id(&event) && payload.len() <= MAX_CUSTOM_EVENT_PAYLOAD_BYTES)
+            .then_some(Self { event, payload })
+    }
+}
+
+impl CustomEvent {
+    /// Validate channel ownership and payload bounds before guest delivery.
+    pub fn is_valid(&self) -> bool {
+        custom_event_owned_by(&self.event, &self.sender)
+            && self.payload.len() <= MAX_CUSTOM_EVENT_PAYLOAD_BYTES
+    }
+}
+
+#[cfg(test)]
+mod custom_event_tests {
+    use super::*;
+
+    fn principal() -> PrincipalId {
+        PrincipalId::new("org.example.weather").unwrap()
+    }
+
+    #[test]
+    fn custom_channels_are_reserved_exact_and_principal_owned() {
+        let owned = EventId::new("mod.org.example.weather.event.front-arrived").unwrap();
+        assert!(is_custom_event_id(&owned));
+        assert!(custom_event_owned_by(&owned, &principal()));
+
+        let foreign = EventId::new("mod.org.example.climate.event.front-arrived").unwrap();
+        assert!(is_custom_event_id(&foreign));
+        assert!(!custom_event_owned_by(&foreign, &principal()));
+
+        let nested = EventId::new("mod.org.example.weather.event.front.event.arrived").unwrap();
+        assert!(custom_event_owned_by(&nested, &principal()));
+        assert!(!custom_event_owned_by(
+            &nested,
+            &PrincipalId::new("org.example.weather.event.front").unwrap()
+        ));
+
+        for invalid in [
+            "byro.events.front-arrived",
+            "mod.org.example.weather.front-arrived",
+            "mod.org.example.weather.event.",
+        ] {
+            assert!(!is_custom_event_id(&EventId::new(invalid).unwrap()));
+        }
+    }
+
+    #[test]
+    fn publication_payload_is_bounded() {
+        let event = EventId::new("mod.org.example.weather.event.front-arrived").unwrap();
+        assert!(
+            PublishEventCommand::new(event.clone(), vec![0; MAX_CUSTOM_EVENT_PAYLOAD_BYTES])
+                .is_some()
+        );
+        assert!(
+            PublishEventCommand::new(event, vec![0; MAX_CUSTOM_EVENT_PAYLOAD_BYTES + 1]).is_none()
+        );
+    }
+}
 
 /// Canonical gameplay actions exposed after physical input rebinding.
 ///

@@ -1649,6 +1649,14 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes_resource::<MetricsState>()
             .writes_resource::<MetricsSnapshot>(),
     );
+    // Custom events committed on the previous frame are drained before any
+    // callback in this frame can publish another one. This is the scheduler
+    // boundary that prevents nested/reentrant guest execution.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_custom_event_dispatch_system,
+        Access::new().writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     // SDK Phase 3 — deliver activation only after every built-in consumer has
     // run and immediately before the transient marker is drained. The adapter
     // snapshots `ActivateEvent` and the cloneable host slot, drops both ECS
@@ -2259,6 +2267,7 @@ mod fragment_activation_order_tests {
                 .unwrap_or_else(|| panic!("{needle} is no longer registered in boot.rs"))
         };
 
+        let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
         let activation = pos("crate::extensions::extension_activation_dispatch_system");
         let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
         let equipment = pos("crate::extensions::extension_equipment_dispatch_system");
@@ -2268,7 +2277,9 @@ mod fragment_activation_order_tests {
         let update = pos("crate::extensions::extension_update_dispatch_system");
         let cleanup = pos("byroredux_scripting::event_cleanup_system");
         assert!(
-            activation < cleanup
+            custom < activation
+                && custom < cleanup
+                && activation < cleanup
                 && cell_load < cleanup
                 && equipment < cleanup
                 && input < cleanup

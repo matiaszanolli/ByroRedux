@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::component::ComponentFieldDeclaration;
 use crate::event::{
-    InputAction, SessionPhase, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD, SESSION_EVENT,
-    SESSION_PHASE_FILTER_FIELD,
+    is_custom_event_id, InputAction, SessionPhase, INPUT_ACTION_EVENT, INPUT_ACTION_FILTER_FIELD,
+    SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
 };
 use crate::identity::{
     CapabilityId, ComponentId, ComponentSchemaId, EventId, ExtensionId, ServiceId,
@@ -32,6 +32,14 @@ pub const MIN_RECURRING_UPDATE_INTERVAL_MS: u32 = 16;
 /// Largest supported recurring callback cadence.
 pub const MAX_RECURRING_UPDATE_INTERVAL_MS: u32 = 3_600_000;
 const UPDATE_EVENT_ID: &str = "byro.events.update";
+const BUILTIN_IMMEDIATE_EVENT_IDS: &[&str] = &[
+    "byro.events.activate",
+    "byro.events.cell-load",
+    "byro.events.hit",
+    "byro.events.equipment-change",
+    INPUT_ACTION_EVENT,
+    SESSION_EVENT,
+];
 
 /// Versioned package contract for sandboxed executable extensions.
 ///
@@ -214,6 +222,12 @@ pub enum ManifestError {
     /// The same session lifecycle phase was selected more than once.
     #[error("duplicate session lifecycle phase filter {0}")]
     DuplicateSessionPhase(String),
+    /// The subscription named neither a canonical engine event nor a custom channel.
+    #[error("unsupported event subscription {0}")]
+    UnsupportedEvent(EventId),
+    /// Custom channels are already exact-match filters and take no field predicates.
+    #[error("custom event {0} does not accept field filters")]
+    CustomEventFiltersUnsupported(EventId),
 }
 
 impl ExtensionManifest {
@@ -277,6 +291,18 @@ impl ExtensionManifest {
                     filter.equals.len(),
                     MAX_FILTER_VALUE_BYTES,
                 )?;
+            }
+            let is_custom = is_custom_event_id(&subscription.event);
+            if subscription.event.as_str() != UPDATE_EVENT_ID
+                && !BUILTIN_IMMEDIATE_EVENT_IDS.contains(&subscription.event.as_str())
+                && !is_custom
+            {
+                return Err(ManifestError::UnsupportedEvent(subscription.event.clone()));
+            }
+            if is_custom && !subscription.filters.is_empty() {
+                return Err(ManifestError::CustomEventFiltersUnsupported(
+                    subscription.event.clone(),
+                ));
             }
             if subscription.event.as_str() == INPUT_ACTION_EVENT {
                 let mut actions = BTreeSet::new();
@@ -634,5 +660,33 @@ mod tests {
             duplicate.validate(),
             Err(ManifestError::DuplicateSessionPhase("new-game".to_owned()))
         );
+    }
+
+    #[test]
+    fn custom_event_subscriptions_require_the_reserved_exact_channel_shape() {
+        let mut valid = manifest();
+        valid.subscriptions.push(EventSubscription {
+            event: EventId::new("mod.org.example.weather.event.front-arrived").unwrap(),
+            filters: Vec::new(),
+            interval_millis: None,
+        });
+        valid.validate().unwrap();
+
+        let mut typo = valid.clone();
+        typo.subscriptions[0].event = EventId::new("byro.events.activte").unwrap();
+        assert!(matches!(
+            typo.validate(),
+            Err(ManifestError::UnsupportedEvent(_))
+        ));
+
+        let mut filtered = valid;
+        filtered.subscriptions[0].filters.push(EventFilter {
+            field: ServiceId::new("mod.payload.tag").unwrap(),
+            equals: "rain".to_owned(),
+        });
+        assert!(matches!(
+            filtered.validate(),
+            Err(ManifestError::CustomEventFiltersUnsupported(_))
+        ));
     }
 }

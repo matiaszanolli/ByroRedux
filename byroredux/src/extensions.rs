@@ -24,8 +24,9 @@ use byroredux_sdk::component::{
     EXTENSION_STATE_FORMAT_VERSION,
 };
 use byroredux_sdk::event::{
-    ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction as SdkInputAction,
-    InputActionEvent, InputPhase, SessionEvent, SessionPhase, UpdateEvent,
+    custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
+    EquipmentEvent, HitEvent, InputAction as SdkInputAction, InputActionEvent, InputPhase,
+    SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, ExtensionId, FormRef, PrincipalId,
@@ -45,6 +46,8 @@ use thiserror::Error;
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
 const MAX_PENDING_SESSION_EVENTS: usize = 64;
+const MAX_PENDING_CUSTOM_EVENTS: usize = 256;
+const MAX_PENDING_CUSTOM_EVENT_BYTES: usize = 1024 * 1024;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -175,6 +178,7 @@ struct HostedComponent {
     input_actions: BTreeSet<SdkInputAction>,
     receives_session: bool,
     session_phases: BTreeSet<SessionPhase>,
+    custom_subscriptions: BTreeSet<byroredux_sdk::identity::EventId>,
     receives_hit: bool,
     recurring_update: Option<RecurringCadence>,
     instance: ModInstance,
@@ -218,6 +222,7 @@ pub(crate) struct ExtensionHost {
     diagnostics: Vec<ExtensionDiagnostic>,
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
+    pending_custom_events: Vec<CustomEvent>,
 }
 
 impl ExtensionHost {
@@ -237,6 +242,7 @@ impl ExtensionHost {
             diagnostics: Vec::new(),
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
+            pending_custom_events: Vec::new(),
         })
     }
 
@@ -348,6 +354,12 @@ impl ExtensionHost {
             .find(|subscription| subscription.event.as_str() == UPDATE_EVENT)
             .and_then(|subscription| subscription.interval_millis)
             .map(RecurringCadence::from_millis);
+        let custom_subscriptions = manifest
+            .subscriptions
+            .iter()
+            .filter(|subscription| is_custom_event_id(&subscription.event))
+            .map(|subscription| subscription.event.clone())
+            .collect::<BTreeSet<_>>();
         let mut staged_components = Vec::with_capacity(compiled.len());
         let mut staged_diagnostics = Vec::new();
         for (component_id, compiled) in compiled {
@@ -372,6 +384,7 @@ impl ExtensionHost {
                 input_actions: input_actions.clone(),
                 receives_session,
                 session_phases: session_phases.clone(),
+                custom_subscriptions: custom_subscriptions.clone(),
                 receives_hit,
                 recurring_update,
                 instance,
@@ -530,6 +543,7 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -608,6 +622,7 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -690,6 +705,7 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -755,6 +771,7 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -816,6 +833,66 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
+                    &mut self.diagnostics,
+                    &mut stats,
+                );
+            }
+        }
+        stats
+    }
+
+    /// Deliver custom events committed by earlier scheduler passes.
+    ///
+    /// The queue is taken before entering any guest, so events published from
+    /// these callbacks remain pending and cannot cause nested guest execution.
+    #[cfg(test)]
+    pub fn dispatch_custom_events(&mut self) -> ExtensionDispatchStats {
+        self.dispatch_pending_custom_events()
+    }
+
+    fn dispatch_pending_custom_events(&mut self) -> ExtensionDispatchStats {
+        let events = std::mem::take(&mut self.pending_custom_events);
+        let mut stats = ExtensionDispatchStats::default();
+        for event in events {
+            stats.events += 1;
+            for hosted in &mut self.components {
+                if !hosted.custom_subscriptions.contains(&event.event)
+                    || !hosted
+                        .instance
+                        .grants()
+                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+                    || hosted.instance.status() != &InstanceStatus::Active
+                {
+                    continue;
+                }
+                stats.deliveries += 1;
+                let principal = hosted.instance.principal().id().clone();
+                let storage_snapshot = self
+                    .principal_storage
+                    .values(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_principal_storage_snapshot(storage_snapshot);
+                let result = hosted.instance.on_custom_event(event.clone());
+                self.diagnostics
+                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
+                        ExtensionDiagnostic::Log {
+                            extension: hosted.extension.clone(),
+                            component: hosted.component.clone(),
+                            entry,
+                        }
+                    }));
+                apply_delivery_result(
+                    hosted,
+                    result,
+                    LifecyclePhase::CustomEvent,
+                    &principal,
+                    &mut self.state,
+                    &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -949,6 +1026,7 @@ impl ExtensionHost {
                     &principal,
                     &mut self.state,
                     &mut self.principal_storage,
+                    &mut self.pending_custom_events,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1017,6 +1095,7 @@ impl ExtensionHost {
                 &principal,
                 &mut self.state,
                 &mut self.principal_storage,
+                &mut self.pending_custom_events,
                 &mut self.diagnostics,
                 &mut stats,
             );
@@ -1315,6 +1394,7 @@ fn apply_delivery_result(
     principal: &PrincipalId,
     state: &mut ExtensionComponentStore,
     principal_storage: &mut PrincipalStorageStore,
+    pending_custom_events: &mut Vec<CustomEvent>,
     diagnostics: &mut Vec<ExtensionDiagnostic>,
     stats: &mut ExtensionDispatchStats,
 ) {
@@ -1333,17 +1413,59 @@ fn apply_delivery_result(
     let command_count = commands.len();
     let mut component_commands = Vec::new();
     let mut storage_commands = Vec::new();
+    let mut published_events = Vec::new();
     for command in commands {
         match command {
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
+            HostCommand::PublishEvent(command) => published_events.push(command),
         }
     }
     let mut staged_state = state.clone();
     let mut staged_storage = principal_storage.clone();
-    let apply_result = staged_state
-        .apply_batch(principal, &component_commands)
-        .map_err(|error| error.to_string())
+    let staged_events = published_events
+        .into_iter()
+        .map(|command| {
+            if !custom_event_owned_by(&command.event, principal) {
+                return Err(format!(
+                    "principal {principal} does not own custom event {}",
+                    command.event
+                ));
+            }
+            let event = CustomEvent {
+                event: command.event,
+                sender: principal.clone(),
+                payload: command.payload,
+            };
+            event
+                .is_valid()
+                .then_some(event)
+                .ok_or_else(|| "custom event payload is invalid or exceeds its bound".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>();
+    let apply_result = staged_events.and_then(|staged_events| {
+        let next_event_count = pending_custom_events
+            .len()
+            .checked_add(staged_events.len())
+            .ok_or_else(|| "pending custom event count overflow".to_owned())?;
+        if next_event_count > MAX_PENDING_CUSTOM_EVENTS {
+            return Err(format!(
+                "pending custom event limit of {MAX_PENDING_CUSTOM_EVENTS} exceeded"
+            ));
+        }
+        let next_payload_bytes = pending_custom_events
+            .iter()
+            .chain(&staged_events)
+            .try_fold(0usize, |total, event| total.checked_add(event.payload.len()))
+            .ok_or_else(|| "pending custom event byte count overflow".to_owned())?;
+        if next_payload_bytes > MAX_PENDING_CUSTOM_EVENT_BYTES {
+            return Err(format!(
+                "pending custom event payload limit of {MAX_PENDING_CUSTOM_EVENT_BYTES} bytes exceeded"
+            ));
+        }
+        staged_state
+            .apply_batch(principal, &component_commands)
+            .map_err(|error| error.to_string())
         .and_then(|()| {
             if storage_commands.is_empty() {
                 Ok(())
@@ -1352,22 +1474,28 @@ fn apply_delivery_result(
                     .apply_batch(principal, &storage_commands)
                     .map_err(|error| error.to_string())
             }
-        });
-    if let Err(error) = apply_result {
-        let message = format!("deferred command batch rejected: {error}");
-        hosted
-            .instance
-            .reject_deferred_commands(phase, message.clone());
-        diagnostics.push(ExtensionDiagnostic::Fault {
-            extension: hosted.extension.clone(),
-            component: hosted.component.clone(),
-            message,
-        });
-        stats.faults += 1;
-    } else {
-        *state = staged_state;
-        *principal_storage = staged_storage;
-        stats.commands_applied += command_count;
+        })?;
+        Ok(staged_events)
+    });
+    match apply_result {
+        Err(error) => {
+            let message = format!("deferred command batch rejected: {error}");
+            hosted
+                .instance
+                .reject_deferred_commands(phase, message.clone());
+            diagnostics.push(ExtensionDiagnostic::Fault {
+                extension: hosted.extension.clone(),
+                component: hosted.component.clone(),
+                message,
+            });
+            stats.faults += 1;
+        }
+        Ok(staged_events) => {
+            *state = staged_state;
+            *principal_storage = staged_storage;
+            pending_custom_events.extend(staged_events);
+            stats.commands_applied += command_count;
+        }
     }
 }
 
@@ -1511,6 +1639,38 @@ pub(crate) fn pending_session_events(world: &World) -> Vec<SessionEvent> {
         .try_resource::<SessionEventQueue>()
         .map(|queue| queue.events.clone())
         .unwrap_or_default()
+}
+
+/// Drain the custom-event queue at the start of the extension dispatch pass.
+///
+/// Boot registers this before every producer-facing extension adapter. Any
+/// event published later in the frame therefore waits for the next Late pass.
+pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
+    let host = {
+        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+            return;
+        };
+        slot.host()
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    let stats = host.dispatch_pending_custom_events();
+    let diagnostics = host.take_diagnostics();
+    drop(host);
+    emit_diagnostics(diagnostics);
+    if stats.faults > 0 {
+        log::warn!(
+            "extension custom-event dispatch: events={} deliveries={} commands={} faults={}",
+            stats.events,
+            stats.deliveries,
+            stats.commands_applied,
+            stats.faults
+        );
+    }
 }
 
 /// Late-stage adapter from transient ECS markers to sandbox callbacks.
@@ -2415,6 +2575,7 @@ mod tests {
       call $increment)
     (func (export "on-input-action") (param i32 i32))
     (func (export "on-session-event") (param i32 i32 i32))
+    (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2449,6 +2610,9 @@ mod tests {
     (param "phase" $session-phase)
     (param "slot" (option u32))
     (canon lift (core func $guest-instance "on-session-event")))
+  (func (export "on-custom-event")
+    (param "subscription-index" u32)
+    (canon lift (core func $guest-instance "on-custom-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2561,6 +2725,17 @@ mod tests {
       i32.const 16
       i64.const 1
       call $increment)
+    (func (export "on-custom-event") (param $subscription-index i32)
+      local.get $subscription-index
+      i32.eqz
+      if
+        i32.const 0
+        i32.const 16
+        i64.const 1
+        call $increment
+      else
+        unreachable
+      end)
     (func (export "on-update") (param f32)
       i32.const 0
       i32.const 16
@@ -2600,6 +2775,9 @@ mod tests {
     (param "phase" $session-phase)
     (param "slot" (option u32))
     (canon lift (core func $guest-instance "on-session-event")))
+  (func (export "on-custom-event")
+    (param "subscription-index" u32)
+    (canon lift (core func $guest-instance "on-custom-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2679,6 +2857,7 @@ mod tests {
       end)
     (func (export "on-input-action") (param i32 i32))
     (func (export "on-session-event") (param i32 i32 i32))
+    (func (export "on-custom-event") (param i32))
     (func (export "on-update") (param f32))
   )
   (core instance $guest-instance (instantiate $guest
@@ -2713,6 +2892,9 @@ mod tests {
     (param "phase" $session-phase)
     (param "slot" (option u32))
     (canon lift (core func $guest-instance "on-session-event")))
+  (func (export "on-custom-event")
+    (param "subscription-index" u32)
+    (canon lift (core func $guest-instance "on-custom-event")))
   (func (export "on-update")
     (param "elapsed-seconds" f32)
     (canon lift (core func $guest-instance "on-update")))
@@ -2822,6 +3004,16 @@ mod tests {
                 field: ServiceId::new(byroredux_sdk::service::SESSION_PHASE_FILTER_FIELD).unwrap(),
                 equals: "load-complete".to_owned(),
             }],
+            interval_millis: None,
+        }];
+        manifest
+    }
+
+    fn custom_event_manifest(id: &str, event: &str) -> ExtensionManifest {
+        let mut manifest = storage_manifest(id);
+        manifest.subscriptions = vec![EventSubscription {
+            event: EventId::new(event).unwrap(),
+            filters: Vec::new(),
             interval_millis: None,
         }];
         manifest
@@ -2970,6 +3162,23 @@ mod tests {
         );
         host.install_package(&session_manifest(id), &artifacts, storage_grants())
             .unwrap();
+        host
+    }
+
+    fn host_with_custom_event_package(id: &str, event: &str) -> ExtensionHost {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        let mut artifacts = ExtensionArtifacts::new();
+        artifacts.insert(
+            ComponentId::new("runtime").unwrap(),
+            wat::parse_str(STORAGE_COMPONENT).unwrap(),
+        );
+        host.install_package(
+            &custom_event_manifest(id, event),
+            &artifacts,
+            storage_grants(),
+        )
+        .unwrap();
         host
     }
 
@@ -3224,6 +3433,111 @@ mod tests {
                 .and_then(|values| values.get(&key)),
             Some(&ExtensionValue::I64(1))
         );
+    }
+
+    #[test]
+    fn custom_events_route_by_exact_channel_on_a_later_dispatch_pass() {
+        let subscriber = PrincipalId::new("org.example.subscriber").unwrap();
+        let sender = PrincipalId::new("org.example.publisher").unwrap();
+        let channel = EventId::new("mod.org.example.publisher.event.ready").unwrap();
+        let key = StorageKey::new("activation-count").unwrap();
+        let mut host = host_with_custom_event_package(subscriber.as_str(), channel.as_str());
+
+        host.pending_custom_events.push(CustomEvent {
+            event: channel,
+            sender,
+            payload: vec![1, 2, 3],
+        });
+        assert!(host
+            .principal_storage
+            .values(&subscriber)
+            .and_then(|values| values.get(&key))
+            .is_none());
+
+        let stats = host.dispatch_custom_events();
+        assert_eq!(
+            stats,
+            ExtensionDispatchStats {
+                events: 1,
+                deliveries: 1,
+                commands_applied: 1,
+                faults: 0,
+            }
+        );
+        assert_eq!(
+            host.principal_storage
+                .values(&subscriber)
+                .and_then(|values| values.get(&key)),
+            Some(&ExtensionValue::I64(1))
+        );
+
+        host.pending_custom_events.push(CustomEvent {
+            event: EventId::new("mod.org.example.other.event.ready").unwrap(),
+            sender: PrincipalId::new("org.example.other").unwrap(),
+            payload: Vec::new(),
+        });
+        assert_eq!(
+            host.dispatch_custom_events(),
+            ExtensionDispatchStats {
+                events: 1,
+                ..ExtensionDispatchStats::default()
+            }
+        );
+    }
+
+    #[test]
+    fn custom_event_queue_overflow_rejects_the_entire_deferred_batch() {
+        let mut host = host_with_package("org.example.atomic");
+        let principal = PrincipalId::new("org.example.atomic").unwrap();
+        let event = EventId::new("mod.org.example.atomic.event.ready").unwrap();
+        host.pending_custom_events = (0..MAX_PENDING_CUSTOM_EVENTS)
+            .map(|_| CustomEvent {
+                event: event.clone(),
+                sender: principal.clone(),
+                payload: Vec::new(),
+            })
+            .collect();
+        let entity = EntityRef::new(1, 99).unwrap();
+        let commands = vec![
+            HostCommand::Component(byroredux_sdk::component::ExtensionCommand::IncrementI64 {
+                entity,
+                schema: ComponentSchemaId::new("example.activation-count").unwrap(),
+                field: ComponentFieldId::new("count").unwrap(),
+                delta: 1,
+            }),
+            HostCommand::PublishEvent(
+                byroredux_sdk::event::PublishEventCommand::new(event, Vec::new()).unwrap(),
+            ),
+        ];
+        let mut stats = ExtensionDispatchStats::default();
+        let hosted = &mut host.components[0];
+        apply_delivery_result(
+            hosted,
+            Ok(commands),
+            LifecyclePhase::Activate,
+            &principal,
+            &mut host.state,
+            &mut host.principal_storage,
+            &mut host.pending_custom_events,
+            &mut host.diagnostics,
+            &mut stats,
+        );
+
+        assert_eq!(host.pending_custom_events.len(), MAX_PENDING_CUSTOM_EVENTS);
+        assert!(host
+            .state
+            .row(
+                &principal,
+                &ComponentSchemaId::new("example.activation-count").unwrap(),
+                entity,
+            )
+            .is_none());
+        assert_eq!(stats.commands_applied, 0);
+        assert_eq!(stats.faults, 1);
+        assert!(matches!(
+            host.components[0].instance.status(),
+            InstanceStatus::Quarantined(_)
+        ));
     }
 
     #[test]

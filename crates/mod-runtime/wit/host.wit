@@ -20,6 +20,15 @@ interface context {
     service-version: func(service: string) -> option<string>;
 }
 
+/// Principal-owned, bounded custom/mod event publication and callback-local
+/// payload access. The callback receives the exact manifest subscription
+/// index, so channels never become guest-chosen numeric identifiers.
+interface events {
+    publish: func(event: string, payload: list<u8>);
+    current-payload-len: func() -> u32;
+    current-payload-byte: func(index: u32) -> option<u8>;
+}
+
 /// Deferred mutations to principal-owned extension component state.
 interface state {
     record entity-ref {
@@ -133,6 +142,7 @@ interface world-state {
 world extension {
     import logging;
     import context;
+    import events;
     import state;
     import storage;
     import world-state;
@@ -156,6 +166,7 @@ world extension {
     );
     export on-input-action: func(action: input-action, phase: input-phase);
     export on-session-event: func(phase: session-phase, slot: option<u32>);
+    export on-custom-event: func(subscription-index: u32);
     export on-update: func(elapsed-seconds: f32);
     export shutdown: func();
 }

@@ -1,12 +1,13 @@
 use crate::bindings::byro::mod_host::{
-    context, logging, state, storage as wit_storage, world_state,
+    context, events, logging, state, storage as wit_storage, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
 use byroredux_sdk::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
 use byroredux_sdk::event::{
-    ActivationEvent, CellLoadEvent, EquipmentEvent, HitEvent, InputAction, InputActionEvent,
-    InputPhase, SessionEvent, SessionPhase, UpdateEvent,
+    custom_event_owned_by, is_custom_event_id, ActivationEvent, CellLoadEvent, CustomEvent,
+    EquipmentEvent, HitEvent, InputAction, InputActionEvent, InputPhase, PublishEventCommand,
+    SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
     CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
@@ -16,9 +17,9 @@ use byroredux_sdk::projection::EntityProjection;
 use byroredux_sdk::service::{
     current_sdk_version, CapabilityDescriptor, ServiceCatalog, ServiceDescriptor, ACTIVATE_EVENT,
     CELL_LOAD_EVENT, COMPONENTS_WRITE_OWN_CAPABILITY, COMPONENT_STATE_SERVICE, CONTEXT_SERVICE,
-    EQUIPMENT_EVENT, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE,
-    HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
+    EQUIPMENT_EVENT, EVENTS_PUBLISH_CAPABILITY, EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE,
+    EXTENSION_WORLD_SERVICE, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
+    LOGGING_SERVICE, PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, STORAGE_READ_OWN_CAPABILITY,
     STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
@@ -58,6 +59,7 @@ pub enum LifecyclePhase {
     Equipment,
     Input,
     Session,
+    CustomEvent,
     Update,
     Shutdown,
 }
@@ -72,6 +74,7 @@ impl fmt::Display for LifecyclePhase {
             Self::Equipment => "on-equipment-change",
             Self::Input => "on-input-action",
             Self::Session => "on-session-event",
+            Self::CustomEvent => "on-custom-event",
             Self::Update => "on-update",
             Self::Shutdown => "shutdown",
         })
@@ -195,6 +198,10 @@ impl SandboxRuntime {
             (
                 EVENTS_SUBSCRIBE_CAPABILITY,
                 "Receive declared canonical engine events",
+            ),
+            (
+                EVENTS_PUBLISH_CAPABILITY,
+                "Publish bounded events in the authenticated principal namespace",
             ),
             (
                 INPUT_ACTIONS_SUBSCRIBE_CAPABILITY,
@@ -411,6 +418,13 @@ impl SandboxRuntime {
                 .subscriptions
                 .iter()
                 .any(|subscription| subscription.event.as_str() == SESSION_EVENT),
+            custom_subscriptions: manifest
+                .subscriptions
+                .iter()
+                .filter(|subscription| is_custom_event_id(&subscription.event))
+                .map(|subscription| subscription.event.clone())
+                .collect(),
+            current_custom_event: None,
             subscribed_to_update: manifest
                 .subscriptions
                 .iter()
@@ -768,6 +782,52 @@ impl ModInstance {
         Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
     }
 
+    /// Deliver one principal-owned custom event to an exact manifest subscriber.
+    ///
+    /// The callback receives the manifest subscription index. Its opaque bytes
+    /// are readable only for the duration of this callback through `events`.
+    pub fn on_custom_event(&mut self, event: CustomEvent) -> Result<Vec<HostCommand>> {
+        if self.status != InstanceStatus::Active {
+            return Err(SandboxError::InvalidLifecycle {
+                phase: LifecyclePhase::CustomEvent,
+                status: self.status.clone(),
+            });
+        }
+        let Some(subscription_index) = self
+            .store
+            .data()
+            .custom_subscriptions
+            .iter()
+            .position(|subscribed| subscribed == &event.event)
+        else {
+            return Err(SandboxError::EventNotSubscribed(event.event));
+        };
+        if !self
+            .store
+            .data()
+            .grants
+            .contains(EVENTS_SUBSCRIBE_CAPABILITY)
+        {
+            return Err(SandboxError::EventDeliveryDenied(event.event));
+        }
+        if !event.is_valid() {
+            return Err(SandboxError::InvalidEventPayload {
+                event: event.event,
+                message: "custom event namespace or payload is invalid".to_owned(),
+            });
+        }
+        let subscription_index = u32::try_from(subscription_index)
+            .expect("manifest subscription count is bounded below u32::MAX");
+        self.store.data_mut().current_custom_event = Some(event);
+        let result = self.enter(LifecyclePhase::CustomEvent, true, |bindings, store| {
+            bindings.call_on_custom_event(store, subscription_index)
+        });
+        self.store.data_mut().current_custom_event = None;
+        self.store.data_mut().entity_projections.clear();
+        result?;
+        Ok(std::mem::take(&mut self.store.data_mut().pending_commands))
+    }
+
     /// Deliver one bounded recurring callback and return deferred commands.
     pub fn on_update(&mut self, event: UpdateEvent) -> Result<Vec<HostCommand>> {
         if self.status != InstanceStatus::Active {
@@ -935,6 +995,8 @@ struct HostState {
     subscribed_to_equipment: bool,
     subscribed_to_input: bool,
     subscribed_to_session: bool,
+    custom_subscriptions: Vec<EventId>,
+    current_custom_event: Option<CustomEvent>,
     subscribed_to_update: bool,
     principal_storage_schema: Option<u32>,
     principal_storage: BTreeMap<StorageKey, ExtensionValue>,
@@ -943,6 +1005,57 @@ struct HostState {
     max_commands_per_entry: usize,
     accepting_commands: bool,
     command_budget_exhausted: bool,
+}
+
+impl events::Host for HostState {
+    fn publish(&mut self, event: String, payload: Vec<u8>) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("custom events are only accepted during an event callback");
+        }
+        if !self.grants.contains(EVENTS_PUBLISH_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {EVENTS_PUBLISH_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let event = EventId::new(event)
+            .map_err(|error| wasmtime::Error::msg(format!("invalid custom event id: {error}")))?;
+        if !custom_event_owned_by(&event, self.principal.id()) {
+            wasmtime::bail!(
+                "principal {} does not own custom event {}",
+                self.principal.id(),
+                event
+            );
+        }
+        let command = PublishEventCommand::new(event, payload).ok_or_else(|| {
+            wasmtime::Error::msg("custom event id or payload exceeds the SDK contract")
+        })?;
+        self.pending_commands
+            .push(HostCommand::PublishEvent(command));
+        Ok(())
+    }
+
+    fn current_payload_len(&mut self) -> wasmtime::Result<u32> {
+        let event = self.current_custom_event.as_ref().ok_or_else(|| {
+            wasmtime::Error::msg("custom event payload is only visible during on-custom-event")
+        })?;
+        Ok(u32::try_from(event.payload.len())
+            .expect("custom event payload is bounded below u32::MAX"))
+    }
+
+    fn current_payload_byte(&mut self, index: u32) -> wasmtime::Result<Option<u8>> {
+        let event = self.current_custom_event.as_ref().ok_or_else(|| {
+            wasmtime::Error::msg("custom event payload is only visible during on-custom-event")
+        })?;
+        Ok(event.payload.get(index as usize).copied())
+    }
 }
 
 impl state::Host for HostState {

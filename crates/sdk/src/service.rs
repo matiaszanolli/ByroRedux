@@ -19,6 +19,8 @@ pub const LOG_WRITE_CAPABILITY: &str = "byro.log.write";
 pub const COMPONENTS_WRITE_OWN_CAPABILITY: &str = "byro.components.write-own";
 /// Capability required for delivery of declared canonical event subscriptions.
 pub const EVENTS_SUBSCRIBE_CAPABILITY: &str = "byro.events.subscribe";
+/// Capability required to publish bounded principal-owned custom events.
+pub const EVENTS_PUBLISH_CAPABILITY: &str = "byro.events.publish";
 /// Additional authority required to observe normalized player input actions.
 pub const INPUT_ACTIONS_SUBSCRIBE_CAPABILITY: &str = "byro.input.actions.subscribe";
 /// Capability required to read the caller's private persistent storage.

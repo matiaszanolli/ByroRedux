@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::component::{ExtensionCommand, ExtensionValue, ExtensionValueType};
+use crate::event::PublishEventCommand;
 use crate::identity::{PrincipalId, StorageKey};
 
 /// One deferred operation against the authenticated principal's private map.
@@ -29,6 +30,7 @@ pub enum PrincipalStorageCommand {
 pub enum HostCommand {
     Component(ExtensionCommand),
     PrincipalStorage(PrincipalStorageCommand),
+    PublishEvent(PublishEventCommand),
 }
 
 /// Hard bounds for one engine-owned principal storage service.
