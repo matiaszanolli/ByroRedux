@@ -94,7 +94,8 @@ decompiled PEX into a typed program, and `OnInit`, `OnLoad`, `OnActivate`,
 `OnUpdate` handlers execute through the same authenticated Wasm host after ECS
 guards are released. `OnInit` is emitted once when the
 translated program attaches, independently of cell load; trigger handlers
-preserve one dispatch per entering actor. The subset supports scalar locals,
+preserve one dispatch per entering actor. `OnHit` projects its four boolean
+attack/block flags into typed handler locals. The subset supports scalar locals,
 literal arguments, assignments, and bounded boolean branches with negation,
 short-circuit logical operators, and same-type boolean/integer/float comparisons. Arithmetic, string,
 and object expressions, broader events, other latent primitives, and dynamic
@@ -870,7 +871,8 @@ proceeds by semantic domain and closes only against real mod fixtures.
   `OnObjectUnequipped`, `OnTriggerEnter`, and `OnUpdate`. Program attachment
   emits one engine-owned initialization marker; trigger entry multiplicity and
   ordered wearer equipment transitions are preserved. The
-  current subset covers scalar locals, literal arguments, assignments, and
+  four scalar `OnHit` attack/block parameters are projected under their authored
+  names. The current subset covers scalar locals, literal arguments, assignments, and
   bounded boolean branches, including negation, short-circuit logical
   operators, and same-type boolean/integer/float comparisons over locals,
   literals, and provider results. A synthetic byte-level Skyrim PEX fixture
@@ -1083,9 +1085,17 @@ Checkpoint commit: `feat(scripting): dispatch provider combat events`.
 Delivered for live combat `OnHit` plus actor-side `OnObjectEquipped` and
 `OnObjectUnequipped`. The provider runtime snapshots the existing engine event
 markers before guest entry and preserves every transition in a wearer-owned
-equipment batch. Event-payload locals are not projected yet, so handlers that
-reference those parameters still reject as a whole instead of observing a
-fabricated value.
+equipment batch. Reference-bearing event payloads are not projected yet, so
+handlers that reference object/form parameters still reject as a whole instead
+of observing a fabricated value.
+
+Checkpoint commit: `feat(scripting): project provider hit flags`.
+
+Delivered for the boolean power-attack, sneak-attack, bash-attack, and blocked
+positions in the canonical `OnHit` signature. Source/PEX parameter names are
+retained as typed locals and may drive the existing bounded condition IR; the
+reference-bearing parameters remain unavailable until the executable converts
+raw ECS identities through its generational handle registry.
 
 ### 14.4 Exit gate
 
