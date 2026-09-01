@@ -18,6 +18,7 @@ pub mod factions;
 pub mod identity;
 pub mod inventory;
 pub mod legacy_containers;
+pub mod legacy_script;
 pub mod manifest;
 pub mod packages;
 pub mod perks;

@@ -16,6 +16,9 @@ use byroredux_sdk::compatibility::{
     adapt_legacy_obscript_load_order, LegacyObscriptLoadOrderCall, LegacyObscriptLoadOrderResult,
 };
 use byroredux_sdk::content::ContentCatalog;
+use byroredux_sdk::legacy_script::{
+    decode_legacy_obscript_sdk_call, LEGACY_OBSCRIPT_SDK_CALL_OPCODE,
+};
 use byroredux_sdk::script_function::{ScriptValue, MAX_SCRIPT_CALL_BYTES, MAX_SCRIPT_STRING_BYTES};
 
 use crate::events::{ActivateEvent, OnCellLoadEvent};
@@ -256,7 +259,7 @@ fn parse_compiled_sequence(
                 lines,
                 cursor,
                 depth,
-                LegacyObscriptCall::LoadOrder(parse_compiled_condition(line.payload, dialect)?),
+                parse_compiled_condition(line.payload, dialect)?,
             )?),
             ELSE if line.payload.len() == 2 => {
                 return Some((statements, StatementTerminator::Else));
@@ -267,9 +270,7 @@ fn parse_compiled_sequence(
             ELSE_IF => {
                 return Some((
                     statements,
-                    StatementTerminator::ElseIf(LegacyObscriptCall::LoadOrder(
-                        parse_compiled_condition(line.payload, dialect)?,
-                    )),
+                    StatementTerminator::ElseIf(parse_compiled_condition(line.payload, dialect)?),
                 ));
             }
             _ => return None,
@@ -318,13 +319,13 @@ fn parse_compiled_conditional(
 fn parse_compiled_condition(
     payload: &[u8],
     dialect: ObscriptDialect,
-) -> Option<LegacyObscriptLoadOrderCall> {
+) -> Option<LegacyObscriptCall> {
     let expression_len = usize::from(read_u16(payload, 2)?);
     let expression_end = 4usize.checked_add(expression_len)?;
     if expression_end != payload.len() {
         return None;
     }
-    decode_exact_load_order_expression(&payload[4..expression_end], dialect)
+    decode_compiled_call(&payload[4..expression_end], dialect)
 }
 
 fn compiled_line(bytes: &[u8], offset: usize) -> Option<(u16, &[u8], usize)> {
@@ -370,14 +371,32 @@ fn parse_compiled_assignment(
         .locals
         .iter()
         .find(|local| local.index == local_index)?;
-    let call = LegacyObscriptCall::LoadOrder(decode_exact_load_order_expression(
-        &payload[5..expression_end],
-        dialect,
-    )?);
+    let call = decode_compiled_call(&payload[5..expression_end], dialect)?;
     Some(LegacyObscriptAssignment {
         target: local.name.clone(),
         call,
     })
+}
+
+fn decode_compiled_call(expression: &[u8], dialect: ObscriptDialect) -> Option<LegacyObscriptCall> {
+    if let Some(call) = decode_exact_load_order_expression(expression, dialect) {
+        return Some(LegacyObscriptCall::LoadOrder(call));
+    }
+    let payload = exact_expression_payload(expression, LEGACY_OBSCRIPT_SDK_CALL_OPCODE)?;
+    let call = decode_legacy_obscript_sdk_call(payload).ok()?;
+    Some(LegacyObscriptCall::Extension {
+        qualified_name: call.qualified_name,
+        arguments: call.arguments,
+    })
+}
+
+fn exact_expression_payload(expression: &[u8], opcode: u16) -> Option<&[u8]> {
+    if expression.first() != Some(&b'X') || read_u16(expression, 1)? != opcode {
+        return None;
+    }
+    let payload_len = usize::from(read_u16(expression, 3)?);
+    let payload_end = 5usize.checked_add(payload_len)?;
+    (payload_end == expression.len()).then(|| &expression[5..payload_end])
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -828,6 +847,7 @@ mod tests {
     use super::*;
     use byroredux_plugin::esm::records::ScriptLocalVar;
     use byroredux_sdk::content::{PluginInfo, PluginKind};
+    use byroredux_sdk::legacy_script::encode_legacy_obscript_sdk_call;
     use std::sync::Mutex;
 
     fn script(source: &str) -> ScriptRecord {
@@ -875,6 +895,35 @@ mod tests {
         expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
         expression.extend_from_slice(&arguments);
         expression
+    }
+
+    fn compiled_sdk_expression(qualified_name: &str, arguments: &[ScriptValue]) -> Vec<u8> {
+        let payload = encode_legacy_obscript_sdk_call(qualified_name, arguments).unwrap();
+        let mut expression = vec![b'X'];
+        expression.extend_from_slice(&LEGACY_OBSCRIPT_SDK_CALL_OPCODE.to_le_bytes());
+        expression.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        expression.extend_from_slice(&payload);
+        expression
+    }
+
+    fn compiled_sdk_assignment(
+        event: u16,
+        local_index: u16,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Vec<u8> {
+        let expression = compiled_sdk_expression(qualified_name, arguments);
+        let mut assignment = vec![b's'];
+        assignment.extend_from_slice(&local_index.to_le_bytes());
+        assignment.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        assignment.extend_from_slice(&expression);
+
+        let mut begin = event.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+        let mut compiled = framed(BEGIN, &begin);
+        compiled.extend(framed(SET_TO, &assignment));
+        compiled.extend(framed(END, &[]));
+        compiled
     }
 
     fn compiled_assignment_payload(local_index: u16, command: u16, plugin: &str) -> Vec<u8> {
@@ -1071,6 +1120,133 @@ mod tests {
 
         let ambiguous = source.replace("integer:7", "7");
         assert!(compile_legacy_obscript_program(&script(&ambiguous), &ambiguous).is_none());
+    }
+
+    #[test]
+    fn compiled_obscript_invokes_typed_principal_qualified_sdk_function() {
+        let qualified_name = "ext.org.example.math.answer";
+        let arguments = vec![
+            ScriptValue::Integer(7),
+            ScriptValue::String("hello world".to_owned()),
+        ];
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled_sdk_assignment(21, 7, qualified_name, &arguments);
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        set_extension_script_function_invoker(
+            &world,
+            Some(Arc::new(move |name, arguments| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((name.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::Float(42.5))
+            })),
+        );
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        world.insert(entity, OnCellLoadEvent);
+
+        legacy_obscript_load_order_system(&world, 0.0);
+
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(42.5)
+        );
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [(qualified_name.to_owned(), arguments)]
+        );
+
+        let magic_offset = record
+            .compiled
+            .windows(8)
+            .position(|bytes| bytes == b"BYROSDK\0")
+            .expect("fixture contains the SDK payload");
+        record.compiled[magic_offset + 8] = 99;
+        assert!(
+            compile_legacy_obscript_bytecode_program(&record, ObscriptDialect::Xnvse).is_none(),
+            "an unsupported payload version rejects the complete handler"
+        );
+    }
+
+    #[test]
+    fn compiled_sdk_call_selects_a_conditional_branch() {
+        let qualified_name = "ext.org.example.flags.is-ready";
+        let expression = compiled_sdk_expression(
+            qualified_name,
+            &[ScriptValue::Boolean(true), ScriptValue::Integer(3)],
+        );
+        let mut condition = 0u16.to_le_bytes().to_vec();
+        condition.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        condition.extend_from_slice(&expression);
+        let mut begin = 21u16.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+        let mut compiled = framed(BEGIN, &begin);
+        compiled.extend(framed(IF, &condition));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Companion Pack.esp"),
+        ));
+        compiled.extend(framed(ELSE, &[0, 0]));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Missing.esp"),
+        ));
+        compiled.extend(framed(END_IF, &[]));
+        compiled.extend(framed(END, &[]));
+
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled;
+        let mut world = World::new();
+        crate::register(&mut world);
+        set_legacy_obscript_content_catalog(&world, catalog());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        set_extension_script_function_invoker(
+            &world,
+            Some(Arc::new(move |name, arguments| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((name.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::Boolean(true))
+            })),
+        );
+        let entity = world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut world,
+            entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        world.insert(entity, OnCellLoadEvent);
+
+        legacy_obscript_load_order_system(&world, 0.0);
+
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     #[test]
