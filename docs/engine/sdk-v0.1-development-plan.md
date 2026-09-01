@@ -1344,6 +1344,16 @@ bit-exact values, and an empty byte payload represents a `None` Form entry
 without colliding with the 20-byte portable Form encoding. The existing array
 save shape and limits remain authoritative.
 
+Checkpoint: `feat(scripting): execute StorageUtil list mutation aliases`.
+
+The second typed-list pack adds 20 exact aliases across all four element
+kinds: set, pluck, remove-at, shift, and pop. Set returns the previous value;
+pluck returns the removed value or its optional missing default; shift and pop
+return the removed endpoint or the type default; remove-at reports success.
+Every successful mutation is expressed as a bounded principal-storage
+`ArraySet` or `ArrayRemove`, preserving the existing save representation and
+callback-local read-your-writes behavior.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

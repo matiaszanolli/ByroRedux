@@ -1256,6 +1256,12 @@ impl ExtensionHost {
                 "StorageUtil list call has an invalid typed value".to_owned(),
             )),
         };
+        let default_value = || match kind {
+            StorageUtilListKind::Int => StorageUtilListValue::Int(0),
+            StorageUtilListKind::Float => StorageUtilListValue::Float(0.0),
+            StorageUtilListKind::String => StorageUtilListValue::String(String::new()),
+            StorageUtilListKind::Form => StorageUtilListValue::Form(None),
+        };
         let (key_name, call) = match (operation, arguments) {
             (
                 StorageUtilListOperation::Add,
@@ -1286,12 +1292,57 @@ impl ExtensionHost {
                     index: integer(*index)?,
                 },
             ),
+            (
+                StorageUtilListOperation::Set,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index), value],
+            ) => (
+                key,
+                StorageUtilListCall::Set {
+                    index: integer(*index)?,
+                    value: list_value(value)?,
+                },
+            ),
+            (
+                StorageUtilListOperation::Pluck,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index)],
+            ) => (
+                key,
+                StorageUtilListCall::Pluck {
+                    index: integer(*index)?,
+                    missing: default_value(),
+                },
+            ),
+            (
+                StorageUtilListOperation::Pluck,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index), missing],
+            ) => (
+                key,
+                StorageUtilListCall::Pluck {
+                    index: integer(*index)?,
+                    missing: list_value(missing)?,
+                },
+            ),
+            (StorageUtilListOperation::Shift, [ScriptValue::None, ScriptValue::String(key)]) => {
+                (key, StorageUtilListCall::Shift)
+            }
+            (StorageUtilListOperation::Pop, [ScriptValue::None, ScriptValue::String(key)]) => {
+                (key, StorageUtilListCall::Pop)
+            }
             (StorageUtilListOperation::Count, [ScriptValue::None, ScriptValue::String(key)]) => {
                 (key, StorageUtilListCall::Count)
             }
             (StorageUtilListOperation::Clear, [ScriptValue::None, ScriptValue::String(key)]) => {
                 (key, StorageUtilListCall::Clear)
             }
+            (
+                StorageUtilListOperation::RemoveAt,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(index)],
+            ) => (
+                key,
+                StorageUtilListCall::RemoveAt {
+                    index: integer(*index)?,
+                },
+            ),
             (
                 StorageUtilListOperation::Find,
                 [ScriptValue::None, ScriptValue::String(key), value],
@@ -7829,6 +7880,14 @@ mod tests {
                 StorageUtil.SetFormValue(None, "Owner", None)
                 StorageUtil.IntListAdd(None, "Numbers", 7)
                 StorageUtil.IntListAdd(None, "numbers", 7, false)
+                StorageUtil.IntListSet(None, "numbers", 0, 8)
+                StorageUtil.IntListAdd(None, "numbers", 9)
+                StorageUtil.IntListRemoveAt(None, "numbers", 0)
+                StorageUtil.IntListAdd(None, "numbers", 10)
+                StorageUtil.IntListShift(None, "numbers")
+                StorageUtil.IntListAdd(None, "numbers", 11)
+                StorageUtil.IntListPop(None, "numbers")
+                StorageUtil.IntListPluck(None, "numbers", -1, -99)
                 StorageUtil.IntListGet(None, "numbers", 0)
                 StorageUtil.IntListCount(None, "numbers")
                 StorageUtil.IntListFind(None, "numbers", 7)
@@ -7889,7 +7948,7 @@ mod tests {
         assert!(!values.contains_key(&StorageKey::new("storageutil.string:onestring").unwrap()));
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.int:numbers").unwrap()),
-            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(7)]))
+            Some(&PrincipalStorageValue::Array(vec![ExtensionValue::I64(10)]))
         );
         assert_eq!(
             values.get(&StorageKey::new("storageutil.list.float:ratios").unwrap()),

@@ -376,7 +376,7 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
 fn papyrus_storage_util_list_declarations(
     object_and_key: &[(&str, ScriptValueType, bool); 2],
 ) -> Vec<EnginePapyrusFunctionDeclaration> {
-    let mut declarations = Vec::with_capacity(24);
+    let mut declarations = Vec::with_capacity(44);
     for (kind, suffix, value_type) in [
         ("int", "Int", ScriptValueType::Integer),
         ("float", "Float", ScriptValueType::Float),
@@ -406,6 +406,30 @@ fn papyrus_storage_util_list_declarations(
                 ],
             ),
             (
+                "set",
+                "Set",
+                value_type,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("index", ScriptValueType::Integer, true),
+                    ("value", value_type, true),
+                ],
+            ),
+            (
+                "pluck",
+                "Pluck",
+                value_type,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("index", ScriptValueType::Integer, true),
+                    ("missing", value_type, true),
+                ],
+            ),
+            ("shift", "Shift", value_type, object_and_key.to_vec()),
+            ("pop", "Pop", value_type, object_and_key.to_vec()),
+            (
                 "count",
                 "Count",
                 ScriptValueType::Integer,
@@ -416,6 +440,16 @@ fn papyrus_storage_util_list_declarations(
                 "Clear",
                 ScriptValueType::Integer,
                 object_and_key.to_vec(),
+            ),
+            (
+                "remove-at",
+                "RemoveAt",
+                ScriptValueType::Boolean,
+                vec![
+                    object_and_key[0],
+                    object_and_key[1],
+                    ("index", ScriptValueType::Integer, true),
+                ],
             ),
             (
                 "find",
@@ -1299,8 +1333,21 @@ pub enum StorageUtilListCall {
     Get {
         index: i32,
     },
+    Set {
+        index: i32,
+        value: StorageUtilListValue,
+    },
+    Pluck {
+        index: i32,
+        missing: StorageUtilListValue,
+    },
+    Shift,
+    Pop,
     Count,
     Clear,
+    RemoveAt {
+        index: i32,
+    },
     Find {
         value: StorageUtilListValue,
     },
@@ -1330,8 +1377,13 @@ pub struct StorageUtilListAdaptation {
 pub enum StorageUtilListOperation {
     Add,
     Get,
+    Set,
+    Pluck,
+    Shift,
+    Pop,
     Count,
     Clear,
+    RemoveAt,
     Find,
     Has,
 }
@@ -1516,30 +1568,58 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
     let aliases = [
         ("IntListAdd", "storage.array-get+queue-push", "signed"),
         ("IntListGet", "storage.array-get", "signed"),
+        ("IntListSet", "storage.array-get+queue-set", "signed"),
+        ("IntListPluck", "storage.array-get+queue-remove", "signed"),
+        ("IntListShift", "storage.array-get+queue-remove", "signed"),
+        ("IntListPop", "storage.array-get+queue-remove", "signed"),
         ("IntListCount", "storage.array-get", "signed"),
         ("IntListClear", "storage.array-get+queue-delete", "signed"),
+        ("IntListRemoveAt", "storage.array-get+queue-remove", "bool"),
         ("IntListFind", "storage.array-get", "signed"),
         ("IntListHas", "storage.array-get", "bool"),
         ("FloatListAdd", "storage.array-get+queue-push", "float"),
         ("FloatListGet", "storage.array-get", "float"),
+        ("FloatListSet", "storage.array-get+queue-set", "float"),
+        ("FloatListPluck", "storage.array-get+queue-remove", "float"),
+        ("FloatListShift", "storage.array-get+queue-remove", "float"),
+        ("FloatListPop", "storage.array-get+queue-remove", "float"),
         ("FloatListCount", "storage.array-get", "signed"),
         ("FloatListClear", "storage.array-get+queue-delete", "signed"),
+        (
+            "FloatListRemoveAt",
+            "storage.array-get+queue-remove",
+            "bool",
+        ),
         ("FloatListFind", "storage.array-get", "signed"),
         ("FloatListHas", "storage.array-get", "bool"),
         ("StringListAdd", "storage.array-get+queue-push", "text"),
         ("StringListGet", "storage.array-get", "text"),
+        ("StringListSet", "storage.array-get+queue-set", "text"),
+        ("StringListPluck", "storage.array-get+queue-remove", "text"),
+        ("StringListShift", "storage.array-get+queue-remove", "text"),
+        ("StringListPop", "storage.array-get+queue-remove", "text"),
         ("StringListCount", "storage.array-get", "signed"),
         (
             "StringListClear",
             "storage.array-get+queue-delete",
             "signed",
         ),
+        (
+            "StringListRemoveAt",
+            "storage.array-get+queue-remove",
+            "bool",
+        ),
         ("StringListFind", "storage.array-get", "signed"),
         ("StringListHas", "storage.array-get", "bool"),
         ("FormListAdd", "storage.array-get+queue-push", "form"),
         ("FormListGet", "storage.array-get", "form"),
+        ("FormListSet", "storage.array-get+queue-set", "form"),
+        ("FormListPluck", "storage.array-get+queue-remove", "form"),
+        ("FormListShift", "storage.array-get+queue-remove", "form"),
+        ("FormListPop", "storage.array-get+queue-remove", "form"),
         ("FormListCount", "storage.array-get", "signed"),
         ("FormListClear", "storage.array-get+queue-delete", "signed"),
+        ("FormListRemoveAt", "storage.array-get+queue-remove", "bool"),
         ("FormListFind", "storage.array-get", "signed"),
         ("FormListHas", "storage.array-get", "bool"),
     ];
@@ -2002,8 +2082,13 @@ pub fn parse_storage_util_list_route(
     let operation = match operation {
         "add" => StorageUtilListOperation::Add,
         "get" => StorageUtilListOperation::Get,
+        "set" => StorageUtilListOperation::Set,
+        "pluck" => StorageUtilListOperation::Pluck,
+        "shift" => StorageUtilListOperation::Shift,
+        "pop" => StorageUtilListOperation::Pop,
         "count" => StorageUtilListOperation::Count,
         "clear" => StorageUtilListOperation::Clear,
+        "remove-at" => StorageUtilListOperation::RemoveAt,
         "find" => StorageUtilListOperation::Find,
         "has" => StorageUtilListOperation::Has,
         _ => return None,
@@ -2057,6 +2142,77 @@ pub fn adapt_storage_util_global_list(
                 .unwrap_or_else(|| default_storage_util_list_value(kind));
             StorageUtilListResult::Value(value)
         }
+        StorageUtilListCall::Set { index, value } => {
+            let encoded = encode_storage_util_list_value(kind, &value)?;
+            let Some((index, previous)) = usize::try_from(index)
+                .ok()
+                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
+                    commands,
+                });
+            };
+            commands.push(PrincipalStorageCommand::ArraySet {
+                key: key.clone(),
+                index: u32::try_from(index)
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+                value: encoded,
+            });
+            StorageUtilListResult::Value(previous)
+        }
+        StorageUtilListCall::Pluck { index, missing } => {
+            encode_storage_util_list_value(kind, &missing)?;
+            let Some((index, value)) = usize::try_from(index)
+                .ok()
+                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Value(missing),
+                    commands,
+                });
+            };
+            commands.push(PrincipalStorageCommand::ArrayRemove {
+                key: key.clone(),
+                index: u32::try_from(index)
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            });
+            StorageUtilListResult::Value(value)
+        }
+        StorageUtilListCall::Shift => {
+            let value = values
+                .first()
+                .cloned()
+                .unwrap_or_else(|| default_storage_util_list_value(kind));
+            if !values.is_empty() {
+                commands.push(PrincipalStorageCommand::ArrayRemove {
+                    key: key.clone(),
+                    index: 0,
+                });
+            }
+            StorageUtilListResult::Value(value)
+        }
+        StorageUtilListCall::Pop => {
+            let Some((index, value)) = values
+                .len()
+                .checked_sub(1)
+                .map(|index| (index, values[index].clone()))
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
+                    commands,
+                });
+            };
+            commands.push(PrincipalStorageCommand::ArrayRemove {
+                key: key.clone(),
+                index: u32::try_from(index)
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            });
+            StorageUtilListResult::Value(value)
+        }
         StorageUtilListCall::Count => StorageUtilListResult::Int(
             i32::try_from(values.len()).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
         ),
@@ -2065,6 +2221,24 @@ pub fn adapt_storage_util_global_list(
                 .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
             commands.push(PrincipalStorageCommand::Delete { key: key.clone() });
             StorageUtilListResult::Int(count)
+        }
+        StorageUtilListCall::RemoveAt { index } => {
+            let Some(index) = usize::try_from(index)
+                .ok()
+                .filter(|index| *index < values.len())
+            else {
+                return Ok(StorageUtilListAdaptation {
+                    key,
+                    result: StorageUtilListResult::Bool(false),
+                    commands,
+                });
+            };
+            commands.push(PrincipalStorageCommand::ArrayRemove {
+                key: key.clone(),
+                index: u32::try_from(index)
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            });
+            StorageUtilListResult::Bool(true)
         }
         StorageUtilListCall::Find { value } => {
             encode_storage_util_list_value(kind, &value)?;
@@ -2679,6 +2853,12 @@ mod tests {
                 .operation,
             "storage.array-get+queue-push"
         );
+        assert_eq!(
+            source_alias("StorageUtil", "FormListSet")
+                .unwrap()
+                .operation,
+            "storage.array-get+queue-set"
+        );
         assert!(source_alias("StorageUtil", "FormListInsert").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
@@ -2687,7 +2867,7 @@ mod tests {
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 46);
+        assert_eq!(declarations.len(), 66);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -3024,6 +3204,128 @@ mod tests {
             ),
             Err(StorageUtilAdapterError::TypeMismatch)
         );
+    }
+
+    #[test]
+    fn storage_util_list_mutations_return_previous_values_and_queue_exact_edits() {
+        let current =
+            PrincipalStorageValue::Array(vec![ExtensionValue::I64(4), ExtensionValue::I64(9)]);
+        let set = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Set {
+                index: 1,
+                value: StorageUtilListValue::Int(7),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            set.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(9))
+        );
+        assert_eq!(
+            set.commands,
+            [PrincipalStorageCommand::ArraySet {
+                key: set.key.clone(),
+                index: 1,
+                value: ExtensionValue::I64(7),
+            }]
+        );
+
+        let pluck = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Pluck {
+                index: 0,
+                missing: StorageUtilListValue::Int(-1),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            pluck.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(4))
+        );
+        assert_eq!(
+            pluck.commands,
+            [PrincipalStorageCommand::ArrayRemove {
+                key: pluck.key.clone(),
+                index: 0,
+            }]
+        );
+
+        let missing = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::Pluck {
+                index: -1,
+                missing: StorageUtilListValue::Int(-1),
+            },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            missing.result,
+            StorageUtilListResult::Value(StorageUtilListValue::Int(-1))
+        );
+        assert!(missing.commands.is_empty());
+
+        for (call, expected, index) in [
+            (StorageUtilListCall::Shift, 4, 0),
+            (StorageUtilListCall::Pop, 9, 1),
+        ] {
+            let adapted = adapt_storage_util_global_list(
+                "recent",
+                StorageUtilListKind::Int,
+                call,
+                Some(&current),
+                4,
+            )
+            .unwrap();
+            assert_eq!(
+                adapted.result,
+                StorageUtilListResult::Value(StorageUtilListValue::Int(expected))
+            );
+            assert_eq!(
+                adapted.commands,
+                [PrincipalStorageCommand::ArrayRemove {
+                    key: adapted.key.clone(),
+                    index,
+                }]
+            );
+        }
+
+        let removed = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::RemoveAt { index: 1 },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(removed.result, StorageUtilListResult::Bool(true));
+        assert_eq!(
+            removed.commands,
+            [PrincipalStorageCommand::ArrayRemove {
+                key: removed.key.clone(),
+                index: 1,
+            }]
+        );
+
+        let not_removed = adapt_storage_util_global_list(
+            "recent",
+            StorageUtilListKind::Int,
+            StorageUtilListCall::RemoveAt { index: 2 },
+            Some(&current),
+            4,
+        )
+        .unwrap();
+        assert_eq!(not_removed.result, StorageUtilListResult::Bool(false));
+        assert!(not_removed.commands.is_empty());
     }
 
     #[test]

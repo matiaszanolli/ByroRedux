@@ -372,10 +372,16 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
     if let Some((_, operation)) = parse_storage_util_list_route(route) {
         return Some(match operation {
             StorageUtilListOperation::Add => (3, 4),
+            StorageUtilListOperation::Set => (4, 4),
+            StorageUtilListOperation::Pluck => (3, 4),
             StorageUtilListOperation::Get
+            | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
             | StorageUtilListOperation::Has => (3, 3),
-            StorageUtilListOperation::Count | StorageUtilListOperation::Clear => (2, 2),
+            StorageUtilListOperation::Shift
+            | StorageUtilListOperation::Pop
+            | StorageUtilListOperation::Count
+            | StorageUtilListOperation::Clear => (2, 2),
         });
     }
     match route {
@@ -3418,6 +3424,25 @@ mod tests {
                 ScriptValue::String("Recent".to_owned()),
                 ScriptValue::Integer(7),
                 ScriptValue::Boolean(false),
+            ]
+        );
+        let list_pluck = lower_provider_call(
+            &expression("StorageUtil.StringListPluck(None, \"Labels\", 2, \"missing\")"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_pluck.route.qualified_name(),
+            "byro.storage.compat.storage-util.list-string-pluck"
+        );
+        assert_eq!(
+            list_pluck.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Labels".to_owned()),
+                ScriptValue::Integer(2),
+                ScriptValue::String("missing".to_owned()),
             ]
         );
         let container = lower_provider_call(&expression("JArray.getInt(4, -1, 7)"), &catalog)
