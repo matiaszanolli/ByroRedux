@@ -93,7 +93,12 @@ decompiled PEX into a typed program, and `OnLoad`/`OnActivate` handlers execute
 through the same authenticated Wasm host after ECS guards are released. It
 currently supports scalar locals, literal arguments, assignments, and bounded
 boolean branches; broader expressions, events, fragments, latent calls, and
-dynamic object dispatch remain open.
+dynamic object dispatch remain open. The first curated extender-era alias is
+also executable without an extension package: SKSE's `Game.GetModByName`
+delegates to the immutable content catalog, counts only regular plugins, and
+preserves the classic `255` missing sentinel. Engine aliases cannot be
+shadowed by a package, while unrelated vanilla `Game` calls remain available
+to other translators.
 Typed settings reads are now engine-owned too:
 `byro.settings.read` projects the same persisted universal `SettingsRegistry`
 consumed by native menus into bounded bool/number/choice values, is available
@@ -847,7 +852,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   bounded boolean branches. A synthetic byte-level Skyrim PEX fixture now
   exercises the production reader/decompiler/translation boundary. Compiled
   SCDA call encoding, fragment scheduling, broader expressions/events, latent
-  calls, and dynamic object dispatch remain pending.**
+  calls, and dynamic object dispatch remain pending. SKSE's exact
+  `Game.GetModByName` extension is now an engine-owned content-catalog alias
+  with case-insensitive lookup, regular-plugin indexing, and the classic `255`
+  missing sentinel; it needs neither a Wasm package nor an extender DLL.**
 
 These services land only when the underlying engine subsystem has canonical
 semantics. The SDK must not expose a fake operation that cannot be honored.
@@ -863,7 +871,9 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
 ### Wave D — per-game compatibility packs
 
 - Curated SKSE, F4SE, xNVSE, and OBSE script API aliases backed by the common
-  service catalog.
+  service catalog. **The first exact SKSE alias, `Game.GetModByName`, is live
+  through `byro.content.catalog.get-mod-by-name`; engine-owned aliases are
+  reserved against package shadowing. Broader compatibility packs remain.**
 - Automated source/PEX scans that report supported, mapped, and unsupported
   calls before launch. **Decoded PEX call-site extraction and compatibility
   classification are implemented, including full-property bodies, optional
@@ -990,8 +1000,10 @@ same typed lowering and runtime. Tests cover a source handler invoking a real
 Wasm component and a synthetic byte-level Skyrim PEX fixture through the
 production reader/decompiler/translation boundary. Recognized extender calls
 without an executable route now reject the whole provider-bearing handler
-instead of being silently skipped. A real extender-era compatibility alias
-backed by a completed semantic service and broader conformance remain open.
+instead of being silently skipped. SKSE's `Game.GetModByName` is the first real
+extender-era alias backed by a completed semantic service: it executes against
+the live immutable content catalog without an extension package. Broader
+compatibility aliases and conformance remain open.
 
 ### 14.4 Exit gate
 
