@@ -117,6 +117,21 @@ impl LegacyContainerRegistry {
         self.containers.contains_key(&handle)
     }
 
+    pub fn is_array(&self, handle: i32) -> bool {
+        matches!(
+            self.containers.get(&handle),
+            Some(LegacyContainer::Array(_))
+        )
+    }
+
+    pub fn is_map(&self, handle: i32) -> bool {
+        matches!(self.containers.get(&handle), Some(LegacyContainer::Map(_)))
+    }
+
+    pub fn is_empty(&self, handle: i32) -> bool {
+        self.count(handle) == 0
+    }
+
     pub fn count(&self, handle: i32) -> i32 {
         self.containers
             .get(&handle)
@@ -232,6 +247,101 @@ impl LegacyContainerRegistry {
         self.retentions
             .get(&handle)
             .and_then(|retention| retention.tag.as_deref())
+    }
+
+    /// Copy one container while retaining references to the original children.
+    pub fn shallow_copy(&mut self, handle: i32) -> i32 {
+        let Some(container) = self.containers.get(&handle).cloned() else {
+            return 0;
+        };
+        if self
+            .entry_count()
+            .checked_add(Self::container_len(&container))
+            .is_none_or(|count| count > MAX_LEGACY_CONTAINER_ENTRIES)
+        {
+            return 0;
+        }
+        self.create(container)
+    }
+
+    /// Copy a complete reachable object graph, preserving shared children and
+    /// cycles while assigning fresh handles to every copied object.
+    pub fn deep_copy(&mut self, handle: i32) -> i32 {
+        if !self.contains(handle) {
+            return 0;
+        }
+        let mut reachable = Vec::new();
+        let mut pending = vec![handle];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(candidate) = pending.pop() {
+            if !visited.insert(candidate) {
+                continue;
+            }
+            let Some(container) = self.containers.get(&candidate) else {
+                return 0;
+            };
+            reachable.push(candidate);
+            pending.extend(
+                Self::container_values(container).filter_map(|value| match value {
+                    LegacyContainerValue::Object(child) if *child != 0 => Some(*child),
+                    _ => None,
+                }),
+            );
+        }
+        let copied_entries = reachable
+            .iter()
+            .filter_map(|source| self.containers.get(source))
+            .map(Self::container_len)
+            .sum::<usize>();
+        if self
+            .object_count()
+            .checked_add(reachable.len())
+            .is_none_or(|count| count > MAX_LEGACY_CONTAINER_OBJECTS)
+            || self
+                .entry_count()
+                .checked_add(copied_entries)
+                .is_none_or(|count| count > MAX_LEGACY_CONTAINER_ENTRIES)
+        {
+            return 0;
+        }
+
+        let mut staged = self.clone();
+        let mut remap = BTreeMap::new();
+        for source in &reachable {
+            let empty = match staged.containers.get(source) {
+                Some(LegacyContainer::Array(_)) => LegacyContainer::Array(Vec::new()),
+                Some(LegacyContainer::Map(_)) => LegacyContainer::Map(BTreeMap::new()),
+                None => return 0,
+            };
+            let copy = staged.create(empty);
+            if copy == 0 {
+                return 0;
+            }
+            remap.insert(*source, copy);
+        }
+        for source in &reachable {
+            let Some(original) = self.containers.get(source) else {
+                return 0;
+            };
+            let copied = match original {
+                LegacyContainer::Array(values) => LegacyContainer::Array(
+                    values
+                        .iter()
+                        .map(|value| Self::remap_object_value(value, &remap))
+                        .collect(),
+                ),
+                LegacyContainer::Map(values) => LegacyContainer::Map(
+                    values
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Self::remap_object_value(value, &remap)))
+                        .collect(),
+                ),
+            };
+            staged.containers.insert(remap[source], copied);
+        }
+        let root = remap[&handle];
+        *self = staged;
+        root
     }
 
     /// Insert before `index`, or append when it is absent. Rejected mutations
@@ -436,6 +546,25 @@ impl LegacyContainerRegistry {
         !matches!(value, LegacyContainerValue::Object(handle) if *handle != 0 && !self.contains(*handle))
     }
 
+    fn container_len(container: &LegacyContainer) -> usize {
+        match container {
+            LegacyContainer::Array(values) => values.len(),
+            LegacyContainer::Map(values) => values.len(),
+        }
+    }
+
+    fn remap_object_value(
+        value: &LegacyContainerValue,
+        remap: &BTreeMap<i32, i32>,
+    ) -> LegacyContainerValue {
+        match value {
+            LegacyContainerValue::Object(handle) if *handle != 0 => {
+                LegacyContainerValue::Object(remap[handle])
+            }
+            _ => value.clone(),
+        }
+    }
+
     fn container_values(
         container: &LegacyContainer,
     ) -> Box<dyn Iterator<Item = &LegacyContainerValue> + '_> {
@@ -624,5 +753,54 @@ mod tests {
         assert!(registry.release(parent));
         assert!(!registry.contains(parent));
         assert!(!registry.contains(replacement));
+    }
+
+    #[test]
+    fn shallow_and_deep_copy_preserve_kind_sharing_and_cycles() {
+        let mut registry = LegacyContainerRegistry::new();
+        let child = registry.create_array();
+        assert!(registry.array_add(child, LegacyContainerValue::Int(7), None));
+        let root = registry.create_map();
+        assert!(registry.map_set(
+            root,
+            "first".to_owned(),
+            LegacyContainerValue::Object(child),
+        ));
+        assert!(registry.map_set(
+            root,
+            "second".to_owned(),
+            LegacyContainerValue::Object(child),
+        ));
+        assert!(registry.map_set(root, "self".to_owned(), LegacyContainerValue::Object(root),));
+
+        let shallow = registry.shallow_copy(root);
+        assert!(registry.is_map(shallow));
+        assert_eq!(
+            registry.map_get(shallow, "first"),
+            Some(&LegacyContainerValue::Object(child))
+        );
+
+        let deep = registry.deep_copy(root);
+        assert!(registry.is_map(deep));
+        assert!(!registry.is_array(deep));
+        assert!(!registry.is_empty(deep));
+        let Some(LegacyContainerValue::Object(first_copy)) = registry.map_get(deep, "first") else {
+            panic!("deep copy lost its first child")
+        };
+        let first_copy = *first_copy;
+        assert_ne!(first_copy, child);
+        assert_eq!(
+            registry.map_get(deep, "second"),
+            Some(&LegacyContainerValue::Object(first_copy))
+        );
+        assert_eq!(
+            registry.map_get(deep, "self"),
+            Some(&LegacyContainerValue::Object(deep))
+        );
+        assert_eq!(
+            registry.array_get(first_copy, 0),
+            Some(&LegacyContainerValue::Int(7))
+        );
+        assert!(registry.is_empty(0));
     }
 }

@@ -1188,12 +1188,27 @@ impl ExtensionHost {
             ("jvalue-is-exists", [ScriptValue::Integer(handle)]) => {
                 ScriptValue::Boolean(registry.contains(integer(*handle)?))
             }
+            ("jvalue-is-array", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Boolean(registry.is_array(integer(*handle)?))
+            }
+            ("jvalue-is-map", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Boolean(registry.is_map(integer(*handle)?))
+            }
+            ("jvalue-empty", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Boolean(registry.is_empty(integer(*handle)?))
+            }
             ("jvalue-count" | "jarray-count" | "jmap-count", [ScriptValue::Integer(handle)]) => {
                 ScriptValue::Integer(i64::from(registry.count(integer(*handle)?)))
             }
             ("jvalue-clear" | "jarray-clear" | "jmap-clear", [ScriptValue::Integer(handle)]) => {
                 registry.clear(integer(*handle)?);
                 ScriptValue::None
+            }
+            ("jvalue-shallow-copy", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Integer(i64::from(registry.shallow_copy(integer(*handle)?)))
+            }
+            ("jvalue-deep-copy", [ScriptValue::Integer(handle)]) => {
+                ScriptValue::Integer(i64::from(registry.deep_copy(integer(*handle)?)))
             }
             ("jvalue-retain", [ScriptValue::Integer(handle)]) => {
                 ScriptValue::Integer(i64::from(registry.retain(integer(*handle)?, None)))
@@ -6865,6 +6880,31 @@ mod tests {
         );
         assert_eq!(
             host.invoke_owned_papyrus_provider(
+                Some(&first),
+                &route("jvalue-is-array"),
+                &[array.clone()],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        for operation in ["jvalue-shallow-copy", "jvalue-deep-copy"] {
+            let copy = host
+                .invoke_owned_papyrus_provider(Some(&first), &route(operation), &[map.clone()])
+                .unwrap();
+            assert_eq!(
+                host.invoke_owned_papyrus_provider(
+                    Some(&first),
+                    &route("jvalue-is-map"),
+                    &[copy.clone()],
+                )
+                .unwrap(),
+                ScriptValue::Boolean(true)
+            );
+            host.invoke_owned_papyrus_provider(Some(&first), &route("jvalue-release"), &[copy])
+                .unwrap();
+        }
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
                 Some(&second),
                 &route("jvalue-count"),
                 &[ScriptValue::Integer(1)],
@@ -7482,6 +7522,13 @@ mod tests {
                 If restored == 20
                     JMap.setStr(container, "status", "ready")
                 EndIf
+                Int copied
+                copied = JValue.deepCopy(container)
+                Bool copiedIsMap
+                copiedIsMap = JValue.isMap(copied)
+                If copiedIsMap
+                    JMap.setStr(copied, "copy", "ready")
+                EndIf
             EndEvent
         "#;
         let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
@@ -7512,6 +7559,10 @@ mod tests {
         assert_eq!(registry.retention_tag(1), Some("fixture-owner"));
         assert_eq!(
             registry.map_get(2, "status"),
+            Some(&LegacyContainerValue::String("ready".to_owned()))
+        );
+        assert_eq!(
+            registry.map_get(3, "copy"),
             Some(&LegacyContainerValue::String("ready".to_owned()))
         );
     }

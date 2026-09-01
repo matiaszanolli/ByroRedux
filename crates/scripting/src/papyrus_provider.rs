@@ -425,8 +425,13 @@ fn legacy_container_arity(route: &str) -> Option<(usize, usize)> {
     Some(match function {
         "jarray-object" | "jmap-object" => (0, 0),
         "jvalue-is-exists"
+        | "jvalue-is-array"
+        | "jvalue-is-map"
+        | "jvalue-empty"
         | "jvalue-count"
         | "jvalue-clear"
+        | "jvalue-shallow-copy"
+        | "jvalue-deep-copy"
         | "jvalue-release"
         | "jvalue-release-objects-with-tag"
         | "jarray-count"

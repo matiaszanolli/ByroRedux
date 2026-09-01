@@ -443,8 +443,13 @@ pub fn papyrus_legacy_container_declarations() -> Vec<EnginePapyrusFunctionDecla
     let object_key = [("object", integer, false), ("key", string, false)];
     let mut declarations = vec![
         papyrus_legacy_container_declaration("JValue", "isExists", &object, Some(boolean)),
+        papyrus_legacy_container_declaration("JValue", "isArray", &object, Some(boolean)),
+        papyrus_legacy_container_declaration("JValue", "isMap", &object, Some(boolean)),
+        papyrus_legacy_container_declaration("JValue", "empty", &object, Some(boolean)),
         papyrus_legacy_container_declaration("JValue", "count", &object, Some(integer)),
         papyrus_legacy_container_declaration("JValue", "clear", &object, None),
+        papyrus_legacy_container_declaration("JValue", "shallowCopy", &object, Some(integer)),
+        papyrus_legacy_container_declaration("JValue", "deepCopy", &object, Some(integer)),
         papyrus_legacy_container_declaration(
             "JValue",
             "retain",
@@ -1147,10 +1152,30 @@ fn legacy_container_source_alias(provider: &str, function: &str) -> Option<Sourc
     let (provider, function, operation, value_kind) = if provider.eq_ignore_ascii_case("JValue") {
         if function.eq_ignore_ascii_case("isExists") {
             ("JValue", "isExists", "legacy-containers.is-exists", "bool")
+        } else if function.eq_ignore_ascii_case("isArray") {
+            ("JValue", "isArray", "legacy-containers.is-array", "bool")
+        } else if function.eq_ignore_ascii_case("isMap") {
+            ("JValue", "isMap", "legacy-containers.is-map", "bool")
+        } else if function.eq_ignore_ascii_case("empty") {
+            ("JValue", "empty", "legacy-containers.empty", "bool")
         } else if function.eq_ignore_ascii_case("count") {
             ("JValue", "count", "legacy-containers.count", "signed")
         } else if function.eq_ignore_ascii_case("clear") {
             ("JValue", "clear", "legacy-containers.clear", "none")
+        } else if function.eq_ignore_ascii_case("shallowCopy") {
+            (
+                "JValue",
+                "shallowCopy",
+                "legacy-containers.shallow-copy",
+                "handle",
+            )
+        } else if function.eq_ignore_ascii_case("deepCopy") {
+            (
+                "JValue",
+                "deepCopy",
+                "legacy-containers.deep-copy",
+                "handle",
+            )
         } else if function.eq_ignore_ascii_case("retain") {
             ("JValue", "retain", "legacy-containers.retain", "handle")
         } else if function.eq_ignore_ascii_case("release") {
@@ -1890,7 +1915,7 @@ mod tests {
             CompatibilityDisposition::Unsupported
         );
         let declarations = papyrus_legacy_container_declarations();
-        assert_eq!(declarations.len(), 41);
+        assert_eq!(declarations.len(), 46);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));

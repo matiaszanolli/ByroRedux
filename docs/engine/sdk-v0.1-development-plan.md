@@ -554,13 +554,14 @@ string-keyed `JMap` objects, including nested object handles, stable Forms, and
 bit-preserved floats. Successful callbacks commit the bounded registry
 atomically; trapped or rejected callbacks do not. Registries round-trip in the
 engine extension-save payload and survive temporarily unavailable packages.
-The source aliases cover object/count/clear, `isExists`, reference-counted
-retain/release, tagged bulk release, typed array add/get/set/erase, and typed
-map get/set/has/remove calls. Nested object insertion owns the child until that
-entry is replaced, removed, or cleared, and explicit retain counts plus recovery
-tags survive the normal engine save. Zero-owner collection happens
-deterministically at the releasing mutation boundary rather than after
-JContainers' approximate ten-second grace period. Each principal is
+The source aliases cover object/count/clear, existence/kind/empty queries,
+shallow/deep copy, reference-counted retain/release, tagged bulk release, typed
+array add/get/set/erase, and typed map get/set/has/remove calls. Nested object
+insertion owns the child until that entry is replaced, removed, or cleared, and
+explicit retain counts plus recovery tags survive the normal engine save.
+Zero-owner collection happens deterministically at the releasing mutation
+boundary rather than after JContainers' approximate ten-second grace period.
+Each principal is
 limited to 256 objects, 4096 aggregate entries, and 4096 UTF-8 bytes per key or
 string. `JDB`, path solving, JSON files, Lua, cross-mod global databases, and
 Form/int-keyed map providers remain explicitly unsupported instead of being
@@ -1299,6 +1300,18 @@ format 16 rejects older registries that cannot reconstruct ownership. The
 engine deliberately collects at deterministic mutation boundaries instead of
 emulating JContainers' real-time grace timer. Pools and timed autorelease remain
 an explicit follow-up rather than a hidden behavioral claim.
+
+Checkpoint commit: `feat(scripting): execute JContainers copy aliases`.
+
+The follow-up compatibility audit selected and delivered the five-function
+JContainers introspection/copy pack (`empty`, `isArray`, `isMap`, `shallowCopy`,
+`deepCopy`). Deep copies preserve shared children and cycles with fresh handles;
+shallow copies retain references to the original children. The pack operates
+entirely on the existing bounded registry and does not change its saved shape.
+StorageUtil Float/Form/adjust calls rank next but need new portable
+principal-storage value kinds and therefore another save-contract decision.
+Dynamic physical-key registration and arbitrary UI access remain behind
+normalized-input and isolated-UI policy work, respectively.
 
 ### 14.4 Exit gate
 
