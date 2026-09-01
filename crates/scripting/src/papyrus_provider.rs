@@ -11,7 +11,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, World};
 use byroredux_papyrus::ast::{
-    AssignOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type,
+    AssignOp, BinaryOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type, UnaryOp,
 };
 use byroredux_sdk::{
     compatibility::{classify_static_call, papyrus_game_content_declarations},
@@ -330,7 +330,7 @@ pub enum PapyrusProviderStatement {
     },
     Call(TypedPapyrusProviderCall),
     If {
-        condition: PapyrusProviderCondition,
+        condition: Box<PapyrusProviderCondition>,
         then_branch: Vec<PapyrusProviderStatement>,
         else_branch: Vec<PapyrusProviderStatement>,
     },
@@ -342,6 +342,33 @@ pub enum PapyrusProviderCondition {
     Literal(bool),
     Local(String),
     Call(TypedPapyrusProviderCall),
+    Not(Box<PapyrusProviderCondition>),
+    And(Box<PapyrusProviderCondition>, Box<PapyrusProviderCondition>),
+    Or(Box<PapyrusProviderCondition>, Box<PapyrusProviderCondition>),
+    Compare {
+        left: Box<PapyrusProviderValue>,
+        operator: PapyrusProviderComparison,
+        right: Box<PapyrusProviderValue>,
+    },
+}
+
+/// Scalar expression accepted on either side of a translated comparison.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PapyrusProviderValue {
+    Literal(ScriptValue),
+    Local(String),
+    Call(TypedPapyrusProviderCall),
+}
+
+/// Same-type comparison operations executable by the provider runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PapyrusProviderComparison {
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
 }
 
 /// Static translated handlers attached to one scripted entity.
@@ -508,13 +535,13 @@ fn lower_statements(
                     let then_branch =
                         lower_statements(body, catalog, &mut branch_locals, depth + 1)?;
                     else_branch = vec![PapyrusProviderStatement::If {
-                        condition,
+                        condition: Box::new(condition),
                         then_branch,
                         else_branch,
                     }];
                 }
                 lowered.push(PapyrusProviderStatement::If {
-                    condition,
+                    condition: Box::new(condition),
                     then_branch,
                     else_branch,
                 });
@@ -535,6 +562,18 @@ fn lower_condition(
     catalog: &PapyrusProviderCatalog,
     locals: &BTreeMap<String, ScriptValueType>,
 ) -> Result<PapyrusProviderCondition, PapyrusProviderProgramError> {
+    lower_condition_at_depth(expression, catalog, locals, 0)
+}
+
+fn lower_condition_at_depth(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, ScriptValueType>,
+    depth: usize,
+) -> Result<PapyrusProviderCondition, PapyrusProviderProgramError> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err(PapyrusProviderProgramError::NestingTooDeep);
+    }
     match expression {
         Expr::BoolLit(value) => Ok(PapyrusProviderCondition::Literal(*value)),
         Expr::Ident(identifier) => {
@@ -547,6 +586,61 @@ fn lower_condition(
                 ))
             }
         }
+        Expr::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+        } => Ok(PapyrusProviderCondition::Not(Box::new(
+            lower_condition_at_depth(&operand.node, catalog, locals, depth + 1)?,
+        ))),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOp::And,
+            right,
+        } => Ok(PapyrusProviderCondition::And(
+            Box::new(lower_condition_at_depth(
+                &left.node,
+                catalog,
+                locals,
+                depth + 1,
+            )?),
+            Box::new(lower_condition_at_depth(
+                &right.node,
+                catalog,
+                locals,
+                depth + 1,
+            )?),
+        )),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOp::Or,
+            right,
+        } => Ok(PapyrusProviderCondition::Or(
+            Box::new(lower_condition_at_depth(
+                &left.node,
+                catalog,
+                locals,
+                depth + 1,
+            )?),
+            Box::new(lower_condition_at_depth(
+                &right.node,
+                catalog,
+                locals,
+                depth + 1,
+            )?),
+        )),
+        Expr::BinaryOp { left, op, right } if comparison_operator(*op).is_some() => {
+            let operator = comparison_operator(*op).expect("comparison operator was matched");
+            let (left, left_type) = lower_condition_value(&left.node, catalog, locals)?;
+            let (right, right_type) = lower_condition_value(&right.node, catalog, locals)?;
+            if left_type != right_type || !comparison_is_supported(operator, left_type) {
+                return Err(PapyrusProviderProgramError::UnsupportedStatement);
+            }
+            Ok(PapyrusProviderCondition::Compare {
+                left: Box::new(left),
+                operator,
+                right: Box::new(right),
+            })
+        }
         _ => {
             let call = lower_provider_call(expression, catalog)
                 .map_err(PapyrusProviderProgramError::Call)?
@@ -554,6 +648,71 @@ fn lower_condition(
             require_result(&call, ScriptValueType::Boolean, "if condition")?;
             Ok(PapyrusProviderCondition::Call(call))
         }
+    }
+}
+
+fn lower_condition_value(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, ScriptValueType>,
+) -> Result<(PapyrusProviderValue, ScriptValueType), PapyrusProviderProgramError> {
+    let literal = match expression {
+        Expr::BoolLit(value) => Some((ScriptValue::Boolean(*value), ScriptValueType::Boolean)),
+        Expr::IntLit(value) => Some((ScriptValue::Integer(*value), ScriptValueType::Integer)),
+        Expr::FloatLit(value) => {
+            let value = *value as f32;
+            value
+                .is_finite()
+                .then_some((ScriptValue::Float(value), ScriptValueType::Float))
+        }
+        _ => None,
+    };
+    if let Some((value, value_type)) = literal {
+        return Ok((PapyrusProviderValue::Literal(value), value_type));
+    }
+    if let Expr::Ident(identifier) = expression {
+        let key = identifier.0.to_ascii_lowercase();
+        let value_type = locals
+            .get(&key)
+            .copied()
+            .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(identifier.0.clone()))?;
+        return Ok((PapyrusProviderValue::Local(key), value_type));
+    }
+    let call = lower_provider_call(expression, catalog)
+        .map_err(PapyrusProviderProgramError::Call)?
+        .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
+    let result = call
+        .result
+        .as_ref()
+        .filter(|result| !result.optional)
+        .ok_or_else(|| PapyrusProviderProgramError::ResultTypeMismatch("comparison".to_owned()))?;
+    let value_type = result.value_type;
+    Ok((PapyrusProviderValue::Call(call), value_type))
+}
+
+fn comparison_operator(operator: BinaryOp) -> Option<PapyrusProviderComparison> {
+    match operator {
+        BinaryOp::Eq => Some(PapyrusProviderComparison::Equal),
+        BinaryOp::Ne => Some(PapyrusProviderComparison::NotEqual),
+        BinaryOp::Lt => Some(PapyrusProviderComparison::Less),
+        BinaryOp::Le => Some(PapyrusProviderComparison::LessOrEqual),
+        BinaryOp::Gt => Some(PapyrusProviderComparison::Greater),
+        BinaryOp::Ge => Some(PapyrusProviderComparison::GreaterOrEqual),
+        _ => None,
+    }
+}
+
+fn comparison_is_supported(
+    operator: PapyrusProviderComparison,
+    value_type: ScriptValueType,
+) -> bool {
+    match value_type {
+        ScriptValueType::Boolean => matches!(
+            operator,
+            PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
+        ),
+        ScriptValueType::Integer | ScriptValueType::Float => true,
+        _ => false,
     }
 }
 
@@ -823,6 +982,29 @@ fn evaluate_condition(
     callback: &PapyrusProviderCallback,
     locals: &BTreeMap<String, ScriptValue>,
 ) -> Result<bool, String> {
+    match condition {
+        PapyrusProviderCondition::Not(condition) => {
+            return Ok(!evaluate_condition(condition, callback, locals)?);
+        }
+        PapyrusProviderCondition::And(left, right) => {
+            return Ok(evaluate_condition(left, callback, locals)?
+                && evaluate_condition(right, callback, locals)?);
+        }
+        PapyrusProviderCondition::Or(left, right) => {
+            return Ok(evaluate_condition(left, callback, locals)?
+                || evaluate_condition(right, callback, locals)?);
+        }
+        PapyrusProviderCondition::Compare {
+            left,
+            operator,
+            right,
+        } => {
+            let left = evaluate_condition_value(left, callback, locals)?;
+            let right = evaluate_condition_value(right, callback, locals)?;
+            return compare_condition_values(&left, *operator, &right);
+        }
+        _ => {}
+    }
     let value = match condition {
         PapyrusProviderCondition::Literal(value) => return Ok(*value),
         PapyrusProviderCondition::Local(name) => locals
@@ -832,10 +1014,65 @@ fn evaluate_condition(
         PapyrusProviderCondition::Call(call) => {
             callback(call.route.qualified_name(), &call.arguments)?
         }
+        PapyrusProviderCondition::Not(_)
+        | PapyrusProviderCondition::And(_, _)
+        | PapyrusProviderCondition::Or(_, _)
+        | PapyrusProviderCondition::Compare { .. } => unreachable!("handled above"),
     };
     match value {
         ScriptValue::Boolean(value) => Ok(value),
         _ => Err("provider returned a non-boolean condition result".to_owned()),
+    }
+}
+
+fn evaluate_condition_value(
+    value: &PapyrusProviderValue,
+    callback: &PapyrusProviderCallback,
+    locals: &BTreeMap<String, ScriptValue>,
+) -> Result<ScriptValue, String> {
+    match value {
+        PapyrusProviderValue::Literal(value) => Ok(value.clone()),
+        PapyrusProviderValue::Local(name) => locals
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("translated local {name} was not initialized")),
+        PapyrusProviderValue::Call(call) => callback(call.route.qualified_name(), &call.arguments),
+    }
+}
+
+fn compare_condition_values(
+    left: &ScriptValue,
+    operator: PapyrusProviderComparison,
+    right: &ScriptValue,
+) -> Result<bool, String> {
+    match (left, right) {
+        (ScriptValue::Boolean(left), ScriptValue::Boolean(right)) => match operator {
+            PapyrusProviderComparison::Equal => Ok(left == right),
+            PapyrusProviderComparison::NotEqual => Ok(left != right),
+            _ => Err("ordered boolean provider comparison reached execution".to_owned()),
+        },
+        (ScriptValue::Integer(left), ScriptValue::Integer(right)) => {
+            Ok(compare_ordered(*left, operator, *right))
+        }
+        (ScriptValue::Float(left), ScriptValue::Float(right)) => {
+            Ok(compare_ordered(*left, operator, *right))
+        }
+        _ => Err("provider comparison operands changed type at execution".to_owned()),
+    }
+}
+
+fn compare_ordered<T: PartialOrd + PartialEq>(
+    left: T,
+    operator: PapyrusProviderComparison,
+    right: T,
+) -> bool {
+    match operator {
+        PapyrusProviderComparison::Equal => left == right,
+        PapyrusProviderComparison::NotEqual => left != right,
+        PapyrusProviderComparison::Less => left < right,
+        PapyrusProviderComparison::LessOrEqual => left <= right,
+        PapyrusProviderComparison::Greater => left > right,
+        PapyrusProviderComparison::GreaterOrEqual => left >= right,
     }
 }
 
@@ -1233,6 +1470,69 @@ mod tests {
                 ScriptValue::String("clear".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn provider_results_support_comparisons_and_short_circuit_conditions() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Int count
+                count = Game.GetModCount()
+                If count >= 2 && !Game.IsPluginInstalled("Missing.esp")
+                    WeatherNative.WeatherAt(4, "matched")
+                Else
+                    WeatherNative.WeatherAt(5, "missed")
+                EndIf
+                If true || Game.IsPluginInstalled("MustNotRun.esp")
+                    WeatherNative.WeatherAt(6, "short-circuited")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let extension = ExtensionId::new("org.example.weather").unwrap();
+        provider_catalog.insert(&extension, &declaration()).unwrap();
+        provider_catalog
+            .insert(&extension, &boolean_declaration())
+            .unwrap();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(move |route: &str, arguments: &[ScriptValue]| {
+            calls_for_callback
+                .lock()
+                .unwrap()
+                .push((route.to_owned(), arguments.to_vec()));
+            if route.ends_with("get-mod-count") {
+                Ok(ScriptValue::Integer(2))
+            } else if route.ends_with("is-plugin-installed") {
+                Ok(ScriptValue::Boolean(false))
+            } else {
+                Ok(ScriptValue::String("ok".to_owned()))
+            }
+        }) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert!(calls[0].0.ends_with("get-mod-count"));
+        assert!(calls[1].0.ends_with("is-plugin-installed"));
+        assert_eq!(calls[2].1[0], ScriptValue::Integer(4));
+        assert_eq!(calls[3].1[0], ScriptValue::Integer(6));
+        assert!(calls.iter().all(|(_, arguments)| arguments.first()
+            != Some(&ScriptValue::String("MustNotRun.esp".to_owned()))));
     }
 
     #[test]
