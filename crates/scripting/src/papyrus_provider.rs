@@ -14,7 +14,10 @@ use byroredux_papyrus::ast::{
     AssignOp, CallArg, Event, Expr, Script, ScriptItem, StateItem, Stmt, Type,
 };
 use byroredux_sdk::{
-    compatibility::classify_static_call,
+    compatibility::{
+        classify_static_call, papyrus_game_get_mod_by_name_declaration,
+        PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+    },
     identity::ExtensionId,
     script_function::{
         ScriptFunctionDeclaration, ScriptFunctionError, ScriptResultDeclaration, ScriptValue,
@@ -97,6 +100,19 @@ pub struct PapyrusProviderCatalog {
 }
 
 impl PapyrusProviderCatalog {
+    /// Catalog of exact extender-era aliases implemented by engine services.
+    pub fn engine_compatibility() -> Self {
+        let mut catalog = Self::default();
+        catalog
+            .insert_route(
+                PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE.to_owned(),
+                &papyrus_game_get_mod_by_name_declaration(),
+                false,
+            )
+            .expect("built-in Papyrus compatibility declaration is valid");
+        catalog
+    }
+
     /// Insert one declared function when it publishes a Papyrus alias.
     ///
     /// The operation is atomic: a duplicate alias or invalid declaration does
@@ -105,6 +121,15 @@ impl PapyrusProviderCatalog {
         &mut self,
         extension: &ExtensionId,
         declaration: &ScriptFunctionDeclaration,
+    ) -> Result<(), PapyrusProviderCatalogError> {
+        self.insert_route(declaration.qualified_name(extension), declaration, true)
+    }
+
+    fn insert_route(
+        &mut self,
+        qualified_name: String,
+        declaration: &ScriptFunctionDeclaration,
+        strict_provider: bool,
     ) -> Result<(), PapyrusProviderCatalogError> {
         declaration
             .validate()
@@ -120,10 +145,12 @@ impl PapyrusProviderCatalog {
             });
         }
         let route = PapyrusProviderRoute {
-            qualified_name: declaration.qualified_name(extension),
+            qualified_name,
             declaration: declaration.clone(),
         };
-        self.providers.insert(key.0.clone());
+        if strict_provider {
+            self.providers.insert(key.0.clone());
+        }
         self.routes.insert(key, route);
         Ok(())
     }
@@ -1062,6 +1089,33 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn engine_compatibility_catalog_lowers_only_the_exact_game_alias() {
+        let mut catalog = PapyrusProviderCatalog::engine_compatibility();
+        let call = lower_provider_call(&expression("Game.GetModByName(\"Update.esm\")"), &catalog)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            call.route.qualified_name(),
+            PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE
+        );
+        assert_eq!(
+            call.arguments,
+            [ScriptValue::String("Update.esm".to_owned())]
+        );
+        assert_eq!(
+            lower_provider_call(&expression("Game.GetPlayer()"), &catalog),
+            Ok(None)
+        );
+        assert!(matches!(
+            catalog.insert(
+                &ExtensionId::new("org.example.shadow").unwrap(),
+                &papyrus_game_get_mod_by_name_declaration(),
+            ),
+            Err(PapyrusProviderCatalogError::DuplicateAlias { .. })
+        ));
     }
 
     #[test]

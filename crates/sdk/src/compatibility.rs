@@ -5,10 +5,15 @@
 //! adapter must target, or records why the operation is intentionally absent.
 
 use crate::component::ExtensionValue;
-use crate::content::ContentCatalog;
+use crate::content::{ContentCatalog, PluginKind};
 use crate::event::{legacy_skse_mod_event_id, LegacySkseModEventPayload, PublishEventCommand};
-use crate::identity::FormRef;
-use crate::identity::{IdentityError, StorageKey};
+use crate::identity::{
+    ComponentId, FormRef, IdentityError, ScriptFunctionId, ScriptParameterId, StorageKey,
+};
+use crate::script_function::{
+    PapyrusFunctionAlias, ScriptFunctionDeclaration, ScriptParameterDeclaration,
+    ScriptResultDeclaration, ScriptValueType,
+};
 use crate::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE,
     PRINCIPAL_STORAGE_SERVICE,
@@ -168,6 +173,54 @@ pub struct SourceAlias {
 /// Indices `0..=254` are valid and `255` is reserved as the missing sentinel.
 pub const LEGACY_OBSCRIPT_PLUGIN_LIMIT: usize = 255;
 pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
+
+/// Engine route backing SKSE's `Game.GetModByName` Papyrus extension.
+pub const PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE: &str = "byro.content.catalog.get-mod-by-name";
+
+/// Typed declaration for the first engine-native extender-era Papyrus alias.
+pub fn papyrus_game_get_mod_by_name_declaration() -> ScriptFunctionDeclaration {
+    ScriptFunctionDeclaration {
+        id: ScriptFunctionId::new("get-mod-by-name")
+            .expect("built-in Papyrus function ID is valid"),
+        component: ComponentId::new("content-catalog")
+            .expect("built-in Papyrus component ID is valid"),
+        parameters: vec![ScriptParameterDeclaration {
+            id: ScriptParameterId::new("plugin").expect("built-in Papyrus parameter ID is valid"),
+            value_type: ScriptValueType::String,
+            optional: false,
+        }],
+        result: Some(ScriptResultDeclaration {
+            value_type: ScriptValueType::Integer,
+            optional: false,
+        }),
+        papyrus: Some(PapyrusFunctionAlias {
+            provider: "Game".to_owned(),
+            function: "GetModByName".to_owned(),
+        }),
+        description: "Return the classic regular-plugin index or 255 when absent".to_owned(),
+    }
+}
+
+/// Execute SKSE's `Game.GetModByName` against the immutable engine catalog.
+///
+/// Light plugins do not occupy classic regular-plugin indices. The sentinel
+/// is preserved for missing/light plugins and malformed over-budget catalogs.
+pub fn adapt_papyrus_game_get_mod_by_name(catalog: &ContentCatalog, plugin: &str) -> i32 {
+    let mut regular_index = 0usize;
+    for entry in catalog.iter() {
+        if entry.kind() != PluginKind::Regular {
+            continue;
+        }
+        if entry.name().eq_ignore_ascii_case(plugin) {
+            return i32::try_from(regular_index)
+                .ok()
+                .filter(|index| *index < LEGACY_OBSCRIPT_MISSING_MOD_INDEX)
+                .unwrap_or(LEGACY_OBSCRIPT_MISSING_MOD_INDEX);
+        }
+        regular_index = regular_index.saturating_add(1);
+    }
+    LEGACY_OBSCRIPT_MISSING_MOD_INDEX
+}
 
 /// Typed load-order operation recovered from extender-era ObScript.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -657,6 +710,13 @@ fn checked_string(
 /// Classify a static Papyrus call by provider type and function name.
 /// Returns `None` for providers that are not known extender APIs.
 pub fn classify_static_call(provider: &str, function: &str) -> Option<CompatibilityMatch> {
+    if provider.eq_ignore_ascii_case("Game") && function.eq_ignore_ascii_case("GetModByName") {
+        return Some(native(
+            ExtenderFamily::Skse,
+            CONTENT_CATALOG_SERVICE,
+            "executed by the engine content catalog with the classic 255 missing sentinel",
+        ));
+    }
     if provider.eq_ignore_ascii_case("SKSE") {
         return Some(if is_extender_version_probe(function) {
             mapped(
@@ -937,6 +997,39 @@ mod tests {
             CompatibilityDisposition::Native
         );
         assert!(obscript_source_alias("GetSourceModIndex").is_none());
+    }
+
+    #[test]
+    fn papyrus_get_mod_by_name_uses_regular_indices_and_the_legacy_sentinel() {
+        let catalog = ContentCatalog::new(vec![
+            PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
+            PluginInfo::new("Patch.esl", 2_u128.to_be_bytes(), PluginKind::Light).unwrap(),
+            PluginInfo::new("Update.esm", 3_u128.to_be_bytes(), PluginKind::Regular).unwrap(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            adapt_papyrus_game_get_mod_by_name(&catalog, "UPDATE.ESM"),
+            1
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_mod_by_name(&catalog, "Patch.esl"),
+            255
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_mod_by_name(&catalog, "Missing.esp"),
+            255
+        );
+        papyrus_game_get_mod_by_name_declaration()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            classify_static_call("game", "getmodbyname")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Native
+        );
+        assert!(classify_static_call("Game", "GetPlayer").is_none());
     }
 
     #[test]

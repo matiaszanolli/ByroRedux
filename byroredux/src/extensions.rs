@@ -28,6 +28,9 @@ use byroredux_sdk::actor_values::{
     ActorValueCommand, ActorValueOperation, ActorValueState, MAX_ACTOR_VALUES_PER_ENTITY,
 };
 use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
+use byroredux_sdk::compatibility::{
+    adapt_papyrus_game_get_mod_by_name, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+};
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
@@ -342,7 +345,7 @@ impl ExtensionHost {
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
             script_functions: Vec::new(),
-            papyrus_providers: PapyrusProviderCatalog::default(),
+            papyrus_providers: PapyrusProviderCatalog::engine_compatibility(),
         })
     }
 
@@ -671,6 +674,27 @@ impl ExtensionHost {
                 lines: vec!["deferred command batch was rejected".to_owned()],
             }
         }
+    }
+
+    /// Invoke an exact engine-native compatibility alias or a sandboxed
+    /// principal-namespaced function through the shared typed boundary.
+    fn invoke_papyrus_provider(
+        &mut self,
+        qualified_name: &str,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        if qualified_name == PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE {
+            let [ScriptValue::String(plugin)] = arguments else {
+                return Err(ExtensionHostError::ScriptFunctionUnavailable {
+                    function: qualified_name.to_owned(),
+                    reason: "Game.GetModByName requires one string plugin basename".to_owned(),
+                });
+            };
+            return Ok(ScriptValue::Integer(i64::from(
+                adapt_papyrus_game_get_mod_by_name(&self.content_catalog, plugin),
+            )));
+        }
+        self.invoke_script_function(qualified_name, arguments)
     }
 
     /// Invoke a principal-namespaced typed function and publish its result
@@ -2467,7 +2491,7 @@ fn sync_extension_script_function_invoker(world: &World) {
         Arc::new(move |name: &str, arguments: &[ScriptValue]| {
             host.lock()
                 .map_err(|_| "extension host mutex was poisoned".to_owned())?
-                .invoke_script_function(name, arguments)
+                .invoke_papyrus_provider(name, arguments)
                 .map_err(|error| error.to_string())
         }) as Arc<byroredux_scripting::ExtensionScriptFunctionCallback>
     });
@@ -6191,6 +6215,55 @@ mod tests {
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(1))
+        );
+    }
+
+    #[test]
+    fn game_get_mod_by_name_runs_without_an_extension_package() {
+        let catalog = ContentCatalog::new(vec![
+            byroredux_sdk::content::PluginInfo::new(
+                "Skyrim.esm",
+                1_u128.to_be_bytes(),
+                byroredux_sdk::content::PluginKind::Regular,
+            )
+            .unwrap(),
+            byroredux_sdk::content::PluginInfo::new(
+                "Patch.esl",
+                2_u128.to_be_bytes(),
+                byroredux_sdk::content::PluginKind::Light,
+            )
+            .unwrap(),
+            byroredux_sdk::content::PluginInfo::new(
+                "Update.esm",
+                3_u128.to_be_bytes(),
+                byroredux_sdk::content::PluginKind::Regular,
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.set_content_catalog(Arc::new(catalog));
+
+        assert!(host
+            .papyrus_provider_catalog()
+            .resolve("game", "getmodbyname")
+            .is_some());
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+                &[ScriptValue::String("UPDATE.ESM".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Integer(1)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+                &[ScriptValue::String("Patch.esl".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Integer(255)
         );
     }
 
