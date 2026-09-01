@@ -114,6 +114,34 @@ interface state {
     );
 }
 
+/// Principal-local typed object handles used by the JContainers source
+/// compatibility adapter. Objects are bounded and included in engine saves.
+interface legacy-containers {
+    use state.{form-ref};
+
+    variant value {
+        int(s32),
+        float(f32),
+        text(string),
+        form(option<form-ref>),
+        object(s32),
+    }
+
+    array-create: func() -> s32;
+    map-create: func() -> s32;
+    count: func(handle: s32) -> s32;
+    clear: func(handle: s32) -> bool;
+    release: func(handle: s32) -> bool;
+    array-add: func(handle: s32, value: value, index: option<u32>) -> bool;
+    array-get: func(handle: s32, index: s32) -> option<value>;
+    array-set: func(handle: s32, index: s32, value: value) -> bool;
+    array-erase: func(handle: s32, index: s32) -> bool;
+    map-get: func(handle: s32, key: string) -> option<value>;
+    map-has-key: func(handle: s32, key: string) -> bool;
+    map-set: func(handle: s32, key: string, value: value) -> bool;
+    map-remove: func(handle: s32, key: string) -> bool;
+}
+
 /// Principal-scoped persistent data stored inside the engine save.
 interface storage {
     variant value {
@@ -446,6 +474,7 @@ world extension {
     import context;
     import events;
     import state;
+    import legacy-containers;
     import storage;
     import world-state;
     import content-catalog;

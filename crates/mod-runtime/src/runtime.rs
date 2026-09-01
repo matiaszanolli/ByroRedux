@@ -1,7 +1,7 @@
 use crate::bindings::byro::mod_host::{
     actor_values, animation, console, content_catalog, context, events, faction_relationships,
-    factions, inventory, logging, packages, perks, reputation, state, storage as wit_storage,
-    world_spatial, world_state,
+    factions, inventory, legacy_containers as wit_legacy_containers, logging, packages, perks,
+    reputation, state, storage as wit_storage, world_spatial, world_state,
 };
 use crate::bindings::Extension;
 use crate::{CapabilitySet, Principal, Result, SandboxConfig, SandboxError};
@@ -25,6 +25,7 @@ use byroredux_sdk::identity::{
     StorageKey,
 };
 use byroredux_sdk::inventory::{InventoryEntry, InventorySnapshot, ItemCategory, ItemMetadata};
+use byroredux_sdk::legacy_containers::{LegacyContainerRegistry, LegacyContainerValue};
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::packages::{
     EvaluatePackageCommand, PackageSelection, PackageSelectionSource, PackageSnapshot,
@@ -45,13 +46,14 @@ use byroredux_sdk::service::{
     EXTENSION_WORLD_SERVICE, FACTIONS_READ_CAPABILITY, FACTIONS_SERVICE,
     FACTION_RELATIONSHIPS_READ_CAPABILITY, FACTION_RELATIONSHIPS_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, INVENTORY_READ_CAPABILITY,
-    INVENTORY_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY, PACKAGES_READ_CAPABILITY,
-    PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
-    REPUTATION_READ_CAPABILITY, REPUTATION_SERVICE, REPUTATION_WRITE_CAPABILITY, SESSION_EVENT,
-    SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
-    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
-    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE,
-    WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    INVENTORY_SERVICE, LEGACY_CONTAINERS_SERVICE, LOGGING_SERVICE, PACKAGES_EVALUATE_CAPABILITY,
+    PACKAGES_READ_CAPABILITY, PACKAGES_SERVICE, PERKS_READ_CAPABILITY, PERKS_SERVICE,
+    PRINCIPAL_STORAGE_SERVICE, REPUTATION_READ_CAPABILITY, REPUTATION_SERVICE,
+    REPUTATION_WRITE_CAPABILITY, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
+    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
+    WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
 use byroredux_sdk::settings::{
     SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
@@ -507,6 +509,17 @@ impl SandboxRuntime {
             .map_err(|error| SandboxError::Link(error.to_string()))?;
         catalog
             .register_service(ServiceDescriptor {
+                id: ServiceId::new(LEGACY_CONTAINERS_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: Some(
+                    CapabilityId::new(STORAGE_READ_OWN_CAPABILITY)
+                        .map_err(|error| SandboxError::Link(error.to_string()))?,
+                ),
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
                 id: ServiceId::new(COMPONENT_STATE_SERVICE)
                     .map_err(|error| SandboxError::Link(error.to_string()))?,
                 version: Version::new(0, 1, 0),
@@ -674,6 +687,7 @@ impl SandboxRuntime {
                 .collect(),
             legacy_mod_event_callbacks: BTreeMap::new(),
             legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
+            legacy_containers: LegacyContainerRegistry::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,
@@ -1257,6 +1271,16 @@ impl ModInstance {
         self.store.data_mut().principal_storage = values;
     }
 
+    /// Replace the principal-local JContainers compatibility object table.
+    pub fn set_legacy_container_snapshot(&mut self, registry: LegacyContainerRegistry) {
+        self.store.data_mut().legacy_containers = registry;
+    }
+
+    /// Snapshot the compatibility object table after a successful guest entry.
+    pub fn legacy_container_snapshot(&self) -> &LegacyContainerRegistry {
+        &self.store.data().legacy_containers
+    }
+
     /// Replace the callback-local set of engine entity projections.
     pub fn set_entity_projections(
         &mut self,
@@ -1409,6 +1433,7 @@ struct HostState {
     custom_subscriptions: Vec<EventId>,
     legacy_mod_event_callbacks: BTreeMap<EventId, String>,
     legacy_mod_event_builders: LegacySkseModEventBuilders,
+    legacy_containers: LegacyContainerRegistry,
     current_custom_event: Option<CustomEvent>,
     current_legacy_callback: Option<String>,
     current_console_args: Option<Vec<u8>>,
@@ -1677,6 +1702,131 @@ impl state::Host for HostState {
                 delta,
             }));
         Ok(())
+    }
+}
+
+impl wit_legacy_containers::Host for HostState {
+    fn array_create(&mut self) -> wasmtime::Result<i32> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.create_array())
+    }
+
+    fn map_create(&mut self) -> wasmtime::Result<i32> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.create_map())
+    }
+
+    fn count(&mut self, handle: i32) -> wasmtime::Result<i32> {
+        self.require_legacy_container_read()?;
+        Ok(self.legacy_containers.count(handle))
+    }
+
+    fn clear(&mut self, handle: i32) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.clear(handle))
+    }
+
+    fn release(&mut self, handle: i32) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.release(handle))
+    }
+
+    fn array_add(
+        &mut self,
+        handle: i32,
+        value: wit_legacy_containers::Value,
+        index: Option<u32>,
+    ) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        let value = sdk_legacy_container_value(value);
+        Ok(self.legacy_containers.array_add(handle, value, index))
+    }
+
+    fn array_get(
+        &mut self,
+        handle: i32,
+        index: i32,
+    ) -> wasmtime::Result<Option<wit_legacy_containers::Value>> {
+        self.require_legacy_container_read()?;
+        Ok(self
+            .legacy_containers
+            .array_get(handle, index)
+            .map(wit_legacy_container_value))
+    }
+
+    fn array_set(
+        &mut self,
+        handle: i32,
+        index: i32,
+        value: wit_legacy_containers::Value,
+    ) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        let value = sdk_legacy_container_value(value);
+        Ok(self.legacy_containers.array_set(handle, index, value))
+    }
+
+    fn array_erase(&mut self, handle: i32, index: i32) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.array_erase(handle, index))
+    }
+
+    fn map_get(
+        &mut self,
+        handle: i32,
+        key: String,
+    ) -> wasmtime::Result<Option<wit_legacy_containers::Value>> {
+        self.require_legacy_container_read()?;
+        Ok(self
+            .legacy_containers
+            .map_get(handle, &key)
+            .map(wit_legacy_container_value))
+    }
+
+    fn map_has_key(&mut self, handle: i32, key: String) -> wasmtime::Result<bool> {
+        self.require_legacy_container_read()?;
+        Ok(self.legacy_containers.map_has_key(handle, &key))
+    }
+
+    fn map_set(
+        &mut self,
+        handle: i32,
+        key: String,
+        value: wit_legacy_containers::Value,
+    ) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        let value = sdk_legacy_container_value(value);
+        Ok(self.legacy_containers.map_set(handle, key, value))
+    }
+
+    fn map_remove(&mut self, handle: i32, key: String) -> wasmtime::Result<bool> {
+        self.require_legacy_container_write()?;
+        Ok(self.legacy_containers.map_remove(handle, &key))
+    }
+}
+
+fn sdk_legacy_container_value(value: wit_legacy_containers::Value) -> LegacyContainerValue {
+    match value {
+        wit_legacy_containers::Value::Int(value) => LegacyContainerValue::Int(value),
+        wit_legacy_containers::Value::Float(value) => LegacyContainerValue::float(value),
+        wit_legacy_containers::Value::Text(value) => LegacyContainerValue::String(value),
+        wit_legacy_containers::Value::Form(value) => {
+            LegacyContainerValue::Form(value.map(sdk_form_ref))
+        }
+        wit_legacy_containers::Value::Object(value) => LegacyContainerValue::Object(value),
+    }
+}
+
+fn wit_legacy_container_value(value: &LegacyContainerValue) -> wit_legacy_containers::Value {
+    match value {
+        LegacyContainerValue::Int(value) => wit_legacy_containers::Value::Int(*value),
+        LegacyContainerValue::FloatBits(bits) => {
+            wit_legacy_containers::Value::Float(f32::from_bits(*bits))
+        }
+        LegacyContainerValue::String(value) => wit_legacy_containers::Value::Text(value.clone()),
+        LegacyContainerValue::Form(value) => {
+            wit_legacy_containers::Value::Form(value.map(wit_form_ref))
+        }
+        LegacyContainerValue::Object(value) => wit_legacy_containers::Value::Object(*value),
     }
 }
 
@@ -2777,6 +2927,26 @@ impl HostState {
         Ok(())
     }
 
+    fn require_legacy_container_read(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(STORAGE_READ_OWN_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {STORAGE_READ_OWN_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_legacy_container_write(&self) -> wasmtime::Result<()> {
+        if !self.grants.contains(STORAGE_WRITE_OWN_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {STORAGE_WRITE_OWN_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        Ok(())
+    }
+
     fn require_storage_write(&mut self) -> wasmtime::Result<()> {
         if !self.accepting_commands {
             wasmtime::bail!("storage commands are only accepted during an event callback");
@@ -3002,6 +3172,7 @@ mod projection_tests {
             custom_subscriptions: Vec::new(),
             legacy_mod_event_callbacks: BTreeMap::new(),
             legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
+            legacy_containers: LegacyContainerRegistry::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,
@@ -3069,6 +3240,64 @@ mod projection_tests {
             wit_storage::Value::Unsigned(9),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn legacy_container_host_preserves_mixed_values_and_nested_handles() {
+        let mut state = content_host_state(false);
+        state.grants.grant(STORAGE_READ_OWN_CAPABILITY).unwrap();
+        state.grants.grant(STORAGE_WRITE_OWN_CAPABILITY).unwrap();
+
+        let array = <HostState as wit_legacy_containers::Host>::array_create(&mut state).unwrap();
+        let map = <HostState as wit_legacy_containers::Host>::map_create(&mut state).unwrap();
+        assert_ne!(array, 0);
+        assert_ne!(map, 0);
+        assert!(<HostState as wit_legacy_containers::Host>::array_add(
+            &mut state,
+            array,
+            wit_legacy_containers::Value::Float(2.5),
+            None,
+        )
+        .unwrap());
+        assert!(<HostState as wit_legacy_containers::Host>::array_add(
+            &mut state,
+            array,
+            wit_legacy_containers::Value::Form(Some(state::FormRef {
+                source_high: 0x0001_0203_0405_0607,
+                source_low: 0x0809_0a0b_0c0d_0e0f,
+                local: 0x1234,
+            })),
+            None,
+        )
+        .unwrap());
+        assert!(<HostState as wit_legacy_containers::Host>::map_set(
+            &mut state,
+            map,
+            "items".to_owned(),
+            wit_legacy_containers::Value::Object(array),
+        )
+        .unwrap());
+        assert_eq!(
+            <HostState as wit_legacy_containers::Host>::count(&mut state, array).unwrap(),
+            2
+        );
+        assert!(matches!(
+            <HostState as wit_legacy_containers::Host>::map_get(
+                &mut state,
+                map,
+                "items".to_owned(),
+            )
+            .unwrap(),
+            Some(wit_legacy_containers::Value::Object(handle)) if handle == array
+        ));
+        assert!(matches!(
+            <HostState as wit_legacy_containers::Host>::array_get(&mut state, array, 1).unwrap(),
+            Some(wit_legacy_containers::Value::Form(Some(form))) if form.local == 0x1234
+        ));
+
+        let mut denied = content_host_state(false);
+        assert!(<HostState as wit_legacy_containers::Host>::array_create(&mut denied).is_err());
+        assert!(<HostState as wit_legacy_containers::Host>::count(&mut denied, array).is_err());
     }
 
     #[test]
@@ -3331,6 +3560,7 @@ mod projection_tests {
             custom_subscriptions: Vec::new(),
             legacy_mod_event_callbacks: BTreeMap::new(),
             legacy_mod_event_builders: LegacySkseModEventBuilders::new(),
+            legacy_containers: LegacyContainerRegistry::new(),
             current_custom_event: None,
             current_legacy_callback: None,
             current_console_args: None,

@@ -17,6 +17,7 @@ pub mod event;
 pub mod factions;
 pub mod identity;
 pub mod inventory;
+pub mod legacy_containers;
 pub mod manifest;
 pub mod packages;
 pub mod perks;

@@ -8,7 +8,9 @@ use crate::component::ExtensionValue;
 use crate::event::{legacy_skse_mod_event_id, LegacySkseModEventPayload, PublishEventCommand};
 use crate::identity::FormRef;
 use crate::identity::{IdentityError, StorageKey};
-use crate::service::{CONTEXT_SERVICE, EVENT_SERVICE, PRINCIPAL_STORAGE_SERVICE};
+use crate::service::{
+    CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
+};
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 
 /// Extender ecosystem that introduced a recognized Papyrus provider/call.
@@ -180,6 +182,9 @@ pub fn method_source_alias(function: &str) -> Option<SourceAlias> {
 /// components; floats, Forms, pluck, file, list, and cross-principal sharing
 /// remain unsupported until an engine service can honor their full contracts.
 pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
+    if let Some(alias) = legacy_container_source_alias(provider, function) {
+        return Some(alias);
+    }
     if provider.eq_ignore_ascii_case("ModEvent") {
         let (function, operation, value_kind) = if function.eq_ignore_ascii_case("Create") {
             ("Create", "events.legacy-builder-create", "handle")
@@ -238,6 +243,116 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
         operation,
         value_kind,
         constraint: "ObjKey must be None; portable key; principal-private (no cross-mod sharing)",
+    })
+}
+
+fn legacy_container_source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
+    let (provider, function, operation, value_kind) = if provider.eq_ignore_ascii_case("JValue") {
+        if function.eq_ignore_ascii_case("count") {
+            ("JValue", "count", "legacy-containers.count", "signed")
+        } else if function.eq_ignore_ascii_case("clear") {
+            ("JValue", "clear", "legacy-containers.clear", "none")
+        } else if function.eq_ignore_ascii_case("release") {
+            ("JValue", "release", "legacy-containers.release", "none")
+        } else {
+            return None;
+        }
+    } else if provider.eq_ignore_ascii_case("JArray") {
+        if function.eq_ignore_ascii_case("object") {
+            (
+                "JArray",
+                "object",
+                "legacy-containers.array-create",
+                "handle",
+            )
+        } else if function.eq_ignore_ascii_case("count") {
+            ("JArray", "count", "legacy-containers.count", "signed")
+        } else if function.eq_ignore_ascii_case("clear") {
+            ("JArray", "clear", "legacy-containers.clear", "none")
+        } else if function.eq_ignore_ascii_case("eraseIndex") {
+            (
+                "JArray",
+                "eraseIndex",
+                "legacy-containers.array-erase",
+                "none",
+            )
+        } else if function.eq_ignore_ascii_case("addInt") {
+            ("JArray", "addInt", "legacy-containers.array-add", "signed")
+        } else if function.eq_ignore_ascii_case("addFlt") {
+            ("JArray", "addFlt", "legacy-containers.array-add", "float")
+        } else if function.eq_ignore_ascii_case("addStr") {
+            ("JArray", "addStr", "legacy-containers.array-add", "text")
+        } else if function.eq_ignore_ascii_case("addForm") {
+            ("JArray", "addForm", "legacy-containers.array-add", "form")
+        } else if function.eq_ignore_ascii_case("addObj") {
+            ("JArray", "addObj", "legacy-containers.array-add", "handle")
+        } else if function.eq_ignore_ascii_case("getInt") {
+            ("JArray", "getInt", "legacy-containers.array-get", "signed")
+        } else if function.eq_ignore_ascii_case("getFlt") {
+            ("JArray", "getFlt", "legacy-containers.array-get", "float")
+        } else if function.eq_ignore_ascii_case("getStr") {
+            ("JArray", "getStr", "legacy-containers.array-get", "text")
+        } else if function.eq_ignore_ascii_case("getForm") {
+            ("JArray", "getForm", "legacy-containers.array-get", "form")
+        } else if function.eq_ignore_ascii_case("getObj") {
+            ("JArray", "getObj", "legacy-containers.array-get", "handle")
+        } else if function.eq_ignore_ascii_case("setInt") {
+            ("JArray", "setInt", "legacy-containers.array-set", "signed")
+        } else if function.eq_ignore_ascii_case("setFlt") {
+            ("JArray", "setFlt", "legacy-containers.array-set", "float")
+        } else if function.eq_ignore_ascii_case("setStr") {
+            ("JArray", "setStr", "legacy-containers.array-set", "text")
+        } else if function.eq_ignore_ascii_case("setForm") {
+            ("JArray", "setForm", "legacy-containers.array-set", "form")
+        } else if function.eq_ignore_ascii_case("setObj") {
+            ("JArray", "setObj", "legacy-containers.array-set", "handle")
+        } else {
+            return None;
+        }
+    } else if provider.eq_ignore_ascii_case("JMap") {
+        if function.eq_ignore_ascii_case("object") {
+            ("JMap", "object", "legacy-containers.map-create", "handle")
+        } else if function.eq_ignore_ascii_case("count") {
+            ("JMap", "count", "legacy-containers.count", "signed")
+        } else if function.eq_ignore_ascii_case("clear") {
+            ("JMap", "clear", "legacy-containers.clear", "none")
+        } else if function.eq_ignore_ascii_case("hasKey") {
+            ("JMap", "hasKey", "legacy-containers.map-has-key", "bool")
+        } else if function.eq_ignore_ascii_case("removeKey") {
+            ("JMap", "removeKey", "legacy-containers.map-remove", "none")
+        } else if function.eq_ignore_ascii_case("setInt") {
+            ("JMap", "setInt", "legacy-containers.map-set", "signed")
+        } else if function.eq_ignore_ascii_case("setFlt") {
+            ("JMap", "setFlt", "legacy-containers.map-set", "float")
+        } else if function.eq_ignore_ascii_case("setStr") {
+            ("JMap", "setStr", "legacy-containers.map-set", "text")
+        } else if function.eq_ignore_ascii_case("setForm") {
+            ("JMap", "setForm", "legacy-containers.map-set", "form")
+        } else if function.eq_ignore_ascii_case("setObj") {
+            ("JMap", "setObj", "legacy-containers.map-set", "handle")
+        } else if function.eq_ignore_ascii_case("getInt") {
+            ("JMap", "getInt", "legacy-containers.map-get", "signed")
+        } else if function.eq_ignore_ascii_case("getFlt") {
+            ("JMap", "getFlt", "legacy-containers.map-get", "float")
+        } else if function.eq_ignore_ascii_case("getStr") {
+            ("JMap", "getStr", "legacy-containers.map-get", "text")
+        } else if function.eq_ignore_ascii_case("getForm") {
+            ("JMap", "getForm", "legacy-containers.map-get", "form")
+        } else if function.eq_ignore_ascii_case("getObj") {
+            ("JMap", "getObj", "legacy-containers.map-get", "handle")
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    Some(SourceAlias {
+        provider,
+        function,
+        service: LEGACY_CONTAINERS_SERVICE,
+        operation,
+        value_kind,
+        constraint: "principal-local; <=256 objects; <=4096 aggregate entries; <=4096 UTF-8 bytes per key/string",
     })
 }
 
@@ -407,11 +522,18 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         provider,
         &["JValue", "JMap", "JArray", "JFormMap", "JIntMap", "JDB"],
     ) {
-        return Some(mapped(
-            ExtenderFamily::JContainers,
-            PRINCIPAL_STORAGE_SERVICE,
-            "migrate to bounded principal arrays, maps, sets, or entity-attached extension components",
-        ));
+        return Some(if source_alias(provider, function).is_some() {
+            mapped(
+                ExtenderFamily::JContainers,
+                LEGACY_CONTAINERS_SERVICE,
+                "an exact core typed-container alias targets the persisted principal-local object service",
+            )
+        } else {
+            unsupported(
+                ExtenderFamily::JContainers,
+                "the JContainers provider is recognized, but this function has no exact engine adapter; file JSON, Lua, path solving, form/int-keyed maps, and global cross-mod databases remain unavailable",
+            )
+        });
     }
     if provider.eq_ignore_ascii_case("ModEvent") {
         return Some(if source_alias(provider, function).is_some() {
@@ -563,6 +685,33 @@ mod tests {
         assert!(source_alias("StorageUtil", "FormListAdd").is_none());
         assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Unsupported
+        );
+    }
+
+    #[test]
+    fn jcontainers_aliases_only_claim_the_executable_core_surface() {
+        let create = source_alias("jarray", "OBJECT").unwrap();
+        assert_eq!(create.service, LEGACY_CONTAINERS_SERVICE);
+        assert_eq!(create.operation, "legacy-containers.array-create");
+        let nested = source_alias("JMap", "setObj").unwrap();
+        assert_eq!(nested.operation, "legacy-containers.map-set");
+        assert_eq!(nested.value_kind, "handle");
+        assert_eq!(
+            classify_static_call("JArray", "getForm")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Mapped
+        );
+        assert!(source_alias("JDB", "solveObj").is_none());
+        assert_eq!(
+            classify_static_call("JDB", "solveObj").unwrap().disposition,
+            CompatibilityDisposition::Unsupported
+        );
+        assert_eq!(
+            classify_static_call("JArray", "writeToFile")
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Unsupported

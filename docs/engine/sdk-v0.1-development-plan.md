@@ -474,6 +474,20 @@ their complete semantics. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
 
+The first JContainers replacement is a separate `byro.legacy-containers`
+service rather than a lossy projection onto primitive storage collections. It
+provides principal-local integer handles for mixed typed `JArray` and
+string-keyed `JMap` objects, including nested object handles, stable Forms, and
+bit-preserved floats. Successful callbacks commit the bounded registry
+atomically; trapped or rejected callbacks do not. Registries round-trip in the
+engine extension-save payload and survive temporarily unavailable packages.
+The initial source aliases cover object/count/clear/release, typed array
+add/get/set/erase, and typed map get/set/has/remove calls. Each principal is
+limited to 256 objects, 4096 aggregate entries, and 4096 UTF-8 bytes per key or
+string. `JDB`, path solving, JSON files, Lua, cross-mod global databases, and
+Form/int-keyed map providers remain explicitly unsupported instead of being
+classified as compatible merely because their provider name is recognized.
+
 The first event adapter covers fixed-arity
 `Form`/`Alias`/`ActiveMagicEffect.SendModEvent`. It maps the original event
 name to the shared engine-owned compatibility bus and preserves the string,

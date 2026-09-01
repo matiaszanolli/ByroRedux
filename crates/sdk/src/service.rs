@@ -77,6 +77,8 @@ pub const COMPONENT_STATE_SERVICE: &str = "byro.components";
 pub const EVENT_SERVICE: &str = "byro.events";
 /// Service providing bounded principal-scoped persistent storage.
 pub const PRINCIPAL_STORAGE_SERVICE: &str = "byro.storage";
+/// Service providing persisted, principal-local typed compatibility objects.
+pub const LEGACY_CONTAINERS_SERVICE: &str = "byro.legacy-containers";
 /// Service providing immutable, callback-local entity projections.
 pub const WORLD_PROJECTION_SERVICE: &str = "byro.world";
 /// Service providing canonical actor-value reads and deferred mutations.

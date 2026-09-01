@@ -30,7 +30,7 @@ use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleComman
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
     ExtensionStateSnapshot, ExtensionValue, PersistedComponentRow, RestoredComponentRow,
-    EXTENSION_STATE_FORMAT_VERSION,
+    EXTENSION_STATE_FORMAT_VERSION, MIN_EXTENSION_STATE_FORMAT_VERSION,
 };
 use byroredux_sdk::console::ConsoleCommandResult;
 use byroredux_sdk::content::ContentCatalog;
@@ -46,6 +46,9 @@ use byroredux_sdk::identity::{
 };
 use byroredux_sdk::inventory::{
     InventoryEntry, InventorySnapshot, MAX_INVENTORY_ENTRIES_PER_ENTITY,
+};
+use byroredux_sdk::legacy_containers::{
+    LegacyContainerError, LegacyContainerRegistry, PersistedLegacyContainers,
 };
 use byroredux_sdk::manifest::ExtensionManifest;
 use byroredux_sdk::packages::{
@@ -100,6 +103,8 @@ pub(crate) enum ExtensionHostError {
     State(#[from] ComponentStoreError),
     #[error("principal storage rejected the package, command batch, or saved state: {0}")]
     PrincipalStorage(#[from] PrincipalStorageError),
+    #[error("legacy container state is invalid: {0}")]
+    LegacyContainers(#[from] LegacyContainerError),
     #[error("extension {0} is already installed")]
     AlreadyInstalled(ExtensionId),
     #[error("extension {extension} is missing component artifact {component}")]
@@ -125,6 +130,8 @@ pub(crate) enum ExtensionHostError {
         schema: byroredux_sdk::identity::ComponentSchemaId,
         entity: FormRef,
     },
+    #[error("saved extension state repeats legacy containers for principal {0}")]
+    DuplicateLegacyContainerPrincipal(PrincipalId),
     #[error(
         "{count} extension row(s) target transient entities without stable form identity; refusing a lossy save"
     )]
@@ -269,6 +276,8 @@ pub(crate) struct ExtensionHost {
     diagnostics: Vec<ExtensionDiagnostic>,
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
+    legacy_containers: BTreeMap<PrincipalId, LegacyContainerRegistry>,
+    retained_legacy_containers: Vec<PersistedLegacyContainers>,
     pending_custom_events: Vec<CustomEvent>,
     pending_setting_writes: Vec<byroredux_sdk::settings::SettingWriteCommand>,
     pending_actor_value_writes: Vec<ActorValueCommand>,
@@ -298,6 +307,8 @@ impl ExtensionHost {
             diagnostics: Vec::new(),
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
+            legacy_containers: BTreeMap::new(),
+            retained_legacy_containers: Vec::new(),
             pending_custom_events: Vec::new(),
             pending_setting_writes: Vec::new(),
             pending_actor_value_writes: Vec::new(),
@@ -335,6 +346,8 @@ impl ExtensionHost {
         let mut staged_state = self.state.clone();
         let mut staged_principal_storage = self.principal_storage.clone();
         let mut staged_retained_storage = self.retained_storage.clone();
+        let mut staged_legacy_containers = self.legacy_containers.clone();
+        let mut staged_retained_legacy_containers = self.retained_legacy_containers.clone();
         for declaration in &manifest.component_schemas {
             staged_state.register_schema(
                 &principal,
@@ -360,7 +373,19 @@ impl ExtensionHost {
             .iter()
             .any(|record| record.principal == principal)
         {
-            return Err(PrincipalStorageError::UndeclaredPrincipal(principal).into());
+            return Err(PrincipalStorageError::UndeclaredPrincipal(principal.clone()).into());
+        }
+        if let Some(index) = staged_retained_legacy_containers
+            .iter()
+            .position(|record| record.principal == principal)
+        {
+            let retained = staged_retained_legacy_containers.remove(index);
+            retained.registry.validate()?;
+            staged_legacy_containers.insert(principal.clone(), retained.registry);
+        } else {
+            staged_legacy_containers
+                .entry(principal.clone())
+                .or_default();
         }
 
         let mut compiled = Vec::with_capacity(manifest.components.len());
@@ -434,7 +459,17 @@ impl ExtensionHost {
             instance.set_content_catalog_snapshot(Arc::clone(&self.content_catalog));
             instance.set_faction_relationships_snapshot(Arc::clone(&self.faction_relationships));
             instance.set_engine_settings_snapshot(Arc::clone(&self.engine_settings));
+            instance.set_legacy_container_snapshot(
+                staged_legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             instance.initialize()?;
+            staged_legacy_containers.insert(
+                principal.clone(),
+                instance.legacy_container_snapshot().clone(),
+            );
             staged_diagnostics.extend(instance.take_logs().into_iter().map(|entry| {
                 ExtensionDiagnostic::Log {
                     extension: manifest.id.clone(),
@@ -462,6 +497,8 @@ impl ExtensionHost {
         self.state = staged_state;
         self.principal_storage = staged_principal_storage;
         self.retained_storage = staged_retained_storage;
+        self.legacy_containers = staged_legacy_containers;
+        self.retained_legacy_containers = staged_retained_legacy_containers;
         self.components.extend(staged_components);
         if grants.contains(CONSOLE_REGISTER_CAPABILITY) {
             self.console_commands
@@ -517,6 +554,14 @@ impl ExtensionHost {
         hosted
             .instance
             .set_principal_storage_snapshot(storage_snapshot);
+        let legacy_container_snapshot = self
+            .legacy_containers
+            .get(&principal)
+            .cloned()
+            .unwrap_or_default();
+        hosted
+            .instance
+            .set_legacy_container_snapshot(legacy_container_snapshot);
         let result = hosted
             .instance
             .on_console_command(route.declaration_index, args);
@@ -551,6 +596,7 @@ impl ExtensionHost {
             DeliveryCommitContext {
                 state: &mut self.state,
                 principal_storage: &mut self.principal_storage,
+                legacy_containers: &mut self.legacy_containers,
                 pending_custom_events: &mut self.pending_custom_events,
                 pending_setting_writes: &mut self.pending_setting_writes,
                 pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -737,6 +783,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -760,6 +814,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -826,6 +881,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -846,6 +909,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -912,6 +976,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -936,6 +1008,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -992,6 +1065,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 let result = hosted.instance.on_input_action(event);
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -1009,6 +1090,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -1061,6 +1143,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 let result = hosted.instance.on_session_event(event);
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -1078,6 +1168,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -1127,6 +1218,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 let result = hosted.instance.on_custom_event(event.clone());
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -1144,6 +1243,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -1255,6 +1355,14 @@ impl ExtensionHost {
                 hosted
                     .instance
                     .set_principal_storage_snapshot(storage_snapshot);
+                let legacy_container_snapshot = self
+                    .legacy_containers
+                    .get(&principal)
+                    .cloned()
+                    .unwrap_or_default();
+                hosted
+                    .instance
+                    .set_legacy_container_snapshot(legacy_container_snapshot);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -1285,6 +1393,7 @@ impl ExtensionHost {
                     DeliveryCommitContext {
                         state: &mut self.state,
                         principal_storage: &mut self.principal_storage,
+                        legacy_containers: &mut self.legacy_containers,
                         pending_custom_events: &mut self.pending_custom_events,
                         pending_setting_writes: &mut self.pending_setting_writes,
                         pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -1344,6 +1453,14 @@ impl ExtensionHost {
             hosted
                 .instance
                 .set_principal_storage_snapshot(storage_snapshot);
+            let legacy_container_snapshot = self
+                .legacy_containers
+                .get(&principal)
+                .cloned()
+                .unwrap_or_default();
+            hosted
+                .instance
+                .set_legacy_container_snapshot(legacy_container_snapshot);
             let result = hosted.instance.on_update(UpdateEvent { elapsed_seconds });
             self.diagnostics
                 .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -1361,6 +1478,7 @@ impl ExtensionHost {
                 DeliveryCommitContext {
                     state: &mut self.state,
                     principal_storage: &mut self.principal_storage,
+                    legacy_containers: &mut self.legacy_containers,
                     pending_custom_events: &mut self.pending_custom_events,
                     pending_setting_writes: &mut self.pending_setting_writes,
                     pending_actor_value_writes: &mut self.pending_actor_value_writes,
@@ -1413,7 +1531,9 @@ impl ExtensionHost {
         &self,
         saved: &ExtensionStateSnapshot,
     ) -> Result<(), ExtensionHostError> {
-        if saved.format_version != EXTENSION_STATE_FORMAT_VERSION {
+        if !(MIN_EXTENSION_STATE_FORMAT_VERSION..=EXTENSION_STATE_FORMAT_VERSION)
+            .contains(&saved.format_version)
+        {
             return Err(ExtensionHostError::UnsupportedStateFormat {
                 actual: saved.format_version,
                 expected: EXTENSION_STATE_FORMAT_VERSION,
@@ -1508,6 +1628,15 @@ impl ExtensionHost {
         }
         let mut staged_storage = self.principal_storage.clone();
         staged_storage.replace_active(active_storage)?;
+        let mut legacy_principals = BTreeSet::new();
+        for record in &saved.legacy_containers {
+            if !legacy_principals.insert(record.principal.clone()) {
+                return Err(ExtensionHostError::DuplicateLegacyContainerPrincipal(
+                    record.principal.clone(),
+                ));
+            }
+            record.registry.validate()?;
+        }
         Ok(())
     }
 
@@ -1557,10 +1686,24 @@ impl ExtensionHost {
         for record in self.principal_storage.persisted() {
             principal_storage.insert(record.principal.clone(), record);
         }
+        let mut legacy_containers = BTreeMap::new();
+        for record in &self.retained_legacy_containers {
+            legacy_containers.insert(record.principal.clone(), record.clone());
+        }
+        for (principal, registry) in &self.legacy_containers {
+            legacy_containers.insert(
+                principal.clone(),
+                PersistedLegacyContainers {
+                    principal: principal.clone(),
+                    registry: registry.clone(),
+                },
+            );
+        }
         let saved = ExtensionStateSnapshot {
             format_version: EXTENSION_STATE_FORMAT_VERSION,
             rows: rows.into_values().collect(),
             principal_storage: principal_storage.into_values().collect(),
+            legacy_containers: legacy_containers.into_values().collect(),
         };
         self.validate_saved_state(&saved)?;
         Ok(saved)
@@ -1614,11 +1757,27 @@ impl ExtensionHost {
         }
         let mut staged_storage = self.principal_storage.clone();
         staged_storage.replace_active(active_storage)?;
+        let mut active_legacy_containers = BTreeMap::new();
+        let mut retained_legacy_containers = Vec::new();
+        for record in &saved.legacy_containers {
+            if active.contains(&record.principal) {
+                active_legacy_containers.insert(record.principal.clone(), record.registry.clone());
+            } else {
+                retained_legacy_containers.push(record.clone());
+            }
+        }
+        for principal in &active {
+            active_legacy_containers
+                .entry(principal.clone())
+                .or_default();
+        }
         self.handles = staged_handles;
         self.state = staged_state;
         self.principal_storage = staged_storage;
         self.retained_rows = retained;
         self.retained_storage = retained_storage;
+        self.legacy_containers = active_legacy_containers;
+        self.retained_legacy_containers = retained_legacy_containers;
         Ok(generation)
     }
 
@@ -1760,6 +1919,7 @@ struct ResolvedReputationWrite {
 struct DeliveryCommitContext<'a> {
     state: &'a mut ExtensionComponentStore,
     principal_storage: &'a mut PrincipalStorageStore,
+    legacy_containers: &'a mut BTreeMap<PrincipalId, LegacyContainerRegistry>,
     pending_custom_events: &'a mut Vec<CustomEvent>,
     pending_setting_writes: &'a mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
     pending_actor_value_writes: &'a mut Vec<ActorValueCommand>,
@@ -1780,6 +1940,7 @@ fn apply_delivery_result(
     let DeliveryCommitContext {
         state,
         principal_storage,
+        legacy_containers,
         pending_custom_events,
         pending_setting_writes,
         pending_actor_value_writes,
@@ -1828,24 +1989,31 @@ fn apply_delivery_result(
     }
     let mut staged_state = state.clone();
     let mut staged_storage = principal_storage.clone();
+    let staged_legacy_containers = hosted.instance.legacy_container_snapshot().clone();
     let mut staged_custom_subscriptions = hosted.custom_subscriptions.clone();
-    let staged_subscriptions = legacy_event_subscriptions.iter().try_for_each(|command| {
-        if !command.is_valid() {
-            return Err("legacy mod-event subscription command is invalid".to_owned());
-        }
-        match command {
-            LegacyModEventSubscriptionCommand::Subscribe { event, .. } => {
-                staged_custom_subscriptions.insert(event.clone());
-            }
-            LegacyModEventSubscriptionCommand::Unsubscribe { event } => {
-                staged_custom_subscriptions.remove(event);
-            }
-            LegacyModEventSubscriptionCommand::UnsubscribeAll => {
-                staged_custom_subscriptions.retain(|event| !is_legacy_skse_mod_event_id(event));
-            }
-        }
-        Ok(())
-    });
+    let staged_subscriptions = staged_legacy_containers
+        .validate()
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            legacy_event_subscriptions.iter().try_for_each(|command| {
+                if !command.is_valid() {
+                    return Err("legacy mod-event subscription command is invalid".to_owned());
+                }
+                match command {
+                    LegacyModEventSubscriptionCommand::Subscribe { event, .. } => {
+                        staged_custom_subscriptions.insert(event.clone());
+                    }
+                    LegacyModEventSubscriptionCommand::Unsubscribe { event } => {
+                        staged_custom_subscriptions.remove(event);
+                    }
+                    LegacyModEventSubscriptionCommand::UnsubscribeAll => {
+                        staged_custom_subscriptions
+                            .retain(|event| !is_legacy_skse_mod_event_id(event));
+                    }
+                }
+                Ok(())
+            })
+        });
     let staged_events = published_events
         .into_iter()
         .map(|command| {
@@ -1866,7 +2034,7 @@ fn apply_delivery_result(
                 .ok_or_else(|| "custom event payload is invalid or exceeds its bound".to_owned())
         })
         .collect::<Result<Vec<_>, _>>();
-    let apply_result = staged_subscriptions.and_then(|()| staged_events).and_then(|staged_events| {
+    let apply_result = staged_subscriptions.and(staged_events).and_then(|staged_events| {
         let owned_setting_prefix = format!("ext.{principal}.");
         if setting_writes
             .iter()
@@ -1968,6 +2136,7 @@ fn apply_delivery_result(
         Ok(staged_events) => {
             *state = staged_state;
             *principal_storage = staged_storage;
+            legacy_containers.insert(principal.clone(), staged_legacy_containers);
             hosted.custom_subscriptions = staged_custom_subscriptions;
             hosted
                 .instance
@@ -5033,7 +5202,12 @@ mod tests {
                 callback: "OnConfigManagerReady".to_owned(),
             });
         let mut registration_stats = ExtensionDispatchStats::default();
+        let mut staged_registry = host.legacy_containers.get(&subscriber).unwrap().clone();
+        let staged_array = staged_registry.create_array();
         let hosted = &mut host.components[0];
+        hosted
+            .instance
+            .set_legacy_container_snapshot(staged_registry);
         apply_delivery_result(
             hosted,
             Ok(vec![subscribe]),
@@ -5042,6 +5216,7 @@ mod tests {
             DeliveryCommitContext {
                 state: &mut host.state,
                 principal_storage: &mut host.principal_storage,
+                legacy_containers: &mut host.legacy_containers,
                 pending_custom_events: &mut host.pending_custom_events,
                 pending_setting_writes: &mut host.pending_setting_writes,
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
@@ -5053,6 +5228,11 @@ mod tests {
             },
         );
         assert_eq!(registration_stats.commands_applied, 1);
+        assert!(host
+            .legacy_containers
+            .get(&subscriber)
+            .unwrap()
+            .contains(staged_array));
         assert!(host.components[0].custom_subscriptions.contains(&channel));
         assert_eq!(
             host.components[0]
@@ -5093,6 +5273,7 @@ mod tests {
             DeliveryCommitContext {
                 state: &mut host.state,
                 principal_storage: &mut host.principal_storage,
+                legacy_containers: &mut host.legacy_containers,
                 pending_custom_events: &mut host.pending_custom_events,
                 pending_setting_writes: &mut host.pending_setting_writes,
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
@@ -5127,6 +5308,8 @@ mod tests {
         let principal = PrincipalId::new("org.example.atomic-registration").unwrap();
         let key = StorageKey::new("should-not-commit").unwrap();
         let mut host = host_with_storage_package(principal.as_str());
+        let mut staged_registry = host.legacy_containers.get(&principal).unwrap().clone();
+        let staged_array = staged_registry.create_array();
         let commands = vec![
             HostCommand::PrincipalStorage(byroredux_sdk::storage::PrincipalStorageCommand::Set {
                 key: key.clone(),
@@ -5140,6 +5323,9 @@ mod tests {
         ];
         let mut stats = ExtensionDispatchStats::default();
         let hosted = &mut host.components[0];
+        hosted
+            .instance
+            .set_legacy_container_snapshot(staged_registry);
         apply_delivery_result(
             hosted,
             Ok(commands),
@@ -5148,6 +5334,7 @@ mod tests {
             DeliveryCommitContext {
                 state: &mut host.state,
                 principal_storage: &mut host.principal_storage,
+                legacy_containers: &mut host.legacy_containers,
                 pending_custom_events: &mut host.pending_custom_events,
                 pending_setting_writes: &mut host.pending_setting_writes,
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
@@ -5167,6 +5354,11 @@ mod tests {
             .and_then(|values| values.get(&key))
             .is_none());
         assert!(host.components[0].custom_subscriptions.is_empty());
+        assert!(!host
+            .legacy_containers
+            .get(&principal)
+            .unwrap()
+            .contains(staged_array));
     }
 
     #[test]
@@ -5203,6 +5395,7 @@ mod tests {
             DeliveryCommitContext {
                 state: &mut host.state,
                 principal_storage: &mut host.principal_storage,
+                legacy_containers: &mut host.legacy_containers,
                 pending_custom_events: &mut host.pending_custom_events,
                 pending_setting_writes: &mut host.pending_setting_writes,
                 pending_actor_value_writes: &mut host.pending_actor_value_writes,
@@ -5427,6 +5620,81 @@ mod tests {
                 .values(&principal)
                 .and_then(|values| values.get(&key)),
             Some(&PrincipalStorageValue::I64(2))
+        );
+    }
+
+    #[test]
+    fn legacy_container_objects_are_principal_local_and_save_persistent() {
+        let principal = PrincipalId::new("org.example.storage").unwrap();
+        let mut source = host_with_storage_package(principal.as_str());
+        let registry = source.legacy_containers.get_mut(&principal).unwrap();
+        let array = registry.create_array();
+        let map = registry.create_map();
+        assert!(registry.array_add(
+            array,
+            byroredux_sdk::legacy_containers::LegacyContainerValue::Int(42),
+            None,
+        ));
+        assert!(registry.map_set(
+            map,
+            "items".to_owned(),
+            byroredux_sdk::legacy_containers::LegacyContainerValue::Object(array),
+        ));
+
+        let saved = source.capture_saved_state(&BTreeMap::new()).unwrap();
+        assert_eq!(saved.format_version, EXTENSION_STATE_FORMAT_VERSION);
+        assert_eq!(saved.legacy_containers.len(), 1);
+        let mut restored = host_with_storage_package(principal.as_str());
+        restored
+            .restore_saved_state(&saved, &BTreeMap::new())
+            .unwrap();
+        let registry = restored.legacy_containers.get(&principal).unwrap();
+        assert_eq!(registry.count(array), 1);
+        assert_eq!(
+            registry.map_get(map, "items"),
+            Some(&byroredux_sdk::legacy_containers::LegacyContainerValue::Object(array))
+        );
+
+        let mut unavailable =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        unavailable
+            .restore_saved_state(&saved, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(unavailable.retained_legacy_containers.len(), 1);
+        assert_eq!(
+            unavailable
+                .capture_saved_state(&BTreeMap::new())
+                .unwrap()
+                .legacy_containers,
+            saved.legacy_containers
+        );
+        install_storage_package(&mut unavailable, principal.as_str());
+        assert!(unavailable.retained_legacy_containers.is_empty());
+        assert_eq!(
+            unavailable
+                .legacy_containers
+                .get(&principal)
+                .unwrap()
+                .count(array),
+            1
+        );
+    }
+
+    #[test]
+    fn pre_container_extension_state_remains_loadable() {
+        let mut version_two = ExtensionStateSnapshot::default();
+        version_two.format_version = MIN_EXTENSION_STATE_FORMAT_VERSION;
+        version_two.legacy_containers.clear();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.restore_saved_state(&version_two, &BTreeMap::new())
+            .unwrap();
+        assert!(host.legacy_containers.is_empty());
+        assert_eq!(
+            host.capture_saved_state(&BTreeMap::new())
+                .unwrap()
+                .format_version,
+            EXTENSION_STATE_FORMAT_VERSION
         );
     }
 

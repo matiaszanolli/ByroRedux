@@ -6,10 +6,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::identity::{ComponentFieldId, ComponentSchemaId, EntityRef, FormRef, PrincipalId};
+use crate::legacy_containers::PersistedLegacyContainers;
 use crate::storage::PersistedPrincipalStorage;
 
 /// Current engine-owned extension-state payload format.
-pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 2;
+pub const EXTENSION_STATE_FORMAT_VERSION: u32 = 3;
+
+/// Oldest extension-state payload accepted by this SDK. Version 2 predates
+/// legacy container records, which deserialize as an empty list.
+pub const MIN_EXTENSION_STATE_FORMAT_VERSION: u32 = 2;
 
 /// Portable value kinds supported by the first dynamic-component contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -103,6 +108,8 @@ pub struct ExtensionStateSnapshot {
     pub rows: Vec<PersistedComponentRow>,
     #[serde(default)]
     pub principal_storage: Vec<PersistedPrincipalStorage>,
+    #[serde(default)]
+    pub legacy_containers: Vec<PersistedLegacyContainers>,
 }
 
 impl Default for ExtensionStateSnapshot {
@@ -111,6 +118,7 @@ impl Default for ExtensionStateSnapshot {
             format_version: EXTENSION_STATE_FORMAT_VERSION,
             rows: Vec::new(),
             principal_storage: Vec::new(),
+            legacy_containers: Vec::new(),
         }
     }
 }
