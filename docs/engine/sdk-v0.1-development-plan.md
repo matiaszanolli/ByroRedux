@@ -89,11 +89,13 @@ its static statement tree before entering guest code so no ECS guard crosses
 the sandbox boundary. Compiled SCDA SDK-call encoding and the general Papyrus
 dispatcher remain open. A conservative Papyrus vertical slice is live:
 manifest-declared `Provider.Function(...)` aliases lower from parsed source and
-decompiled PEX into a typed program, and `OnLoad`/`OnActivate` handlers execute
-through the same authenticated Wasm host after ECS guards are released. It
-currently supports scalar locals, literal arguments, assignments, and bounded
-boolean branches; broader expressions, events, fragments, latent calls, and
-dynamic object dispatch remain open. The first curated extender-era pack is
+decompiled PEX into a typed program, and `OnLoad`, `OnActivate`,
+`OnTriggerEnter`, and `OnUpdate` handlers execute through the same authenticated
+Wasm host after ECS guards are released. Trigger handlers preserve one dispatch
+per entering actor. The subset supports scalar locals, literal arguments,
+assignments, and bounded boolean branches; broader expressions and events,
+fragments, latent calls, and dynamic object dispatch remain open. The first
+curated extender-era pack is
 also executable without an extension package: ten SKSE `Game` content calls
 cover regular/light counts, name-to-index and index-to-name lookup, and active
 plugin, dependency-count, and light-plugin master queries. They preserve
@@ -849,7 +851,8 @@ proceeds by semantic domain and closes only against real mod fixtures.
   through `ext.<extension-id>.<function>` assignments and conditions without
   OBSE/xNVSE. Manifest-declared `Provider.Function(...)` aliases now lower
   case-insensitively from parsed Papyrus and decompiled PEX into a typed,
-  guard-free `OnLoad`/`OnActivate` program that calls the same live host. The
+  guard-free `OnLoad`/`OnActivate`/`OnTriggerEnter`/`OnUpdate` program that
+  calls the same live host. Trigger entry multiplicity is preserved. The
   current subset covers scalar locals, literal arguments, assignments, and
   bounded boolean branches. A synthetic byte-level Skyrim PEX fixture now
   exercises the production reader/decompiler/translation boundary. Compiled
@@ -986,7 +989,9 @@ Checkpoint commit: `feat(scripting): execute deferred Papyrus provider calls`.
 Delivered for entity-attached `OnLoad` and `OnActivate` programs. The runtime
 snapshots programs and event IDs, releases ECS guards, invokes the existing
 extension host, and resumes assignment/branch evaluation only from a validated
-result. Quest/scene fragment queue integration remains open.
+result. A later event-dispatch checkpoint adds `OnTriggerEnter` with one call
+per entering actor and recurring `OnUpdate` delivery through the same guard-free
+path. Quest/scene fragment queue integration remains open.
 
 ### 14.3 Source and PEX parity
 
