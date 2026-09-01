@@ -73,7 +73,10 @@ Manifest-declared registration is now implemented as well:
 granted packages contribute bounded toggle/slider/choice metadata under
 `ext.<extension-id>.*`, persisted values are overlaid before guest
 initialization, and registration commits atomically with package activation;
-deferred guest writes remain.
+`byro.settings.write-own` now queues declaration-indexed updates through the
+shared command budget, validates type/range/choice and principal ownership,
+then commits and persists the native registry after callbacks without guest
+reentrancy.
 
 ## 1. Outcome
 
@@ -499,8 +502,8 @@ Exit gate:
 Status: **Exact-version entity-attached and principal-storage persistence
 and the first read-only plugin/form catalog, manifest-declared namespaced
 console registration, and typed universal-settings reads implemented;
-migrations, service aliases, record metadata queries, namespaced setting
-writes, and real-mod fixtures remain pending.**
+migrations, service aliases, record metadata queries, and real-mod fixtures
+remain pending.**
 
 Deliverables:
 
@@ -614,7 +617,9 @@ proceeds by semantic domain and closes only against real mod fixtures.
   native universal settings registry with startup-correct and live-refreshed
   bool/number/choice values. Granted manifests can register bounded native
   toggle/slider/choice controls under `ext.<extension-id>.*`, atomically with
-  package activation and persisted-value overlay; deferred writes remain.**
+  package activation and persisted-value overlay. Capability-gated writes are
+  declaration-indexed, command-budgeted, type/range/ownership validated,
+  applied after callbacks, persisted, and reflected into the next snapshot.**
 - Plugin/form/dependency introspection. **Loaded regular/light plugin
   enumeration, case-insensitive basename lookup, stable source identity, and
   bounded portable form qualification are implemented behind

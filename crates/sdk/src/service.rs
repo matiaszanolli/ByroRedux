@@ -39,6 +39,8 @@ pub const CONSOLE_REGISTER_CAPABILITY: &str = "byro.console.register";
 pub const SETTINGS_READ_CAPABILITY: &str = "byro.settings.read";
 /// Capability required to register manifest-declared principal settings.
 pub const SETTINGS_REGISTER_CAPABILITY: &str = "byro.settings.register";
+/// Capability required to queue writes to the caller's declared settings.
+pub const SETTINGS_WRITE_OWN_CAPABILITY: &str = "byro.settings.write-own";
 /// Service providing principal and host-contract discovery.
 pub const CONTEXT_SERVICE: &str = "byro.context";
 /// Service providing bounded attributed diagnostics.

@@ -116,6 +116,25 @@ impl SettingDeclaration {
             _ => false,
         }
     }
+
+    pub fn accepts(&self, value: &SettingValue) -> bool {
+        match (value, &self.control) {
+            (SettingValue::Boolean(_), SettingControlDeclaration::Toggle) => true,
+            (SettingValue::Number(value), SettingControlDeclaration::Slider { min, max, .. }) => {
+                value.is_finite() && value >= min && value <= max
+            }
+            (SettingValue::Choice(value), SettingControlDeclaration::Choice { options }) => {
+                options.iter().any(|option| option.value == *value)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingWriteCommand {
+    pub key: String,
+    pub value: SettingValue,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

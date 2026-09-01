@@ -191,11 +191,12 @@ pub enum PrincipalStorageCommand {
 }
 
 /// One mutation emitted by a sandbox callback.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum HostCommand {
     Component(ExtensionCommand),
     PrincipalStorage(PrincipalStorageCommand),
     PublishEvent(PublishEventCommand),
+    Setting(crate::settings::SettingWriteCommand),
 }
 
 /// Hard bounds for one engine-owned principal storage service.

@@ -27,11 +27,13 @@ use byroredux_sdk::service::{
     EVENTS_SUBSCRIBE_CAPABILITY, EVENT_SERVICE, EXTENSION_WORLD_SERVICE, HIT_EVENT,
     INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT, LOGGING_SERVICE,
     PRINCIPAL_STORAGE_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
-    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
-    WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
+    SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
-use byroredux_sdk::settings::{SettingValue, SettingsSnapshot, MAX_SETTING_KEY_BYTES};
+use byroredux_sdk::settings::{
+    SettingDeclaration, SettingValue, SettingWriteCommand, SettingsSnapshot, MAX_SETTING_KEY_BYTES,
+};
 use byroredux_sdk::storage::{HostCommand, PrincipalStorageCommand, PrincipalStorageValue};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -253,6 +255,10 @@ impl SandboxRuntime {
                 SETTINGS_REGISTER_CAPABILITY,
                 "Register bounded principal-namespaced engine settings",
             ),
+            (
+                SETTINGS_WRITE_OWN_CAPABILITY,
+                "Queue writes to principal-owned declared engine settings",
+            ),
         ] {
             catalog
                 .register_capability(CapabilityDescriptor {
@@ -459,6 +465,7 @@ impl SandboxRuntime {
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
+            setting_declarations: manifest.settings.clone(),
             subscribed_to_activate: manifest
                 .subscriptions
                 .iter()
@@ -1175,6 +1182,7 @@ struct HostState {
     entity_projections: BTreeMap<byroredux_sdk::identity::EntityRef, EntityProjection>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
+    setting_declarations: Vec<SettingDeclaration>,
     pending_commands: Vec<HostCommand>,
     max_commands_per_entry: usize,
     accepting_commands: bool,
@@ -1854,6 +1862,50 @@ impl context::Host for HostState {
             SettingValue::Choice(value) => context::SettingValue::Choice(value.clone()),
         }))
     }
+
+    fn queue_own_setting(
+        &mut self,
+        declaration_index: u32,
+        value: context::SettingValue,
+    ) -> wasmtime::Result<()> {
+        if !self.accepting_commands {
+            wasmtime::bail!("setting writes are only accepted during an event callback");
+        }
+        if !self.grants.contains(SETTINGS_WRITE_OWN_CAPABILITY) {
+            wasmtime::bail!(
+                "principal {} lacks capability {SETTINGS_WRITE_OWN_CAPABILITY}",
+                self.principal.id()
+            );
+        }
+        if self.pending_commands.len() >= self.max_commands_per_entry {
+            self.command_budget_exhausted = true;
+            wasmtime::bail!(
+                "command limit of {} exceeded in one entry",
+                self.max_commands_per_entry
+            );
+        }
+        let declaration = self
+            .setting_declarations
+            .get(declaration_index as usize)
+            .ok_or_else(|| wasmtime::Error::msg("unknown setting declaration index"))?;
+        let value = match value {
+            context::SettingValue::Boolean(value) => SettingValue::Boolean(value),
+            context::SettingValue::Number(value) => SettingValue::Number(value),
+            context::SettingValue::Choice(value) => SettingValue::Choice(value),
+        };
+        if !declaration.accepts(&value) {
+            wasmtime::bail!("setting value does not satisfy its declared control");
+        }
+        self.pending_commands
+            .push(HostCommand::Setting(SettingWriteCommand {
+                key: declaration.qualified_name(
+                    &ExtensionId::new(self.principal.id().as_str())
+                        .expect("extension principals retain a valid extension identity"),
+                ),
+                value,
+            }));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1950,6 +2002,7 @@ mod projection_tests {
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
+            setting_declarations: Vec::new(),
             pending_commands: Vec::new(),
             max_commands_per_entry: 1,
             accepting_commands: false,
@@ -2045,6 +2098,7 @@ mod projection_tests {
                 ])
                 .unwrap(),
             ),
+            setting_declarations: Vec::new(),
             pending_commands: Vec::new(),
             max_commands_per_entry: 1,
             accepting_commands: false,
@@ -2128,5 +2182,53 @@ mod projection_tests {
             <HostState as context::Host>::engine_setting(&mut state, "bad\nkey".to_owned(),)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn own_setting_writes_are_deferred_typed_and_capability_gated() {
+        let mut state = content_host_state(false);
+        state.grants.grant(SETTINGS_WRITE_OWN_CAPABILITY).unwrap();
+        state.accepting_commands = true;
+        state.setting_declarations = vec![SettingDeclaration {
+            id: byroredux_sdk::identity::SettingId::new("strength").unwrap(),
+            label: "Strength".to_owned(),
+            description: "Effect strength".to_owned(),
+            default: SettingValue::Number(1.0),
+            control: byroredux_sdk::settings::SettingControlDeclaration::Slider {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                unit: "x".to_owned(),
+            },
+            restart_required: false,
+        }];
+
+        <HostState as context::Host>::queue_own_setting(
+            &mut state,
+            0,
+            context::SettingValue::Number(1.5),
+        )
+        .unwrap();
+        assert!(matches!(
+            state.pending_commands.as_slice(),
+            [HostCommand::Setting(SettingWriteCommand { key, value: SettingValue::Number(1.5) })]
+                if key == "ext.org.example.content.strength"
+        ));
+        assert!(<HostState as context::Host>::queue_own_setting(
+            &mut state,
+            0,
+            context::SettingValue::Number(3.0),
+        )
+        .is_err());
+
+        let mut denied = content_host_state(false);
+        denied.accepting_commands = true;
+        denied.setting_declarations = state.setting_declarations;
+        assert!(<HostState as context::Host>::queue_own_setting(
+            &mut denied,
+            0,
+            context::SettingValue::Number(1.0),
+        )
+        .is_err());
     }
 }

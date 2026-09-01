@@ -1750,6 +1750,14 @@ pub(crate) fn build_scheduler() -> Scheduler {
         crate::extensions::extension_update_dispatch_system,
         Access::new().writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_setting_write_apply_system,
+        Access::new()
+            .writes_resource::<byroredux_core::settings::SettingsRegistry>()
+            .reads_resource::<crate::settings_io::SettingsPersistence>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
     scheduler
@@ -2293,6 +2301,7 @@ mod fragment_activation_order_tests {
         let session = pos("crate::extensions::extension_session_dispatch_system");
         let hit = pos("crate::extensions::extension_hit_dispatch_system");
         let update = pos("crate::extensions::extension_update_dispatch_system");
+        let setting_apply = pos("crate::extensions::extension_setting_write_apply_system");
         let cleanup = pos("byroredux_scripting::event_cleanup_system");
         assert!(
             settings < custom
@@ -2305,7 +2314,8 @@ mod fragment_activation_order_tests {
                 && input < cleanup
                 && session < cleanup
                 && hit < cleanup
-                && update < cleanup,
+                && update < setting_apply
+                && setting_apply < cleanup,
             "extension callbacks must run before transient marker cleanup"
         );
     }

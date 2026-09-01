@@ -56,6 +56,7 @@ const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
 const MAX_PENDING_SESSION_EVENTS: usize = 64;
 const MAX_PENDING_CUSTOM_EVENTS: usize = 256;
 const MAX_PENDING_CUSTOM_EVENT_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_SETTING_WRITES: usize = 256;
 
 /// Package-relative component bytes supplied to [`ExtensionHost::install_package`].
 pub(crate) type ExtensionArtifacts = BTreeMap<ComponentId, Vec<u8>>;
@@ -240,6 +241,7 @@ pub(crate) struct ExtensionHost {
     retained_rows: Vec<PersistedComponentRow>,
     retained_storage: Vec<PersistedPrincipalStorage>,
     pending_custom_events: Vec<CustomEvent>,
+    pending_setting_writes: Vec<byroredux_sdk::settings::SettingWriteCommand>,
     content_catalog: Arc<ContentCatalog>,
     engine_settings: Arc<SettingsSnapshot>,
     console_commands: Vec<HostedConsoleCommand>,
@@ -263,6 +265,7 @@ impl ExtensionHost {
             retained_rows: Vec::new(),
             retained_storage: Vec::new(),
             pending_custom_events: Vec::new(),
+            pending_setting_writes: Vec::new(),
             content_catalog: Arc::new(ContentCatalog::default()),
             engine_settings: Arc::new(SettingsSnapshot::default()),
             console_commands: Vec::new(),
@@ -508,6 +511,7 @@ impl ExtensionHost {
             &mut self.state,
             &mut self.principal_storage,
             &mut self.pending_custom_events,
+            &mut self.pending_setting_writes,
             &mut self.diagnostics,
             &mut stats,
         );
@@ -690,6 +694,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -769,6 +774,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -852,6 +858,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -918,6 +925,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -980,6 +988,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1039,6 +1048,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1173,6 +1183,7 @@ impl ExtensionHost {
                     &mut self.state,
                     &mut self.principal_storage,
                     &mut self.pending_custom_events,
+                    &mut self.pending_setting_writes,
                     &mut self.diagnostics,
                     &mut stats,
                 );
@@ -1242,6 +1253,7 @@ impl ExtensionHost {
                 &mut self.state,
                 &mut self.principal_storage,
                 &mut self.pending_custom_events,
+                &mut self.pending_setting_writes,
                 &mut self.diagnostics,
                 &mut stats,
             );
@@ -1541,6 +1553,7 @@ fn apply_delivery_result(
     state: &mut ExtensionComponentStore,
     principal_storage: &mut PrincipalStorageStore,
     pending_custom_events: &mut Vec<CustomEvent>,
+    pending_setting_writes: &mut Vec<byroredux_sdk::settings::SettingWriteCommand>,
     diagnostics: &mut Vec<ExtensionDiagnostic>,
     stats: &mut ExtensionDispatchStats,
 ) {
@@ -1560,11 +1573,13 @@ fn apply_delivery_result(
     let mut component_commands = Vec::new();
     let mut storage_commands = Vec::new();
     let mut published_events = Vec::new();
+    let mut setting_writes = Vec::new();
     for command in commands {
         match command {
             HostCommand::Component(command) => component_commands.push(command),
             HostCommand::PrincipalStorage(command) => storage_commands.push(command),
             HostCommand::PublishEvent(command) => published_events.push(command),
+            HostCommand::Setting(command) => setting_writes.push(command),
         }
     }
     let mut staged_state = state.clone();
@@ -1590,6 +1605,22 @@ fn apply_delivery_result(
         })
         .collect::<Result<Vec<_>, _>>();
     let apply_result = staged_events.and_then(|staged_events| {
+        let owned_setting_prefix = format!("ext.{principal}.");
+        if setting_writes
+            .iter()
+            .any(|command| !command.key.starts_with(&owned_setting_prefix))
+        {
+            return Err("setting write escaped its principal namespace".to_owned());
+        }
+        let next_setting_count = pending_setting_writes
+            .len()
+            .checked_add(setting_writes.len())
+            .ok_or_else(|| "pending setting write count overflow".to_owned())?;
+        if next_setting_count > MAX_PENDING_SETTING_WRITES {
+            return Err(format!(
+                "pending setting write limit of {MAX_PENDING_SETTING_WRITES} exceeded"
+            ));
+        }
         let next_event_count = pending_custom_events
             .len()
             .checked_add(staged_events.len())
@@ -1640,6 +1671,7 @@ fn apply_delivery_result(
             *state = staged_state;
             *principal_storage = staged_storage;
             pending_custom_events.extend(staged_events);
+            pending_setting_writes.extend(setting_writes);
             stats.commands_applied += command_count;
         }
     }
@@ -1940,6 +1972,59 @@ pub(crate) fn extension_engine_settings_sync_system(world: &World, _dt: f32) {
     host.lock()
         .expect("ExtensionHost mutex poisoned by a host panic")
         .set_engine_settings(settings);
+}
+
+/// Commit sandbox setting writes after every callback for this frame has run.
+pub(crate) fn extension_setting_write_apply_system(world: &World, _dt: f32) {
+    let host = world
+        .try_resource::<ExtensionHostSlot>()
+        .and_then(|slot| slot.host());
+    let Some(host) = host else {
+        return;
+    };
+    let writes = {
+        let mut host = host
+            .lock()
+            .expect("ExtensionHost mutex poisoned by a host panic");
+        std::mem::take(&mut host.pending_setting_writes)
+    };
+    if writes.is_empty() {
+        return;
+    }
+
+    let mut staged = world
+        .resource::<byroredux_core::settings::SettingsRegistry>()
+        .clone();
+    for write in &writes {
+        let value = match &write.value {
+            SdkSettingValue::Boolean(value) => byroredux_core::settings::SettingValue::Bool(*value),
+            SdkSettingValue::Number(value) => {
+                byroredux_core::settings::SettingValue::Number(*value)
+            }
+            SdkSettingValue::Choice(value) => {
+                byroredux_core::settings::SettingValue::Choice(value.clone())
+            }
+        };
+        if let Err(error) = staged.set(&write.key, value) {
+            log::error!("rejected validated extension setting batch: {error}");
+            return;
+        }
+    }
+    let snapshot = match settings_snapshot_from_registry(&staged) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            log::error!("rejected extension setting snapshot: {error}");
+            return;
+        }
+    };
+    *world.resource_mut::<byroredux_core::settings::SettingsRegistry>() = staged;
+    if let Some(persistence) = world.try_resource::<crate::settings_io::SettingsPersistence>() {
+        let settings = world.resource::<byroredux_core::settings::SettingsRegistry>();
+        crate::settings_io::save(&settings, &persistence);
+    }
+    host.lock()
+        .expect("ExtensionHost mutex poisoned by a host panic")
+        .set_engine_settings(snapshot);
 }
 
 fn engine_settings_snapshot(world: &World) -> Option<Arc<SettingsSnapshot>> {
@@ -3937,6 +4022,7 @@ mod tests {
             &mut host.state,
             &mut host.principal_storage,
             &mut host.pending_custom_events,
+            &mut host.pending_setting_writes,
             &mut host.diagnostics,
             &mut stats,
         );
@@ -4605,6 +4691,48 @@ mod tests {
         assert_eq!(
             host.engine_settings.get("gameplay.fov"),
             Some(&byroredux_sdk::settings::SettingValue::Number(110.0))
+        );
+    }
+
+    #[test]
+    fn deferred_extension_setting_writes_commit_through_native_registry() {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut settings = byroredux_core::settings::SettingsRegistry::default();
+        settings
+            .register(byroredux_core::settings::SettingEntry::toggle(
+                "ext.org.example.settings.enabled",
+                "org.example.settings",
+                "Enabled",
+                "test",
+                false,
+            ))
+            .unwrap();
+        host.lock().unwrap().pending_setting_writes.push(
+            byroredux_sdk::settings::SettingWriteCommand {
+                key: "ext.org.example.settings.enabled".to_owned(),
+                value: SdkSettingValue::Boolean(true),
+            },
+        );
+        let mut world = World::new();
+        world.insert_resource(settings);
+        world.insert_resource(slot);
+
+        extension_setting_write_apply_system(&world, 0.0);
+
+        assert_eq!(
+            world
+                .resource::<byroredux_core::settings::SettingsRegistry>()
+                .get("ext.org.example.settings.enabled")
+                .unwrap()
+                .value,
+            byroredux_core::settings::SettingValue::Bool(true)
+        );
+        let host = host.lock().unwrap();
+        assert!(host.pending_setting_writes.is_empty());
+        assert_eq!(
+            host.engine_settings.get("ext.org.example.settings.enabled"),
+            Some(&SdkSettingValue::Boolean(true))
         );
     }
 

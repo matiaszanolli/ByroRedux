@@ -26,8 +26,8 @@ use byroredux_sdk::service::{
     EVENTS_SUBSCRIBE_CAPABILITY, HIT_EVENT, INPUT_ACTIONS_SUBSCRIBE_CAPABILITY, INPUT_ACTION_EVENT,
     INPUT_ACTION_FILTER_FIELD, LOGGING_SERVICE, SESSION_EVENT, SESSION_PHASE_FILTER_FIELD,
     SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
-    WORLD_ENTITY_READ_CAPABILITY,
+    SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY,
+    UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
 };
 use byroredux_sdk::storage::{
     HostCommand, PrincipalStorageLimits, PrincipalStorageStore, PrincipalStorageValue,
@@ -1295,6 +1295,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
+            HostCommand::Setting(_) => panic!("unexpected setting command"),
         })
         .collect::<Vec<_>>();
     let principal = PrincipalId::from(&manifest.id);
@@ -1359,6 +1360,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
             HostCommand::Component(command) => command,
             HostCommand::PrincipalStorage(_) => panic!("unexpected principal-storage command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
+            HostCommand::Setting(_) => panic!("unexpected setting command"),
         })
         .collect::<Vec<_>>();
     let principal = PrincipalId::from(&manifest.id);
@@ -1429,6 +1431,7 @@ fn canonical_recurring_update_queues_private_state_and_validates_elapsed_time() 
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("unexpected custom-event command"),
+            HostCommand::Setting(_) => panic!("unexpected setting command"),
         })
         .collect::<Vec<_>>();
     storage.apply_batch(&principal, &storage_commands).unwrap();
@@ -1621,6 +1624,9 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
     assert!(runtime
         .catalog()
         .supports_capability(SETTINGS_REGISTER_CAPABILITY));
+    assert!(runtime
+        .catalog()
+        .supports_capability(SETTINGS_WRITE_OWN_CAPABILITY));
 }
 
 #[test]
@@ -2162,6 +2168,7 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
                 panic!("fixture emitted an unexpected storage command")
             }
             HostCommand::PublishEvent(_) => panic!("fixture emitted an unexpected event command"),
+            HostCommand::Setting(_) => panic!("fixture emitted an unexpected setting command"),
         })
         .collect();
     state.apply_batch(&owner, &component_commands).unwrap();
@@ -2203,6 +2210,7 @@ fn principal_storage_mutation_is_deferred_and_principal_attributed() {
             HostCommand::PrincipalStorage(command) => command,
             HostCommand::Component(_) => panic!("fixture emitted an unexpected component command"),
             HostCommand::PublishEvent(_) => panic!("fixture emitted an unexpected event command"),
+            HostCommand::Setting(_) => panic!("fixture emitted an unexpected setting command"),
         })
         .collect();
 

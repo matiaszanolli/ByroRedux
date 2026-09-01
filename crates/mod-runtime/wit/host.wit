@@ -25,6 +25,7 @@ interface context {
     sdk-version: func() -> string;
     service-version: func(service: string) -> option<string>;
     engine-setting: func(key: string) -> option<setting-value>;
+    queue-own-setting: func(declaration-index: u32, value: setting-value);
 }
 
 /// Principal-owned, bounded custom/mod event publication and callback-local
