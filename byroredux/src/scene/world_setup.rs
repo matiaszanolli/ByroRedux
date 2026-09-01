@@ -962,7 +962,10 @@ pub(crate) fn assemble_exterior_streaming(
         &wctx.record_index,
     )));
     world.insert_resource(
-        cell_loader::load_order::GlobalFormIdResolver::from_load_order(&wctx.load_order),
+        cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records(
+            &wctx.load_order,
+            &wctx.record_index.record_types,
+        ),
     );
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);

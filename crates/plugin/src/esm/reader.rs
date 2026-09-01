@@ -13,10 +13,15 @@
 
 use anyhow::{ensure, Context, Result};
 use flate2::read::ZlibDecoder;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::rc::Rc;
 
 /// Record flag: data is zlib-compressed.
 const FLAG_COMPRESSED: u32 = 0x00040000;
+/// Record flag: this override deletes the inherited authored record.
+const FLAG_DELETED: u32 = 0x0000_0020;
 
 /// Largest inflation multiple a compressed record may claim over its own
 /// compressed byte count (#3399).
@@ -341,6 +346,14 @@ pub struct EsmReader<'a> {
     /// according to this plugin's position in the global load order.
     /// See [`FormIdRemap`] for the mapping rules.
     form_id_remap: Option<FormIdRemap>,
+    record_type_trace: Option<Rc<RefCell<RecordTypeTrace>>>,
+}
+
+/// Optional generic record-header trace used to build read-only metadata.
+#[derive(Debug, Default)]
+pub struct RecordTypeTrace {
+    pub record_types: HashMap<u32, [u8; 4]>,
+    pub deleted_records: HashSet<u32>,
 }
 
 /// FormID mod-index remap rule for a single plugin in a load order.
@@ -559,6 +572,7 @@ impl<'a> EsmReader<'a> {
             pos: 0,
             variant: EsmVariant::detect(data),
             form_id_remap: None,
+            record_type_trace: None,
         }
     }
 
@@ -570,6 +584,7 @@ impl<'a> EsmReader<'a> {
             pos: 0,
             variant,
             form_id_remap: None,
+            record_type_trace: None,
         }
     }
 
@@ -578,6 +593,13 @@ impl<'a> EsmReader<'a> {
     /// load order. See [`FormIdRemap`] for the rules. See #445.
     pub fn set_form_id_remap(&mut self, remap: FormIdRemap) {
         self.form_id_remap = Some(remap);
+    }
+
+    /// Trace remapped record identities as existing parsers consume headers.
+    pub fn enable_record_type_trace(&mut self) -> Rc<RefCell<RecordTypeTrace>> {
+        let trace = Rc::new(RefCell::new(RecordTypeTrace::default()));
+        self.record_type_trace = Some(Rc::clone(&trace));
+        trace
     }
 
     /// Get a clone of the installed FormID remap (if any).
@@ -648,6 +670,18 @@ impl<'a> EsmReader<'a> {
         // load-order so multi-plugin maps stay collision-free. No-op
         // when no remap is set (single-plugin load).
         let form_id = self.remap_form_id(form_id_raw);
+        if form_id != 0 {
+            if let Some(trace) = &self.record_type_trace {
+                let mut trace = trace.borrow_mut();
+                if flags & FLAG_DELETED != 0 {
+                    trace.record_types.remove(&form_id);
+                    trace.deleted_records.insert(form_id);
+                } else {
+                    trace.deleted_records.remove(&form_id);
+                    trace.record_types.insert(form_id, record_type);
+                }
+            }
+        }
         Ok(RecordHeader {
             record_type,
             data_size,

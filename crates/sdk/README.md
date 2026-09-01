@@ -12,6 +12,8 @@ The current public surface includes:
   lets hosts reject stale references without exposing ECS slots.
 - `FormRef` is the load-order-independent, save-safe identity used to rebind
   authored entities after a world replacement.
+- `ContentCatalog` is a bounded snapshot of loaded regular/light plugins,
+  their declared master edges, and portable record-existence/type metadata.
 - `EntityProjection` and `WorldTransform` are finite, bounded, renderer-neutral
   snapshots of callback-visible entities; they expose no ECS slot or pointer.
 - Validated extension, principal, capability, service, event, and schema IDs

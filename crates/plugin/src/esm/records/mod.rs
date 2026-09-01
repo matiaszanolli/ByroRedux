@@ -202,6 +202,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // re-deriving from a HEDR they no longer have.
     index.game = game;
     index.character_rules = character_rules_profile(game, file_header.hedr_version);
+    let record_type_trace = reader.enable_record_type_trace();
     log::info!(
         "ESM file: {} records, {} master files",
         file_header.record_count,
@@ -492,6 +493,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
         }
     }
+    drop(reader);
+    let record_type_trace = std::rc::Rc::try_unwrap(record_type_trace)
+        .expect("record metadata trace has one owner after ESM walk")
+        .into_inner();
+    index.record_types = record_type_trace.record_types;
+    index.deleted_record_metadata = record_type_trace.deleted_records;
 
     // Resolve LTEX → texture path via TXST indirection.
     // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.

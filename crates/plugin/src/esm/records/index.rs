@@ -19,7 +19,7 @@ use super::{
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SounRecord, SpelRecord, TermRecord,
     TreeRecord, WatrRecord, WeatherRecord,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// One entry in the [`EsmIndex::categories`] table: a display label, count
 /// accessor, and merge operation. Keeping all three together makes the table
@@ -69,6 +69,11 @@ pub struct EsmIndex {
     /// Canonical character policy selected once from the source master header.
     /// Unlike `game`, this deliberately distinguishes FO3 from New Vegas.
     pub character_rules: byroredux_core::character::CharacterRulesProfile,
+    /// Remapped FormID → four-byte signature for every consumed record.
+    pub record_types: HashMap<u32, [u8; 4]>,
+    /// Tombstones retained across plugin merges so deleted overrides remove
+    /// metadata inherited from an earlier master.
+    pub deleted_record_metadata: HashSet<u32>,
     pub cells: EsmCellIndex,
     pub items: HashMap<u32, ItemRecord>,
     /// Fallout 4 / 76 OMOD FormID → optional loose MISC item (`LNAM`).
@@ -898,6 +903,17 @@ impl EsmIndex {
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(std::mem::take(&mut other.cells));
 
+        let deleted_record_metadata = std::mem::take(&mut other.deleted_record_metadata);
+        for form_id in &deleted_record_metadata {
+            self.record_types.remove(form_id);
+        }
+        for form_id in other.record_types.keys() {
+            self.deleted_record_metadata.remove(form_id);
+        }
+        self.record_types
+            .extend(std::mem::take(&mut other.record_types));
+        self.deleted_record_metadata.extend(deleted_record_metadata);
+
         // Every top-level record category is merged by the same table that
         // drives `total()` and `category_breakdown()`. Adding a category can
         // no longer silently omit it from load-order folding (#2907).
@@ -1209,8 +1225,11 @@ mod tests {
     #[test]
     fn every_index_map_is_a_category_or_a_recorded_exclusion() {
         /// Maps that are deliberately NOT record counts, each with the reason
-        /// a reader would otherwise have to reconstruct. Empty today.
-        const EXCLUSIONS: &[(&str, &str)] = &[];
+        /// a reader would otherwise have to reconstruct.
+        const EXCLUSIONS: &[(&str, &str)] = &[(
+            "record_types",
+            "generic metadata duplicates typed record maps and must not inflate record totals",
+        )];
 
         const INDEX_RS: &str = include_str!("index.rs");
         let struct_start = INDEX_RS
@@ -1281,6 +1300,24 @@ mod tests {
                  from a deliberate choice (#2990, following #1773 / #2907)"
             );
         }
+    }
+
+    #[test]
+    fn record_metadata_merge_honors_delete_then_readd() {
+        let mut merged = EsmIndex::default();
+        merged.record_types.insert(0x1234, *b"WEAP");
+
+        let mut deletion = EsmIndex::default();
+        deletion.deleted_record_metadata.insert(0x1234);
+        merged.merge_from(deletion);
+        assert!(!merged.record_types.contains_key(&0x1234));
+        assert!(merged.deleted_record_metadata.contains(&0x1234));
+
+        let mut readd = EsmIndex::default();
+        readd.record_types.insert(0x1234, *b"ARMO");
+        merged.merge_from(readd);
+        assert_eq!(merged.record_types.get(&0x1234), Some(b"ARMO"));
+        assert!(!merged.deleted_record_metadata.contains(&0x1234));
     }
 
     #[test]

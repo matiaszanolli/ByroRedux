@@ -1,6 +1,6 @@
 //! Bounded discovery of loaded content sources and portable authored forms.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -11,6 +11,8 @@ use crate::identity::FormRef;
 pub const MAX_LOADED_PLUGINS: usize = 4_350;
 /// Portable upper bound for one plugin basename.
 pub const MAX_PLUGIN_NAME_BYTES: usize = 260;
+/// Maximum record metadata rows retained in one callback snapshot.
+pub const MAX_RECORD_METADATA: usize = 4_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -28,6 +30,21 @@ pub struct PluginInfo {
     kind: PluginKind,
     #[serde(default)]
     dependencies: Vec<u32>,
+    #[serde(default)]
+    records: BTreeMap<u32, RecordInfo>,
+}
+
+/// Portable, parser-independent metadata for one authored record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordInfo {
+    record_type: [u8; 4],
+}
+
+impl RecordInfo {
+    pub const fn record_type(self) -> [u8; 4] {
+        self.record_type
+    }
 }
 
 impl PluginInfo {
@@ -49,6 +66,7 @@ impl PluginInfo {
             source,
             kind,
             dependencies: Vec::new(),
+            records: BTreeMap::new(),
         })
     }
 
@@ -68,6 +86,10 @@ impl PluginInfo {
     pub fn dependencies(&self) -> &[u32] {
         &self.dependencies
     }
+
+    pub fn record(&self, local: u32) -> Option<RecordInfo> {
+        self.records.get(&local).copied()
+    }
 }
 
 /// Immutable callback snapshot of the active game-content load order.
@@ -82,21 +104,41 @@ impl ContentCatalog {
     }
 
     pub fn new_with_dependencies(
+        plugins: Vec<PluginInfo>,
+        dependencies: Vec<Vec<u32>>,
+    ) -> Result<Self, ContentCatalogError> {
+        let records = vec![Vec::new(); plugins.len()];
+        Self::new_with_metadata(plugins, dependencies, records)
+    }
+
+    pub fn new_with_metadata(
         mut plugins: Vec<PluginInfo>,
         dependencies: Vec<Vec<u32>>,
+        records: Vec<Vec<(u32, [u8; 4])>>,
     ) -> Result<Self, ContentCatalogError> {
         if plugins.len() > MAX_LOADED_PLUGINS {
             return Err(ContentCatalogError::PluginBudgetExceeded {
                 maximum: MAX_LOADED_PLUGINS,
             });
         }
-        if dependencies.len() != plugins.len() {
-            return Err(ContentCatalogError::DependencyShapeMismatch);
+        if dependencies.len() != plugins.len() || records.len() != plugins.len() {
+            return Err(ContentCatalogError::MetadataShapeMismatch);
+        }
+        let total_records = records
+            .iter()
+            .try_fold(0usize, |total, records| total.checked_add(records.len()));
+        if total_records.is_none_or(|total| total > MAX_RECORD_METADATA) {
+            return Err(ContentCatalogError::RecordBudgetExceeded {
+                maximum: MAX_RECORD_METADATA,
+            });
         }
         let mut names = BTreeSet::new();
         let mut sources = BTreeSet::new();
-        for (plugin_index, (plugin, plugin_dependencies)) in
-            plugins.iter_mut().zip(dependencies).enumerate()
+        for (plugin_index, ((plugin, plugin_dependencies), plugin_records)) in plugins
+            .iter_mut()
+            .zip(dependencies)
+            .zip(records)
+            .enumerate()
         {
             let folded = plugin.name.to_ascii_lowercase();
             if !names.insert(folded) {
@@ -125,6 +167,35 @@ impl ContentCatalog {
                 }
             }
             plugin.dependencies = plugin_dependencies;
+            for (local, record_type) in plugin_records {
+                let valid_local = local != 0
+                    && match plugin.kind {
+                        PluginKind::Regular => local <= 0x00ff_ffff,
+                        PluginKind::Light => local <= 0x0000_0fff,
+                    };
+                let valid_type = record_type.iter().all(|byte| {
+                    byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_'
+                });
+                if !valid_local || !valid_type {
+                    return Err(ContentCatalogError::InvalidRecordMetadata {
+                        plugin: u32::try_from(plugin_index)
+                            .expect("content catalog is bounded below u32::MAX"),
+                        local,
+                        record_type,
+                    });
+                }
+                if plugin
+                    .records
+                    .insert(local, RecordInfo { record_type })
+                    .is_some()
+                {
+                    return Err(ContentCatalogError::DuplicateRecordMetadata {
+                        plugin: u32::try_from(plugin_index)
+                            .expect("content catalog is bounded below u32::MAX"),
+                        local,
+                    });
+                }
+            }
         }
         Ok(Self(plugins))
     }
@@ -146,6 +217,14 @@ impl ContentCatalog {
             .dependencies()
             .get(index as usize)
             .copied()
+    }
+
+    pub fn record(&self, form: FormRef) -> Option<RecordInfo> {
+        let plugin = self
+            .0
+            .iter()
+            .find(|plugin| plugin.source == form.source())?;
+        plugin.record(form.local())
     }
 
     pub fn find(&self, name: &str) -> Option<(u32, &PluginInfo)> {
@@ -189,16 +268,26 @@ pub enum ContentCatalogError {
     InvalidPluginName(String),
     #[error("loaded plugin count exceeds {maximum}")]
     PluginBudgetExceeded { maximum: usize },
+    #[error("record metadata count exceeds {maximum}")]
+    RecordBudgetExceeded { maximum: usize },
     #[error("loaded plugin basename is duplicated case-insensitively: {0}")]
     DuplicatePluginName(String),
     #[error("loaded plugins repeat stable source identity {0:02x?}")]
     DuplicateSource([u8; 16]),
-    #[error("dependency lists must be parallel with loaded plugins")]
-    DependencyShapeMismatch,
+    #[error("dependency and record metadata lists must be parallel with loaded plugins")]
+    MetadataShapeMismatch,
     #[error("plugin {plugin} has invalid forward or self dependency {dependency}")]
     InvalidDependency { plugin: u32, dependency: u32 },
     #[error("plugin {plugin} repeats dependency {dependency}")]
     DuplicateDependency { plugin: u32, dependency: u32 },
+    #[error("plugin {plugin} has invalid metadata for local {local:#x} type {record_type:?}")]
+    InvalidRecordMetadata {
+        plugin: u32,
+        local: u32,
+        record_type: [u8; 4],
+    },
+    #[error("plugin {plugin} repeats record metadata for local {local:#x}")]
+    DuplicateRecordMetadata { plugin: u32, local: u32 },
 }
 
 #[cfg(test)]
@@ -275,5 +364,28 @@ mod tests {
             ),
             Err(ContentCatalogError::InvalidDependency { .. })
         ));
+    }
+
+    #[test]
+    fn record_metadata_is_portable_typed_and_source_scoped() {
+        let catalog = ContentCatalog::new_with_metadata(
+            vec![
+                plugin("Skyrim.esm", 1, PluginKind::Regular),
+                plugin("Creation.esl", 2, PluginKind::Light),
+            ],
+            vec![vec![], vec![0]],
+            vec![vec![(0x1234, *b"WEAP")], vec![(0xabc, *b"STAT")]],
+        )
+        .unwrap();
+        assert_eq!(
+            catalog
+                .record(FormRef::new(2_u128.to_be_bytes(), 0xabc))
+                .unwrap()
+                .record_type(),
+            *b"STAT"
+        );
+        assert!(catalog
+            .record(FormRef::new(1_u128.to_be_bytes(), 0xabc))
+            .is_none());
     }
 }

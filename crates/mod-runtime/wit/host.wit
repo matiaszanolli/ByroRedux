@@ -181,11 +181,17 @@ interface content-catalog {
         kind: plugin-kind,
     }
 
+    record record-info {
+        // Four ASCII signature bytes packed in network order (for example WEAP).
+        record-type: u32,
+    }
+
     plugin-count: func() -> u32;
     plugin-at: func(index: u32) -> option<plugin-info>;
     find-plugin: func(name: string) -> option<u32>;
     dependency-count: func(plugin: u32) -> option<u32>;
     dependency-at: func(plugin: u32, index: u32) -> option<u32>;
+    get-record: func(form: form-ref) -> option<record-info>;
     qualify-form: func(plugin: string, local: u32) -> option<form-ref>;
 }
 

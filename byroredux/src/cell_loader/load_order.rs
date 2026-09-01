@@ -116,7 +116,15 @@ pub(crate) struct GlobalFormIdResolver {
 }
 
 impl GlobalFormIdResolver {
+    #[cfg(test)]
     pub(crate) fn from_load_order(load_order: &LoadOrder) -> Self {
+        Self::from_load_order_with_records(load_order, &HashMap::new())
+    }
+
+    pub(crate) fn from_load_order_with_records(
+        load_order: &LoadOrder,
+        record_types: &HashMap<u32, [u8; 4]>,
+    ) -> Self {
         let owners = load_order
             .slots
             .iter()
@@ -128,6 +136,18 @@ impl GlobalFormIdResolver {
                     .map(|name| PluginId::from_filename(name)),
             )
             .collect::<Vec<_>>();
+        let mut records = vec![Vec::new(); load_order.names.len()];
+        for (form_id, record_type) in record_types {
+            let slot = global_slot_of(*form_id);
+            let Some(position) = load_order.slots.iter().position(|owner| *owner == slot) else {
+                continue;
+            };
+            let local = match slot {
+                esm::reader::GlobalSlot::Regular(_) => form_id & 0x00ff_ffff,
+                esm::reader::GlobalSlot::Light(_) => form_id & 0x0000_0fff,
+            };
+            records[position].push((local, *record_type));
+        }
         let plugins = load_order
             .names
             .iter()
@@ -141,7 +161,7 @@ impl GlobalFormIdResolver {
             })
             .collect::<Result<Vec<_>, _>>()
             .and_then(|plugins| {
-                ContentCatalog::new_with_dependencies(plugins, load_order.dependencies.clone())
+                ContentCatalog::new_with_metadata(plugins, load_order.dependencies.clone(), records)
             });
         let content_catalog = match plugins {
             Ok(catalog) => Arc::new(catalog),
@@ -576,7 +596,11 @@ mod tests {
             ],
             vec![vec![], vec![0]],
         );
-        let catalog = GlobalFormIdResolver::from_load_order(&order).content_catalog();
+        let catalog = GlobalFormIdResolver::from_load_order_with_records(
+            &order,
+            &HashMap::from([(0xFE00_5ABC, *b"STAT")]),
+        )
+        .content_catalog();
 
         assert_eq!(catalog.plugin(0).unwrap().name(), "Skyrim.esm");
         assert_eq!(catalog.plugin(0).unwrap().kind(), PluginKind::Regular);
@@ -584,6 +608,16 @@ mod tests {
         assert_eq!(catalog.plugin(1).unwrap().kind(), PluginKind::Light);
         assert_eq!(catalog.find("CREATION.ESL").unwrap().0, 1);
         assert_eq!(catalog.plugin(1).unwrap().dependencies(), &[0]);
+        assert_eq!(
+            catalog
+                .record(byroredux_sdk::identity::FormRef::new(
+                    PluginId::from_filename("Creation.esl").0.to_be_bytes(),
+                    0xabc,
+                ))
+                .unwrap()
+                .record_type(),
+            *b"STAT"
+        );
         assert_eq!(
             catalog.qualify_form("creation.esl", 0xabc),
             Some(byroredux_sdk::identity::FormRef::new(
@@ -749,6 +783,7 @@ mod tests {
         let path_str = esm_path.to_str().unwrap();
         let (index, _order) = parse_record_indexes_in_load_order(&[path_str]).unwrap();
         let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(index.record_types.get(&0xBEEF), Some(b"WEAP"));
         assert_eq!(
             item.common.full_name, "Iron Sword",
             "the load-order wiring must install the .STRINGS guard so the \

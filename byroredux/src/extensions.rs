@@ -4642,7 +4642,10 @@ mod tests {
             ],
         );
         let resolver =
-            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order);
+            crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records(
+                &order,
+                &std::collections::HashMap::from([(0xFE00_3ABC, *b"STAT")]),
+            );
         let slot = ExtensionHostSlot::initialize_default();
         let host = slot.host().unwrap();
         let mut world = World::new();
@@ -4655,6 +4658,16 @@ mod tests {
         assert_eq!(host.content_catalog.len(), 2);
         assert_eq!(host.content_catalog.plugin(0).unwrap().name(), "Skyrim.esm");
         assert_eq!(host.content_catalog.find("CREATION.ESL").unwrap().0, 1);
+        let form = byroredux_sdk::identity::FormRef::new(
+            byroredux_core::form_id::PluginId::from_filename("Creation.esl")
+                .0
+                .to_be_bytes(),
+            0xabc,
+        );
+        assert_eq!(
+            host.content_catalog.record(form).unwrap().record_type(),
+            *b"STAT"
+        );
     }
 
     #[test]

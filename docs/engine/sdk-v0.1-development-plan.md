@@ -56,10 +56,13 @@ deferred mutation and save participation; schema
 migrators, additional projection families/events, and status tooling remain
 open. The first read-only content service is also live: capability-gated guests
 can enumerate the active regular/light plugin order, look up basenames
-case-insensitively, and qualify bounded source-local IDs into portable
-`FormRef` values. The executable projects this immutable snapshot from the
-same resolver that owns live global FormID translation before callbacks run;
-record existence and metadata queries remain open.
+case-insensitively, inspect each plugin's ordered TES4 master dependencies,
+qualify bounded source-local IDs into portable `FormRef` values, and query
+whether a consumed authored record exists together with its four-byte record
+signature. The executable projects this immutable, bounded snapshot from the
+same resolver and parser walk that own live global FormID translation before
+callbacks run; override deletions and later re-additions follow load-order
+semantics without exposing numeric global FormIDs.
 Manifest-declared console commands are now engine-owned as well: granted
 packages publish only under `ext.<extension-id>.*`, route to an authenticated
 component/declaration index, receive bounded callback-local arguments, return

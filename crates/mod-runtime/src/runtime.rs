@@ -15,7 +15,8 @@ use byroredux_sdk::event::{
     SessionEvent, SessionPhase, UpdateEvent,
 };
 use byroredux_sdk::identity::{
-    CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, PrincipalId, ServiceId, StorageKey,
+    CapabilityId, ComponentId, EntityRef, EventId, ExtensionId, FormRef, PrincipalId, ServiceId,
+    StorageKey,
 };
 use byroredux_sdk::manifest::{ComponentSchemaDeclaration, ExtensionManifest};
 use byroredux_sdk::projection::EntityProjection;
@@ -1595,6 +1596,22 @@ impl content_catalog::Host for HostState {
         Ok(self.content_catalog.dependency(plugin, index))
     }
 
+    fn get_record(
+        &mut self,
+        form: state::FormRef,
+    ) -> wasmtime::Result<Option<content_catalog::RecordInfo>> {
+        self.require_content_catalog_read()?;
+        let mut source = [0_u8; 16];
+        source[..8].copy_from_slice(&form.source_high.to_be_bytes());
+        source[8..].copy_from_slice(&form.source_low.to_be_bytes());
+        Ok(self
+            .content_catalog
+            .record(FormRef::new(source, form.local))
+            .map(|record| content_catalog::RecordInfo {
+                record_type: u32::from_be_bytes(record.record_type()),
+            }))
+    }
+
     fn qualify_form(
         &mut self,
         plugin: String,
@@ -2092,7 +2109,7 @@ mod projection_tests {
             principal_storage: BTreeMap::new(),
             entity_projections: BTreeMap::new(),
             content_catalog: Arc::new(
-                ContentCatalog::new_with_dependencies(
+                ContentCatalog::new_with_metadata(
                     vec![
                         PluginInfo::new("Skyrim.esm", 1_u128.to_be_bytes(), PluginKind::Regular)
                             .unwrap(),
@@ -2100,6 +2117,7 @@ mod projection_tests {
                             .unwrap(),
                     ],
                     vec![vec![], vec![0]],
+                    vec![vec![(0x1234, *b"WEAP")], vec![(0xabc, *b"STAT")]],
                 )
                 .unwrap(),
             ),
@@ -2156,6 +2174,17 @@ mod projection_tests {
             <HostState as content_catalog::Host>::dependency_at(&mut state, 1, 1).unwrap(),
             None
         );
+        let record = <HostState as content_catalog::Host>::get_record(
+            &mut state,
+            state::FormRef {
+                source_high: 0,
+                source_low: 2,
+                local: 0xabc,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(record.record_type, u32::from_be_bytes(*b"STAT"));
         let form = <HostState as content_catalog::Host>::qualify_form(
             &mut state,
             "creation.esl".to_owned(),
@@ -2180,6 +2209,16 @@ mod projection_tests {
         assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
         let error =
             <HostState as content_catalog::Host>::dependency_count(&mut denied, 1).unwrap_err();
+        assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
+        let error = <HostState as content_catalog::Host>::get_record(
+            &mut denied,
+            state::FormRef {
+                source_high: 0,
+                source_low: 2,
+                local: 0xabc,
+            },
+        )
+        .unwrap_err();
         assert!(error.to_string().contains(CONTENT_CATALOG_READ_CAPABILITY));
         assert!(<HostState as content_catalog::Host>::find_plugin(
             &mut state,
