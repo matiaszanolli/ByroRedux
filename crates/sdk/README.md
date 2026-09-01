@@ -60,6 +60,8 @@ The current public surface includes:
   JContainers, input, event, and UI calls as engine-native, mapped to a
   semantic service, or explicitly unsupported with migration guidance. It
   never treats a recognized provider as proof that an unknown function works.
+  The scripting crate exposes the same catalog over decoded PEX and parsed
+  Papyrus source, plus an `extender_preflight` example for mixed loose inputs.
 - `ExtensionComponentStore` registers typed schemas under authenticated
   principals and applies bounded command batches atomically. Identical schema
   IDs owned by different principals cannot observe or mutate one another.

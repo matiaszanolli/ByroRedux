@@ -683,6 +683,19 @@ returning byte spans and one-based source lines in source order. This gives
 authoring and porting tools the same compatibility policy before a `.pex` is
 compiled.
 
+Loose scripts can be checked without launching the engine:
+
+```bash
+cargo run -p byroredux-scripting --example extender_preflight -- \
+  path/to/source.psc path/to/compiled.pex
+```
+
+The tool accepts multiple mixed inputs, prints each attributed finding and an
+aggregate summary, exits `1` for input/parse errors, and exits `2` when an
+unsupported or malformed call makes the compatibility gate fail. Mapped calls
+remain visible but do not fail the command because they have a documented
+engine-service migration target.
+
 ### Fragments → Triggered Systems
 
 Papyrus fragments are inline script snippets that run at specific moments:
