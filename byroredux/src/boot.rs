@@ -1678,6 +1678,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<crate::interaction::ActionBindings>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_player_entity_sync_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     // Run translated OBSE/xNVSE load-order handlers after their shared live
     // catalog snapshot is published and before transient OnLoad/OnActivate
     // markers are drained. The program component is static translated data;

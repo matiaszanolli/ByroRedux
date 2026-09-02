@@ -3797,9 +3797,20 @@ mod tests {
                 ScriptValue::String("Update.esm".to_owned()),
             ]
         );
+        let player = lower_provider_call(&expression("Game.GetPlayer()"), &catalog)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            lower_provider_call(&expression("Game.GetPlayer()"), &catalog),
-            Ok(None)
+            player.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE
+        );
+        assert!(player.arguments.is_empty());
+        assert_eq!(
+            player.result,
+            Some(ScriptResultDeclaration {
+                value_type: ScriptValueType::Entity,
+                optional: true,
+            })
         );
         let storage = lower_provider_call(
             &expression("StorageUtil.GetIntValue(None, \"Score\", -1)"),

@@ -109,9 +109,9 @@ attack/block flags into typed handler locals. The subset supports scalar locals,
 literal or typed scalar/event-local arguments, assignments, and bounded boolean
 branches with negation, short-circuit logical operators,
 same-type boolean/integer/float comparisons,
-and string equality/inequality. Arithmetic, string concatenation, object
-expressions, broader events, other latent primitives, and dynamic object
-dispatch remain open. Provider-bearing
+and string equality/inequality. Arithmetic and string concatenation execute
+through the engine provider host, while object expressions, broader events,
+other latent primitives, and dynamic object dispatch remain open. Provider-bearing
 handlers support bounded `Utility.Wait` continuations that preserve locals and
 ordered branch/enclosing tails across save/load. Restored calls are reconciled
 against the live provider catalog before dispatch. Archive-backed VMAD handlers
@@ -993,7 +993,9 @@ four scalar `OnHit` attack/block parameters are projected under their authored
   `GetFormFromFile`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
   `GetLightModByName`, `GetLightModName`, `GetModDependencyCount`,
-  `GetLightModDependencyCount`, and `GetNthLightModDependency`. They need
+  `GetLightModDependencyCount`, and `GetNthLightModDependency`. `Game.GetPlayer()`
+  is also engine-owned: it returns the canonical player body as a stable
+  opaque entity handle, or `None` when no player body exists. These aliases need
   neither a Wasm package nor an extender DLL and preserve regular/light SKSE
   index encodings.**
 
@@ -1483,6 +1485,14 @@ oversized concatenations fail closed. The new assignment/value nodes persist in
 save format 17, which rejects older suspended tails rather than changing their
 results on resume. Object expressions and additional latent primitives remain
 future substrate work.
+
+Checkpoint: `feat(sdk): integrate engine player identity alias`.
+
+`Game.GetPlayer()` now lowers as a nullable entity result and executes through
+the engine-owned provider host. A late-stage synchronization publishes the
+canonical `systems::PlayerEntity` body before callbacks; the host converts it
+to a stable generational `EntityRef`, returns `None` for flycam/no-player
+worlds, and rejects malformed arguments without exposing raw ECS IDs.
 
 ### 14.4 Exit gate
 

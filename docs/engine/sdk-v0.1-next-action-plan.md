@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `97ef46a1` (`feat(sdk): execute typed provider expressions`)
+Checkpoint: pending (`feat(sdk): integrate engine player identity alias`)
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
@@ -29,10 +29,14 @@ unsupported call.
 
 ### 2. Finish the provider execution substrate
 
-- **Delivered in this slice:** typed integer/float arithmetic and string
-  concatenation now lower from source and execute through the engine provider
-  host, including nested provider results and continuation-safe assignments.
-  Save format v17 records the new expression nodes.
+- **Delivered:** typed integer/float arithmetic and string concatenation now
+  lower from source and execute through the engine provider host, including
+  nested provider results and continuation-safe assignments. Save format v17
+  records the new expression nodes.
+- **Delivered in this slice:** `Game.GetPlayer()` now resolves through the
+  engine's canonical `PlayerEntity` resource and the same stable generational
+  entity-handle registry used by sandbox projections. No-player/flycam worlds
+  return `None`, and malformed arguments fail closed.
 - Continue with object expressions and the next justified latent primitive.
 - Add broader event coverage only when the canonical ECS payload and save
   behavior exist; preserve guard-free guest entry and whole-handler rejection

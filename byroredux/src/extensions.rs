@@ -46,21 +46,21 @@ use byroredux_sdk::compatibility::{
     PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
     PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
     PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
-    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
-    PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE, PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
-    PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
-    PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
-    PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
+    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_GET_PLAYER_ROUTE,
+    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
+    PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
+    PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE, PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -354,6 +354,7 @@ pub(crate) struct ExtensionHost {
     papyrus_providers: PapyrusProviderCatalog,
     input_bindings: Vec<PapyrusInputBinding>,
     ui_menu_snapshot: PapyrusUiMenuSnapshot,
+    player_entity: Option<EntityId>,
 }
 
 impl ExtensionHost {
@@ -392,6 +393,7 @@ impl ExtensionHost {
             papyrus_providers: PapyrusProviderCatalog::engine_compatibility(),
             input_bindings: Vec::new(),
             ui_menu_snapshot: PapyrusUiMenuSnapshot::default(),
+            player_entity: None,
         })
     }
 
@@ -771,6 +773,10 @@ impl ExtensionHost {
             return self.invoke_mod_event(principal, qualified_name, arguments);
         }
         let value = match (qualified_name, arguments) {
+            (PAPYRUS_GAME_GET_PLAYER_ROUTE, []) => match self.player_entity {
+                Some(entity) => ScriptValue::Entity(self.handles.handle_for(entity)?),
+                None => ScriptValue::None,
+            },
             (PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE, [ScriptValue::String(control)]) => {
                 ScriptValue::Integer(i64::from(adapt_papyrus_input_get_mapped_key(
                     &self.input_bindings,
@@ -861,6 +867,12 @@ impl ExtensionHost {
                 *mod_index,
                 *dependency_index,
             ))),
+            (route, _) if route == PAPYRUS_GAME_GET_PLAYER_ROUTE => {
+                return Err(ExtensionHostError::ScriptFunctionUnavailable {
+                    function: qualified_name.to_owned(),
+                    reason: "engine player alias received invalid typed arguments".to_owned(),
+                });
+            }
             (route, _) if route.starts_with("byro.content.catalog.") => {
                 return Err(ExtensionHostError::ScriptFunctionUnavailable {
                     function: qualified_name.to_owned(),
@@ -2202,6 +2214,10 @@ impl ExtensionHost {
         if self.ui_menu_snapshot != snapshot {
             self.ui_menu_snapshot = snapshot;
         }
+    }
+
+    fn set_player_entity(&mut self, entity: Option<EntityId>) {
+        self.player_entity = entity;
     }
 
     fn set_faction_relationships(&mut self, relationships: Arc<FactionRelationshipCatalog>) {
@@ -4218,6 +4234,28 @@ pub(crate) fn extension_input_bindings_sync_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     host.set_input_bindings(bindings);
+}
+
+/// Publish the process-lifetime engine player body to the provider host.
+///
+/// `Game.GetPlayer()` returns the same generational opaque handle as other
+/// entity projections. Keeping this synchronization in the late stage means
+/// fly-camera/test worlds correctly expose `None`, while a recreated player
+/// body is never captured by a long-lived callback closure.
+pub(crate) fn extension_player_entity_sync_system(world: &World, _dt: f32) {
+    let player = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|resource| resource.0);
+    let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+        return;
+    };
+    let Some(host) = slot.host() else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    host.set_player_entity(player);
 }
 
 /// Publish the active engine-owned menu snapshot before provider callbacks run.
@@ -7800,6 +7838,66 @@ mod tests {
             .unwrap(),
             ScriptValue::String(String::new())
         );
+    }
+
+    #[test]
+    fn game_get_player_returns_stable_engine_entity_handle_or_none() {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(None, PAPYRUS_GAME_GET_PLAYER_ROUTE, &[])
+                .unwrap(),
+            ScriptValue::None
+        );
+
+        host.set_player_entity(Some(41));
+        let first = host
+            .invoke_owned_papyrus_provider(None, PAPYRUS_GAME_GET_PLAYER_ROUTE, &[])
+            .unwrap();
+        let second = host
+            .invoke_owned_papyrus_provider(None, PAPYRUS_GAME_GET_PLAYER_ROUTE, &[])
+            .unwrap();
+        let ScriptValue::Entity(handle) = first else {
+            panic!("Game.GetPlayer should return an entity handle when a player exists");
+        };
+        assert_eq!(second, ScriptValue::Entity(handle));
+        assert_eq!(host.handles.resolve(handle), Some(41));
+
+        host.set_player_entity(None);
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(None, PAPYRUS_GAME_GET_PLAYER_ROUTE, &[])
+                .unwrap(),
+            ScriptValue::None
+        );
+        assert!(matches!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_GAME_GET_PLAYER_ROUTE,
+                &[ScriptValue::Integer(1)]
+            ),
+            Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn player_entity_sync_publishes_the_live_engine_body() {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(slot);
+
+        extension_player_entity_sync_system(&world, 0.0);
+
+        let mut host = host.lock().unwrap();
+        let value = host
+            .invoke_owned_papyrus_provider(None, PAPYRUS_GAME_GET_PLAYER_ROUTE, &[])
+            .unwrap();
+        let ScriptValue::Entity(handle) = value else {
+            panic!("player sync should expose an entity handle");
+        };
+        assert_eq!(host.handles.resolve(handle), Some(player));
     }
 
     #[test]

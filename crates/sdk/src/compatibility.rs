@@ -16,7 +16,7 @@ use crate::script_function::{
 };
 use crate::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, INPUT_SERVICE,
-    LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE, UI_SERVICE,
+    LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE, UI_SERVICE, WORLD_PROJECTION_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,8 +175,9 @@ pub struct SourceAlias {
 pub const LEGACY_OBSCRIPT_PLUGIN_LIMIT: usize = 255;
 pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
 
-/// Engine routes backing SKSE's content-discovery extensions on `Game`.
+/// Engine routes backing SKSE's `Game` compatibility aliases.
 pub const PAPYRUS_GAME_GET_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-mod-count";
+pub const PAPYRUS_GAME_GET_PLAYER_ROUTE: &str = "byro.world.compat.get-player";
 pub const PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE: &str = "byro.content.catalog.get-mod-by-name";
 pub const PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE: &str = "byro.content.catalog.get-form-from-file";
 pub const PAPYRUS_GAME_GET_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-mod-name";
@@ -297,6 +298,31 @@ fn papyrus_game_content_declaration(
     }
 }
 
+fn papyrus_game_entity_declaration(
+    route: &'static str,
+    id: &str,
+    function: &str,
+    description: &str,
+) -> EnginePapyrusFunctionDeclaration {
+    let mut declaration = papyrus_game_content_declaration(
+        route,
+        id,
+        function,
+        &[],
+        ScriptValueType::Entity,
+        description,
+    );
+    declaration
+        .declaration
+        .result
+        .as_mut()
+        .expect("entity compatibility declaration has a result")
+        .optional = true;
+    declaration.declaration.component =
+        ComponentId::new("world").expect("built-in player component ID is valid");
+    declaration
+}
+
 fn papyrus_input_declaration(
     route: &'static str,
     id: &str,
@@ -370,6 +396,12 @@ fn papyrus_ui_declaration(
 /// Exact SKSE `Game` functions executable through the content catalog.
 pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
     vec![
+        papyrus_game_entity_declaration(
+            PAPYRUS_GAME_GET_PLAYER_ROUTE,
+            "get-player",
+            "GetPlayer",
+            "Return the current engine player as an opaque entity handle, or None when no player body exists",
+        ),
         papyrus_game_content_declaration(
             PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
             "get-mod-count",
@@ -3487,6 +3519,7 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         && matches_ignore_ascii_case(
             function,
             &[
+                "GetPlayer",
                 "GetModCount",
                 "GetModByName",
                 "GetFormFromFile",
@@ -3503,8 +3536,16 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
     {
         return Some(native(
             ExtenderFamily::Skse,
-            CONTENT_CATALOG_SERVICE,
-            "executed by the engine content catalog with exact regular/light index semantics",
+            if function.eq_ignore_ascii_case("GetPlayer") {
+                WORLD_PROJECTION_SERVICE
+            } else {
+                CONTENT_CATALOG_SERVICE
+            },
+            if function.eq_ignore_ascii_case("GetPlayer") {
+                "executed by the engine player-identity bridge with a stable opaque entity handle"
+            } else {
+                "executed by the engine content catalog with exact regular/light index semantics"
+            },
         ));
     }
     if provider.eq_ignore_ascii_case("SKSE") {
@@ -3989,7 +4030,7 @@ mod tests {
             0
         );
         let declarations = papyrus_game_content_declarations();
-        assert_eq!(declarations.len(), 11);
+        assert_eq!(declarations.len(), 12);
         for declaration in declarations {
             declaration.declaration.validate().unwrap();
         }
@@ -4005,7 +4046,9 @@ mod tests {
                 .disposition,
             CompatibilityDisposition::Native
         );
-        assert!(classify_static_call("Game", "GetPlayer").is_none());
+        let player = classify_static_call("Game", "GetPlayer").unwrap();
+        assert_eq!(player.disposition, CompatibilityDisposition::Native);
+        assert_eq!(player.service, Some(WORLD_PROJECTION_SERVICE));
     }
 
     #[test]
