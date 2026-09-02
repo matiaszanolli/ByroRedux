@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: pending commit for the provider-expression slice
+Checkpoint: `97ef46a1` (`feat(sdk): execute typed provider expressions`)
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
