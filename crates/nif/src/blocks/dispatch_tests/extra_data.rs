@@ -756,6 +756,64 @@ fn sse_bs_distant_object_large_ref_extra_data_round_trips_false() {
 
 // ── #942 / NIF-D5-NEW-03 — BSDistantObjectInstancedNode (FO76) ──────
 
+// ── #3461 / NIF-2026-08-27-D3-01 — BSDistantObjectExtraData (FO76) ──
+
+/// FO76 header with the `BSExtraData.name` slot populated, `bsver = 155`
+/// (`#BS_F76#` per nif.xml) — the exact band this block is `versions=
+/// "#F76#"`-restricted to. `BSDistantObjectExtraData`'s own field isn't
+/// bsver-gated, only `read_extra_data_name`'s `>= 10.0.1.0` version gate
+/// applies, which every retail bsver clears — the specific value just
+/// keeps the fixture honest about which game this block belongs to.
+fn fo76_header_with_name(name: &str) -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 155,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from(name)],
+        max_string_length: name.len() as u32,
+        num_groups: 0,
+    }
+}
+
+/// Pre-#3461 this type had no dispatch arm at all — every instance fell
+/// through to `NiUnknown` and its flags word was discarded. Measured
+/// 112,716 instances across FO76's `GeneratedMeshes*` / `*UpdateMain`
+/// archives (distant-LOD `.bto` terrain meshes).
+#[test]
+fn fo76_bs_distant_object_extra_data_round_trips() {
+    let header = fo76_header_with_name("DistantLOD");
+    let mut data = Vec::new();
+    // NiExtraData.name: string-table index 0 → "DistantLOD".
+    data.extend_from_slice(&0i32.to_le_bytes());
+    // Distant Object Flags — uint, nif.xml's only own field.
+    data.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSDistantObjectExtraData",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSDistantObjectExtraData must dispatch");
+    assert_eq!(block.block_type_name(), "BSDistantObjectExtraData");
+    let extra = block
+        .as_any()
+        .downcast_ref::<extra_data::BsDistantObjectExtraData>()
+        .expect("dispatch must produce BsDistantObjectExtraData, not NiUnknown");
+    assert_eq!(extra.name.as_deref(), Some("DistantLOD"));
+    assert_eq!(extra.distant_object_flags, 0xDEAD_BEEF);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "must consume the 8-byte body exactly (4 B name index + 4 B flags)"
+    );
+}
+
 // ── #728 / NIF-D5-10 — BSCollisionQueryProxyExtraData (FO76) ─────
 
 #[test]

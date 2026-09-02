@@ -528,18 +528,7 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
     }
 
     // Pure-alias variants — parse as plain NiNode with no trailing bytes.
-    // BSFaceGenNiNode (Starfield, #727) is an unconfirmed-layout stub: the
-    // FaceGen-coefficient trailing fields are unknown, so the alias just
-    // catches the dispatch and lets `block_size` recovery skip whatever
-    // trailing bytes the real wire layout carries. Test asserts the
-    // dispatch lands on `NiNode` so the FaceMeshes.ba2 corpus stops
-    // demoting all 1,282 face NIFs to NiUnknown.
-    for type_name in [
-        "AvoidNode",
-        "NiBSAnimationNode",
-        "NiBSParticleNode",
-        "BSFaceGenNiNode",
-    ] {
+    for type_name in ["AvoidNode", "NiBSAnimationNode", "NiBSParticleNode"] {
         let mut stream = NifStream::new(&base, &header);
         let block = parse_block(type_name, &mut stream, Some(base.len() as u32))
             .unwrap_or_else(|e| panic!("{type_name} dispatch: {e}"));
@@ -549,6 +538,54 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
             .is_some());
         assert_eq!(stream.position(), base.len() as u64);
     }
+}
+
+/// #3464 / NIF-2026-08-27-D1-01 — `BSFaceGenNiNode` (Starfield,
+/// `FaceMeshes.ba2`) is no longer a bare `NiNode` alias: the wire layout
+/// carries an undocumented +2-byte tail on 100% of measured content.
+/// `parse_with_size` must dispatch to the dedicated `BsFaceGenNiNode`
+/// type and capture that tail opaquely rather than dropping it to
+/// `block_size` drift recovery.
+#[test]
+fn bs_face_gen_ni_node_captures_starfield_tail() {
+    let header = oblivion_header();
+    let base = oblivion_empty_ninode_bytes();
+
+    // `block_size` is 2 bytes larger than the NiNode base the parser
+    // actually reads — the exact +2 drift measured on real content.
+    let mut data = base.clone();
+    data.extend_from_slice(&[0xAB, 0xCD]);
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block("BSFaceGenNiNode", &mut stream, Some(data.len() as u32))
+        .expect("BSFaceGenNiNode dispatch");
+    assert_eq!(block.block_type_name(), "BSFaceGenNiNode");
+    let n = block
+        .as_any()
+        .downcast_ref::<crate::blocks::node::BsFaceGenNiNode>()
+        .expect("dispatch must produce BsFaceGenNiNode, not a plain NiNode alias");
+    assert_eq!(
+        n.starfield_tail,
+        vec![0xAB, 0xCD],
+        "the undocumented tail must be captured opaquely, not dropped"
+    );
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "must land exactly on block_size — no drift left for outer recovery"
+    );
+
+    // Without a block_size (the legacy `parse` entry point), no tail is
+    // captured and the base NiNode body still parses cleanly.
+    let mut stream = NifStream::new(&base, &header);
+    let block = parse_block("BSFaceGenNiNode", &mut stream, None)
+        .expect("BSFaceGenNiNode dispatch without block_size");
+    let n = block
+        .as_any()
+        .downcast_ref::<crate::blocks::node::BsFaceGenNiNode>()
+        .unwrap();
+    assert!(n.starfield_tail.is_empty());
+    assert_eq!(stream.position(), base.len() as u64);
 }
 
 /// Regression test for issue #160: `NiAVObject::parse` and

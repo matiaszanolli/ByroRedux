@@ -141,7 +141,12 @@ fn pre_10_1_0_106_sequence_layout_is_byte_exact() {
     // nif.xml's own defaults for the absent derived-class fields.
     assert_eq!(seq.weight, 1.0);
     assert_eq!(seq.frequency, 1.0);
-    assert_eq!(seq.cycle_type, 0, "CYCLE_CLAMP");
+    // #3437 — was `0`, decoded as CYCLE_LOOP by `CycleType::from_u32`.
+    // nif.xml's CycleType enum is CYCLE_LOOP=0 / CYCLE_REVERSE=1 /
+    // CYCLE_CLAMP=2, and CYCLE_CLAMP is the block's actual stated default.
+    assert_eq!(seq.cycle_type, 2, "CYCLE_CLAMP");
+    assert_eq!(seq.start_time, f32::MAX);
+    assert_eq!(seq.stop_time, f32::MIN);
     // #3468 — retargeted from `is_null()`. The prologue ref
     // (`until="10.1.0.103"`) is the NiSequence-side declaration of the field
     // NiControllerSequence re-declares `since="10.1.0.106"`; exactly one is
@@ -158,5 +163,54 @@ fn pre_10_1_0_106_sequence_layout_is_byte_exact() {
     assert!(
         seq.anim_note_refs.is_empty(),
         "bsver 4 carries no anim notes"
+    );
+}
+
+/// #3437 — the two-part fix must survive `import_sequence`, not just the
+/// raw parse. `cycle_type`'s corrected default (CYCLE_CLAMP=2) alone would
+/// route `duration = stop_time - start_time = FLT_MIN - FLT_MAX` (which
+/// overflows f32 range to `-inf`) into the `Clamp` cycle arm's
+/// `local_time.min(duration)`, freezing every such clip at its first tick.
+/// Both halves — the corrected `cycle_type` AND a finite `duration` — must
+/// hold together on the resulting `AnimationClip`.
+#[test]
+fn pre_10_1_0_106_sequence_yields_clamp_cycle_and_finite_duration() {
+    use crate::anim::{import_sequence, CycleType};
+    use crate::scene::NifScene;
+
+    let mut data = Vec::new();
+    push_inline_string(&mut data, "Seq");
+    push_inline_string(&mut data, "Root");
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // Text Keys ref (null)
+    data.extend_from_slice(&0u32.to_le_bytes()); // Num Controlled Blocks = 0
+
+    let header = pre_106_header();
+    let mut stream = NifStream::new(&data, &header);
+    let seq = NiControllerSequence::parse(&mut stream).expect("pre-10.1.0.106 sequence parses");
+
+    assert!(
+        seq.start_time.is_finite() && seq.stop_time.is_finite(),
+        "nif.xml's own FLT_MAX/FLT_MIN neutral defaults are themselves finite \
+         individually — only their difference overflows"
+    );
+
+    let scene = NifScene::default();
+    let clip = import_sequence(&scene, &seq);
+
+    assert_eq!(
+        clip.cycle_type,
+        CycleType::Clamp,
+        "#3437: pre-10.1.0.106 sequences must default to CYCLE_CLAMP, not Loop"
+    );
+    assert!(
+        clip.duration.is_finite(),
+        "#3437: FLT_MIN - FLT_MAX overflows to -inf; import_sequence must not \
+         let that reach the AnimationClip — got {}",
+        clip.duration
+    );
+    assert_eq!(
+        clip.duration, 0.0,
+        "a non-finite raw duration collapses to 0.0, the same neutral value \
+         every cycle arm already treats as \"no wrap / no fold\""
     );
 }

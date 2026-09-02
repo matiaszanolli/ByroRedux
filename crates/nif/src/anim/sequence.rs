@@ -17,7 +17,23 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
         .as_deref()
         .map(str::to_string)
         .unwrap_or_else(|| "unnamed".to_string());
+    // #3437 — pre-10.1.0.106 content has no `stop_time`/`start_time` fields;
+    // the parser substitutes nif.xml's own neutral defaults (`FLT_MAX` /
+    // `FLT_MIN`), but `FLT_MIN - FLT_MAX` overflows f32 range to `-inf`.
+    // Fixing the sibling `cycle_type` default (was wrongly CYCLE_LOOP=0,
+    // now CYCLE_CLAMP=2, see `blocks/controller/sequence.rs`) routes this
+    // clip into the `Clamp` cycle arm, which would otherwise freeze at
+    // `local_time.min(-inf) = -inf` on the first tick. Every cycle arm
+    // already treats a non-positive duration as "no wrap", so collapse
+    // non-finite (and negative) to `0.0` here, at the origin, rather than
+    // relying solely on `byroredux::anim_convert::sanitized_clip_duration`
+    // downstream (#3432) to catch it.
     let duration = seq.stop_time - seq.start_time;
+    let duration = if duration.is_finite() && duration > 0.0 {
+        duration
+    } else {
+        0.0
+    };
     let cycle_type = CycleType::from_u32(seq.cycle_type);
     let frequency = seq.frequency;
     let weight = seq.weight;

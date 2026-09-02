@@ -276,8 +276,40 @@ impl NifVersion {
     /// out of scope until one is added.) Old-Oblivion-and-earlier content
     /// stores the data ref directly; `since="10.1.0.104"` it is replaced
     /// by the interpolator ref. (#1337 / #2562 / #2563 / #3174)
+    ///
+    /// See also [`has_ni_sequence_prologue`](Self::has_ni_sequence_prologue)
+    /// — `NiSequence`'s own `Accum Root Name` / `Text Keys` pair sits on
+    /// this identical `until="10.1.0.103"` boundary but is a distinct
+    /// concept (unrelated to any `Data` ref), so it gets its own named
+    /// helper rather than reusing this one under a misleading name. (#3476)
     pub fn has_keyframe_controller_data(self) -> bool {
         self <= Self::V10_1_0_103
+    }
+
+    /// The `until="10.1.0.103"` pre-Gamebryo-10.1.0.104 layout `NiSequence`
+    /// / `ControlledBlock` themselves carry, gating three fields:
+    /// `NiSequence.Accum Root Name`, `NiSequence.Text Keys` (both replaced
+    /// `since="10.1.0.106"` by `NiControllerSequence`'s re-declared,
+    /// disjointly-gated same-named fields), and `ControlledBlock.Target
+    /// Name` (replaced `since="10.1.0.104"` by `Node Name`). Bit-identical
+    /// boundary to [`has_keyframe_controller_data`](Self::has_keyframe_controller_data)
+    /// but a different concept — see that method's doc. (#2345 / #3468 /
+    /// #3476)
+    pub fn has_ni_sequence_prologue(self) -> bool {
+        self <= Self::V10_1_0_103
+    }
+
+    /// nif.xml's `since="10.1.0.106"` boundary gating every field
+    /// `NiControllerSequence` (the derived class) adds beyond its
+    /// `NiSequence` base — `Weight`, `Text Keys`, `Cycle Type`,
+    /// `Frequency`, `Start`/`Stop Time`, `Manager`, `Accum Root Name` —
+    /// plus the `ControlledBlock` fields nif.xml adds at the same
+    /// version: `Interpolator` and (paired with `#BSSTREAM#`) `Priority`.
+    /// Below this version a `NiControllerSequence` is structurally just
+    /// its `NiSequence` base, and each of these `ControlledBlock` fields
+    /// is absent entirely. (#2345 / #3476)
+    pub fn has_controller_sequence_fields(self) -> bool {
+        self >= Self::V10_1_0_106
     }
 
     /// `NiInterpController.Manager Controlled` is a 1-byte `bool` present
@@ -783,6 +815,40 @@ mod tests {
         // (until=10.1.0.0, inclusive).
         let b = NifVersion::V10_1_0_0;
         assert!(b.has_mopp_offset() && b.has_skin_data_partition_ref());
+    }
+
+    /// #3476 — `has_ni_sequence_prologue` / `has_controller_sequence_fields`
+    /// pin the exact boundary the 19-raw-comparison refactor now routes
+    /// through named helpers instead. `has_ni_sequence_prologue` is
+    /// bit-identical to `has_keyframe_controller_data` (both `<=
+    /// V10_1_0_103`) but names a distinct concept.
+    #[test]
+    fn ni_sequence_and_controller_sequence_helpers() {
+        let below = NifVersion::V10_1_0_103;
+        let gap = NifVersion::V10_1_0_104; // 104/105: prologue gone, fields not yet present
+        let at = NifVersion::V10_1_0_106;
+        let above = NifVersion::V20_0_0_5;
+
+        assert!(below.has_ni_sequence_prologue());
+        assert!(!gap.has_ni_sequence_prologue());
+        assert!(!at.has_ni_sequence_prologue());
+        assert!(!above.has_ni_sequence_prologue());
+
+        assert!(!below.has_controller_sequence_fields());
+        assert!(!gap.has_controller_sequence_fields());
+        assert!(at.has_controller_sequence_fields());
+        assert!(above.has_controller_sequence_fields());
+
+        // Bit-identical to has_keyframe_controller_data at this boundary,
+        // per the doc cross-reference on both methods.
+        assert_eq!(
+            below.has_ni_sequence_prologue(),
+            below.has_keyframe_controller_data()
+        );
+        assert_eq!(
+            above.has_ni_sequence_prologue(),
+            above.has_keyframe_controller_data()
+        );
     }
 
     /// #2168 — both `NiSkinData` layout gates carry their full nif.xml

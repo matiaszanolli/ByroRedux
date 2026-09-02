@@ -956,6 +956,81 @@ impl BsWeakReferenceNode {
     }
 }
 
+// ── BSFaceGenNiNode ──────────────────────────────────────────────────
+
+/// Starfield FaceGen head node (`.esm`-side NPC facegen data,
+/// `FaceMeshes.ba2`). nif.xml has no `<niobject>` entry for this type —
+/// it was previously aliased straight to plain `NiNode::parse` as a
+/// coverage-first stub (#727).
+///
+/// #3464 / NIF-2026-08-27-D1-01 — that alias under-reads by a constant
+/// `+2` bytes on 100% of measured retail content (1,417 / 1,417 across
+/// `Starfield - FaceMeshes.ba2` + `ShatteredSpace - Main01/02.ba2`, all
+/// `bsver = 175`). The drift is specific to this type — 58,128 plain
+/// `NiNode` and 9,440 `BSWeakReferenceNode` blocks in the same `bsver`
+/// band drift by zero — so it is `BSFaceGenNiNode`'s own trailing field,
+/// not the shared `NiNode` base and not `BSWeakReferenceNode`'s
+/// `SF_WEAK_REF_GAP` field (#2105). The semantics are unrecoverable from
+/// either authority (no nif.xml schema, predates the Gamebryo 2.3
+/// source), so [`parse_with_size`](Self::parse_with_size) captures the
+/// bytes opaquely up to `block_size` instead of fabricating a layout —
+/// mirroring `BSWeakReferenceNode`'s `#1882` `starfield_tail` (#1606's
+/// opaque-capture idiom).
+#[derive(Debug)]
+pub struct BsFaceGenNiNode {
+    pub base: NiNode,
+    /// Opaque trailing Starfield bytes captured up to `block_size`
+    /// (#3464). Empty when parsed without a `block_size` (the legacy
+    /// `parse` entry).
+    pub starfield_tail: Vec<u8>,
+}
+
+impl NiObject for BsFaceGenNiNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSFaceGenNiNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base)
+    }
+}
+
+impl BsFaceGenNiNode {
+    /// Parse without a `block_size` — no tail capture (any trailing bytes
+    /// fall to the outer drift recovery as before). Equivalent to
+    /// `parse_with_size(stream, None)`.
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_size(stream, None)
+    }
+
+    /// As [`parse`](Self::parse), but with the block's declared
+    /// `block_size` so the undocumented +2-byte Starfield tail (#3464) is
+    /// captured opaquely up to the block boundary — mirroring #1606 /
+    /// `BSWeakReferenceNode::parse_with_size`. The dispatcher passes
+    /// `Some(block_size)`; `parse(stream)` passes `None`.
+    pub fn parse_with_size(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
+        let block_start = stream.position();
+        let base = NiNode::parse(stream)?;
+        let mut starfield_tail = Vec::new();
+        if let Some(size) = block_size {
+            let consumed = stream.position().saturating_sub(block_start);
+            let remaining = u64::from(size).saturating_sub(consumed);
+            if remaining > 0 {
+                starfield_tail = stream.read_bytes(remaining as usize)?;
+            }
+        }
+        Ok(Self {
+            base,
+            starfield_tail,
+        })
+    }
+}
+
 /// Read and discard a null-terminated (C-style) string from the stream.
 /// Advances past the terminal '\0'. Used only for `BSWeakReferenceNode`'s
 /// `UnkMaterialStruct.mat` field (nifly `SyncString` → `getstring`). The

@@ -45,8 +45,8 @@ use controller::{
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
     BsCollisionQueryProxyExtraData, BsConnectPointChildren, BsConnectPointParents,
-    BsDecalPlacementVectorExtraData, BsDistantObjectLargeRefExtraData, BsEyeCenterExtraData,
-    BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
+    BsDecalPlacementVectorExtraData, BsDistantObjectExtraData, BsDistantObjectLargeRefExtraData,
+    BsEyeCenterExtraData, BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
     BsTreadTransfInterpolator, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
@@ -310,23 +310,24 @@ fn parse_block_inner(
         // NiNode base. AvoidNode / NiBSAnimationNode / NiBSParticleNode are
         // legacy Morrowind/Oblivion-era NiNode subclasses; the rest are
         // Bethesda node tags. See issue #142.
-        //
-        // BSFaceGenNiNode (Starfield, 1,282 / 1,282 in `FaceMeshes.ba2`,
-        // #727) is aliased here as a coverage-first stub: the wire
-        // layout is unconfirmed and nif.xml has no SF schema for it.
-        // Outer per-block `block_size` reconciliation in `lib.rs:312`
-        // skips any trailing FaceGen-coefficient bytes so the alias
-        // can't desync downstream blocks. Promoting to a dedicated
-        // parser is follow-up work once a sample face NIF is reverse-
-        // engineered (FaceGen morph data is dropped under the alias).
         "NiNode"
         | "BSFadeNode"
         | "BSLeafAnimNode"
-        | "BSFaceGenNiNode"
         | "RootCollisionNode"
         | "AvoidNode"
         | "NiBSAnimationNode"
         | "NiBSParticleNode" => Ok(Box::new(NiNode::parse(stream)?)),
+        // #3464 / NIF-2026-08-27-D1-01 — Starfield FaceGen head node
+        // (`FaceMeshes.ba2`, 1,417 / 1,417 measured). Was aliased straight
+        // to plain `NiNode::parse` (#727); that under-read by a constant
+        // +2 bytes on every instance — `block_size` reconciliation
+        // absorbed the drift silently, but the 2 bytes themselves (of
+        // unknown semantics; no nif.xml schema exists) were lost.
+        // `parse_with_size` captures them opaquely instead, mirroring
+        // `BSWeakReferenceNode`'s `#1882` tail (#1606's idiom).
+        "BSFaceGenNiNode" => Ok(Box::new(node::BsFaceGenNiNode::parse_with_size(
+            stream, block_size,
+        )?)),
         // BSMultiBoundNode: NiNode + multi_bound_ref + (Skyrim+) culling_mode.
         // See issue #148. Previously aliased to plain NiNode, dropping the
         // multi_bound linkage to BSMultiBoundAABB volumes.
@@ -722,6 +723,12 @@ fn parse_block_inner(
         "BSDistantObjectLargeRefExtraData" => {
             Ok(Box::new(BsDistantObjectLargeRefExtraData::parse(stream)?))
         }
+        // #3461 / NIF-2026-08-27-D3-01 — FO76-only per-object distant-LOD
+        // flags word on `.bto` distant-terrain meshes. Pre-fix the block
+        // fell into NiUnknown (112,716 instances measured across the
+        // `GeneratedMeshes*` / `*UpdateMain` archives), losing the flags
+        // word the same way #942 above lost `Large Ref` before its fix.
+        "BSDistantObjectExtraData" => Ok(Box::new(BsDistantObjectExtraData::parse(stream)?)),
         "BSConnectPoint::Parents" => Ok(Box::new(BsConnectPointParents::parse(stream)?)),
         "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
         // BSPackedCombined[Shared]GeomDataExtra — FO4+ distant-LOD

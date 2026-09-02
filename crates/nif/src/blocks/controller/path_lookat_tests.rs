@@ -338,7 +338,7 @@ fn nicontrollersequence_v10_2_reads_phase() {
     data.extend_from_slice(&0u32.to_le_bytes());
     // array_grow_by (since 10.1.0.106) = 1
     data.extend_from_slice(&1u32.to_le_bytes());
-    // weight=1.0, text_keys=null, cycle_type=2 (LOOP), frequency=1.0
+    // weight=1.0, text_keys=null, cycle_type=2 (CLAMP, #3437), frequency=1.0
     data.extend_from_slice(&1.0f32.to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
     data.extend_from_slice(&2u32.to_le_bytes());

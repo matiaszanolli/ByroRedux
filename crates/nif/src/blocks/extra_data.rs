@@ -699,6 +699,43 @@ impl BsDistantObjectLargeRefExtraData {
     }
 }
 
+// ── BSDistantObjectExtraData ─────────────────────────────────────────
+
+/// FO76 (`bsver` 152–167) per-object distant-LOD flags word, attached to
+/// `.bto` distant-terrain meshes. Inherits `NiExtraData`; nif.xml line
+/// 8460: `<niobject name="BSDistantObjectExtraData" inherit="NiExtraData"
+/// module="BSMain" versions="#F76#">` with a single `uint Distant Object
+/// Flags` field.
+///
+/// Pre-#3461 the block had no dispatch arm at all and landed on the
+/// `NiUnknown` recovery path — measured 112,716 instances across
+/// `SeventySix - GeneratedMeshes01/02.ba2` + `SeventySix -
+/// 10UpdateMain.ba2` (the `Meshes.ba2` corpus-gate archive carries none).
+/// Same loss class #942 fixed for `BSDistantObjectLargeRefExtraData`
+/// above ("ghost foliage"), on FO76's distant terrain instead of SSE's
+/// large-ref worldspace statics. See issue #3461 / NIF-2026-08-27-D3-01.
+#[derive(Debug)]
+pub struct BsDistantObjectExtraData {
+    pub name: Option<Arc<str>>,
+    /// Per-object distant-LOD flags. Semantics undocumented by nif.xml
+    /// beyond the field name; kept raw for a future distant-LOD consumer
+    /// rather than fabricating a bit layout.
+    pub distant_object_flags: u32,
+}
+
+impl BsDistantObjectExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
+        // FO76 is well past that gate, so the name field is always present.
+        let name = stream.read_extra_data_name()?;
+        let distant_object_flags = stream.read_u32_le()?;
+        Ok(Self {
+            name,
+            distant_object_flags,
+        })
+    }
+}
+
 // ── BSConnectPoint::Parents ────────────────────────────────────────
 
 /// Workshop connection point definition. FO4+.
@@ -1308,6 +1345,7 @@ impl_ni_object!(
     BsClothExtraData => "BSClothExtraData",
     BsCollisionQueryProxyExtraData => "BSCollisionQueryProxyExtraData",
     BsDistantObjectLargeRefExtraData => "BSDistantObjectLargeRefExtraData",
+    BsDistantObjectExtraData => "BSDistantObjectExtraData",
     BsConnectPointParents => "BSConnectPoint::Parents",
     BsConnectPointChildren => "BSConnectPoint::Children",
     BsAnimNote => "BSAnimNote",

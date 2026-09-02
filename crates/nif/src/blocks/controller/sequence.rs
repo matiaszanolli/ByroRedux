@@ -145,7 +145,7 @@ impl NiControllerSequence {
         // <= 10.1.0.103 reads them here, >= 10.1.0.106 reads them there, and
         // the 10.1.0.104/105 gap reads neither. Conflating them is easy and
         // wrong — the issue that prompted this fix did exactly that.
-        let seq_accum_root_name = if stream.version() <= NifVersion::V10_1_0_103 {
+        let seq_accum_root_name = if stream.version().has_ni_sequence_prologue() {
             stream.read_string()?
         } else {
             None
@@ -156,7 +156,7 @@ impl NiControllerSequence {
         // on the floor silently yielded zero text events for every sequence on
         // this band — the exact asymmetry #2345 avoided one line above for the
         // accum root name.
-        let seq_text_keys_ref = if stream.version() <= NifVersion::V10_1_0_103 {
+        let seq_text_keys_ref = if stream.version().has_ni_sequence_prologue() {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
@@ -165,7 +165,7 @@ impl NiControllerSequence {
         let num_controlled_blocks = stream.read_u32_le()?;
 
         // Array Grow By (since 10.1.0.106)
-        let array_grow_by = if stream.version() >= NifVersion::V10_1_0_106 {
+        let array_grow_by = if stream.version().has_controller_sequence_fields() {
             stream.read_u32_le()?
         } else {
             0
@@ -207,7 +207,7 @@ impl NiControllerSequence {
             // `node_name == None` for the whole band, which short-circuits
             // `anim/controlled_block.rs`'s target resolution — every channel
             // in the sequence failed to bind, not just its text events.
-            let target_name = if stream.version() <= NifVersion::V10_1_0_103 {
+            let target_name = if stream.version().has_ni_sequence_prologue() {
                 Some(Arc::from(stream.read_sized_string()?.as_str()))
             } else {
                 None
@@ -215,7 +215,7 @@ impl NiControllerSequence {
             // Interpolator — nif.xml `since="10.1.0.106"`. #2345: read
             // unconditionally before this fix, a 4-byte over-read on
             // anything below that version.
-            let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_106 {
+            let interpolator_ref = if stream.version().has_controller_sequence_fields() {
                 stream.read_block_ref()?
             } else {
                 BlockRef::NULL
@@ -239,7 +239,7 @@ impl NiControllerSequence {
             // #2345: only the `#BSSTREAM#` half (bsver > 0) was applied, so a
             // Bethesda file BELOW 10.1.0.106 read a phantom priority byte
             // that isn't in the layout. Both halves are required.
-            let priority = if stream.version() >= NifVersion::V10_1_0_106
+            let priority = if stream.version().has_controller_sequence_fields()
                 && bsver > crate::version::bsver::PRE_BETHESDA
             {
                 stream.read_u8()?
@@ -332,10 +332,19 @@ impl NiControllerSequence {
         // ordinary ones were not.
         //
         // Defaults are nif.xml's own (`weight` 1.0, `frequency` 1.0,
-        // `cycle_type` CYCLE_CLAMP = 0, `start_time` FLT_MAX,
+        // `cycle_type` CYCLE_CLAMP = 2, `start_time` FLT_MAX,
         // `stop_time` FLT_MIN) so a pre-10.1.0.106 sequence presents the
         // same neutral values the format itself specifies.
-        let has_ctlr_seq_fields = stream.version() >= NifVersion::V10_1_0_106;
+        //
+        // #3437 — `cycle_type`'s substituted literal was `0` (decoded as
+        // CYCLE_LOOP by `CycleType::from_u32`), not `2`. nif.xml's
+        // `CycleType` enum is CYCLE_LOOP=0 / CYCLE_REVERSE=1 /
+        // CYCLE_CLAMP=2, and the block's own stated default IS
+        // CYCLE_CLAMP — so every pre-10.1.0.106 sequence looped where
+        // the format says clamp. The comment above asserting `0` was the
+        // same value as CYCLE_CLAMP is what made the substitution look
+        // correct; it was the wrong enum ordinal entirely.
+        let has_ctlr_seq_fields = stream.version().has_controller_sequence_fields();
 
         let weight = if has_ctlr_seq_fields {
             stream.read_f32_le()?
@@ -354,7 +363,7 @@ impl NiControllerSequence {
         let cycle_type = if has_ctlr_seq_fields {
             stream.read_u32_le()?
         } else {
-            0
+            2 // CYCLE_CLAMP — see the doc comment above (#3437).
         };
         let frequency = if has_ctlr_seq_fields {
             stream.read_f32_le()?

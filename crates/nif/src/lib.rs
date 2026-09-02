@@ -886,6 +886,13 @@ fn is_ni_node_subclass(block_type_name: &str) -> bool {
             | "NiLODNode"
             | "NiSortAdjustNode"
             | "BSRangeNode"
+            // #3464 — was a plain-NiNode alias (reported "NiNode", caught
+            // by the first arm above) until its own dedicated
+            // `BsFaceGenNiNode` parser landed with real RTTI. Starfield
+            // FaceGen head NIFs are plausibly rooted at this type, so it
+            // needs its own entry now that its `block_type_name()` no
+            // longer reads "NiNode".
+            | "BSFaceGenNiNode"
     )
 }
 
