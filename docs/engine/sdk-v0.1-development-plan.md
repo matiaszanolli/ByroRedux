@@ -114,8 +114,11 @@ through the engine provider host. Typed object-local receiver calls now lower
 when the local's declared Papyrus object type has a matching provider route;
 event-projected `ObjectReference` handles are resolved through the same stable
 opaque `Entity` registry and supplied as the declaration's required first
-argument. Broader object expressions, receiver-producing expressions, broader
-events, and other latent primitives remain open. A reserved
+argument. Broader object expressions, unproven receiver-producing routes,
+broader events, and other latent primitives remain open. A bounded chained receiver
+expression such as `Game.GetPlayer().Method(...)` now evaluates the inner
+provider call first, carries its proven `ObjectReference` type, and fails
+closed if the result is `None`. A reserved
 `Self.Method(...)` route now supplies the current script owner's stable opaque
 `Entity` handle as the declaration's first argument; latent handlers using either
 receiver remain rejected until continuation ownership is persisted. Provider-bearing
@@ -1000,7 +1003,9 @@ four scalar `OnHit` attack/block parameters are projected under their authored
   calls while preserving locals and ordered branch/enclosing tails.
   Typed integer/float arithmetic and string concatenation now lower through
   the same source/PEX provider IR, with checked runtime evaluation and save
-  format v17 persistence. Object expressions, broader events, other latent
+  format v17 persistence. A bounded `Game.GetPlayer().Method(...)` receiver
+  expression now extends this IR; its serialized receiver tree advances save
+  format v18. Broader receiver-producing expressions, events, other latent
   primitives, and dynamic object dispatch remain pending. The continuation queue is registered with the save system and revalidates saved
   routes against the live catalog before resuming.
   Ten exact SKSE `Game` content extensions plus the vanilla Papyrus
@@ -1509,7 +1514,8 @@ canonical `systems::PlayerEntity` body before callbacks; the host converts it
 to a stable generational `EntityRef`, returns `None` for flycam/no-player
 worlds, and rejects malformed arguments without exposing raw ECS IDs. Papyrus
 object locals now retain that nullable opaque entity value and can pass it to a
-typed provider call; receiver-method dispatch remains future work.
+typed provider call; receiver-method dispatch is covered by the later typed
+object-receiver checkpoint below.
 
 Checkpoint: `feat(sdk): compare engine entity handles`.
 
@@ -1517,11 +1523,21 @@ Provider conditions now support identity comparisons for engine-owned entity
 handles (`==` and `!=`), including explicit `None` checks for a missing player
 or other nullable object result. Entity handles compare by stable generational
 identity, while ordered comparisons remain rejected before attachment and
-runtime value mismatches fail closed. Receiver-method dispatch and broader
-object expressions remain future substrate work. The bounded receiver slice is
+runtime value mismatches fail closed. Broader receiver-producing expressions
+remain future substrate work. The bounded receiver slice is
 now available for `self.Method(...)` routes published under the reserved
 `Self` provider; declarations must expose a required first `Entity` parameter,
 and execution resolves `self` through the same engine-owned handle registry.
+
+Checkpoint: `feat(sdk): dispatch typed object receivers` / `feat(sdk): evaluate receiver expressions`.
+
+Event-projected `ObjectReference` locals now dispatch typed provider methods
+with their stable opaque entity handle as the required first argument. Chained
+receiver expressions such as `Game.GetPlayer().Method(...)` evaluate the inner
+call first, select routes only for proven `ObjectReference` results, and fail
+closed on nullable `None`. The serialized receiver tree advances the save
+format to v18; broader receiver-producing routes and computed non-receiver
+arguments remain unsupported.
 
 Checkpoint: `feat(scripting): preserve SCPT load-order name probes`.
 
