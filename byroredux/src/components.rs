@@ -1098,6 +1098,9 @@ pub(crate) struct WeatherSkyState {
     pub(crate) aurora_follows_sun: bool,
     /// Authored horizontal wind direction in renderer X/Z coordinates.
     pub(crate) wind_direction: [f32; 2],
+    /// True when the source weather actually authored a directional-wind
+    /// value. Legacy records retain the deterministic worldspace fallback.
+    pub(crate) wind_direction_authored: bool,
     /// Normalized WTHR wind speed for precipitation drift.
     pub(crate) wind_speed: f32,
 }
@@ -1115,6 +1118,7 @@ impl Default for WeatherSkyState {
             aurora_intensity: 0.0,
             aurora_follows_sun: false,
             wind_direction: [1.0, 0.0],
+            wind_direction_authored: false,
             wind_speed: 0.0,
         }
     }

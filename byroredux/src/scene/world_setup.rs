@@ -590,12 +590,21 @@ fn sanitize_wind(wind: WindField) -> WindField {
 /// resolve` substitutes the built-in species so the scatter pass never sees an
 /// empty palette. Phase 5 fills it from `GRAS`.
 fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
-    use crate::groundcover_translate::{resolve_palette_for_chain, resolve_wind};
+    use crate::groundcover_translate::{
+        resolve_palette_for_chain, resolve_wind, resolve_wind_with_direction,
+    };
 
-    let wind_speed = world
+    let (wind_speed, wind_direction) = world
         .try_resource::<WeatherDataRes>()
-        .map(|w| w.wind_speed)
-        .unwrap_or(0);
+        .map(|w| {
+            (
+                w.wind_speed,
+                w.weather
+                    .wind_direction_authored
+                    .then_some(w.weather.wind_direction),
+            )
+        })
+        .unwrap_or((0, None));
     // Classify over the full WNAM ancestry, not the leaf name: FO3's
     // `MegatonWorld` carries no geographic signal of its own and reads as
     // temperate, when Megaton is a Capital Wasteland settlement.
@@ -604,7 +613,12 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         &wctx.worldspace_key,
     );
     let palette = resolve_palette_for_chain(&chain, Vec::new());
-    let wind = sanitize_wind(resolve_wind(&wctx.worldspace_key, wind_speed));
+    let wind = sanitize_wind(match wind_direction {
+        Some(direction) => {
+            resolve_wind_with_direction(&wctx.worldspace_key, wind_speed, Some(direction))
+        }
+        None => resolve_wind(&wctx.worldspace_key, wind_speed),
+    });
     log::info!(
         target: "engine::groundcover",
         "Ground cover for '{}' (chain {:?}): climate {:?}, {} species, \

@@ -394,11 +394,11 @@ the current combined timer as a final budget verdict.
 
 ## Follow-up boundary
 
-1. extend conservative no-through solid blocking with boundary-normal slip /
-   pressure response, then calibrate source, decay, and field-light reduction
-   against shipped fire, smoke, and explosion content. Canonical `FogProfile`
-   values already act as solver emitter presets; the solver has no game or
-   authoring-provenance branch;
+1. calibrate source, decay, boundary-slip, and field-light reduction against
+   shipped fire, smoke, and explosion content. The solver already has
+   conservative no-through solid blocking, triangle-normal tangential slip,
+   mild wall friction, pressure response, and canonical `FogProfile` presets;
+   it has no game or authoring-provenance branch;
 2. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
 3. map the verified Starfield height-fog block without guessing its curve;

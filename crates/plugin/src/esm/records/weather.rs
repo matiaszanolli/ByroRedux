@@ -294,6 +294,10 @@ pub struct WeatherRecord {
     /// Skyrim wind direction and directional spread from DATA.
     pub wind_direction: u8,
     pub wind_direction_range: u8,
+    /// Whether the record actually carried the Skyrim directional-wind tail.
+    /// This must remain separate from `wind_direction`: zero is a valid north
+    /// direction, while legacy records use zero as an absent/default value.
+    pub wind_direction_authored: bool,
     /// Skyrim's seven extra NAM0 colour groups (groups 10..16): cloud LOD,
     /// fog far, sky statics, water multiplier, sun glare and moon glare.
     pub skyrim_extra_colors: [[SkyColor; 4]; 7],
@@ -363,6 +367,7 @@ impl Default for WeatherRecord {
             visual_effect_window: [0; 2],
             wind_direction: 0,
             wind_direction_range: 0,
+            wind_direction_authored: false,
             skyrim_extra_colors: [[SkyColor::default(); 4]; 7],
             skyrim_sun_glare: [SkyColor::default(); 4],
             skyrim_moon_glare: [SkyColor::default(); 4],
@@ -861,6 +866,7 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             // flag is byte 11; byte 14 is the blue lightning channel.
             b"DATA" if sub.data.len() >= SKYRIM_DATA_SIZE => {
                 parse_weather_data(&mut record, &sub.data);
+                record.wind_direction_authored = true;
             }
 
             // Skyrim authored cloud controls. RNAM is the Y component and
@@ -1806,6 +1812,7 @@ mod tests {
         assert_eq!(w.visual_effect_window, [3, 4]);
         assert_eq!(w.wind_direction, 180);
         assert_eq!(w.wind_direction_range, 20);
+        assert!(w.wind_direction_authored);
         assert_eq!(
             w.skyrim_cloud_textures[10].as_deref(),
             Some("sky\\cloud10.dds")

@@ -838,7 +838,9 @@ mod tests {
     /// `DBG_VIZ_REQUIRES_RAW_OUTPUT(flags)` macro — one any-of mask test plus
     /// one all-of compound test in place of four `||`-chained clauses —
     /// removing two short-circuit branches and bringing the count to 32.
-    /// Pins the
+    /// The authored weather sky/cloud, moon, aurora, precipitation, and
+    /// lightning branches added after that baseline bring the current module
+    /// to 40. Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -847,8 +849,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 32,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 32 — \
+            count, 40,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 40 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

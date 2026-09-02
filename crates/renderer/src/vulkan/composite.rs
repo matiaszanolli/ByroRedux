@@ -1719,27 +1719,36 @@ mod composite_params_layout_tests {
         // the trailing camera_pos + inv_view_proj layout shape.
         assert_eq!(offset_of!(CompositeParams, cloud_params_2), 192);
         assert_eq!(offset_of!(CompositeParams, cloud_params_3), 208);
-        // #428 — `camera_pos` was added after `cloud_params` and before
-        // `inv_view_proj`. Fixing the offset here prevents a future
-        // reorder from silently corrupting the fog-distance origin.
-        assert_eq!(offset_of!(CompositeParams, camera_pos), 224);
-        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 240);
+        // Weather state and the four authored cloud tint vectors sit between
+        // the cloud layers and camera pose. Keep these offsets explicit so a
+        // future UBO reorder cannot silently corrupt fog or sky reconstruction.
+        assert_eq!(offset_of!(CompositeParams, weather_params), 224);
+        assert_eq!(offset_of!(CompositeParams, weather_wind), 240);
+        assert_eq!(offset_of!(CompositeParams, weather_lightning), 256);
+        assert_eq!(offset_of!(CompositeParams, weather_sky), 272);
+        assert_eq!(offset_of!(CompositeParams, weather_aurora), 288);
+        assert_eq!(offset_of!(CompositeParams, cloud_tint_0), 304);
+        assert_eq!(offset_of!(CompositeParams, cloud_tint_1), 320);
+        assert_eq!(offset_of!(CompositeParams, cloud_tint_2), 336);
+        assert_eq!(offset_of!(CompositeParams, cloud_tint_3), 352);
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 368);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 384);
         // Underwater post-FX field — appended after inv_view_proj.
         // Same lockstep contract as the cloud_params expansion above:
         // adding a new vec4 here bumps the asserted total by 16 and
         // adds a matching `vec4 underwater;` declaration in the
         // `composite.frag` UBO block. See `composite.frag` end-of-
         // shader underwater branch.
-        assert_eq!(offset_of!(CompositeParams, underwater), 304);
+        assert_eq!(offset_of!(CompositeParams, underwater), 448);
         // caustic_flags — appended after underwater (#2508). Same
         // lockstep contract: adding a new vec4 here bumps the asserted
         // total by 16 and adds a matching `vec4 caustic_flags;`
         // declaration in the `composite.frag` UBO block.
-        assert_eq!(offset_of!(CompositeParams, caustic_flags), 320);
+        assert_eq!(offset_of!(CompositeParams, caustic_flags), 464);
         assert_eq!(
             size_of::<CompositeParams>(),
-            320 + 16,
-            "CompositeParams must be 336 bytes (17 × vec4 + mat4)"
+            464 + 16,
+            "CompositeParams must be 480 bytes (26 × vec4 + mat4)"
         );
     }
 

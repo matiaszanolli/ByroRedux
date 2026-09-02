@@ -480,6 +480,11 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
         } else {
             [1.0, 0.0]
         },
+        wind_direction_authored: if t < 0.5 {
+            a.wind_direction_authored
+        } else {
+            b.wind_direction_authored
+        },
         wind_speed: lerp1(a.wind_speed, b.wind_speed, t),
     }
 }
@@ -875,8 +880,19 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // ground-cover install path seeds this resource when entering a
     // worldspace, but WTHR changes can occur without a worldspace reload;
     // SpeedTree sway and water-normal motion must follow those changes too.
+    let wind_direction = if weather.wind_direction_authored {
+        weather.wind_direction
+    } else {
+        // Legacy WTHR has no directional tail. Preserve the deterministic
+        // worldspace fallback installed at the boundary instead of replacing
+        // it with the numeric zero/east placeholder every frame.
+        world
+            .try_resource::<WindField>()
+            .map(|wind| wind.direction)
+            .unwrap_or(weather.wind_direction)
+    };
     if let Some(mut wind) = world.try_resource_mut::<WindField>() {
-        *wind = WindField::from_weather_byte(weather_wind_speed, weather.wind_direction);
+        *wind = WindField::from_weather_byte(weather_wind_speed, wind_direction);
     }
 
     // Update SkyParamsRes.

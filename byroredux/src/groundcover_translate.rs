@@ -257,20 +257,36 @@ pub fn resolve_palette_for_chain(
     GroundCoverPalette::resolve(authored, climate_for_worldspace_chain(chain))
 }
 
-/// Canonical wind for the current weather.
-///
-/// Direction is not authored by any source game's `WTHR` record, so it is
-/// derived from the worldspace name's hash — stable across sessions for a
-/// given worldspace (grass does not change direction when you reload) while
-/// still differing between them.
+/// Canonical wind for the current weather when no authored direction is
+/// available. The stable worldspace hash keeps legacy/fallback content
+/// deterministic across sessions while still giving different worlds
+/// different prevailing directions.
 pub fn resolve_wind(editor_id: &str, wind_speed: u8) -> WindField {
+    resolve_wind_with_direction(editor_id, wind_speed, None)
+}
+
+/// Resolve a weather wind, preferring the direction translated from a Skyrim
+/// WTHR record and falling back to the stable worldspace direction used by
+/// older records. Installation happens before the first `weather_system` tick,
+/// so using this at the boundary prevents one frame of grass/water/smoke flow
+/// from disagreeing with the authored direction.
+pub fn resolve_wind_with_direction(
+    editor_id: &str,
+    wind_speed: u8,
+    authored_direction: Option<[f32; 2]>,
+) -> WindField {
     let mut hash: u32 = 2_166_136_261;
     for byte in editor_id.as_bytes() {
         hash ^= u32::from(byte.to_ascii_lowercase());
         hash = hash.wrapping_mul(16_777_619);
     }
     let angle = (hash % 3600) as f32 * (std::f32::consts::TAU / 3600.0);
-    WindField::from_weather_byte(wind_speed, [angle.cos(), angle.sin()])
+    let fallback_direction = [angle.cos(), angle.sin()];
+    let direction = authored_direction.filter(|candidate| {
+        candidate.iter().all(|value| value.is_finite())
+            && candidate[0] * candidate[0] + candidate[1] * candidate[1] > 1.0e-8
+    });
+    WindField::from_weather_byte(wind_speed, direction.unwrap_or(fallback_direction))
 }
 
 #[cfg(test)]

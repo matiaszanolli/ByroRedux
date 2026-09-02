@@ -113,12 +113,17 @@ translate boundary, and the per-worldspace **latitude tilt** is still a fixed
 
 ### Weather / TOD — **canonical; the cleanest of the dynamic categories**
 
-`WeatherDataRes` holds the full WTHR NAM0 table + `tod_hours` + Skyrim-only
-`skyrim_dalc_per_tod` (`Option`, correctly `None` on FNV/FO3/Oblivion) +
-`wind_speed`. `weather_system` interpolates it per frame; `WeatherTransitionRes`
-cross-fades. The `Option<DalcCubeYup>` is **not** a leak — it is the canonical
-encoding of "this game has no DALC ambient cube", consumed uniformly. **Status:
-canonical.** EXAL only moves the WTHR→`WeatherDataRes` decode under the boundary.
+`WeatherDataRes` holds the full WTHR NAM0 table + `tod_hours`, authored cloud
+motion/tint/alpha tables, precipitation and thunder controls, lightning colour,
+aurora flags, and wind direction/speed, plus Skyrim-only
+`skyrim_dalc_per_tod` (`Option`, correctly `None` on FNV/FO3/Oblivion). The
+matching `SkyParamsRes::weather` is the render-facing copy: it carries the
+sampled stars/moon/sun-glare values and the currently blended weather controls.
+`weather_system` interpolates these values per frame; `WeatherTransitionRes`
+cross-fades them with the cloud simulation rather than snapping the sky. The
+`Option<DalcCubeYup>` is **not** a leak — it is the canonical encoding of "this
+game has no DALC ambient cube", consumed uniformly. **Status: canonical.** EXAL
+only moves the WTHR→`WeatherDataRes`/`SkyParamsRes` decode under the boundary.
 
 Climate resolution has two inputs, both settled at the boundary in
 `env_translate`: the worldspace `CNAM` (chasing the `WNAM` parent chain when the

@@ -1206,6 +1206,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         },
         aurora_follows_sun,
         wind_direction: [angle.cos(), angle.sin()],
+        wind_direction_authored: wthr.wind_direction_authored,
         wind_speed: wthr.wind_speed as f32 / 255.0,
     }
 }
@@ -1433,7 +1434,10 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         (SKY_AMBIENT, FB_AMBIENT),
         (SKY_SUNLIGHT, FB_SUNLIGHT),
         (SKY_SUN, FB_SUN_COLOR),
-        (byroredux_plugin::esm::records::weather::SKY_STARS, FB_STARS_COLOR),
+        (
+            byroredux_plugin::esm::records::weather::SKY_STARS,
+            FB_STARS_COLOR,
+        ),
         // #541 — `weather_system` also reads SKY_LOWER for the below-horizon
         // branch; synthetic value matches the procedural `FB_LOWER`.
         (SKY_LOWER, FB_LOWER),
@@ -3290,14 +3294,14 @@ mod tests {
 
         let wd = translate_weather(&w, None);
         assert_eq!(wd.fog, [100.0, 200.0, 300.0, 400.0]);
-        assert_eq!(
-            wd.fog_media[0],
-            crate::fog::FogMedium::from_legacy_ramp(100.0, 200.0, Some(0.9))
-        );
-        assert_eq!(
-            wd.fog_media[1],
-            crate::fog::FogMedium::from_legacy_ramp(300.0, 400.0, Some(0.4))
-        );
+        let mut expected_day = crate::fog::FogMedium::from_legacy_ramp(100.0, 200.0, Some(0.9));
+        let mut expected_night = crate::fog::FogMedium::from_legacy_ramp(300.0, 400.0, Some(0.4));
+        // Rainy weather raises atmospheric occupancy above the neutral ramp;
+        // the weather classifier is part of the canonical translation.
+        expected_day.coverage = 0.86;
+        expected_night.coverage = 0.86;
+        assert_eq!(wd.fog_media[0], expected_day);
+        assert_eq!(wd.fog_media[1], expected_night);
         assert_eq!(wd.wind_speed, 7);
         assert_eq!(wd.cloud_layer_velocities[0], [32.0 / 255.0, 16.0 / 255.0]);
         assert_eq!(

@@ -233,6 +233,20 @@ fn wind_direction_is_case_insensitive_per_worldspace() {
 }
 
 #[test]
+fn authored_wind_direction_wins_at_installation_boundary() {
+    let wind = resolve_wind_with_direction("Tamriel", 128, Some([0.0, 1.0]));
+    assert!(wind.direction[0].abs() < 1.0e-6);
+    assert!((wind.direction[1] - 1.0).abs() < 1.0e-6);
+}
+
+#[test]
+fn malformed_authored_wind_direction_uses_stable_fallback() {
+    let expected = resolve_wind("Tamriel", 128);
+    let malformed = resolve_wind_with_direction("Tamriel", 128, Some([f32::NAN, 0.0]));
+    assert_eq!(malformed.direction, expected.direction);
+}
+
+#[test]
 fn resolved_wind_is_always_well_formed() {
     for name in ["Tamriel", "", "WastelandNV", "MegatonWorld"] {
         for speed in [0_u8, 1, 127, 255] {
