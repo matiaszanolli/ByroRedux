@@ -388,6 +388,18 @@ fn apply_bs_lighting_shader(
         info.uv_scale = shader.uv_scale;
         info.has_uv_transform = true;
         info.alpha = shader.alpha;
+        // #3507 / FO4-2026-08-27-D5-01 — `Texture Clamp Mode` is an
+        // unconditional `BSLightingShaderProperty` field (nif.xml:6597, no
+        // `vercond`) parsed on Skyrim, FO4, FO76 and Starfield alike
+        // (`shader.rs:923/1060/1243`), but this arm never copied it — every
+        // FO4+ lit material fell through to `MaterialInfo`'s WRAP_S_WRAP_T
+        // default regardless of what was authored. Same `_consumed`
+        // precedence gate #2328 established: a legacy `NiTexturingProperty`
+        // or `BSEffectShaderProperty` that ran first stays authoritative.
+        if !info.texture_clamp_mode_consumed {
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.texture_clamp_mode_consumed = true;
+        }
         // PBR scalars on every BSLSP body — none of these were
         // surfaced before #1241 (NIF-DIM4-NEW-01). The parser
         // captures them per BSVER gate at `shader.rs:679-695`;

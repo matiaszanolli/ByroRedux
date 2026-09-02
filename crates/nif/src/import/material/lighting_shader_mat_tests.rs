@@ -291,3 +291,56 @@ fn bslighting_mat_name_plus_texture_set_both_captured() {
         "normal_map must be captured"
     );
 }
+
+/// #3507 / FO4-2026-08-27-D5-01 — `BSLightingShaderProperty.texture_clamp_mode`
+/// is an unconditional field (nif.xml:6597) parsed on Skyrim, FO4, FO76 and
+/// Starfield alike, but `apply_bs_lighting_shader` never copied it —
+/// authored non-default clamp modes (7.9% of vanilla FO4 lit materials,
+/// measured — architecture wall-kit trim, LOD atlases) silently fell back
+/// to `MaterialInfo`'s WRAP_S_WRAP_T default.
+#[test]
+fn bslighting_texture_clamp_mode_is_captured() {
+    let mut shader = lighting_shader_with_name("");
+    // CLAMP_S_CLAMP_T — the mode the wrap-default would otherwise mask.
+    shader.texture_clamp_mode = 0;
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.texture_clamp_mode, 0,
+        "authored CLAMP_S_CLAMP_T must survive apply_bs_lighting_shader, \
+         not fall back to the WRAP_S_WRAP_T default"
+    );
+    assert!(
+        info.texture_clamp_mode_consumed,
+        "the consumed gate must be set so a later legacy-property arm \
+         (unreachable for a real BSLightingShaderProperty mesh, but the \
+         invariant every other writer upholds) can't clobber it"
+    );
+}
+
+/// A `BSLightingShaderProperty` authoring the ordinary WRAP_S_WRAP_T mode
+/// (the common case — 92% of the measured vanilla FO4 corpus) must still
+/// mark the field consumed, distinguishing "authored the default" from
+/// "never ran this arm at all".
+#[test]
+fn bslighting_default_clamp_mode_still_marks_consumed() {
+    let shader = lighting_shader_with_name(""); // texture_clamp_mode: 3 (default)
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(info.texture_clamp_mode, 3);
+    assert!(info.texture_clamp_mode_consumed);
+}

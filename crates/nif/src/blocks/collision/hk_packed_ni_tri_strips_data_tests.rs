@@ -204,6 +204,46 @@ fn captures_multi_material_sub_part_table() {
     );
 }
 
+/// #3478 — `sub_parts` used to bound its allocation as if `HkSubPartData`
+/// cost 1 byte on disk instead of its real 12 (3×u32, no heap indirection).
+/// A `num_sub_shapes` claim that satisfies the loose 1-byte bound but
+/// requests far more than the stream actually has left must now be
+/// rejected rather than accepted with an over-sized `Vec::with_capacity`.
+#[test]
+fn oversized_sub_shape_count_is_rejected_by_the_tightened_bound() {
+    let mut d = Vec::new();
+    d.extend_from_slice(&1u32.to_le_bytes()); // num_triangles
+    push_triangle(&mut d, 0, 1, 2, 0);
+    d.extend_from_slice(&1u32.to_le_bytes()); // num_vertices
+    d.push(0u8); // not compressed
+    for v in [0.0f32, 0.0, 0.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    // Claims 1000 sub-parts (12 000 bytes) but leaves only 1000 bytes of
+    // padding — satisfies the old 1-byte-per-element bound (1000 <= 1000)
+    // but not the true 12-bytes-per-element requirement.
+    d.extend_from_slice(&1000u16.to_le_bytes());
+    d.extend(std::iter::repeat_n(0u8, 1000));
+
+    let header = fo3_header();
+    let mut stream = NifStream::new(&d, &header);
+    let err = HkPackedNiTriStripsData::parse(&mut stream)
+        .expect_err("a claimed byte cost of 12 000 against 1 000 remaining must fail");
+    // Both the pre-fix loose bound and the tightened one eventually error
+    // with `UnexpectedEof` here (1000 <= 1000 satisfies the old 1-byte
+    // bound, so pre-fix this fails ~83 sub-parts into the read loop
+    // instead, via a plain `read_exact` "failed to fill whole buffer").
+    // The message distinguishes them: `check_alloc`'s custom wording only
+    // fires when the *allocation* is rejected up front, before any bytes
+    // are read for the (over-sized) Vec's contents.
+    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(
+        err.to_string().contains("NIF requested"),
+        "must be rejected by check_alloc's up-front bound, not a mid-loop \
+         read_exact failure — got {err}"
+    );
+}
+
 /// Pre-FO3 data authors no sub-part table at all; the field must stay empty
 /// rather than mis-reading the preceding vertex bytes.
 #[test]

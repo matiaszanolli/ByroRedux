@@ -1188,6 +1188,10 @@ pub(crate) fn merge_external_material(
     let mut set_glossiness = false;
     let mut set_alpha = false;
     let mut set_uv = false;
+    // #3507 — `tile_u`/`tile_v` (BGSM's texture-address authoring channel)
+    // dropped on the floor, same shape as the NIF-side arm this issue
+    // paired with.
+    let mut set_clamp_mode = false;
     let mut set_blend = false;
     let mut set_fresnel = false;
     let mut set_palette_scale = false;
@@ -1586,6 +1590,18 @@ pub(crate) fn merge_external_material(
                 set_uv = true;
                 touched = true;
             }
+            // #3507 — `tile_u`/`tile_v` are BGSM's own texture-address-mode
+            // authoring channel (`base.rs:174-175` decodes them from the
+            // same bit-packed byte nif.xml's `TexClampMode` enum uses:
+            // bit 1 = S-axis wrap, bit 0 = T-axis wrap), separate from and
+            // in addition to the NIF shader property's `texture_clamp_mode`
+            // field this issue's sibling fix restores.
+            if !set_clamp_mode {
+                material.texture_clamp_mode =
+                    ((bgsm.base.tile_u as u8) << 1) | (bgsm.base.tile_v as u8);
+                set_clamp_mode = true;
+                touched = true;
+            }
             // Boolean gameplay flags OR across the template chain — if
             // ANY ancestor marks the material as two-sided / decal /
             // alpha-test, the concrete instance is too.
@@ -1799,6 +1815,11 @@ pub(crate) fn merge_external_material(
         material.mat_alpha = bgem.base.alpha;
         material.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
         material.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
+        // #3507 — same `tile_u`/`tile_v` → `texture_clamp_mode` mapping as
+        // the BGSM chain above; BGEM shares `BaseMaterial` and has no
+        // inheritance, so this is an unconditional write like its
+        // `uv_offset`/`uv_scale` neighbours.
+        material.texture_clamp_mode = ((bgem.base.tile_u as u8) << 1) | (bgem.base.tile_v as u8);
         if bgem.base.two_sided {
             material.two_sided = true;
         }

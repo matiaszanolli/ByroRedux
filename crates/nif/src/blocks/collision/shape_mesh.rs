@@ -39,7 +39,9 @@ impl BhkNiTriStripsShape {
             [1.0, 1.0, 1.0, 1.0]
         };
         let num_data = stream.read_u32_le()?;
-        let mut data_refs = stream.allocate_vec(num_data)?;
+        // #3478 sibling — `BlockRef` is a plain `u32` newtype, a 4-byte
+        // fixed on-disk element with no heap indirection.
+        let mut data_refs = stream.allocate_vec_sized::<BlockRef>(num_data)?;
         for _ in 0..num_data {
             data_refs.push(stream.read_block_ref()?);
         }
@@ -78,7 +80,10 @@ impl BhkPackedNiTriStripsShape {
         let sub_shapes = if version <= crate::version::NifVersion::V20_0_0_5 {
             // Oblivion: sub-shapes inline (until="20.0.0.5")
             let count = stream.read_u16_le()? as u32;
-            let mut subs = stream.allocate_vec(count)?;
+            // #3478 sibling — same 12-byte `HkSubPartData` element the FO3+
+            // trailer below was measured against; this Oblivion-era inline
+            // table is field-for-field identical.
+            let mut subs = stream.allocate_vec_sized::<HkSubPartData>(count)?;
             for _ in 0..count {
                 let havok_filter = stream.read_u32_le()?;
                 let num_vertices = stream.read_u32_le()?;
@@ -144,7 +149,20 @@ impl HkPackedNiTriStripsData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let version = stream.version();
         let num_triangles = stream.read_u32_le()?;
-        let mut triangles = stream.allocate_vec(num_triangles)?;
+        // #3478 sibling — `PackedTriangle`'s on-disk size isn't fixed
+        // (`allocate_vec_sized` doesn't apply): Oblivion (until 20.0.0.5)
+        // carries a per-triangle 3×f32 normal on top of the shared 8-byte
+        // v0/v1/v2/welding_info prefix, FO3+ doesn't. `version` (checked
+        // per-triangle in the loop below, but constant across the whole
+        // call) already tells us which, so bound on the true minimum for
+        // that branch rather than the universal-but-loose 1-byte default.
+        let min_triangle_bytes = if version <= crate::version::NifVersion::V20_0_0_5 {
+            20 // v0 + v1 + v2 + welding_info (4×u16) + normal (3×f32)
+        } else {
+            8 // v0 + v1 + v2 + welding_info (4×u16), no normal
+        };
+        let mut triangles =
+            stream.allocate_vec_min_bytes::<PackedTriangle>(num_triangles, min_triangle_bytes)?;
         for _ in 0..num_triangles {
             let v0 = stream.read_u16_le()?;
             let v1 = stream.read_u16_le()?;
@@ -184,7 +202,12 @@ impl HkPackedNiTriStripsData {
         } else {
             false
         };
-        let mut vertices: Vec<[f32; 3]> = stream.allocate_vec(num_vertices)?;
+        // #3478 sibling — mirrors the triangle bound above: `compressed` is
+        // already known, so the true 6-or-12-bytes-per-vertex minimum for
+        // *this* call replaces the loose 1-byte default.
+        let min_vertex_bytes = if compressed { 6 } else { 12 };
+        let mut vertices: Vec<[f32; 3]> =
+            stream.allocate_vec_min_bytes(num_vertices, min_vertex_bytes)?;
         for _ in 0..num_vertices {
             let (x, y, z) = if compressed {
                 (
@@ -211,7 +234,11 @@ impl HkPackedNiTriStripsData {
         let mut sub_parts = Vec::new();
         if version >= crate::version::NifVersion::V20_2_0_7 {
             let num_sub_shapes = stream.read_u16_le()? as usize;
-            sub_parts = stream.allocate_vec(num_sub_shapes as u32)?;
+            // #3478 — `HkSubPartData` is three `u32`s, 12 bytes on disk and
+            // in memory, with no heap indirection: the exact case
+            // `allocate_vec_sized` exists for, tightening the bound from
+            // "1 byte per element" to the true element size.
+            sub_parts = stream.allocate_vec_sized::<HkSubPartData>(num_sub_shapes as u32)?;
             for _ in 0..num_sub_shapes {
                 let havok_filter = stream.read_u32_le()?;
                 let num_vertices = stream.read_u32_le()?;

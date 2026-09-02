@@ -1851,3 +1851,72 @@ fn bgem_merge_gates_emissive_source_on_authored_contribution() {
     );
     assert_eq!(mesh.material.emissive_mult, 2.5);
 }
+
+/// Regression for #3507 (FO4-2026-08-27-D5-01), real merge path: BGSM's
+/// `tile_u`/`tile_v` pair is its own texture-address-mode authoring
+/// channel, separate from the NIF shader property's `texture_clamp_mode`
+/// field — and was never mapped onto `ImportedMaterial::texture_clamp_mode`
+/// at all. `tile_u = false, tile_v = true` must resolve to
+/// CLAMP_S_WRAP_T (1): bit 1 (S) clear, bit 0 (T) set — the same bit
+/// packing `crates/bgsm/src/base.rs` decodes the wire byte with.
+#[test]
+fn bgsm_merge_forwards_tile_flags_to_texture_clamp_mode() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/clamp_s_wrap_t.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                base: byroredux_bgsm::BaseMaterial {
+                    tile_u: false,
+                    tile_v: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    assert_eq!(
+        mesh.material.texture_clamp_mode, 0,
+        "sanity: ImportedMaterial's own default is CLAMP_S_CLAMP_T"
+    );
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.texture_clamp_mode, 1,
+        "tile_u=false (S clamped), tile_v=true (T wraps) must map to \
+         CLAMP_S_WRAP_T (1)"
+    );
+}
+
+/// BGEM sibling of the above — same field, same mapping, no inheritance
+/// chain to walk (single unconditional write, matching the neighbouring
+/// `uv_offset`/`uv_scale` forwarding).
+#[test]
+fn bgem_merge_forwards_tile_flags_to_texture_clamp_mode() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/clamp_wrap_s_clamp_t.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            base: byroredux_bgsm::BaseMaterial {
+                tile_u: true,
+                tile_v: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.texture_clamp_mode, 2,
+        "tile_u=true (S wraps), tile_v=false (T clamped) must map to \
+         WRAP_S_CLAMP_T (2)"
+    );
+}

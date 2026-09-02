@@ -157,9 +157,13 @@ pub fn try_reconstruct_sse_geometry(
         }
     }
     if dropped_triangles > 0 {
+        // #3479 — #3355 retargeted this drop's bound from `vertex_map`'s
+        // length to `decoded.positions.len()` (see the comment above);
+        // this message named the old bound and never got updated to match.
         log::debug!(
             "BSTriShape SSE reconstruct: dropped {} triangle(s) with \
-             out-of-range vertex_map indices (truncated/malformed NIF)",
+             out-of-range global vertex indices (past the decoded buffer's \
+             vertex count — truncated/malformed NIF)",
             dropped_triangles,
         );
     }

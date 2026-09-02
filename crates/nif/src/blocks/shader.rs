@@ -1085,11 +1085,26 @@ impl BSLightingShaderProperty {
                 // bound, not a looser 3.0e38 — a rimlight in [3.0e38, FLT_MAX)
                 // would otherwise over-read a 4-byte field nif.xml says is absent.
                 // `is_finite()` covers the `< FLT_INF` clause (and rejects NaN). #1901.
-                let back = if rim >= f32::MAX && rim.is_finite() {
+                let is_flt_max_sentinel = rim >= f32::MAX && rim.is_finite();
+                let back = if is_flt_max_sentinel {
                     stream.read_f32_le()?
                 } else {
                     0.0
                 };
+                // #3452 — `FLT_MAX` here is nif.xml's *discriminator* for
+                // "Backlight Power follows", not an authored rim exponent —
+                // and it's the field's own declared default (nif.xml
+                // `default="#FLT_MAX#"`), so it's the common value on FO4
+                // content that authors backlighting. Left verbatim, this
+                // finite-but-enormous sentinel survives `Material::sanitize`
+                // (`fix_scalar!` only repairs non-finite values) and clamps
+                // to the tightest rim the shader can express. Normalize to
+                // 0.0 here — every other "nothing authored" site in this
+                // pipeline uses 0.0 (see `MaterialInfo::rimlight_power`'s
+                // own default), and `bethesdaRimFactor` already treats a
+                // non-positive `rimlightPower` as no-value, falling back to
+                // `lightingEffect2` and then nif.xml's declared 2.0 default.
+                let rim = if is_flt_max_sentinel { 0.0 } else { rim };
                 (sub, rim, back)
             } else {
                 (0.0, 0.0, 0.0)

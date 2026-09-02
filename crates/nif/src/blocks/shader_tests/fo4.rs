@@ -322,7 +322,13 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     assert!((prop.glossiness - 50.0).abs() < 1e-4);
     assert!((prop.subsurface_rolloff - 0.3).abs() < 1e-6);
     // #1175: rimlight=FLT_MAX is the sentinel that gates Backlight presence.
-    assert_eq!(prop.rimlight_power, f32::MAX);
+    // #3452: the sentinel itself is not an authored rim exponent — normalize
+    // it to 0.0 (the pipeline's "nothing authored" convention) rather than
+    // carrying it verbatim into `ImportedMaterial` and beyond.
+    assert_eq!(
+        prop.rimlight_power, 0.0,
+        "the FLT_MAX discriminator must not survive as the stored rimlight_power"
+    );
     assert!((prop.backlight_power - 1.0).abs() < 1e-6);
     assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
     assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
