@@ -178,6 +178,7 @@ pub const LEGACY_OBSCRIPT_MISSING_MOD_INDEX: i32 = 255;
 /// Engine routes backing SKSE's content-discovery extensions on `Game`.
 pub const PAPYRUS_GAME_GET_MOD_COUNT_ROUTE: &str = "byro.content.catalog.get-mod-count";
 pub const PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE: &str = "byro.content.catalog.get-mod-by-name";
+pub const PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE: &str = "byro.content.catalog.get-form-from-file";
 pub const PAPYRUS_GAME_GET_MOD_NAME_ROUTE: &str = "byro.content.catalog.get-mod-name";
 pub const PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE: &str =
     "byro.content.catalog.get-mod-dependency-count";
@@ -309,6 +310,17 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             &[("plugin", ScriptValueType::String)],
             ScriptValueType::Integer,
             "Return a regular index, 0x100 plus a light index, or 0xff when absent",
+        ),
+        papyrus_game_content_declaration(
+            PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE,
+            "get-form-from-file",
+            "GetFormFromFile",
+            &[
+                ("form-id", ScriptValueType::Integer),
+                ("plugin", ScriptValueType::String),
+            ],
+            ScriptValueType::Form,
+            "Qualify a plugin-local form ID into a portable FormRef, or None when absent/invalid",
         ),
         papyrus_game_content_declaration(
             PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
@@ -1228,6 +1240,16 @@ pub fn adapt_papyrus_game_get_mod_by_name(catalog: &ContentCatalog, plugin: &str
         PluginKind::Regular => index,
         PluginKind::Light => PAPYRUS_GAME_LIGHT_MOD_OFFSET.saturating_add(index),
     }
+}
+
+/// Execute Papyrus `Game.GetFormFromFile` against the immutable content catalog.
+pub fn adapt_papyrus_game_get_form_from_file(
+    catalog: &ContentCatalog,
+    form_id: i64,
+    plugin: &str,
+) -> Option<FormRef> {
+    let local = u32::try_from(form_id).ok()?;
+    catalog.qualify_form(plugin, local)
 }
 
 pub fn adapt_papyrus_game_get_mod_name(catalog: &ContentCatalog, index: i64) -> String {
@@ -3247,6 +3269,7 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
             &[
                 "GetModCount",
                 "GetModByName",
+                "GetFormFromFile",
                 "GetModName",
                 "GetModDependencyCount",
                 "IsPluginInstalled",
@@ -3570,6 +3593,18 @@ mod tests {
             adapt_papyrus_game_get_mod_by_name(&catalog, "Missing.esp"),
             255
         );
+        assert_eq!(
+            adapt_papyrus_game_get_form_from_file(&catalog, 0x1234, "UPDATE.ESM"),
+            Some(FormRef::new(3_u128.to_be_bytes(), 0x1234))
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_form_from_file(&catalog, -1, "Update.esm"),
+            None
+        );
+        assert_eq!(
+            adapt_papyrus_game_get_form_from_file(&catalog, 0x1234, "Missing.esp"),
+            None
+        );
         assert_eq!(adapt_papyrus_game_get_mod_count(&catalog), 2);
         assert_eq!(adapt_papyrus_game_get_mod_name(&catalog, 1), "Update.esm");
         assert_eq!(
@@ -3622,7 +3657,7 @@ mod tests {
             0
         );
         let declarations = papyrus_game_content_declarations();
-        assert_eq!(declarations.len(), 10);
+        assert_eq!(declarations.len(), 11);
         for declaration in declarations {
             declaration.declaration.validate().unwrap();
         }

@@ -3446,6 +3446,23 @@ mod tests {
             call.arguments,
             [ScriptValue::String("Update.esm".to_owned())]
         );
+        let form_from_file = lower_provider_call(
+            &expression("Game.GetFormFromFile(4660, \"Update.esm\")"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            form_from_file.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE
+        );
+        assert_eq!(
+            form_from_file.arguments,
+            [
+                ScriptValue::Integer(4660),
+                ScriptValue::String("Update.esm".to_owned()),
+            ]
+        );
         assert_eq!(
             lower_provider_call(&expression("Game.GetPlayer()"), &catalog),
             Ok(None)

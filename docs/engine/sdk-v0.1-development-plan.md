@@ -1425,6 +1425,14 @@ order and return a bounded `Form[]`. Null entries, unresolved forms, unknown
 record signatures, and non-global object keys are omitted rather than guessed,
 so this compatibility surface remains portable across supported games.
 
+Checkpoint: `feat(sdk): integrate Game form lookup`.
+
+The content pack now also owns `Game.GetFormFromFile`. A signed Papyrus local
+ID is validated against the named regular or light plugin in the immutable
+catalog and becomes a portable `FormRef`; missing plugins, zero/negative IDs,
+and out-of-range light or regular IDs return `None` without exposing numeric
+global FormIDs.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

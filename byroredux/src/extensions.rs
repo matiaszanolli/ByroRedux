@@ -29,17 +29,18 @@ use byroredux_sdk::actor_values::{
 };
 use byroredux_sdk::animation::{AnimationEvent, AnimationSnapshot, PlayIdleCommand};
 use byroredux_sdk::compatibility::{
-    adapt_papyrus_game_get_light_mod_by_name, adapt_papyrus_game_get_light_mod_count,
-    adapt_papyrus_game_get_light_mod_dependency_count, adapt_papyrus_game_get_light_mod_name,
-    adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
-    adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
-    adapt_papyrus_game_get_nth_light_mod_dependency, adapt_papyrus_game_is_plugin_installed,
-    adapt_storage_util_global_form_filter, adapt_storage_util_global_list,
-    adapt_storage_util_global_prefix, adapt_storage_util_global_scalar,
-    parse_storage_util_list_route, parse_storage_util_prefix_route, StorageUtilListCall,
-    StorageUtilListKind, StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue,
-    StorageUtilPrefixKind, StorageUtilPrefixOperation, StorageUtilScalarCall,
-    StorageUtilScalarResult, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
+    adapt_papyrus_game_get_form_from_file, adapt_papyrus_game_get_light_mod_by_name,
+    adapt_papyrus_game_get_light_mod_count, adapt_papyrus_game_get_light_mod_dependency_count,
+    adapt_papyrus_game_get_light_mod_name, adapt_papyrus_game_get_mod_by_name,
+    adapt_papyrus_game_get_mod_count, adapt_papyrus_game_get_mod_dependency_count,
+    adapt_papyrus_game_get_mod_name, adapt_papyrus_game_get_nth_light_mod_dependency,
+    adapt_papyrus_game_is_plugin_installed, adapt_storage_util_global_form_filter,
+    adapt_storage_util_global_list, adapt_storage_util_global_prefix,
+    adapt_storage_util_global_scalar, parse_storage_util_list_route,
+    parse_storage_util_prefix_route, StorageUtilListCall, StorageUtilListKind,
+    StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind,
+    StorageUtilPrefixOperation, StorageUtilScalarCall, StorageUtilScalarResult,
+    PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
     PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
     PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
     PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
@@ -773,6 +774,11 @@ impl ExtensionHost {
                     plugin,
                 )))
             }
+            (
+                PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE,
+                [ScriptValue::Integer(form_id), ScriptValue::String(plugin)],
+            ) => adapt_papyrus_game_get_form_from_file(&self.content_catalog, *form_id, plugin)
+                .map_or(ScriptValue::None, ScriptValue::Form),
             (PAPYRUS_GAME_GET_MOD_NAME_ROUTE, [ScriptValue::Integer(index)]) => {
                 ScriptValue::String(adapt_papyrus_game_get_mod_name(
                     &self.content_catalog,
@@ -8825,6 +8831,28 @@ mod tests {
             )
             .unwrap(),
             ScriptValue::Integer(0x100)
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE,
+                &[
+                    ScriptValue::Integer(0x1234),
+                    ScriptValue::String("update.esm".to_owned()),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Form(FormRef::new(3_u128.to_be_bytes(), 0x1234))
+        );
+        assert_eq!(
+            host.invoke_papyrus_provider(
+                PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE,
+                &[
+                    ScriptValue::Integer(-1),
+                    ScriptValue::String("Update.esm".to_owned()),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::None
         );
         assert_eq!(
             host.invoke_papyrus_provider(PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, &[])
