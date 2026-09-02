@@ -123,7 +123,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 17 adds typed scalar provider expressions to saved continuation
 /// tails. Older saves cannot represent the expression node without silently
 /// changing a resumed handler's result.
-pub const FORMAT_MAJOR: u16 = 17;
+/// Version 18 adds computed provider receiver arguments and their proven
+/// object types to saved continuation tails. Older saves cannot reconstruct
+/// the receiver expression or its dispatch type without changing a resumed
+/// handler's result, so they are rejected rather than default-filled.
+pub const FORMAT_MAJOR: u16 = 18;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -374,8 +374,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // arithmetic and string concatenation survive a save/load boundary. The
     // tagged value/statement shapes make v17 intentionally incompatible with
     // v16 rather than dropping a pending assignment.
-    const BASELINE_MAJOR: u16 = 17;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2167_318d_f869_61a2;
+    // Computed provider receiver arguments and their proven object types now
+    // persist in the same continuation value tree. The new tagged argument
+    // shape makes v18 intentionally incompatible with v17 rather than
+    // silently changing a resumed receiver dispatch.
+    const BASELINE_MAJOR: u16 = 18;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xed7a_74fc_57ff_9746;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

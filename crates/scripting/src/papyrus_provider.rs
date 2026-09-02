@@ -353,9 +353,9 @@ pub struct PapyrusProviderInvocation {
     pub arguments: Vec<PapyrusProviderArgument>,
     pub result: Option<ScriptResultDeclaration>,
     /// Papyrus object type produced by this call when the SDK can prove one.
-    /// Older saved invocations omit this field and remain valid for calls
-    /// that do not feed a typed receiver.
-    #[cfg_attr(feature = "save", serde(default))]
+    /// This field is required in the current save format because a nested
+    /// receiver-producing call must retain its proven object type across a
+    /// continuation boundary.
     pub result_object_type: Option<PapyrusProviderObjectType>,
 }
 
