@@ -20,18 +20,19 @@ use byroredux_sdk::{
         papyrus_input_declarations, papyrus_legacy_container_declarations,
         papyrus_mod_event_declarations, papyrus_storage_util_declarations, papyrus_ui_declarations,
         parse_storage_util_list_route, parse_storage_util_prefix_route, StorageUtilListOperation,
-        PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
-        PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
-        PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+        PAPYRUS_GAME_GET_PLAYER_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
+        PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+        PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
     },
     event::{
         CustomEvent, LegacyModEventSubscriptionCommand, LegacySkseModEventValue,
@@ -303,8 +304,8 @@ pub struct TypedPapyrusProviderCall {
     pub result: Option<ScriptResultDeclaration>,
 }
 
-/// One handler argument resolved either at translation time or from a typed
-/// local when the event executes.
+/// One handler argument resolved either at translation time, from a typed
+/// local, or from a bounded provider expression when the event executes.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum PapyrusProviderArgument {
@@ -313,6 +314,30 @@ pub enum PapyrusProviderArgument {
         name: String,
         value_type: ScriptValueType,
     },
+    /// A bounded provider expression evaluated immediately before the call.
+    /// This is used for receiver-producing expressions such as
+    /// `Game.GetPlayer().Method(...)`.
+    Value {
+        value: Box<PapyrusProviderValue>,
+        value_type: ScriptValueType,
+    },
+}
+
+/// Papyrus object types that the provider runtime can prove for a returned
+/// entity value. This is intentionally a compact enum so saved expression
+/// values do not inflate the surrounding recursive AST enums.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum PapyrusProviderObjectType {
+    ObjectReference,
+}
+
+impl PapyrusProviderObjectType {
+    fn as_provider_name(self) -> &'static str {
+        match self {
+            Self::ObjectReference => "ObjectReference",
+        }
+    }
 }
 
 /// A provider call embedded in an event handler. Fragment calls continue to
@@ -321,11 +346,17 @@ pub enum PapyrusProviderArgument {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PapyrusProviderInvocation {
     pub route: PapyrusProviderRoute,
-    /// Engine-owned receiver for a reserved `self.Method(...)` call. The SDK
-    /// declaration includes this as its required first `Entity` parameter.
+    /// Engine-owned receiver for a reserved `self.Method(...)` call or a
+    /// typed object receiver. The SDK declaration includes this as its
+    /// required first `Entity` parameter.
     pub receiver: Option<Box<PapyrusProviderArgument>>,
     pub arguments: Vec<PapyrusProviderArgument>,
     pub result: Option<ScriptResultDeclaration>,
+    /// Papyrus object type produced by this call when the SDK can prove one.
+    /// Older saved invocations omit this field and remain valid for calls
+    /// that do not feed a typed receiver.
+    #[cfg_attr(feature = "save", serde(default))]
+    pub result_object_type: Option<PapyrusProviderObjectType>,
 }
 
 /// Catalog construction failure detected before scripts are attached.
@@ -663,35 +694,70 @@ fn lower_provider_invocation(
     let Expr::MemberAccess { object, member } = &callee.node else {
         return Ok(None);
     };
-    let Expr::Ident(provider) = &object.node else {
-        return Ok(None);
-    };
-    let provider_name = provider.0.to_ascii_lowercase();
-    let (route, receiver, parameter_offset) = if provider.0.eq_ignore_ascii_case(PAPYRUS_SELF_LOCAL)
-        && locals
-            .get(PAPYRUS_SELF_LOCAL)
-            .is_some_and(|local| local.value_type == ScriptValueType::Entity)
-    {
-        let Some(route) = catalog.resolve(PAPYRUS_SELF_PROVIDER, &member.node.0) else {
-            if catalog.contains_provider(PAPYRUS_SELF_PROVIDER) {
-                return Err(PapyrusProviderLowerError::UnknownFunction {
-                    provider: provider.0.clone(),
-                    function: member.node.0.clone(),
-                });
-            }
-            return Ok(None);
-        };
-        (
-            route,
-            Some(Box::new(PapyrusProviderArgument::Local {
-                name: PAPYRUS_SELF_LOCAL.to_owned(),
-                value_type: ScriptValueType::Entity,
-            })),
-            1,
-        )
-    } else if let Some(local) = locals.get(&provider_name) {
-        if local.value_type != ScriptValueType::Entity {
-            if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+    let (route, receiver, parameter_offset) =
+        if let Expr::Ident(provider) = &object.node {
+            let provider_name = provider.0.to_ascii_lowercase();
+            if provider.0.eq_ignore_ascii_case(PAPYRUS_SELF_LOCAL)
+                && locals
+                    .get(PAPYRUS_SELF_LOCAL)
+                    .is_some_and(|local| local.value_type == ScriptValueType::Entity)
+            {
+                let Some(route) = catalog.resolve(PAPYRUS_SELF_PROVIDER, &member.node.0) else {
+                    if catalog.contains_provider(PAPYRUS_SELF_PROVIDER) {
+                        return Err(PapyrusProviderLowerError::UnknownFunction {
+                            provider: provider.0.clone(),
+                            function: member.node.0.clone(),
+                        });
+                    }
+                    return Ok(None);
+                };
+                (
+                    route,
+                    Some(Box::new(PapyrusProviderArgument::Local {
+                        name: PAPYRUS_SELF_LOCAL.to_owned(),
+                        value_type: ScriptValueType::Entity,
+                    })),
+                    1,
+                )
+            } else if let Some(local) = locals.get(&provider_name) {
+                if local.value_type != ScriptValueType::Entity {
+                    if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+                        (route, None, 0)
+                    } else {
+                        if is_known_provider_call(&provider.0, &member.node.0, catalog) {
+                            return Err(PapyrusProviderLowerError::UnknownFunction {
+                                provider: provider.0.clone(),
+                                function: member.node.0.clone(),
+                            });
+                        }
+                        return Ok(None);
+                    }
+                } else if let Some(object_type) = local.object_type.as_deref() {
+                    if let Some(route) = catalog.resolve(object_type, &member.node.0) {
+                        (
+                            route,
+                            Some(Box::new(PapyrusProviderArgument::Local {
+                                name: provider_name,
+                                value_type: ScriptValueType::Entity,
+                            })),
+                            1,
+                        )
+                    } else if catalog.contains_provider(object_type) {
+                        return Err(PapyrusProviderLowerError::UnknownFunction {
+                            provider: object_type.to_owned(),
+                            function: member.node.0.clone(),
+                        });
+                    } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+                        (route, None, 0)
+                    } else {
+                        return Ok(None);
+                    }
+                } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+                    (route, None, 0)
+                } else {
+                    return Ok(None);
+                }
+            } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
                 (route, None, 0)
             } else {
                 if is_known_provider_call(&provider.0, &member.node.0, catalog) {
@@ -702,42 +768,40 @@ fn lower_provider_invocation(
                 }
                 return Ok(None);
             }
-        } else if let Some(object_type) = local.object_type.as_deref() {
-            if let Some(route) = catalog.resolve(object_type, &member.node.0) {
-                (
-                    route,
-                    Some(Box::new(PapyrusProviderArgument::Local {
-                        name: provider_name,
-                        value_type: ScriptValueType::Entity,
-                    })),
-                    1,
-                )
-            } else if catalog.contains_provider(object_type) {
-                return Err(PapyrusProviderLowerError::UnknownFunction {
-                    provider: object_type.to_owned(),
-                    function: member.node.0.clone(),
-                });
-            } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
-                (route, None, 0)
-            } else {
-                return Ok(None);
-            }
-        } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
-            (route, None, 0)
         } else {
-            return Ok(None);
-        }
-    } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
-        (route, None, 0)
-    } else {
-        if is_known_provider_call(&provider.0, &member.node.0, catalog) {
-            return Err(PapyrusProviderLowerError::UnknownFunction {
-                provider: provider.0.clone(),
-                function: member.node.0.clone(),
-            });
-        }
-        return Ok(None);
-    };
+            let (value, value_type) = lower_provider_value(&object.node, catalog, locals, 1)
+                .map_err(|error| PapyrusProviderLowerError::UnsupportedArgument {
+                    parameter: format!("receiver expression: {error:?}"),
+                })?;
+            if value_type != ScriptValueType::Entity {
+                return Err(PapyrusProviderLowerError::UnsupportedArgument {
+                    parameter: "receiver expression".to_owned(),
+                });
+            }
+            let Some(object_type) = provider_value_object_type(&value) else {
+                return Err(PapyrusProviderLowerError::UnsupportedArgument {
+                    parameter: "receiver object type".to_owned(),
+                });
+            };
+            let object_type_name = object_type.as_provider_name();
+            let Some(route) = catalog.resolve(object_type_name, &member.node.0) else {
+                if catalog.contains_provider(object_type_name) {
+                    return Err(PapyrusProviderLowerError::UnknownFunction {
+                        provider: object_type_name.to_owned(),
+                        function: member.node.0.clone(),
+                    });
+                }
+                return Ok(None);
+            };
+            (
+                route,
+                Some(Box::new(PapyrusProviderArgument::Value {
+                    value: Box::new(value),
+                    value_type,
+                })),
+                1,
+            )
+        };
     let declaration = route.declaration();
     if parameter_offset == 1
         && !declaration.parameters.first().is_some_and(|parameter| {
@@ -780,7 +844,8 @@ fn lower_provider_invocation(
             PapyrusProviderArgument::Literal(value) => {
                 value.matches(parameter.value_type, parameter.optional)
             }
-            PapyrusProviderArgument::Local { value_type, .. } => {
+            PapyrusProviderArgument::Local { value_type, .. }
+            | PapyrusProviderArgument::Value { value_type, .. } => {
                 *value_type == parameter.value_type
             }
         };
@@ -803,11 +868,13 @@ fn lower_provider_invocation(
     validate_storage_util_arguments(route.qualified_name(), &arguments)?;
     validate_legacy_container_arity(route.qualified_name(), arguments.len())?;
     validate_mod_event_arity(route.qualified_name(), arguments.len())?;
+    let result_object_type = provider_result_object_type(route);
     Ok(Some(PapyrusProviderInvocation {
         route: route.clone(),
         receiver,
         arguments,
         result: declaration.result,
+        result_object_type,
     }))
 }
 
@@ -1591,19 +1658,15 @@ fn invocation_references_local(call: &PapyrusProviderInvocation, name: &str) -> 
         .iter()
         .map(Box::as_ref)
         .chain(call.arguments.iter())
-        .any(|argument| {
-            matches!(
-                argument,
-                PapyrusProviderArgument::Local { name: local, .. } if local == name
-            )
-        })
+        .any(|argument| argument_references_local(argument, name))
 }
 
 fn argument_references_local(argument: &PapyrusProviderArgument, name: &str) -> bool {
-    matches!(
-        argument,
-        PapyrusProviderArgument::Local { name: local, .. } if local == name
-    )
+    match argument {
+        PapyrusProviderArgument::Local { name: local, .. } => local == name,
+        PapyrusProviderArgument::Value { value, .. } => value_references_local(value, name),
+        PapyrusProviderArgument::Literal(_) => false,
+    }
 }
 
 fn condition_references_local(condition: &PapyrusProviderCondition, name: &str) -> bool {
@@ -2150,7 +2213,7 @@ fn lower_provider_value(
     let result = call
         .result
         .as_ref()
-        .filter(|result| !result.optional)
+        .filter(|result| !result.optional || matches!(result.value_type, ScriptValueType::Entity))
         .ok_or_else(|| PapyrusProviderProgramError::ResultTypeMismatch("comparison".to_owned()))?;
     let value_type = result.value_type;
     Ok((PapyrusProviderValue::Call(call), value_type))
@@ -2252,6 +2315,34 @@ fn sdk_local_type(value: &Type) -> Option<PapyrusProviderLocalType> {
             &object.0,
         )),
         _ => sdk_type(value).map(PapyrusProviderLocalType::scalar),
+    }
+}
+
+fn provider_value_object_type(value: &PapyrusProviderValue) -> Option<PapyrusProviderObjectType> {
+    match value {
+        PapyrusProviderValue::Call(call) => call.result_object_type,
+        PapyrusProviderValue::Literal(_)
+        | PapyrusProviderValue::Local(_)
+        | PapyrusProviderValue::Binary { .. } => None,
+    }
+}
+
+fn provider_result_object_type(route: &PapyrusProviderRoute) -> Option<PapyrusProviderObjectType> {
+    let declaration = route.declaration();
+    if declaration
+        .result
+        .as_ref()
+        .is_none_or(|result| result.value_type != ScriptValueType::Entity)
+    {
+        return None;
+    }
+    let alias = declaration.papyrus.as_ref()?;
+    if route.qualified_name() == PAPYRUS_GAME_GET_PLAYER_ROUTE
+        || alias.provider.eq_ignore_ascii_case("ObjectReference")
+    {
+        Some(PapyrusProviderObjectType::ObjectReference)
+    } else {
+        None
     }
 }
 
@@ -2984,6 +3075,10 @@ fn validate_provider_call(
         || saved.result != current.result
         || saved.papyrus != current.papyrus
         || call.result != current.result
+        || call
+            .result_object_type
+            .as_ref()
+            .is_some_and(|saved| Some(saved) != provider_result_object_type(live).as_ref())
     {
         return Err("saved provider route does not match the live catalog".to_owned());
     }
@@ -3000,6 +3095,11 @@ fn validate_provider_call(
                 if !name.is_empty()
                     && *name == name.to_ascii_lowercase()
                     && *value_type == parameter.value_type => {}
+            PapyrusProviderArgument::Value { value, value_type }
+                if *value_type == parameter.value_type =>
+            {
+                validate_provider_value(value, catalog)?;
+            }
             _ => return Err("saved provider receiver is invalid".to_owned()),
         }
         1
@@ -3030,6 +3130,13 @@ fn validate_provider_call(
                     }
                     Ok(())
                 }
+                PapyrusProviderArgument::Value { value, value_type } => {
+                    if *value_type != parameter.value_type {
+                        return Err("saved provider computed argument changed type".to_owned());
+                    }
+                    validate_provider_value(value, catalog)
+                        .map_err(|_| "saved provider computed argument is invalid".to_owned())
+                }
             }
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -3052,8 +3159,14 @@ fn validate_provider_call(
 
 fn materialize_provider_arguments(
     call: &PapyrusProviderInvocation,
+    callback: &PapyrusProviderCallback,
+    principal: Option<&PrincipalId>,
     locals: &BTreeMap<String, ScriptValue>,
+    depth: usize,
 ) -> Result<Vec<ScriptValue>, String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("provider argument nesting exceeds the runtime bound".to_owned());
+    }
     let parameter_offset = if call.receiver.is_some() { 1 } else { 0 };
     let mut arguments = Vec::with_capacity(call.arguments.len() + parameter_offset);
     if let Some(receiver) = &call.receiver {
@@ -3066,19 +3179,29 @@ fn materialize_provider_arguments(
                 parameter.value_type == ScriptValueType::Entity && !parameter.optional
             })
             .ok_or_else(|| "provider receiver declaration is invalid".to_owned())?;
-        let PapyrusProviderArgument::Local { name, value_type } = receiver.as_ref() else {
-            return Err("provider receiver must be a local".to_owned());
+        let value = match receiver.as_ref() {
+            PapyrusProviderArgument::Local { name, value_type } => {
+                if name.is_empty()
+                    || *name != name.to_ascii_lowercase()
+                    || *value_type != parameter.value_type
+                {
+                    return Err("provider receiver local changed type".to_owned());
+                }
+                locals
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| "translated provider receiver was not initialized".to_owned())?
+            }
+            PapyrusProviderArgument::Value { value, value_type } => {
+                if *value_type != parameter.value_type {
+                    return Err("provider receiver expression changed type".to_owned());
+                }
+                evaluate_provider_value(value, callback, principal, locals, depth + 1)?
+            }
+            PapyrusProviderArgument::Literal(_) => {
+                return Err("provider receiver must be a local or expression".to_owned());
+            }
         };
-        if name.is_empty()
-            || *name != name.to_ascii_lowercase()
-            || *value_type != parameter.value_type
-        {
-            return Err("provider receiver local changed type".to_owned());
-        }
-        let value = locals
-            .get(name)
-            .cloned()
-            .ok_or_else(|| "translated provider receiver was not initialized".to_owned())?;
         if !value.matches(parameter.value_type, parameter.optional) {
             return Err("translated provider receiver changed type at execution".to_owned());
         }
@@ -3101,6 +3224,12 @@ fn materialize_provider_arguments(
                     .get(name)
                     .cloned()
                     .ok_or_else(|| format!("translated local {name} was not initialized"))?
+            }
+            PapyrusProviderArgument::Value { value, value_type } => {
+                if *value_type != parameter.value_type {
+                    return Err("provider computed argument declaration changed type".to_owned());
+                }
+                evaluate_provider_value(value, callback, principal, locals, depth + 1)?
             }
         };
         if !value.matches(parameter.value_type, parameter.optional) {
@@ -3182,7 +3311,8 @@ fn execute_statements(
                 locals.insert(name.clone(), value.clone());
             }
             PapyrusProviderStatement::AssignCall { name, call } => {
-                let arguments = materialize_provider_arguments(call, locals)?;
+                let arguments =
+                    materialize_provider_arguments(call, callback, principal, locals, 0)?;
                 let value = callback(principal, call.route.qualified_name(), &arguments)?;
                 locals.insert(name.clone(), value);
             }
@@ -3200,7 +3330,8 @@ fn execute_statements(
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::ArrayWritebackCall { name, call } => {
-                let arguments = materialize_provider_arguments(call, locals)?;
+                let arguments =
+                    materialize_provider_arguments(call, callback, principal, locals, 0)?;
                 let value = callback(principal, call.route.qualified_name(), &arguments)?;
                 let expected = call
                     .route
@@ -3217,7 +3348,8 @@ fn execute_statements(
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::Call(call) => {
-                let arguments = materialize_provider_arguments(call, locals)?;
+                let arguments =
+                    materialize_provider_arguments(call, callback, principal, locals, 0)?;
                 callback(principal, call.route.qualified_name(), &arguments)?;
             }
             PapyrusProviderStatement::RegisterModEvent {
@@ -3321,6 +3453,9 @@ fn materialize_mod_event_argument(
                 .cloned()
                 .ok_or_else(|| format!("translated local {name} was not initialized"))?
         }
+        PapyrusProviderArgument::Value { .. } => {
+            return Err("SendModEvent computed arguments are unsupported".to_owned());
+        }
     };
     value
         .matches(expected, false)
@@ -3364,7 +3499,7 @@ fn evaluate_condition(
             .cloned()
             .ok_or_else(|| format!("translated local {name} was not initialized"))?,
         PapyrusProviderCondition::Call(call) => {
-            let arguments = materialize_provider_arguments(call, locals)?;
+            let arguments = materialize_provider_arguments(call, callback, principal, locals, 0)?;
             callback(principal, call.route.qualified_name(), &arguments)?
         }
         PapyrusProviderCondition::Not(_)
@@ -3404,7 +3539,7 @@ fn evaluate_provider_value(
             .cloned()
             .ok_or_else(|| format!("translated local {name} was not initialized")),
         PapyrusProviderValue::Call(call) => {
-            let arguments = materialize_provider_arguments(call, locals)?;
+            let arguments = materialize_provider_arguments(call, callback, principal, locals, 0)?;
             callback(principal, call.route.qualified_name(), &arguments)
         }
         PapyrusProviderValue::Binary {
@@ -3776,7 +3911,7 @@ mod tests {
     }
 
     fn object_catalog() -> PapyrusProviderCatalog {
-        let mut catalog = catalog();
+        let mut catalog = PapyrusProviderCatalog::engine_compatibility();
         catalog
             .insert(
                 &ExtensionId::new("org.example.object").unwrap(),
@@ -3966,6 +4101,144 @@ mod tests {
                     ScriptValue::Entity(EntityRef::new(9, u64::from(activator) + 1).unwrap()),
                     ScriptValue::Integer(7),
                 ],
+            )]
+        );
+    }
+
+    #[test]
+    fn receiver_expression_lowers_nested_game_player_call() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Game.GetPlayer().Touch(7)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &object_catalog())
+            .unwrap()
+            .unwrap();
+        let [PapyrusProviderStatement::Call(call)] = program.handler(PapyrusProviderEvent::OnLoad)
+        else {
+            panic!("expected one receiver-expression provider call");
+        };
+        assert_eq!(
+            call.route.qualified_name(),
+            "ext.org.example.object.touch-object"
+        );
+        assert_eq!(call.result_object_type, None);
+        assert_eq!(
+            call.receiver,
+            Some(Box::new(PapyrusProviderArgument::Value {
+                value: Box::new(PapyrusProviderValue::Call(PapyrusProviderInvocation {
+                    route: object_catalog()
+                        .resolve("Game", "GetPlayer")
+                        .unwrap()
+                        .clone(),
+                    receiver: None,
+                    arguments: Vec::new(),
+                    result: Some(ScriptResultDeclaration {
+                        value_type: ScriptValueType::Entity,
+                        optional: true,
+                    }),
+                    result_object_type: Some(PapyrusProviderObjectType::ObjectReference),
+                })),
+                value_type: ScriptValueType::Entity,
+            }))
+        );
+    }
+
+    #[test]
+    fn receiver_expression_dispatch_evaluates_inner_call_before_outer_call() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Game.GetPlayer().Touch(7)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &object_catalog())
+            .unwrap()
+            .unwrap();
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE {
+                    Ok(ScriptValue::Entity(EntityRef::new(3, 11).unwrap()))
+                } else {
+                    Ok(ScriptValue::None)
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(object_catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [
+                (
+                    byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE.to_owned(),
+                    Vec::new(),
+                ),
+                (
+                    "ext.org.example.object.touch-object".to_owned(),
+                    vec![
+                        ScriptValue::Entity(EntityRef::new(3, 11).unwrap()),
+                        ScriptValue::Integer(7),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn receiver_expression_with_none_player_fails_closed_before_outer_call() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Game.GetPlayer().Touch(7)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &object_catalog())
+            .unwrap()
+            .unwrap();
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::None)
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(object_catalog()), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [(
+                byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE.to_owned(),
+                Vec::new(),
             )]
         );
     }
