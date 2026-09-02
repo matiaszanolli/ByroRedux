@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `0f42c0cc` (`feat(sdk): integrate engine player identity alias`)
+Checkpoint: `44ad6b2b` (`feat(scripting): preserve SCPT load-order name probes`)
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
@@ -54,6 +54,10 @@ typed result and deferred mutation across a wait and save/reload boundary.
 
 ### 3. Close the preserved-SCPT bridge deliberately
 
+- **Delivered in this slice:** source-backed `GetNthModName <index>` now
+  lowers through the same bounded immutable content catalog as the existing
+  SCDA opcode path. Source and source-less conditional fixtures agree, and a
+  non-numeric source argument rejects translation before attachment.
 - Extend the bounded SCDA expression evaluator and non-literal argument
   handling only for commands with a semantic SDK route.
 - Add the remaining safe load-order/content commands and explicit diagnostics
