@@ -1111,6 +1111,10 @@ void applyCombustionSources(
 // this compute shader has none of that function's dependencies
 // (`dofParams.z` knee-frac override, `dbgFlags` legacy A/B branch)
 // bound, and doesn't need them for an ambient-style fog glow.
+// Both arms recover the authored range from `R` (the CULL radius) through
+// the shared LEGACY_LIGHT_CULL_RANGE_MULTIPLIER, and both fold in
+// `sourceRadius` the way `Emitter::distance_attenuation` does — see the
+// same two lines in `pointSpotAtten`.
 float froxelLightAtten(
     float dist, float R, float shape, float sourceRadius, float encodedModel
 ) {
@@ -1124,11 +1128,11 @@ float froxelLightAtten(
             distanceMeters * distanceMeters,
             sourceMeters * sourceMeters
         );
-        float authoredRange = max(R * 0.5, sourceRadius);
+        float authoredRange = max(R / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER, sourceRadius);
         float cullWindow = 1.0 - smoothstep(authoredRange, max(R, authoredRange + 1.0), dist);
         return inverseSquare * cullWindow;
     }
-    float knee = max(R * 0.5, 1.0);
+    float knee = max(max(R / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER, sourceRadius), 1.0);
     float dn = dist / knee;
     float phys = 1.0 / (1.0 + shape * dn * dn);
     float wcull = 1.0 - smoothstep(knee, max(R, knee + 1.0), dist);

@@ -140,6 +140,14 @@ pub const ATTENUATION_MODEL_LEGACY_SOFT_RANGE: u32 =
 pub const ATTENUATION_MODEL_INVERSE_SQUARE: u32 =
     byroredux_core::lighting::AttenuationModel::InverseSquare as u32;
 pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+/// Authored influence range -> compatibility cull-range multiplier (#3575
+/// follow-up). `gpu_light_from_emitter` ships the *derived* value in
+/// `GpuLight.position_radius.w`, so every shader that needs the authored
+/// range back has to divide by this. Emitting it here keeps that recovery
+/// tied to the same `byroredux_core` constant the upload multiplies by,
+/// instead of four independent `0.5` literals.
+pub const LEGACY_LIGHT_CULL_RANGE_MULTIPLIER: f32 =
+    byroredux_core::lighting::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER;
 pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 =
     byroredux_core::combustion::ADIABATIC_FLAME_TEMPERATURE_K;
 pub const COMBUSTION_REACTION_RATE_PER_SECOND: f32 =

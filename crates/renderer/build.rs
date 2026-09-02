@@ -192,6 +192,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define LEGACY_LIGHT_CULL_RANGE_MULTIPLIER {LEGACY_LIGHT_CULL_RANGE_MULTIPLIER:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define ADIABATIC_FLAME_TEMPERATURE_K {ADIABATIC_FLAME_TEMPERATURE_K:?}"
     )
     .unwrap();

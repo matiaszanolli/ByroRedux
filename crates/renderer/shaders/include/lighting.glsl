@@ -53,7 +53,13 @@ float pointSpotAtten(
             distanceMeters * distanceMeters,
             sourceMeters * sourceMeters
         );
-        float authoredRange = max(R * 0.5, sourceRadius);
+        // `R` is the CULL radius. Recover the authored range through the
+        // shared LEGACY_LIGHT_CULL_RANGE_MULTIPLIER rather than a bare
+        // `0.5` literal, so retuning the multiplier CPU-side cannot leave
+        // the shader silently normalizing against the old geometry (#3575
+        // follow-up). `max(.., sourceRadius)` mirrors
+        // `Emitter::distance_attenuation`'s `range.max(source_radius)`.
+        float authoredRange = max(R / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER, sourceRadius);
         float cullWindow = 1.0 - smoothstep(authoredRange, max(R, authoredRange + 1.0), dist);
         return inverseSquare * cullWindow;
     }
@@ -62,8 +68,17 @@ float pointSpotAtten(
         float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
         return pow(window, shape);
     }
-    float kneeFrac = (dofParams.z > 0.0001) ? dofParams.z : 0.5;
-    float knee = max(R * kneeFrac, 1.0);
+    // Default knee = the authored range recovered from the cull radius.
+    // `dofParams.z` stays a deliberate REND-#1451 bench override; the
+    // DEFAULT is derived from LEGACY_LIGHT_CULL_RANGE_MULTIPLIER so a
+    // debug tunable is not the only thing that knows the upload geometry.
+    // `max(.., sourceRadius)` matches both the inverse-square arm above and
+    // `Emitter::distance_attenuation`'s `range.max(source_radius)` — the
+    // legacy arm was the one place the three disagreed.
+    float kneeFrac = (dofParams.z > 0.0001)
+        ? dofParams.z
+        : (1.0 / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER);
+    float knee = max(max(R * kneeFrac, sourceRadius), 1.0);
     float dn = dist / knee;
     // Smooth, bounded near-zone falloff: 1.0 at the source, decaying
     // with the per-light `shape` (falloff_exponent). shape 1 → 50% at

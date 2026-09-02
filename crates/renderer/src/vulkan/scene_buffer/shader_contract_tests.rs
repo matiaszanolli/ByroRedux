@@ -2912,3 +2912,217 @@ fn refraction_terminus_tints_through_ray_hit_albedo_not_instance_avg_albedo() {
          by it counts the texture twice (#2916)"
     );
 }
+
+// ── CPU→GPU light-boundary sibling pairs (#3575 / #3232 bug class) ──
+//
+// `GpuLight` carries three quantities that each have a near-identical
+// sibling on the CPU side, and every recurrence of this bug class so far was
+// a consumer or producer reaching for the wrong half: #3575 sized the
+// soft-shadow disk off the 2x-inflated cull radius instead of the canonical
+// source radius, and #3232 rotated a placed NIF light's position by its
+// REFR rotation but not its direction. Both presented as visual artifacts
+// someone happened to notice, months apart.
+//
+// `soft_shadow_disk_reads_the_canonical_source_radius_not_the_cull_radius`
+// above pins #3575's two sites in `triangle.frag`. The tests below pin the
+// class rather than the site: no shader anywhere may fabricate an emitter
+// size from `position_radius.w`, and no shader may recover the authored
+// influence range from it except through the one shared multiplier the
+// upload used. The producer half of the position/direction pair is pinned
+// CPU-side by `spawn_nif_lights_rotates_direction_by_reference_rotation`
+// (`byroredux/src/cell_loader/nif_light_spawn_gate_tests.rs`).
+
+/// Every GLSL source that reads `GpuLight`. Kept as one list so a new
+/// light consumer has a single place to be added to, and so the two pins
+/// below cannot silently cover three files while a fourth drifts.
+const LIGHT_CONSUMER_SOURCES: &[(&str, &str)] = &[
+    (
+        "include/lighting.glsl",
+        include_str!("../../../shaders/include/lighting.glsl"),
+    ),
+    (
+        "triangle.frag",
+        include_str!("../../../shaders/triangle.frag"),
+    ),
+    (
+        "cluster_cull.comp",
+        include_str!("../../../shaders/cluster_cull.comp"),
+    ),
+    (
+        "caustic_splat.comp",
+        include_str!("../../../shaders/caustic_splat.comp"),
+    ),
+    (
+        "volumetrics_inject.comp",
+        include_str!("../../../shaders/volumetrics_inject.comp"),
+    ),
+];
+
+/// Executable (non-comment) lines of a GLSL source. The prohibitions below
+/// are about code, not about commentary explaining why the code is shaped
+/// the way it is — the #3575 comment block quotes the forbidden expression
+/// verbatim.
+fn executable_glsl_lines(src: &str) -> Vec<&str> {
+    src.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with("//") && !line.starts_with("*"))
+        .collect()
+}
+
+/// #3575 generalized — `position_radius.w` is the CULL radius
+/// (`range x LEGACY_LIGHT_CULL_RANGE_MULTIPLIER`). The emitter's physical
+/// size is `params.y`, derived once CPU-side by
+/// `Emitter::from_legacy_world_units` as `(range * 0.05).clamp(1.0, 32.0)`
+/// and by the procedural emitters as a real physical radius. Scaling `.w`
+/// by a small constant reproduces `params.y` only in the unclamped middle;
+/// it has no ceiling, disagrees at the floor, and makes a pure culling
+/// tunable own shadow softness.
+///
+/// #3575 fixed the two `triangle.frag` sites and pinned them there. This
+/// pins the *class* across every light consumer, so the next shader to want
+/// "how big is this lamp" cannot reintroduce the derivation in a file the
+/// original pin never looked at.
+#[test]
+fn no_shader_fabricates_an_emitter_size_from_the_cull_radius() {
+    // `.w * k` for a small `k`, in either operand order, however the source
+    // spells the read (`lights[i].position_radius.w`, a `radius` local, or
+    // an unpacked `Lrad`).
+    for (name, src) in LIGHT_CONSUMER_SOURCES {
+        for line in executable_glsl_lines(src) {
+            for needle in [
+                "radius * 0.0",
+                "radius * 0.1",
+                "0.025 * radius",
+                "position_radius.w * 0.",
+                "0. * position_radius.w",
+            ] {
+                assert!(
+                    !line.contains(needle),
+                    "{name}: `{}` scales the CULL radius down to fabricate an \
+                     emitter size. The canonical source radius is \
+                     `lights[i].params.y` — see #3575 and the sibling-pair \
+                     table on `GpuLight`.",
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
+/// The authored influence range is the canonical CPU value; the cull radius
+/// is what crosses the boundary, because four shaders need it as the
+/// cull-window edge. Any shader wanting the authored range back must
+/// therefore divide `position_radius.w` by the *same* multiplier
+/// `gpu_light_from_emitter` multiplied by.
+///
+/// Before this pin, four sites spelled that recovery as a bare `0.5`, and
+/// one of them (`pointSpotAtten`'s legacy arm) sourced it from
+/// `dofParams.z` — a runtime *debug* tunable — so the bench knob for
+/// REND-#1451 was the only thing in the tree that knew the upload geometry.
+/// Dropping `LEGACY_LIGHT_CULL_RANGE_MULTIPLIER` to 1.5 CPU-side would have
+/// left every shader normalizing against the old 2.0 geometry with nothing
+/// failing.
+#[test]
+fn authored_light_range_is_recovered_through_the_shared_cull_multiplier() {
+    let glsl_multiplier = crate::shader_constants::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER;
+    assert_eq!(
+        glsl_multiplier,
+        byroredux_core::lighting::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER,
+        "the renderer's GLSL-emitted multiplier must be the core constant \
+         `gpu_light_from_emitter` uploads with"
+    );
+
+    // Both attenuation implementations — `pointSpotAtten` (surface) and
+    // `froxelLightAtten` (volumetrics) — recover the authored range twice
+    // each: once per attenuation model arm.
+    for (name, src, expected_sites) in [
+        (
+            "include/lighting.glsl",
+            include_str!("../../../shaders/include/lighting.glsl"),
+            2usize,
+        ),
+        (
+            "volumetrics_inject.comp",
+            include_str!("../../../shaders/volumetrics_inject.comp"),
+            2usize,
+        ),
+    ] {
+        let executable = executable_glsl_lines(src);
+        let sites = executable
+            .iter()
+            .filter(|line| line.contains("R / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER"))
+            .count()
+            + executable
+                .iter()
+                .filter(|line| line.contains("1.0 / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER"))
+                .count();
+        assert_eq!(
+            sites, expected_sites,
+            "{name}: expected {expected_sites} recoveries of the authored range \
+             through LEGACY_LIGHT_CULL_RANGE_MULTIPLIER, found {sites}. A new \
+             attenuation arm must derive it the same way, not re-spell `0.5`."
+        );
+
+        for line in &executable {
+            let recovers_range = line.contains("authoredRange") || line.contains("kneeFrac");
+            assert!(
+                !(recovers_range && line.contains("* 0.5")),
+                "{name}: `{}` recovers the authored influence range with a bare \
+                 `0.5` instead of `/ LEGACY_LIGHT_CULL_RANGE_MULTIPLIER`. That \
+                 literal is only correct while the multiplier is exactly 2.0.",
+                line.trim()
+            );
+        }
+    }
+}
+
+/// Both GPU attenuation arms and the CPU reference
+/// (`Emitter::distance_attenuation`, documented as "CPU reference for the
+/// distance law implemented by surface and froxel shaders") must agree on
+/// what the authored range is when a light's luminous surface is larger
+/// than its influence range: `range.max(source_radius)`.
+///
+/// The inverse-square arms always folded `sourceRadius` in; the legacy
+/// arms did not, so the one quantity three implementations were supposed
+/// to share had two definitions. Procedural emitters — the ones with a
+/// real physical `source_radius` rather than a range-derived one — are
+/// exactly the class where the two diverge.
+#[test]
+fn both_attenuation_arms_clamp_the_authored_range_to_the_source_radius() {
+    for (name, src, function) in [
+        (
+            "include/lighting.glsl",
+            include_str!("../../../shaders/include/lighting.glsl"),
+            "float pointSpotAtten(",
+        ),
+        (
+            "volumetrics_inject.comp",
+            include_str!("../../../shaders/volumetrics_inject.comp"),
+            "float froxelLightAtten(",
+        ),
+    ] {
+        let start = src
+            .find(function)
+            .unwrap_or_else(|| panic!("{name}: no longer declares `{function}`"));
+        let body = &src[start..];
+        let end = body
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{name}: `{function}` body did not terminate"));
+        let body = &body[..end];
+
+        let folds = executable_glsl_lines(body)
+            .iter()
+            .filter(|line| {
+                (line.contains("authoredRange") || line.contains("knee ="))
+                    && line.contains("sourceRadius")
+            })
+            .count();
+        assert_eq!(
+            folds, 2,
+            "{name}: `{function}` must fold `sourceRadius` into the authored \
+             range in BOTH model arms, matching \
+             `Emitter::distance_attenuation`'s `range.max(source_radius)`; \
+             found {folds} of 2."
+        );
+    }
+}

@@ -267,6 +267,28 @@ impl Default for GpuInstance {
 /// the LIGH-authored curve, producing visibly sharper falloff on
 /// FO3/FNV/FO4 lights (smaller authored radii) than on Skyrim
 /// lights (larger authored radii). See REN-LIGHT-FALLOFF-NEW-01.
+///
+/// ## Near-identical sibling pairs (#3575 / #3232 bug class)
+///
+/// Three quantities on this struct have a CPU-side sibling that looks like
+/// the one a consumer wants. Every recurrence of that class so far
+/// (#3575: shadow disk sized off the cull radius; #3232: position rotated,
+/// direction not) has been a consumer or producer picking the wrong half.
+/// Which half is canonical, and where the other one is derived:
+///
+/// | pair | canonical | derived | rule |
+/// |---|---|---|---|
+/// | influence range | `Emitter::range` (CPU) | `position_radius.w` = `range × LEGACY_LIGHT_CULL_RANGE_MULTIPLIER` | the cull radius crosses because four shaders need it as the cull-window edge; the authored range is recovered **only** as `.w / LEGACY_LIGHT_CULL_RANGE_MULTIPLIER`, never a bare literal |
+/// | emitter size | `Emitter::source_radius` → `params.y` | — | anything asking "how big is the lamp" reads `params.y`. Never `position_radius.w × <small constant>` |
+/// | placement | producer's `ref_rot` | `position_radius.xyz` **and** `direction_angle.xyz` | both are world-space; a producer that rotates one must rotate the other |
+///
+/// `direction_angle.w` (spot outer-cone **cosine**) and `color_type.rgb`
+/// (radiant intensity already scaled by `dimmer × intensity`) have no
+/// sibling crossing beside them — the raw half-angle and the unscaled
+/// intensity stay CPU-side — so they are single-valued by construction.
+///
+/// Pinned by `light_boundary_contract_tests` in
+/// `crates/renderer/src/vulkan/scene_buffer/shader_contract_tests.rs`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct GpuLight {
