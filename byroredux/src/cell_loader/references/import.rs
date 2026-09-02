@@ -229,7 +229,7 @@ pub(super) fn parse_and_import_nif(
 /// Cost: O(nodes). NIF scenes typically have 10-100 nodes; the
 /// search runs once per unique model path at cache fill time
 /// and the result is cached across every placement.
-pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -> Option<[f32; 3]> {
+pub(crate) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -> Option<[f32; 3]> {
     const PATTERNS: &[&str] = &["flame", "fire", "attachlight"];
 
     // Walk raw NIF blocks. Limited to first-level lookup: returns

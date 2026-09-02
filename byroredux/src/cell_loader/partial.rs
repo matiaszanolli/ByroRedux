@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::asset_provider::{merge_external_material, MaterialProvider};
 
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
+use super::references::{find_flame_attach_offset, furniture_component};
 
 pub(crate) fn finish_partial_import(
     world: &mut World,
@@ -92,15 +93,26 @@ pub(crate) fn finish_partial_import(
         clip_reg.add(clip)
     });
 
-    // Phase 18 — flame-marker offset is left `None` on the
-    // streaming-partial path. The helper takes
-    // `&ImportedScene` (post-import node array); partial.rs
-    // works on the raw `NifScene`. Running the full
-    // `import_nif_scene` again here just to get the node
-    // names would double the per-NIF parse cost.
-    // Streamed-cell candles fall back to the placement-root
-    // position (pre-Phase-18 behaviour) until a focused
-    // raw-NifScene flame-walker lands as a follow-up.
+    // Phase 18 — flame-marker offset, computed the same way the
+    // synchronous `parse_and_import_nif` path does. #3074: the stated
+    // blocker for leaving this `None` here was that the helper needs
+    // `&ImportedScene` — false, it takes `&NifScene`, which `scene`
+    // (destructured above) already is.
+    let flame_attach_offset = find_flame_attach_offset(&scene);
+
+    // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
+    // to the `Furniture` ECS component, mirroring the synchronous path
+    // (`references/import.rs`). #3072: this used to hardcode `None`,
+    // citing the same (false) blocker as `flame_attach_offset` above —
+    // `scene` is a `&NifScene` here too.
+    let furniture = {
+        let markers = byroredux_nif::import::extract_furniture_markers(&scene);
+        if markers.is_empty() {
+            None
+        } else {
+            Some(furniture_component(&markers))
+        }
+    };
 
     let cached = Arc::new(CachedNifImport {
         meshes,
@@ -122,17 +134,18 @@ pub(crate) fn finish_partial_import(
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,
-        // Phase 18 — see note above; streamed-partial path keeps
-        // None, sync parse path fills it.
-        flame_attach_offset: None,
-        // #1594 — the streaming-partial path keeps the attach graph None,
-        // mirroring `flame_attach_offset` above; the sync
-        // `parse_and_import_nif` path materializes it. Cell-streamed REFRs
-        // are architecture / clutter, not modular weapons, so this is a
-        // near-zero-loss follow-up.
+        flame_attach_offset,
+        // #1594 — the streaming-partial path keeps the FO4+ weapon-mod
+        // attach graph `None`; the sync `parse_and_import_nif` path
+        // materializes it. Unlike `flame_attach_offset` / `furniture`
+        // above (#3072 / #3074, both blocked on nothing — the data was
+        // sitting in `scene` the whole time), this one is a deliberate
+        // scope decision: cell-streamed REFRs are architecture / clutter,
+        // not modular weapons, so this is a near-zero-loss follow-up
+        // rather than a bug.
         attach_points: None,
         child_attach_connections: None,
-        furniture: None,
+        furniture,
     });
 
     let freed_clip_handles = {

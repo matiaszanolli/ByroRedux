@@ -36,6 +36,12 @@ use attach::{attach_container_inventory, attach_script_for_refr, trigger_volume_
 // Re-exported (not just `use`d) so the sibling `spawn` module can share this
 // helper instead of duplicating its body (D22-3 / #2121).
 pub(crate) use attach::attach_light_flicker_if_needed;
+// Re-exported so the sibling `partial` module (streaming-worker drain path)
+// can populate `furniture` / `flame_attach_offset` the same way the
+// synchronous import path does, instead of hardcoding `None` for data it
+// already has the `&NifScene` to compute (#3072 / #3074).
+pub(crate) use attach::furniture_component;
+pub(crate) use import::find_flame_attach_offset;
 pub(super) use import::parse_and_import_nif_pub;
 // Consumed only by the sibling `attach_points_spawn_tests` (#[cfg(test)]);
 // gate the re-export so it isn't an unused import in the non-test build.

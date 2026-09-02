@@ -317,3 +317,115 @@ fn finish_partial_import_bsx_bit5_keeps_real_geometry_sibling() {
         .expect("bit 5 must not reject the whole NIF");
     assert_eq!(cached.meshes.len(), 1, "only real geometry survives");
 }
+
+// ── #3072 / #3074 — furniture + flame-attach offset survive the
+// streaming-partial path ─────────────────────────────────────────────
+
+/// A scene carrying a flame-marker `NiNode` child and a `BSFurnitureMarker`
+/// block — everything `finish_partial_import` needs to populate both
+/// fields via the streaming-partial path.
+fn furniture_and_flame_scene() -> NifScene {
+    use byroredux_nif::blocks::extra_data::{
+        BsFurnitureMarker, FurniturePosition, FurniturePositionData,
+    };
+    use byroredux_nif::types::NiMatrix3;
+
+    fn av(name: &str) -> NiAVObjectData {
+        NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(StdArc::from(name)),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        }
+    }
+
+    let mut flame_av = av("AttachFire");
+    flame_av.transform = NiTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: NiMatrix3::default(),
+        scale: 1.0,
+    };
+    let flame_node = NiNode {
+        av: flame_av,
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+
+    let marker = BsFurnitureMarker {
+        type_name: "BSFurnitureMarker",
+        name: None,
+        positions: vec![FurniturePosition {
+            offset: [1.0, 0.0, 0.0],
+            data: FurniturePositionData::Modern {
+                heading: 0.0,
+                animation_type: 1, // Sit
+                entry_properties: 0,
+            },
+        }],
+    };
+
+    let root = NiNode {
+        av: av("Scene Root"),
+        children: vec![BlockRef(1)],
+        effects: Vec::new(),
+    };
+
+    NifScene {
+        blocks: vec![Box::new(root), Box::new(flame_node), Box::new(marker)],
+        root_index: Some(0),
+        bsver: 34,
+        ..NifScene::default()
+    }
+}
+
+/// #3072 / #3074 — the streaming-partial path used to hardcode both
+/// `furniture` and `flame_attach_offset` to `None`, one citing a false
+/// blocker (the helper needs `&ImportedScene`, when it actually takes
+/// `&NifScene`) and the other citing that blocker as precedent. Both are
+/// available from the `&NifScene` `finish_partial_import` already holds.
+#[test]
+fn finish_partial_import_populates_furniture_and_flame_offset() {
+    let mut world = world_with_registries();
+    let partial = crate::streaming::PartialNifImport {
+        scene: furniture_and_flame_scene(),
+        bsx: 0,
+        root_flags: 0,
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
+    };
+
+    finish_partial_import(&mut world, None, None, "furnace01.nif", partial);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let cached = reg
+        .get("meshes\\furnace01.nif")
+        .expect("cache entry inserted")
+        .as_ref()
+        .expect("scene must import successfully");
+
+    let furniture = cached
+        .furniture
+        .as_ref()
+        .expect("BSFurnitureMarker must survive the streaming-partial path (#3072)");
+    assert_eq!(furniture.markers.len(), 1);
+    assert_eq!(
+        furniture.markers[0].kind,
+        byroredux_core::ecs::components::FurnitureMarkerKind::Sit
+    );
+
+    let offset = cached
+        .flame_attach_offset
+        .expect("flame-marker offset must survive the streaming-partial path (#3074)");
+    // zup_to_yup_pos([1,2,3]) = [1,3,-2].
+    assert_eq!(offset, [1.0, 3.0, -2.0]);
+}
