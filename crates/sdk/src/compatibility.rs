@@ -15,8 +15,8 @@ use crate::script_function::{
     ScriptResultDeclaration, ScriptValueType, MAX_SCRIPT_ARRAY_ELEMENTS,
 };
 use crate::service::{
-    CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE,
-    PRINCIPAL_STORAGE_SERVICE,
+    CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, INPUT_SERVICE,
+    LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 use std::collections::{BTreeMap, BTreeSet};
@@ -191,6 +191,9 @@ pub const PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE: &str =
     "byro.content.catalog.get-light-mod-dependency-count";
 pub const PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE: &str =
     "byro.content.catalog.get-nth-light-mod-dependency";
+/// Engine routes backing the read-only subset of SKSE's `Input` provider.
+pub const PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE: &str = "byro.input.compat.get-mapped-key";
+pub const PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE: &str = "byro.input.compat.get-mapped-control";
 pub const PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-int-value";
 pub const PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE: &str =
@@ -292,6 +295,41 @@ fn papyrus_game_content_declaration(
     }
 }
 
+fn papyrus_input_declaration(
+    route: &'static str,
+    id: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType, bool)],
+    result: ScriptValueType,
+    description: &str,
+) -> EnginePapyrusFunctionDeclaration {
+    EnginePapyrusFunctionDeclaration {
+        route: route.to_owned(),
+        declaration: ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new(id).expect("built-in Input function ID is valid"),
+            component: ComponentId::new("input").expect("built-in Input component ID is valid"),
+            parameters: parameters
+                .iter()
+                .cloned()
+                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
+                    id: ScriptParameterId::new(id).expect("built-in Input parameter ID is valid"),
+                    value_type,
+                    optional,
+                })
+                .collect(),
+            result: Some(ScriptResultDeclaration {
+                value_type: result,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "Input".to_owned(),
+                function: function.to_owned(),
+            }),
+            description: description.to_owned(),
+        },
+    }
+}
+
 /// Exact SKSE `Game` functions executable through the content catalog.
 pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
     vec![
@@ -390,6 +428,79 @@ pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclarati
             "Return the regular mod index of a light plugin's nth master",
         ),
     ]
+}
+
+/// Exact read-only `Input` functions executable through the engine's current
+/// action-binding table. Physical polling and key injection remain separate
+/// policy surfaces because this table does not expose a host key snapshot.
+pub fn papyrus_input_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    vec![
+        papyrus_input_declaration(
+            PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
+            "get-mapped-key",
+            "GetMappedKey",
+            &[
+                ("control", ScriptValueType::String, false),
+                ("device-type", ScriptValueType::Integer, true),
+            ],
+            ScriptValueType::Integer,
+            "Return the current DirectInput-style key code for a known control, or 0xff when unbound",
+        ),
+        papyrus_input_declaration(
+            PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
+            "get-mapped-control",
+            "GetMappedControl",
+            &[("keycode", ScriptValueType::Integer, false)],
+            ScriptValueType::String,
+            "Return the current control name for a known keyboard key code, or an empty string",
+        ),
+    ]
+}
+
+/// One engine-owned binding projected into SKSE's Input key-code contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PapyrusInputBinding {
+    pub control: String,
+    pub device_type: i32,
+    pub keycode: i32,
+}
+
+pub const PAPYRUS_INPUT_AUTO_DEVICE: i32 = 0xff;
+pub const PAPYRUS_INPUT_UNBOUND_KEY: i32 = 0xff;
+
+/// Resolve a control name using the current engine binding snapshot.
+pub fn adapt_papyrus_input_get_mapped_key(
+    bindings: &[PapyrusInputBinding],
+    control: &str,
+    device_type: i64,
+) -> i32 {
+    let Ok(device_type) = i32::try_from(device_type) else {
+        return PAPYRUS_INPUT_UNBOUND_KEY;
+    };
+    if !matches!(device_type, 0..=2 | PAPYRUS_INPUT_AUTO_DEVICE) {
+        return PAPYRUS_INPUT_UNBOUND_KEY;
+    }
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.control.eq_ignore_ascii_case(control)
+                && (device_type == PAPYRUS_INPUT_AUTO_DEVICE || binding.device_type == device_type)
+        })
+        .map_or(PAPYRUS_INPUT_UNBOUND_KEY, |binding| binding.keycode)
+}
+
+/// Resolve a keyboard key code to its current control name.
+pub fn adapt_papyrus_input_get_mapped_control(
+    bindings: &[PapyrusInputBinding],
+    keycode: i64,
+) -> String {
+    let Ok(keycode) = i32::try_from(keycode) else {
+        return String::new();
+    };
+    bindings
+        .iter()
+        .find(|binding| binding.keycode == keycode)
+        .map_or_else(String::new, |binding| binding.control.clone())
 }
 
 fn papyrus_storage_util_list_declarations(
@@ -1811,6 +1922,35 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
             operation,
             value_kind,
             constraint: "<=64 live handles; <=128 arguments; encoded payload <=4096 bytes",
+        });
+    }
+    if provider.eq_ignore_ascii_case("Input") {
+        let (function, operation, value_kind, constraint) = if function
+            .eq_ignore_ascii_case("GetMappedKey")
+        {
+            (
+                "GetMappedKey",
+                "input.binding-key",
+                "signed",
+                "control matching is case-insensitive; device type is keyboard (0), mouse (1), gamepad (2), or auto (0xff)",
+            )
+        } else if function.eq_ignore_ascii_case("GetMappedControl") {
+            (
+                "GetMappedControl",
+                "input.binding-control",
+                "text",
+                "returns an empty string for an unbound or unsupported key code",
+            )
+        } else {
+            return None;
+        };
+        return Some(SourceAlias {
+            provider: "Input",
+            function,
+            service: INPUT_SERVICE,
+            operation,
+            value_kind,
+            constraint,
         });
     }
     if !provider.eq_ignore_ascii_case("StorageUtil") {
@@ -3366,28 +3506,35 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         });
     }
     if provider.eq_ignore_ascii_case("Input") {
-        return Some(
-            if matches_ignore_ascii_case(
-                function,
-                &[
-                    "GetMappedKey",
-                    "IsKeyPressed",
-                    "TapKey",
-                    "HoldKey",
-                    "ReleaseKey",
-                ],
-            ) {
-                unsupported(
+        return Some(if source_alias(provider, function).is_some() {
+            native(
+                ExtenderFamily::Shared,
+                INPUT_SERVICE,
+                "an exact read-only alias targets the engine's current action-binding snapshot",
+            )
+        } else if matches_ignore_ascii_case(
+            function,
+            &[
+                "GetMappedKey",
+                "GetMappedControl",
+                "IsKeyPressed",
+                "TapKey",
+                "HoldKey",
+                "ReleaseKey",
+                "GetNumKeysPressed",
+                "GetNthKeyPressed",
+            ],
+        ) {
+            unsupported(
                 ExtenderFamily::Shared,
                 "physical-key polling/injection is not exposed; subscribe to normalized manifest input actions",
             )
-            } else {
-                unsupported(
+        } else {
+            unsupported(
                 ExtenderFamily::Shared,
                 "the Input provider is recognized, but this function has no engine semantic mapping",
             )
-            },
-        );
+        });
     }
     if provider.eq_ignore_ascii_case("UI") {
         return Some(unsupported(
@@ -3511,6 +3658,64 @@ mod tests {
         assert_eq!(storage.service, Some(PRINCIPAL_STORAGE_SERVICE));
         let event = classify_method_call("RegisterForModEvent").unwrap();
         assert_eq!(event.service, Some(EVENT_SERVICE));
+    }
+
+    #[test]
+    fn input_mapping_aliases_are_read_only_bounded_and_case_insensitive() {
+        let bindings = [
+            PapyrusInputBinding {
+                control: "Forward".to_owned(),
+                device_type: 0,
+                keycode: 17,
+            },
+            PapyrusInputBinding {
+                control: "Forward".to_owned(),
+                device_type: 1,
+                keycode: 1,
+            },
+        ];
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_key(&bindings, "forward", 0xff),
+            17
+        );
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_key(&bindings, "FORWARD", 1),
+            1
+        );
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_key(&bindings, "missing", 0),
+            PAPYRUS_INPUT_UNBOUND_KEY
+        );
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_key(&bindings, "forward", 9),
+            PAPYRUS_INPUT_UNBOUND_KEY
+        );
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_control(&bindings, 17),
+            "Forward"
+        );
+        assert_eq!(adapt_papyrus_input_get_mapped_control(&bindings, 99), "");
+
+        let declarations = papyrus_input_declarations();
+        assert_eq!(declarations.len(), 2);
+        assert!(declarations
+            .iter()
+            .all(|declaration| declaration.declaration.validate().is_ok()));
+        assert!(declarations[0].declaration.parameters[1].optional);
+        assert_eq!(
+            source_alias("input", "getmappedkey").unwrap().service,
+            INPUT_SERVICE
+        );
+        assert_eq!(
+            classify_static_call("INPUT", "GetMappedControl")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Native
+        );
+        assert_eq!(
+            classify_static_call("Input", "TapKey").unwrap().disposition,
+            CompatibilityDisposition::Unsupported
+        );
     }
 
     #[test]

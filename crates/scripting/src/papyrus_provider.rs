@@ -16,9 +16,9 @@ use byroredux_papyrus::ast::{
 use byroredux_sdk::{
     compatibility::{
         adapt_legacy_send_mod_event, classify_static_call, papyrus_game_content_declarations,
-        papyrus_legacy_container_declarations, papyrus_mod_event_declarations,
-        papyrus_storage_util_declarations, parse_storage_util_list_route,
-        parse_storage_util_prefix_route, StorageUtilListOperation,
+        papyrus_input_declarations, papyrus_legacy_container_declarations,
+        papyrus_mod_event_declarations, papyrus_storage_util_declarations,
+        parse_storage_util_list_route, parse_storage_util_prefix_route, StorageUtilListOperation,
         PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
         PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
         PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
@@ -209,6 +209,11 @@ impl PapyrusProviderCatalog {
             catalog
                 .insert_route(function.route.to_owned(), &function.declaration, false)
                 .expect("built-in Papyrus compatibility declaration is valid");
+        }
+        for function in papyrus_input_declarations() {
+            catalog
+                .insert_route(function.route.to_owned(), &function.declaration, false)
+                .expect("built-in Input compatibility declaration is valid");
         }
         for function in papyrus_storage_util_declarations() {
             catalog
@@ -3426,6 +3431,40 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn engine_compatibility_catalog_lowers_read_only_input_aliases() {
+        let catalog = PapyrusProviderCatalog::engine_compatibility();
+        let key = lower_provider_call(&expression("Input.GetMappedKey(\"Forward\")"), &catalog)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            key.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE
+        );
+        assert_eq!(key.arguments, [ScriptValue::String("Forward".to_owned())]);
+        let control = lower_provider_call(&expression("Input.GetMappedControl(17)"), &catalog)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            control.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE
+        );
+        assert_eq!(control.arguments, [ScriptValue::Integer(17)]);
+        assert_eq!(
+            catalog
+                .resolve("Input", "GetMappedKey")
+                .unwrap()
+                .declaration()
+                .parameters
+                .len(),
+            2
+        );
+        assert!(matches!(
+            lower_provider_call(&expression("Input.TapKey(17)"), &catalog),
+            Err(PapyrusProviderLowerError::UnknownFunction { .. })
+        ));
     }
 
     #[test]

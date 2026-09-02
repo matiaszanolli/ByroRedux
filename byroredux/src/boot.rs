@@ -1671,6 +1671,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes_resource::<byroredux_scripting::LegacyObscriptContentCatalog>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::extensions::extension_input_bindings_sync_system,
+        Access::new()
+            .reads_resource::<crate::interaction::ActionBindings>()
+            .writes_resource::<crate::extensions::ExtensionHostSlot>(),
+    );
     // Run translated OBSE/xNVSE load-order handlers after their shared live
     // catalog snapshot is published and before transient OnLoad/OnActivate
     // markers are drained. The program component is static translated data;
@@ -2325,6 +2332,7 @@ mod fragment_activation_order_tests {
 
         let settings = pos("crate::extensions::extension_engine_settings_sync_system");
         let catalog = pos("crate::extensions::extension_content_catalog_sync_system");
+        let input_bindings = pos("crate::extensions::extension_input_bindings_sync_system");
         let legacy = pos("byroredux_scripting::legacy_obscript_load_order_system");
         let papyrus = pos("byroredux_scripting::papyrus_provider_system");
         let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
@@ -2340,6 +2348,8 @@ mod fragment_activation_order_tests {
         assert!(
             settings < custom
                 && catalog < custom
+                && catalog < input_bindings
+                && input_bindings < legacy
                 && catalog < legacy
                 && legacy < cleanup
                 && legacy < papyrus

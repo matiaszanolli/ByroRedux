@@ -54,7 +54,7 @@ fn workshop_framework_reports_real_f4se_dependencies_and_policy_gaps() {
     let utility = byroredux_pex::parse(&utility).expect("parse real utility PEX");
     let utility_report = analyze_pex_compatibility(&utility);
     assert!(utility_report.malformed_calls.is_empty());
-    assert_eq!(utility_report.unsupported_count(), 2);
+    assert_eq!(utility_report.unsupported_count(), 1);
     assert!(utility_report.findings.iter().any(|finding| {
         provider(&finding.call) == Some("ui")
             && finding
@@ -66,6 +66,6 @@ fn workshop_framework_reports_real_f4se_dependencies_and_policy_gaps() {
     assert!(utility_report.findings.iter().any(|finding| {
         provider(&finding.call) == Some("input")
             && finding.call.function.eq_ignore_ascii_case("GetMappedKey")
-            && finding.compatibility.disposition == CompatibilityDisposition::Unsupported
+            && finding.compatibility.disposition == CompatibilityDisposition::Native
     }));
 }

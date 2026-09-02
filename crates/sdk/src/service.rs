@@ -103,6 +103,8 @@ pub const PACKAGES_SERVICE: &str = "byro.packages";
 pub const WORLD_SPATIAL_SERVICE: &str = "byro.world.spatial";
 /// Service providing loaded plugin discovery and portable form qualification.
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
+/// Service providing read-only, engine-owned control-to-key bindings.
+pub const INPUT_SERVICE: &str = "byro.input";
 /// Service providing bounded, principal-namespaced console callbacks.
 pub const CONSOLE_SERVICE: &str = "byro.console";
 /// Service providing typed calls from engine scripts into sandbox components.

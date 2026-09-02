@@ -15,6 +15,7 @@ use byroredux_core::math::Vec3;
 use byroredux_core::settings::{
     SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
 };
+use byroredux_sdk::compatibility::PapyrusInputBinding;
 use rustc_hash::FxHashMap;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -230,6 +231,78 @@ impl ActionBindings {
     pub(crate) fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
         self.keyboard.get(&key).copied()
     }
+
+    /// Project the live keyboard bindings into SKSE's read-only Input view.
+    ///
+    /// The engine currently owns a normalized keyboard action table, so mouse
+    /// and gamepad bindings are intentionally absent until their physical
+    /// binding resources become first-class. The control names match the
+    /// canonical SKSE names rather than the UI labels used by this module.
+    pub(crate) fn papyrus_bindings(&self) -> Vec<PapyrusInputBinding> {
+        InputAction::OBSERVABLE
+            .into_iter()
+            .filter_map(|action| {
+                let key = self.key_for_action(action)?;
+                Some(PapyrusInputBinding {
+                    control: papyrus_control_name(action).to_owned(),
+                    device_type: 0,
+                    keycode: papyrus_keycode(key)?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn papyrus_control_name(action: InputAction) -> &'static str {
+    match action {
+        InputAction::MoveForward => "Forward",
+        InputAction::MoveBackward => "Back",
+        InputAction::StrafeLeft => "Strafe Left",
+        InputAction::StrafeRight => "Strafe Right",
+        InputAction::Jump => "Jump",
+        InputAction::Sprint => "Sprint",
+        InputAction::Activate => "Activate",
+        InputAction::Attack => "Left Attack/Block",
+        InputAction::Block => "Right Attack/Block",
+        InputAction::Inventory => "Quick Inventory",
+        InputAction::Quicksave => "Quicksave",
+        InputAction::Quickload => "Quickload",
+        InputAction::Pause => "Pause",
+    }
+}
+
+/// Convert the winit key identity to the DirectInput-style code used by the
+/// SKSE Input contract. Unsupported keys are omitted from the compatibility
+/// snapshot rather than exposed with an invented code.
+fn papyrus_keycode(key: KeyCode) -> Option<i32> {
+    Some(match key {
+        KeyCode::KeyW => 17,
+        KeyCode::KeyA => 30,
+        KeyCode::KeyS => 31,
+        KeyCode::KeyD => 32,
+        KeyCode::KeyE => 18,
+        KeyCode::KeyR => 19,
+        KeyCode::KeyC => 46,
+        KeyCode::KeyI => 23,
+        KeyCode::KeyJ => 36,
+        KeyCode::KeyK => 37,
+        KeyCode::KeyL => 38,
+        KeyCode::KeyX => 45,
+        KeyCode::KeyZ => 44,
+        KeyCode::ArrowUp => 200,
+        KeyCode::ArrowDown => 208,
+        KeyCode::ArrowLeft => 203,
+        KeyCode::ArrowRight => 205,
+        KeyCode::Space => 57,
+        KeyCode::ShiftLeft => 42,
+        KeyCode::ControlLeft => 29,
+        KeyCode::AltLeft => 56,
+        KeyCode::Tab => 15,
+        KeyCode::Enter => 28,
+        KeyCode::F5 => 63,
+        KeyCode::F9 => 67,
+        _ => return None,
+    })
 }
 
 /// Register the player-control settings owned by the action layer.

@@ -532,6 +532,12 @@ belongs to the host, not `byroredux-sdk`.
 | Arbitrary object extra data | Schema-defined extension components attached to stable entities |
 | Direct engine object or memory access | No equivalent; explicit semantic capability required |
 
+The engine also owns the read-only `Input.GetMappedKey` and
+`Input.GetMappedControl` aliases. They project the current normalized keyboard
+bindings through `byro.input` using the SKSE control names and DirectInput-style
+key codes; unsupported physical polling, key injection, and unmapped devices
+remain policy gaps until their state and trust contracts are explicit.
+
 The exact source-alias pack covers global (`ObjKey == None`) `StorageUtil`
 integer, float, string, and Form get/has/set/unset/pluck calls plus integer and
 float adjustment. Each descriptor names
@@ -661,9 +667,10 @@ and [xOBSE implementation](https://github.com/llde/xOBSE/tree/master/obse/obse).
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified
 compiled Fallout 4 scripts: its F4SE version probes map to `byro.context`,
-while `UI.IsMenuRegistered` and `Input.GetMappedKey` remain explicit policy
-gaps. This keeps compatibility claims tied to shipping mod bytecode without
-checking third-party assets into the repository.
+the two read-only Input mapping aliases map to `byro.input`, while
+`UI.IsMenuRegistered` and physical Input polling/injection remain explicit
+policy gaps. This keeps compatibility claims tied to shipping mod bytecode
+without checking third-party assets into the repository.
 
 ## 8. v0.1 delivery phases
 
@@ -870,7 +877,10 @@ proceeds by semantic domain and closes only against real mod fixtures.
   component fields and filtered collection queries remain.**
 - Input action/control subscriptions after user rebinding. **Implemented for
   the engine's normalized action catalog with press/release edges and validated
-  action filters; custom action registration remains.**
+  action filters; the read-only `Input.GetMappedKey` and
+  `Input.GetMappedControl` aliases now expose the live keyboard table through
+  `byro.input`; custom action registration, physical polling, and injection
+  remain pending.**
 - Namespaced console commands and settings. **Manifest-declared commands are
   implemented under the engine-owned `ext.<extension-id>.*` namespace with
   bounded arguments/output, atomic deferred mutation, capability denial, and
@@ -991,7 +1001,9 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   light-plugin discovery, dependency-count, and master-lookup calls, plus the
   vanilla `GetFormFromFile` lookup, route through
   `byro.content.catalog.*`; engine-owned aliases are reserved against
-  package shadowing. Broader compatibility packs remain.**
+  package shadowing. Two read-only `Input` mapping aliases are also live under
+  `byro.input.compat.*`; physical polling and injection remain unsupported.
+  Broader compatibility packs remain.**
 - Automated source/PEX scans that report supported, mapped, and unsupported
   calls before launch. **Decoded PEX call-site extraction and compatibility
   classification are implemented, including full-property bodies, optional

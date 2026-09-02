@@ -34,10 +34,11 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_light_mod_name, adapt_papyrus_game_get_mod_by_name,
     adapt_papyrus_game_get_mod_count, adapt_papyrus_game_get_mod_dependency_count,
     adapt_papyrus_game_get_mod_name, adapt_papyrus_game_get_nth_light_mod_dependency,
-    adapt_papyrus_game_is_plugin_installed, adapt_storage_util_global_form_filter,
+    adapt_papyrus_game_is_plugin_installed, adapt_papyrus_input_get_mapped_control,
+    adapt_papyrus_input_get_mapped_key, adapt_storage_util_global_form_filter,
     adapt_storage_util_global_list, adapt_storage_util_global_prefix,
     adapt_storage_util_global_scalar, parse_storage_util_list_route,
-    parse_storage_util_prefix_route, StorageUtilListCall, StorageUtilListKind,
+    parse_storage_util_prefix_route, PapyrusInputBinding, StorageUtilListCall, StorageUtilListKind,
     StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind,
     StorageUtilPrefixOperation, StorageUtilScalarCall, StorageUtilScalarResult,
     PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
@@ -45,10 +46,10 @@ use byroredux_sdk::compatibility::{
     PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
     PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
     PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
-    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
+    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
+    PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
     PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE,
-    PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
     PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
@@ -350,6 +351,7 @@ pub(crate) struct ExtensionHost {
     console_commands: Vec<HostedConsoleCommand>,
     script_functions: Vec<HostedScriptFunction>,
     papyrus_providers: PapyrusProviderCatalog,
+    input_bindings: Vec<PapyrusInputBinding>,
 }
 
 impl ExtensionHost {
@@ -386,6 +388,7 @@ impl ExtensionHost {
             console_commands: Vec::new(),
             script_functions: Vec::new(),
             papyrus_providers: PapyrusProviderCatalog::engine_compatibility(),
+            input_bindings: Vec::new(),
         })
     }
 
@@ -765,6 +768,27 @@ impl ExtensionHost {
             return self.invoke_mod_event(principal, qualified_name, arguments);
         }
         let value = match (qualified_name, arguments) {
+            (PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE, [ScriptValue::String(control)]) => {
+                ScriptValue::Integer(i64::from(adapt_papyrus_input_get_mapped_key(
+                    &self.input_bindings,
+                    control,
+                    0xff,
+                )))
+            }
+            (
+                PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
+                [ScriptValue::String(control), ScriptValue::Integer(device_type)],
+            ) => ScriptValue::Integer(i64::from(adapt_papyrus_input_get_mapped_key(
+                &self.input_bindings,
+                control,
+                *device_type,
+            ))),
+            (PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE, [ScriptValue::Integer(keycode)]) => {
+                ScriptValue::String(adapt_papyrus_input_get_mapped_control(
+                    &self.input_bindings,
+                    *keycode,
+                ))
+            }
             (PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
                 adapt_papyrus_game_get_mod_count(&self.content_catalog),
             )),
@@ -2150,6 +2174,12 @@ impl ExtensionHost {
             hosted
                 .instance
                 .set_content_catalog_snapshot(Arc::clone(&catalog));
+        }
+    }
+
+    fn set_input_bindings(&mut self, bindings: Vec<PapyrusInputBinding>) {
+        if self.input_bindings != bindings {
+            self.input_bindings = bindings;
         }
     }
 
@@ -4151,6 +4181,24 @@ pub(crate) fn extension_content_catalog_sync_system(world: &World, _dt: f32) {
     host.set_faction_relationships(faction_relationships);
 }
 
+/// Publish the current normalized keyboard bindings to the Papyrus Input
+/// compatibility adapter before any provider callback executes.
+pub(crate) fn extension_input_bindings_sync_system(world: &World, _dt: f32) {
+    let bindings = world
+        .try_resource::<crate::interaction::ActionBindings>()
+        .map_or_else(Vec::new, |bindings| bindings.papyrus_bindings());
+    let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+        return;
+    };
+    let Some(host) = slot.host() else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    host.set_input_bindings(bindings);
+}
+
 /// Publish public engine configuration before sandbox callbacks run.
 pub(crate) fn extension_engine_settings_sync_system(world: &World, _dt: f32) {
     let Some(settings) = engine_settings_snapshot(world) else {
@@ -5780,6 +5828,10 @@ mod tests {
     use byroredux_core::form_id::{LocalFormId, PluginId};
     use byroredux_core::math::{Quat, Vec3};
     use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRecord};
+    use byroredux_sdk::compatibility::{
+        PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE,
+        PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE,
+    };
     use byroredux_sdk::component::{ComponentFieldDeclaration, ExtensionValue, ExtensionValueType};
     use byroredux_sdk::identity::{
         CapabilityId, ComponentFieldId, ComponentSchemaId, EventId, ScriptFunctionId,
@@ -7656,6 +7708,77 @@ mod tests {
             )
             .unwrap(),
             ScriptValue::FormArray(vec![Some(armor)])
+        );
+    }
+
+    #[test]
+    fn input_aliases_read_the_live_engine_binding_snapshot() {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.set_input_bindings(vec![PapyrusInputBinding {
+            control: "Forward".to_owned(),
+            device_type: 0,
+            keycode: 17,
+        }]);
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
+                &[ScriptValue::String("forward".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Integer(17)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
+                &[
+                    ScriptValue::String("Forward".to_owned()),
+                    ScriptValue::Integer(2),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::Integer(0xff)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
+                &[ScriptValue::Integer(17)],
+            )
+            .unwrap(),
+            ScriptValue::String("Forward".to_owned())
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
+                &[ScriptValue::Integer(99)],
+            )
+            .unwrap(),
+            ScriptValue::String(String::new())
+        );
+    }
+
+    #[test]
+    fn input_binding_sync_publishes_normalized_keyboard_actions() {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(crate::interaction::ActionBindings::default());
+        world.insert_resource(slot);
+
+        extension_input_bindings_sync_system(&world, 0.0);
+
+        let host = host.lock().unwrap();
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_key(&host.input_bindings, "Forward", 0xff),
+            17
+        );
+        assert_eq!(
+            adapt_papyrus_input_get_mapped_control(&host.input_bindings, 15),
+            "Quick Inventory"
         );
     }
 
