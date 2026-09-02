@@ -1161,9 +1161,9 @@ fn parse_block_inner(
         // GravityStrength / AirFriction etc.). FO76 emits 5
         // occurrences in `SeventySix - Meshes.ba2`. Same wire shape
         // as the other modifier ctlrs above; the trailing
-        // `Data: Ref<NiFloatData>` is gated `until="10.1.0.103"` so
-        // FO76 (v20.2.0.7) skips it via the same NiTimeController
-        // base.
+        // `Data: Ref<NiFloatData>` is gated `until="10.1.0.103"` via
+        // `parse_modifier_ctlr`, so FO76 (v20.2.0.7) skips it. (#3174 —
+        // this gate did not actually exist prior to that fix.)
         | "NiPSysRotDampeningCtlr" => {
             Ok(Box::new(particle::parse_modifier_ctlr(stream, type_name)?))
         }

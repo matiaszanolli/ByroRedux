@@ -304,6 +304,38 @@ fn sanitized_clip_frequency(frequency: f32) -> f32 {
     }
 }
 
+/// Clamp a raw `NiControllerSequence.stop_time - start_time` to a duration
+/// the animation clock can integrate (#3432, sibling of `frequency` above).
+///
+/// `CycleType::Reverse`'s `fold_reverse_time` folds a NaN duration into a
+/// permanently-NaN `local_time` (`NaN <= 0.0` is false, so its zero-or-less
+/// guard doesn't catch it), and `CycleType::Loop`'s modulo has the same
+/// latch. Every cycle arm already treats a non-positive duration as
+/// "no wrap / no fold", so non-finite (and negative) collapses to `0.0`
+/// here — resolved once at the translate boundary rather than re-derived
+/// at render time (NIFAL doctrine).
+fn sanitized_clip_duration(duration: f32) -> f32 {
+    if duration.is_finite() && duration > 0.0 {
+        duration
+    } else {
+        0.0
+    }
+}
+
+/// Clamp a raw `NiControllerSequence.weight` the same way (#3432).
+///
+/// `sample_blended_transform`'s per-layer skip (`ew < 0.001`) is
+/// NaN-transparent, so a NaN weight is never filtered out and poisons
+/// `total_weight` — and therefore every blended bone transform on the
+/// channel — instead of being skipped. `1.0` is nif.xml's own default.
+fn sanitized_clip_weight(weight: f32) -> f32 {
+    if weight.is_finite() {
+        weight
+    } else {
+        1.0
+    }
+}
+
 pub(crate) fn convert_nif_clip(
     nif: &byroredux_nif::anim::AnimationClip,
     pool: &mut StringPool,
@@ -503,7 +535,9 @@ pub(crate) fn convert_nif_clip(
 
     AnimationClip {
         name: nif.name.clone(),
-        duration: nif.duration,
+        // #3432 — `NiControllerSequence.duration` is raw file data; see
+        // `sanitized_clip_duration` for why it's resolved here.
+        duration: sanitized_clip_duration(nif.duration),
         cycle_type,
         // #3258 — `NiControllerSequence.frequency` is raw file data and the
         // only unvalidated factor in `advance_time`'s `dt * speed *
@@ -530,7 +564,9 @@ pub(crate) fn convert_nif_clip(
         } else {
             0.0
         },
-        weight: nif.weight,
+        // #3432 — `NiControllerSequence.weight` is raw file data; see
+        // `sanitized_clip_weight` for why it's resolved here.
+        weight: sanitized_clip_weight(nif.weight),
         accum_root_name: nif.accum_root_name.as_deref().map(|s| pool.intern(s)),
         channels,
         float_channels,
@@ -858,5 +894,89 @@ mod clip_phase_tests {
         }
         let clip = convert_nif_clip(&nif_clip(-0.25), &mut pool);
         assert_eq!(clip.phase, -0.25);
+    }
+}
+
+#[cfg(test)]
+mod clip_duration_weight_tests {
+    //! #3432 — sibling of `clip_frequency_tests` / `clip_phase_tests`:
+    //! `NiControllerSequence.duration` and `.weight` are the two fields of
+    //! the same struct #3258 left unsanitized. A NaN `duration` latches
+    //! `CycleType::Reverse`'s `fold_reverse_time` (`NaN <= 0.0` is false);
+    //! a NaN `weight` is never filtered by `sample_blended_transform`'s
+    //! `ew < 0.001` skip (`NaN < 0.001` is also false).
+    use super::{convert_nif_clip, sanitized_clip_duration, sanitized_clip_weight};
+    use byroredux_core::string::StringPool;
+    use byroredux_nif::anim as na;
+    use std::collections::HashMap;
+
+    fn nif_clip(duration: f32, weight: f32) -> na::AnimationClip {
+        na::AnimationClip {
+            name: "unsanitized".to_string(),
+            duration,
+            cycle_type: na::CycleType::Reverse,
+            frequency: 1.0,
+            phase: 0.0,
+            weight,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn authored_duration_and_weight_pass_through() {
+        assert_eq!(sanitized_clip_duration(2.5), 2.5);
+        assert_eq!(sanitized_clip_weight(0.5), 0.5);
+        // Weight has no #1544-style positivity requirement — a clip
+        // legitimately authors a negative or zero blend weight.
+        assert_eq!(sanitized_clip_weight(-0.5), -0.5);
+        assert_eq!(sanitized_clip_weight(0.0), 0.0);
+    }
+
+    #[test]
+    fn non_finite_or_non_positive_duration_collapses_to_zero() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+            assert_eq!(
+                sanitized_clip_duration(bad),
+                0.0,
+                "duration {bad} must not reach fold_reverse_time / the Loop modulo"
+            );
+        }
+    }
+
+    #[test]
+    fn non_finite_weight_falls_back_to_the_nifxml_default() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                sanitized_clip_weight(bad),
+                1.0,
+                "weight {bad} must not reach sample_blended_transform's total_weight"
+            );
+        }
+    }
+
+    /// The NIF→core boundary must apply both sanitizers, not just carry the
+    /// raw fields across — the same shape #3258 fixed for `frequency`.
+    #[test]
+    fn duration_and_weight_are_sanitized_at_the_nif_to_core_boundary() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&nif_clip(f32::NAN, f32::NAN), &mut pool);
+        assert_eq!(
+            clip.duration, 0.0,
+            "NaN duration must not reach byroredux_core::AnimationClip"
+        );
+        assert_eq!(
+            clip.weight, 1.0,
+            "NaN weight must not reach byroredux_core::AnimationClip"
+        );
+
+        let clip = convert_nif_clip(&nif_clip(3.0, 0.75), &mut pool);
+        assert_eq!(clip.duration, 3.0, "finite duration must pass through");
+        assert_eq!(clip.weight, 0.75, "finite weight must pass through");
     }
 }

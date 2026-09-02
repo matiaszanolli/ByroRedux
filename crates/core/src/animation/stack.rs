@@ -381,7 +381,12 @@ pub fn sample_blended_transform(
         };
         // `clip.weight` pre-attenuates the layer per #469.
         let ew = layer.effective_weight() * clip.weight;
-        if ew < 0.001 {
+        // #3432 — NaN-safe: `NaN < 0.001` is false, so a plain `<` guard is
+        // NaN-*transparent* and lets a poisoned weight through into
+        // `total_weight`, poisoning every blended transform on this
+        // channel. `!(ew >= 0.001)` catches NaN the same way `> 0.0` does
+        // for `duration` in `fold_reverse_time`.
+        if !(ew >= 0.001) {
             continue;
         }
         let Some(channel) = clip.channels.get(&channel_name) else {
@@ -424,7 +429,9 @@ pub fn sample_blended_transform(
         };
         // `clip.weight` pre-attenuates the layer per #469.
         let ew = layer.effective_weight() * clip.weight;
-        if ew < 0.001 {
+        // #3432 — NaN-safe twin of the identical guard in the weight pass
+        // above.
+        if !(ew >= 0.001) {
             continue;
         }
         let Some(channel) = clip.channels.get(&channel_name) else {

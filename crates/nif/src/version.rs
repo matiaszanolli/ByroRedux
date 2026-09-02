@@ -266,9 +266,16 @@ impl NifVersion {
     /// `NiTextureTransformController.Data` (`NiFloatData`),
     /// `NiMaterialColorController.Data` / `NiLightColorController.Data`
     /// (`NiPosData`), `NiFloatExtraDataController.Data` (`NiFloatData`).
-    /// Old-Oblivion-and-earlier content stores the data ref directly;
-    /// `since="10.1.0.104"` it is replaced by the interpolator ref.
-    /// (#1337 / #2562 / #2563)
+    /// The same split reaches four more types in the `NiPSys*Ctlr` family:
+    /// `NiPSysEmitterCtlr.Data` (`NiPSysEmitterCtlrData`, mutually
+    /// exclusive with its own `since="10.1.0.104"` Visibility
+    /// Interpolator), `NiPSysModifierActiveCtlr.Data` (`NiVisData`), and
+    /// `NiPSysModifierFloatCtlr.Data` (`NiFloatData`, inherited by its 19
+    /// dispatch aliases) — parsed in `blocks/particle.rs`. (`Data` on
+    /// `NiFloatsExtraDataController`, plural, has no dispatch arm and is
+    /// out of scope until one is added.) Old-Oblivion-and-earlier content
+    /// stores the data ref directly; `since="10.1.0.104"` it is replaced
+    /// by the interpolator ref. (#1337 / #2562 / #2563 / #3174)
     pub fn has_keyframe_controller_data(self) -> bool {
         self <= Self::V10_1_0_103
     }

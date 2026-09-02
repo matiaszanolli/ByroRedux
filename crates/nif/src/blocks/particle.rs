@@ -908,29 +908,52 @@ pub fn parse_time_controller(stream: &mut NifStream, type_name: &str) -> io::Res
     Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
-/// NiPSysModifierCtlr chain: NiSingleInterpController + modifier_name(string).
-/// Used by NiPSysEmitterCtlr (+ visibility_interpolator_ref) and all
-/// NiPSysModifier*Ctlr aliases (no additional fields).
+/// NiPSysModifierCtlr chain: NiSingleInterpController + modifier_name(string)
+/// + Data(ref, until=10.1.0.103). Used by NiPSysModifierActiveCtlr
+/// (Data: NiVisData) and all NiPSysModifierFloatCtlr aliases (Data:
+/// NiFloatData) — no additional fields of their own.
 pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
     // NiPSysModifierCtlr inherits NiSingleInterpController → NiInterpController,
     // so it carries the Manager Controlled bool on the 10.1.0.104–108 band. (#1543)
     let _base = parse_interp_controller_base(stream)?;
-    let _interpolator_ref = stream.read_block_ref()?; // NiSingleInterpController
+    // NiSingleInterpController.Interpolator — since=10.1.0.104. Was read
+    // unconditionally, desyncing every file below that version. (#3174)
+    let _interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
+        stream.read_block_ref()?
+    } else {
+        BlockRef::NULL
+    };
     let _modifier_name = stream.read_string()?; // NiPSysModifierCtlr
+    // Data (Ref) — until=10.1.0.103, the legacy slot the interpolator ref
+    // above replaced since=10.1.0.104. Was never read at any version. (#3174)
+    let _data_ref = if stream.version().has_keyframe_controller_data() {
+        stream.read_block_ref()?
+    } else {
+        BlockRef::NULL
+    };
     Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
 pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtlr> {
     let _base = parse_interp_controller_base(stream)?;
-    let interpolator_ref = stream.read_block_ref()?;
+    // NiSingleInterpController.Interpolator — since=10.1.0.104. Was read
+    // unconditionally, desyncing every file below that version. (#3174)
+    let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
+        stream.read_block_ref()?
+    } else {
+        BlockRef::NULL
+    };
     let _modifier_name = stream.read_string()?;
     // NiPSysEmitterCtlr.Visibility Interpolator (Ref) — nif.xml since=10.1.0.104
-    // (the pre-10.1.0.104 `Data` ref is the mutually-exclusive legacy slot).
-    // Was wrongly gated >= V10_2_0_0, skipping the 4-byte ref on old-Gamebryo
-    // FX in the 10.1.0.104–10.2 band. (#1544)
+    // (the pre-10.1.0.104 `Data` ref is the mutually-exclusive legacy slot,
+    // now read on the `else` arm below). Was wrongly gated >= V10_2_0_0,
+    // skipping the 4-byte ref on old-Gamebryo FX in the 10.1.0.104–10.2
+    // band. (#1544, #3174)
     if stream.version() >= NifVersion::V10_1_0_104 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
+    } else {
+        let _data_ref = stream.read_block_ref()?;
     }
     Ok(NiPSysEmitterCtlr { interpolator_ref })
 }
@@ -938,11 +961,20 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtl
 /// BSPSysMultiTargetEmitterCtlr (FO3+): emitter_ctlr + max_emitters(u16) + master_ref(ptr)
 pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = parse_interp_controller_base(stream)?;
-    let _interpolator_ref = stream.read_block_ref()?;
+    // NiSingleInterpController.Interpolator — since=10.1.0.104. Was read
+    // unconditionally, desyncing every file below that version. (#3174)
+    let _interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
+        stream.read_block_ref()?
+    } else {
+        BlockRef::NULL
+    };
     let _modifier_name = stream.read_string()?;
-    // Visibility Interpolator (Ref) — nif.xml since=10.1.0.104, not v10.2. (#1544)
+    // Visibility Interpolator (Ref) — nif.xml since=10.1.0.104, not v10.2.
+    // Below that, the mutually-exclusive legacy `Data` ref. (#1544, #3174)
     if stream.version() >= NifVersion::V10_1_0_104 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
+    } else {
+        let _data_ref = stream.read_block_ref()?;
     }
     let _max_emitters = stream.read_u16_le()?;
     let _master_ref = stream.read_block_ref()?;

@@ -259,7 +259,15 @@ pub fn synthesize_tangents(
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let n_zup = normals_zup[i];
-        let n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);
+        // #3177 / #2632's Z-up sibling — `normals_zup` is unit-length only
+        // to quantization for a `byte_to_normal`-decoded `BSTriShape`
+        // source (`bs_tri_shape.rs`'s three independent byte reads perform
+        // no vector renormalization); the Gram-Schmidt projection below
+        // (and the degenerate branch's permutation + cross product) is
+        // only correct for `|n| == 1`. Normalize the local copy once here,
+        // mirroring `synthesize_tangents_yup`'s established guard.
+        let mut n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);
+        normalize_inplace(&mut n_yup);
 
         // #786 — store `tangent = ∂P/∂U` (standard Lengyel
         // convention), inverting nifly's Bethesda-convention swap
@@ -286,6 +294,14 @@ pub fn synthesize_tangents(
                     t_y_raw[2] - n_yup[2] * dot_nt,
                 ];
                 normalize_inplace(&mut t_y);
+                if vec3_is_zero(&t_y) {
+                    // #3176 — the cyclic permutation of N was itself
+                    // parallel to N (e.g. N == (1,1,1)/sqrt(3), which
+                    // permutes to itself), so the projection above removed
+                    // the entire vector. Fall back to a seed guaranteed
+                    // non-parallel to N instead of shipping a zero tangent.
+                    t_y = fallback_orthogonal_seed(n_yup);
+                }
                 let b_y = [
                     n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
                     n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
@@ -494,6 +510,14 @@ pub fn synthesize_tangents_yup(
                     t_y_raw[2] - n_yup[2] * dot_nt,
                 ];
                 normalize_inplace(&mut t_y);
+                if vec3_is_zero(&t_y) {
+                    // #3176 — exactly the case the comment above names:
+                    // N's cyclic permutation is parallel to N itself (e.g.
+                    // N == (1,1,1)/sqrt(3)), so the projection removed the
+                    // entire vector. Fall back to a seed guaranteed
+                    // non-parallel to N instead of shipping a zero tangent.
+                    t_y = fallback_orthogonal_seed(n_yup);
+                }
                 let b_y = [
                     n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
                     n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
@@ -539,6 +563,35 @@ pub fn synthesize_tangents_yup(
         out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
     }
     out
+}
+
+/// Second-choice seed for the degenerate-tangent fallback, used when the
+/// primary seed (a Gram-Schmidt-projected cyclic permutation of `N`)
+/// collapses to zero — which happens exactly when the permutation is
+/// itself parallel to `N` (e.g. `N == (1,1,1)/sqrt(3)`, the all-equal-
+/// components case both producers' comments name as the motivation for
+/// projecting in the first place). #3176.
+///
+/// Crosses `n` (assumed unit) with the world axis least aligned with it.
+/// A unit vector's smallest component is at most `1/sqrt(3)` in
+/// magnitude, so that axis can never be parallel to `n` — the cross
+/// product, and therefore this seed, is never zero.
+#[inline]
+fn fallback_orthogonal_seed(n: [f32; 3]) -> [f32; 3] {
+    let axis = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if n[1].abs() <= n[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let mut t = [
+        n[1] * axis[2] - n[2] * axis[1],
+        n[2] * axis[0] - n[0] * axis[2],
+        n[0] * axis[1] - n[1] * axis[0],
+    ];
+    normalize_inplace(&mut t);
+    t
 }
 
 #[inline]

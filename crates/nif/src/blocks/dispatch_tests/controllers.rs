@@ -675,4 +675,162 @@ fn ni_geom_morpher_controller_v10_0_1_0_has_no_flags_or_interpolators() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
+// ── #3174 — NiPSys*Ctlr family until=10.1.0.103 / since=10.1.0.104 split ──
+//
+// #2562/#2563 fixed this same `Data` ref / interpolator-ref split on nine
+// `NiSingleInterpController` subclasses but never reached the
+// `NiPSysModifierCtlr` chain (`parse_modifier_ctlr` / `parse_emitter_ctlr` /
+// `parse_multi_target_emitter_ctlr` in `blocks/particle.rs`), which
+// open-code the same base instead of delegating to
+// `NiSingleInterpController::parse`. Below v10.1.0.104 those three read a
+// nonexistent interpolator ref unconditionally and never read the
+// complementary legacy `Data` ref, desyncing every block that follows.
+
+/// `NiPSysModifierActiveCtlr` / `NiPSysModifierFloatCtlr` family (dispatched
+/// through `parse_modifier_ctlr`) at `v10.1.0.103`: no interpolator ref
+/// (since=10.1.0.104), `modifier_name` immediately after the base, then the
+/// legacy `Data` ref (until=10.1.0.103).
+#[test]
+fn ni_psys_modifier_ctlr_family_reads_data_ref_below_10_1_0_104() {
+    for type_name in ["NiPSysGravityStrengthCtlr", "NiPSysRotDampeningCtlr"] {
+        let header = header_at(NifVersion::V10_1_0_103);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
+        // No interpolator ref at this version (since=10.1.0.104).
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
+        bytes.extend_from_slice(&77i32.to_le_bytes()); // Data ref (until=10.1.0.103)
+        let mut stream = NifStream::new(&bytes, &header);
+        parse_block(type_name, &mut stream, Some(bytes.len() as u32))
+            .unwrap_or_else(|e| panic!("{type_name} must parse below v10.1.0.104: {e}"));
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "{type_name}: Data ref must be consumed, not left desyncing later blocks"
+        );
+    }
+}
+
+/// Same family at `v10.1.0.104`: `Manager Controlled` bool + interpolator
+/// ref now present, legacy `Data` ref gone.
+#[test]
+fn ni_psys_modifier_ctlr_family_reads_interpolator_ref_at_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_104);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.push(0); // Manager Controlled (10.1.0.104–108 band, #1506)
+    bytes.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref (since=10.1.0.104)
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
+    let mut stream = NifStream::new(&bytes, &header);
+    parse_block(
+        "NiPSysGravityStrengthCtlr",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("NiPSysGravityStrengthCtlr must parse at v10.1.0.104");
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// `NiPSysEmitterCtlr` at `v10.1.0.103`: no base interpolator ref, and the
+/// trailing ref is the legacy `Data` slot rather than the (not-yet-present)
+/// Visibility Interpolator.
+#[test]
+fn ni_psys_emitter_ctlr_reads_data_ref_below_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
+    bytes.extend_from_slice(&88i32.to_le_bytes()); // Data ref (legacy, until=10.1.0.103)
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiPSysEmitterCtlr", &mut stream, Some(bytes.len() as u32))
+        .expect("NiPSysEmitterCtlr must parse below v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiPSysEmitterCtlr>()
+        .expect("downcast NiPSysEmitterCtlr");
+    assert!(
+        ctrl.interpolator_ref.is_null(),
+        "base interpolator_ref is since=10.1.0.104 — must not be read below it"
+    );
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// `NiPSysEmitterCtlr` at `v10.1.0.104`: base interpolator ref present,
+/// trailing ref is the Visibility Interpolator (#1544).
+#[test]
+fn ni_psys_emitter_ctlr_reads_visibility_interpolator_at_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_104);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.push(0); // Manager Controlled
+    bytes.extend_from_slice(&9i32.to_le_bytes()); // base interpolator_ref
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
+    bytes.extend_from_slice(&10i32.to_le_bytes()); // Visibility Interpolator
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiPSysEmitterCtlr", &mut stream, Some(bytes.len() as u32))
+        .expect("NiPSysEmitterCtlr must parse at v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiPSysEmitterCtlr>()
+        .expect("downcast NiPSysEmitterCtlr");
+    assert_eq!(ctrl.interpolator_ref.index(), Some(9));
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// `BSPSysMultiTargetEmitterCtlr` (FO3+) at `v10.1.0.103`: same
+/// `NiPSysEmitterCtlr`-shaped prologue (legacy `Data` ref, not Visibility
+/// Interpolator), then its own `max_emitters` + `master_ref` tail.
+#[test]
+fn bs_psys_multi_target_emitter_ctlr_reads_data_ref_below_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
+    bytes.extend_from_slice(&88i32.to_le_bytes()); // Data ref (legacy)
+    bytes.extend_from_slice(&3u16.to_le_bytes()); // max_emitters
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // master_ref
+    let mut stream = NifStream::new(&bytes, &header);
+    parse_block(
+        "BSPSysMultiTargetEmitterCtlr",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("BSPSysMultiTargetEmitterCtlr must parse below v10.1.0.104");
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
 // ── #124 / audit NIF-513 — bhkNPCollisionObject family ──────────

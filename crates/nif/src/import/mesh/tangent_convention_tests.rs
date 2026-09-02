@@ -334,6 +334,145 @@ fn synthesize_tangents_zup_degenerate_fallback_normalizes_and_orthogonalizes_aga
     }
 }
 
+/// #3176 — the degenerate fallback's primary seed is a cyclic permutation
+/// of N, Gram-Schmidt-projected against N. For `N = (1,1,1)/sqrt(3)` that
+/// permutation is N itself (the case the #2632 comment on the branch
+/// names as its own motivation), so the projection removes the entire
+/// vector and pre-fix the branch shipped a zero tangent. The fallback
+/// seed must produce a unit, N-orthogonal tangent instead.
+#[test]
+fn synthesize_tangents_yup_degenerate_fallback_handles_all_equal_normal_components() {
+    let positions: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.3]];
+    let c = 1.0f32 / 3.0f32.sqrt();
+    let normals: Vec<[f32; 3]> = vec![[c, c, c]; 3];
+    let uvs = vec![[0.5, 0.5]; 3]; // identical UVs → every vertex takes the degenerate branch
+    let triangles = vec![[0u16, 1u16, 2u16]];
+
+    let out = synthesize_tangents_yup(&positions, &normals, &uvs, &triangles);
+    assert_eq!(out.len(), 3);
+
+    for (i, t) in out.iter().enumerate() {
+        let tangent = [t[0], t[1], t[2]];
+        let mag2 = tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2];
+        assert!(
+            mag2 > 1e-5,
+            "vertex {i} fallback tangent must be non-zero (pre-#3176 this was [0,0,0])"
+        );
+        assert!(
+            (mag2 - 1.0).abs() < 1e-5,
+            "vertex {i} fallback tangent must be unit length, got |T|^2={mag2}"
+        );
+        let dot_nt = c * tangent[0] + c * tangent[1] + c * tangent[2];
+        assert!(
+            dot_nt.abs() < 1e-5,
+            "vertex {i} fallback tangent must be orthogonal to N, got dot(N, T)={dot_nt}"
+        );
+    }
+}
+
+/// Z-up counterpart of the #3176 regression guard above.
+#[test]
+fn synthesize_tangents_zup_degenerate_fallback_handles_all_equal_normal_components() {
+    let vertices = vec![
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.3,
+        },
+    ];
+    let c = 1.0f32 / 3.0f32.sqrt();
+    let normals = vec![NiPoint3 { x: c, y: c, z: c }; 3];
+    let uvs = vec![[0.5, 0.5]; 3];
+    let triangles = vec![[0u16, 1u16, 2u16]];
+
+    let out = synthesize_tangents(&vertices, &normals, &uvs, &triangles);
+    assert_eq!(out.len(), 3);
+
+    // Z-up (x,y,z) → Y-up (x,z,-y): (c,c,c) → (c,c,-c), still all-equal
+    // in magnitude, so the Z-up permutation self-collapses too.
+    let n_unit = [c, c, -c];
+    for (i, t) in out.iter().enumerate() {
+        let mag2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
+        assert!(
+            mag2 > 1e-5,
+            "vertex {i} fallback tangent must be non-zero (pre-#3176 this was [0,0,0])"
+        );
+        assert!((mag2 - 1.0).abs() < 1e-5, "vertex {i} tangent not unit");
+        let dot_nt = n_unit[0] * t[0] + n_unit[1] * t[1] + n_unit[2] * t[2];
+        assert!(
+            dot_nt.abs() < 1e-5,
+            "vertex {i} fallback tangent must be orthogonal to N, got dot(N, T)={dot_nt}"
+        );
+    }
+}
+
+/// #3177 — `synthesize_tangents`'s Z-up producer receives `BSTriShape`
+/// normbyte normals (`byte_to_normal`), which are unit-length only to
+/// quantization. Pre-fix the ordinary (non-degenerate) branch's
+/// Gram-Schmidt projection used the raw, non-unit N directly instead of
+/// normalizing it first (unlike its `synthesize_tangents_yup` #2632
+/// sibling), leaving the emitted tangent measurably non-orthogonal to
+/// the real (normalized) shading normal.
+///
+/// `raw_normal` is deliberately far off unit (magnitude 5, not
+/// axis-aligned with the UV-derived tangent) so the orthogonality
+/// violation is unambiguous in floating point — real normbyte
+/// quantization error is much smaller (~1.5%) but exercises the exact
+/// same code path.
+#[test]
+fn synthesize_tangents_zup_normalizes_nonunit_normal_before_orthogonalizing() {
+    let vertices = vec![
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
+    ];
+    let raw_normal = NiPoint3 {
+        x: 3.0,
+        y: 4.0,
+        z: 0.0,
+    };
+    let normals = vec![raw_normal; 3];
+    let uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]; // distinct UVs → ordinary branch
+    let triangles = vec![[0u16, 1u16, 2u16]];
+
+    let out = synthesize_tangents(&vertices, &normals, &uvs, &triangles);
+    assert_eq!(out.len(), 3);
+
+    // Z-up (3,4,0) → Y-up (3,0,-4), normalized → (0.6, 0, -0.8).
+    let n_unit = [0.6f32, 0.0, -0.8];
+    for (i, t) in out.iter().enumerate() {
+        let dot_nt = n_unit[0] * t[0] + n_unit[1] * t[1] + n_unit[2] * t[2];
+        assert!(
+            dot_nt.abs() < 1e-4,
+            "vertex {i} tangent must be orthogonal to the NORMALIZED normal, \
+             got dot(N_unit, T)={dot_nt} (pre-#3177 the projection used the \
+             raw non-unit N)"
+        );
+    }
+}
+
 #[test]
 fn synthesize_tangents_yup_empty_inputs_return_empty() {
     let empty_positions: Vec<[f32; 3]> = Vec::new();

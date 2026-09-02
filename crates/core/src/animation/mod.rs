@@ -1222,6 +1222,78 @@ mod tests {
         );
     }
 
+    /// #3432 — a NaN `clip.weight` (e.g. an unsanitized
+    /// `NiControllerSequence.weight`) must be excluded from the blend the
+    /// same way a below-threshold weight already is. Pre-fix, `ew < 0.001`
+    /// is false for `ew = NaN`, so the NaN layer was never skipped:
+    /// `total_weight` became NaN, its own `< 0.001` early-return was also
+    /// false, and the blended position/rotation/scale all came out NaN.
+    #[test]
+    fn sample_blended_transform_excludes_nan_clip_weight() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mk_clip = |weight: f32, tx: f32| {
+            let mut channels = HashMap::new();
+            channels.insert(
+                node,
+                TransformChannel {
+                    translation_keys: vec![TranslationKey {
+                        time: 0.0,
+                        value: Vec3::new(tx, 0.0, 0.0),
+                        forward: Vec3::ZERO,
+                        backward: Vec3::ZERO,
+                        tbc: None,
+                    }],
+                    translation_type: KeyType::Linear,
+                    rotation_keys: Vec::new(),
+                    rotation_type: KeyType::Linear,
+                    scale_keys: Vec::new(),
+                    scale_type: KeyType::Linear,
+                    priority: 0,
+                },
+            );
+            AnimationClip {
+                name: "c".to_string(),
+                duration: 1.0,
+                cycle_type: CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight,
+                accum_root_name: None,
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        };
+
+        let mut registry = AnimationClipRegistry::new();
+        let h_good = registry.add(mk_clip(1.0, 10.0));
+        let h_nan = registry.add(mk_clip(f32::NAN, 20.0));
+
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(h_good));
+        stack.layers.push(AnimationLayer::new(h_nan));
+
+        let (pos, rot, scale) = sample_blended_transform(&stack, &registry, node)
+            .expect("the finite-weight layer alone must still produce a transform");
+        assert!(
+            pos.x.is_finite() && rot.is_finite() && scale.is_finite(),
+            "#3432: a NaN clip.weight must not poison the blend — got pos={pos:?} scale={scale}"
+        );
+        assert!(
+            (pos.x - 10.0).abs() < 1e-4,
+            "#3432: the NaN-weight layer must be fully excluded, not just \
+             diluted — got {}, expected 10.0",
+            pos.x
+        );
+    }
+
     #[test]
     fn linear_scale_interpolation() {
         let ch = TransformChannel {

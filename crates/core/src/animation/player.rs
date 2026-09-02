@@ -101,7 +101,13 @@ pub(crate) fn fold_reverse_time(
     delta: f32,
     duration: f32,
 ) -> (f32, bool) {
-    if duration <= 0.0 {
+    // #3432 — NaN-safe: `NaN <= 0.0` is false, so a plain `<= 0.0` guard is
+    // NaN-*transparent* and lets a poisoned duration fall through into
+    // `rem_euclid`, which latches `local_time` to NaN for the rest of the
+    // entity's life. `!(duration > 0.0)` catches NaN (and non-positive)
+    // the same way the sibling `CycleType::Loop` arm's `duration > 0.0`
+    // guard in `advance_time` already does.
+    if !(duration > 0.0) {
         return (0.0, false);
     }
     let period = 2.0 * duration;
@@ -258,6 +264,17 @@ mod fold_tests {
     fn zero_duration_is_safe() {
         let (t, rev) = fold_reverse_time(0.5, true, 1.0, 0.0);
         assert_eq!(t, 0.0);
+        assert!(!rev);
+    }
+
+    /// #3432 — `NaN <= 0.0` is false, so a plain `<= 0.0` guard would let a
+    /// NaN duration fall through into `rem_euclid`, latching `local_time`
+    /// to NaN forever. The guard must be NaN-safe (`!(duration > 0.0)`),
+    /// not just non-positive-safe.
+    #[test]
+    fn nan_duration_is_safe() {
+        let (t, rev) = fold_reverse_time(0.5, true, 1.0, f32::NAN);
+        assert_eq!(t, 0.0, "a NaN duration must not reach rem_euclid");
         assert!(!rev);
     }
 }
