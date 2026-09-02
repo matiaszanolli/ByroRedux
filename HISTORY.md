@@ -5,10 +5,12 @@ For current state see [ROADMAP.md](ROADMAP.md); for fine-grained archaeology
 see `git log`.
 
 New entries are drafted by `/session-close` at the end of each working
-session. The canonical entry shape is:
+session. Since Session 77, each entry also carries a one-movie tag picked to
+fit that session's theme — purely a mnemonic, not a fact to verify. The
+canonical entry shape is:
 
 ```
-## Session N — <one-line theme>  (YYYY-MM-DD, <commit range>)
+## Session N — "<Movie Title>": <one-line theme>  (YYYY-MM-DD, <commit range>)
 
 <one-paragraph "why this session happened">
 
@@ -24,7 +26,76 @@ Commits hold that record.
 
 ---
 
-## Session 76 — Audit-bundle closeout: 127 issues, corpus gates tripled, CDB Phase 2 unblocked  (2026-08-29, `e350b7ab..f3f6b60c`, 34 commits)
+## Session 77 — "The Wizard of Oz": SDK v0.1 native dispatch, a launcher front end, and the EX-16 epic's honest close  (2026-08-29 → 2026-09-01, `81a74add..58f3d442`, 252 commits)
+
+The prior session unblocked Starfield CDB and closed 127 audit findings; this
+one turned outward instead of inward, building the two things a mod author or
+a non-developer actually touches: a stable typed surface to script against
+(the SDK), and a front door to launch the engine without a CLI (the
+launcher). Both grew from stubs to load-bearing in one session, alongside a
+tail of correctness fixes and an honest, overdue audit of a 2026-06 epic that
+had been closed twice on false premises.
+
+- **`byroredux-sdk` v0.1 — native dispatch layer** — the session's bulk (~180
+  commits). A typed provider-call boundary now runs Papyrus and legacy
+  ObScript extender calls (StorageUtil, JContainers, ModEvent, native SKSE
+  content/dependency queries, Game form lookup, UI menu-state, input
+  mappings) natively instead of through the old compatibility-shim
+  classification — each landing paired with a docs commit recording the
+  engine-service mapping (`docs/engine/sdk-v0.1-development-plan.md`) and a
+  regression test. Session closed with a hand-off doc
+  (`docs/engine/sdk-v0.1-next-action-plan.md`) rather than a finished v0.1:
+  file-backed/object-scoped StorageUtil, cross-mod shared state, and
+  JContainers JDB/path/JSON/Lua remain explicitly out of scope.
+- **Launcher front end (P1–P3)** — `crates/boot-request` (the boot contract,
+  16 tests) + `crates/game-detect` (Steam discovery/validation, 38 tests) +
+  `tools/byro-detect` land P1; `tools/byro-launcher` (eframe/glow) ships a
+  Library/Play/Details UI that supervises the engine and renders all six
+  detected games under a virtual display for P2; P3 moves the settings model
+  into `crates/core/src/settings/`, persistence into the new
+  `crates/settings-io`, and adds a Settings screen with presets and a GPU
+  pre-flight (32 more tests). Non-Steam probes (Windows registry, GOG) stay
+  design-only — no API to exercise them from this box.
+- **Correctness tail** — cross-tile NAVM path connectivity via geometric
+  vertex-matching (#3802), Havok packfile container + `.uvd` envelope field
+  triage (#3809/#3810, research spikes, still open), Oblivion PGRD pathgrid
+  parsing (#3598), a `cell.owners` debug command for REGN/NAVM/audio/AI
+  ownership (#3805), a point/spot light-disk-radius fix that had been
+  re-deriving from the 2×-inflated cull radius instead of the CPU's
+  canonical source radius (#3575), a parallax-map bindless-index bit mask
+  that could sample wildly out of bounds (#3530), and green `cargo clippy
+  --workspace -- -D warnings` (#3525).
+- **EX-16 epic closed honestly** — audited #2372's 6 acceptance criteria
+  against real code rather than trusting its "closed" state: 0 of 6 were
+  actually done. Split into 6 individually-scoped, individually-assessed
+  sub-issues (#3801–#3806) and closed as superseded, following up on the
+  prior-session finding that #2369 had been auto-closed by GitHub's keyword
+  scanner off a commit that fixed only one slice.
+- **~40-commit doc-rot batch** — nif-parser.md coverage table, nifal.md BGEM
+  glass-overlay role, shader-pipeline.md submission order, save-load-
+  roundtrip.md reconciler count, ui.md API/module-map drift, and 9 more.
+- **Session-close ritual hygiene** — two real regressions the session's own
+  commits never surfaced were caught here: a compat-command test still
+  asserted the pre-session `Mapped` disposition for `StorageUtil.GetIntValue`
+  after the SDK work legitimately promoted it to `Native`, and the new
+  `StudioSession` editor-mode resource had no `NOT_SAVED_BY_DESIGN` entry,
+  tripping the save-registry completeness guard. Also caught: the ritual's
+  own `cargo test --workspace` repro command silently under-reports by
+  thousands of tests without `--no-fail-fast` (now fixed in the skill); 5
+  stale doc-path references (`settings.rs` → `settings/`, crate count 25→28);
+  95 zero-citation closed issues, all already properly comment-documented;
+  3 orphan-referenced issues genuinely fixed without a closing keyword, now
+  closed (#3776, #3780, #3786).
+
+Net: tests 6326 → **6905** (+579), Rust `src/` LOC ~457 475 → **~520 455**
+(+62 980), workspace members 28 → **33** (+5: `boot-request`, `game-detect`,
+`settings-io`, `byro-detect`, `byro-launcher`). Bench-of-record unchanged at
+`34074b93`, now 914 commits stale — this session's hot-path touches were
+correctness fixes, not new architecture (see R6a-stale-20).
+
+---
+
+## Session 76 — "The Da Vinci Code": Audit-bundle closeout: 127 issues, corpus gates tripled, CDB Phase 2 unblocked  (2026-08-29, `e350b7ab..f3f6b60c`, 34 commits)
 
 Session 75 ended by filing 139 issues from a 25-audit comprehensive sweep.
 This session spent itself closing them — 127 issues, almost all in four-issue
@@ -89,7 +160,7 @@ afternoon once someone actually ran the probes.
 Net: tests 6142 → 6326 (+184); Rust `src/` LOC +12 614; NIF sweep corpus
 184 886 → 603 207 (3.3×). Audit-bundle closeout — no milestone churn.
 
-## Session 75 — Comprehensive audit suite, 139 issues filed, and a per-game correctness sweep  (2026-08-28, `4d3f9761..d5a8c36c`, 68 commits)
+## Session 75 — "Spotlight": Comprehensive audit suite, 139 issues filed, and a per-game correctness sweep  (2026-08-28, `4d3f9761..d5a8c36c`, 68 commits)
 
 The session's spine is a full `/audit-suite --preset comprehensive` run —
 25 audits, 34 reports, 143 findings — bracketed by the fix work it fed on
@@ -153,7 +224,7 @@ Net: tests 5996 → **6142** (+146), non-test LOC ~436 665 → **444 861**
 
 ---
 
-## Session 74 — Renderer-independent SDK, ECS concurrency-declaration sweep, terrain-seam closeout, and a 27-issue doc-rot batch  (2026-08-26, `21a840d5..2bcaf1cc`, 47 commits)
+## Session 74 — "The Matrix": Renderer-independent SDK, ECS concurrency-declaration sweep, terrain-seam closeout, and a 27-issue doc-rot batch  (2026-08-26, `21a840d5..2bcaf1cc`, 47 commits)
 
 A broad, multi-arc session bridging several tracks that had been queued
 since Session 73: a new renderer-independent SDK crate for external
@@ -237,7 +308,7 @@ addition, #3298, is noted but not treated as a new measured-cost source).
 
 ---
 
-## Session 73 — Canonical material lighting response: BGEM glass optics, soft/rim/back Bethesda lighting, and the Cornell L3-L5 rungs  (2026-08-25, `3d0d7f16..cdd9aa41`, 6 commits)
+## Session 73 — "Blade Runner": Canonical material lighting response: BGEM glass optics, soft/rim/back Bethesda lighting, and the Cornell L3-L5 rungs  (2026-08-25, `3d0d7f16..cdd9aa41`, 6 commits)
 
 A short, single-arc follow-on to Session 72's audit closeout, picking the
 material-recovery plan's R5 (canonical roles) and R4 (Cornell oracle) rows
@@ -288,7 +359,7 @@ into R6a-stale-20 at this close — see Known Issues).
 
 ---
 
-## Session 72 — Quest/scene fragment expansion, save-load hardening, audit closure, and CI buildability  (2026-08-24 → 2026-08-25, `eb2e2445..df162912`, 36 commits)
+## Session 72 — "Memento": Quest/scene fragment expansion, save-load hardening, audit closure, and CI buildability  (2026-08-24 → 2026-08-25, `eb2e2445..df162912`, 36 commits)
 
 This session converted the prior nif-deep audit's highest-risk findings into
 shipped fixes while expanding the runtime surface those fixes protect. The
@@ -334,7 +405,7 @@ commits stale; no GPU is available in this environment for the 75-run refresh.
 
 ---
 
-## Session 71 — Exterior Tranche C/D closeout, WATAL convergence, GPU morph-target blending, and a nif-deep audit sweep that found five HIGH bugs  (2026-08-20 → 2026-08-23, `bb0b92f2..bfdc3d3f`, 95 commits)
+## Session 71 — "The Perfect Storm": Exterior Tranche C/D closeout, WATAL convergence, GPU morph-target blending, and a nif-deep audit sweep that found five HIGH bugs  (2026-08-20 → 2026-08-23, `bb0b92f2..bfdc3d3f`, 95 commits)
 
 The session picked up where Session 70 left off — WATAL "near-complete" — and
 spent its first half finishing two parallel tracks: closing every checklist
@@ -406,7 +477,7 @@ available in this environment to re-run it.
 
 ---
 
-## Session 70 — WATAL reaches near-complete per-game coverage, CHARAL's wiring gap closes, and two exterior-streaming ownership audits  (2026-08-18 → 2026-08-20, `82904bed..1a428278`, 284 commits)
+## Session 70 — "Waterworld": WATAL reaches near-complete per-game coverage, CHARAL's wiring gap closes, and two exterior-streaming ownership audits  (2026-08-18 → 2026-08-20, `82904bed..1a428278`, 284 commits)
 
 This is a large, multi-track close spanning several days and, for long
 stretches, more than one concurrent working session — the commit volume alone
@@ -493,7 +564,7 @@ skill-drift gate's own resolution rule — no path drift found.
 
 ---
 
-## Session 69 — a transported combustion solver, and the nine boundary fixes that cleared the way  (2026-08-17 → 2026-08-18, `e3986e38..348f4cd0`, 34 commits)
+## Session 69 — "Backdraft": a transported combustion solver, and the nine boundary fixes that cleared the way  (2026-08-17 → 2026-08-18, `e3986e38..348f4cd0`, 34 commits)
 
 Session 68 gave `GpuFogVolume` three fog profiles and gave explosions a
 per-entity clock, but left fire *lighting* in its own opt-in module behind
@@ -587,7 +658,7 @@ which pushes bench-of-record `34074b93` to 84 commits stale and makes
 R6a-stale-20 the most urgent it has been — a compute shader that grew 2.4×
 against an unmeasured baseline.
 
-## Session 68 — a thirteen-report sweep, a native UI for the playable slice, and gates that stop lying  (2026-08-15 → 2026-08-17, `83655bdf..23068af0`, 26 commits)
+## Session 68 — "The Truman Show": a thirteen-report sweep, a native UI for the playable slice, and gates that stop lying  (2026-08-15 → 2026-08-17, `83655bdf..23068af0`, 26 commits)
 
 Session 67 closed on the observation that the four owner-audits added at the end
 of Session 66 were finding what the shape-checking audits structurally could
@@ -676,7 +747,7 @@ source files +14; workspace members unchanged at 27. Open issue dirs 2823 →
 Bench-of-record untouched at `34074b93` and now 49 commits stale — filed as
 R6a-stale-20, three days after stale-19 was cleared.
 
-## Session 67 — eight audit reports, two of them a subsystem's first ever; the bench becomes reproducible  (2026-08-13 → 2026-08-15, `654e3be6..819c4491`, 65 commits)
+## Session 67 — "Groundhog Day": eight audit reports, two of them a subsystem's first ever; the bench becomes reproducible  (2026-08-13 → 2026-08-15, `654e3be6..819c4491`, 65 commits)
 
 Session 66 drained a twelve-report backlog; Session 67 refilled it deliberately
 and then drained most of that too. Eight reports landed — ESM, ECS, physics and
@@ -766,7 +837,7 @@ canary), Rust `src/` lines ~370 223 → ~379 036 (+8 813), issue directories
 commits from HEAD at close — inside the 30-commit window, but the next session
 should expect to re-run it.
 
-## Session 66 — twelve-report audit sweep and the bug-bash that drained it; exterior slices land  (2026-08-11 → 2026-08-13, `17d9135e..53a398f1`, 69 commits)
+## Session 66 — "Predator": twelve-report audit sweep and the bug-bash that drained it; exterior slices land  (2026-08-11 → 2026-08-13, `17d9135e..53a398f1`, 69 commits)
 
 Session 65 closed on a playable vertical slice and a physical lighting
 backbone; Session 66 spent its budget paying for them. Twelve audit reports
@@ -837,7 +908,7 @@ commits because the runner cannot find `vulkan/vulkan.h` when building
 `byroredux-fsr3-sys` — an environmental break, not a code one, but it means CI
 gave no signal for any of this session's merges.
 
-## Session 65 — playable vertical slice opens; physical lighting backbone; RT decomposition harness  (2026-08-09 → 2026-08-11, `a705423a..65217327`, 36 commits)
+## Session 65 — "Tron: Legacy": playable vertical slice opens; physical lighting backbone; RT decomposition harness  (2026-08-09 → 2026-08-11, `a705423a..65217327`, 36 commits)
 
 With Session 64's audit backlog drained, the project turned from "parses and
 renders Bethesda content" to "can be played." Session 65 opened the playable
@@ -903,7 +974,7 @@ against a session that changed renderer hot paths.
 
 ---
 
-## Session 64 — 13-dimension audit sweep + ~95-issue bug-bash across renderer/NIF/physics/save, three feature completions  (2026-08-07 → 2026-08-09, `626614a1..2e5912f5`, 41 commits)
+## Session 64 — "World War Z": 13-dimension audit sweep + ~95-issue bug-bash across renderer/NIF/physics/save, three feature completions  (2026-08-07 → 2026-08-09, `626614a1..2e5912f5`, 41 commits)
 
 Session 64 opened by finishing three in-flight feature threads — Skyrim's
 day/night cycle, the quest lifecycle + alias runtime, and PHYSAL's
@@ -981,7 +1052,7 @@ flagged higher-urgency for a re-run at the next opportunity.
 
 ---
 
-## Session 63 — Renderer audit bug-bash, exterior streaming resumability, save/load registry completeness, sandboxed mod runtime, and a 36-issue NIFAL dedup/doc sweep  (2026-08-01 → 2026-08-07, `b00a8902..03be068d`, 95 commits)
+## Session 63 — "Inception": Renderer audit bug-bash, exterior streaming resumability, save/load registry completeness, sandboxed mod runtime, and a 36-issue NIFAL dedup/doc sweep  (2026-08-01 → 2026-08-07, `b00a8902..03be068d`, 95 commits)
 
 A long, multi-threaded session with no single planned arc: a 2026-08-02
 renderer audit drove the largest chunk of work, exterior streaming picked
@@ -1074,7 +1145,7 @@ at the next renderer-touching session.
 
 ---
 
-## Session 62 — Volumetric fog/GI, MQ101 cinematic vertical slice (SCEN/PACK-scene + Havok HKX), streaming resumability, ten-issue bug-bash  (2026-07-26 → 2026-08-01, `5f0220eb..7e068c7d`, 61 commits)
+## Session 62 — "The Fog": Volumetric fog/GI, MQ101 cinematic vertical slice (SCEN/PACK-scene + Havok HKX), streaming resumability, ten-issue bug-bash  (2026-07-26 → 2026-08-01, `5f0220eb..7e068c7d`, 61 commits)
 
 Four large threads ran in parallel rather than one planned arc. The renderer
 picked up its biggest single-session feature push since the FSR work —
@@ -1204,7 +1275,7 @@ now 59 commits stale** (record at `3a02b02d`, 2026-07-26) — past the
 water, POM, shadows) is exactly the kind of change the gate exists to
 catch; filed as R6a-stale-18, not yet re-run.
 
-## Session 61 — FSR 3.1 phases 5–7 + default flip, Scaleform host bridge (R4 closed), two regressions caught by measurement  (2026-07-24 → 2026-07-26, `98a0fd7a..3a02b02d`, 43 commits)
+## Session 61 — "The Flash": FSR 3.1 phases 5–7 + default flip, Scaleform host bridge (R4 closed), two regressions caught by measurement  (2026-07-24 → 2026-07-26, `98a0fd7a..3a02b02d`, 43 commits)
 
 Three planned threads and one unplanned. The planned ones: finish the FSR 3.1
 integration plan through phase 7, continue the Scaleform bridge that R4's
@@ -1320,7 +1391,7 @@ closed or characterised that only measurement would have found; R4 closed.
 
 ---
 
-## Session 60 — FSR 3.1 upscaler (phases 1→4/5), exterior terrain collision, RT correctness  (2026-07-21 → 2026-07-23, `c8dbba93..33d6a18e`, 18 commits)
+## Session 60 — "Speed": FSR 3.1 upscaler (phases 1→4/5), exterior terrain collision, RT correctness  (2026-07-21 → 2026-07-23, `c8dbba93..33d6a18e`, 18 commits)
 
 Two drivers. The larger was standing up AMD FidelityFX Super Resolution
 3.1 in upscaler-only mode behind a narrow FFI boundary, executed against
@@ -1340,7 +1411,7 @@ Net: tests 3785 → 3826 (+41); non-test LOC ~285.4K → ~290.3K (+~4.9K); +1 wo
 
 ---
 
-## Session 59 — M47.2 quest aliases + object-targeting effects, renderer surface-ID/light-animation quality pass, audit bug-bash  (2026-07-20 → 2026-07-21, `dfcf74c1..c2336ee1`, 16 commits)
+## Session 59 — "The Bourne Identity": M47.2 quest aliases + object-targeting effects, renderer surface-ID/light-animation quality pass, audit bug-bash  (2026-07-20 → 2026-07-21, `dfcf74c1..c2336ee1`, 16 commits)
 
 Three threads running in parallel rather than one driver: continuing
 M47.2's scripting vertical slice into quest aliases and object-targeting
@@ -1430,7 +1501,7 @@ breach is still unresolved.
 
 ---
 
-## Session 58 — Renderer quality pass (ReSTIR spatial close-out, TAA/glass/volumetrics/decals) + audit bug-bash  (2026-07-18 → 2026-07-20, `42cf7641..86035f51`, 21 commits)
+## Session 58 — "Shine": Renderer quality pass (ReSTIR spatial close-out, TAA/glass/volumetrics/decals) + audit bug-bash  (2026-07-18 → 2026-07-20, `42cf7641..86035f51`, 21 commits)
 
 Split roughly evenly between a renderer-quality pass and the standing
 audit-bug-bash cadence. On the renderer side, several shading paths that
@@ -1494,7 +1565,7 @@ R6a-stale-16, re-run recommended next session.
 
 ---
 
-## Session 57 — M42 AI-behavior rollout (Wander→Patrol) + audit bug-bash + CI recovery  (2026-07-15 → 2026-07-18, `7b1fefac..b5e38c22`, 42 commits)
+## Session 57 — "Homeward Bound": M42 AI-behavior rollout (Wander→Patrol) + audit bug-bash + CI recovery  (2026-07-15 → 2026-07-18, `7b1fefac..b5e38c22`, 42 commits)
 
 Picked up the NPC-liveliness arc where Session 56 left it — Sandbox could
 only make an actor sit — and gave six more PACK procedures a runtime, each
@@ -1576,7 +1647,7 @@ threshold — no re-run needed this session).
 
 ---
 
-## Session 56 — M42 sandbox seating + M41.5 NPC idle variety + audit bug-bash tail  (2026-07-15, `c0b2d4e0..005ff563`, 28 commits)
+## Session 56 — "Toy Story": M42 sandbox seating + M41.5 NPC idle variety + audit bug-bash tail  (2026-07-15, `c0b2d4e0..005ff563`, 28 commits)
 
 Opened on the NPC-liveliness arc — giving spawned actors something to *do*
 beyond standing in a T-pose — and closed out the M42 Sandbox seat behavior
@@ -1627,7 +1698,7 @@ no bench delta — bench-of-record `1c26bc25` is now 613 commits stale
 (R6a-stale-15 still gates any current FPS claim). No hot-path shader/pipeline
 change landed this session.
 
-## Session 55 — M47.2 QUST fragment keystone + VWD/ghosting root-cause + a 100-issue audit bug-bash tail  (2026-07-11, `c4d5996f..5fb2e666`, 82 commits)
+## Session 55 — "Ghostbusters": M47.2 QUST fragment keystone + VWD/ghosting root-cause + a 100-issue audit bug-bash tail  (2026-07-11, `c4d5996f..5fb2e666`, 82 commits)
 
 Opened on the M47.2 scripting runtime and the long-open interior-ghosting
 investigation, then spent the back half of the session working through five
@@ -1690,7 +1761,7 @@ blast-radius fix, not hot-path code, so no new drift risk was added.
 
 ---
 
-## Session 54 — CHARAL new mechanism families (affliction/stealth/affinity) + per-game ruleset extensions + audit bug-bash  (2026-07-04, `1b4e8e84..8ec1f0aa`, 63 commits)
+## Session 54 — "The Invisible Man": CHARAL new mechanism families (affliction/stealth/affinity) + per-game ruleset extensions + audit bug-bash  (2026-07-04, `1b4e8e84..8ec1f0aa`, 63 commits)
 
 Continued the CHARAL research/build cadence from Session 53: a long stretch
 of UESP/Fandom wiki fetches (Skyrim, Oblivion, Starfield, FO76) fed three
@@ -1746,7 +1817,7 @@ commits stale (R6a-stale-15 still gating any current FPS claim).
 
 ---
 
-## Session 53 — CHARAL character abstraction layer + audit bug-bash  (2026-07-01, `8d653b48..d6d46c27`, 61 commits)
+## Session 53 — "Frankenstein": CHARAL character abstraction layer + audit bug-bash  (2026-07-01, `8d653b48..d6d46c27`, 61 commits)
 
 Two threads. The feature thread stood up **CHARAL** — the Character Abstraction
 Layer, the canonical attributes / skills / perks / leveling / derived-stat tier
@@ -1788,7 +1859,7 @@ change — bench-of-record `1c26bc25` now 437 commits stale (R6a-stale-15 gating
 
 ---
 
-## Session 52 — Audit bug-bash: distant-object LOD, condition functions, M47.2 fragment lowerer  (2026-06-26, `70ea69e6..af359ed8`, 42 commits)
+## Session 52 — "Far and Away": Audit bug-bash: distant-object LOD, condition functions, M47.2 fragment lowerer  (2026-06-26, `70ea69e6..af359ed8`, 42 commits)
 
 Driven by the 2026-06-23 audit-suite run (`e2f8923e` bundles the suite summary +
 tech-debt reports). The session worked the findings — 53 issue refs across fixes,
@@ -1845,7 +1916,7 @@ milestone fully closed (M35 `_far.nif` sub-item shipped).
 
 ---
 
-## Session 51 — M47.2 compiled-Papyrus pipeline (.pex decompiler + recognizer + triggers)  (2026-06-22, `65239fec..f1a00e89`)
+## Session 51 — "The Imitation Game": M47.2 compiled-Papyrus pipeline (.pex decompiler + recognizer + triggers)  (2026-06-22, `65239fec..f1a00e89`)
 
 ROADMAP pick after M45/M45.1: M47.2 (full scripting runtime), unblocked by M30.2
 (full `.psc` parse) and M47.0/M47.1 (event hooks + condition eval). Three forks
@@ -1895,7 +1966,7 @@ and perk entry-point composition remain.
 
 ---
 
-## Session 50 — M45 + M45.1 Save/Load (library + live load)  (2026-06-21, `bd2d0de2` + `48e18c4f`)
+## Session 50 — "Edge of Tomorrow": M45 + M45.1 Save/Load (library + live load)  (2026-06-21, `bd2d0de2` + `48e18c4f`)
 
 ROADMAP pick: M45 was the only unblocked top-tier (Tier 1–4) capability
 milestone — M40 (world streaming) closed in Session 40, and M45 is pure-Rust
@@ -1953,7 +2024,7 @@ Net: +1 crate (`crates/save`), +22 tests (17 save-crate + 2 World + 3 binary,
 incl. cross-crate ScriptTimer round-trip + FormId delta-reroute), workspace +
 clippy green. M45 + M45.1 both land: save, verify, and a working in-game load.
 
-## Session 49 — RT denoiser overhaul + FO4 import-consumer arc + audit bug-bash  (2026-06-19, bac64c45..b1f86290, 79 commits)
+## Session 49 — "Eternal Sunshine of the Spotless Mind": RT denoiser overhaul + FO4 import-consumer arc + audit bug-bash  (2026-06-19, bac64c45..b1f86290, 79 commits)
 
 Three threads. The headline was an **RT denoiser overhaul** (#1662) pushing
 interior lighting toward reference-grade — the first material/noise-quality
@@ -1976,7 +2047,7 @@ Net: tests 2915 → 2985 (+70); non-test Rust LOC ~231.1k → ~235.9k (+~4.8k); 
 
 ---
 
-## Session 48 — Havok ragdoll (M41.x + PHYSAL) + 56-issue audit bug-bash  (2026-06-15, 05e9ebd5..ca575eec, 53 commits)
+## Session 48 — "Weekend at Bernie's": Havok ragdoll (M41.x + PHYSAL) + 56-issue audit bug-bash  (2026-06-15, 05e9ebd5..ca575eec, 53 commits)
 
 Two distinct bodies of work that were never separately closed out. First, the
 **M41.x Havok ragdoll** deliverable landed end-to-end — `bhkRagdoll` /
@@ -2000,7 +2071,7 @@ Net: tests 2870 → 2915 (+45); total Rust LOC ~241.8k → ~244.7k (+~2.9k); 56 
 
 ---
 
-## Session 47 — RT glass/Cornell arc + camera-relative precision + Oblivion v10.x NIF + audit bug-bash  (2026-06-14, aed64034..4d61e802, 140 commits)
+## Session 47 — "Alice in Wonderland": RT glass/Cornell arc + camera-relative precision + Oblivion v10.x NIF + audit bug-bash  (2026-06-14, aed64034..4d61e802, 140 commits)
 
 The longest run between closeouts so far — 11 days, 140 commits across five
 threads. The driver was renderer correctness: the new Cornell-box harness
@@ -2021,7 +2092,7 @@ Net: +97 tests (2773 → 2870), +~6 650 non-test LOC (~221 700 → ~228 350; tot
 
 ---
 
-## Session 46 — R6a-stale-14 + renderer stability + M24.2 Phase 2 + ReSTIR-DI Phase 1  (2026-06-03, 017996bc..04b8d4d9, 30 commits)
+## Session 46 — "Unbreakable": R6a-stale-14 + renderer stability + M24.2 Phase 2 + ReSTIR-DI Phase 1  (2026-06-03, 017996bc..04b8d4d9, 30 commits)
 
 Session 46 opened on the heels of Session 45's CSG precombined geometry + NIFAL surface-audit dual landing, which left three build-breaking crates (sfmaterial, scripting, renderer) and a pending R6a-stale-14 bench cycle. The first half of the session burned through the stability and material backlog; the second half pushed two new capability threads: M24.2 Phase 2 semantic ESM decoding and a ReSTIR-DI Phase 1 reservoir landing.
 
@@ -2045,7 +2116,7 @@ Net: +15 tests (2758 → 2773), +1 304 non-test LOC (~220 400 → ~221 700). Ben
 
 ---
 
-## Session 45 — M49 FO4 precombined geometry + NIFAL surface audit complete + EXAL introduced  (2026-06-02, c1951b89..633729f0, 10 commits)
+## Session 45 — "The Prestige": M49 FO4 precombined geometry + NIFAL surface audit complete + EXAL introduced  (2026-06-02, c1951b89..633729f0, 10 commits)
 
 Three parallel arcs closed in a compact 10-commit session. The headline
 was M49: FO4 precombined geometry had been deferred since Session 44 as
@@ -2096,7 +2167,7 @@ this session touched no renderer hot paths — R6a-stale-14 carries forward.
 
 ---
 
-## Session 44 — audit bug-bash (FNV + Safety + FO4/NIFAL) + perf arc + stochastic depth of field  (2026-05-30 → 2026-06-01, 04cd20a1..49ec0e33, 63 commits)
+## Session 44 — "Focus": audit bug-bash (FNV + Safety + FO4/NIFAL) + perf arc + stochastic depth of field  (2026-05-30 → 2026-06-01, 04cd20a1..49ec0e33, 63 commits)
 
 The largest session since the milestone-heavy stretch: two fresh audits
 (`AUDIT_FNV_2026-05-30`, `AUDIT_SAFETY_2026-06-01`) plus standing FO4 / NIFAL
@@ -2155,7 +2226,7 @@ incremental propagation, terrain LOD); a re-run is warranted (DOF itself is
 opt-in/zero-cost). No bench re-run this session — flagged in ROADMAP Known Issues
 as R6a-stale-14.
 
-## Session 43 — audit-bundle bug-bash: v10.0.1.0 "old Oblivion" NIF + Oblivion/Starfield ESM-XCLL + tech-debt sweep + M47.2 VMAD  (2026-05-28 → 2026-05-30, 86d32e5f..b2e04548, 38 commits)
+## Session 43 — "Back to the Future": audit-bundle bug-bash: v10.0.1.0 "old Oblivion" NIF + Oblivion/Starfield ESM-XCLL + tech-debt sweep + M47.2 VMAD  (2026-05-28 → 2026-05-30, 86d32e5f..b2e04548, 38 commits)
 
 A pure audit-driven closeout session, no milestone churn. Three fresh 2026-05-28 audits
 (AUDIT_OBLIVION, AUDIT_TECH_DEBT 11-dim sweep, plus a NIF adversarial-probe report) plus the
@@ -2223,7 +2294,7 @@ the session touched parser/ESM/audit/scripting + one skinning safety-guard, not 
 hot path; bench-of-record `4e2ebe8c` is now 42 commits stale but the FNV/Skyrim/FO4 steady-state
 numbers remain representative (no re-run warranted). Audit-bundle closeout, no milestone churn.
 
-## Session 42 — #1277 NIF translation-layer epic close + Starfield walkable-Cydonia bring-up + Disney BSDF + water caustics + R6a-stale-12 closeout  (2026-05-23 → 2026-05-28, 4cbf2e6a..dabf89b2, 162 commits)
+## Session 42 — "Interstellar": #1277 NIF translation-layer epic close + Starfield walkable-Cydonia bring-up + Disney BSDF + water caustics + R6a-stale-12 closeout  (2026-05-23 → 2026-05-28, 4cbf2e6a..dabf89b2, 162 commits)
 
 Session 41 closed with the M27 / M47.0 / M47.1 / M30.2 Tier-3 push done; Session 42 opened with the per-game NIF/ESM translation-survey #1277 epic in mid-flight and ran five days of mixed work. The session's two largest arcs were the **#1277 epic close-out** (Tasks 1/3/4/5/6/8 land in sequence via PR #1278 plus all five children #1279/1280/1281/1282/1283) and a final-day **Starfield bring-up** that drove vanilla `Starfield.esm` from "no ESM parser at all per audit framing" to "walkable Cydonia interior with 91 698 static colliders / 93 547 entities / 7 253 unique meshes" in one sitting — empirical measurement via `sf_smoke` + `sf_parse_check` showed the existing parser already captured 99.9% of vanilla SF records, collapsing the original 7-11-session Starfield roadmap to 3-4. In between: Disney BSDF lobe shipped end-to-end (#1248-1254), water-side caustic synthesis (#1210 Phases A-E) closed the long-deferred sun-direction → water.frag → composite chain, **R6a-stale-12 closeout (`c9ad33f0`) delivered +33-50% FPS across all three benches**, the 2026-05-26 Fallout-symptom sweep closed F2-F8, and the materially-translation Stages 1-3 + canonical-material convergence + #1284 SkinSlotPool 3-step bump completed the multi-session material/skinning refactor begun in Session 38. Full audit-renderer + audit-starfield + audit-fnv + audit-runtime sweeps over the last 36 hours produced nine new tracked issues (#1285-1287, #1289-1295) and seven of them closed in-session.
 
@@ -2259,7 +2330,7 @@ Net: tests 2457 → 2628 (+171); LOC non-test ~192 906 → 210 226 (+17 320); LO
 
 ---
 
-## Session 41 — Renderer perf-instrumentation tail + M40 P2 cell-swap + M28.5 KCC player + Tier-3 milestone push (M27 + M47.0 + M47.1 + M30.2)  (2026-05-21 → 2026-05-23, e5774b19..4cbf2e6a, 65 commits)
+## Session 41 — "Whiplash": Renderer perf-instrumentation tail + M40 P2 cell-swap + M28.5 KCC player + Tier-3 milestone push (M27 + M47.0 + M47.1 + M30.2)  (2026-05-21 → 2026-05-23, e5774b19..4cbf2e6a, 65 commits)
 
 Session 40 closed with R6a-stale-11 just shipped at `d0b52bd5` and bench-of-record refreshed to Prospector 120.7 FPS / 8.28 ms. Session 41 opened the same evening picking up the #1194 follow-on work (per-bracket TIMESTAMP reads to stop Whiterun hanging on the unwritten BLAS_REFIT query), then ran three days of mixed work: M40 Phase 2 interior↔exterior cell-swap orchestration so doors actually load the destination cell, M28.5 kinematic character controller so the player walks with gravity + collide-and-slide instead of fly-cam-only, a 13-issue NIF/BSA correctness bug-bash that drained the Session-40 audit-publish queue, the #1147 PBR / SSS / model-space-normals shader-flag gating that closes the FO4-D6-003 BGSM-flag wiring trilogy, the #1156 Option-C ritual change codifying `.claude/issues/<N>/ISSUE.md` as an immutable snapshot, and on the third day a Tier-3 milestone push that shipped four milestones (M27 declared-access scheduler, M47.0 event hooks runtime, M47.1 condition eval, M30.2 full `.psc` → AST parser) across 16 commits. The Tier-3 push unblocks M47.2 (Papyrus transpiler) — the M30 expression parser couldn't yet eat a real `.psc` file, and event/condition runtimes had no consumers until R5's `papyrus_demo` got wired into cell-loader spawns.
 
@@ -2293,7 +2364,7 @@ Net: tests 2310 → 2457 (+147 — M30.2 stmt+script tests +22, M47.0 phases 1-6
 
 ---
 
-## Session 40 — FO4 PreCombined Mesh pipeline + legacy-compat audit full closeout + M29.5/6 GPU bone palette  (2026-05-19 → 2026-05-21, 7d6e2bfb..18cfd62f, 37 commits)
+## Session 40 — "The Bone Collector": FO4 PreCombined Mesh pipeline + legacy-compat audit full closeout + M29.5/6 GPU bone palette  (2026-05-19 → 2026-05-21, 7d6e2bfb..18cfd62f, 37 commits)
 
 Session 39 closed with the concurrency audit's HIGH+MEDIUM tier shipped and bench-of-record refreshed to `b5726a18`. Session 40 opened with the user asking to "render Diamond City Dugout Inn," which surfaced the FO4 PreCombined Mesh gap end-to-end: walls + floors + ceilings absent because the CK absorbs architecture REFRs into baked `_oc.nif` files this engine had never parsed. The session split into three threads — the FO4 PreCombined Mesh shipment + its post-mortem-driven legacy-compat audit + that audit's full 13/13 closeout, the M29.5 → M29.6 GPU bone-palette milestone (compute pass + persistent SSBO with slot pool + three hotfixes), and a long tail of independently-filed audit-finishers (renderer, NIF parser, ESM, tech-debt) that all happened to mature this week.
 
@@ -2315,7 +2386,7 @@ Net: tests 2264 → 2310 (+46 — Dim 1 spawn-site insert smoke from the FormIdP
 
 ---
 
-## Session 39 — #1115 build_render_data refactor + concurrency audit closeout  (2026-05-17 → 2026-05-18, c265032e..48646895, 32 commits)
+## Session 39 — "Chaos Theory": #1115 build_render_data refactor + concurrency audit closeout  (2026-05-17 → 2026-05-18, c265032e..48646895, 32 commits)
 
 Session 38 closed with R6a-stale-10 staged and the AUDIT_CONCURRENCY_2026-05-17 / AUDIT_TECH_DEBT_2026-05-17 reports filed uncommitted. This session opened by carrying over five trailing audit-finishers from the Session-38 batch, ground through the eight-step `build_render_data` decomposition (#1115 / TD9-001) that the renderer-audit moratorium gate had been holding, validated the post-refactor bench against the pre-refactor baseline (R6a-stale-10 closed at `b5726a18` — all three benches within the 5% gate), then transitioned overnight into a sixteen-issue closeout of the new concurrency audit's LOW/MEDIUM tier.
 
@@ -2331,7 +2402,7 @@ Net: tests 2257 → 2264 (+7 from concurrency audit closeout test additions — 
 
 ---
 
-## Session 38 — FO4 compat deepening + R5 verdict + audit-bundle closeout  (2026-05-15 → 2026-05-17, 05a5ae06..c265032e, 73 commits)
+## Session 38 — "The Verdict": FO4 compat deepening + R5 verdict + audit-bundle closeout  (2026-05-15 → 2026-05-17, 05a5ae06..c265032e, 73 commits)
 
 This session opened with the AUDIT_FO4 sweep filed at Session 37 close,
 threaded the R6a-prospector-regress diagnosis (-18.5% Prospector FPS, root
@@ -2481,7 +2552,7 @@ changes landed since). R6a-stale-10 opens; re-bench scheduled for Session
 
 ---
 
-## Session 37 — Tech-debt sweep + ESM strings loader + NIF import fixes  (2026-05-15, 5ab6a8b8..94675f12, 25 commits)
+## Session 37 — "Office Space": Tech-debt sweep + ESM strings loader + NIF import fixes  (2026-05-15, 5ab6a8b8..94675f12, 25 commits)
 
 This session closed the bulk of the tech-debt batch filed in Session 36 (`#1037–#1053`),
 shipped two correctness fixes surfaced by the Skyrim and NIF audits, and repaired a
@@ -2531,7 +2602,7 @@ Net: 2134 → 2139 tests (+5), LOC non-test ~143 745 → ~151 085 (+7 340), sour
 
 ---
 
-## Session 36 — Monolith-split sweep + post-tech-debt audit finishers  (2026-05-14, 98bbbcd..ca81c19, 35 commits)
+## Session 36 — "2001: A Space Odyssey": Monolith-split sweep + post-tech-debt audit finishers  (2026-05-14, 98bbbcd..ca81c19, 35 commits)
 
 Session 35 left the audit-bundle pipeline cleared but the repo still
 carried six production files plus two test files above 2 000 LOC.
@@ -2558,7 +2629,7 @@ Net: tests 2 109 → 2 134 (+25 from audit finishers), workspace zero failures t
 
 ---
 
-## Session 35 — Audit-bundle closeout + tech-debt sweep  (2026-05-12 → 2026-05-14, 6622eeb..98bbbcd, 66 commits)
+## Session 35 — "Unfinished Business": Audit-bundle closeout + tech-debt sweep  (2026-05-12 → 2026-05-14, 6622eeb..98bbbcd, 66 commits)
 
 Session 34 left the audit pipeline mid-cycle: a still-open bundle of renderer / safety / NIF / audio findings, the SpeedTree Phase 1 placeholder gaps, and a fresh round of AUDIT_NIF / AUDIT_SAFETY reports waiting on disposition. This session closed ~28 audit issues across the bundle, shipped Skyrim WTHR end-to-end (#539 / M33-04..07), and ran a first-pass `/audit-tech-debt` that surfaced 132 findings and filed them as 17 batched GitHub issues (#1037-#1053). Two of those batches closed in the same session; five more landed partials.
 
@@ -2573,7 +2644,7 @@ Net: tests 1979 → 2109 (+130), LOC (non-test) ~164k → ~172k (+8k), source fi
 
 ---
 
-## Session 34 — Audit-bundle closeouts + M38 water ship + large-module refactor sweep  (2026-05-10 → 2026-05-12, cc025ca..0d437d6, 78 commits)
+## Session 34 — "Titanic": Audit-bundle closeouts + M38 water ship + large-module refactor sweep  (2026-05-10 → 2026-05-12, cc025ca..0d437d6, 78 commits)
 
 Long-running multi-day window that closed ~45 standing audit issues (Renderer-D / NIF-D / Audio dimensions), shipped M38 water rendering end-to-end, accumulated the debug-CLI surface (cam.where/pos/tp, prid, inspect, light.dump), and ended with a deliberate 10-commit code-reorganization pass that split most of the largest production-code files (>2000 lines) into focused submodules without touching behaviour. The refactor wave was an explicit user-driven request after the audit work had accumulated enough scaffolding to warrant a slim-down.
 
@@ -2602,7 +2673,7 @@ Net: tests **1879 → 1979 (+100)**, Rust LOC (non-test) **~153 802 → 164 180 
 
 ---
 
-## Session 33 — Markarth renders: Tier 8 ship (M55/M58/M-LIGHT v1) + SpeedTree Phase 1 + perf audit-bundle close + NIF `until=` doctrine flip + Anniversary Edition path-strip  (2026-05-08 → 2026-05-10, 33f48b5..e2409c0)
+## Session 33 — "Into the Woods": Markarth renders: Tier 8 ship (M55/M58/M-LIGHT v1) + SpeedTree Phase 1 + perf audit-bundle close + NIF `until=` doctrine flip + Anniversary Edition path-strip  (2026-05-08 → 2026-05-10, 33f48b5..e2409c0)
 
 21-commit multi-day session that converged three structural threads and one live-test catch. The **Tier 8 visual fidelity** stretch lit up an entire indirect-lighting pipeline in one commit — M55 volumetrics (froxel inject + integrate, single-shadow-ray RT against TLAS), M58 bloom pyramid (5-mip down + 4-mip up, R11G11B10F), M-LIGHT v1 stochastic single-tap soft shadows (angular cone), and a golden-frame regression harness pinned to the cube demo. The **SpeedTree Phase 1** arc dissected the FNV/FO3/Oblivion `.spt` TLV format from scratch (single-file dissector → tag dictionary recovery → TLV walker hitting the ≥95% acceptance gate → importer placeholder fallback → cell-loader extension switch → `--tree` CLI surface + smoke test) so foliage at least renders a placeholder card instead of crashing the importer. The **performance + NIF audit-bundle** thread closed 5 perf findings (#928–#932) and ran a fresh NIF audit that surfaced the load-bearing **`until=X` semantic doctrine flip** (#935) — niftools/nifly are inclusive (`<=`), the post-#765/#769 sweep had chosen exclusive (`<`), and every shipping `until=` gate sat at versions older than 20.0.0.5 so the bug was silent on Bethesda content but bit pre-Bethesda Gamebryo / NetImmerse legacy. The closing arc was a **live Markarth render** that surfaced an Anniversary Edition compat bug — `tex.missing` reported juniper / reach branches / driftwood all authored with the full pipeline-internal prefix `skyrimhd\build\pc\data\textures\…` that the real Skyrim runtime strips at lookup time — and the path-normalize fix that ended with the user looking up at a real reach-tree silhouette against the Markarth sky.
 
@@ -2619,7 +2690,7 @@ Net: tests **1827 → 1879 (+52)**, Rust LOC (non-test) **~147 575 → ~153 802 
 
 ---
 
-## Session 32 — Audit-driven sweep: FNV-D5 + Renderer-D11 closeouts, M41-EQUIP Phase 2 close-out, smoke-test framework  (2026-05-08, cfc89af..0af2aa9)
+## Session 32 — "Smoke Signals": Audit-driven sweep: FNV-D5 + Renderer-D11 closeouts, M41-EQUIP Phase 2 close-out, smoke-test framework  (2026-05-08, cfc89af..0af2aa9)
 
 13-commit single-day session, audit-driven. Three structural arcs converged: an **FNV-D5 dimension-5 audit** ran at HEAD `318fcaf`, surfaced 3 findings (#900 / #901 / #902), all closed within the same session — the load-bearing one (#900) was a `skin_compute` descriptor-pool exhaustion under the new M41-EQUIP entity volume that turned RT shadows off on overflowing NPCs and dumped 58 WARN / 300 frames of retry-spam. A **Renderer-D11 deep TAA audit** found 2 LOW shader-only defects (#903 NaN-propagation reliance on undefined GLSL `min`/`max`, #904 full-u16 mesh_id disocclusion compare) and shipped the fix to TAA + the SVGF temporal sibling in one batch. **M41-EQUIP Phase 2 close-out** finally got the LVLI dispatch the prebaked path needed (vanilla Skyrim+ outfits reference leveled lists, not direct ARMO refs — pre-fix Whiterun NPCs silently spawned with no gear) plus the new `--bench-hold` infrastructure, the `Inventory` / `EquipmentSlots` debug-server registration, and a runnable smoke-test harness with hard / soft pass-fail assertions. Plus four standing-queue closures: #337 NiStencilProperty capture, #720 BSEyeCenterExtraData FO4/FO76 dispatch, #873 BSGeometry per-element push-loops, #848 footstep_system stage-ordering, #891 NiTextureEffect Phase 1 import.
 
@@ -2633,7 +2704,7 @@ Net: tests **1811 → 1827 (+16)**, Rust LOC (non-test) **~146 399 → 147 575 (
 
 ---
 
-## Session 31 — Cell-load perf bundle, M41-EQUIP scaffold, REFR rotation fix, audit-bundle closeout  (2026-05-06 → 2026-05-08, 086b25c..470f737)
+## Session 31 — "The Fast and the Furious": Cell-load perf bundle, M41-EQUIP scaffold, REFR rotation fix, audit-bundle closeout  (2026-05-06 → 2026-05-08, 086b25c..470f737)
 
 55-commit session spanning two-and-a-half calendar days. Three structural arcs converged: the 2026-05-06 cell-load performance audit (dims 7 + 9) drove a coordinated batch that turned per-REFR / per-NPC / per-frame O(N²) and O(N) hot paths into deduped / batched / dirty-gated O(1)s — REFR placement dedup (#879), NPC spawn cache (#880), batched DDS uploads (#881), batched StringPool lock (#882), unload_cell single fan-out (#883), dirty-gated material SSBO (#878), and `tracing` spans across the whole chain (#886) so the next regression is observable instead of inferred. M41-EQUIP shipped a five-phase scaffold (#896 Phases A.0 → B.2) that introduced `Inventory` + `EquipmentSlots` components, the `ItemInstancePool` resource, and per-game ARMO → worn-mesh resolution for both kf-era and Skyrim+ paths — NPCs now spawn wearing their default outfit. A long-running REFR rendering bug pinned to wrong Euler→Y-up rotation composition order (`Rx · Ry · Rz`, not `Rz · Ry · Rx`, after the diagnostic CLI flag landed in `196dd67`). On top: REN-D15 audit closed out, the NIF parser perf cluster (#834, #872, #874-#876) rolled `Vec<String>` → `Vec<Arc<str>>` + `read_pod_vec` extension into 5 sites, and the M44 audio crate's "API ships, cell loader doesn't call it" reverb-send caveat from Session 30 finally got wired (#846).
 
@@ -2652,7 +2723,7 @@ Net: tests **1729 → 1811 (+82)**, Rust LOC (non-test) **~140 312 → 146 399 (
 
 ---
 
-## Session 30 — M44 audio end-to-end, cell-streaming hardening, concurrency audit closeouts  (2026-05-05 → 2026-05-06, 9ec71d2..f3c0f08)
+## Session 30 — "The Sound of Music": M44 audio end-to-end, cell-streaming hardening, concurrency audit closeouts  (2026-05-05 → 2026-05-06, 9ec71d2..f3c0f08)
 
 40-commit session spanning ~24 hours. Headline arc was M44 audio shipping six phases in a single push — `byroredux-audio` is now the 18th workspace crate, with kira-backed spatial sub-tracks, BSA decode, looping per-emitter sounds, streaming music, and a global reverb send. Around it, three companion arcs converged: the cell-streaming worker grew real fault-tolerance (panic catch + cache reuse + evicted-clip release) closing the durability gap surfaced during M40; the 2026-05-04 ECS performance audit's remaining items closed out (root cache, scratch hoist, billboard cycle collapse, NIF Vec pre-size); and a fresh concurrency audit on dims 2-3 found mostly fixed-without-closure issues plus three new low-severity defensive gaps. No bench refresh — `6a6950a` now 363 commits stale, still gated on M41 visible-actor workload.
 
@@ -2668,7 +2739,7 @@ Net: tests **1649 → 1729 (+80)**, Rust LOC (non-test) **~134 834 → ~140 312 
 
 ---
 
-## Session 29 — Three-day audit-bundle marathon: M-NORMALS finishers + perf/Skyrim audit closeouts  (2026-05-03 → 2026-05-05, b19cef9..c48d2dd)
+## Session 29 — "Marathon Man": Three-day audit-bundle marathon: M-NORMALS finishers + perf/Skyrim audit closeouts  (2026-05-03 → 2026-05-05, b19cef9..c48d2dd)
 
 54-commit grind across three calendar days, no milestone churn — Sessions 27-28 had landed the load-bearing M-NORMALS + RenderLayer architectural work; this session was the long-tail closeout. Three audit reports filed mid-session (2026-05-03 safety + compatibility multi-dim, 2026-05-04 performance + Skyrim D5) drove the bulk of the issue queue. The visual-quality arc that started in Session 26 finally settled into a stable per-vertex-tangent path; the R1 MaterialTable refactor got its missing telemetry + safety cap + per-field offset guard; the FNV ESM dispatch table closed its long-tail; the NIF parse hot path picked up rayon parallelism + four allocation-collapse fixes.
 
@@ -2688,7 +2759,7 @@ Net: tests **1581 → 1649 (+68)**, Rust LOC (non-test) **~130,196 → 134,834 (
 
 ---
 
-## Session 28 — Audit-bundle closeout, RenderLayer depth-bias ladder, lighting-curve fixes  (2026-05-03, ad455ae..8038ae7)
+## Session 28 — "Jacob's Ladder": Audit-bundle closeout, RenderLayer depth-bias ladder, lighting-curve fixes  (2026-05-03, ad455ae..8038ae7)
 
 Two-arc session. First half: continuation of the audit-bundle grind, six tracked issues from the 04-2x audits + a held-over FNV F2 finding closed in single-site fixes. Second half: chasing visible-quality regressions that survived Session 27's M-NORMALS + LIGHT-N2 closeouts — z-fighting on coplanar clutter and a "harsh threshold" on point-light falloff. The depth-bias work converged into a proper architectural fix (`RenderLayer` ECS component + per-layer `vkCmdSetDepthBias` ladder) instead of one more ad-hoc bias bump; the lighting work landed two surgical shader-side curves derived from Frostbite §3.1.2 + a long-misclassified PBR signal. Audit-bundle close-out + renderer polish, no milestone churn.
 
@@ -2707,7 +2778,7 @@ Two-arc session. First half: continuation of the audit-bundle grind, six tracked
 
 ---
 
-## Session 27 — "Chrome walls" was missing textures all along; auto-load `<stem>N.bsa` siblings  (2026-05-02, 91e9011..b2354a4)
+## Session 27 — "Now You See Me": "Chrome walls" was missing textures all along; auto-load `<stem>N.bsa` siblings  (2026-05-02, 91e9011..b2354a4)
 
 Continuation of the M-NORMALS arc opened in Session 26. After landing #783 (per-vertex tangent decode + nifly CalcTangentSpace synthesis fallback) and #784 (composite fog moved to display space), the chrome posterized walls on FNV `GSDocMitchellHouse` *still* persisted at close range despite the `BYROREDUX_RENDER_DEBUG=0x8` tangent-presence visualization showing all-green (Path 1 firing on every fragment). Two more speculative TBN swap attempts later, the user's "Chrome is still there." pushed the agent to run a clean bisect instead of guessing further. The bisect found a much simpler bug — and one that had been silently shaping every diagnosis in the M-NORMALS thread.
 
@@ -2722,7 +2793,7 @@ Continuation of the M-NORMALS arc opened in Session 26. After landing #783 (per-
 
 ---
 
-## Session 26 — Live debug nails the chrome-walls regression to TBN discontinuity, opens M-NORMALS  (2026-05-01, 9c7ea0d..8305456)
+## Session 26 — "Zodiac": Live debug nails the chrome-walls regression to TBN discontinuity, opens M-NORMALS  (2026-05-01, 9c7ea0d..8305456)
 
 Marathon session that started as audit-publish + fix-issue grind on the 2026-05-01 audits and ended with the visual-quality milestone arc finally pinned. Key inflection point came when the user — frustrated by speculation cycles — pointed out that the agent has direct CLI access to the engine *and* to the debug protocol's screenshot capability, which should be used instead of asking for screenshots over chat. That observation reframed the rest of the session.
 
@@ -2736,7 +2807,7 @@ Marathon session that started as audit-publish + fix-issue grind on the 2026-05-
 
 ---
 
-## Session 25 — R1 MaterialTable refactor (6 phases) + 04-30 / 05-01 audit residue  (2026-05-01, a68b3b7..b3b27a9)
+## Session 25 — "Six Degrees of Separation": R1 MaterialTable refactor (6 phases) + 04-30 / 05-01 audit residue  (2026-05-01, a68b3b7..b3b27a9)
 
 Same calendar day as Session 24, but with a full architectural arc on
 top of the bug-bash queue. Three open issues from the 05-01 FO3 audit
@@ -2843,7 +2914,7 @@ with M41 visible-actor workload still the gating event.
 
 ---
 
-## Session 24 — M41.0 NPC spawn pipeline + audit-bundle closeout  (2026-05-01, eda39bf..ff23881)
+## Session 24 — "Multiplicity": M41.0 NPC spawn pipeline + audit-bundle closeout  (2026-05-01, eda39bf..ff23881)
 
 Single-day session with one headline goal — close M41.0 Phase 0
 through Phase 4 so an ACHR REFR resolving to NPC_ produces a visible
@@ -2985,7 +3056,7 @@ stale; refresh deferred until M41 lands the visible-actor workload.
 
 ---
 
-## Session 23 — M40 Phase 1 streaming kickoff + NIF audit 04-26 / 04-28 closeout + Starfield import path  (2026-04-27, c3072e9..d926b97)
+## Session 23 — "A River Runs Through It": M40 Phase 1 streaming kickoff + NIF audit 04-26 / 04-28 closeout + Starfield import path  (2026-04-27, c3072e9..d926b97)
 
 Two-day session driven by three parallel threads. M40 (world
 streaming) was overdue — exterior cells loaded once and persisted —
@@ -3124,7 +3195,7 @@ M41 remains the gating event for the next bench-of-record).
 
 ---
 
-## Session 22 — Cell-loader monolith refactor + Oblivion / NIF audit closeouts  (2026-04-27, 552f494..db62c94)
+## Session 22 — "Demolition Man": Cell-loader monolith refactor + Oblivion / NIF audit closeouts  (2026-04-27, 552f494..db62c94)
 
 Two-track session driven by the next-day filing of two large audit
 reports (`AUDIT_OBLIVION_2026-04-25.md` + `AUDIT_NIF_2026-04-26.md`)
@@ -3225,7 +3296,7 @@ runs locally.
 
 ---
 
-## Session 21 — RT shader bug-bash + AS sync hardening  (2026-04-26, 333b79e..f41912e)
+## Session 21 — "Starship Troopers": RT shader bug-bash + AS sync hardening  (2026-04-26, 333b79e..f41912e)
 
 Pure audit-bundle closeout on top of `AUDIT_RENDERER_2026-04-25.md`
 filed at commit `20b8ef0`. No milestone churn — every commit pays
@@ -3284,7 +3355,7 @@ commits stale; M41 actor spawning is still the gating event).
 
 ---
 
-## Session 20 — M29 GPU pre-skinning end-to-end + audit closeout  (2026-04-25, 6e70751..b8834cc)
+## Session 20 — "The Skin I Live In": M29 GPU pre-skinning end-to-end + audit closeout  (2026-04-25, 6e70751..b8834cc)
 
 11-commit session anchored on M29: discovered the existing CPU
 skinning chain works end-to-end on real game content (`f60e27c`
@@ -3366,7 +3437,7 @@ an interior-bench no-op.
 
 ---
 
-## Session 19 — Audit bundle closeout: parser correctness + RGBA pipeline + mem.frag visibility  (2026-04-25, a2a3fcd..79c81b9)
+## Session 19 — "Pleasantville": Audit bundle closeout: parser correctness + RGBA pipeline + mem.frag visibility  (2026-04-25, a2a3fcd..79c81b9)
 
 A 25-commit bug-bash burning through audit findings #221 / #404 / #435 /
 #503 / #559 / #565 / #569 / #576 / #580 / #581 / #590 / #592 / #604 /
@@ -3443,7 +3514,7 @@ under Known Issues `R6a-stale-2`; refresh deferred to next session.
 
 ---
 
-## Session 18 — Risk-reducer triple: R3 + R6 + R7 plus the parser fixes they surfaced  (2026-04-24, 4293c51..a9c7bc9)
+## Session 18 — "The Three Musketeers": Risk-reducer triple: R3 + R6 + R7 plus the parser fixes they surfaced  (2026-04-24, 4293c51..a9c7bc9)
 
 An eight-commit session organised around the prevention-tooling track:
 each of the three closed risk-reducers added a piece of telemetry
@@ -3544,7 +3615,7 @@ freshness threshold).
 
 ---
 
-## Session 17 — Audit bundle #572–603 closeout: FO4 consumers + NIF coverage + renderer hygiene  (2026-04-24, cd959cf..e4cf68b)
+## Session 17 — "As Good as It Gets": Audit bundle #572–603 closeout: FO4 consumers + NIF coverage + renderer hygiene  (2026-04-24, cd959cf..e4cf68b)
 
 An 18-commit bug-bash against the post-session-15 audit sweep
 (`AUDIT_FO4_2026-04-23`, `AUDIT_RENDERER_2026-04-22`,
@@ -3651,7 +3722,7 @@ flagged in Known Issues pending a re-bench session.)
 
 ---
 
-## Session 16 — NIF audit 2026-04-22 closeout: dispatch coverage + Oblivion bisect + ESM REFR/TXST expansion  (2026-04-23, 634929b..e0791b4)
+## Session 16 — "Sherlock Holmes": NIF audit 2026-04-22 closeout: dispatch coverage + Oblivion bisect + ESM REFR/TXST expansion  (2026-04-23, 634929b..e0791b4)
 
 A 14-issue bug-bash against `AUDIT_NIF_2026-04-22`'s dispatch-coverage
 dimension plus two cross-cutting ESM fixes from the concurrent FO4
@@ -3763,7 +3834,7 @@ total). Thirteen audit issues closed, two child issues opened
 
 ---
 
-## Session 15 — Bench infrastructure, multi-game validation, sky completion  (2026-04-23, e6e8091..707b718)
+## Session 15 — "Field of Dreams": Bench infrastructure, multi-game validation, sky completion  (2026-04-23, e6e8091..707b718)
 
 Driven by two findings that surfaced back-to-back: the bench framework
 had been measuring GPU submit time rather than wall-clock frame time, so
@@ -3813,7 +3884,7 @@ Bench-of-record: Prospector 192.8 FPS / 5.19 ms at `e6e8091` (wall-clock).
 
 ---
 
-## Session 14 — M33 cloud layer 1 + RT glass  (2026-04-22, 1622d61..f7f2819)
+## Session 14 — "Cloud Atlas": M33 cloud layer 1 + RT glass  (2026-04-22, 1622d61..f7f2819)
 
 M33 sky & atmosphere had one open piece: cloud layer 1 (CNAM) was parsed
 but not yet wired into the render path. Closing that gap finished M33
@@ -3845,7 +3916,7 @@ Net: 924 → 1038 tests (+114). LOC ~91 300 → ~91 450 non-test.
 
 ---
 
-## Session 13 — FO3 / FNV / ECS audit closeout  (2026-04-21, ~25 issues)
+## Session 13 — "The Road": FO3 / FNV / ECS audit closeout  (2026-04-21, ~25 issues)
 
 The 2026-04 audit sweep landed at `docs/audits/AUDIT_FO3_2026-04-19.md`,
 `AUDIT_FNV_2026-04-20.md`, and `AUDIT_ECS_2026-04-19.md`. Publish-then-fix
@@ -3905,7 +3976,7 @@ verification.
 
 ---
 
-## Session 12 — Audit bundle #306–#463 closeout  (2026-04-20, 37 commits)
+## Session 12 — "Patch Adams": Audit bundle #306–#463 closeout  (2026-04-20, 37 commits)
 
 Renderer validation hygiene, Oblivion/FO4-era ESM coverage, and NIF
 shader plumbing completeness.
@@ -3958,7 +4029,7 @@ lines of Rust across 188 source files.
 
 ---
 
-## Session 11 — Audit bundle #341–#438 bug-bash  (2026-04-18, 72 commits)
+## Session 11 — "Men in Black": Audit bundle #341–#438 bug-bash  (2026-04-18, 72 commits)
 
 - **Parser correctness** — Oblivion v20.0.0.5 stability: runtime size
   cache, stream drift detector, v20.2.0.5+ parallax gate.
@@ -3976,7 +4047,7 @@ Net: test count 623 → 770+. Net source ~64K → ~75K.
 
 ---
 
-## Session 10 — Shadow pipeline overhaul + TAA + BLAS compaction + FO4 architecture
+## Session 10 — "Peter Pan": Shadow pipeline overhaul + TAA + BLAS compaction + FO4 architecture
 
 Renderer-quality push that retired the largest remaining visual
 regressions and shipped three renderer milestones (M31.5 streaming RIS,
@@ -4029,7 +4100,7 @@ Net: test count 472 → 623. Zero new warnings.
 
 ---
 
-## Session 8 — Papyrus parser, RT performance, landscape, exterior sun  (35 commits)
+## Session 8 — "Lawrence of Arabia": Papyrus parser, RT performance, landscape, exterior sun  (35 commits)
 
 - **M30 Phase 1** — Papyrus language parser (logos lexer + Pratt
   expression parser, 45 tests).
@@ -4050,7 +4121,7 @@ Net: test count 472 → 623. Zero new warnings.
 
 ---
 
-## Session 7 — Starfield BA2 v3 + LZ4 block decompression
+## Session 7 — "Contact": Starfield BA2 v3 + LZ4 block decompression
 
 BA2 v3 header has a 12-byte extension (not 8) with a
 `compression_method` field; LZ4 block decompression via
@@ -4060,7 +4131,7 @@ BA2 support verified end-to-end for every version/variant.
 
 ---
 
-## Session 6 — N26 closeout + skinning end-to-end + Oblivion parser fix  (35 commits)
+## Session 6 — "Face/Off": N26 closeout + skinning end-to-end + Oblivion parser fix  (35 commits)
 
 Long bug-bash that closed out 26 GitHub issues and tracked down a
 long-standing Oblivion parser regression.
@@ -4121,7 +4192,7 @@ Net: test count 396 → 472. Zero new warnings.
 
 ---
 
-## Sessions 1–5 — Foundational work
+## Sessions 1–5 — "The Right Stuff": Foundational work
 
 Not narrated here; see milestone M1–M22 table in ROADMAP.md and the
 commit log on `main` for day-to-day history of the Vulkan init chain,

@@ -360,6 +360,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
         ("SoundArchiveProvider", "engine-wide --sounds-bsa archive handle(s) opened once at startup (EX-16 item 5 / #2372), same posture as FootstepConfig/WaterAudioConfig/ScriptProvider — audio assets are re-resolved, not gameplay save state"),
         ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
+        ("StudioSession", "editor-mode state for the `--studio` asset-preview/inspection host (SDK v0.1); ObjectId bindings and undo transforms describe a tooling session over loose NIF/asset content, never gameplay in a player save"),
         ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
         ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),

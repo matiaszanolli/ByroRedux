@@ -51,10 +51,14 @@ If N == 0, exit early — nothing to record.
 Run these in parallel (single message, multiple Bash calls):
 
 ```bash
-# Test count — warm compile first, then count
+# Test count — warm compile first, then count.
+# --no-fail-fast is load-bearing, not optional: without it, cargo stops
+# running further test binaries after the first one with a failure, so a
+# single regression anywhere silently truncates the workspace-wide count
+# (Session 77 saw 1836 vs the true 6905 this way — under-reported by ~5000).
 cargo test --workspace --no-run 2>&1 | tail -3
-cargo test --workspace 2>&1 | grep -E "^test result:" | \
-    awk '{s+=$4} END {print "Total tests passing:", s}'
+cargo test --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | \
+    awk '{s+=$4; f+=$6} END {print "Total tests passing:", s, "failing:", f}'
 
 # Source LOC (non-test and total)
 find . -name "*.rs" -not -path "*/target/*" -not -path "*/tests/*" | \

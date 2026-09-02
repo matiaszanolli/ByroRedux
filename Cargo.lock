@@ -973,6 +973,7 @@ dependencies = [
  "byroredux-papyrus",
  "byroredux-pex",
  "byroredux-plugin",
+ "byroredux-sdk",
  "log",
  "serde",
 ]

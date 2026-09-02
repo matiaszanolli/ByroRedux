@@ -38,7 +38,7 @@ fn sdk_compat_command_formats_engine_service_mapping() {
     };
     let output = format_sdk_compat_entry(&entry);
     assert!(
-        output.contains("mapped      storageutil.getintvalue"),
+        output.contains("native      storageutil.getintvalue"),
         "{output}"
     );
     assert!(output.contains("service=byro.storage"), "{output}");

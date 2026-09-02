@@ -139,10 +139,10 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/fsr3-upscaler-integration-plan.md` | FSR 3.1 integration plan, all 7 phases + the SSIM quality matrix. Paired with `docs/engine/fsr3-troubleshooting.md`. **No owner audit skill** — see `/audit-renderer` Dimension 23 (the FSR/presentation-chain dimension; Dimension 22 is light animation). |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
-Crate count: 25 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
-debug-protocol, debug-server, debug-ui, facegen, fsr3-sys, hkx, mod-runtime,
-nif, papyrus, pex, physics, platform, plugin, renderer, save, scripting, sdk,
-sfmaterial, spt, ui.
+Crate count: 28 under `crates/` — audio, bgsm, boot-request, bsa, core,
+cxx-bridge, debug-protocol, debug-server, debug-ui, facegen, fsr3-sys,
+game-detect, hkx, mod-runtime, nif, papyrus, pex, physics, platform, plugin,
+renderer, save, scripting, sdk, settings-io, sfmaterial, spt, ui.
 Use this as a coverage sanity check: an audit that never touches a relevant
 crate here is incomplete.
 

@@ -118,7 +118,7 @@ accounting so the plan does not re-implement any of it.
 |---|---|---|
 | **Game profile registry** | [`assets/debug_profiles.toml`](../../assets/debug_profiles.toml), [`byroredux/src/game_profiles.rs`](../../byroredux/src/game_profiles.rs), `GameProfileEntry` in [`crates/core/src/ecs/game_profiles.rs`](../../crates/core/src/ecs/game_profiles.rs) | **Done.** 6 profiles (`fnv`, `fo3`, `oblivion`, `skyrim_se`, `fo4`, `starfield`), each with `root`/`subdir`, `esm`, five archive categories (`default_bsas`, `_textures_`, `_scripts_`, `_sounds_`, `_materials_`), `new_game_worldspace`/`_grid`/`_radius`, and `sample_cells`. Per-user override at `~/.byroredux/profiles.toml` already layers over the shipped file. |
 | **Profile → argv expander** | [`byroredux/src/boot.rs:1618`](../../byroredux/src/boot.rs) `expand_game_profile_args` | **Done.** `--game skyrim_se --new-game` already fans out to the full flag vector, with a `[defaults]` table that boots straight into a game/cell. |
-| **Settings model** | [`crates/core/src/settings.rs`](../../crates/core/src/settings.rs) | **Done, and built for this.** `SettingEntry { id, section, label, description, value, default, control, restart_required }`; `SettingControl` is `Toggle` / `Slider{min,max,step,unit}` / `Choice{options}`; `SettingsRegistry` validates on `register` and `set`. Its module doc already states it exists so that "native game menus later" need not depend on a menu implementation. |
+| **Settings model** | [`crates/core/src/settings/`](../../crates/core/src/settings/) | **Done, and built for this.** `SettingEntry { id, section, label, description, value, default, control, restart_required }`; `SettingControl` is `Toggle` / `Slider{min,max,step,unit}` / `Choice{options}`; `SettingsRegistry` validates on `register` and `set`. Its module doc already states it exists so that "native game menus later" need not depend on a menu implementation. |
 | **Settings persistence** | [`byroredux/src/settings_io.rs`](../../byroredux/src/settings_io.rs) | **Done.** Versioned TOML (`SETTINGS_VERSION = 1`), `(id, value)` pairs overlaid onto freshly-registered defaults, unknown/stale keys skipped individually. Path overridable via `BYROREDUX_SETTINGS_PATH`. Atomic write shared with the save container (#3472). |
 | **Settings applied pre-device** | [`byroredux/src/main.rs:520-545`](../../byroredux/src/main.rs) | **Done, and load-bearing for §4.** The registry is loaded *before* `VulkanContext` is created, and the persisted `render.upscaler` choice already drives renderer config at that point specifically to avoid a first-frame upscaler rebuild. A launcher that writes the settings file therefore already steers device setup with zero engine changes. |
 | **Panel harness** | [`crates/debug-ui/src/panels.rs`](../../crates/debug-ui/src/panels.rs) | **Reusable pattern, not reusable code.** Snapshot-in (`PanelSnapshot`) / outputs-out (`PanelOutputs`) with a player-facing `GameMenuState`/`GameMenuPage` pause menu and a `draw_player_setting` renderer. The *shape* is what §4 adopts. |
@@ -330,7 +330,7 @@ is worse than no validator**, so there must be exactly one implementation of
 This is already the architecture of
 [`panels.rs`](../../crates/debug-ui/src/panels.rs) — `PanelSnapshot` in,
 `PanelOutputs` out — and it is already the stated purpose of
-`crates/core/src/settings.rs`. The launcher adopts it rather than inventing a
+`crates/core/src/settings/`. The launcher adopts it rather than inventing a
 parallel notion of "graphics options".
 
 ### 4.2 Mechanism
@@ -426,7 +426,7 @@ run — instance-level enumeration works with no logical device.
 The project supports seven titles at genuinely different maturity. A launcher
 that shows six identical Play buttons is lying by omission.
 
-Add `assets/compatibility.toml`, machine-readable, one block per profile,
+Add *assets/compatibility.toml* (not yet built), machine-readable, one block per profile,
 authored from the [`ROADMAP.md`](../../ROADMAP.md) compat matrix:
 
 ```toml
@@ -656,7 +656,7 @@ and observed the engine come up differently.
 
 1. `save_<slot>.json` sidecar written at save time; screenshot capture.
 2. Save list with metadata, thumbnails, and explicit incompatible-slot marking.
-3. `assets/compatibility.toml` + badges; added to the `/session-close` sync set.
+3. *assets/compatibility.toml* + badges; added to the `/session-close` sync set.
 
 **Gate**: quit mid-cell, relaunch, Continue, resume in place.
 
