@@ -4,6 +4,10 @@ Status: **In progress**
 
 Date: 2026-09-01
 
+The current hand-off backlog is maintained in the [next action plan](sdk-v0.1-next-action-plan.md).
+It records the remaining work after the first compatibility slices and is
+intended to be executed one bounded, tested, committed slice per session.
+
 Implementation progress: the first Phase 1 boundary is live in the working
 tree. `ObjectId` is public SDK identity, while `StudioSession` and its
 `ObjectId <-> EntityId` mapping are private to the executable host. Scene import
