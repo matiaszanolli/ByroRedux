@@ -2493,4 +2493,85 @@ mod canonical_completeness_harness {
         let material = translate_material(&source, None, paths, 0);
         assert!(material.shader_type_fields.is_none());
     }
+
+    /// #2572 (OBL-D5-02) — `resolve_normal_alpha_spec_roughness` post-mutates
+    /// canonical `Material::roughness` *after* `translate_material` has
+    /// already run, at both real call sites (`cell_loader/spawn.rs`,
+    /// `scene/nif_loader.rs`). Every existing coverage of that resolver
+    /// either drives the pure `normal_alpha_spec_roughness` function in
+    /// isolation, or drives `translate_material` alone through this
+    /// harness — nothing exercised the two stages back-to-back the way a
+    /// real spawn does, so a boundary drift between them (e.g. a field the
+    /// resolver reads that `translate_material` populates differently than
+    /// expected) had no test that could catch it.
+    ///
+    /// Representative Oblivion shape per the issue: a non-metal, non-glass
+    /// material (`material_kind = 0`, `metalness_override` well under the
+    /// 0.3 gate) whose keyword classifier already resolved a matte default
+    /// roughness at import time (`roughness_override`), carrying a normal
+    /// map with no dedicated gloss texture and no authored alpha channel
+    /// (a DXT1-compressed Oblivion normal map, common in practice) and no
+    /// authored environment map scale — every input the gate
+    /// (`normal_alpha_spec_applies`) and the `!normal_has_alpha` overwrite
+    /// branch require. This does NOT establish that the resulting scalar is
+    /// visually correct against real Oblivion content (unmeasured, per the
+    /// issue — the `_tmp_obl_d5_nifal.rs` census harness needs real BSA
+    /// data this environment doesn't have); it pins that the two-stage
+    /// pipeline actually wires together and silently overwrites the
+    /// classifier's roughness the way the issue describes, so a future
+    /// change to either stage can't quietly stop doing that unnoticed.
+    #[test]
+    fn resolve_normal_alpha_spec_roughness_overwrites_classifier_roughness_after_translate() {
+        let source = ImportedMaterial {
+            material_kind: 0,              // lit surface, not glass/effect
+            metalness_override: Some(0.1), // < 0.3 — non-metal
+            roughness_override: Some(0.6), // the keyword classifier's matte default
+            specular_strength: 2.5,        // NiMaterialProperty.shininess-derived, > 1.2
+            env_map_scale: 0.0,            // Oblivion default — no SLSF1-equivalent bit authored
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                normal: Some("Textures/Architecture/Wall01_n.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+        };
+        let material = translate_material(&source, Some("Wall01"), paths, 0);
+        assert_eq!(
+            material.roughness, 0.6,
+            "translate_material alone must still carry the classifier's \
+             roughness through — the overwrite is the resolver's job, not \
+             translate_material's"
+        );
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, material);
+        world.insert(
+            entity,
+            MaterialTextureHandles {
+                textures: MaterialTextureSet {
+                    normal: 42,     // non-zero handle — the gate's `normal_map_index != 0`
+                    smooth_spec: 0, // no dedicated gloss texture (Oblivion convention)
+                    ..MaterialTextureSet::default()
+                },
+                normal_has_alpha: false, // no authored alpha channel — the overwrite arm
+                parallax_height_scale: 0.04,
+                parallax_max_passes: 4.0,
+            },
+        );
+
+        // `bgsm_pbr_scalars_authored = false` — Oblivion has no BGSM.
+        resolve_normal_alpha_spec_roughness(&mut world, entity, false);
+
+        let resolved = world.get::<Material>(entity).unwrap();
+        assert!(
+            (resolved.roughness - 0.70).abs() < 1e-5,
+            "the alpha-normal-as-spec fallback must have overwritten the \
+             classifier's 0.6 matte default, per normal_alpha_spec_roughness's \
+             formula: (0.85 - (2.5 - 1.0) * 0.1).clamp(0.4, 0.85) = 0.70, got {}",
+            resolved.roughness
+        );
+    }
 }
