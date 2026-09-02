@@ -1215,6 +1215,38 @@ pub(crate) struct CloudSimState {
 }
 impl Resource for CloudSimState {}
 
+/// Continuous exterior-ground response to the current weather.
+///
+/// This is intentionally separate from [`WeatherSkyState`]: the latter is
+/// authored weather input sampled from WTHR, while these values are history-
+/// dependent surface state. Rain first raises a thin wet film and then makes
+/// low spots read as standing water in the terrain shader; snow accumulates
+/// independently and hides the wet response until it melts or compacts.
+///
+/// The state currently follows the active worldspace rather than individual
+/// cells. That keeps it alive across exterior streaming and interior visits;
+/// per-cell exposure/retention maps can refine it later without changing the
+/// weather-to-renderer contract.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WeatherSurfaceState {
+    /// Absorbed rain film on exposed ground, normalized to `[0, 1]`.
+    pub(crate) wetness: f32,
+    /// Snow coverage/depth at the renderer's visual accumulation cap,
+    /// normalized to `[0, 1]`.
+    pub(crate) snow: f32,
+}
+
+impl Default for WeatherSurfaceState {
+    fn default() -> Self {
+        Self {
+            wetness: 0.0,
+            snow: 0.0,
+        }
+    }
+}
+
+impl Resource for WeatherSurfaceState {}
+
 impl SkyParamsRes {
     /// Bindless texture handles owned by this resource.
     ///

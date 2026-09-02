@@ -775,6 +775,12 @@ pub struct SkyWeatherParams {
     pub aurora_follows_sun: bool,
     pub wind_direction: [f32; 2],
     pub wind_speed: f32,
+    /// History-dependent exposed-ground rain film, normalized to `[0, 1]`.
+    /// Packed into the low 16 bits of `GpuCamera.render_debug.w`.
+    pub surface_wetness: f32,
+    /// History-dependent snow coverage/depth, normalized to `[0, 1]`.
+    /// Packed into the high 16 bits of `GpuCamera.render_debug.w`.
+    pub surface_snow: f32,
 }
 
 impl Default for SkyWeatherParams {
@@ -791,6 +797,8 @@ impl Default for SkyWeatherParams {
             aurora_follows_sun: false,
             wind_direction: [1.0, 0.0],
             wind_speed: 0.0,
+            surface_wetness: 0.0,
+            surface_snow: 0.0,
         }
     }
 }

@@ -152,9 +152,9 @@ mod tests {
                     "{a_name} ({a:#010x}) and {b_name} ({b:#010x}) share a bit. The \
                      DBG_* u32 is fully allocated (bits 0-31), so a new view cannot be \
                      given a fresh value — recycle DBG_RESERVED_20 (bit 5) or \
-                     DBG_RESERVED_200 (bit 9) by renaming it in place, or move the new \
-                     view to a second flag word in the unused GpuCamera.render_debug.w \
-                     lane. See #3563."
+                     DBG_RESERVED_200 (bit 9) by renaming it in place. The \
+                     GpuCamera.render_debug.w lane carries weather-surface state and \
+                     is not available for another debug payload. See #3563."
                 );
             }
             union |= a;

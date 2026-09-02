@@ -15,7 +15,8 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::TextureProvider;
 use crate::cell_loader;
 use crate::components::{
-    CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherTransitionRes,
+    CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherSurfaceState,
+    WeatherTransitionRes,
 };
 use crate::streaming::{self, WorldStreamingState};
 use crate::streaming_helpers::{
@@ -347,6 +348,12 @@ fn apply_environment(
         // accumulator so clouds resume drift across interior visits.
         if world.try_resource::<CloudSimState>().is_none() {
             world.insert_resource(CloudSimState::default());
+        }
+        // Surface response is simulation state, not authored WTHR data.
+        // Seed it once so rain/snow survives cell streaming and the interior
+        // visits that deliberately preserve worldspace weather.
+        if world.try_resource::<WeatherSurfaceState>().is_none() {
+            world.insert_resource(WeatherSurfaceState::default());
         }
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
         // (Z-up→Y-up once), all resolved at the EXAL boundary.
@@ -748,6 +755,9 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
     // CloudSimState only on the first exterior load.
     if world.try_resource::<CloudSimState>().is_none() {
         world.insert_resource(CloudSimState::default());
+    }
+    if world.try_resource::<WeatherSurfaceState>().is_none() {
+        world.insert_resource(WeatherSurfaceState::default());
     }
     world.insert_resource(crate::env_translate::procedural_fallback_weather());
     ensure_game_time(world);

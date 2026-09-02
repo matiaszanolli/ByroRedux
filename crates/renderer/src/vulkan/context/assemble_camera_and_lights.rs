@@ -14,6 +14,21 @@ use super::draw::{
 use super::{DofView, SkyParams, VulkanContext};
 use anyhow::Result;
 
+/// Pack the two normalized weather-surface channels into the structured
+/// debug lane of `GpuCamera`. Keeping this as two u16 values gives the
+/// terrain shader enough precision for gradual wetting/melting without
+/// changing the CameraUBO size or any of its five GLSL mirrors.
+pub(super) fn pack_weather_surface(wetness: f32, snow: f32) -> u32 {
+    fn pack(value: f32) -> u32 {
+        if value.is_finite() {
+            (value.clamp(0.0, 1.0) * 65535.0 + 0.5) as u32
+        } else {
+            0
+        }
+    }
+    pack(wetness) | (pack(snow) << 16)
+}
+
 /// Output of [`VulkanContext::assemble_camera_and_lights`] — the locals
 /// later phases (or `draw_frame`'s own tail, after `record_geometry_pass`)
 /// still need. A struct rather than a long tuple: 9 fields of similar
@@ -467,7 +482,14 @@ impl VulkanContext {
                 self.render_debug_mode.shader_value(),
                 self.renderer_config.rt_test_lod_scale_bits.unwrap_or(0),
                 u32::from(self.renderer_config.rt_test_lod_telemetry),
-                0,
+                // Low 16 bits = rain wetness; high 16 bits = snow coverage.
+                // The terrain shader decodes this only for exterior LAND
+                // surfaces, so the structured debug mode/telemetry lanes
+                // remain unchanged.
+                pack_weather_surface(
+                    sky_params.weather.surface_wetness,
+                    sky_params.weather.surface_snow,
+                ),
             ],
         };
         self.rt_flag_last_frame =
@@ -563,5 +585,23 @@ impl VulkanContext {
             previous_camera_position,
             fsr_frame,
         })
+    }
+}
+
+#[cfg(test)]
+mod weather_surface_pack_tests {
+    use super::pack_weather_surface;
+
+    #[test]
+    fn packs_wetness_low_and_snow_high() {
+        let packed = pack_weather_surface(0.5, 1.0);
+        assert_eq!(packed & 0xFFFF, 32_768);
+        assert_eq!(packed >> 16, 65_535);
+    }
+
+    #[test]
+    fn clamps_invalid_surface_inputs_to_safe_range() {
+        assert_eq!(pack_weather_surface(-1.0, f32::NAN), 0);
+        assert_eq!(pack_weather_surface(2.0, f32::INFINITY), 0x0000_FFFF);
     }
 }

@@ -10,7 +10,7 @@ use byroredux_core::ecs::World;
 
 use crate::components::{
     CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherSkyState,
-    WeatherTransitionRes,
+    WeatherSurfaceState, WeatherTransitionRes,
 };
 
 /// Build the time-of-day key table used by the `weather_system`
@@ -332,12 +332,66 @@ fn apply_neutral_exterior_fallback(cell_lit: &mut CellLightingRes) {
 /// when one becomes available.
 const WIND_TO_SCROLL_RATE: f32 = 0.018 / 32.0;
 
+// Surface rates are normalized simulation rates, not a direct conversion of
+// WTHR's weather classification (which has no precipitation volume or soil
+// retention field). They are intentionally slow enough for a weather change
+// to read as a transition: a full rain event wets ground in roughly 4 s,
+// while a full snowstorm reaches the visual accumulation cap in roughly 33 s.
+const SURFACE_MAX_DT: f32 = 0.25;
+const RAIN_WETTING_RATE: f32 = 0.24;
+const SURFACE_DRYING_RATE: f32 = 0.012;
+const SUN_SURFACE_DRYING_RATE: f32 = 0.028;
+const WIND_SURFACE_DRYING_RATE: f32 = 0.014;
+const SNOW_BUILDUP_RATE: f32 = 0.030;
+const RAIN_SNOW_MELT_RATE: f32 = 0.060;
+const SUN_SNOW_MELT_RATE: f32 = 0.010;
+
 /// Pure helper for the cloud-scroll-rate derivation so the unit test
 /// can pin the calm-vs-storm contract without a live `World`. See the
 /// `WIND_TO_SCROLL_RATE` doc for the calibration rationale.
 #[inline]
 pub(crate) fn cloud_scroll_rate_from_wind(wind_speed: u8) -> f32 {
     wind_speed as f32 * WIND_TO_SCROLL_RATE
+}
+
+/// Advance the history-dependent exterior-ground response.
+///
+/// Rain and snow are separate channels on purpose. Snowfall does not
+/// immediately turn into a wet floor, and rain does not instantly erase a
+/// snow layer; rain and sun melt the latter on their own slower timescales.
+/// The shader derives the spatial standing-water mask from the scalar wetness
+/// and terrain slope, so this helper only carries the temporal state.
+pub(crate) fn advance_weather_surface(
+    state: &mut WeatherSurfaceState,
+    precipitation: [f32; 2],
+    wind_speed: f32,
+    sun_intensity: f32,
+    dt: f32,
+) {
+    let dt = if dt.is_finite() {
+        dt.max(0.0).min(SURFACE_MAX_DT)
+    } else {
+        0.0
+    };
+    if dt == 0.0 {
+        return;
+    }
+
+    let rain = precipitation[0].max(0.0).min(1.0);
+    let snow = precipitation[1].max(0.0).min(1.0);
+    let wind = wind_speed.max(0.0).min(1.0);
+    let sun = (sun_intensity / crate::env_translate::SUN_INTENSITY_PEAK)
+        .max(0.0)
+        .min(1.0);
+
+    let wet_gain = rain * RAIN_WETTING_RATE;
+    let dry_loss = (1.0 - rain)
+        * (SURFACE_DRYING_RATE + sun * SUN_SURFACE_DRYING_RATE + wind * WIND_SURFACE_DRYING_RATE);
+    state.wetness = (state.wetness + (wet_gain - dry_loss) * dt).clamp(0.0, 1.0);
+
+    let snow_gain = snow * SNOW_BUILDUP_RATE;
+    let snow_loss = rain * RAIN_SNOW_MELT_RATE + sun * SUN_SNOW_MELT_RATE;
+    state.snow = (state.snow + (snow_gain - snow_loss) * dt).clamp(0.0, 1.0);
 }
 
 /// Seven blended WTHR sky fields, in order:
@@ -818,6 +872,24 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // painted dawn while N·L = 0).
     let (sun_dir, sun_intensity) = compute_sun_arc(hour, wd.tod_hours);
 
+    // Surface state is updated only while an exterior is active. Weather
+    // continues sampling indoors so window portals retain the live sky, but
+    // rain and snow must not accumulate on sealed interior geometry.
+    if world
+        .try_resource::<CellLightingRes>()
+        .map_or(true, |cell| !cell.is_interior)
+    {
+        if let Some(mut surface) = world.try_resource_mut::<WeatherSurfaceState>() {
+            advance_weather_surface(
+                &mut surface,
+                weather.precipitation,
+                weather.wind_speed,
+                sun_intensity,
+                dt,
+            );
+        }
+    }
+
     // Cloud layer 0 base scroll rate, driven by the WTHR DATA
     // `wind_speed` byte (#1033 / REN-D15-NEW-12).
     //
@@ -1099,6 +1171,63 @@ mod cloud_scroll_rate_tests {
             );
             prev = current;
         }
+    }
+}
+
+#[cfg(test)]
+mod weather_surface_tests {
+    use super::*;
+
+    #[test]
+    fn rain_wets_ground_without_accumulating_snow() {
+        let mut state = WeatherSurfaceState::default();
+        advance_weather_surface(&mut state, [1.0, 0.0], 0.5, 0.0, 1.0);
+
+        assert!(
+            state.wetness > 0.0,
+            "rain must raise the ground wetness state"
+        );
+        assert_eq!(state.snow, 0.0, "rain alone must not create snow");
+    }
+
+    #[test]
+    fn clear_sun_and_wind_dry_existing_ground() {
+        let mut state = WeatherSurfaceState {
+            wetness: 1.0,
+            snow: 0.0,
+        };
+        advance_weather_surface(&mut state, [0.0, 0.0], 1.0, 4.0, 1.0);
+
+        assert!(
+            state.wetness < 1.0,
+            "sun and wind must evaporate wet ground"
+        );
+        assert!(state.wetness >= 0.0);
+    }
+
+    #[test]
+    fn snowstorm_builds_coverage_and_rain_sun_melt_it() {
+        let mut state = WeatherSurfaceState::default();
+        for _ in 0..100 {
+            advance_weather_surface(&mut state, [0.0, 1.0], 0.2, 0.0, 0.25);
+        }
+        assert!(state.snow > 0.0, "snowfall must build accumulated coverage");
+
+        let before_melt = state.snow;
+        advance_weather_surface(&mut state, [1.0, 0.0], 0.0, 4.0, 0.25);
+        assert!(
+            state.snow < before_melt,
+            "rain and sun must melt snow coverage"
+        );
+    }
+
+    #[test]
+    fn invalid_or_large_dt_cannot_make_surface_state_non_finite() {
+        let mut state = WeatherSurfaceState::default();
+        advance_weather_surface(&mut state, [1.0, 1.0], 1.0, 4.0, f32::INFINITY);
+        assert!(state.wetness.is_finite() && state.snow.is_finite());
+        assert!((0.0..=1.0).contains(&state.wetness));
+        assert!((0.0..=1.0).contains(&state.snow));
     }
 }
 

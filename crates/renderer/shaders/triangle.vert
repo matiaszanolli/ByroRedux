@@ -116,7 +116,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
     vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w = FSR reset diagnostic.
-    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; yzw reserved.
+    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = RT LOD scale; z = LOD telemetry; w = packed weather surface (low 16 wetness, high 16 snow).
     // #3323 — EXTERIOR TOD zenith colour, live even on interior cells.
     // Consumed only by triangle.frag's window-portal escape; declared
     // here to keep the five CameraUBO mirrors byte-identical

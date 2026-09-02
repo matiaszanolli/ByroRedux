@@ -9,7 +9,9 @@ use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::SkyDalcCube;
 use byroredux_renderer::{SkyParams, SkyWeatherParams};
 
-use crate::components::{CellLightingRes, CloudSimState, DalcCubeYup, SkyParamsRes};
+use crate::components::{
+    CellLightingRes, CloudSimState, DalcCubeYup, SkyParamsRes, WeatherSurfaceState,
+};
 
 fn renderer_dalc_cube(cube: DalcCubeYup) -> SkyDalcCube {
     SkyDalcCube {
@@ -142,6 +144,12 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         aurora_follows_sun: sky_res.weather.aurora_follows_sun,
         wind_direction: sky_res.weather.wind_direction,
         wind_speed: sky_res.weather.wind_speed,
+        surface_wetness: world
+            .try_resource::<WeatherSurfaceState>()
+            .map_or(0.0, |surface| surface.wetness),
+        surface_snow: world
+            .try_resource::<WeatherSurfaceState>()
+            .map_or(0.0, |surface| surface.snow),
     };
     SkyParams {
         zenith_color: sky_res.zenith_color,
@@ -300,6 +308,10 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(interior_lighting(None));
         world.insert_resource(stale_exterior_daytime_sky());
+        world.insert_resource(WeatherSurfaceState {
+            wetness: 0.8,
+            snow: 0.6,
+        });
 
         let params = build_sky_params(&world);
         let default = SkyParams::default();
@@ -312,6 +324,8 @@ mod tests {
         assert_eq!(params.cloud_tile_scale, default.cloud_tile_scale);
         assert_eq!(params.cloud_texture_index, default.cloud_texture_index);
         assert!(params.dalc_cube.is_none());
+        assert_eq!(params.weather.surface_wetness, 0.0);
+        assert_eq!(params.weather.surface_snow, 0.0);
         // #3323 — the one deliberate exception, added *after* #2226 and
         // narrower than what #2226 removed. `exterior_zenith_color` is a
         // separate lane read by exactly one shader branch (the window-portal
@@ -354,11 +368,17 @@ mod tests {
     fn exterior_cell_reports_the_same_sky_on_both_lanes() {
         let mut world = World::new();
         world.insert_resource(stale_exterior_daytime_sky());
+        world.insert_resource(WeatherSurfaceState {
+            wetness: 0.8,
+            snow: 0.6,
+        });
 
         let params = build_sky_params(&world);
         assert!(params.is_exterior);
         assert_eq!(params.exterior_zenith_color, params.zenith_color);
         assert_eq!(params.exterior_zenith_color, [0.3, 0.5, 0.9]);
+        assert_eq!(params.weather.surface_wetness, 0.8);
+        assert_eq!(params.weather.surface_snow, 0.6);
     }
 
     /// Sibling of the above with an XCLL cube present: the interior cube

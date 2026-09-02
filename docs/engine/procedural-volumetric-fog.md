@@ -157,6 +157,28 @@ of them one physical and temporal contract.
   only its cluster list. Their directional and local-light visibility uses the
   same scene TLAS/BLAS ray queries as atmospheric fog.
 
+## Weathered ground response
+
+Rain and snow are surface state, not another fog volume. `WeatherSurfaceState`
+keeps two history-dependent channels for the active exterior: absorbed rain
+wetness and accumulated snow coverage. Rain raises wetness quickly; clear-air
+drying is modulated by sun intensity and wind. Snow accumulates independently,
+then melts more slowly under rain and sunlight. Interior weather sampling can
+continue for window portals without depositing precipitation on sealed floors.
+
+The camera upload carries those channels as unorm16 values in the existing
+`GpuCamera.render_debug.w` lane. Exterior LAND fragments turn them into a
+geometric-slope mask: broad low-frequency low spots become darker, smoother,
+cool dielectric puddles, while snow grows from patchy coverage into a rough,
+bright layer. The first pass intentionally limits this to streamed terrain;
+ordinary exterior architectural floors need an authored/exposure classification
+before they can share the effect without making interior floors wet.
+
+This split is important for later effects: rainfall can feed puddle retention
+and runoff, snowfall can gain depth/compaction and occlude ground detail, and
+magic/energy weapons can contribute their own thermal or plasma surface state
+without being misclassified as weather or fire.
+
 ## Emissive media (fire)
 
 Fire is not a separate subsystem. A flame and its smoke are one physical

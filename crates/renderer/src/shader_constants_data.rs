@@ -974,10 +974,10 @@ pub const fn dbg_viz_raw_output_any_mask() -> u32 {
 ///
 /// Two slots are recyclable and exist for exactly this purpose:
 /// [`DBG_RESERVED_20`] (bit 5) and [`DBG_RESERVED_200`] (bit 9) — rename one
-/// in place rather than inventing a value. Past those two, the real expansion
-/// room is `GpuCamera.render_debug`, a `uvec4` whose `.w` lane is unused
-/// (`triangle.frag` reads only `.x` mode, `.y` rtLodScale, `.z`
-/// rtLodTelemetryEnabled), so a second flag word costs zero bytes.
+/// in place rather than inventing a value. Past those two, future debug
+/// expansion must coordinate with the history-dependent weather-surface
+/// payload already carried in `GpuCamera.render_debug.w`; that lane is no
+/// longer an unused flag word.
 ///
 /// The last three entries are compound unions of bits already listed above
 /// them, not bits of their own; the uniqueness guard skips them by name.

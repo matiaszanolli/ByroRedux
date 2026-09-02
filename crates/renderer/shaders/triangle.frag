@@ -101,6 +101,26 @@ uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
         | (lightIndex & RESERVOIR_LIGHT_MASK);
 }
 
+// CameraUBO.renderDebug.w carries the compact, history-dependent exterior
+// ground state. The low/high halves are unorm16 wetness and snow coverage;
+// keeping this in the existing lane avoids changing the CameraUBO ABI for
+// every shader mirror and descriptor upload.
+vec2 decodeWeatherSurface() {
+    return vec2(
+        float(renderDebug.w & 0xFFFFu),
+        float(renderDebug.w >> 16u)
+    ) / 65535.0;
+}
+
+// Coarse world-space cells make the response read as pooled water and
+// irregular snow coverage instead of UV-locked material noise. Two scales
+// are combined at the call site so the result remains stable while the
+// terrain texture layers continue to stream independently.
+float weatherGroundNoise(vec2 worldXZ, float cellSize) {
+    vec2 cell = floor(worldXZ / max(cellSize, 0.001));
+    return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
 // DBG_* bit flags, and the render-layer unpack constants
@@ -531,6 +551,37 @@ void main() {
             );
             N = normalize(mix(N, layerNormal, w));
         }
+    }
+
+    // Weathered exterior LAND response. `WeatherSurfaceState` is temporal;
+    // this pass turns it into a spatial material response using the terrain's
+    // geometric slope. Standing water is concentrated in broad low-frequency
+    // patches, while snow coverage grows from sparse patches to a continuous
+    // layer as its accumulated depth approaches the cap.
+    float weatherWetFilm = 0.0;
+    float weatherPuddles = 0.0;
+    float weatherSnow = 0.0;
+    if (terrainSplatActive && jitter.w > 0.5) {
+        vec2 surfaceState = decodeWeatherSurface();
+        float groundSlope = smoothstep(
+            0.50, 0.92, clamp(terrainGeometryNormal.y, 0.0, 1.0));
+        float puddleNoise = mix(
+            weatherGroundNoise(fragWorldPos.xz, 7.0),
+            weatherGroundNoise(fragWorldPos.xz + vec2(19.3, 47.1), 2.5),
+            0.35);
+        float snowPattern = weatherGroundNoise(
+            fragWorldPos.xz + vec2(71.7, 13.9), 3.5);
+        float snowPatch = smoothstep(
+            0.12, 1.0, snowPattern + surfaceState.y);
+        weatherSnow = surfaceState.y * groundSlope * snowPatch;
+        weatherWetFilm = surfaceState.x * groundSlope
+            * (1.0 - weatherSnow * 0.85);
+        weatherPuddles = weatherWetFilm
+            * smoothstep(0.42, 0.78, puddleNoise);
+
+        // Accumulated snow softens terrain relief but leaves the geometric
+        // normal available for the slope test and ray-origin offsets.
+        N = normalize(mix(N, terrainGeometryNormal, weatherSnow * 0.65));
     }
 
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
@@ -1326,6 +1377,26 @@ void main() {
         float glint = step(0.995, sparkleHash) * mat.sparkleIntensity;
         vec3 sparkleColor = vec3(mat.sparkleR, mat.sparkleG, mat.sparkleB);
         albedo += sparkleColor * glint;
+    }
+
+    // Apply weather after authored terrain/material layers have composed, so
+    // rain and snow do not erase the LAND splat palette. Wet ground darkens
+    // slightly and shifts toward a cool dielectric film; puddles lower the
+    // lobe roughness and restore a visible water-like F0. Snow is brighter,
+    // rougher, non-metallic, and broadly dielectric rather than mirror-like.
+    if (weatherWetFilm > 0.0 || weatherSnow > 0.0) {
+        albedo = mix(
+            albedo,
+            albedo * vec3(0.72, 0.80, 0.88),
+            weatherWetFilm * 0.32);
+        roughness = mix(roughness, 0.10, weatherPuddles * 0.82);
+        specStrength = max(specStrength, weatherPuddles * 0.78);
+        specColor = mix(specColor, vec3(0.02), weatherPuddles * 0.75);
+
+        albedo = mix(albedo, vec3(0.82, 0.86, 0.92), weatherSnow * 0.78);
+        roughness = mix(roughness, 0.82, weatherSnow * 0.85);
+        metalness *= 1.0 - weatherSnow;
+        specStrength = mix(specStrength, max(specStrength, 0.42), weatherSnow * 0.65);
     }
     // Variant stubs — data already lands in GpuMaterial; the full
     // shading branches ship in follow-up issues. Listed explicitly so

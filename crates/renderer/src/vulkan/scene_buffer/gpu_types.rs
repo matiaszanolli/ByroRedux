@@ -504,7 +504,8 @@ pub struct GpuCamera {
     pub render_origin: [f32; 4],
     /// x = [`RenderDebugMode`](crate::vulkan::render_debug::RenderDebugMode)
     /// shader discriminant; y = optional `f32::to_bits` RT-LOD scale;
-    /// z = diagnostic LOD-counter enable; w reserved. Kept separate from `jitter.z` so
+    /// z = diagnostic LOD-counter enable; w = packed weather surface
+    /// (low 16 bits wetness, high 16 bits snow coverage). Kept separate from `jitter.z` so
     /// named mutually-exclusive views do not consume or reinterpret the
     /// orthogonal legacy feature-ablation bitmask.
     pub render_debug: [u32; 4],
