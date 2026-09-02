@@ -1286,8 +1286,11 @@ impl Resource for WeatherTransitionRes {}
 /// engine currently renames entities after spawn, so this is not a
 /// concern today — add an explicit `invalidate()` call if that
 /// changes.
+/// `FxHashMap` (#3677 / PERF-D1-2026-08-30-01) — `FixedString`-keyed,
+/// probed once per animated channel per animated entity per frame; see
+/// `_audit-common.md`'s "Hot-path hashing" doctrine.
 pub(crate) struct NameIndex {
-    pub(crate) map: HashMap<FixedString, EntityId>,
+    pub(crate) map: FxHashMap<FixedString, EntityId>,
     /// Count of `Name` components seen at the last rebuild. `usize::MAX`
     /// on a fresh index so the first comparison always rebuilds.
     pub(crate) generation: usize,
@@ -1297,8 +1300,11 @@ impl Resource for NameIndex {}
 /// Persisted subtree name maps for animation — maps root entity →
 /// (bone name → entity) so the BFS walk isn't repeated every frame.
 /// Invalidated alongside `NameIndex` when the Name component count changes. #278.
+/// `FxHashMap` (#3677) — same doctrine as `NameIndex.map`; the inner map is
+/// the one actually probed per channel (`build_subtree_name_map`'s
+/// return type in `anim_convert.rs`).
 pub(crate) struct SubtreeCache {
-    pub(crate) map: HashMap<EntityId, HashMap<FixedString, EntityId>>,
+    pub(crate) map: FxHashMap<EntityId, FxHashMap<FixedString, EntityId>>,
     /// Name component count at last rebuild — same invalidation signal as NameIndex.
     pub(crate) generation: usize,
 }
@@ -1306,7 +1312,7 @@ impl Resource for SubtreeCache {}
 impl SubtreeCache {
     pub(crate) fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             generation: usize::MAX,
         }
     }
@@ -1337,7 +1343,7 @@ impl CellRootIndex {
 impl NameIndex {
     pub(crate) fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             generation: usize::MAX, // Force rebuild on first use.
         }
     }
@@ -2065,5 +2071,42 @@ mod decal_blend_classification_tests {
             6.0 / 255.0
         ));
         assert!(!decal_uses_implicit_alpha_blend(true, false, false, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod fx_hash_guard_tests {
+    //! #3677 / PERF-D1-2026-08-30-01 — source-scan pin for `NameIndex.map`
+    //! / `SubtreeCache.map` (this file) and `build_subtree_name_map`'s
+    //! return type (`anim_convert.rs`, the function that actually
+    //! populates `SubtreeCache.map`'s inner map). Mirrors
+    //! `crates/renderer/src/vulkan/context/mod.rs`'s
+    //! `pose_dirty_crosses_the_crate_boundary_without_siphash` (#2923):
+    //! text-scan, not type-check, so a revert to std's SipHash-1-3 fails
+    //! at `cargo test` instead of silently regressing the hot path.
+
+    #[test]
+    fn name_index_and_subtree_cache_stay_fx_hash_map() {
+        let src = include_str!("components.rs");
+        assert!(
+            src.contains("pub(crate) map: FxHashMap<FixedString, EntityId>"),
+            "NameIndex.map must stay FxHashMap (#3677)"
+        );
+        assert!(
+            src.contains(
+                "pub(crate) map: FxHashMap<EntityId, FxHashMap<FixedString, EntityId>>"
+            ),
+            "SubtreeCache.map must stay FxHashMap (#3677)"
+        );
+    }
+
+    #[test]
+    fn build_subtree_name_map_stays_fx_hash_map() {
+        let src = include_str!("anim_convert.rs");
+        assert!(
+            src.contains(") -> FxHashMap<FixedString, EntityId> {"),
+            "build_subtree_name_map must stay FxHashMap (#3677) — it's what \
+             actually populates SubtreeCache.map's inner map"
+        );
     }
 }

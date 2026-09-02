@@ -573,6 +573,7 @@ fn animation_stack_round_trips_through_container() {
         reverse_direction: true,
         blend_in_remaining: 0.2,
         blend_in_total: 0.5,
+        blend_in_target: 1.0,
         blend_out_remaining: 0.1,
         blend_out_total: 0.3,
         prev_time: 1.4,
@@ -587,6 +588,7 @@ fn animation_stack_round_trips_through_container() {
         reverse_direction: false,
         blend_in_remaining: 0.0,
         blend_in_total: 0.0,
+        blend_in_target: 1.0,
         blend_out_remaining: 0.0,
         blend_out_total: 0.0,
         prev_time: 2.9,
@@ -629,6 +631,7 @@ fn animation_stack_round_trips_through_container() {
     assert!(r0.reverse_direction);
     assert_eq!(r0.blend_in_remaining, 0.2);
     assert_eq!(r0.blend_in_total, 0.5);
+    assert_eq!(r0.blend_in_target, 1.0);
     assert_eq!(r0.blend_out_remaining, 0.1);
     assert_eq!(r0.blend_out_total, 0.3);
     assert_eq!(r0.prev_time, 1.4);
@@ -642,6 +645,7 @@ fn animation_stack_round_trips_through_container() {
     assert!(!r1.reverse_direction);
     assert_eq!(r1.blend_in_remaining, 0.0);
     assert_eq!(r1.blend_in_total, 0.0);
+    assert_eq!(r1.blend_in_target, 1.0);
     assert_eq!(r1.blend_out_remaining, 0.0);
     assert_eq!(r1.blend_out_total, 0.0);
     assert_eq!(r1.prev_time, 2.9);

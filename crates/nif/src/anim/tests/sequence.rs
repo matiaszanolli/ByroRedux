@@ -135,6 +135,85 @@ fn import_sequence_dispatches_keyframe_controller_alias() {
     );
 }
 
+/// Regression: #3327. The KF-sequence dispatch (this file) keys on
+/// `ControlledBlock.controller_type`, an authored string independent of
+/// the block-parser RTTI erasure #3327 fixes elsewhere — this pins that
+/// "BSMaterialEmittanceMultController" / "BSRefractionStrengthController"
+/// controller-type strings route to `extract_float_channel` with the
+/// right `FloatTarget`, not the `_ =>` skip arm.
+#[test]
+fn import_sequence_dispatches_bs_named_float_controllers() {
+    use crate::blocks::controller::NiControllerSequence;
+    use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType, NiFloatData, NiFloatInterpolator};
+    use crate::types::BlockRef;
+
+    // Scene layout: [0] NiFloatData (one key), [1] NiFloatInterpolator → [0].
+    let data = NiFloatData {
+        keys: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![FloatKey {
+                time: 0.0,
+                value: 3.5,
+                tangent_forward: 0.0,
+                tangent_backward: 0.0,
+                tbc: None,
+            }],
+        },
+    };
+    let interp = NiFloatInterpolator {
+        value: 0.0,
+        data_ref: BlockRef(0),
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(data), Box::new(interp)],
+        ..NifScene::default()
+    };
+
+    let make_seq = |ctrl_type: &str| {
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(1);
+        cb.node_name = Some(Arc::from("Prop"));
+        cb.controller_type = Some(Arc::from(ctrl_type));
+        NiControllerSequence {
+            name: Some(Arc::from("seq")),
+            controlled_blocks: vec![cb],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        }
+    };
+
+    for (ctrl_type, expected_target) in [
+        (
+            "BSMaterialEmittanceMultController",
+            FloatTarget::EmissiveMultiple,
+        ),
+        (
+            "BSRefractionStrengthController",
+            FloatTarget::RefractionStrength,
+        ),
+    ] {
+        let clip = import_sequence(&scene, &make_seq(ctrl_type));
+        assert_eq!(
+            clip.float_channels.len(),
+            1,
+            "{ctrl_type}: exactly one float channel expected"
+        );
+        let (node_name, ch) = &clip.float_channels[0];
+        assert_eq!(&**node_name, "Prop", "{ctrl_type}");
+        assert_eq!(ch.target, expected_target, "{ctrl_type}");
+        assert!((ch.keys[0].value - 3.5).abs() < 1e-6, "{ctrl_type}");
+    }
+}
+
 /// #3097 SIBLING gap — `NiControllerSequence.Phase` was parsed since
 /// M21 but `import_sequence` never carried it onto the resulting
 /// `AnimationClip`. Not the primary bug in #3097 (that's the

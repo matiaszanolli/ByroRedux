@@ -27,6 +27,16 @@ pub struct AnimationLayer {
     pub blend_in_remaining: f32,
     /// Total blend-in duration (for computing interpolation progress).
     pub blend_in_total: f32,
+    /// The weight this layer ramps TOWARD as blend-in completes. #3701 —
+    /// `with_blend_in` used to zero `weight` itself and have
+    /// `effective_weight()` multiply that zero by the ramp progress, which
+    /// is zero for the entire fade no matter what `progress` is. `weight`
+    /// now IS the live, per-tick value (`advance_stack` writes
+    /// `blend_in_target * progress` into it every tick, not just at
+    /// completion), so `effective_weight()` no longer needs a separate
+    /// blend-in multiplier — only blend-out still applies one, since
+    /// nothing else re-derives `weight` on the way down.
+    pub blend_in_target: f32,
     /// When > 0, this layer is blending out: weight decreases to 0 over this duration.
     pub blend_out_remaining: f32,
     /// Total blend-out duration.
@@ -58,6 +68,7 @@ impl AnimationLayer {
             reverse_direction: false,
             blend_in_remaining: 0.0,
             blend_in_total: 0.0,
+            blend_in_target: 1.0,
             blend_out_remaining: 0.0,
             blend_out_total: 0.0,
             prev_time: 0.0,
@@ -76,21 +87,26 @@ impl AnimationLayer {
         self
     }
 
-    /// Create a layer that blends in over `blend_time` seconds.
+    /// Create a layer that blends in over `blend_time` seconds. The
+    /// layer's weight at the moment this is called becomes the ramp
+    /// TARGET (#3701) — `weight` itself starts at zero and `advance_stack`
+    /// writes the interpolated value into it every tick.
     pub fn with_blend_in(mut self, blend_time: f32) -> Self {
         self.blend_in_remaining = blend_time;
         self.blend_in_total = blend_time;
-        self.weight = 0.0; // Starts at zero, ramps up.
+        self.blend_in_target = self.weight;
+        self.weight = 0.0; // Starts at zero, ramps up — see advance_stack.
         self
     }
 
-    /// Compute the effective weight after blend-in/out modulation.
+    /// Compute the effective weight after blend-out modulation. #3701 —
+    /// blend-in no longer needs a case here: `weight` is already the live,
+    /// per-tick ramped value `advance_stack` maintains (see
+    /// `blend_in_target`'s doc), not a value this function multiplies
+    /// down from. Blend-out still applies its own decay multiplier since
+    /// nothing else re-derives `weight` on the way down.
     pub fn effective_weight(&self) -> f32 {
         let mut w = self.weight;
-        if self.blend_in_total > 0.0 && self.blend_in_remaining > 0.0 {
-            let progress = 1.0 - (self.blend_in_remaining / self.blend_in_total);
-            w *= progress;
-        }
         if self.blend_out_total > 0.0 && self.blend_out_remaining > 0.0 {
             let progress = self.blend_out_remaining / self.blend_out_total;
             w *= progress;
@@ -212,9 +228,20 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
         // Advance blend timers.
         if layer.blend_in_remaining > 0.0 {
             layer.blend_in_remaining = (layer.blend_in_remaining - dt).max(0.0);
+            // #3701 — write the ramped weight every tick, not just at
+            // completion. `blend_in_target` is what `with_blend_in`
+            // captured `weight` as before zeroing it; `weight` itself is
+            // the live value `effective_weight()` now reads directly.
+            let progress = if layer.blend_in_total > 0.0 {
+                1.0 - (layer.blend_in_remaining / layer.blend_in_total)
+            } else {
+                1.0
+            };
+            layer.weight = layer.blend_in_target * progress;
             if layer.blend_in_remaining <= 0.0 {
-                // Blend-in complete — ensure full weight.
-                layer.weight = layer.weight.max(1.0);
+                // Blend-in complete — land exactly on target rather than
+                // whatever the last floating-point progress step produced.
+                layer.weight = layer.blend_in_target;
             }
         }
         if layer.blend_out_remaining > 0.0 {

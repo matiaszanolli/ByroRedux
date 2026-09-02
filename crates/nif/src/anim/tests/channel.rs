@@ -337,6 +337,129 @@ fn import_embedded_animations_captures_flip_controller() {
     assert!((ch.keys[1].value - 2.0).abs() < 1e-6);
 }
 
+/// Regression: #3327. `BSMaterialEmittanceMultController` /
+/// `BSRefractionStrengthController` must dispatch through
+/// `BsNamedFloatInterpController` and reach `AnimationClip::float_channels`
+/// with their real target (`EmissiveMultiple` / `RefractionStrength`), not
+/// the erased "NiSingleInterpController" name that previously routed
+/// through `extract_transform_channel_at` (self-selecting to `None` since
+/// neither drives a transform). `BSFrustumFOVController` keeps its RTTI
+/// but intentionally produces no channel (no FloatTarget/consumer for
+/// camera FOV yet) — asserted here too, same scene shape.
+#[test]
+fn import_embedded_animations_captures_bs_named_float_interp_controllers() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{
+        BsNamedFloatInterpController, NiSingleInterpController, NiTimeControllerBase,
+    };
+    use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType};
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiTransform};
+    use std::sync::Arc;
+
+    for (type_name, expected_target) in [
+        (
+            "BSMaterialEmittanceMultController",
+            Some(FloatTarget::EmissiveMultiple),
+        ),
+        (
+            "BSRefractionStrengthController",
+            Some(FloatTarget::RefractionStrength),
+        ),
+        ("BSFrustumFOVController", None),
+    ] {
+        // Scene layout:
+        //   [0] NiFloatData (one key, value 2.5)
+        //   [1] NiFloatInterpolator → [0]
+        //   [2] BsNamedFloatInterpController(type_name) → interp=[1]
+        //   [3] NiNode (name="Prop") with controller_ref=[2]
+        let data = NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![FloatKey {
+                    time: 0.0,
+                    value: 2.5,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                }],
+            },
+        };
+        let interp = NiFloatInterpolator {
+            value: 0.0,
+            data_ref: BlockRef(0),
+        };
+        let ctrl = BsNamedFloatInterpController {
+            type_name,
+            base: NiSingleInterpController {
+                base: NiTimeControllerBase {
+                    next_controller_ref: BlockRef::NULL,
+                    flags: 0,
+                    frequency: 1.0,
+                    phase: 0.0,
+                    start_time: 0.0,
+                    stop_time: 1.0,
+                    target_ref: BlockRef::NULL,
+                },
+                interpolator_ref: BlockRef(1),
+            },
+        };
+        let node = NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("Prop")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef(2),
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        };
+        let scene = NifScene {
+            blocks: vec![
+                Box::new(data),
+                Box::new(interp),
+                Box::new(ctrl),
+                Box::new(node),
+            ],
+            ..NifScene::default()
+        };
+
+        // Confirm RTTI survived dispatch regardless of consumption.
+        assert_eq!(scene.blocks[2].block_type_name(), type_name);
+
+        match expected_target {
+            Some(target) => {
+                let clip = import_embedded_animations(&scene)
+                    .unwrap_or_else(|| panic!("{type_name} expected a clip"));
+                assert_eq!(
+                    clip.float_channels.len(),
+                    1,
+                    "{type_name}: exactly one float channel expected"
+                );
+                let (node_name, ch) = &clip.float_channels[0];
+                assert_eq!(&**node_name, "Prop", "{type_name}");
+                assert_eq!(ch.target, target, "{type_name}");
+                assert_eq!(ch.keys.len(), 1, "{type_name}");
+                assert!((ch.keys[0].value - 2.5).abs() < 1e-6, "{type_name}");
+            }
+            None => {
+                // BSFrustumFOVController: RTTI preserved, no consumer —
+                // no channel, and since it's the only controller on the
+                // node, no clip at all.
+                assert!(
+                    import_embedded_animations(&scene).is_none(),
+                    "{type_name} must not produce a channel or clip"
+                );
+            }
+        }
+    }
+}
+
 /// Regression: #261. A NiNode with no `controller_ref` must
 /// produce no clip — import_embedded_animations returns None and
 /// the scene loader skips the AnimationPlayer spawn.

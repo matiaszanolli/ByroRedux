@@ -1492,13 +1492,14 @@ mod animation_system_e2e_tests {
         TranslationKey,
     };
     use byroredux_core::ecs::{Children, Parent, World};
+    use rustc_hash::FxHashMap;
     use std::collections::HashMap;
 
     /// Build a clip with one rotation channel keyed by `bone_name` —
     /// two rotation keys, identity at t=0 and a 90° around Y at t=1.
     fn rotation_clip(pool: &mut StringPool, bone_name: &str) -> AnimationClip {
         let sym = pool.intern(bone_name);
-        let mut channels = HashMap::new();
+        let mut channels = FxHashMap::default();
         let half = std::f32::consts::FRAC_1_SQRT_2;
         channels.insert(
             sym,
@@ -1578,7 +1579,7 @@ mod animation_system_e2e_tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -1646,7 +1647,7 @@ mod animation_system_e2e_tests {
         let (mut world, root, bone, _) = build_skeleton_and_clip(bone_name);
         world.register::<RootMotionDelta>();
         let bone_name = world.resource::<StringPool>().get(bone_name).unwrap();
-        let mut channels = HashMap::new();
+        let mut channels = FxHashMap::default();
         channels.insert(bone_name, cart_com_channel());
         let handle = world
             .resource_mut::<AnimationClipRegistry>()

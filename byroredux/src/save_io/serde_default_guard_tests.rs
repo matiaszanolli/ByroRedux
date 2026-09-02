@@ -398,8 +398,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (v10's `parallax_height_in_alpha`, v19 above) — that asymmetry is why
     // this one case in the enum family is compatible where the struct-field
     // ones are not.
-    const BASELINE_MAJOR: u16 = 19;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeac5_5bef_0aaa_15d2;
+    // #3701 (ECS-2026-08-30-D10-01) — v20 adds `AnimationLayer::
+    // blend_in_target` as a required field on the registered
+    // `AnimationStack` column's nested layer type. See `FORMAT_MAJOR`'s
+    // own doc for why this exact case (a saved-type's own doc example)
+    // needs the bump.
+    const BASELINE_MAJOR: u16 = 20;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc23c_952c_cb28_6729;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

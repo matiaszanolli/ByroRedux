@@ -12,7 +12,8 @@ use byroredux_core::string::StringPool;
 use byroredux_hkx::{HkxAnimation, HkxSkeleton};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::EsmIndex;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap;
+use std::collections::HashSet;
 
 const SKELETON_PATH: &str = r"meshes\actors\character\character assets\skeleton.hkx";
 const ANIMATION_ROOT: &str = r"meshes\actors\character\animations";
@@ -169,7 +170,8 @@ fn convert_hkx_clip(
     animation: &HkxAnimation,
     pool: &mut StringPool,
 ) -> AnimationClip {
-    let mut channels = HashMap::with_capacity(animation.tracks.len());
+    let mut channels =
+        FxHashMap::with_capacity_and_hasher(animation.tracks.len(), Default::default());
     for (track_index, samples) in animation.tracks.iter().enumerate() {
         let Some(&bone_index) = animation.track_to_bone.get(track_index) else {
             // `decode_spline_animation` always produces `track_to_bone.len()

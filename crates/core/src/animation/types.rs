@@ -2,7 +2,7 @@
 
 use crate::math::{Quat, Vec3};
 use crate::string::FixedString;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// How the animation behaves when it reaches its end.
@@ -93,6 +93,15 @@ pub enum FloatTarget {
     /// Drives the renderer's per-light attenuation cutoff in world
     /// units. See #983.
     LightRadius,
+    /// Material emissive multiplier. Animated by
+    /// `BSMaterialEmittanceMultController`. See #3327. Mirrors
+    /// `ShaderFloat`'s state as of #2221: reaches this far, no
+    /// ECS/render consumer yet.
+    EmissiveMultiple,
+    /// Glass refraction strength (Stealth Boy / heat-haze). Animated by
+    /// `BSRefractionStrengthController`. See #3327 — same no-consumer-yet
+    /// caveat as `EmissiveMultiple`.
+    RefractionStrength,
 }
 
 /// What a color channel targets.
@@ -235,7 +244,12 @@ pub struct AnimationClip {
     /// Map from interned node name to its transform animation channel.
     /// Keys are `FixedString` symbols — pre-interned at clip load time so
     /// the animation hot path does zero-allocation lookups. See #340.
-    pub channels: HashMap<FixedString, TransformChannel>,
+    /// `FxHashMap` (#3677 / PERF-D1-2026-08-30-01) — `FixedString` is a
+    /// 4-byte interned symbol, exactly the shape std's SipHash-1-3 loses
+    /// on hardest; this map is probed once per animated channel per
+    /// animated entity per frame. See `_audit-common.md`'s "Hot-path
+    /// hashing" doctrine (#2923, #1368, #2174).
+    pub channels: FxHashMap<FixedString, TransformChannel>,
     /// Float channels: (node_name, channel).
     pub float_channels: Vec<(FixedString, FloatChannel)>,
     /// Color channels: (node_name, channel).
@@ -254,4 +268,28 @@ pub struct AnimationClip {
     /// (#231 / SI-04). Resolve via `StringPool::resolve` when a `&str`
     /// is actually required.
     pub text_keys: Vec<(f32, FixedString)>,
+}
+
+#[cfg(test)]
+mod fx_hash_guard_tests {
+    //! #3677 / PERF-D1-2026-08-30-01 — a source-scan pin, mirroring
+    //! `crates/renderer/src/vulkan/context/mod.rs`'s
+    //! `pose_dirty_crosses_the_crate_boundary_without_siphash` (#2923):
+    //! asserts by text rather than by type so a future edit that reverts
+    //! `AnimationClip.channels` back to std's SipHash-1-3 fails at
+    //! `cargo test` instead of silently regressing the hot path.
+
+    // No negative "must not contain the std form" companion assertion here
+    // (unlike the `crates/renderer` precedent this mirrors): that precedent
+    // scans *other* files, but this one's only source is `types.rs` itself
+    // — self-including via `include_str!` means the negative string would
+    // match this very assertion's own text.
+    #[test]
+    fn animation_clip_channels_stays_fx_hash_map() {
+        let src = include_str!("types.rs");
+        assert!(
+            src.contains("pub channels: FxHashMap<FixedString, TransformChannel>"),
+            "AnimationClip.channels must stay FxHashMap (#3677)"
+        );
+    }
 }

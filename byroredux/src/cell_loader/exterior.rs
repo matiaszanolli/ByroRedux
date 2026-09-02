@@ -819,6 +819,7 @@ mod persistent_root_survives_crossing_tests {
 mod persistent_cell_stamp_tests {
     use super::*;
     use crate::components::CellRootIndex;
+    use rustc_hash::FxHashMap;
 
     /// A job in the shape `begin_worldspace_persistent_cell` produces,
     /// minus the ESM data the stamp path never reads.
@@ -929,7 +930,7 @@ mod persistent_cell_stamp_tests {
                 phase: 0.0,
                 weight: 1.0,
                 accum_root_name: None,
-                channels: HashMap::new(),
+                channels: FxHashMap::default(),
                 float_channels: Vec::new(),
                 color_channels: Vec::new(),
                 bool_channels: Vec::new(),

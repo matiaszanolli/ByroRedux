@@ -219,7 +219,7 @@ fn canonicalise(key: &str) -> CanonKey<'_> {
 mod tests {
     use super::*;
     use crate::animation::types::{AnimationClip, CycleType};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     fn empty_clip() -> AnimationClip {
         AnimationClip {
@@ -230,7 +230,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),

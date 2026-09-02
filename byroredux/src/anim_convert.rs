@@ -10,16 +10,19 @@ use byroredux_core::ecs::{Children, Name, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 
 use crate::asset_provider::TextureProvider;
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.
+/// `FxHashMap` (#3677) — feeds directly into `SubtreeCache.map`'s inner
+/// map, on the same `FixedString`-keyed per-channel hot path.
 pub(crate) fn build_subtree_name_map(
     world: &World,
     root: EntityId,
-) -> HashMap<FixedString, EntityId> {
-    let mut map = HashMap::new();
+) -> FxHashMap<FixedString, EntityId> {
+    let mut map = FxHashMap::default();
 
     // Include the root itself.
     if let Some(nq) = world.query::<Name>() {
@@ -208,6 +211,12 @@ pub(crate) fn attach_animation_sinks(
             }
             // Writes into an existing LightSource — see the contract note.
             FloatTarget::LightDimmer | FloatTarget::LightIntensity | FloatTarget::LightRadius => {}
+            // #3327 — parser-scope fix only: these two reach this point
+            // with their real data, but (like `ShaderFloat` before #2221
+            // wired it up) have no ECS component / render consumer yet.
+            // A follow-up wiring them mirrors `FloatTarget::ShaderFloat`'s
+            // `AnimatedShaderFloat` arm above.
+            FloatTarget::EmissiveMultiple | FloatTarget::RefractionStrength => {}
         }
     }
 
@@ -426,6 +435,8 @@ pub(crate) fn convert_nif_clip(
         na::FloatTarget::LightDimmer => FloatTarget::LightDimmer,
         na::FloatTarget::LightIntensity => FloatTarget::LightIntensity,
         na::FloatTarget::LightRadius => FloatTarget::LightRadius,
+        na::FloatTarget::EmissiveMultiple => FloatTarget::EmissiveMultiple,
+        na::FloatTarget::RefractionStrength => FloatTarget::RefractionStrength,
     };
 
     let convert_color_target = |t: na::ColorTarget| match t {

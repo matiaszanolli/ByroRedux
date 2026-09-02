@@ -134,7 +134,18 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v10's `parallax_height_in_alpha`, the shared defaults happen to be the
 /// correct value for every pre-v19 snapshot — the bump is taken anyway per
 /// the same blanket rule that field's doc explains.
-pub const FORMAT_MAJOR: u16 = 19;
+/// Version 20 (#3701, ECS-2026-08-30-D10-01) adds `AnimationLayer::
+/// blend_in_target` — the weight a blending-in layer ramps toward — as a
+/// required field on the registered `AnimationStack` column's nested layer
+/// type (this doc's own "an AnimationStack layer" example, above). Fixes a
+/// latent bug where `with_blend_in` zeroed `weight` itself and
+/// `effective_weight()` multiplied that zero by the ramp progress, so a
+/// blending-in layer contributed nothing until snapping to full weight on
+/// completion; `weight` is now the live per-tick value and
+/// `blend_in_target` is what it ramps toward. No pre-v20 snapshot has a
+/// correct value to infer here — the field didn't exist for `weight` to be
+/// derived from — so old snapshots are rejected rather than guessed at.
+pub const FORMAT_MAJOR: u16 = 20;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

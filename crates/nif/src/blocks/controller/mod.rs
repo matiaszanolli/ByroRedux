@@ -269,6 +269,53 @@ impl NiSingleInterpController {
     }
 }
 
+// ── BSMaterialEmittanceMultController / BSRefractionStrengthController /
+//    BSFrustumFOVController ───────────────────────────────────────────
+//
+// Per nif.xml:6780 / 6802 / 7019, all three inherit `NiFloatInterpController`
+// -> `NiSingleInterpController` with no fields of their own, so the byte
+// parse is identical to the shared base — pre-#3327 they parsed straight
+// into a bare `NiSingleInterpController`, which is byte-correct but erases
+// their RTTI the same way the `NiKeyframeController`/etc. family did before
+// #2562/#2563 (see that section's comment above for the general shape of
+// the problem). `anim/entry.rs` dispatches by `block_type_name()` string, so
+// all three landed in the shared "NiSingleInterpController" arm, which only
+// attempts `extract_transform_channel_at` — none of them drive a transform,
+// so it silently produced nothing. #3327.
+
+/// `BSMaterialEmittanceMultController` / `BSRefractionStrengthController` /
+/// `BSFrustumFOVController` — see the module comment above. Parser-scope
+/// fix only (#3327): this restores correct RTTI/dispatch so
+/// `anim/entry.rs` can route the two material-float controllers through
+/// `extract_float_channel_at`. `BSFrustumFOVController`'s camera-FOV
+/// animation has no ECS/render consumer yet — its arm preserves RTTI but
+/// intentionally extracts no channel (see `anim/entry.rs`).
+#[derive(Debug)]
+pub struct BsNamedFloatInterpController {
+    /// Original block type name, so `block_type_name()` reports the real
+    /// RTTI instead of the shared "NiSingleInterpController" label.
+    pub type_name: &'static str,
+    pub base: NiSingleInterpController,
+}
+
+impl NiObject for BsNamedFloatInterpController {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsNamedFloatInterpController {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        Ok(Self {
+            type_name,
+            base: NiSingleInterpController::parse(stream)?,
+        })
+    }
+}
+
 // ── NiKeyframeController / NiTransformController / NiVisController /
 //    NiAlphaController ────────────────────────────────────────────────
 //

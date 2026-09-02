@@ -160,9 +160,9 @@ fn time_controller_base_of(
     block: &dyn crate::NiObject,
 ) -> Option<&crate::blocks::controller::NiTimeControllerBase> {
     use crate::blocks::controller::{
-        BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
-        NiMaterialColorController, NiPreSplitDataController, NiSingleInterpController,
-        NiTextureTransformController,
+        BsNamedFloatInterpController, BsShaderController, NiFlipController, NiLightColorController,
+        NiLightFloatController, NiMaterialColorController, NiPreSplitDataController,
+        NiSingleInterpController, NiTextureTransformController,
     };
     let any = block.as_any();
     if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
@@ -174,6 +174,14 @@ fn time_controller_base_of(
         // have their own type so their real block_type_name() reaches
         // the embedded-controller dispatch below instead of being erased
         // to "NiSingleInterpController".
+        Some(&c.base.base)
+    } else if let Some(c) = any.downcast_ref::<BsNamedFloatInterpController>() {
+        // #3327 — BSMaterialEmittanceMultController / BSRefractionStrengthController /
+        // BSFrustumFOVController, same reasoning as the NiPreSplitDataController
+        // arm above: without this arm, `time_controller_base_of` returns
+        // `None` for these three and `walk_controller_chain` stops dead
+        // (its `next_controller_ref` advance reads through `base`),
+        // silently dropping every controller further down the same chain.
         Some(&c.base.base)
     } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
         Some(&c.base)
@@ -283,8 +291,9 @@ pub(crate) fn walk_controller_chain(
 /// with a debug-log.
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     use crate::blocks::controller::{
-        BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
-        NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
+        BsNamedFloatInterpController, BsShaderController, NiFlipController, NiLightColorController,
+        NiLightFloatController, NiMaterialColorController, NiSingleInterpController,
+        NiTextureTransformController,
     };
 
     let mut clip = AnimationClip {
@@ -401,15 +410,13 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         clip.channels.insert(Arc::clone(&node_name), channel);
                     }
                 }
-                // Only the three Bethesda-extension float controllers with
-                // no fields beyond `NiSingleInterpController`
-                // (BSMaterialEmittanceMultController, BSRefractionStrengthController,
-                // BSFrustumFOVController — `blocks/mod.rs`) still parse as a
-                // bare `NiSingleInterpController` and reach this arm under
-                // that literal name. None of them drive a transform, so
-                // `extract_transform_channel_at` self-selects to `None`
-                // here — kept as a harmless, self-selecting attempt rather
-                // than special-cased per type.
+                // #3327 — pre-fix, the three arms below all parsed as a bare
+                // `NiSingleInterpController` and fell through to this arm
+                // under that erased name; none of them drive a transform, so
+                // `extract_transform_channel_at` always self-selected to
+                // `None`. Kept as a harmless, self-selecting fallback for
+                // any genuinely-unlisted same-shape block that might still
+                // reach here.
                 "NiSingleInterpController" => {
                     let interp_idx = any
                         .downcast_ref::<NiSingleInterpController>()
@@ -420,6 +427,44 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         clip.channels.insert(Arc::clone(&node_name), channel);
                     }
                 }
+                // #3327 — animated material emissive multiplier (pulsing/
+                // flickering neon, glow-panel signage). No ECS/render
+                // consumer yet (same state `ShaderFloat` shipped in for
+                // #2221) — this restores the channel reaching
+                // `AnimationClip::float_channels` with its real RTTI, which
+                // is this issue's scope.
+                "BSMaterialEmittanceMultController" => {
+                    let interp_idx = any
+                        .downcast_ref::<BsNamedFloatInterpController>()
+                        .and_then(|c| c.base.interpolator_ref.index());
+                    if let Some(ch) = interp_idx.and_then(|idx| {
+                        extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple)
+                    }) {
+                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                    }
+                }
+                // #3327 — animated glass refraction strength (Stealth Boy /
+                // heat-haze). Same no-consumer-yet caveat as above.
+                "BSRefractionStrengthController" => {
+                    let interp_idx = any
+                        .downcast_ref::<BsNamedFloatInterpController>()
+                        .and_then(|c| c.base.interpolator_ref.index());
+                    if let Some(ch) = interp_idx.and_then(|idx| {
+                        extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength)
+                    }) {
+                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                    }
+                }
+                // #3327 — animated camera FOV. No `FloatTarget` variant:
+                // unlike the two arms above, this doesn't animate a
+                // Material field at all (it's a NiCamera property), so
+                // there's no natural sink to route it to yet. This arm
+                // exists purely so the block keeps its real RTTI
+                // (`BSFrustumFOVController`, not the erased
+                // `NiSingleInterpController` label) rather than to extract
+                // a channel — a future camera-animation feature has a real
+                // type to hang off of.
+                "BSFrustumFOVController" => {}
                 "NiTextureTransformController" => {
                     if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
                         let target = float_target_from_operation(c.operation);

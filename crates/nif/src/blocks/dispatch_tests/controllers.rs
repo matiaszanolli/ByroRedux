@@ -833,4 +833,55 @@ fn bs_psys_multi_target_emitter_ctlr_reads_data_ref_below_10_1_0_104() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
+/// #3327 — `BSMaterialEmittanceMultController` / `BSRefractionStrengthController`
+/// / `BSFrustumFOVController` must dispatch through `BsNamedFloatInterpController`
+/// and report their real RTTI via `block_type_name()`, not the shared
+/// "NiSingleInterpController" label these three erased into pre-fix.
+#[test]
+fn bs_named_float_interp_controller_family_preserves_rtti() {
+    for type_name in [
+        "BSMaterialEmittanceMultController",
+        "BSRefractionStrengthController",
+        "BSFrustumFOVController",
+    ] {
+        // FO3/FNV representative version — >= 10.1.0.104 so the
+        // interpolator ref is present and the Manager Controlled bool
+        // gate (10.1.0.104-108) doesn't apply.
+        let header = header_at(NifVersion::V20_2_0_7);
+        let mut bytes = Vec::new();
+        // NiTimeController base (26 B).
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
+        bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
+        // NiSingleInterpController: interpolator_ref (4 B) — the only
+        // field any of these three carry beyond the base.
+        bytes.extend_from_slice(&42i32.to_le_bytes());
+        assert_eq!(bytes.len(), 30);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(type_name, &mut stream, Some(bytes.len() as u32))
+            .unwrap_or_else(|e| panic!("{type_name} must parse: {e}"));
+        assert_eq!(
+            block.block_type_name(),
+            type_name,
+            "RTTI must survive dispatch, not erase to NiSingleInterpController"
+        );
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::BsNamedFloatInterpController>()
+            .unwrap_or_else(|| {
+                panic!("{type_name} did not downcast to BsNamedFloatInterpController")
+            });
+        assert_eq!(
+            ctrl.base.interpolator_ref.index(),
+            Some(42),
+            "{type_name}"
+        );
+        assert_eq!(stream.position() as usize, bytes.len(), "{type_name}");
+    }
+}
+
 // ── #124 / audit NIF-513 — bhkNPCollisionObject family ──────────

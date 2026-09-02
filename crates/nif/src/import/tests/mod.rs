@@ -15,6 +15,7 @@ use super::*;
 use crate::blocks::tri_shape::NiTriShapeData;
 use crate::types::{BlockRef, NiPoint3};
 
+mod app_culled_visibility;
 mod billboard;
 mod bs_subclass;
 mod coord_cross_check;

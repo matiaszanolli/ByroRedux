@@ -39,8 +39,8 @@ use controller::{
     NiBsBoneLodController, NiControllerManager, NiControllerSequence, NiFlipController,
     NiFloatExtraDataController, NiGeomMorpherController, NiLightColorController,
     NiLightFloatController, NiLookAtController, NiMaterialColorController, NiMorphData,
-    NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper,
-    NiSingleInterpController, NiTimeController, NiUVController,
+    NiMultiTargetTransformController, NiPathController, NiSequenceStreamHelper, NiTimeController,
+    NiUVController,
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
@@ -791,11 +791,24 @@ fn parse_block_inner(
         }
         // Pure NiFloatInterpController subclasses (no extra fields beyond
         // NiSingleInterpController). FO3+ era — block_size recovery catches
-        // any stream drift. See issue #235.
+        // any stream drift. See issue #235. #3327 — wrapped in a
+        // type_name-carrying newtype (mirroring `NiPreSplitDataController`)
+        // so `block_type_name()` reports the real RTTI instead of the
+        // shared "NiSingleInterpController" label; see
+        // `controller::BsNamedFloatInterpController`'s doc.
         "BSMaterialEmittanceMultController"
         | "BSRefractionStrengthController"
         | "BSFrustumFOVController" => {
-            Ok(Box::new(NiSingleInterpController::parse(stream)?))
+            let type_name_static: &'static str = match type_name {
+                "BSMaterialEmittanceMultController" => "BSMaterialEmittanceMultController",
+                "BSRefractionStrengthController" => "BSRefractionStrengthController",
+                "BSFrustumFOVController" => "BSFrustumFOVController",
+                _ => unreachable!(),
+            };
+            Ok(Box::new(controller::BsNamedFloatInterpController::parse(
+                stream,
+                type_name_static,
+            )?))
         }
         // Inherits NiTimeController directly with one explicit interpolator ref.
         // Not NiSingleInterpController (different base class per nif.xml line 6830).

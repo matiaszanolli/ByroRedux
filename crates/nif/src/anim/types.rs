@@ -109,6 +109,15 @@ pub enum FloatTarget {
     LightIntensity,
     /// NiLight radius (NiLightRadiusController). See #983.
     LightRadius,
+    /// Material emissive multiplier (BSMaterialEmittanceMultController).
+    /// See #3327. No ECS/render consumer yet — the extracted channel
+    /// lands in `AnimationClip::float_channels` but isn't applied, the
+    /// same state `ShaderFloat` shipped in for #2221.
+    EmissiveMultiple,
+    /// Glass refraction strength (BSRefractionStrengthController) — the
+    /// Stealth Boy / heat-haze animation family. See #3327. No ECS/render
+    /// consumer yet, same caveat as `EmissiveMultiple` above.
+    RefractionStrength,
 }
 
 /// What a color animation channel targets.

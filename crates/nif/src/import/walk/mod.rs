@@ -226,6 +226,38 @@ fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)>
     None
 }
 
+/// Whether `controller_ref`'s chain contains a live `NiVisController`
+/// (RTTI-preserved since #2562/#2563, so `block_type_name()` reports it
+/// correctly whether the block parsed as a bare `NiSingleInterpController`
+/// pre-fix era or its own type today). #3640 — a shape with `APP_CULLED`
+/// (`flags & 0x01`) set is normally dropped at import outright; when
+/// something is actually going to drive its visibility at runtime, the
+/// shape needs to exist in the ECS for that controller to have anything
+/// to toggle. Shape-scoped only (SHAPE sites: NiTriShape / BsTriShape /
+/// NiLodTriShape / BSGeometry in both `walk_node_hierarchical` and
+/// `walk_node_flat`) — the sibling NODE-level `flags & 0x01` checks
+/// (`switch_active_children` / `as_ni_node` branches) are deliberately
+/// untouched: dropping a culled node also drops its whole subtree, and
+/// nothing in this ECS propagates a parent's `AnimatedVisibility` to its
+/// children, so "stop dropping the node" would not by itself reproduce
+/// "subtree starts hidden" the way it does for a single shape. The
+/// audit's own measured evidence (581 APP_CULLED BSTriShapes, 13 files)
+/// is shape-scoped too — no node-level count was measured. A node-level
+/// fix needs visibility propagation this codebase doesn't have yet; left
+/// for a follow-up rather than silently making the wrong subtree visible.
+fn has_live_visibility_controller(scene: &NifScene, controller_ref: BlockRef) -> bool {
+    if controller_ref.is_null() {
+        return false;
+    }
+    let mut found = false;
+    crate::anim::walk_controller_chain(scene, controller_ref, |_idx, block, _base| {
+        if !found && block.block_type_name() == "NiVisController" {
+            found = true;
+        }
+    });
+    found
+}
+
 /// Maximum recursion depth for `walk_node_hierarchical` and
 /// `walk_node_flat`. Bethesda-shipped NIFs nest at most a few dozen
 /// nodes deep; the cap stops a malformed or adversarial file from
@@ -461,7 +493,13 @@ pub(super) fn walk_node_hierarchical(
         // conflation was harmless on vanilla Bethesda content (which
         // doesn't set that bit) but dropped modded geometry and
         // anything authored with a Gamebryo-native tool.
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -508,7 +546,13 @@ pub(super) fn walk_node_hierarchical(
         // conflation was harmless on vanilla Bethesda content (which
         // doesn't set that bit) but dropped modded geometry and
         // anything authored with a Gamebryo-native tool.
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -544,7 +588,13 @@ pub(super) fn walk_node_hierarchical(
     // had no import arm and were silently dropped (#988 / SK-D5-NEW-09).
     if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
         let shape = &lod.base;
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -577,7 +627,13 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -1381,7 +1437,13 @@ pub(super) fn walk_node_flat(
         // conflation was harmless on vanilla Bethesda content (which
         // doesn't set that bit) but dropped modded geometry and
         // anything authored with a Gamebryo-native tool.
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -1419,7 +1481,13 @@ pub(super) fn walk_node_flat(
         // conflation was harmless on vanilla Bethesda content (which
         // doesn't set that bit) but dropped modded geometry and
         // anything authored with a Gamebryo-native tool.
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -1442,7 +1510,13 @@ pub(super) fn walk_node_flat(
     // Flat-walk path identical to NiTriShape but delegating via .base (#988).
     if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
         let shape = &lod.base;
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
@@ -1470,7 +1544,13 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
-        if shape.av.flags & 0x01 != 0 {
+        // #3640 — a live NiVisController targeting this shape gets a
+        // chance to un-hide it at runtime instead of the shape never
+        // existing for it to act on. See `has_live_visibility_controller`'s
+        // doc for why this is shape-scoped only.
+        if shape.av.flags & 0x01 != 0
+            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
+        {
             return;
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {

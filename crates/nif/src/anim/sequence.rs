@@ -90,6 +90,25 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
+            // #3327 — unlike the embedded path (`entry.rs`), this KF-sequence
+            // dispatch keys on `ControlledBlock.controller_type`, an
+            // authored string from the NIF's own string table — it was
+            // never subject to the block-dispatch RTTI erasure #3327 fixes,
+            // just missing these two arms outright (SIBLING check).
+            // `BSFrustumFOVController` intentionally has no arm here either,
+            // same reasoning as `entry.rs`'s: no FloatTarget/consumer exists
+            // for a camera-FOV animation yet.
+            "BSMaterialEmittanceMultController" => {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::EmissiveMultiple) {
+                    float_channels.push((Arc::clone(&node_name), ch));
+                }
+            }
+            "BSRefractionStrengthController" => {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::RefractionStrength)
+                {
+                    float_channels.push((Arc::clone(&node_name), ch));
+                }
+            }
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
                 if let Some(ch) = extract_shader_color_channel(scene, cb) {
                     color_channels.push((Arc::clone(&node_name), ch));

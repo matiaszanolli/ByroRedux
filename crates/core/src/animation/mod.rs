@@ -39,7 +39,7 @@ pub use types::{
 mod tests {
     use super::*;
     use crate::math::{Quat, Vec3};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     fn make_linear_translation_channel() -> TransformChannel {
         TransformChannel {
@@ -430,7 +430,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -461,7 +461,7 @@ mod tests {
                     phase: 0.0,
                     weight: 1.0,
                     accum_root_name: None,
-                    channels: HashMap::new(),
+                    channels: FxHashMap::default(),
                     float_channels: Vec::new(),
                     color_channels: Vec::new(),
                     bool_channels: Vec::new(),
@@ -498,7 +498,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -516,6 +516,102 @@ mod tests {
         assert!(stack.layers[0].local_time.is_finite());
     }
 
+    /// Minimal clip with no channels — enough for `advance_stack` timing
+    /// tests, which only need `cycle_type`/`duration`/`frequency` to be
+    /// well-formed and don't sample any channel.
+    fn flat_clip(name: &str, cycle_type: CycleType, duration: f32) -> AnimationClip {
+        AnimationClip {
+            name: name.to_string(),
+            duration,
+            cycle_type,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: FxHashMap::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    /// Regression: #3701 / ECS-2026-08-30-D10-01. `with_blend_in` used to
+    /// zero `AnimationLayer::weight` and have `effective_weight()`
+    /// multiply that zero by the ramp progress — zero for the entire
+    /// fade, then a one-tick snap to full weight at completion. This
+    /// pins `effective_weight()` mid-fade: it must be strictly between 0
+    /// and the target weight, and must increase monotonically tick over
+    /// tick, not sit at zero until the last tick.
+    #[test]
+    fn advance_stack_ramps_blend_in_weight_smoothly_not_a_hard_cut() {
+        let clip = flat_clip("c", CycleType::Loop, 1.0);
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(clip);
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(handle).with_blend_in(1.0));
+
+        let mut previous_weight = stack.layers[0].effective_weight();
+        assert_eq!(previous_weight, 0.0, "blend-in must still start at zero");
+
+        for _ in 0..4 {
+            advance_stack(&mut stack, &registry, 0.25);
+            let w = stack.layers[0].effective_weight();
+            assert!(
+                w > previous_weight,
+                "weight must strictly increase each tick during blend-in, \
+                 got {w} after {previous_weight}"
+            );
+            assert!(
+                (0.0..=1.0).contains(&w),
+                "weight must stay within [0, target], got {w}"
+            );
+            previous_weight = w;
+        }
+        assert!(
+            (previous_weight - 1.0).abs() < 1e-6,
+            "blend-in must land exactly on its target weight (1.0) on \
+             completion, got {previous_weight}"
+        );
+    }
+
+    /// Regression: #3701's own suggested pin — a crossfade's outgoing
+    /// (blend-out) and incoming (blend-in) layers' effective weights must
+    /// sum to ~1 at the midpoint, i.e. the two contribute a genuine cross-
+    /// fade rather than the incoming layer contributing nothing until the
+    /// last tick.
+    #[test]
+    fn crossfade_effective_weights_sum_to_about_one_at_the_midpoint() {
+        let clip = flat_clip("c", CycleType::Loop, 1.0);
+        let mut registry = AnimationClipRegistry::new();
+        let handle_a = registry.add(clip.clone());
+        let handle_b = registry.add(clip);
+        let mut stack = AnimationStack::new();
+
+        stack.play(handle_a, 0.0); // Established layer, full weight, no blend.
+        stack.play(handle_b, 1.0); // 1 s crossfade: A blends out, B blends in.
+        assert_eq!(stack.layers.len(), 2);
+
+        advance_stack(&mut stack, &registry, 0.5); // Midpoint of the 1 s fade.
+
+        let ew_a = stack.layers[0].effective_weight();
+        let ew_b = stack.layers[1].effective_weight();
+        assert!(
+            (ew_a - 0.5).abs() < 1e-6,
+            "outgoing layer should be at half weight, got {ew_a}"
+        );
+        assert!(
+            (ew_b - 0.5).abs() < 1e-6,
+            "incoming layer should be at half weight, got {ew_b}"
+        );
+        assert!(
+            (ew_a + ew_b - 1.0).abs() < 1e-6,
+            "the two layers must sum to ~1 at the midpoint, got {}",
+            ew_a + ew_b
+        );
+    }
+
     #[test]
     fn advance_time_clamp() {
         let clip = AnimationClip {
@@ -526,7 +622,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -548,7 +644,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -580,7 +676,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -609,7 +705,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -634,7 +730,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -671,7 +767,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -704,7 +800,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -749,7 +845,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -807,7 +903,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -854,7 +950,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -886,7 +982,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -928,7 +1024,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -951,7 +1047,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -1014,7 +1110,7 @@ mod tests {
             phase: 0.0,
             weight: 1.0,
             accum_root_name: None,
-            channels: HashMap::new(),
+            channels: FxHashMap::default(),
             float_channels: Vec::new(),
             color_channels: Vec::new(),
             bool_channels: Vec::new(),
@@ -1078,7 +1174,7 @@ mod tests {
         let node = pool.intern("root");
 
         let mk_clip = |keyed: bool| {
-            let mut channels = HashMap::new();
+            let mut channels = FxHashMap::default();
             channels.insert(
                 node,
                 TransformChannel {
@@ -1167,7 +1263,7 @@ mod tests {
         let node = pool.intern("root");
 
         let mk_clip = |weight: f32, tx: f32| {
-            let mut channels = HashMap::new();
+            let mut channels = FxHashMap::default();
             channels.insert(
                 node,
                 TransformChannel {
@@ -1236,7 +1332,7 @@ mod tests {
         let node = pool.intern("root");
 
         let mk_clip = |weight: f32, tx: f32| {
-            let mut channels = HashMap::new();
+            let mut channels = FxHashMap::default();
             channels.insert(
                 node,
                 TransformChannel {
