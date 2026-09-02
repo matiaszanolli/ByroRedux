@@ -7,6 +7,10 @@ cargo run -p byro-launcher
 cargo run -p byro-launcher -- --profiles <path>   # use a different profiles file
 ```
 
+On Linux, the launcher normally follows the desktop's native window backend.
+For X11-only or headless environments that expose an X server alongside a
+stale Wayland variable, set `BYROREDUX_LAUNCHER_X11=1`.
+
 ## Why it is a separate process on OpenGL
 
 The engine's in-window egui overlay draws through `egui-ash-renderer` *inside
@@ -47,7 +51,7 @@ unit test without a window or a GPU.
 
 ## Scope
 
-P2 of [`docs/engine/launcher.md`](../../docs/engine/launcher.md). Library, Play,
-and Details screens; detection with a Browse fallback. Settings (P3), the save
-list (P4), and mod load order (P5) are not implemented — there is no Settings
-screen yet, and Play offers a profile's new-game placement and its sample cells.
+P3 of [`docs/engine/launcher.md`](../../docs/engine/launcher.md): Library, Play,
+Details, Settings, GPU pre-flight, and detection with a Browse fallback. The
+save list (P4) and mod load order (P5) are not implemented; Play offers a
+profile's new-game placement and its sample cells.

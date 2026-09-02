@@ -24,7 +24,17 @@ use std::path::PathBuf;
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let options = eframe::NativeOptions {
+    let profiles_path = profiles_path();
+    #[cfg(target_os = "linux")]
+    let force_x11 = std::env::var_os("BYROREDUX_LAUNCHER_X11").is_some();
+    #[cfg(not(target_os = "linux"))]
+    let force_x11 = false;
+
+    run_launcher(native_options(force_x11), profiles_path)
+}
+
+fn native_options(force_x11: bool) -> eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([880.0, 620.0])
             .with_min_inner_size([640.0, 480.0])
@@ -32,7 +42,18 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    let profiles_path = profiles_path();
+    #[cfg(target_os = "linux")]
+    if force_x11 {
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11();
+        }));
+    }
+
+    options
+}
+
+fn run_launcher(options: eframe::NativeOptions, profiles_path: PathBuf) -> eframe::Result<()> {
     eframe::run_native(
         "ByroRedux",
         options,

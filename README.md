@@ -160,7 +160,7 @@ Havok `.hkx` skeleton stub (M41.x); the ECS equip state is observable
 today via `inspect <ref>` in `byro-dbg`. Oblivion exterior WRLD/CELL/LAND
 wiring and rendering are live; the cross-game readiness/streaming workstream
 is tracked under [exterior epic #2377](https://github.com/matiaszanolli/ByroRedux/issues/2377).
-A standalone launcher (`cargo run -p byro-launcher`) is in progress —
+A standalone launcher (`cargo run -p byro-launcher`) is available —
 Steam-install discovery, a Library/Play/Details/Settings UI, and a GPU
 pre-flight are landed; see [docs/engine/launcher.md](docs/engine/launcher.md)
 for status. See **[ROADMAP.md](ROADMAP.md)** for the

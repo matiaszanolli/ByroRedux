@@ -24,6 +24,7 @@ egui = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 rfd = { workspace = true }
+winit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

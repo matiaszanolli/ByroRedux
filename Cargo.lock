@@ -648,6 +648,7 @@ dependencies = [
  "log",
  "rfd",
  "tempfile",
+ "winit",
 ]
 
 [[package]]
