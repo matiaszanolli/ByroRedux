@@ -3667,6 +3667,12 @@ mod tests {
                 .disposition,
             CompatibilityDisposition::Native
         );
+        assert_eq!(
+            classify_static_call("game", "getformfromfile")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Native
+        );
         assert!(classify_static_call("Game", "GetPlayer").is_none());
     }
 
