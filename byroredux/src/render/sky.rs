@@ -192,6 +192,7 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         // as a defensive `or_else` rather than removed outright.
         dalc_cube: interior_cube.or_else(|| sky_res.current_dalc_cube.map(renderer_dalc_cube)),
         weather,
+        weather_time_seconds: world.try_resource::<TotalTime>().map_or(0.0, |time| time.0),
     }
 }
 

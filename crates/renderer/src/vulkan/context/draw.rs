@@ -881,6 +881,40 @@ pub(super) fn build_composite_params(
             sky_params.cloud_tile_scale_3,
             f32::from_bits(sky_params.cloud_texture_index_3),
         ],
+        weather_params: [
+            sky_params.weather.precipitation[0],
+            sky_params.weather.precipitation[1],
+            sky_params.weather.thunder_frequency,
+            sky_params.weather_time_seconds,
+        ],
+        weather_wind: [
+            sky_params.weather.wind_direction[0],
+            sky_params.weather.wind_speed,
+            sky_params.weather.wind_direction[1],
+            0.0,
+        ],
+        weather_lightning: [
+            sky_params.weather.lightning_color[0],
+            sky_params.weather.lightning_color[1],
+            sky_params.weather.lightning_color[2],
+            sky_params.weather.moon_glare,
+        ],
+        weather_sky: [
+            sky_params.weather.stars_color[0],
+            sky_params.weather.stars_color[1],
+            sky_params.weather.stars_color[2],
+            sky_params.weather.sun_glare,
+        ],
+        weather_aurora: [
+            sky_params.weather.aurora_intensity,
+            if sky_params.weather.aurora_follows_sun { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        ],
+        cloud_tint_0: sky_params.weather.cloud_tints[0],
+        cloud_tint_1: sky_params.weather.cloud_tints[1],
+        cloud_tint_2: sky_params.weather.cloud_tints[2],
+        cloud_tint_3: sky_params.weather.cloud_tints[3],
         // #428 — composite-pass fog needs the camera origin to
         // compute per-pixel world-space distance from a depth
         // sample.

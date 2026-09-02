@@ -1720,6 +1720,89 @@ mod tests {
     }
 
     #[test]
+    fn parse_weather_dynamics_keeps_timing_cloud_motion_and_lightning() {
+        let mut data = vec![0u8; 15];
+        data[0] = 7;
+        data[3] = 9;
+        data[4] = 20;
+        data[5] = 21;
+        data[6] = 22;
+        data[7] = 23;
+        data[8] = 24;
+        data[9] = 25;
+        data[10] = 26;
+        data[11] = WTHR_RAINY;
+        data[12..15].copy_from_slice(&[10, 20, 30]);
+
+        let mut onam = vec![11, 22, 33, 44];
+        let mut pnam = vec![0u8; 64];
+        pnam[2 * 16 + 2 * 4..2 * 16 + 3 * 4].copy_from_slice(&[1, 2, 3, 200]);
+        let w = parse_wthr(
+            0xD1A,
+            &[
+                make_sub(b"DATA", data),
+                make_sub(b"ONAM", std::mem::take(&mut onam)),
+                make_sub(b"PNAM", pnam),
+            ],
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(w.wind_speed, 7);
+        assert_eq!(w.transition_delta, 9);
+        assert_eq!(w.sun_glare, 20);
+        assert_eq!(w.sun_damage, 21);
+        assert_eq!(w.precipitation_fade, [22, 23]);
+        assert_eq!(w.thunder_fade, [24, 25]);
+        assert_eq!(w.thunder_frequency, 26);
+        assert_eq!(w.classification, WTHR_RAINY);
+        assert_eq!(w.lightning_color, [10, 20, 30]);
+        assert_eq!(w.cloud_layer_velocities[2], [33, 0]);
+        assert_eq!(w.cloud_layer_colors[2][2].r, 1);
+        assert_eq!(w.cloud_layer_colors[2][2].a, 200);
+    }
+
+    #[test]
+    fn parse_skyrim_creation_cloud_tables_and_data_tail() {
+        let mut rnam = vec![0u8; 32];
+        let mut qnam = vec![0u8; 32];
+        rnam[..4].copy_from_slice(&[5, 6, 7, 8]);
+        qnam[..4].copy_from_slice(&[15, 16, 17, 18]);
+        let mut jnam = vec![0u8; 64];
+        jnam[2 * 16..2 * 16 + 4].copy_from_slice(&0.25f32.to_le_bytes());
+        let mut data = vec![0u8; SKYRIM_DATA_SIZE];
+        data[11] = WTHR_SNOW | WTHR_AURORA_FOLLOWS_SUN;
+        data[12..15].copy_from_slice(&[90, 100, 110]);
+        data[15..19].copy_from_slice(&[3, 4, 180, 20]);
+        let w = parse_wthr(
+            0xD1B,
+            &[
+                make_sub(b"RNAM", rnam),
+                make_sub(b"QNAM", qnam),
+                make_sub(b"JNAM", jnam),
+                make_sub(b"DATA", data),
+                make_sub(b"00TX", b"sky\\cloud0.dds\0".to_vec()),
+                make_sub(b"A0TX", b"sky\\cloud10.dds\0".to_vec()),
+                make_sub(b"V0TX", b"sky\\cloud31.dds\0".to_vec()),
+                make_sub(b"MNAM", 0x1234_5678u32.to_le_bytes().to_vec()),
+                make_sub(b"NNAM", 0x8765_4321u32.to_le_bytes().to_vec()),
+            ],
+            GameKind::Skyrim,
+        );
+        assert_eq!(w.cloud_layer_velocities[0], [15, 5]);
+        assert_eq!(w.cloud_layer_velocities[3], [18, 8]);
+        assert!((w.cloud_layer_alphas[2][0] - 0.25).abs() < 1e-6);
+        assert_eq!(w.classification, WTHR_SNOW | WTHR_AURORA_FOLLOWS_SUN);
+        assert_eq!(w.lightning_color, [90, 100, 110]);
+        assert_eq!(w.visual_effect_window, [3, 4]);
+        assert_eq!(w.wind_direction, 180);
+        assert_eq!(w.wind_direction_range, 20);
+        assert_eq!(w.skyrim_cloud_textures[10].as_deref(), Some("sky\\cloud10.dds"));
+        assert_eq!(w.skyrim_cloud_textures[31].as_deref(), Some("sky\\cloud31.dds"));
+        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\cloud0.dds"));
+        assert_eq!(w.skyrim_precipitation_effect, Some(0x1234_5678));
+        assert_eq!(w.skyrim_visual_effect, Some(0x8765_4321));
+    }
+
+    #[test]
     fn parse_skyrim_dalc_captures_four_ambient_cubes() {
         // 4× DALC entries, each 32 B = 6 RGB+pad axes + RGB+pad spec
         // + f32 fresnel.

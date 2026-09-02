@@ -104,6 +104,23 @@ pub struct CompositeParams {
     /// Drifts in the opposite U direction (mirrors layer 1).
     /// `z` = 0.0 disables the layer when no BNAM texture is available.
     pub cloud_params_3: [f32; 4],
+    /// Current WTHR precipitation and thunder state: x = rain, y = snow,
+    /// z = thunder frequency, w = monotonic session time in seconds.
+    pub weather_params: [f32; 4],
+    /// Current horizontal wind direction/speed: x/z are the direction,
+    /// y is normalized WTHR speed, w reserved.
+    pub weather_wind: [f32; 4],
+    /// Lightning RGB and moon-glare multiplier.
+    pub weather_lightning: [f32; 4],
+    /// Stars RGB and sun-glare multiplier.
+    pub weather_sky: [f32; 4],
+    /// Aurora intensity, follows-sun flag, and reserved lanes.
+    pub weather_aurora: [f32; 4],
+    /// Current PNAM/JNAM cloud tints and alpha multipliers.
+    pub cloud_tint_0: [f32; 4],
+    pub cloud_tint_1: [f32; 4],
+    pub cloud_tint_2: [f32; 4],
+    pub cloud_tint_3: [f32; 4],
     /// `xyz` = camera world position, render-origin-relative. Needed for
     /// per-pixel world-space fog distance in composite (#428). Before this
     /// field landed, fog was computed in `triangle.frag` and baked into

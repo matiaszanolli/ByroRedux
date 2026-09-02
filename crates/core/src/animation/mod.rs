@@ -612,6 +612,45 @@ mod tests {
         );
     }
 
+    /// Regression: #3702 / ECS-2026-08-30-D10-02. `play()` schedules a
+    /// blend-out on every existing layer regardless of `playing`, but
+    /// `advance_stack` used to skip the blend-timer decrements for any
+    /// layer with `playing == false` — a paused layer scheduled to fade
+    /// out never ticked `blend_out_remaining` toward zero, so
+    /// `cleanup_finished` could never retire it and it held full weight
+    /// forever. Pauses a fading-out layer and asserts it still ticks down
+    /// and is eventually retired.
+    #[test]
+    fn advance_stack_ticks_blend_out_on_a_paused_layer_so_it_can_be_retired() {
+        let clip = flat_clip("c", CycleType::Loop, 1.0);
+        let mut registry = AnimationClipRegistry::new();
+        let handle_a = registry.add(clip.clone());
+        let handle_b = registry.add(clip);
+        let mut stack = AnimationStack::new();
+
+        stack.play(handle_a, 0.0); // Established layer, full weight, no blend.
+        stack.play(handle_b, 1.0); // 1 s crossfade schedules A's blend-out.
+        assert_eq!(stack.layers.len(), 2);
+
+        // Pause the outgoing layer — it must still be faded out and retired.
+        stack.layers[0].playing = false;
+
+        for _ in 0..4 {
+            advance_stack(&mut stack, &registry, 0.25);
+        }
+
+        assert_eq!(
+            stack.layers.len(),
+            1,
+            "a paused layer scheduled for blend-out must still be retired \
+             once its fade completes, not held forever at full weight"
+        );
+        assert_eq!(
+            stack.layers[0].clip_handle, handle_b,
+            "the surviving layer must be the incoming one"
+        );
+    }
+
     #[test]
     fn advance_time_clamp() {
         let clip = AnimationClip {

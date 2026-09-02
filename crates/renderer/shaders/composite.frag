@@ -50,6 +50,15 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_1; // cloud layer 1 (WTHR CNAM) — same packing as cloud_params
     vec4 cloud_params_2; // cloud layer 2 (WTHR ANAM) — same packing (M33.1)
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
+    vec4 weather_params; // rain, snow, thunder frequency, session seconds
+    vec4 weather_wind; // wind direction x/z, normalized speed, reserved
+    vec4 weather_lightning; // lightning RGB, moon glare
+    vec4 weather_sky; // stars RGB, sun glare
+    vec4 weather_aurora; // aurora intensity, follows-sun flag, reserved
+    vec4 cloud_tint_0; // PNAM/JNAM tint + alpha
+    vec4 cloud_tint_1;
+    vec4 cloud_tint_2;
+    vec4 cloud_tint_3;
     vec4 camera_pos;     // xyz = camera position in render-origin-RELATIVE space (matches inv_view_proj; the CPU subtracts render_origin at upload). Fog distance origin (#428) + ray origin for screen_to_world_dir (#1490). w = height-fog reference altitude (REN-D16-01 / #2225), same relative space as xyz — ground height near the camera, or camera Y as a fallback.
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
     // xyz = water deep-color tint (linear RGB), w = authored Beer-Lambert
@@ -299,6 +308,124 @@ vec3 screen_to_world_dir(vec2 uv) {
     return normalize(world.xyz / w - params.camera_pos.xyz);
 }
 
+float weather_hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float weather_star_field(vec3 dir) {
+    if (dir.y <= 0.02) {
+        return 0.0;
+    }
+    // A stable spherical-ish hash grid. It is deliberately sparse and
+    // high-frequency: stars are points of light, not another cloud texture.
+    vec2 projected = dir.xz / max(dir.y, 0.08) * 95.0;
+    vec2 cell = floor(projected);
+    vec2 local = fract(projected) - 0.5;
+    float seed = weather_hash21(cell);
+    float point = 1.0 - smoothstep(0.0, 0.035, length(local));
+    float rare = smoothstep(0.992, 1.0, seed);
+    float bright = mix(0.45, 1.0, weather_hash21(cell + 17.0));
+    return rare * point * bright;
+}
+
+vec3 weather_sky_details(vec3 sky, vec3 dir, float elevation) {
+    if (params.depth_params.x <= 0.5) {
+        return sky;
+    }
+    // sun_dir.y is positive while the sun is above the horizon and is the
+    // canonical day/night signal already used by the TOD system.
+    float night = 1.0 - smoothstep(-0.08, 0.20, params.sun_dir.y);
+    float stars = weather_star_field(dir) * night;
+    sky += params.weather_sky.rgb * stars;
+
+    // At night WTHR's SKY_SUN colour is the authored moon tint in the legacy
+    // weather table. Keep the moon direction deterministic when the engine's
+    // below-horizon sun sentinel has no horizontal component.
+    vec3 moon_direction = vec3(-params.sun_dir.x, 0.18, -params.sun_dir.z);
+    if (length(moon_direction.xz) < 0.05) {
+        moon_direction = vec3(0.46, 0.28, 0.82);
+    }
+    moon_direction = normalize(moon_direction);
+    float moon_cos = dot(dir, moon_direction);
+    float moon_edge = 0.9992;
+    if (moon_cos > moon_edge && elevation > 0.0) {
+        float moon_disc = smoothstep(moon_edge, 1.0, moon_cos);
+        sky += params.sun_color.rgb * moon_disc
+            * params.weather_lightning.w * night * 0.65;
+    }
+
+    float aurora = params.weather_aurora.x * night
+        * smoothstep(0.12, 0.48, elevation);
+    if (aurora > 0.0) {
+        float travel = params.weather_aurora.y > 0.5
+            ? params.weather_params.w * 0.018
+            : 0.0;
+        float bands = 0.5 + 0.5 * sin(dir.x * 17.0 + dir.z * 5.0 + travel);
+        float curtains = 0.5 + 0.5 * sin(dir.z * 31.0 - dir.x * 7.0 + bands * 2.0);
+        vec3 aurora_color = mix(vec3(0.08, 0.42, 0.28), vec3(0.18, 0.35, 0.75), curtains);
+        sky += aurora_color * aurora * bands * curtains * 0.38;
+    }
+
+    return sky;
+}
+
+vec3 weather_precipitation(vec3 color, vec2 uv) {
+    if (params.depth_params.x <= 0.5) {
+        return color;
+    }
+    float time = params.weather_params.w;
+    float wind_speed = params.weather_wind.y;
+    vec2 wind = params.weather_wind.xz;
+
+    // Rain is a coherent screen-space field: every streak advects in the
+    // authored wind direction, while a perpendicular term gives the slanted
+    // fall seen in gusts. It is a presentation overlay for distant rain;
+    // authored/local particle emitters remain responsible for close impacts.
+    vec2 rain_grid = uv * vec2(150.0, 90.0);
+    vec2 rain_cell = floor(rain_grid);
+    vec2 rain_local = fract(rain_grid);
+    float rain_seed = weather_hash21(rain_cell);
+    vec2 rain_drift = wind * time * (0.11 + wind_speed * 0.23);
+    float rain_y = fract(rain_seed + time * (0.42 + wind_speed * 0.8));
+    float rain_x = fract(rain_seed * 7.13 + rain_drift.x + rain_local.y * 0.18);
+    float rain_line = 1.0 - smoothstep(0.012, 0.0,
+        abs(rain_local.x - rain_x + wind.x * 0.018));
+    float rain_mask = smoothstep(0.52, 0.96, rain_seed);
+    float rain = rain_line * rain_mask * params.weather_params.x;
+
+    // Snow uses larger, slower, round flakes and only a small wind-driven
+    // fall vector. Keeping this separate from rain is important: sharing the
+    // streak primitive makes a snow storm read as translucent rain.
+    vec2 snow_grid = uv * vec2(62.0, 42.0);
+    vec2 snow_cell = floor(snow_grid);
+    vec2 snow_local = fract(snow_grid);
+    float snow_seed = weather_hash21(snow_cell + 91.7);
+    vec2 snow_pos = fract(vec2(snow_seed, snow_seed * 5.7)
+        + vec2(wind.x * time * 0.06, time * 0.075));
+    float flake = 1.0 - smoothstep(0.0, 0.095, length(snow_local - snow_pos));
+    float snow = flake * smoothstep(0.72, 0.98, snow_seed)
+        * params.weather_params.y;
+
+    vec3 precipitation_color = vec3(0.65, 0.78, 0.95) * rain
+        + vec3(0.92, 0.96, 1.0) * snow;
+    float precipitation_alpha = clamp(rain * 0.28 + snow * 0.24, 0.0, 0.55);
+    color = mix(color, color + precipitation_color, precipitation_alpha);
+
+    // Thunder is a sparse, deterministic flash. The event phase is seeded
+    // per burst so frequency controls do not turn into a hard metronome.
+    float burst_rate = 0.12 + params.weather_params.z * 2.2;
+    float burst_id = floor(time * burst_rate);
+    float burst_phase = fract(time * burst_rate);
+    float burst_seed = weather_hash21(vec2(burst_id, 37.1));
+    float flash = (1.0 - smoothstep(0.0, 0.045, burst_phase))
+        * step(0.64, burst_seed)
+        * params.weather_params.z;
+    color += params.weather_lightning.rgb * flash * 0.32;
+    return color;
+}
+
 // Compute sky color from view direction.
 vec3 compute_sky(vec3 dir) {
     vec3 zenith = params.sky_zenith.xyz;
@@ -366,7 +493,9 @@ vec3 compute_sky(vec3 dir) {
         // Fade clouds out at the horizon so the projection singularity
         // doesn't produce an ugly stretched band right at elevation=0.
         float horizon_fade = smoothstep(0.0, 0.12, elevation);
-        sky = mix(sky, cloud.rgb, cloud.a * horizon_fade);
+        vec4 tint = params.cloud_tint_0;
+        cloud.rgb *= tint.rgb;
+        sky = mix(sky, cloud.rgb, cloud.a * tint.a * horizon_fade);
     }
 
     // Cloud layer 1 (WTHR CNAM — higher-altitude deck, opposite drift direction).
@@ -379,7 +508,9 @@ vec3 compute_sky(vec3 dir) {
                   + params.cloud_params_1.xy;
         vec4 cloud_1 = textureLod(textures[nonuniformEXT(cloud_idx_1)], uv_1, cloud_lod);
         float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
-        sky = mix(sky, cloud_1.rgb, cloud_1.a * horizon_fade_1);
+        vec4 tint_1 = params.cloud_tint_1;
+        cloud_1.rgb *= tint_1.rgb;
+        sky = mix(sky, cloud_1.rgb, cloud_1.a * tint_1.a * horizon_fade_1);
     }
 
     // Cloud layer 2 (WTHR ANAM, M33.1) — same projection / fade as layer 1.
@@ -390,7 +521,9 @@ vec3 compute_sky(vec3 dir) {
                   + params.cloud_params_2.xy;
         vec4 cloud_2 = textureLod(textures[nonuniformEXT(cloud_idx_2)], uv_2, cloud_lod);
         float horizon_fade_2 = smoothstep(0.0, 0.12, elevation);
-        sky = mix(sky, cloud_2.rgb, cloud_2.a * horizon_fade_2);
+        vec4 tint_2 = params.cloud_tint_2;
+        cloud_2.rgb *= tint_2.rgb;
+        sky = mix(sky, cloud_2.rgb, cloud_2.a * tint_2.a * horizon_fade_2);
     }
 
     // Cloud layer 3 (WTHR BNAM, M33.1) — same projection / fade as layer 1.
@@ -401,7 +534,9 @@ vec3 compute_sky(vec3 dir) {
                   + params.cloud_params_3.xy;
         vec4 cloud_3 = textureLod(textures[nonuniformEXT(cloud_idx_3)], uv_3, cloud_lod);
         float horizon_fade_3 = smoothstep(0.0, 0.12, elevation);
-        sky = mix(sky, cloud_3.rgb, cloud_3.a * horizon_fade_3);
+        vec4 tint_3 = params.cloud_tint_3;
+        cloud_3.rgb *= tint_3.rgb;
+        sky = mix(sky, cloud_3.rgb, cloud_3.a * tint_3.a * horizon_fade_3);
     }
 
     // Sun disc: bright circular spot with a soft edge.
@@ -464,7 +599,7 @@ vec3 compute_sky(vec3 dir) {
             disc_color = sun_col * sprite.rgb;
         }
 
-        sky += disc_color * sun_intensity * disc;
+        sky += disc_color * sun_intensity * params.weather_sky.w * disc;
     }
 
     // Sun glow: soft radial halo around the sun.
@@ -486,9 +621,9 @@ vec3 compute_sky(vec3 dir) {
     // without washing the rest of the sky.
     float glow = max(cos_angle, 0.0);
     glow = pow(glow, 8.0);
-    sky += sun_col * glow * 0.10 * sun_intensity;
+    sky += sun_col * glow * 0.10 * sun_intensity * params.weather_sky.w;
 
-    return sky;
+    return weather_sky_details(sky, dir, elevation);
 }
 
 void main() {
@@ -815,6 +950,14 @@ void main() {
             0.35
         );
         combined += shaftColor * shaftStrength;
+    }
+
+    // Weather precipitation and lightning are exterior-only presentation
+    // terms. Rain/snow is intentionally applied after the volumetric resolve
+    // so the streaks remain legible through a deep storm volume, while the
+    // shared exterior gate keeps sealed interiors dry.
+    if (params.depth_params.x > 0.5) {
+        combined = weather_precipitation(combined, fragUV);
     }
 
     // M58 — bloom add. #2796 / REN-D16-01 moved this OUT of composite:

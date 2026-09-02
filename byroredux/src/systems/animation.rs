@@ -846,6 +846,11 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         stack_events.clear();
         seen_labels.clear();
         let accum_root: Option<FixedString>;
+        // #3703 — the accum-root layer's own `(clip_handle, prev_time,
+        // local_time)`, captured alongside `accum_root` so Phase 3b can
+        // compute a proper per-tick delta via `sampled_root_motion_delta`
+        // instead of treating the blended absolute position as a delta.
+        let accum_root_delta_info: Option<(u32, f32, f32)>;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
         {
@@ -898,7 +903,10 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             }
 
             // Accum root name from highest-weight active layer (#279 D6-04).
-            let mut best: Option<(FixedString, f32)> = None;
+            // Also captures that same layer's own `(clip_handle, prev_time,
+            // local_time)` — #3703 needs the *layer's* clock, not the
+            // blended stack output, to compute a per-tick delta.
+            let mut best: Option<(FixedString, f32, u32, f32, f32)> = None;
             for layer in &stack.layers {
                 let ew = layer.effective_weight();
                 if ew < 0.001 {
@@ -906,13 +914,17 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 }
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     if let Some(name) = clip.accum_root_name {
-                        if best.is_none_or(|(_, bw)| ew > bw) {
-                            best = Some((name, ew));
+                        if best.as_ref().is_none_or(|(_, bw, ..)| ew > *bw) {
+                            best =
+                                Some((name, ew, layer.clip_handle, layer.prev_time, layer.local_time));
                         }
                     }
                 }
             }
-            accum_root = best.map(|(n, _)| n);
+            accum_root = best.as_ref().map(|(n, ..)| *n);
+            accum_root_delta_info = best.map(|(_, _, clip_handle, prev_time, local_time)| {
+                (clip_handle, prev_time, local_time)
+            });
 
             // Dominant layer: capture only clip_handle + local_time. The
             // float/color/bool channel Vecs are accessed via the registry
@@ -943,15 +955,31 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         }
 
         // Phase 3b: apply blended transforms with root motion splitting (AR-02).
+        //
+        // #3703 — `split_root_motion(pos).1` is the horizontal *absolute*
+        // sampled position, not a displacement; `sampled_root_motion_delta`
+        // exists precisely because applying that raw value every tick
+        // compounds (the player path above already routes through it).
+        // The blended `pos` still supplies the vertical (anim) half via
+        // `split_root_motion`; the horizontal (delta) half is instead
+        // recomputed from the accum-root layer's own clip/channel and its
+        // `(prev_time, local_time)`, mirroring the player path exactly.
         let mut tq = world.query_mut::<Transform>().unwrap();
         let mut root_motion = Vec3::ZERO;
         for &(name, target, pos, rot, scale) in updates_scratch.iter() {
             if let Some(transform) = tq.get_mut(target) {
                 let is_accum = accum_root == Some(name);
                 if is_accum {
-                    let (anim_pos, delta) = split_root_motion(pos);
+                    let (anim_pos, _) = split_root_motion(pos);
                     transform.translation = anim_pos;
-                    root_motion += delta;
+                    if let Some((clip_handle, prev_time, local_time)) = accum_root_delta_info {
+                        if let Some(clip) = registry.get(clip_handle) {
+                            if let Some(channel) = clip.channels.get(&name) {
+                                root_motion +=
+                                    sampled_root_motion_delta(clip, channel, prev_time, local_time);
+                            }
+                        }
+                    }
                 } else {
                     transform.translation = pos;
                 }
@@ -1679,6 +1707,91 @@ mod animation_system_e2e_tests {
             world.get::<Transform>(bone).unwrap().translation,
             Vec3::new(0.0, 105.0, 0.0),
             "COM height remains skeletal pose while horizontal travel is extracted"
+        );
+    }
+
+    /// Regression: #3703 / ECS-2026-08-30-D10-03. The `AnimationStack`
+    /// path used to feed the blended *absolute* sampled position straight
+    /// into `RootMotionDelta` instead of the per-tick displacement
+    /// `sampled_root_motion_delta` computes — exactly the compounding the
+    /// player path already avoids. Ticks a stack-driven accum-root twice
+    /// with a channel whose keys are chosen so the raw absolute position
+    /// at each tick differs sharply from the true per-tick delta, and
+    /// asserts the second tick's `RootMotionDelta` is the delta, not the
+    /// absolute sample.
+    #[test]
+    fn animation_stack_emits_per_tick_root_motion_delta_not_absolute_position() {
+        let bone_name = "NPC COM [COM ]";
+        let (mut world, root, _bone, _) = build_skeleton_and_clip(bone_name);
+        world.register::<RootMotionDelta>();
+        world.register::<AnimationStack>();
+        let bone_sym = world.resource::<StringPool>().get(bone_name).unwrap();
+
+        // x: 10 → 40 (30/s), z: -20 → 60 (80/s). Chosen so the absolute
+        // horizontal position at t=0.5 (25, 20) and t=1.0 (40, 60) both
+        // differ sharply from the true per-tick delta (15, 40) — the old
+        // bug (writing the absolute position) and the fix (writing the
+        // delta) are unambiguously distinguishable at either tick.
+        let channel = TransformChannel {
+            translation_keys: vec![
+                TranslationKey {
+                    time: 0.0,
+                    value: Vec3::new(10.0, 50.0, -20.0),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
+                    tbc: None,
+                },
+                TranslationKey {
+                    time: 1.0,
+                    value: Vec3::new(40.0, 50.0, 60.0),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
+                    tbc: None,
+                },
+            ],
+            translation_type: KeyType::Linear,
+            rotation_keys: Vec::new(),
+            rotation_type: KeyType::Linear,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        let mut channels = FxHashMap::default();
+        channels.insert(bone_sym, channel);
+        let handle = world
+            .resource_mut::<AnimationClipRegistry>()
+            .add(AnimationClip {
+                name: "stack accum root".into(),
+                duration: 1.0,
+                cycle_type: CycleType::Clamp,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: Some(bone_sym),
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            });
+
+        let mut stack = AnimationStack::new();
+        stack.root_entity = Some(root);
+        stack.play(handle, 0.0);
+        world.insert(root, stack);
+        world.insert(root, RootMotionDelta(Vec3::ZERO));
+
+        animation_system(&world, 0.5); // local_time 0.0 -> 0.5
+        animation_system(&world, 0.5); // local_time 0.5 -> 1.0 (clamped)
+
+        let delta = world.get::<RootMotionDelta>(root).unwrap().0;
+        let expected = Vec3::new(15.0, 0.0, 40.0);
+        assert!(
+            (delta - expected).length() < 1e-3,
+            "second tick must emit only the displacement crossed since the \
+             previous tick, not the raw absolute sampled position — \
+             expected {expected:?}, got {delta:?}"
         );
     }
 

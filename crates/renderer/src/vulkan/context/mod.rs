@@ -891,6 +891,9 @@ pub struct SkyParams {
     pub dalc_cube: Option<SkyDalcCube>,
     /// Current weather effects and cloud tint state.
     pub weather: SkyWeatherParams,
+    /// Monotonic session time used to animate rain, snow, lightning, and
+    /// aurora without coupling the renderer to GameTimeRes.
+    pub weather_time_seconds: f32,
 }
 
 /// Depth-of-field parameters for the current frame.
@@ -977,6 +980,7 @@ impl Default for SkyParams {
             // overwrite from per-TOD-lerped WTHR.DALC.
             dalc_cube: None,
             weather: SkyWeatherParams::default(),
+            weather_time_seconds: 0.0,
         }
     }
 }

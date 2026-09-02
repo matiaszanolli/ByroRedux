@@ -827,7 +827,11 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // matches the Bethesda-content perceptual range of "completely
     // still" to "visibly streaking storm clouds." Replace with a
     // bench-captured calibration when one becomes available.
-    let cloud_scroll_rate = cloud_scroll_rate_from_wind(wd.wind_speed);
+    let cloud_scroll_rate = if transition_t > 0.0 {
+        weather.wind_speed * 255.0 * WIND_TO_SCROLL_RATE
+    } else {
+        cloud_scroll_rate_from_wind(wd.wind_speed)
+    };
     let weather_wind_speed = if transition_t > 0.0 {
         world
             .try_resource::<WeatherTransitionRes>()
