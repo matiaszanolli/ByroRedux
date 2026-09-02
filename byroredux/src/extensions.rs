@@ -34,28 +34,30 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_mod_by_name, adapt_papyrus_game_get_mod_count,
     adapt_papyrus_game_get_mod_dependency_count, adapt_papyrus_game_get_mod_name,
     adapt_papyrus_game_get_nth_light_mod_dependency, adapt_papyrus_game_is_plugin_installed,
-    adapt_storage_util_global_list, adapt_storage_util_global_prefix,
-    adapt_storage_util_global_scalar, parse_storage_util_list_route,
-    parse_storage_util_prefix_route, StorageUtilListCall, StorageUtilListKind,
-    StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind,
-    StorageUtilPrefixOperation, StorageUtilScalarCall, StorageUtilScalarResult,
-    PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
-    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
-    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
-    PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
-    PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    adapt_storage_util_global_form_filter, adapt_storage_util_global_list,
+    adapt_storage_util_global_prefix, adapt_storage_util_global_scalar,
+    parse_storage_util_list_route, parse_storage_util_prefix_route, StorageUtilListCall,
+    StorageUtilListKind, StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue,
+    StorageUtilPrefixKind, StorageUtilPrefixOperation, StorageUtilScalarCall,
+    StorageUtilScalarResult, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
+    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
+    PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE,
+    PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -1285,6 +1287,106 @@ impl ExtensionHost {
         Ok(ScriptValue::Integer(i64::from(adaptation.result)))
     }
 
+    fn invoke_storage_util_form_filter(
+        &mut self,
+        principal: Option<&PrincipalId>,
+        qualified_name: &str,
+        operation: StorageUtilListOperation,
+        arguments: &[ScriptValue],
+    ) -> Result<ScriptValue, ExtensionHostError> {
+        let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
+            function: qualified_name.to_owned(),
+            reason,
+        };
+        let principal = principal.ok_or_else(|| {
+            unavailable("StorageUtil call has no authenticated legacy-script principal".to_owned())
+        })?;
+        let integer = |value: i64| {
+            i32::try_from(value).map_err(|_| {
+                unavailable("StorageUtil form type ID is outside the Papyrus i32 range".to_owned())
+            })
+        };
+        let (key_name, form_type_ids, return_matching) = match (operation, arguments) {
+            (
+                StorageUtilListOperation::FilterByType,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(form_type)],
+            ) => (key, vec![integer(*form_type)?], true),
+            (
+                StorageUtilListOperation::FilterByType,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::Integer(form_type), ScriptValue::Boolean(return_matching)],
+            ) => (key, vec![integer(*form_type)?], *return_matching),
+            (
+                StorageUtilListOperation::FilterByTypes,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::IntegerArray(form_types)],
+            ) => (
+                key,
+                form_types
+                    .iter()
+                    .copied()
+                    .map(integer)
+                    .collect::<Result<Vec<_>, _>>()?,
+                true,
+            ),
+            (
+                StorageUtilListOperation::FilterByTypes,
+                [ScriptValue::None, ScriptValue::String(key), ScriptValue::IntegerArray(form_types), ScriptValue::Boolean(return_matching)],
+            ) => (
+                key,
+                form_types
+                    .iter()
+                    .copied()
+                    .map(integer)
+                    .collect::<Result<Vec<_>, _>>()?,
+                *return_matching,
+            ),
+            _ => {
+                return Err(unavailable(
+                    "StorageUtil form filter requires ObjKey=None and exact typed arguments"
+                        .to_owned(),
+                ));
+            }
+        };
+        let probe = adapt_storage_util_global_form_filter(
+            key_name,
+            &form_type_ids,
+            return_matching,
+            None,
+            &self.content_catalog,
+        )
+        .map_err(|error| unavailable(error.to_string()))?;
+        let current = self
+            .principal_storage
+            .values(principal)
+            .and_then(|values| values.get(&probe.key))
+            .cloned();
+        let adaptation = adapt_storage_util_global_form_filter(
+            key_name,
+            &form_type_ids,
+            return_matching,
+            current.as_ref(),
+            &self.content_catalog,
+        )
+        .map_err(|error| unavailable(error.to_string()))?;
+        if !adaptation.commands.is_empty() {
+            self.principal_storage
+                .apply_batch(principal, &adaptation.commands)?;
+        }
+        let StorageUtilListResult::Array(values) = adaptation.result else {
+            unreachable!("form filter always returns a typed form array")
+        };
+        Ok(ScriptValue::FormArray(
+            values
+                .into_iter()
+                .map(|value| {
+                    let StorageUtilListValue::Form(value) = value else {
+                        unreachable!("form filter result is homogeneous")
+                    };
+                    value
+                })
+                .collect(),
+        ))
+    }
+
     fn invoke_storage_util_list(
         &mut self,
         principal: Option<&PrincipalId>,
@@ -1293,6 +1395,17 @@ impl ExtensionHost {
         operation: StorageUtilListOperation,
         arguments: &[ScriptValue],
     ) -> Result<ScriptValue, ExtensionHostError> {
+        if matches!(
+            operation,
+            StorageUtilListOperation::FilterByType | StorageUtilListOperation::FilterByTypes
+        ) {
+            return self.invoke_storage_util_form_filter(
+                principal,
+                qualified_name,
+                operation,
+                arguments,
+            );
+        }
         let unavailable = |reason: String| ExtensionHostError::ScriptFunctionUnavailable {
             function: qualified_name.to_owned(),
             reason,
@@ -7473,6 +7586,71 @@ mod tests {
             ),
             Err(ExtensionHostError::ScriptFunctionUnavailable { .. })
         ));
+    }
+
+    #[test]
+    fn storage_util_form_filter_uses_live_content_metadata() {
+        let principal = PrincipalId::new("legacy.scripts.form-filter").unwrap();
+        let source = 1_u128.to_be_bytes();
+        let weapon = FormRef::new(source, 0x1234);
+        let armor = FormRef::new(source, 0x1235);
+        let catalog = ContentCatalog::new_with_metadata(
+            vec![byroredux_sdk::content::PluginInfo::new(
+                "Skyrim.esm",
+                source,
+                byroredux_sdk::content::PluginKind::Regular,
+            )
+            .unwrap()],
+            vec![vec![]],
+            vec![vec![(0x1234, *b"WEAP"), (0x1235, *b"ARMO")]],
+        )
+        .unwrap();
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.register_legacy_script_principal(principal.clone())
+            .unwrap();
+        host.set_content_catalog(Arc::new(catalog));
+        let add_route = "byro.storage.compat.storage-util.list-form-add";
+        for form in [Some(weapon), None, Some(armor)] {
+            let value = form.map_or(ScriptValue::None, ScriptValue::Form);
+            host.invoke_owned_papyrus_provider(
+                Some(&principal),
+                add_route,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("Owners".to_owned()),
+                    value,
+                ],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&principal),
+                PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("owners".to_owned()),
+                    ScriptValue::IntegerArray(vec![41]),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::FormArray(vec![Some(weapon)])
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                Some(&principal),
+                PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE,
+                &[
+                    ScriptValue::None,
+                    ScriptValue::String("owners".to_owned()),
+                    ScriptValue::Integer(41),
+                    ScriptValue::Boolean(false),
+                ],
+            )
+            .unwrap(),
+            ScriptValue::FormArray(vec![Some(armor)])
+        );
     }
 
     #[test]

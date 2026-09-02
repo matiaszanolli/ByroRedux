@@ -383,7 +383,9 @@ fn storage_util_arity(route: &str) -> Option<(usize, usize)> {
             | StorageUtilListOperation::Remove
             | StorageUtilListOperation::CountValue
             | StorageUtilListOperation::Resize
-            | StorageUtilListOperation::Slice => (3, 4),
+            | StorageUtilListOperation::Slice
+            | StorageUtilListOperation::FilterByType
+            | StorageUtilListOperation::FilterByTypes => (3, 4),
             StorageUtilListOperation::Get
             | StorageUtilListOperation::RemoveAt
             | StorageUtilListOperation::Find
@@ -3626,6 +3628,29 @@ mod tests {
         assert_eq!(
             list_array.result.unwrap().value_type,
             ScriptValueType::IntegerArray
+        );
+        let list_filter = lower_provider_call(
+            &expression("StorageUtil.FormListFilterByType(None, \"Owners\", 41, false)"),
+            &catalog,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            list_filter.route.qualified_name(),
+            byroredux_sdk::compatibility::PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE
+        );
+        assert_eq!(
+            list_filter.arguments,
+            [
+                ScriptValue::None,
+                ScriptValue::String("Owners".to_owned()),
+                ScriptValue::Integer(41),
+                ScriptValue::Boolean(false),
+            ]
+        );
+        assert_eq!(
+            list_filter.result.unwrap().value_type,
+            ScriptValueType::FormArray
         );
         let prefix_route = catalog.resolve("StorageUtil", "CountAllPrefix").unwrap();
         assert_eq!(

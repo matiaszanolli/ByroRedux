@@ -1415,6 +1415,16 @@ start indices leave the destination unchanged, out-of-range source elements
 leave the remaining destination defaults intact, and the operation never
 mutates the source list.
 
+Checkpoint: `feat(sdk): integrate StorageUtil form-type filters`.
+
+The form-filter pack adds `FormListFilterByType` and `FormListFilterByTypes`
+as engine-owned aliases. Filters resolve each stored `FormRef` through the
+immutable content catalog and compare its parser-independent record signature
+to the stable Creation `FormType` IDs; matching and inverse modes preserve list
+order and return a bounded `Form[]`. Null entries, unresolved forms, unknown
+record signatures, and non-global object keys are omitted rather than guessed,
+so this compatibility surface remains portable across supported games.
+
 ### 14.4 Exit gate
 
 - The same fixture executes from source and byte-level PEX and produces the

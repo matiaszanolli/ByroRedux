@@ -12,14 +12,14 @@ use crate::identity::{
 };
 use crate::script_function::{
     PapyrusFunctionAlias, ScriptFunctionDeclaration, ScriptParameterDeclaration,
-    ScriptResultDeclaration, ScriptValueType,
+    ScriptResultDeclaration, ScriptValueType, MAX_SCRIPT_ARRAY_ELEMENTS,
 };
 use crate::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, LEGACY_CONTAINERS_SERVICE,
     PRINCIPAL_STORAGE_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Extender ecosystem that introduced a recognized Papyrus provider/call.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -235,6 +235,10 @@ pub const PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE: &str =
 pub const PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.unset-form-value";
 pub const PAPYRUS_STORAGE_UTIL_LIST_ROUTE_PREFIX: &str = "byro.storage.compat.storage-util.list-";
+pub const PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE: &str =
+    "byro.storage.compat.storage-util.list-form-filter-by-type";
+pub const PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE: &str =
+    "byro.storage.compat.storage-util.list-form-filter-by-types";
 pub const PAPYRUS_STORAGE_UTIL_PREFIX_ROUTE_PREFIX: &str =
     "byro.storage.compat.storage-util.prefix-";
 pub const PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX: &str = "byro.legacy-containers.compat.";
@@ -1181,6 +1185,32 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
         ),
     ];
     declarations.extend(papyrus_storage_util_list_declarations(&object_and_key));
+    declarations.extend([
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPE_ROUTE,
+            "storage-util-form-list-filter-by-type",
+            "FormListFilterByType",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("form-type", ScriptValueType::Integer, true),
+                ("return-matching", ScriptValueType::Boolean, true),
+            ],
+            ScriptValueType::FormArray,
+        ),
+        papyrus_storage_util_declaration(
+            PAPYRUS_STORAGE_UTIL_FORM_FILTER_BY_TYPES_ROUTE,
+            "storage-util-form-list-filter-by-types",
+            "FormListFilterByTypes",
+            &[
+                object_and_key[0],
+                object_and_key[1],
+                ("form-types", ScriptValueType::IntegerArray, true),
+                ("return-matching", ScriptValueType::Boolean, true),
+            ],
+            ScriptValueType::FormArray,
+        ),
+    ]);
     declarations.extend(papyrus_storage_util_prefix_declarations());
     declarations
 }
@@ -1613,6 +1643,8 @@ pub enum StorageUtilListOperation {
     Resize,
     Copy,
     Slice,
+    FilterByType,
+    FilterByTypes,
     ToArray,
     Find,
     Has,
@@ -1987,6 +2019,16 @@ fn storage_util_list_source_alias(function: &str) -> Option<SourceAlias> {
         ),
         ("FormListFind", "storage.array-get", "signed"),
         ("FormListHas", "storage.array-get", "bool"),
+        (
+            "FormListFilterByType",
+            "storage.array-get+form-type-filter",
+            "form-array",
+        ),
+        (
+            "FormListFilterByTypes",
+            "storage.array-get+form-type-filter",
+            "form-array",
+        ),
     ];
     aliases
         .into_iter()
@@ -2369,6 +2411,124 @@ fn encode_storage_util_form(value: FormRef) -> Vec<u8> {
     encoded
 }
 
+/// Resolve the stable Creation Engine `FormType` value for one cataloged form.
+///
+/// The catalog stores parser-independent record signatures, so this mapping
+/// is deliberately centralized at the SDK boundary. Unknown or game-specific
+/// signatures return `None` and are omitted from typed compatibility filters
+/// instead of being guessed from a transient ECS object.
+pub fn storage_util_form_type_id(catalog: &ContentCatalog, form: FormRef) -> Option<i32> {
+    let record_type = catalog.record(form)?.record_type();
+    Some(match &record_type {
+        b"TES4" => 1,
+        b"GMST" => 3,
+        b"KYWD" => 4,
+        b"LCRT" => 5,
+        b"AACT" => 6,
+        b"TXST" => 7,
+        b"GLOB" => 9,
+        b"CLAS" => 10,
+        b"FACT" => 11,
+        b"HDPT" => 12,
+        b"EYES" => 13,
+        b"RACE" => 14,
+        b"SOUN" => 15,
+        b"ASPC" => 16,
+        b"SKIL" => 17,
+        b"MGEF" => 18,
+        b"SCPT" => 19,
+        b"LTEX" => 20,
+        b"ENCH" => 21,
+        b"SPEL" => 22,
+        b"SCRL" => 23,
+        b"ACTI" => 24,
+        b"TACT" => 25,
+        b"ARMO" => 26,
+        b"BOOK" => 27,
+        b"CONT" => 28,
+        b"DOOR" => 29,
+        b"INGR" => 30,
+        b"LIGH" => 31,
+        b"MISC" => 32,
+        b"APPA" => 33,
+        b"STAT" => 34,
+        b"SCOL" => 35,
+        b"MSTT" => 36,
+        b"GRAS" => 37,
+        b"TREE" => 38,
+        b"FLOR" => 39,
+        b"FURN" => 40,
+        b"WEAP" => 41,
+        b"AMMO" => 42,
+        b"NPC_" | b"CREA" => 43,
+        b"LVLN" => 44,
+        b"KEYM" => 45,
+        b"ALCH" => 46,
+        b"IDLM" => 47,
+        b"NOTE" => 48,
+        b"COBJ" => 49,
+        b"PROJ" => 50,
+        b"HAZD" => 51,
+        b"SLGM" => 52,
+        b"LVLI" => 53,
+        b"WTHR" => 54,
+        b"CLMT" => 55,
+        b"SPGD" => 56,
+        b"RFCT" => 57,
+        b"REGN" => 58,
+        b"NAVI" => 59,
+        b"CELL" => 60,
+        b"REFR" => 61,
+        b"ACHR" => 62,
+        b"PMIS" => 63,
+        b"PARW" => 64,
+        b"PGRE" => 65,
+        b"PBEA" => 66,
+        b"PFLA" => 67,
+        b"PCON" => 68,
+        b"PBAR" => 69,
+        b"PHZD" => 70,
+        b"WRLD" => 71,
+        b"LAND" => 72,
+        b"NAVM" => 73,
+        b"TLOD" => 74,
+        b"DIAL" => 75,
+        b"INFO" => 76,
+        b"QUST" => 77,
+        b"IDLE" => 78,
+        b"PACK" => 79,
+        b"CSTY" => 80,
+        b"LSCR" => 81,
+        b"LVSP" => 82,
+        b"ANIO" => 83,
+        b"WATR" => 84,
+        b"EFSH" => 85,
+        b"TOFT" => 86,
+        b"EXPL" => 87,
+        b"DEBR" => 88,
+        b"IMGS" => 89,
+        b"IMAD" => 90,
+        b"FLST" => 91,
+        b"PERK" => 92,
+        b"BPTD" => 93,
+        b"ADDN" => 94,
+        b"AVIF" => 95,
+        b"VTYP" => 98,
+        b"MATT" => 99,
+        b"IPCT" => 100,
+        b"IPDS" => 101,
+        b"ARMA" => 102,
+        b"ECZN" => 103,
+        b"LCTN" => 104,
+        b"MESG" => 105,
+        b"LGTM" => 108,
+        b"MUSC" => 109,
+        b"FSTP" => 110,
+        b"FSTS" => 111,
+        _ => return None,
+    })
+}
+
 fn checked_int(
     current: Option<&PrincipalStorageValue>,
 ) -> Result<Option<i32>, StorageUtilAdapterError> {
@@ -2463,6 +2623,8 @@ pub fn parse_storage_util_list_route(
         "resize" => StorageUtilListOperation::Resize,
         "copy" => StorageUtilListOperation::Copy,
         "slice" => StorageUtilListOperation::Slice,
+        "filter-by-type" => StorageUtilListOperation::FilterByType,
+        "filter-by-types" => StorageUtilListOperation::FilterByTypes,
         "to-array" => StorageUtilListOperation::ToArray,
         "find" => StorageUtilListOperation::Find,
         "has" => StorageUtilListOperation::Has,
@@ -2935,6 +3097,43 @@ pub fn adapt_storage_util_global_list(
         key,
         result,
         commands,
+    })
+}
+
+/// Filter a principal-private Form list by the portable Creation Engine form
+/// type IDs used by `FormType.psc`. Unknown record metadata is omitted rather
+/// than guessed, for both matching and inverse filters.
+pub fn adapt_storage_util_global_form_filter(
+    key_name: &str,
+    form_type_ids: &[i32],
+    return_matching: bool,
+    current: Option<&PrincipalStorageValue>,
+    catalog: &ContentCatalog,
+) -> Result<StorageUtilListAdaptation, StorageUtilAdapterError> {
+    if form_type_ids.len() > MAX_SCRIPT_ARRAY_ELEMENTS {
+        return Err(StorageUtilAdapterError::IntegerOutOfRange);
+    }
+    let key = StorageKey::new(format!(
+        "storageutil.list.form:{}",
+        key_name.to_ascii_lowercase()
+    ))?;
+    let values = decode_storage_util_list(StorageUtilListKind::Form, current)?;
+    let requested = form_type_ids.iter().copied().collect::<BTreeSet<_>>();
+    let filtered = values
+        .into_iter()
+        .filter_map(|value| {
+            let StorageUtilListValue::Form(Some(form)) = value else {
+                return None;
+            };
+            let form_type = storage_util_form_type_id(catalog, form)?;
+            (requested.contains(&form_type) == return_matching)
+                .then_some(StorageUtilListValue::Form(Some(form)))
+        })
+        .collect();
+    Ok(StorageUtilListAdaptation {
+        key,
+        result: StorageUtilListResult::Array(filtered),
+        commands: Vec::new(),
     })
 }
 
@@ -3588,13 +3787,19 @@ mod tests {
             "none"
         );
         assert_eq!(
+            source_alias("StorageUtil", "FormListFilterByTypes")
+                .unwrap()
+                .operation,
+            "storage.array-get+form-type-filter"
+        );
+        assert_eq!(
             classify_static_call("StorageUtil", "GetFloatValue")
                 .unwrap()
                 .disposition,
             CompatibilityDisposition::Native
         );
         let declarations = papyrus_storage_util_declarations();
-        assert_eq!(declarations.len(), 122);
+        assert_eq!(declarations.len(), 124);
         assert!(declarations
             .iter()
             .all(|function| function.declaration.validate().is_ok()));
@@ -4077,6 +4282,43 @@ mod tests {
             ])
         );
         assert!(negative.commands.is_empty());
+    }
+
+    #[test]
+    fn storage_util_form_filter_uses_cataloged_record_types_and_omits_unknowns() {
+        let source = 1_u128.to_be_bytes();
+        let weapon = FormRef::new(source, 0x1234);
+        let armor = FormRef::new(source, 0x1235);
+        let catalog = ContentCatalog::new_with_metadata(
+            vec![PluginInfo::new("Skyrim.esm", source, PluginKind::Regular).unwrap()],
+            vec![vec![]],
+            vec![vec![(0x1234, *b"WEAP"), (0x1235, *b"ARMO")]],
+        )
+        .unwrap();
+        assert_eq!(storage_util_form_type_id(&catalog, weapon), Some(41));
+        assert_eq!(storage_util_form_type_id(&catalog, armor), Some(26));
+        let current = PrincipalStorageValue::Array(vec![
+            ExtensionValue::Bytes(encode_storage_util_form(weapon)),
+            ExtensionValue::Bytes(Vec::new()),
+            ExtensionValue::Bytes(encode_storage_util_form(armor)),
+        ]);
+
+        let matching =
+            adapt_storage_util_global_form_filter("owners", &[41], true, Some(&current), &catalog)
+                .unwrap();
+        assert_eq!(
+            matching.result,
+            StorageUtilListResult::Array(vec![StorageUtilListValue::Form(Some(weapon))])
+        );
+        assert!(matching.commands.is_empty());
+
+        let inverse =
+            adapt_storage_util_global_form_filter("owners", &[41], false, Some(&current), &catalog)
+                .unwrap();
+        assert_eq!(
+            inverse.result,
+            StorageUtilListResult::Array(vec![StorageUtilListValue::Form(Some(armor))])
+        );
     }
 
     #[test]
