@@ -211,9 +211,9 @@ pub struct WaterMaterial {
     pub night_fog_near: f32,
     pub night_fog_far: f32,
     pub night_reflection_tint: [f32; 3],
-    /// Normal-map index in the bindless texture array. Both wave
-    /// layers sample this; the shader applies a different scale +
-    /// scroll vector to each. `u32::MAX` = solid-colour water.
+    /// Canonical normal-map index in the bindless texture array. The render
+    /// path uses it for any missing authored wave layers; `u32::MAX` means
+    /// procedural fallback.
     pub normal_map_index: u32,
     /// Authored BGSM flow-map index for mesh-bound water. The map stores a
     /// tangent-plane direction in RG; `u32::MAX` means no flow map. Cell WATR
@@ -223,7 +223,7 @@ pub struct WaterMaterial {
     /// normal layer contributes; `true` is the compatibility default.
     pub blend_normals: bool,
     /// Bindless indices for Skyrim+/FO4 authored noise layers NAM2–4.
-    /// `u32::MAX` means procedural fallback; the loader fills missing
+    /// `u32::MAX` means procedural fallback; the render path fills missing
     /// layers from `normal_map_index` when a legacy record has no NAM paths.
     pub noise_map_indices: [u32; 3],
     /// World-space scroll vectors for the three wave layers (xy = m/s).

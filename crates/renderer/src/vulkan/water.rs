@@ -1107,6 +1107,50 @@ mod tests {
     }
 
     #[test]
+    fn water_shader_preserves_a_valid_bitangent_when_tangent_handedness_is_missing() {
+        let vert = include_str!("../../shaders/water.vert");
+        let frag = include_str!("../../shaders/water.frag");
+        assert!(
+            vert.contains("vWorldBitangentSign = abs(inTangent.w) > 0.5")
+                && frag.contains("float bitangentSign = abs(vWorldBitangentSign) > 0.5")
+                && frag.contains("normalize(bitangentRaw) * bitangentSign"),
+            "zero/invalid tangent handedness must retain a usable bitangent"
+        );
+    }
+
+    #[test]
+    fn water_shader_uses_ordered_smoothstep_for_crest_foam() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("return 1.0 - smoothstep(0.78, 0.92, n);")
+                && !src.contains("smoothstep(0.92, 0.78, n)"),
+            "crest foam must invert an ordered smoothstep; reversed edges are undefined"
+        );
+    }
+
+    #[test]
+    fn water_shader_procedural_normals_use_consistent_gradient_weights() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.38")
+                && src.contains("float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.38")
+                && src.contains("The old 0.45/0.30/0.15 prefix"),
+            "procedural water gradients must differentiate the same weighted height field"
+        );
+    }
+
+    #[test]
+    fn water_shader_constrains_direct_sun_glint_to_a_dielectric_lobe() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("float sunNdotL = max(dot(Nperturbed, sunDir), 0.0);")
+                && src.contains("* (sunSpecularPower + 2.0) * 0.15915494")
+                && src.contains("float sunSpecular = sunLobe * fresnel"),
+            "water sun glint must be front-face and Fresnel constrained"
+        );
+    }
+
+    #[test]
     fn water_caustics_keep_the_top_side_wave_normal_below_the_surface() {
         let src = include_str!("../../shaders/water.frag");
         let normal_decl = src

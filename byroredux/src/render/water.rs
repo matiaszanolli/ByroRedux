@@ -21,7 +21,7 @@
 //! This function must run AFTER the draw_commands sort and BEFORE
 //! the renderer consumes them.
 
-use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
+use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterPlane};
 use byroredux_core::ecs::{EntityId, Resource, TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
@@ -46,6 +46,26 @@ fn lerp_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
     ]
+}
+
+/// Resolve the normal layers consumed by `water.frag`.
+///
+/// Cell WATR surfaces fill the three noise slots while they resolve their
+/// authored NAM2/NAM3/NAM4 paths. Mesh-bound water follows the older
+/// `WaterShaderProperty` path and only has `normal_map_index`, so its noise
+/// slots retain the procedural `u32::MAX` sentinel. Use the canonical normal
+/// map as the fallback for those missing layers; otherwise mesh water looks
+/// procedural even though its authored normal texture was successfully
+/// imported and registered.
+#[inline]
+fn effective_noise_indices(material: &WaterMaterial) -> [u32; 3] {
+    material.noise_map_indices.map(|index| {
+        if index == u32::MAX {
+            material.normal_map_index
+        } else {
+            index
+        }
+    })
 }
 
 /// Pack three non-negative legacy rain controls into the reserved fourth
@@ -215,6 +235,7 @@ pub(super) fn reemit_water_planes(
         let authored_scroll_a = rotate_scroll(mat.scroll_a, flowmap_scale);
         let authored_scroll_b = rotate_scroll(mat.scroll_b, flowmap_scale);
         let authored_scroll_c = rotate_scroll(mat.scroll_c, flowmap_scale);
+        let noise_indices = effective_noise_indices(&mat);
         let params = GpuWaterParams {
             timing: [
                 time_secs,
@@ -266,9 +287,9 @@ pub(super) fn reemit_water_planes(
                 mat.reflectivity,
             ],
             noise_indices: [
-                mat.noise_map_indices[0],
-                mat.noise_map_indices[1],
-                mat.noise_map_indices[2],
+                noise_indices[0],
+                noise_indices[1],
+                noise_indices[2],
                 mat.opacity.to_bits(),
             ],
             detail: [

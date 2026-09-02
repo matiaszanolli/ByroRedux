@@ -502,7 +502,7 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
             let mut c = cmd((i % 7) == 0, (i % 13) == 0, (i % 5) == 0);
             // Vary the fields the sort key actually reads so the
             // comparator does real work rather than constant-folding.
-            c.mesh_handle = (i as u32 * 2654435761) & 0xFFFF;
+            c.mesh_handle = (i as u32).wrapping_mul(2654435761) & 0xFFFF;
             c.entity_id = i as u32;
             c.sort_depth = (i as u32 * 1664525).wrapping_add(1013904223);
             c.src_blend = ((i % 4) as u8) + 5;
@@ -599,7 +599,7 @@ fn manual_bench_draw_sort_decorate_sort_undecorate() {
         let mut v = Vec::with_capacity(n);
         for i in 0..n {
             let mut c = cmd((i % 7) == 0, (i % 13) == 0, (i % 5) == 0);
-            c.mesh_handle = (i as u32 * 2654435761) & 0xFFFF;
+            c.mesh_handle = (i as u32).wrapping_mul(2654435761) & 0xFFFF;
             c.entity_id = i as u32;
             c.sort_depth = (i as u32 * 1664525).wrapping_add(1013904223);
             c.src_blend = ((i % 4) as u8) + 5;

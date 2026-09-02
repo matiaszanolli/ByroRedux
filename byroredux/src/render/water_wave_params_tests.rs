@@ -181,6 +181,62 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
 }
 
 #[test]
+fn mesh_water_normal_map_fills_missing_noise_layers() {
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .expect("water plane")
+        .iter()
+        .next()
+        .expect("one water plane")
+        .0;
+    let mut planes = world.query_mut::<WaterPlane>().expect("water storage");
+    let plane = planes.get_mut(water).expect("water plane");
+    plane.material.normal_map_index = 17;
+    plane.material.noise_map_indices = [u32::MAX; 3];
+    drop(planes);
+
+    let params = &run_build(&world)[0].params;
+    assert_eq!(params.noise_indices[..3], [17, 17, 17]);
+}
+
+#[test]
+fn mesh_water_keeps_authored_noise_layers_over_normal_map_fallback() {
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .expect("water plane")
+        .iter()
+        .next()
+        .expect("one water plane")
+        .0;
+    let mut planes = world.query_mut::<WaterPlane>().expect("water storage");
+    let plane = planes.get_mut(water).expect("water plane");
+    plane.material.normal_map_index = 17;
+    plane.material.noise_map_indices = [23, u32::MAX, 29];
+    drop(planes);
+
+    let params = &run_build(&world)[0].params;
+    assert_eq!(params.noise_indices[..3], [23, 17, 29]);
+}
+
+#[test]
 fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     // `WaterMaterial::default()` (no XCWT / no WATR) must keep resolving
     // to the sentinel `water.frag` treats as "no chop change" — see

@@ -303,9 +303,28 @@ pub(super) fn resolve_mesh_paths(
                 mesh.material.textures.back_lighting,
             );
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
-            // index, so it does not go through the slot table.
-            (textures.wrinkle, sources.wrinkle) =
-                resolve_effective(ov.and_then(|o| o.wrinkle), mesh.material.textures.wrinkle);
+            // index, so `merge_from_texture_set`'s direct `o.wrinkle` fill
+            // does not go through the slot table — support.rs already made
+            // the game-level TX02 routing decision, unconditionally correct
+            // regardless of shader type.
+            //
+            // #3187 — an XTXR slot-5 swap is a SECOND, ambiguous source:
+            // `apply_slot_swap` cannot know at ESM-parse time whether the
+            // TXST it swapped in stored TX02's value under `env_mask` or
+            // `wrinkle` (game-dependent), so it always lands in the
+            // overlay's `env_mask` field. Route it through `pick` here,
+            // the same way the `EnvironmentMask` pick above does for its
+            // own reading of slot 5 — `slot_to_role` resolves the real
+            // per-shape role (`Wrinkle` only on the FO4 tint family today;
+            // `EnvironmentMask` everywhere else), so exactly one of the two
+            // picks can ever accept a given slot-5 swap.
+            (textures.wrinkle, sources.wrinkle) = resolve_effective(
+                ov.and_then(|o| {
+                    o.wrinkle
+                        .or_else(|| pick(5, o.env_mask, TextureRole::Wrinkle))
+                }),
+                mesh.material.textures.wrinkle,
+            );
             // #2594 — `lighting` / `flow` are BGSM-only roles with no
             // BSShaderTextureSet wire-slot analog either (same shape as
             // `wrinkle` above): a raw TXST/XTXR override can never
@@ -1424,6 +1443,73 @@ mod tests {
             Some(r"textures\fo4\surface_s.dds"),
             "FO4 slot 7 must route without the MSN flag (#2998)"
         );
+    }
+
+    /// #3187 — an XTXR slot-5 swap on an FO4 tint-family shape (FaceTint /
+    /// SkinTint / HairTint) must reach the wrinkle lane, not silently no-op.
+    /// `apply_slot_swap` always lands slot 5 in the overlay's `env_mask`
+    /// field (it has no shader-type context to know the role in advance);
+    /// `slot_to_role` is what actually decides FO4 tint-family slot 5 is
+    /// `Wrinkle`, not `EnvironmentMask`, and the `pick(5, o.env_mask,
+    /// TextureRole::Wrinkle)` this test exercises is what lets that
+    /// decision reach the resolved mesh.
+    #[test]
+    fn xtxr_fo4_tint_family_slot_five_reaches_wrinkle_not_environment_mask() {
+        let mut pool = StringPool::new();
+        let wrinkle = pool.intern(r"textures\fo4\headwrinkles_n.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Fallout4;
+        mesh.material.shader_type = 4; // bs_lighting::FACE_TINT — tint family
+        let overlay = RefrTextureOverlay {
+            env_mask: Some(wrinkle), // where apply_slot_swap always lands slot 5
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].textures.wrinkle.as_deref(),
+            Some(r"textures\fo4\headwrinkles_n.dds"),
+            "#3187: slot 5 on an FO4 tint-family shape must resolve to \
+             Wrinkle, the role slot_to_role actually assigns it"
+        );
+        assert!(
+            resolved[0].textures.environment_mask.is_none(),
+            "#3187: the same slot-5 value must NOT also bind as \
+             EnvironmentMask on a tint-family shape — exactly one pick \
+             may accept it"
+        );
+    }
+
+    /// Sibling of the test above on the OTHER side of the tint-family
+    /// gate: a non-tint FO4 shape's slot 5 is ordinary `EnvironmentMask`
+    /// (`slot_to_role`'s existing, unchanged behaviour), so the new
+    /// `Wrinkle` pick added under #3187 must NOT also claim it.
+    #[test]
+    fn xtxr_fo4_non_tint_slot_five_stays_environment_mask() {
+        let mut pool = StringPool::new();
+        let mask = pool.intern(r"textures\fo4\surface_m.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Fallout4;
+        // Default shader_type (0) is not in the tint family.
+        let overlay = RefrTextureOverlay {
+            env_mask: Some(mask),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].textures.environment_mask.as_deref(),
+            Some(r"textures\fo4\surface_m.dds"),
+            "#3187: a non-tint-family FO4 shape's slot 5 must still bind \
+             as EnvironmentMask — the new Wrinkle pick must not regress it"
+        );
+        assert!(resolved[0].textures.wrinkle.is_none());
     }
 
     #[test]

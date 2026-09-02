@@ -65,10 +65,10 @@ pub struct AfflictionBand {
 }
 
 /// A resolved (AVIF FormIDs, not EditorIDs) per-game threshold table for one
-/// affliction — Radiation, Poison, Disease, … each get their own. `bands`
-/// **must** be sorted ascending by `min_pool`; [`Self::band_for`] relies on
-/// it and does not sort defensively (the per-game builder controls the data,
-/// same trust boundary as [`super::derived::DerivedStatFormula`]).
+/// affliction — Radiation, Poison, Disease, … each get their own. Band order
+/// is not significant; [`Self::band_for`] selects the highest reached
+/// `min_pool`, so authored tables remain correct even when their entries are
+/// transcribed in a different order.
 ///
 /// Empty (`bands: vec![]`) until a game's thresholds are sourced — every
 /// shipped table is empty today (see module docs).
@@ -90,11 +90,17 @@ impl AfflictionTable {
         avs.get(self.pool_avif).map_or(0.0, |v| v.damage)
     }
 
-    /// Index of the active band for `pool_value` — the highest `min_pool`
-    /// reached — or `None` below every threshold (healthy, no penalty).
+    /// Index of the active band for `pool_value` — the reached band with the
+    /// highest `min_pool` — or `None` below every threshold (healthy, no
+    /// penalty). Band order is intentionally ignored.
     #[inline]
     pub fn band_for(&self, pool_value: f32) -> Option<usize> {
-        self.bands.iter().rposition(|b| pool_value >= b.min_pool)
+        self.bands
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| pool_value >= b.min_pool)
+            .max_by(|(_, a), (_, b)| a.min_pool.total_cmp(&b.min_pool))
+            .map(|(index, _)| index)
     }
 }
 
@@ -268,6 +274,15 @@ mod tests {
             Some(1),
             "no cap — stays in the top band"
         );
+    }
+
+    #[test]
+    fn band_for_ignores_band_order() {
+        let mut table = stand_in_radiation_table();
+        table.bands.reverse();
+
+        assert_eq!(table.band_for(250.0), Some(1));
+        assert_eq!(table.band_for(650.0), Some(0));
     }
 
     #[test]

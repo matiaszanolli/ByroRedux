@@ -175,20 +175,17 @@ impl App {
                 tlm.materials_interned = self.material_table.interned_count();
                 tlm.materials_overflow = self.material_table.overflow_count();
             }
-            // #1428 — catch any frame where we silently degraded over-cap
-            // materials to slot 0 before the Once-gated warn fires again.
-            // Only fires in debug; the `ctx.scratch` console command surfaces the
-            // per-frame count in all builds.
-            debug_assert_eq!(
-                self.material_table.overflow_count(),
-                0,
-                "MaterialTable overflow: {} intern call(s) fell back to the \
-                 neutral-default slot 0 (MAX_MATERIALS={cap}). Run \
-                 `ctx.scratch` to confirm; consider raising MAX_MATERIALS in \
-                 scene_buffer/constants.rs if this cell genuinely needs it.",
-                self.material_table.overflow_count(),
-                cap = byroredux_renderer::MAX_MATERIALS,
-            );
+            // #1428 added a `debug_assert_eq!` here to catch any frame that
+            // silently degraded over-cap materials to slot 0. #2795 removed
+            // it: exceeding `MAX_MATERIALS` is a supported, documented
+            // degrade — `MaterialTable::intern_by_hash` already fires a
+            // `Once`-gated `log::warn!` on first overflow and routes every
+            // over-cap material to the neutral-default slot 0 for the rest
+            // of the session (see `docs/engine/memory-budget.md`) — not a
+            // bug to crash a debug build over. `MAX_INSTANCES` made the same
+            // call for the same reason (#956/#992, also documented there).
+            // The `ctx.scratch` console command and `ScratchTelemetry` above
+            // still surface the per-frame overflow count in every build.
 
             let defer_geometry_rebuild = self
                 .streaming
@@ -724,6 +721,40 @@ mod skin_dispatch_ran_rollback_scope_tests {
             match_pos < ok_arm_pos,
             "sanity: the Ok(needs_recreate) arm must be part of the \
              draw_result match this test is reasoning about."
+        );
+    }
+}
+
+/// #2795 — `MAX_MATERIALS` overflow is a supported, documented degrade:
+/// `MaterialTable::intern_by_hash` fires a `Once`-gated `log::warn!` and
+/// routes every over-cap material to the neutral-default slot 0 for the
+/// rest of the session (`docs/engine/memory-budget.md`, matching the call
+/// `MAX_INSTANCES` already made under #956/#992). The `#1428`
+/// `debug_assert_eq!` here contradicted that by panicking a debug build on
+/// exactly this condition — reachable per this project's own recorded
+/// Skyrim radius-3 measurement (4000+ unique materials). A live `App` test
+/// is impractical here (same reason as the sibling test module above), so
+/// this pins the removal at the source level instead.
+#[cfg(test)]
+mod material_overflow_no_panic_tests {
+    #[test]
+    fn render_one_frame_does_not_assert_on_material_overflow_count() {
+        let src = include_str!("app_frame.rs");
+        assert!(
+            src.contains("tlm.materials_overflow = self.material_table.overflow_count();"),
+            "sanity: the per-frame overflow count must still be read into \
+             ScratchTelemetry — that's the supported, non-panicking way to \
+             surface it (via the `ctx.scratch` console command)"
+        );
+        assert!(
+            !src.contains(
+                "debug_assert_eq!(\n                self.material_table.overflow_count(),"
+            ),
+            "#2795: no code in this file may `debug_assert_eq!` on \
+             MaterialTable::overflow_count() being zero — a nonzero count \
+             is the documented, already-degraded (warn-once + slot 0) \
+             over-cap path, not a bug. Read the count for telemetry only, \
+             never assert it."
         );
     }
 }

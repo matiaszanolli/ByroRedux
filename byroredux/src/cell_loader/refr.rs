@@ -162,6 +162,20 @@ impl RefrTextureOverlay {
     /// from its different TXnn ordering into named roles, so this match is
     /// intentionally NIF-role order rather than raw ESM index order. Later
     /// XTXR for the same role overwrites.
+    ///
+    /// #3187 — slot 5 is the one exception to "one slot, one ESM field":
+    /// `esm::cell::support.rs`'s TX02 routing stores the value in
+    /// `ts.env_mask` on Skyrim but in `ts.wrinkle` on FO4/FO76/Starfield
+    /// (its own TX02→wrinkle-vs-env_mask branch, keyed on game, decided at
+    /// ESM-parse time — see that file). `apply_slot_swap` has no game
+    /// context here to pick the right field, but the two are mutually
+    /// exclusive on any single `TextureSet` (support.rs's branch always
+    /// populates exactly one), so trying both is safe. The *role* this
+    /// value actually plays (`EnvironmentMask` vs `Wrinkle`) is still
+    /// decided downstream, per-shape, by `slot_to_role` — see
+    /// `spawn/mesh_instance.rs`'s `pick(5, .., TextureRole::Wrinkle)`. This
+    /// function stays a dumb slot→field carrier; `slot_to_role` remains the
+    /// sole arbiter of what a slot means.
     fn apply_slot_swap(
         &mut self,
         ts: &esm::cell::TextureSet,
@@ -174,7 +188,7 @@ impl RefrTextureOverlay {
             2 => ts.glow.as_deref(),
             3 => ts.height.as_deref(),
             4 => ts.env.as_deref(),
-            5 => ts.env_mask.as_deref(),
+            5 => ts.env_mask.as_deref().or(ts.wrinkle.as_deref()),
             6 => ts.inner.as_deref(),
             7 => ts.specular.as_deref(),
             _ => return,

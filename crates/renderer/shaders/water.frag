@@ -281,15 +281,20 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         float h  = h0 * 0.38 + h1 * 0.26 + h2 * 0.16 + h3 * 0.10
                  + h4 * 0.06 + h5 * 0.04;
         const float eps = 1.0;
-        float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.45
-                 + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.30
-                 + valueNoise(uv * 16.0 * freqScale + vec2(eps, 0.0) + 41.0) * 0.15
+        // Use the same octave weights for the finite differences as for h.
+        // The old 0.45/0.30/0.15 prefix made hx/hy carry a different mean
+        // than h, which introduced a persistent diagonal tilt unrelated to
+        // the sampled noise and made the fallback water catch the sun from
+        // one preferred direction.
+        float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.38
+                 + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.26
+                 + valueNoise(uv * 16.0 * freqScale + vec2(eps, 0.0) + 41.0) * 0.16
                  + valueNoise(uv * 31.0 * freqScale + vec2(eps, 0.0) + 73.0) * 0.10
                  + valueNoise(uv * 52.0 * freqScale + vec2(eps, 0.0) + 113.0) * 0.06
                  + valueNoise(uv * 83.0 * freqScale + vec2(eps, 0.0) + 157.0) * 0.04;
-        float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.45
-                 + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.30
-                 + valueNoise(uv * 16.0 * freqScale + vec2(0.0, eps) + 41.0) * 0.15
+        float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.38
+                 + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.26
+                 + valueNoise(uv * 16.0 * freqScale + vec2(0.0, eps) + 41.0) * 0.16
                  + valueNoise(uv * 31.0 * freqScale + vec2(0.0, eps) + 73.0) * 0.10
                  + valueNoise(uv * 52.0 * freqScale + vec2(0.0, eps) + 113.0) * 0.06
                  + valueNoise(uv * 83.0 * freqScale + vec2(0.0, eps) + 157.0) * 0.04;
@@ -591,7 +596,8 @@ float foamCrest(vec3 perturbedNormal, vec3 surfaceNormal) {
     // window so flat regions don't foam and full-vertical sides
     // don't foam either.
     float n = dot(perturbedNormal, surfaceNormal);
-    return smoothstep(0.92, 0.78, n); // inverted: lower n = more foam
+    // Keep smoothstep's edges ordered; reversed edges are undefined in GLSL.
+    return 1.0 - smoothstep(0.78, 0.92, n);
 }
 
 float rainSurfaceNoise(vec2 uv, float time) {
@@ -656,8 +662,11 @@ void main() {
         T = normalize(cross(fallbackAxis, Nsurface));
     }
     vec3 bitangentRaw = cross(Nsurface, T);
+    float bitangentSign = abs(vWorldBitangentSign) > 0.5
+        ? (vWorldBitangentSign < 0.0 ? -1.0 : 1.0)
+        : 1.0;
     vec3 B = length(bitangentRaw) > 1.0e-5
-        ? normalize(bitangentRaw) * vWorldBitangentSign
+        ? normalize(bitangentRaw) * bitangentSign
         : vec3(0.0, 0.0, 1.0);
     mat3 TBN = mat3(T, B, Nsurface);
 
@@ -893,10 +902,14 @@ void main() {
     float reflDist; bool reflHit;
     // Reflection miss follows the same environment contract as the main
     // material path: exterior rays see the weather sky; interior rays see
-    // the cell ambient. Feeding an interior miss from `skyTint` is what
-    // turned cave water into a bright, nearly white slab anywhere the
-    // reflected ray escaped sparse TLAS geometry.
-    vec3 reflectionMiss = jitter.w > 0.5 ? skyTint.xyz : sceneFlags.yzw;
+    // the cell ambient. For exterior water, blend the ambient horizon into
+    // the zenith tint using the reflected ray's elevation. A single zenith
+    // colour made sparse exterior cells read as a flat blue mirror.
+    vec3 reflectionMiss = sceneFlags.yzw;
+    if (jitter.w > 0.5) {
+        float skyWeight = smoothstep(-0.2, 0.8, R.y);
+        reflectionMiss = mix(sceneFlags.yzw, skyTint.xyz, skyWeight);
+    }
     vec3 reflColor = traceWaterRay(
         offsetRayOriginForDirection(vWorldPos, N, R),
         R,
@@ -1038,10 +1051,22 @@ void main() {
     float NdotSunHalf = sunHalfLength > 1e-5
         ? max(dot(Nperturbed, sunHalfVector / sunHalfLength), 0.0)
         : 0.0;
-    float sunSpecular = pow(
-        NdotSunHalf,
-        clamp(push.effects.y > 0.0 ? push.effects.y : push.misc.w, 1.0, 2048.0)
-    ) * sunDirection.w * sunVisibility
+    float sunSpecularPower = clamp(
+        push.effects.y > 0.0 ? push.effects.y : push.misc.w,
+        1.0,
+        2048.0
+    );
+    // A water glint is a direct dielectric reflection, not an unbounded
+    // white additive term. The normalized Blinn-Phong lobe keeps its energy
+    // stable as the authored exponent changes; Fresnel and N·L suppress it
+    // at face-on incidence and on the back side of the surface. This avoids
+    // flat white sparkle on calm water while retaining a sharp grazing glint.
+    float sunNdotL = max(dot(Nperturbed, sunDir), 0.0);
+    float sunLobe = pow(NdotSunHalf, sunSpecularPower)
+        * (sunSpecularPower + 2.0) * 0.15915494
+        * sunNdotL;
+    float sunSpecular = sunLobe * fresnel
+        * sunDirection.w * sunVisibility
         * max(push.depth.w, 0.0)
         * max(push.effects.w, 0.0);
 

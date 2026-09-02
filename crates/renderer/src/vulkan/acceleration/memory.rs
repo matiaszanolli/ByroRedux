@@ -279,6 +279,21 @@ impl AccelerationManager {
     ///    allocation leaves the slot exactly as it was rather than
     ///    stranding a live TLAS with no scratch (#2915 / #2673).
     ///
+    ///    #2774 questioned whether this arm is reachable at all — the
+    ///    scratch buffer and the recorded peak are written together on
+    ///    the FIRST fresh build of a size (differing by only the
+    ///    alignment padding), which would keep `tlas_scratch_should_shrink`
+    ///    permanently false. They decouple across a **later**
+    ///    shrink-triggered rebuild (`tlas_shrink_pending`, set by
+    ///    [`Self::shrink_tlas_to_fit`]): the per-frame scratch buffer is
+    ///    grow-only ([`scratch_needs_growth`]), so a rebuild that now
+    ///    needs less scratch than the slot's still-oversized buffer
+    ///    lowers `tlas_scratch_peak_bytes` without touching the buffer
+    ///    itself — see `tlas_scratch_shrink_tests::
+    ///    fresh_build_records_peak_unconditionally_of_scratch_regrow` for
+    ///    the source-level pin of the write ordering that makes this
+    ///    possible. The arm is reachable; it is not dead code.
+    ///
     /// Returns `true` when the scratch was destroyed or reallocated —
     /// `false` when nothing changed, including when the case-2 realloc
     /// failed and the existing buffer was kept.

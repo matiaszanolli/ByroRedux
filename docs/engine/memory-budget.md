@@ -86,7 +86,10 @@ Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
 `overflow_count`, fires a one-shot `warn!` (a `Once` latch, so no per-overflow
 log spam), and over-cap entries share the neutral-default material slot 0 for
 the rest of the session. The per-frame overflow count is exposed through the
-`ctx.scratch` console command (#797 / SAFE-22 + #807).
+`ctx.scratch` console command (#797 / SAFE-22 + #807). It is also no longer a
+`debug_assert` — `app_frame.rs` carried one until #2795, which panicked a
+debug build on this exact supported degrade (reachable per the code's own
+recorded Skyrim radius-3 measurement, 4000+ unique materials).
 
 ---
 

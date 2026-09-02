@@ -476,10 +476,26 @@ fn scratch_serialize_barrier_dst_mask_includes_as_read() {
 }
 
 /// #2915 / REN-D1-03 — two latent defects in `shrink_tlas_scratch_to_fit`'s
-/// live-slot arm. Both need a live device plus a failing allocation under
-/// an arm that is currently unreachable (#2774), so — matching this file's
-/// convention for rollback/ordering invariants — they are pinned at the
-/// source level.
+/// live-slot arm. Both need a live device plus a failing allocation, so —
+/// matching this file's convention for rollback/ordering invariants — they
+/// are pinned at the source level.
+///
+/// #2774 re-examined whether the live-slot arm can even be reached: its
+/// audit premise was that `ensure_tlas_state` writes `current` (the
+/// scratch buffer's actual capacity) and `peak`
+/// (`tlas_scratch_peak_bytes`) together, so they can differ by at most
+/// `scratch_align - 1` and `tlas_scratch_should_shrink`'s `current > 2 ×
+/// peak` gate can never fire. That premise doesn't hold: `peak` is
+/// recorded unconditionally on every fresh TLAS build (see
+/// `fresh_build_records_peak_unconditionally_of_scratch_regrow` below),
+/// but the scratch buffer itself is grow-only (`scratch_needs_growth`,
+/// already pinned above) — a shrink-triggered rebuild
+/// (`tlas_shrink_pending`, set by `shrink_tlas_to_fit`) that needs less
+/// scratch than the slot's existing (oversized, from an earlier large
+/// build) buffer updates `peak` down without touching `current` at all.
+/// The next end-of-frame `shrink_tlas_scratch_to_fit` call then sees
+/// exactly the divergence the live-slot arm exists to reclaim. The arm is
+/// reachable; do not delete it as dead code.
 #[cfg(test)]
 mod tlas_scratch_shrink_tests {
     const MEMORY_RS: &str = include_str!("../memory.rs");
@@ -554,6 +570,39 @@ mod tlas_scratch_shrink_tests {
         assert!(
             TLAS_RS.contains("the slot is live but its \\\n                     scratch was retired without a replacement"),
             "the replacement must explain the invariant it guards (#2915)"
+        );
+    }
+
+    /// #2774 — the structural fact that makes `shrink_tlas_scratch_to_fit`'s
+    /// live-slot arm reachable: `ensure_tlas_state`'s fresh-build path
+    /// records `tlas_scratch_peak_bytes[frame_index]` OUTSIDE (after) the
+    /// `if let Some(scratch) = new_scratch { .. }` block that would
+    /// reallocate the scratch buffer — so a fresh build that reuses the
+    /// existing (larger) scratch buffer still lowers the recorded peak.
+    /// If a future refactor moved the peak write inside that block (so it
+    /// only updates alongside a real reallocation), `current` and `peak`
+    /// would go back to always matching and the live-slot arm this test
+    /// file spends two other tests pinning would become genuinely dead
+    /// code — this test exists so that change doesn't happen unnoticed.
+    #[test]
+    fn fresh_build_records_peak_unconditionally_of_scratch_regrow() {
+        let new_scratch_close = TLAS_RS
+            .find(
+                "                self.scratch_buffers[frame_index] = Some(scratch);\n            }",
+            )
+            .expect(
+                "ensure_tlas_state must still conditionally reallocate the scratch buffer \
+                 inside an `if let Some(scratch) = new_scratch` block",
+            );
+        let peak_write = TLAS_RS
+            .find("self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;")
+            .expect("ensure_tlas_state must still record the fresh build's scratch peak");
+        assert!(
+            new_scratch_close < peak_write,
+            "the peak write must come AFTER (outside) the conditional scratch \
+             reallocation, not be nested inside it — moving it inside would make \
+             peak track current 1:1 again, and the live-slot shrink arm in \
+             `shrink_tlas_scratch_to_fit` would become unreachable (#2774)"
         );
     }
 }

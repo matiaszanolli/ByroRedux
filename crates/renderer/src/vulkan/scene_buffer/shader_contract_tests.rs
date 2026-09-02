@@ -701,8 +701,11 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
         "WATR reflection colour must filter reflected radiance explicitly."
     );
     assert!(
-        frag.contains("jitter.w > 0.5 ? skyTint.xyz : sceneFlags.yzw"),
-        "water reflection misses must use sky only outdoors and cell ambient indoors."
+        frag.contains("vec3 reflectionMiss = sceneFlags.yzw;")
+            && frag.contains("float skyWeight = smoothstep(-0.2, 0.8, R.y);")
+            && frag.contains("reflectionMiss = mix(sceneFlags.yzw, skyTint.xyz, skyWeight);"),
+        "water reflection misses must use a directional outdoor sky gradient and
+         cell ambient indoors."
     );
     assert!(
         frag.contains("offsetRayOriginForDirection(vWorldPos, N, Tdir)")

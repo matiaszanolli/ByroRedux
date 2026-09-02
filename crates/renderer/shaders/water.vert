@@ -241,8 +241,17 @@ void main() {
     // is clear).
     mat3 modelRot = mat3(inst.model);
     vWorldNormal       = normalize(modelRot * localNormal);
-    vWorldTangent      = normalize(modelRot * inTangent.xyz);
-    vWorldBitangentSign = inTangent.w;
+    vec3 tangentWorld = modelRot * inTangent.xyz;
+    // Old water meshes often have no tangent frame at all. Avoid normalizing
+    // a zero vector here and normalise the handedness sentinel as well: a
+    // zero sign would otherwise erase the entire bitangent in water.frag,
+    // making authored normal maps read as a flat strip on those meshes.
+    vWorldTangent = length(tangentWorld) > 1.0e-5
+        ? normalize(tangentWorld)
+        : vec3(1.0, 0.0, 0.0);
+    vWorldBitangentSign = abs(inTangent.w) > 0.5
+        ? (inTangent.w < 0.0 ? -1.0 : 1.0)
+        : 1.0;
     vUV = inUV;
 
     // TAA jitter pulled from the camera UBO — keeps water's projected

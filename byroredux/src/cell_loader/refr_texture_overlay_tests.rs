@@ -149,6 +149,75 @@ fn build_overlay_xtxr_swaps_only_the_named_slot() {
     assert!(ov.specular.is_none());
 }
 
+/// #3187 — on FO4/FO76/Starfield, `esm::cell::support.rs` stores TX02's
+/// value in the TXST's `wrinkle` field instead of `env_mask` (a
+/// game-dependent, ESM-parse-time decision). A slot-5 XTXR override
+/// sourced from such a TXST must still produce a usable overlay value —
+/// `apply_slot_swap` has no game context, so it must fall back to
+/// `ts.wrinkle` when `ts.env_mask` is empty, landing in the overlay's
+/// `env_mask` field either way (the *role* — EnvironmentMask vs Wrinkle —
+/// is resolved later, per-shape, by `slot_to_role` at spawn).
+#[test]
+fn build_overlay_xtxr_slot_five_falls_back_to_the_wrinkle_field() {
+    let mut index = EsmCellIndex::default();
+    // FO4-shaped TXST: TX02's value landed in `wrinkle`, not `env_mask`
+    // (support.rs's game-dependent routing) — `env_mask` stays empty.
+    index.texture_sets.insert(
+        0x0020_0005,
+        TextureSet {
+            wrinkle: Some(r"textures\fo4\headwrinkles_n.dds".to_string()),
+            ..TextureSet::default()
+        },
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.texture_slot_swaps.push(TextureSlotSwap {
+        texture_set: 0x0020_0005,
+        slot_index: 5,
+    });
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XTXR alone must produce an overlay");
+    assert_eq!(
+        resolved(&pool, ov.env_mask),
+        Some(r"textures\fo4\headwrinkles_n.dds"),
+        "#3187: slot 5 must fall back to the TXST's `wrinkle` field when \
+         `env_mask` is empty, so the value isn't silently dropped on \
+         FO4/FO76/Starfield content"
+    );
+}
+
+/// Sibling of the fallback test above: when `env_mask` IS populated
+/// (Skyrim-shaped TXST), it must still win — the fallback must not shadow
+/// the ordinary case. Real content never authors both fields on one TXST
+/// (support.rs's TX02 routing is mutually exclusive by construction); both
+/// are set here only to pin `.or()`'s precedence defensively.
+#[test]
+fn build_overlay_xtxr_slot_five_prefers_env_mask_when_present() {
+    let mut index = EsmCellIndex::default();
+    index.texture_sets.insert(
+        0x0020_0006,
+        TextureSet {
+            env_mask: Some(r"textures\skyrim\cubemask.dds".to_string()),
+            wrinkle: Some(r"textures\decoy\should_not_win.dds".to_string()),
+            ..TextureSet::default()
+        },
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.texture_slot_swaps.push(TextureSlotSwap {
+        texture_set: 0x0020_0006,
+        slot_index: 5,
+    });
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XTXR alone must produce an overlay");
+    assert_eq!(
+        resolved(&pool, ov.env_mask),
+        Some(r"textures\skyrim\cubemask.dds")
+    );
+}
+
 #[test]
 fn build_overlay_xtxr_later_swap_wins_for_same_slot() {
     let mut index = EsmCellIndex::default();
