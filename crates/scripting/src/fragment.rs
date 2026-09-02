@@ -951,7 +951,8 @@ fn apply_effect(
         Effect::Disable {
             object,
             fade_out: _,
-        } => {
+        }
+        | Effect::Enable { object, fade_in: _ } => {
             // #3278 (SCR-D5-2026-08-24-01) — `prim_disable` classifies its
             // receiver through the same `receiver_object` as
             // `AddItem`/`MoveTo`/`EquipItem`, so it can bind to a
@@ -972,7 +973,12 @@ fn apply_effect(
                     resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)?;
                 entity_global_form_id(world, entity)
             })?;
-            deferred.reference_enable_changes.push((form_id, false));
+            // #3489 — the symmetric counterpart to Disable, sharing this arm
+            // (same receiver resolution, same sink) rather than duplicating
+            // it: `Effect::Enable` is the only other variant reaching here,
+            // so this is exhaustive over the pattern above, not a guess.
+            let enabled = matches!(effect, Effect::Enable { .. });
+            deferred.reference_enable_changes.push((form_id, enabled));
             None
         }
         Effect::StartScene { scene } | Effect::StopScene { scene } => {
@@ -1456,6 +1462,7 @@ fn apply_quest_scoped_effect(
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
         | Effect::Disable { .. }
+        | Effect::Enable { .. }
         | Effect::StartScene { .. }
         | Effect::StopScene { .. }
         | Effect::Activate { .. }

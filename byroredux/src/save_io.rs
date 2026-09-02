@@ -945,14 +945,32 @@ impl ConsoleCommand for SaveInfoCommand {
                         snap.row_count()
                     ),
                 ];
-                match snapshot_cell_context(&snap) {
-                    Some(ctx) => lines.push(format!(
+                // #3500 — mirror LoadCommand's three-arm classification
+                // (cell / exterior / neither) so an operator inspecting an
+                // exterior save is told the truth `load` already knows:
+                // it is live-loadable, not a loose save.
+                match (
+                    snapshot_cell_context(&snap),
+                    snapshot_exterior_context(&snap),
+                ) {
+                    (Some(ctx), _) => lines.push(format!(
                         "  cell: {} (esm {}, {} master(s))",
                         ctx.cell_editor_id,
                         ctx.esm_path,
                         ctx.masters.len()
                     )),
-                    None => lines.push("  cell: <none — loose/exterior save>".to_string()),
+                    (None, Some(ctx)) => lines.push(format!(
+                        "  exterior: worldspace '{}' @ ({},{}) (esm {}, {} master(s), \
+                         radius {}/{})",
+                        ctx.worldspace_key,
+                        ctx.grid.0,
+                        ctx.grid.1,
+                        ctx.esm_path,
+                        ctx.masters.len(),
+                        ctx.radius_load,
+                        ctx.radius_unload,
+                    )),
+                    (None, None) => lines.push("  cell: <none — loose save>".to_string()),
                 }
                 if let Some(pose) = snapshot_player_pose(&snap) {
                     lines.push(format!(

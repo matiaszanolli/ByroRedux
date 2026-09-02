@@ -60,6 +60,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::Conditional { .. } => "Conditional",
         Effect::SetGlobalValue { .. } => "SetGlobalValue",
         Effect::Disable { .. } => "Disable",
+        Effect::Enable { .. } => "Enable",
         Effect::SetStage { .. } => "SetStage",
         Effect::StartQuest { .. } => "StartQuest",
         Effect::StopQuest { .. } => "StopQuest",

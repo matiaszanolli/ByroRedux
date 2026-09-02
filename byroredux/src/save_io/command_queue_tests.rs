@@ -120,6 +120,98 @@ fn save_then_load_command_queues_with_exterior_context() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #3500 — `save.info` must classify an exterior save the same way `load`
+/// already does. Pre-fix, `SaveInfoCommand::execute` only ever checked
+/// `snapshot_cell_context` and printed `<none — loose/exterior save>` for
+/// any exterior save — telling the operator the file "cannot be
+/// live-loaded" when `load` on the very same slot succeeds.
+#[test]
+fn save_info_reports_worldspace_and_grid_for_an_exterior_save() {
+    use crate::cell_loader::CurrentExteriorContext;
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_m451_info_ext_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(CurrentExteriorContext {
+        worldspace_key: "tamriel".to_string(),
+        esm_path: "Oblivion.esm".to_string(),
+        masters: vec!["Update.esm".to_string()],
+        grid: (3, -2),
+        radius_load: 2,
+        radius_unload: 3,
+    });
+
+    let e = world.spawn();
+    world.insert(e, Transform::from_translation(Vec3::new(7.0, 8.0, 9.0)));
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "save output: {:?}",
+        out.lines
+    );
+
+    let out = SaveInfoCommand.execute(&world, "0");
+    let joined = out.lines.join("\n");
+    assert!(
+        joined.contains("tamriel") && joined.contains("(3,-2)"),
+        "#3500: save.info must print the worldspace and grid for an \
+         exterior save, matching what load already reports: {:?}",
+        out.lines
+    );
+    assert!(
+        !joined.contains("loose"),
+        "#3500: an exterior (live-loadable) save must not be reported as \
+         a loose save: {:?}",
+        out.lines
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sibling of the exterior case above: an interior save must still print
+/// its `cell:` line unchanged (no regression from the new three-arm match).
+#[test]
+fn save_info_reports_cell_for_an_interior_save() {
+    use crate::cell_loader::CurrentCellContext;
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_m451_info_cell_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(CurrentCellContext {
+        cell_editor_id: "GSDocMitchellHouse".to_string(),
+        esm_path: "FalloutNV.esm".to_string(),
+        masters: vec![],
+    });
+
+    let e = world.spawn();
+    world.insert(e, Transform::from_translation(Vec3::new(7.0, 8.0, 9.0)));
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(out.lines.iter().any(|l| l.contains("saved slot 0")));
+
+    let out = SaveInfoCommand.execute(&world, "0");
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("cell: GSDocMitchellHouse")),
+        "save.info output: {:?}",
+        out.lines
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #3280 — unlike interactive world entry, synchronous live-load cannot
 /// return after only the arrival cell: the shared tail immediately builds a
 /// FormId remap and applies deltas exactly once. Pin the full-radius contract

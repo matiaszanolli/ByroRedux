@@ -977,18 +977,29 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // post-load tick recomputes the winner from PKID plus restored
     // clock/CTDA state, so persisting its cached winner is unnecessary.
     //
-    // #2947 — CharacterLevel and Perks specifically hold only *while no
-    // leveling runtime exists*: `npc_spawn.rs` always stamps
-    // `CharacterLevel { xp: 0, .. }` and `Perks` verbatim from `PRKR`, so
-    // there is nothing accumulated to lose today. CharacterLevel.xp is
-    // CHARAL-defined runtime progress toward the next level — not
-    // re-derivable from a static ESM record by construction — so the exempt
-    // premise breaks the moment XP starts accumulating. That is not left to
-    // this allow-list to notice on its own:
-    // `crates/save/src/validate.rs::validate_progression_state` aborts any
-    // save where a `CharacterLevel.xp != 0` slips through with these two
+    // #2947 — CharacterLevel holds only *while no leveling runtime exists*:
+    // `npc_spawn.rs` always stamps `CharacterLevel { xp: 0, .. }`, so there
+    // is nothing accumulated to lose today. `xp` is CHARAL-defined runtime
+    // progress toward the next level — not re-derivable from a static ESM
+    // record by construction — so the exempt premise breaks the moment XP
+    // starts accumulating. That is not left to this allow-list to notice on
+    // its own: `crates/save/src/validate.rs::validate_progression_state`
+    // aborts any save where a `CharacterLevel.xp != 0` slips through with it
     // still unregistered, so the exemption fails loudly rather than
     // silently discarding progress.
+    //
+    // #3491 — Perks holds for a DIFFERENT reason, and `validate_
+    // progression_state` does not guard it (it inspects `CharacterLevel`
+    // only — grep confirms zero `Perks` references anywhere in
+    // `crates/save`). Unlike XP, an ESM-authored NPC's `Perks` is routinely
+    // non-empty, so "flag any non-empty Perks" isn't a valid guard the way
+    // "flag xp != 0" is — there is no known-safe baseline value to compare
+    // against. The exemption instead rests on there being no production
+    // mutator at all: `npc_spawn.rs` stamps `Perks` verbatim from `PRKR`
+    // and nothing else ever calls `Perks::set_rank`/`try_set_rank` outside
+    // `#[cfg(test)]`. Register it — no loud-failure guard needed first — the
+    // moment an `AddPerk`-style effect or a perk-selection UI lands
+    // (`docs/engine/charal.md`, #3004/#2986).
     const REDERIVED_NOT_SAVED: &[&str] = &[
         "CreatureAttack",
         "FactionRanks",

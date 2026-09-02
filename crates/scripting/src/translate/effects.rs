@@ -176,6 +176,15 @@ pub enum Effect {
     /// `<object>.Disable([fadeOut])` — records the placed reference as
     /// disabled even when its cell/entity is not currently loaded.
     Disable { object: ObjectRef, fade_out: bool },
+    /// `<object>.Enable([fadeIn])` — the symmetric counterpart to
+    /// [`Self::Disable`]; clears the same [`crate::fragment::
+    /// ReferenceEnableState`] entry so a reference a script disabled can be
+    /// re-enabled by script. #3489 — shipped alongside `Disable` (`5f38402e`)
+    /// without this half, so `ReferenceEnableState::set_enabled`'s
+    /// `enabled == true` branch had no production caller and every
+    /// `Enable()` call (3,005 in the real corpus, more common than
+    /// `Disable()`'s 2,587) declined the whole fragment.
+    Enable { object: ObjectRef, fade_in: bool },
     /// `<scene>.Start()` — resolves a VMAD-bound SCEN FormID and queues the
     /// canonical scene start request at dispatch.
     StartScene { scene: ObjectRef },
@@ -565,6 +574,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_equip_item,
     prim_move_to,
     prim_disable,
+    prim_enable,
     prim_start_scene,
     prim_stop_scene,
     prim_activate,
@@ -882,6 +892,20 @@ fn prim_disable(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::Disable {
         object: receiver_object(object, scope)?,
         fade_out: bool_arg(args, 0)?.unwrap_or(false),
+    })
+}
+
+/// #3489 — mirrors [`prim_disable`]: same receiver treatment (including
+/// alias-bound `ObjectReference` properties via `receiver_object`), same
+/// optional literal `bool` argument shape (`abFadeIn` here vs `abFadeOut`).
+fn prim_enable(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Enable")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::Enable {
+        object: receiver_object(object, scope)?,
+        fade_in: bool_arg(args, 0)?.unwrap_or(false),
     })
 }
 
@@ -1614,13 +1638,15 @@ mod tests {
 
     #[test]
     fn declines_on_unmodeled_effect() {
-        // An object-targeting effect (Enable) isn't in this increment's
+        // An object-targeting effect (Kill) isn't in this increment's
         // table — the whole fragment declines, never partially applies.
+        // (#3489 — this used to exercise `Enable()`, which is now modeled;
+        // `Kill()` keeps the same "still unmodeled" shape.)
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_4()\n\
              Self.SetStage(10)\n\
-             akTarget.Enable()\n EndFunction\n",
+             akTarget.Kill()\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
     }
@@ -1744,6 +1770,26 @@ mod tests {
             Some(vec![Effect::Disable {
                 object: ObjectRef::Property("SomeMarker".into()),
                 fade_out: false,
+            }])
+        );
+    }
+
+    /// #3489 — mirrors `lowers_disable_with_optional_fade_out`: `Enable()` is
+    /// the more common of the pair in the real corpus (3,005 vs 2,587 calls)
+    /// and had no primitive at all before this fix, so every fragment
+    /// containing one declined in full.
+    #[test]
+    fn lowers_enable_with_optional_fade_in() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeMarker.Enable(false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Enable {
+                object: ObjectRef::Property("SomeMarker".into()),
+                fade_in: false,
             }])
         );
     }

@@ -1862,6 +1862,70 @@ fn dispatch_disable_then_stage_cascade_and_package_evaluation() {
     assert!(world.has::<crate::EvaluatePackageRequest>(horse_2));
 }
 
+/// #3489 regression — `Effect::Enable` must reach `ReferenceEnableState`
+/// and clear the disabled entry, the direction `set_enabled`'s
+/// `enabled == true` branch had no production caller to exercise before
+/// this fix. Mirrors `dispatch_disable_then_stage_cascade_and_package_
+/// evaluation`'s direct-FormID shape.
+#[test]
+fn dispatch_enable_clears_a_previously_disabled_reference() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const MARKER_FORM: u32 = 0x0005_BB66;
+    let world = fixture();
+    world
+        .resource_mut::<ReferenceEnableState>()
+        .set_enabled(MARKER_FORM, false);
+    assert!(
+        !world
+            .resource::<ReferenceEnableState>()
+            .is_enabled(MARKER_FORM),
+        "test setup: the marker must start disabled"
+    );
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_Enable".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "Marker".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: MARKER_FORM,
+                            alias: -1,
+                        },
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            50,
+            vec![Effect::Enable {
+                object: ObjectRef::Property("Marker".into()),
+                fade_in: false,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 50);
+    emit_advance(&world, Q, 50);
+    quest_fragment_dispatch_system(&world);
+
+    assert!(
+        world
+            .resource::<ReferenceEnableState>()
+            .is_enabled(MARKER_FORM),
+        "#3489: Enable() must clear the disabled entry, not leave it \
+         permanently disabled"
+    );
+}
+
 #[test]
 fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
     use byroredux_plugin::esm::records::script_instance::{

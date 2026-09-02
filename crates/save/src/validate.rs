@@ -708,6 +708,36 @@ mod tests {
         assert_eq!(errors[0].kind, ValidationKind::UnsavedProgression);
         assert!(errors[0].detail.contains("42"));
     }
+
+    /// #3491 — `validate_progression_state` must NOT flag a populated
+    /// `Perks` component. Unlike `CharacterLevel.xp`, an ESM-authored NPC's
+    /// `Perks` is routinely non-empty (`npc_spawn.rs` stamps it verbatim
+    /// from `PRKR`), so there is no "non-empty = runtime mutation happened"
+    /// signal the way `xp != 0` is for `CharacterLevel` — `Perks` is exempt
+    /// from the save registry because it has no production mutator at all,
+    /// not because a guard like this one polices it. This pins that
+    /// distinction: a future "for symmetry, also flag non-empty Perks"
+    /// change (the literal reading of one of #3491's two suggested fixes,
+    /// rejected for this reason) would break this test immediately instead
+    /// of shipping as a save-breaking false positive on any perked actor.
+    #[test]
+    fn populated_perks_does_not_trip_the_unsaved_progression_gate() {
+        use byroredux_core::character::{PerkRank, Perks};
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(
+            e,
+            Perks {
+                entries: vec![PerkRank {
+                    perk_form_id: 0x0005_8F80,
+                    rank: 2,
+                }],
+            },
+        );
+
+        assert!(validate_world(&world).is_empty());
+    }
 }
 
 /// #3649 — `validate_animation` and `validate_inventory_instances` must take

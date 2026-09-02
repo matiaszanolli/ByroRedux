@@ -12,7 +12,7 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
             "SAVE-D1-12 guard can't read directory {} ({e}); a scan root \
-             moved — update SCAN_ROOTS.",
+             moved — see discover_scan_roots.",
             dir.display()
         )
     });
@@ -25,6 +25,92 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path);
         }
+    }
+}
+
+/// #3497 (SAVE-D1-2026-08-27-03) — discovered, not hardcoded. The guard
+/// used to scan a fixed `SCAN_ROOTS: &[&str]` list; that has a strong
+/// defence against a root *moving* (`collect_rs_files`'s panic above, and
+/// the `!found.is_empty()` assert below) but none against a root that was
+/// never added — `crates/sdk` shipped with a live `impl Resource for
+/// StudioSession` and sat unscanned until this fix, silently narrowing
+/// what the ledger actually covers relative to the workspace.
+///
+/// Enumerates every `crates/*/src` directory from the workspace root, plus
+/// `byroredux/src` itself, so a new crate is scanned automatically the
+/// moment it exists — no second commit has to remember to widen a list.
+/// [`NOT_SCANNED`] is the deliberate escape hatch for a crate that must be
+/// excluded for a real structural reason; today nothing needs it; every
+/// crate's `impl Component`/`impl Resource` surface is either registered
+/// or carries a `NOT_SAVED_BY_DESIGN` entry, so there is no blind spot
+/// left to open by omission.
+fn discover_scan_roots(manifest: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let workspace_crates = manifest.join("../crates");
+    let mut roots = vec![manifest.join("src")];
+    let entries = std::fs::read_dir(&workspace_crates).unwrap_or_else(|e| {
+        panic!(
+            "SAVE-D1-12 guard can't read {} ({e}); the workspace crates/ \
+             directory moved — update discover_scan_roots.",
+            workspace_crates.display()
+        )
+    });
+    for entry in entries {
+        let path = entry
+            .expect("SAVE-D1-12 guard: unreadable crates/ entry")
+            .path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if NOT_SCANNED.iter().any(|(excluded, _)| *excluded == name) {
+            continue;
+        }
+        let src = path.join("src");
+        if src.is_dir() {
+            roots.push(src);
+        }
+    }
+    roots.sort();
+    roots
+}
+
+/// See [`discover_scan_roots`]. Empty today — kept as the named place a
+/// future genuinely-must-exclude crate goes, with a reason, rather than
+/// silently dropping out of the enumeration.
+const NOT_SCANNED: &[(&str, &str)] = &[];
+
+/// #3497 — pins the discovery mechanism itself, not just its downstream
+/// effect. `crates/sdk` is the crate that shipped unscanned (`21a840d5`)
+/// and prompted this fix; a hardcoded-list regression (someone reverting
+/// to `SCAN_ROOTS` and forgetting a crate again) fails here directly
+/// rather than only showing up as a missing allowlist entry two tests
+/// away.
+#[test]
+fn discover_scan_roots_finds_every_workspace_crate_and_byroredux() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = discover_scan_roots(manifest);
+
+    let has_suffix = |suffix: &str| {
+        roots
+            .iter()
+            .any(|r| r.to_string_lossy().replace('\\', "/").ends_with(suffix))
+    };
+    assert!(
+        has_suffix("crates/sdk/src"),
+        "the crate that motivated #3497 must be discovered: {roots:?}"
+    );
+    assert!(
+        has_suffix("byroredux/src"),
+        "byroredux's own src must always be scanned: {roots:?}"
+    );
+    // A handful of longstanding crates, as a sanity check that discovery
+    // isn't accidentally scoped to only the newest addition.
+    for known in [
+        "crates/core/src",
+        "crates/scripting/src",
+        "crates/plugin/src",
+    ] {
+        assert!(has_suffix(known), "{known} missing from {roots:?}");
     }
 }
 
@@ -105,7 +191,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CharacterRuleset", "immutable game-profile rules selected at boot from the source game"),
         ("MeleeDamageConfig", "immutable Fallout combat tuning selected from the game profile at boot"),
         ("CharacterLevel", "known progression gap guarded by validate_progression_state: saves are refused once non-default XP/level state exists (#2947)"),
-        ("Perks", "known progression gap guarded by validate_progression_state: saves are refused once perks exist (#2947)"),
+        ("Perks", "stamped verbatim from NPC_.PRKR at spawn with no production mutator anywhere (npc_spawn.rs only; nothing calls set_rank/try_set_rank outside #[cfg(test)]) — NOT guarded by validate_progression_state, which inspects only CharacterLevel; register it the moment an AddPerk-style effect or perk-selection UI lands (#3491, corrects the #2947 cross-reference this reason previously shared with CharacterLevel)"),
         ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
         ("FactionReputation", "forward-latent: no production insertion or mutation site exists yet"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
@@ -368,21 +454,21 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterDrawIndexScratch", "per-frame render scratch whose map is cleared and rebuilt from the current sorted draw list; only allocation capacity persists"),
         ("WeatherDataRes", "WTHR NAM0 sky-color table, rebuilt from the parsed record whenever weather is (re)applied"),
         ("WeatherTransitionRes", "one-shot weather-blend accumulator, present only mid-transition and removed on completion"),
+        // #3497 — surfaced by discover_scan_roots scanning crates/renderer,
+        // crates/debug-ui and crates/save for the first time. None are
+        // gameplay state; all predate this guard, which simply never
+        // looked at their crates before.
+        ("AllocatorResource", "newtype around the renderer's SharedAllocator (GPU device handle), inserted once at renderer init — process/device infrastructure, not gameplay state"),
+        ("GpuMemoryBudget", "constant-after-device-selection VRAM capacity snapshot sampled from vkGetPhysicalDeviceMemoryProperties at renderer init; re-sampled identically on every launch"),
+        ("DebugUiState", "the egui debug/console overlay's own UI state (console history, panel visibility, input buffers) — operator tooling, never gameplay in a player save"),
+        ("SaveRegistry", "the type-erased save/load driver table itself, built once at startup from the curated component/resource type set — save-system infrastructure, not the gameplay state it describes"),
     ];
 
-    const SCAN_ROOTS: &[&str] = &[
-        "../crates/core/src",
-        "../crates/scripting/src",
-        "../crates/physics/src",
-        "../crates/audio/src",
-        "../crates/plugin/src",
-        "../byroredux/src",
-    ];
-
-    let manifest = env!("CARGO_MANIFEST_DIR");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scan_roots = discover_scan_roots(manifest);
     let mut files = Vec::new();
-    for root in SCAN_ROOTS {
-        collect_rs_files(&std::path::Path::new(manifest).join(root), &mut files);
+    for root in &scan_roots {
+        collect_rs_files(root, &mut files);
     }
 
     let mut found: Vec<(String, String)> = Vec::new();
@@ -411,7 +497,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     assert!(
         !found.is_empty(),
         "SAVE-D1-12 guard found zero impl Component/Resource lines under \
-         {SCAN_ROOTS:?} — the scan itself is broken (wrong roots, or the \
+         {scan_roots:?} — the scan itself is broken (wrong roots, or the \
          `impl Component for X` / `impl Resource for X` line shape changed).",
     );
 

@@ -384,8 +384,22 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `parallax_height_in_alpha`, #3530). v19 is intentionally incompatible
     // with v18 per the same blanket rule, even though the shared defaults
     // happen to be correct for every pre-v19 snapshot.
+    // #3489 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, deliberately,
+    // and this is a THIRD case beyond the two named at #3332/#3762 above:
+    // `Effect::Enable` is a new *enum variant* on `crate::translate::effects
+    // ::Effect`, not a new required struct field. `PendingFragmentExecution
+    // .effects: Vec<Effect>` (inside the registered `FragmentExecutionQueue`
+    // — a script paused mid-`Utility.Wait()` genuinely persists queued
+    // `Effect`s) is real saved data, but adding a variant no prior save can
+    // ever contain doesn't change how that prior data decodes: serde only
+    // has to recognize the tags actually present, and old saves have none
+    // named "Enable". A required *field*, by contrast, is unconditionally
+    // present in every serialized instance and genuinely needs the bump
+    // (v10's `parallax_height_in_alpha`, v19 above) — that asymmetry is why
+    // this one case in the enum family is compatible where the struct-field
+    // ones are not.
     const BASELINE_MAJOR: u16 = 19;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa033_e6c5_80d5_b72e;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeac5_5bef_0aaa_15d2;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

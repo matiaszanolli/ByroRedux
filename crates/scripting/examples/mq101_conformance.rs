@@ -133,6 +133,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::Disable { .. } => "Disable",
+        Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
