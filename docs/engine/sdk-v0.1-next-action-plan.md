@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `81b992e6` (`feat(sdk): preserve loaded plugin count aliases`)
+Checkpoint: `3bafb477` (`feat(sdk): dispatch engine-owned self provider receivers`)
 Date: 2026-09-02
 
 This is the hand-off plan after the first extended SDK implementation pass.
