@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
-Status: **planned, not yet started**  
-Checkpoint: `86237432` (`feat(sdk): integrate UI menu state alias`)  
+Status: **in progress**
+Checkpoint: pending commit for the provider-expression slice
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
@@ -29,8 +29,11 @@ unsupported call.
 
 ### 2. Finish the provider execution substrate
 
-- Extend the conservative source/PEX IR with arithmetic, string
-  concatenation, object expressions, and the next justified latent primitive.
+- **Delivered in this slice:** typed integer/float arithmetic and string
+  concatenation now lower from source and execute through the engine provider
+  host, including nested provider results and continuation-safe assignments.
+  Save format v17 records the new expression nodes.
+- Continue with object expressions and the next justified latent primitive.
 - Add broader event coverage only when the canonical ECS payload and save
   behavior exist; preserve guard-free guest entry and whole-handler rejection
   on unsupported syntax.

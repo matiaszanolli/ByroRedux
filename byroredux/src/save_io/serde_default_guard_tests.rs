@@ -370,8 +370,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // JContainers compatibility objects now persist explicit retain counts and
     // recovery tags. The required registry field makes v16 intentionally
     // incompatible with v15 rather than silently discarding ownership.
-    const BASELINE_MAJOR: u16 = 16;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9295_0be7_8d8f_b13f;
+    // Provider continuations now persist typed scalar expression nodes so
+    // arithmetic and string concatenation survive a save/load boundary. The
+    // tagged value/statement shapes make v17 intentionally incompatible with
+    // v16 rather than dropping a pending assignment.
+    const BASELINE_MAJOR: u16 = 17;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2167_318d_f869_61a2;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

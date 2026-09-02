@@ -120,7 +120,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 16 adds explicit JContainers retain counts and recovery tags to the
 /// principal-private container registry. Older saves cannot reconstruct those
 /// ownership relationships without risking premature collection or leaks.
-pub const FORMAT_MAJOR: u16 = 16;
+/// Version 17 adds typed scalar provider expressions to saved continuation
+/// tails. Older saves cannot represent the expression node without silently
+/// changing a resumed handler's result.
+pub const FORMAT_MAJOR: u16 = 17;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

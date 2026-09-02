@@ -983,9 +983,10 @@ four scalar `OnHit` attack/block parameters are projected under their authored
   before starting the next independent item.
   Provider-bearing event handlers now suspend across bounded `Utility.Wait`
   calls while preserving locals and ordered branch/enclosing tails.
-  Arithmetic/string-concatenation/object expressions,
-  broader events, other latent primitives, and dynamic object dispatch remain
-  pending. The continuation queue is registered with the save system and revalidates saved
+  Typed integer/float arithmetic and string concatenation now lower through
+  the same source/PEX provider IR, with checked runtime evaluation and save
+  format v17 persistence. Object expressions, broader events, other latent
+  primitives, and dynamic object dispatch remain pending. The continuation queue is registered with the save system and revalidates saved
   routes against the live catalog before resuming.
   Ten exact SKSE `Game` content extensions plus the vanilla Papyrus
   `GetFormFromFile` call are now engine-owned catalog aliases: `GetModCount`,
@@ -1471,6 +1472,17 @@ engine projects the active visible menu name from the main-thread `UiManager`
 into a bounded host snapshot before provider callbacks, preserving exact menu
 name matching and fail-closed hidden/absent behavior. Menu registration,
 arbitrary Scaleform objects, and menu mutation remain future isolated-UI work.
+
+Checkpoint: `feat(scripting): execute typed provider expressions`.
+
+Provider-bearing source and byte-level PEX handlers now support same-type
+integer/float arithmetic and string concatenation around engine-owned provider
+results. Nested expression values are bounded and validated before execution;
+integer overflow, non-finite float results, divide/remainder by zero, and
+oversized concatenations fail closed. The new assignment/value nodes persist in
+save format 17, which rejects older suspended tails rather than changing their
+results on resume. Object expressions and additional latent primitives remain
+future substrate work.
 
 ### 14.4 Exit gate
 

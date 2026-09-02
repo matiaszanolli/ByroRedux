@@ -802,6 +802,14 @@ pub enum PapyrusProviderStatement {
         name: String,
         call: PapyrusProviderInvocation,
     },
+    /// Evaluate a bounded scalar expression and assign its result to a local.
+    /// Provider calls remain represented by [`Self::AssignCall`] so their
+    /// route validation and saved shape stay explicit.
+    AssignValue {
+        name: String,
+        value: PapyrusProviderValue,
+        value_type: ScriptValueType,
+    },
     /// Execute a native void call whose Papyrus array parameter is mutated by
     /// reference. The host callback returns the filled array as an internal
     /// transport value, which is written back to the named local.
@@ -936,6 +944,25 @@ pub enum PapyrusProviderValue {
     Literal(ScriptValue),
     Local(String),
     Call(PapyrusProviderInvocation),
+    Binary {
+        left: Box<PapyrusProviderValue>,
+        operator: PapyrusProviderArithmetic,
+        right: Box<PapyrusProviderValue>,
+    },
+}
+
+/// Same-type scalar operations that can execute inside a provider-bearing
+/// handler. Numeric operands are deliberately not coerced across integer and
+/// float domains; the Papyrus source type must be unambiguous at lowering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum PapyrusProviderArithmetic {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    StrCat,
 }
 
 /// Same-type comparison operations executable by the provider runtime.
@@ -1355,6 +1382,7 @@ fn statements_reference_local(statements: &[PapyrusProviderStatement], name: &st
                 || argument_references_local(string_arg, name)
                 || argument_references_local(number_arg, name)
         }
+        PapyrusProviderStatement::AssignValue { value, .. } => value_references_local(value, name),
         PapyrusProviderStatement::AssignCall { call, .. }
         | PapyrusProviderStatement::ArrayWritebackCall { call, .. }
         | PapyrusProviderStatement::Call(call) => invocation_references_local(call, name),
@@ -1379,6 +1407,7 @@ fn statements_contain_wait(statements: &[PapyrusProviderStatement]) -> bool {
             ..
         } => statements_contain_wait(then_branch) || statements_contain_wait(else_branch),
         PapyrusProviderStatement::Declare { .. }
+        | PapyrusProviderStatement::AssignValue { .. }
         | PapyrusProviderStatement::AssignCall { .. }
         | PapyrusProviderStatement::ArrayWritebackCall { .. }
         | PapyrusProviderStatement::Call(_)
@@ -1442,6 +1471,9 @@ fn value_references_local(value: &PapyrusProviderValue, name: &str) -> bool {
         PapyrusProviderValue::Literal(_) => false,
         PapyrusProviderValue::Local(local) => local == name,
         PapyrusProviderValue::Call(call) => invocation_references_local(call, name),
+        PapyrusProviderValue::Binary { left, right, .. } => {
+            value_references_local(left, name) || value_references_local(right, name)
+        }
     }
 }
 
@@ -1484,11 +1516,25 @@ fn lower_statements(
                     .get(&key)
                     .copied()
                     .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(target.0.clone()))?;
-                let call = lower_provider_invocation(&value.node, catalog, locals)
+                if let Some(call) = lower_provider_invocation(&value.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
-                    .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
-                require_result(&call, expected, &target.0)?;
-                lowered.push(PapyrusProviderStatement::AssignCall { name: key, call });
+                {
+                    require_result(&call, expected, &target.0)?;
+                    lowered.push(PapyrusProviderStatement::AssignCall { name: key, call });
+                } else {
+                    let (value, value_type) =
+                        lower_provider_value(&value.node, catalog, locals, 0)?;
+                    if value_type != expected {
+                        return Err(PapyrusProviderProgramError::ResultTypeMismatch(
+                            target.0.clone(),
+                        ));
+                    }
+                    lowered.push(PapyrusProviderStatement::AssignValue {
+                        name: key,
+                        value,
+                        value_type,
+                    });
+                }
             }
             Stmt::ExprStmt(expression) => {
                 if let Some(seconds) = lower_wait(&expression.node)? {
@@ -1855,6 +1901,18 @@ fn lower_condition_value(
     catalog: &PapyrusProviderCatalog,
     locals: &BTreeMap<String, ScriptValueType>,
 ) -> Result<(PapyrusProviderValue, ScriptValueType), PapyrusProviderProgramError> {
+    lower_provider_value(expression, catalog, locals, 0)
+}
+
+fn lower_provider_value(
+    expression: &Expr,
+    catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, ScriptValueType>,
+    depth: usize,
+) -> Result<(PapyrusProviderValue, ScriptValueType), PapyrusProviderProgramError> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err(PapyrusProviderProgramError::NestingTooDeep);
+    }
     let literal = match expression {
         Expr::BoolLit(value) => Some((ScriptValue::Boolean(*value), ScriptValueType::Boolean)),
         Expr::IntLit(value) => Some((ScriptValue::Integer(*value), ScriptValueType::Integer)),
@@ -1880,6 +1938,46 @@ fn lower_condition_value(
             .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(identifier.0.clone()))?;
         return Ok((PapyrusProviderValue::Local(key), value_type));
     }
+    if let Expr::BinaryOp { left, op, right } = expression {
+        let Some(operator) = provider_arithmetic(*op) else {
+            return Err(PapyrusProviderProgramError::UnsupportedStatement);
+        };
+        let (left, left_type) = lower_provider_value(&left.node, catalog, locals, depth + 1)?;
+        let (right, right_type) = lower_provider_value(&right.node, catalog, locals, depth + 1)?;
+        let (operator, value_type) = match operator {
+            PapyrusProviderArithmetic::Add
+                if left_type == ScriptValueType::String
+                    && right_type == ScriptValueType::String =>
+            {
+                (PapyrusProviderArithmetic::StrCat, ScriptValueType::String)
+            }
+            PapyrusProviderArithmetic::StrCat
+                if left_type == ScriptValueType::String
+                    && right_type == ScriptValueType::String =>
+            {
+                (PapyrusProviderArithmetic::StrCat, ScriptValueType::String)
+            }
+            PapyrusProviderArithmetic::Add
+            | PapyrusProviderArithmetic::Sub
+            | PapyrusProviderArithmetic::Mul
+            | PapyrusProviderArithmetic::Div
+            | PapyrusProviderArithmetic::Mod
+                if left_type == right_type
+                    && matches!(left_type, ScriptValueType::Integer | ScriptValueType::Float) =>
+            {
+                (operator, left_type)
+            }
+            _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
+        };
+        return Ok((
+            PapyrusProviderValue::Binary {
+                left: Box::new(left),
+                operator,
+                right: Box::new(right),
+            },
+            value_type,
+        ));
+    }
     let call = lower_provider_invocation(expression, catalog, locals)
         .map_err(PapyrusProviderProgramError::Call)?
         .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
@@ -1890,6 +1988,18 @@ fn lower_condition_value(
         .ok_or_else(|| PapyrusProviderProgramError::ResultTypeMismatch("comparison".to_owned()))?;
     let value_type = result.value_type;
     Ok((PapyrusProviderValue::Call(call), value_type))
+}
+
+fn provider_arithmetic(operator: BinaryOp) -> Option<PapyrusProviderArithmetic> {
+    match operator {
+        BinaryOp::Add => Some(PapyrusProviderArithmetic::Add),
+        BinaryOp::Sub => Some(PapyrusProviderArithmetic::Sub),
+        BinaryOp::Mul => Some(PapyrusProviderArithmetic::Mul),
+        BinaryOp::Div => Some(PapyrusProviderArithmetic::Div),
+        BinaryOp::Mod => Some(PapyrusProviderArithmetic::Mod),
+        BinaryOp::StrCat => Some(PapyrusProviderArithmetic::StrCat),
+        _ => None,
+    }
 }
 
 fn comparison_operator(operator: BinaryOp) -> Option<PapyrusProviderComparison> {
@@ -2567,6 +2677,20 @@ fn validate_provider_statements(
         match statement {
             PapyrusProviderStatement::Declare { .. }
             | PapyrusProviderStatement::UnregisterAllModEvents => {}
+            PapyrusProviderStatement::AssignValue {
+                value, value_type, ..
+            } => {
+                if !matches!(
+                    value_type,
+                    ScriptValueType::Boolean
+                        | ScriptValueType::Integer
+                        | ScriptValueType::Float
+                        | ScriptValueType::String
+                ) {
+                    return Err("saved provider expression has a non-scalar result".to_owned());
+                }
+                validate_provider_value(value, catalog)?;
+            }
             PapyrusProviderStatement::RegisterModEvent {
                 event_name,
                 callback,
@@ -2764,8 +2888,23 @@ fn validate_provider_value(
     value: &PapyrusProviderValue,
     catalog: &PapyrusProviderCatalog,
 ) -> Result<(), String> {
+    validate_provider_value_at_depth(value, catalog, 0)
+}
+
+fn validate_provider_value_at_depth(
+    value: &PapyrusProviderValue,
+    catalog: &PapyrusProviderCatalog,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("saved provider value nesting exceeds the runtime bound".to_owned());
+    }
     match value {
         PapyrusProviderValue::Call(call) => validate_provider_call(call, catalog),
+        PapyrusProviderValue::Binary { left, right, .. } => {
+            validate_provider_value_at_depth(left, catalog, depth + 1)?;
+            validate_provider_value_at_depth(right, catalog, depth + 1)
+        }
         PapyrusProviderValue::Literal(_) | PapyrusProviderValue::Local(_) => Ok(()),
     }
 }
@@ -2786,6 +2925,19 @@ fn execute_statements(
             PapyrusProviderStatement::AssignCall { name, call } => {
                 let arguments = materialize_provider_arguments(call, locals)?;
                 let value = callback(principal, call.route.qualified_name(), &arguments)?;
+                locals.insert(name.clone(), value);
+            }
+            PapyrusProviderStatement::AssignValue {
+                name,
+                value,
+                value_type,
+            } => {
+                let value = evaluate_provider_value(value, callback, principal, locals, 0)?;
+                if !value.matches(*value_type, false) {
+                    return Err(format!(
+                        "provider expression assigned an invalid {value_type:?} value"
+                    ));
+                }
                 locals.insert(name.clone(), value);
             }
             PapyrusProviderStatement::ArrayWritebackCall { name, call } => {
@@ -2973,6 +3125,19 @@ fn evaluate_condition_value(
     principal: Option<&PrincipalId>,
     locals: &BTreeMap<String, ScriptValue>,
 ) -> Result<ScriptValue, String> {
+    evaluate_provider_value(value, callback, principal, locals, 0)
+}
+
+fn evaluate_provider_value(
+    value: &PapyrusProviderValue,
+    callback: &PapyrusProviderCallback,
+    principal: Option<&PrincipalId>,
+    locals: &BTreeMap<String, ScriptValue>,
+    depth: usize,
+) -> Result<ScriptValue, String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("provider expression nesting exceeds the runtime bound".to_owned());
+    }
     match value {
         PapyrusProviderValue::Literal(value) => Ok(value.clone()),
         PapyrusProviderValue::Local(name) => locals
@@ -2983,7 +3148,114 @@ fn evaluate_condition_value(
             let arguments = materialize_provider_arguments(call, locals)?;
             callback(principal, call.route.qualified_name(), &arguments)
         }
+        PapyrusProviderValue::Binary {
+            left,
+            operator,
+            right,
+        } => {
+            let left = evaluate_provider_value(left, callback, principal, locals, depth + 1)?;
+            let right = evaluate_provider_value(right, callback, principal, locals, depth + 1)?;
+            apply_provider_arithmetic(left, *operator, right)
+        }
     }
+}
+
+fn apply_provider_arithmetic(
+    left: ScriptValue,
+    operator: PapyrusProviderArithmetic,
+    right: ScriptValue,
+) -> Result<ScriptValue, String> {
+    match (left, operator, right) {
+        (
+            ScriptValue::Integer(left),
+            PapyrusProviderArithmetic::Add,
+            ScriptValue::Integer(right),
+        ) => left
+            .checked_add(right)
+            .map(ScriptValue::Integer)
+            .ok_or_else(|| "provider integer addition overflowed".to_owned()),
+        (
+            ScriptValue::Integer(left),
+            PapyrusProviderArithmetic::Sub,
+            ScriptValue::Integer(right),
+        ) => left
+            .checked_sub(right)
+            .map(ScriptValue::Integer)
+            .ok_or_else(|| "provider integer subtraction overflowed".to_owned()),
+        (
+            ScriptValue::Integer(left),
+            PapyrusProviderArithmetic::Mul,
+            ScriptValue::Integer(right),
+        ) => left
+            .checked_mul(right)
+            .map(ScriptValue::Integer)
+            .ok_or_else(|| "provider integer multiplication overflowed".to_owned()),
+        (
+            ScriptValue::Integer(left),
+            PapyrusProviderArithmetic::Div,
+            ScriptValue::Integer(right),
+        ) => {
+            if right == 0 {
+                return Err("provider integer division by zero".to_owned());
+            }
+            left.checked_div(right)
+                .map(ScriptValue::Integer)
+                .ok_or_else(|| "provider integer division overflowed".to_owned())
+        }
+        (
+            ScriptValue::Integer(left),
+            PapyrusProviderArithmetic::Mod,
+            ScriptValue::Integer(right),
+        ) => {
+            if right == 0 {
+                return Err("provider integer remainder by zero".to_owned());
+            }
+            left.checked_rem(right)
+                .map(ScriptValue::Integer)
+                .ok_or_else(|| "provider integer remainder overflowed".to_owned())
+        }
+        (ScriptValue::Float(left), PapyrusProviderArithmetic::Add, ScriptValue::Float(right)) => {
+            finite_float_result(left + right, "addition")
+        }
+        (ScriptValue::Float(left), PapyrusProviderArithmetic::Sub, ScriptValue::Float(right)) => {
+            finite_float_result(left - right, "subtraction")
+        }
+        (ScriptValue::Float(left), PapyrusProviderArithmetic::Mul, ScriptValue::Float(right)) => {
+            finite_float_result(left * right, "multiplication")
+        }
+        (ScriptValue::Float(left), PapyrusProviderArithmetic::Div, ScriptValue::Float(right)) => {
+            if right == 0.0 {
+                return Err("provider float division by zero".to_owned());
+            }
+            finite_float_result(left / right, "division")
+        }
+        (ScriptValue::Float(left), PapyrusProviderArithmetic::Mod, ScriptValue::Float(right)) => {
+            if right == 0.0 {
+                return Err("provider float remainder by zero".to_owned());
+            }
+            finite_float_result(left % right, "remainder")
+        }
+        (
+            ScriptValue::String(left),
+            PapyrusProviderArithmetic::StrCat,
+            ScriptValue::String(right),
+        ) => {
+            let value = format!("{left}{right}");
+            let result = ScriptValue::String(value);
+            result
+                .matches(ScriptValueType::String, false)
+                .then_some(result)
+                .ok_or_else(|| "provider string concatenation exceeded the script limit".to_owned())
+        }
+        _ => Err("provider expression operands changed type at execution".to_owned()),
+    }
+}
+
+fn finite_float_result(value: f32, operation: &str) -> Result<ScriptValue, String> {
+    value
+        .is_finite()
+        .then_some(ScriptValue::Float(value))
+        .ok_or_else(|| format!("provider float {operation} produced a non-finite result"))
 }
 
 fn compare_condition_values(
@@ -3482,7 +3754,10 @@ mod tests {
             [ScriptValue::String("InventoryMenu".to_owned())]
         );
         assert!(matches!(
-            lower_provider_call(&expression("UI.IsMenuRegistered(\"InventoryMenu\")"), &catalog),
+            lower_provider_call(
+                &expression("UI.IsMenuRegistered(\"InventoryMenu\")"),
+                &catalog
+            ),
             Err(PapyrusProviderLowerError::UnknownFunction { .. })
         ));
     }
@@ -4573,6 +4848,128 @@ mod tests {
         assert_eq!(calls[5].1[1], ScriptValue::String("rain".to_owned()));
         assert!(calls.iter().all(|(_, arguments)| arguments.first()
             != Some(&ScriptValue::String("MustNotRun.esp".to_owned()))));
+    }
+
+    #[test]
+    fn provider_expressions_execute_typed_arithmetic_and_string_concatenation() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Int count
+                count = Game.GetModCount() + 2
+                String label
+                label = "prefix-" + WeatherNative.WeatherAt(count, "fallback")
+                If count * 2 >= 10
+                    WeatherNative.WeatherAt(count, label)
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let extension = ExtensionId::new("org.example.weather").unwrap();
+        provider_catalog.insert(&extension, &declaration()).unwrap();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+        assert!(program
+            .handler(PapyrusProviderEvent::OnLoad)
+            .iter()
+            .any(|statement| matches!(
+                statement,
+                PapyrusProviderStatement::AssignValue {
+                    value: PapyrusProviderValue::Binary {
+                        operator: PapyrusProviderArithmetic::StrCat,
+                        ..
+                    },
+                    value_type: ScriptValueType::String,
+                    ..
+                }
+            )));
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route.ends_with("get-mod-count") {
+                    Ok(ScriptValue::Integer(3))
+                } else {
+                    Ok(ScriptValue::String("rain".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (
+                    byroredux_sdk::compatibility::PAPYRUS_GAME_GET_MOD_COUNT_ROUTE.to_owned(),
+                    Vec::new(),
+                ),
+                (
+                    "ext.org.example.weather.weather-at".to_owned(),
+                    vec![
+                        ScriptValue::Integer(5),
+                        ScriptValue::String("fallback".to_owned()),
+                    ],
+                ),
+                (
+                    "ext.org.example.weather.weather-at".to_owned(),
+                    vec![
+                        ScriptValue::Integer(5),
+                        ScriptValue::String("prefix-rain".to_owned()),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_expressions_reject_mixed_numeric_types_and_runtime_faults() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                Int count
+                count = Game.GetModCount() + 1.5
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            lower_provider_program(&script, &PapyrusProviderCatalog::engine_compatibility()),
+            Err(PapyrusProviderProgramError::UnsupportedStatement)
+        );
+
+        assert!(apply_provider_arithmetic(
+            ScriptValue::Integer(i64::MAX),
+            PapyrusProviderArithmetic::Add,
+            ScriptValue::Integer(1),
+        )
+        .is_err());
+        assert!(apply_provider_arithmetic(
+            ScriptValue::Integer(1),
+            PapyrusProviderArithmetic::Div,
+            ScriptValue::Integer(0),
+        )
+        .is_err());
+        assert!(apply_provider_arithmetic(
+            ScriptValue::String("x".repeat(4 * 1024)),
+            PapyrusProviderArithmetic::StrCat,
+            ScriptValue::String("y".to_owned()),
+        )
+        .is_err());
     }
 
     #[test]
