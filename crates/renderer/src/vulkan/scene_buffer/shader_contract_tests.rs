@@ -2110,32 +2110,19 @@ fn bethesda_lighting_response_is_masked_shadowable_and_palette_scaled() {
 /// secondary-ray one in `ray_hit.glsl`) must also honour the channel, or an
 /// Oblivion cave wall parallaxes correctly in the raster pass and samples a
 /// normal's red channel as height in reflections.
+///
+/// The masking half of this contract (every bindless subscript actually
+/// masks the bit off) is now [`bindless_index_bits_are_masked_at_every_textures_subscript`]
+/// — a per-occurrence, whole-shader-tree scan rather than the "does this one
+/// file contain the mask string anywhere" check this test used to run (#3624
+/// / REN-2026-08-30-D19-04: that shape couldn't catch a new unmasked
+/// subscript added to a file that already had one masked elsewhere, or a
+/// new shader file entirely). What's left here is specific to the parallax
+/// height *channel* semantics, not the masking mechanism.
 #[test]
-fn parallax_alpha_height_bit_is_masked_and_honoured_by_every_reader() {
+fn parallax_alpha_height_bit_is_honoured_by_both_marchers() {
     let sampling = include_str!("../../../shaders/include/material_sampling.glsl");
     let hit = include_str!("../../../shaders/include/ray_hit.glsl");
-    let frag = include_str!("../../../shaders/triangle.frag");
-
-    // The constant must reach GLSL through the generated header, not a
-    // hand-copied literal.
-    let constants = include_str!("../../../shaders/include/shader_constants.glsl");
-    assert!(
-        constants.contains("#define PARALLAX_ALPHA_HEIGHT_BIT"),
-        "the bit must be generated from `shader_constants_data.rs`, so a value \
-         flip changes both sides in lockstep"
-    );
-
-    for (name, src) in [
-        ("material_sampling.glsl", sampling),
-        ("ray_hit.glsl", hit),
-        ("triangle.frag", frag),
-    ] {
-        assert!(
-            src.contains("& ~PARALLAX_ALPHA_HEIGHT_BIT"),
-            "{name} reads parallaxMapIndex but never masks the channel bit off \
-             — bit 31 is not part of the bindless index (#3530)"
-        );
-    }
 
     // Both marchers select the channel rather than hardcoding `.r`.
     assert!(
@@ -2156,6 +2143,154 @@ fn parallax_alpha_height_bit_is_masked_and_honoured_by_every_reader() {
         !hit.contains("textures[nonuniformEXT(mat.parallaxMapIndex)]"),
         "the secondary-ray POM must sample the masked index, never the raw one"
     );
+}
+
+/// #3622 (REN-2026-08-30-D19-03) — the raster POM march used to sample its
+/// height field with plain `texture()` (implicit derivatives) inside a loop
+/// with a data-dependent `break`, which is undefined per the GLSL/Vulkan
+/// spec: invocations in the same subgroup can be on different iterations
+/// by the time any of them samples, so the hardware-computed derivative is
+/// meaningless. Fix: capture one real, well-defined LOD via
+/// `textureQueryLod` at the loop's entry UV (before any divergent control
+/// flow), then sample every layer at that fixed LOD with `textureLod` —
+/// matching `ray_hit.glsl`'s explicit-LOD discipline (which uses a literal
+/// `0.0` out of necessity: secondary rays have no screen-space derivatives
+/// to query in the first place).
+#[test]
+fn raster_pom_marcher_samples_height_at_an_explicit_lod() {
+    let sampling = include_str!("../../../shaders/include/material_sampling.glsl");
+
+    assert!(
+        sampling.contains("textureQueryLod(textures[nonuniformEXT(parallaxMapIdx)], uv).x"),
+        "parallaxDisplaceUV must capture the LOD once, at the entry UV, \
+         before the divergent march loop"
+    );
+    assert!(
+        sampling.contains("float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha, float lod)"),
+        "sampleParallaxHeight must take an explicit lod parameter"
+    );
+    assert!(
+        sampling.contains("textureLod(textures[nonuniformEXT(idx)], uv, lod)"),
+        "sampleParallaxHeight must sample with the caller-supplied explicit \
+         LOD, not implicit derivatives"
+    );
+    assert!(
+        !sampling.contains("texture(textures[nonuniformEXT(idx)], uv)"),
+        "the old implicit-derivative height fetch must not survive"
+    );
+    // All three march call sites (entry sample, per-layer sample, secant
+    // interpolation sample) must thread the same captured `parallaxLod`
+    // through — a call site left on an old signature would fail to
+    // compile, but pin the exact count so a future refactor that silently
+    // drops the LOD argument from one call (while still compiling, e.g. by
+    // reintroducing a 3-arg overload) doesn't go unnoticed.
+    assert_eq!(
+        sampling.matches("heightInAlpha, parallaxLod").count(),
+        3,
+        "expected exactly 3 call sites (entry / per-layer / secant) to pass \
+         parallaxLod through to sampleParallaxHeight"
+    );
+}
+
+/// #3624 (REN-2026-08-30-D19-04) — replaces the old 3-file whitelist +
+/// at-least-once substring check, which could neither catch a 4th shader
+/// file reading `parallaxMapIndex`/`glossMapIndex` unmasked, nor a 4th
+/// *unmasked* read added to a file that already had one masked occurrence
+/// elsewhere (a `src.contains(...)` check goes green the moment ANY line
+/// matches, not EVERY hazardous line).
+///
+/// Walks every `.frag`/`.vert`/`.comp`/`.glsl` file under
+/// `crates/renderer/shaders/` and, for each line that builds a bindless
+/// `textures[...]` subscript (the actual out-of-bounds-descriptor hazard —
+/// `textures[0x8000000N]` — that both bits exist to prevent), requires the
+/// field's mask constant to appear on that same line whenever the raw
+/// `mat.<field>` struct access also appears there.
+///
+/// A bare mention of the raw field elsewhere — a comment, an existence
+/// test (`!= 0u`), or handing it to a helper that masks internally
+/// (`parallaxDisplaceUV(..., mat.parallaxMapIndex, ...)` in
+/// `triangle.frag`) — is not itself a hazard and is deliberately not
+/// flagged: the callee's OWN `textures[...]` line is where that read gets
+/// checked, and it is, because the scan covers every file, not a fixed
+/// list. This is what makes the check whole-tree instead of a whitelist
+/// that goes stale the moment a new reader is added (the exact failure
+/// mode this test replaces).
+#[test]
+fn bindless_index_bits_are_masked_at_every_textures_subscript() {
+    // Generated from `shader_constants_data.rs`, not hand-copied — a value
+    // flip changes both sides in lockstep.
+    let constants = include_str!("../../../shaders/include/shader_constants.glsl");
+    for bit in ["PARALLAX_ALPHA_HEIGHT_BIT", "NORMAL_ALPHA_SPEC_BIT"] {
+        assert!(
+            constants.contains(&format!("#define {bit}")),
+            "{bit} must be `#define`d in shader_constants.glsl"
+        );
+    }
+
+    // (bindless-index field, its mask constant). Add a pair here — never
+    // widen the exemptions below — when a new field gets a channel-selector
+    // bit of its own.
+    const GUARDED: &[(&str, &str)] = &[
+        ("parallaxMapIndex", "PARALLAX_ALPHA_HEIGHT_BIT"),
+        ("glossMapIndex", "NORMAL_ALPHA_SPEC_BIT"),
+    ];
+
+    let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut files = Vec::new();
+    collect_shader_files(&shader_dir, &mut files);
+    assert!(
+        files.len() >= 10,
+        "the shader directory walk under {} found suspiciously few files \
+         ({}) — check the extension filter didn't silently break",
+        shader_dir.display(),
+        files.len()
+    );
+
+    let mut violations = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for (line_no, line) in text.lines().enumerate() {
+            if !line.contains("textures[") {
+                continue; // not a bindless subscript site
+            }
+            for (field, bit) in GUARDED {
+                let field_token = format!("mat.{field}");
+                if line.contains(&field_token) && !line.contains(bit) {
+                    violations.push(format!(
+                        "{}:{}: `{field_token}` used inside a `textures[...]` \
+                         subscript without `{bit}` masking — {}",
+                        path.display(),
+                        line_no + 1,
+                        line.trim(),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "unmasked bindless-index read(s):\n{}",
+        violations.join("\n")
+    );
+}
+
+fn collect_shader_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.unwrap_or_else(|e| panic!("dir entry under {}: {e}", dir.display())).path();
+        if path.is_dir() {
+            collect_shader_files(&path, out);
+            continue;
+        }
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("frag" | "vert" | "comp" | "glsl")
+        ) {
+            out.push(path);
+        }
+    }
 }
 
 #[test]

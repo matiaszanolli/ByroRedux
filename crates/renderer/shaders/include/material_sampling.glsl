@@ -28,8 +28,21 @@
 // Sample one height value, honouring the caller's channel selection.
 // Height in alpha is #3530's Oblivion path; every other producer binds a
 // dedicated greyscale map and reads `.r` exactly as before.
-float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha) {
-    vec4 texel = texture(textures[nonuniformEXT(idx)], uv);
+//
+// #3622 (REN-2026-08-30-D19-03) — `lod` is an explicit, caller-computed
+// mip level rather than the plain `texture()` implicit-derivative form
+// this used to call. Implicit derivatives are undefined per the GLSL/
+// Vulkan spec when the sample sits inside non-uniform control flow (the
+// march below has a data-dependent `break`, so different invocations in
+// the same subgroup can be on different iterations by the time any of
+// them samples, making the hardware's neighbouring-invocation derivative
+// meaningless) — see `parallaxDisplaceUV`'s `parallaxLod` for where the
+// real, well-defined derivative is captured instead, once, before the
+// loop. Matches `ray_hit.glsl`'s `resolveRayHitUV`, which has always used
+// explicit `textureLod` (out of necessity — secondary rays have no screen-
+// space derivatives to begin with).
+float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha, float lod) {
+    vec4 texel = textureLod(textures[nonuniformEXT(idx)], uv, lod);
     return heightInAlpha ? texel.a : texel.r;
 }
 
@@ -48,6 +61,12 @@ vec2 parallaxDisplaceUV(
     // clear and sample `.r`, exactly as before.
     uint parallaxMapIdx = parallaxMapIdxRaw & ~PARALLAX_ALPHA_HEIGHT_BIT;
     bool heightInAlpha = (parallaxMapIdxRaw & PARALLAX_ALPHA_HEIGHT_BIT) != 0u;
+    // #3622 — capture the mip level ONCE, at the entry UV, using the real
+    // screen-space derivatives available here (before the march below's
+    // divergent, data-dependent `break` makes any further implicit-LOD
+    // sample undefined). Every layer of the march then samples at this
+    // fixed LOD via `textureLod` — see `sampleParallaxHeight`.
+    float parallaxLod = textureQueryLod(textures[nonuniformEXT(parallaxMapIdx)], uv).x;
     // Prefer the authored/synthesized vertex tangent, exactly like
     // perturbNormal. The old POM path always rebuilt a derivative tangent,
     // so normal-map detail and parallax motion could disagree at UV seams.
@@ -106,7 +125,7 @@ vec2 parallaxDisplaceUV(
     vec2 currentUV = uv;
     float currentDepth = 0.0;
     float sampledHeight =
-        sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha);
+        sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod);
     for (int i = 0; i < steps; ++i) {
         if (currentDepth >= sampledHeight) {
             break;
@@ -114,7 +133,7 @@ vec2 parallaxDisplaceUV(
         currentUV -= deltaUV;
         currentDepth += layerDepth;
         sampledHeight =
-            sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha);
+            sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod);
     }
 
     // Secant-style interpolation between the last two layers removes the
@@ -122,7 +141,7 @@ vec2 parallaxDisplaceUV(
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = sampledHeight - currentDepth;
     float beforeDepth =
-        sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha)
+        sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha, parallaxLod)
         - (currentDepth - layerDepth);
     float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));

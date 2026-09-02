@@ -244,6 +244,12 @@ fn tex_desc_clamp_mode_decodes_from_the_right_nibble_per_version() {
         data.push(1); // base has = 1
         data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
         data.extend_from_slice(body);
+        // #3623 — dark/detail/gloss/glow `Has * Texture` bools are read
+        // unconditionally per nif.xml, regardless of texture_count.
+        data.push(0); // dark has = 0
+        data.push(0); // detail has = 0
+        data.push(0); // gloss has = 0
+        data.push(0); // glow has = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
         let mut stream = NifStream::new(&data, &header);
         NiTexturingProperty::parse(&mut stream)
@@ -335,6 +341,11 @@ fn ni_texturing_property_apply_mode_decodes_from_both_homes() {
         }
         data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
         data.push(0); // base slot: has = 0 (read unconditionally)
+        // #3623 — dark/detail/gloss/glow are also read unconditionally.
+        data.push(0); // dark has = 0
+        data.push(0); // detail has = 0
+        data.push(0); // gloss has = 0
+        data.push(0); // glow has = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
         let mut stream = NifStream::new(&data, &header);
         NiTexturingProperty::parse(&mut stream).expect("should parse")
@@ -474,10 +485,16 @@ fn parse_ni_texturing_property_with_zero_shader_maps() {
     data.extend_from_slice(&(-1i32).to_le_bytes());
     // flags u16 (v >= 20.1.0.2 path); no apply_mode at v20.2.0.7
     data.extend_from_slice(&0u16.to_le_bytes());
-    // texture_count = 1 → only base_texture is read.
+    // texture_count = 1 → only base_texture is populated, but #3623:
+    // dark/detail/gloss/glow are still read unconditionally (gated on
+    // nothing per nif.xml, not on texture_count).
     data.extend_from_slice(&1u32.to_le_bytes());
     // base_texture TexDesc: has_texture = 0 → TexDesc skipped.
     data.push(0);
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     // num_decals = texture_count.saturating_sub(8) = 0 → no loop.
     // num_shader_textures = 0 as u32 (4 bytes).
     data.extend_from_slice(&0u32.to_le_bytes());
@@ -527,6 +544,11 @@ fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
     data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0 → None
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
 
     let expected_len = data.len();
@@ -566,6 +588,11 @@ fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
     data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0 → None
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
 
     let expected_len = data.len();
@@ -602,6 +629,11 @@ fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
     data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1 (present pre-20.1.0.1)
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
 
     let expected_len = data.len();
@@ -610,6 +642,117 @@ fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
         .expect("v20.1.0.0 NiTexturingProperty must consume Apply Mode");
     assert_eq!(stream.position() as usize, expected_len);
     assert_eq!(prop.texture_count, 0);
+}
+
+/// Regression for #3621 (OBL-D1-01): nif.xml gates `Apply Mode`
+/// `since="3.3.0.13" until="20.1.0.1"`. Pre-fix the parser transcribed
+/// only the `until` half (`<= STRING_TABLE_THRESHOLD`), so a hypothetical
+/// file below the `since` floor would read 4 phantom bytes here and
+/// misalign every following block — with no `block_sizes` table at that
+/// version to recover from it (the #170
+/// `bs_stream_header_not_read_for_off_spec_version` pattern this mirrors).
+/// Builds a synthetic v3.0.0.0 stream (below the 3.3.0.13 floor) with NO
+/// `apply_mode` bytes present and confirms the parser doesn't try to
+/// consume any — `apply_mode` must default to nif.xml's stated
+/// `APPLY_MODULATE` (2) instead.
+#[test]
+fn parse_ni_texturing_property_apply_mode_absent_below_v3_3_0_13() {
+    let header = NifHeader {
+        version: NifVersion(0x0300_0000), // v3.0.0.0 — below the 3.3.0.13 floor
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    // Pre-string-table inline name (len-prefixed), single extra_data ref
+    // (v < 10.0.1.0), controller_ref — same pre-Gamebryo shape as the
+    // v4.0.0.2 fixture below.
+    data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref = NULL
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
+                                                    // NiProperty.Flags: `until=10.0.1.2` — present here.
+    data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
+                                                 // NO apply_mode bytes: below the since=3.3.0.13 floor.
+    data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+                                                 // `Has * Texture` bools: 32-bit here (pre-4.1.0.1).
+    data.extend_from_slice(&0u32.to_le_bytes()); // base has = false
+    data.extend_from_slice(&0u32.to_le_bytes()); // dark has = false
+    data.extend_from_slice(&0u32.to_le_bytes()); // detail has = false
+    data.extend_from_slice(&0u32.to_le_bytes()); // gloss has = false
+    data.extend_from_slice(&0u32.to_le_bytes()); // glow has = false
+                                                 // No shader-textures trailer: `since=10.0.1.0`, absent here.
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiTexturingProperty::parse(&mut stream)
+        .expect("a sub-3.3.0.13 stream with no apply_mode bytes must still parse");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "apply_mode must NOT consume 4 phantom bytes below the since=3.3.0.13 floor"
+    );
+    assert_eq!(
+        prop.apply_mode, 2,
+        "below the since floor, apply_mode must default to nif.xml's stated \
+         APPLY_MODULATE (2), not read garbage off the stream"
+    );
+}
+
+/// Regression for #3623 (OBL-D1-02): nif.xml gates `Has Dark/Detail/
+/// Gloss/Glow Texture` on nothing at all — no version, no `Texture Count`
+/// condition, unlike Bump/Normal/Parallax/Decals. Pre-fix the parser
+/// applied `texture_count > 1..4` gates to these four anyway, which is
+/// invisible on vanilla Oblivion (`texture_count == 7` on every instance)
+/// but drifts a smaller `texture_count` file by 1 byte per skipped slot.
+/// Builds a `texture_count = 0` property (so the OLD gates would have
+/// skipped all four) and confirms all four `has` bools are still consumed
+/// and all four slots correctly decode as absent.
+#[test]
+fn parse_ni_texturing_property_dark_detail_gloss_glow_read_unconditionally() {
+    let header = make_header(12, 83); // Skyrim LE — v20.2.0.7
+    let mut data = Vec::new();
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // name = None
+    data.extend_from_slice(&0u32.to_le_bytes()); // extras count = 0
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    data.extend_from_slice(&0u16.to_le_bytes()); // flags
+    data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0 — every
+                                                 // OLD `texture_count > N` gate below would have been false.
+    data.push(0); // base has = 0
+    data.push(1); // dark has = 1 — populated despite texture_count == 0
+    data.extend_from_slice(&42i32.to_le_bytes()); // dark source_ref
+    data.extend_from_slice(&0u16.to_le_bytes()); // dark flags (v >= 20.1.0.3)
+    data.push(0); // dark has_transform = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures = 0
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiTexturingProperty::parse(&mut stream)
+        .expect("texture_count=0 must not skip the dark/detail/gloss/glow presence bools");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "all four presence bools (and the populated dark TexDesc body) must \
+         be consumed regardless of texture_count"
+    );
+    assert!(prop.base_texture.is_none());
+    assert_eq!(
+        prop.dark_texture.as_ref().map(|t| t.source_ref.0),
+        Some(42),
+        "dark_texture must decode even though texture_count == 0"
+    );
+    assert!(prop.detail_texture.is_none());
+    assert!(prop.gloss_texture.is_none());
+    assert!(prop.glow_texture.is_none());
 }
 
 /// Regression: #119 / audit NIF-302 — a shader map entry with
@@ -635,6 +778,11 @@ fn parse_ni_texturing_property_shader_map_consumes_has_transform_bool() {
     // `has: bool` even when texture_count=0. Set it to 0 for an empty
     // slot entry.
     data.push(0); // base_texture has = 0
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
                   // num_shader_textures = 1
     data.extend_from_slice(&1u32.to_le_bytes());
     // Shader map entry — has_map = 1, then body.
@@ -666,6 +814,11 @@ fn parse_ni_texturing_property_shader_map_consumes_full_transform() {
     data.extend_from_slice(&0u32.to_le_bytes());
     // base_texture has = 0 (unconditional read).
     data.push(0);
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     data.extend_from_slice(&1u32.to_le_bytes());
     // has_map = 1
     data.push(1);
@@ -706,6 +859,11 @@ fn parse_ni_texturing_property_with_empty_shader_map_entry() {
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     data.extend_from_slice(&1u32.to_le_bytes()); // texture_count
     data.push(0); // base_texture has=0
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
     data.extend_from_slice(&1u32.to_le_bytes()); // num_shader_textures = 1
     data.push(0); // shader map has = 0
 
@@ -755,6 +913,12 @@ fn parse_ni_texturing_property_captures_base_uv_transform() {
     data.extend_from_slice(&0.1f32.to_le_bytes());
     data.extend_from_slice(&0.2f32.to_le_bytes());
 
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
+
     // No decals, no shader map list.
     data.extend_from_slice(&0u32.to_le_bytes());
 
@@ -798,6 +962,12 @@ fn parse_ni_texturing_property_transform_absent() {
     data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     data.push(0); // has_transform = 0 (no body bytes)
+
+    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+    data.push(0); // dark has = 0
+    data.push(0); // detail has = 0
+    data.push(0); // gloss has = 0
+    data.push(0); // glow has = 0
 
     data.extend_from_slice(&0u32.to_le_bytes()); // num_shader_textures
 
@@ -1075,6 +1245,12 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
                                                  // `Has Base Texture` — the version-dependent bool, 32-bit here.
     data.extend_from_slice(&0u32.to_le_bytes()); // base_texture has = false (32-bit)
+    // #3623 — dark/detail/gloss/glow are also read unconditionally, and at
+    // this pre-4.1.0.1 version the bool is 32-bit like base_texture's.
+    data.extend_from_slice(&0u32.to_le_bytes()); // dark has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // detail has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // gloss has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // glow has = false (32-bit)
                                                  // No shader-textures trailer: `since=10.0.1.0`, absent at v4.0.0.2.
 
     let expected_len = data.len();

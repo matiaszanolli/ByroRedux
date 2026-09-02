@@ -35,6 +35,16 @@ use std::fmt;
 pub struct NifVersion(pub u32);
 
 impl NifVersion {
+    // ── Pre-NetImmerse (never seen in the wild here; lower bound only) ──
+    /// #3621 (OBL-D1-01) — nif.xml's earliest attested version, the
+    /// `since=` floor for a handful of fields (`NiTexturingProperty`'s
+    /// `Apply Mode` and `Has Bump Map Texture`) that predate everything
+    /// else this parser has ever needed a constant for. No file below
+    /// `V4_0_0_0` has been observed in any corpus this repo has parsed —
+    /// this constant exists purely so those two `since=` gates can be
+    /// expressed correctly rather than left as an implicit "always true".
+    pub const V3_3_0_13: Self = Self(0x0303000D);
+
     // ── NetImmerse / early Gamebryo (4.x – 5.x) ──────────────────────
     /// Earliest NetImmerse version seen in the wild (Civ4-era content).
     pub const V4_0_0_0: Self = Self(0x04000000);

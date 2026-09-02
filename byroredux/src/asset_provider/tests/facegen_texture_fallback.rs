@@ -43,7 +43,9 @@ fn facegen_tool_path_resolves_via_basename_fallback() {
         "the base-color diffuse must resolve through the basename fallback"
     );
     assert!(
-        provider.extract("facegen\\ears\\human\\EarsHuman.dds").is_some(),
+        provider
+            .extract("facegen\\ears\\human\\EarsHuman.dds")
+            .is_some(),
         "extract must return the real archive bytes, not just report presence"
     );
 

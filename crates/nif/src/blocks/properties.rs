@@ -256,7 +256,17 @@ impl NiTexturingProperty {
         // `TexturingFlags`, mask 0x000E). Decode both into one field so no
         // consumer has to branch on version (#3530).
         // `until=` is inclusive per the version.rs doctrine — present at v20.1.0.1.
-        let apply_mode = if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
+        // #3621 (OBL-D1-01) — the `since="3.3.0.13"` half of nif.xml's range
+        // was previously untranscribed (gated `<= STRING_TABLE_THRESHOLD`
+        // alone), so a hypothetical sub-3.3.0.13 file would read 4 phantom
+        // bytes here with nothing downstream to recover the misalignment.
+        // Zero exposure on the Oblivion corpus (lowest version present is
+        // exactly 3.3.0.13, which the inclusive `since` still admits) —
+        // latent for older NetImmerse / non-Bethesda mod content.
+        const APPLY_MODULATE: u32 = 2; // nif.xml `ApplyMode`'s stated default.
+        let apply_mode = if stream.version() < NifVersion::V3_3_0_13 {
+            APPLY_MODULATE
+        } else if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
             stream.read_u32_le()?
         } else {
             u32::from((flags >> 1) & 0x7)
@@ -264,28 +274,27 @@ impl NiTexturingProperty {
 
         let texture_count = stream.read_u32_le()?;
 
+        // #3623 (OBL-D1-02) — nif.xml gates `Has Dark/Detail/Gloss/Glow
+        // Texture` on nothing at all (like `Has Base Texture` above); only
+        // Bump/Normal/Parallax/Decals carry a `Texture Count` condition.
+        // The previous `texture_count > 1..4` gates on these four were an
+        // unsourced divergence from the spec — reading them unconditionally
+        // (`read_tex_desc` still gates the TexDesc BODY on its own leading
+        // presence bool) matches nif.xml exactly. Zero exposure on the
+        // Oblivion corpus (`texture_count == 7` on all 30,121 instances, so
+        // every gate below always passed regardless) — latent for a file
+        // with a smaller texture_count.
         let base_texture = Self::read_tex_desc(stream)?;
-        let dark_texture = if texture_count > 1 {
-            Self::read_tex_desc(stream)?
-        } else {
-            None
-        };
-        let detail_texture = if texture_count > 2 {
-            Self::read_tex_desc(stream)?
-        } else {
-            None
-        };
-        let gloss_texture = if texture_count > 3 {
-            Self::read_tex_desc(stream)?
-        } else {
-            None
-        };
-        let glow_texture = if texture_count > 4 {
-            Self::read_tex_desc(stream)?
-        } else {
-            None
-        };
-        let bump_texture = if texture_count > 5 {
+        let dark_texture = Self::read_tex_desc(stream)?;
+        let detail_texture = Self::read_tex_desc(stream)?;
+        let gloss_texture = Self::read_tex_desc(stream)?;
+        let glow_texture = Self::read_tex_desc(stream)?;
+        // Bump, unlike the four above, IS `Texture Count #GT# 5`-gated per
+        // nif.xml, and — sibling to the Apply Mode gap above (#3621) — also
+        // carries a `since="3.3.0.13"` floor this parser previously didn't
+        // transcribe (the `texture_count` gate alone doesn't imply it: a
+        // pre-3.3.0.13 file could in principle still report a large count).
+        let bump_texture = if stream.version() >= NifVersion::V3_3_0_13 && texture_count > 5 {
             Self::read_tex_desc(stream)?
         } else {
             None
