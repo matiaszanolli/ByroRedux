@@ -688,6 +688,7 @@ pub(crate) fn setup_scene(
     let cornell_oracle =
         crate::cornell::cornell_oracle_rung(&args).unwrap_or_else(|message| panic!("{message}"));
     let combustion_lab = crate::cornell::combustion_lab_mode(&args);
+    let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(&args);
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(&args);
     let cornell_sun = cornell_sun_mode(&args);
     let studio_mode = args.iter().any(|arg| arg == "--studio");
@@ -700,7 +701,11 @@ pub(crate) fn setup_scene(
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
     if combustion_lab {
-        let (pos, target) = crate::cornell::setup_combustion_lab_scene(world, ctx);
+        let (pos, target) = crate::cornell::setup_combustion_lab_scene(
+            world,
+            ctx,
+            combustion_lab_nuclear,
+        );
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

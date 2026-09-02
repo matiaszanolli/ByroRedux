@@ -247,6 +247,21 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define NUCLEAR_EXPLOSION_EXPANSION_SCALE {NUCLEAR_EXPLOSION_EXPANSION_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define NUCLEAR_EXPLOSION_BUOYANCY_SCALE {NUCLEAR_EXPLOSION_BUOYANCY_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE {NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND {COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND:?}"
     )
     .unwrap();

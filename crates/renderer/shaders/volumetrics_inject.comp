@@ -140,7 +140,7 @@ struct GpuFogVolume {
     vec4 inverse_rotation;         // world-to-local quaternion
     vec4 albedo_edge;              // rgb single-scatter albedo, w edge softness
     vec4 emission_temperature;     // rgb emitted radiance L_e, w blackbody K
-    vec4 profile_params;           // x 0 authored / 1 smoke / 2 flame / 3 explosion; y explosion age, z lifetime
+    vec4 profile_params;           // x profile; y normalized explosion age, z lifetime
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
@@ -311,6 +311,16 @@ bool isLocalProfile(float actual, float expected) {
     return abs(actual - expected) < 0.5;
 }
 
+bool isExplosionProfile(float profileKind) {
+    return isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)
+        || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION_OIL)
+        || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR);
+}
+
+bool isNuclearExplosionProfile(float profileKind) {
+    return isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR);
+}
+
 bool isTransportedProfile(float profileKind) {
     return !isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS);
 }
@@ -325,13 +335,14 @@ vec2 sampleLocalTurbulence(
     float seed,
     float timeSeconds
 ) {
-    bool isExplosion = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION);
+    bool isExplosion = isExplosionProfile(profileKind);
+    bool isNuclear = isNuclearExplosionProfile(profileKind);
     bool isFlame = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME);
     bool isSmoke = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE);
-    float baseFrequency = isExplosion ? 0.58 : (isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31));
-    float detailFrequency = isExplosion ? 1.35 : (isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83));
-    float baseRise = isExplosion ? 0.11 : (isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013));
-    float detailRise = isExplosion ? 0.25 : (isFlame ? 0.63 : (isSmoke ? 0.14 : 0.025));
+    float baseFrequency = isNuclear ? 0.34 : (isExplosion ? 0.58 : (isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31)));
+    float detailFrequency = isNuclear ? 0.82 : (isExplosion ? 1.35 : (isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83)));
+    float baseRise = isNuclear ? 0.045 : (isExplosion ? 0.11 : (isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013)));
+    float detailRise = isNuclear ? 0.10 : (isExplosion ? 0.25 : (isFlame ? 0.63 : (isSmoke ? 0.14 : 0.025)));
     vec3 phase = vec3(seed, fract(seed * 1.6180339), fract(seed * 2.4142136));
     vec3 slowCoords = normalizedOffset * baseFrequency + phase
         + vec3(0.013, -baseRise, 0.009) * timeSeconds;
@@ -353,23 +364,59 @@ float localProfileRadius(
     float profileKind,
     float seed,
     float timeSeconds,
-    float explosionAge
+    float explosionAge,
+    float explosionAgeSeconds
 ) {
     if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
         return authoredRadius;
     }
 
-    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)) {
-        float expansion = 1.0 - exp(-5.0 * explosionAge);
+    if (isExplosionProfile(profileKind)) {
+        bool isNuclear = isNuclearExplosionProfile(profileKind);
+        // Expansion is a physical-time event, not a fraction of the authored
+        // cooling lifetime. A long-lived 8 s effect must still become a full
+        // fireball in roughly 0.35 s rather than remaining a bead at age 0.02.
+        float expansionTime = isNuclear
+            ? EXPLOSION_EXPANSION_TIME_SECONDS * 1.8
+            : EXPLOSION_EXPANSION_TIME_SECONDS;
+        float expansion = 1.0 - exp(
+            -explosionAgeSeconds / max(expansionTime, 0.01)
+        );
         float radius = mix(0.10, 0.96, expansion);
         float phase = seed * 2.0 * PI;
         vec2 wobble = mix(0.015, 0.12, explosionAge) * vec2(
             sin(phase + timeSeconds * 1.7),
             cos(phase * 1.37 + timeSeconds * 1.3)
         );
-        float buoyantLift = smoothstep(0.28, 1.0, explosionAge) * 0.18;
+        float buoyantLift = smoothstep(0.35, 2.2, explosionAgeSeconds) * 0.18;
         vec3 displaced = normalizedOffset - vec3(wobble.x, buoyantLift, wobble.y);
-        return length(displaced) / max(radius, 0.04);
+        float fireball = length(displaced) / max(radius, 0.04);
+        if (!isNuclear) {
+            return fireball;
+        }
+
+        // Once the flash has lifted, replace the spherical boundary with a
+        // cap-over-stem union. Both pieces live inside the authored source
+        // bound; transport then carries that shaped mass outward and upward.
+        float mushroomMature = smoothstep(0.30, 1.25, explosionAgeSeconds);
+        float capCenter = mix(0.08, 0.42, mushroomMature);
+        float capThickness = mix(0.30, 0.38, mushroomMature);
+        float capRadius = mix(0.48, 0.88, mushroomMature);
+        float capRadial = length(normalizedOffset.xz - wobble) / capRadius;
+        float cap = max(
+            abs(normalizedOffset.y - capCenter) / capThickness,
+            capRadial
+        );
+        float stemBottom = mix(-0.40, -0.78, mushroomMature);
+        float stemTop = mix(0.18, 0.42, mushroomMature);
+        float stemCenter = (stemBottom + stemTop) * 0.5;
+        float stemHalfHeight = (stemTop - stemBottom) * 0.5;
+        float stemRadius = mix(0.27, 0.18, mushroomMature);
+        float stem = max(
+            abs(normalizedOffset.y - stemCenter) / max(stemHalfHeight, 0.05),
+            length(normalizedOffset.xz - wobble * 0.45) / stemRadius
+        );
+        return mix(fireball, min(cap, stem), mushroomMature);
     }
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
@@ -412,8 +459,9 @@ float localDensityProfile(
         return boundary * mix(0.55, 1.15, genericNoise);
     }
 
-    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)) {
+    if (isExplosionProfile(profileKind)) {
         float core = 1.0 - smoothstep(0.10, 0.94, profileRadius);
+        bool isNuclear = isNuclearExplosionProfile(profileKind);
         float shellCenter = mix(0.52, 0.76, smoothstep(0.0, 0.72, explosionAge));
         float shell = 1.0 - smoothstep(0.10, 0.27, abs(profileRadius - shellCenter));
         float smokeTransition = smoothstep(0.20, 0.72, explosionAge);
@@ -422,9 +470,20 @@ float localDensityProfile(
             1.48,
             smoothstep(0.20, 0.82, turbulence.x * 0.64 + turbulence.y * 0.36)
         );
-        float evolvingBody = mix(core + shell * 0.22, shell + core * 0.16, smokeTransition);
-        float dissipate = 1.0 - smoothstep(0.80, 1.0, explosionAge);
-        return boundary * evolvingBody * clumps * dissipate;
+        // Keep a visible, hot perimeter during the first part of the blast.
+        // The shell becomes the cooled aerosol body later, but a very small
+        // early coefficient made the explosion read as a bright pinprick
+        // surrounded by opacity that did not emit.
+        float evolvingBody = mix(core + shell * 0.40, shell + core * 0.16, smokeTransition);
+        float nuclearCap = isNuclear
+            ? smoothstep(0.24, 0.58, explosionAge)
+                * (1.0 - smoothstep(0.88, 1.0, explosionAge))
+            : 0.0;
+        float capBody = max(evolvingBody, nuclearCap * 0.75);
+        float dissipate = isNuclear
+            ? 1.0 - smoothstep(0.94, 1.0, explosionAge)
+            : 1.0 - smoothstep(0.80, 1.0, explosionAge);
+        return boundary * capBody * clumps * dissipate;
     }
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
@@ -568,18 +627,20 @@ bool evaluateLocalFogVolume(
     profileKind = clamp(
         volume.profile_params.x,
         FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_EXPLOSION
+        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
     );
     float timeSeconds = params.temporal_params.z;
     float seed = localVolumeSeed(volume.center_shape.xyz);
     float explosionAge = clamp(volume.profile_params.y, 0.0, 1.0);
+    float explosionAgeSeconds = explosionAge * max(volume.profile_params.z, 0.0);
     float profileRadius = localProfileRadius(
         normalizedOffset,
         normalizedRadius,
         profileKind,
         seed,
         timeSeconds,
-        explosionAge
+        explosionAge,
+        explosionAgeSeconds
     );
     if (profileRadius >= 1.0) {
         return false;
@@ -688,7 +749,7 @@ float flameSourceSampleRatio(vec3 fieldWorldPos, vec3 sampleWorldPos) {
         float profileKind = clamp(
             volume.profile_params.x,
             FOG_VOLUME_PROFILE_HOMOGENEOUS,
-            FOG_VOLUME_PROFILE_EXPLOSION
+            FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
         );
         if (!isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
             continue;
@@ -800,7 +861,7 @@ bool evaluateCombustionSource(
     profileKind = clamp(
         volume.profile_params.x,
         FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_EXPLOSION
+        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
     );
     if (!isTransportedProfile(profileKind)) {
         return false;
@@ -909,13 +970,16 @@ void applyCombustionSources(
 
         float radialSource = 1.0 - smoothstep(0.28, 0.92, length(normalizedOffset.xz));
         float normalizedHeight = normalizedOffset.y * 0.5 + 0.5;
+        bool nuclearExplosion = isNuclearExplosionProfile(profileKind);
         float basalSource = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)
             ? 1.0 - smoothstep(
                 0.0,
                 FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION,
                 normalizedHeight
             )
-            : 1.0 - smoothstep(-0.72, 0.10, normalizedOffset.y);
+            : (nuclearExplosion
+                ? 1.0
+                : 1.0 - smoothstep(-0.72, 0.10, normalizedOffset.y));
         float sourceMask = densityProfile * radialSource * basalSource;
         float sourceStateMask = stateProfile * radialSource * basalSource;
         float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
@@ -1007,9 +1071,14 @@ void applyCombustionSources(
         float age = clamp(volume.profile_params.y, 0.0, 1.0);
         float lifetime = max(volume.profile_params.z, 0.12);
         float ageSeconds = age * lifetime;
-        float ignitionEnvelope = 1.0 - smoothstep(0.18, 0.52, age);
-        float smokeEnvelope = smoothstep(0.18, 0.72, age)
-            * (1.0 - smoothstep(0.88, 1.0, age));
+        float ignitionEnvelope = nuclearExplosion
+            ? 1.0 - smoothstep(0.06, 0.32, age)
+            : 1.0 - smoothstep(0.18, 0.52, age);
+        float smokeEnvelope = nuclearExplosion
+            ? smoothstep(0.10, 0.40, age)
+                * (1.0 - smoothstep(0.96, 1.0, age))
+            : smoothstep(0.18, 0.72, age)
+                * (1.0 - smoothstep(0.88, 1.0, age));
         bool coldHistory = params.prev_camera_pos.w <= 0.5;
         float impulseEnvelope = 1.0 - smoothstep(
             EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35,
@@ -1018,15 +1087,26 @@ void applyCombustionSources(
         );
         float coreRadius = length(normalizedOffset);
         float compactCore = 1.0 - smoothstep(0.12, 0.36, coreRadius);
+        // A one-froxel fireball needs a warm shell as well as its compact
+        // centre. Without this, the authored explosion's visible shell is
+        // seeded only as cooled smoke and the normal composite reduces it to
+        // a tiny ember even though the volume debug view shows its opacity.
+        float shellCenter = mix(0.42, 0.62, age);
+        float hotShell = 1.0 - smoothstep(
+            0.16,
+            0.44,
+            abs(coreRadius - shellCenter)
+        );
+        float ignitionCoverage = max(compactCore, hotShell * 0.55);
         float ignitionMask = densityProfile * (
             coldHistory
                 ? ignitionEnvelope
-                : compactCore * impulseEnvelope
+                : ignitionCoverage * impulseEnvelope
         );
         float ignitionStateMask = stateProfile * (
             coldHistory
                 ? ignitionEnvelope
-                : compactCore * impulseEnvelope
+                : ignitionCoverage * impulseEnvelope
         );
         // Seed the finite event's cooling shell, not only its compact hot
         // core. This is still a one-shot source term (the envelope closes
@@ -1036,11 +1116,14 @@ void applyCombustionSources(
             ? densityProfile * smokeEnvelope
             : densityProfile * smokeEnvelope * 0.38;
         float sourceTemperature = clamp(
-            max(volume.emission_temperature.w, 2300.0),
+            max(volume.emission_temperature.w, nuclearExplosion ? 3800.0 : 2300.0),
             IGNITION_TEMPERATURE_K,
             MAX_COMBUSTION_TEMPERATURE_K
         );
-        chemistry.x = max(chemistry.x, ignitionMask * 0.72);
+        chemistry.x = max(
+            chemistry.x,
+            ignitionMask * (nuclearExplosion ? 1.0 : 0.72)
+        );
         chemistry.y = max(
             chemistry.y,
             mix(AMBIENT_TEMPERATURE_K, sourceTemperature, ignitionStateMask)
@@ -1057,11 +1140,13 @@ void applyCombustionSources(
             dynamics.y,
             smokeSeedMask
                 * COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS
+                * (nuclearExplosion ? NUCLEAR_EXPLOSION_BUOYANCY_SCALE : 1.0)
                 * WORLD_UNITS_PER_METER
         );
         float sourceSigmaT = authoredSigmaT
             * (ignitionMask * 0.10
-                + smokeSeedMask * COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE);
+                + smokeSeedMask * COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE
+                    * (nuclearExplosion ? NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE : 1.0));
         chemistry.z = max(chemistry.z, sourceSigmaT);
         optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
         float sourceRadianceLuma = max(
@@ -1086,7 +1171,8 @@ void applyCombustionSources(
             max(volume.half_extents_extinction.y, volume.half_extents_extinction.z)
         );
         float expansionSpeed = min(
-            radius / EXPLOSION_EXPANSION_TIME_SECONDS,
+            radius / EXPLOSION_EXPANSION_TIME_SECONDS
+                * (nuclearExplosion ? NUCLEAR_EXPLOSION_EXPANSION_SCALE : 1.0),
             MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER
         );
         float impulseScale = !coldHistory
@@ -1094,7 +1180,8 @@ void applyCombustionSources(
             : 0.45;
         float radialImpulseMask = coldHistory
             ? stateProfile * ignitionEnvelope
-            : stateProfile * compactCore * impulseEnvelope;
+            : stateProfile * (nuclearExplosion ? ignitionCoverage : compactCore)
+                * impulseEnvelope;
         dynamics.xyz += radialDirection * expansionSpeed
             * radialImpulseMask * impulseScale;
         float expansionSpeedMps = expansionSpeed / WORLD_UNITS_PER_METER;

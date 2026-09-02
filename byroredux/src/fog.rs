@@ -293,7 +293,7 @@ pub(crate) fn combustion_state_from_particle(
     emitter: &ParticleEmitter,
     start_time_seconds: f32,
 ) -> Option<CombustionState> {
-    (volume.profile == FogProfile::Explosion)
+    volume.profile.is_explosion()
         .then(|| CombustionState::one_shot(start_time_seconds, emitter.life))
 }
 
@@ -437,7 +437,12 @@ pub(crate) fn explosion_volume_from_particle(
     let representative_width_m = (2.0 * radius / WORLD_UNITS_PER_METER).max(0.01);
     let extinction_per_meter = (EXPLOSION_OPTICAL_DEPTH / representative_width_m)
         .clamp(MIN_SIGMA_PER_METER, MAX_SIGMA_PER_METER);
-    let regime = CombustionRegime::EXPLOSION;
+    let profile = explosion_profile_for_particle(host_name, emitter.texture_path.as_deref())?;
+    let regime = if profile.is_nuclear_explosion() {
+        CombustionRegime::NUCLEAR_EXPLOSION
+    } else {
+        CombustionRegime::EXPLOSION
+    };
     let emissive_radiance = regime.emissive_radiance()?;
 
     Some(FogVolume {
@@ -450,7 +455,7 @@ pub(crate) fn explosion_volume_from_particle(
         extinction_per_meter,
         single_scatter_albedo: regime.single_scatter_albedo(),
         edge_softness: 0.3,
-        profile: FogProfile::Explosion,
+        profile,
         emissive_radiance,
         emission_temperature_k: regime.temperature_k(),
         source: FogSource::ParticleEmitter,
@@ -590,12 +595,44 @@ fn has_explosion_token(value: &str) -> bool {
     EXPLOSION_TOKENS.iter().any(|token| value.contains(token))
 }
 
-fn is_explosion_particle(host_name: &str, texture_path: Option<&str>) -> bool {
+fn has_nuclear_explosion_token(value: &str) -> bool {
+    const NUCLEAR_TOKENS: [&str; 8] = [
+        "nuclear",
+        "nuke",
+        "atomic",
+        "atom bomb",
+        "fatman",
+        "mini nuke",
+        "mininuke",
+        "mushroom",
+    ];
+    let value = value.to_ascii_lowercase();
+    NUCLEAR_TOKENS.iter().any(|token| value.contains(token))
+}
+
+fn explosion_profile_for_particle(
+    host_name: &str,
+    texture_path: Option<&str>,
+) -> Option<FogProfile> {
     let texture_path = texture_path.unwrap_or("");
     if has_fog_token(host_name) || has_fog_token(texture_path) {
-        return false;
+        return None;
     }
-    has_explosion_token(host_name) || has_explosion_token(texture_path)
+    let explosion = has_explosion_token(host_name) || has_explosion_token(texture_path);
+    if !explosion {
+        return None;
+    }
+    let nuclear = has_nuclear_explosion_token(host_name)
+        || has_nuclear_explosion_token(texture_path);
+    Some(if nuclear {
+        FogProfile::NuclearExplosion
+    } else {
+        FogProfile::OilExplosion
+    })
+}
+
+fn is_explosion_particle(host_name: &str, texture_path: Option<&str>) -> bool {
+    explosion_profile_for_particle(host_name, texture_path).is_some()
 }
 
 fn is_fog_particle(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> bool {
@@ -915,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn explosion_is_a_grounded_hot_sphere_with_a_one_shot_timeline() {
+    fn oil_explosion_is_a_grounded_hot_sphere_with_a_one_shot_timeline() {
         if !fire_path_active() {
             return;
         }
@@ -924,7 +961,7 @@ mod tests {
             .expect("an explosion emitter must become a transient medium");
         let bounds = volume.bounds.expect("explosion bounds");
         assert_eq!(volume.source, FogSource::ParticleEmitter);
-        assert_eq!(volume.profile, FogProfile::Explosion);
+        assert_eq!(volume.profile, FogProfile::OilExplosion);
         assert_eq!(bounds.shape, FogShape::Sphere);
         assert_eq!(bounds.center, Vec3::ZERO);
         assert_eq!(bounds.half_extents, Vec3::splat(bounds.half_extents.x));
@@ -947,6 +984,22 @@ mod tests {
         emitter.texture_path = Some("textures\\effects\\explosion_smoke.dds".to_string());
         assert!(explosion_volume_from_particle("ExplosionSmoke", &emitter).is_none());
         assert!(fog_volume_from_particle("ExplosionSmoke", &emitter).is_some());
+    }
+
+    #[test]
+    fn nuclear_tokens_select_the_high_yield_profile_and_regime() {
+        if !fire_path_active() {
+            return;
+        }
+        let emitter = ParticleEmitter::explosion();
+        let volume = explosion_volume_from_particle("MiniNukeExplosion", &emitter)
+            .expect("a nuclear explosion emitter must become a transient medium");
+        assert_eq!(volume.profile, FogProfile::NuclearExplosion);
+        assert_eq!(
+            volume.emission_temperature_k,
+            CombustionRegime::NUCLEAR_EXPLOSION.temperature_k()
+        );
+        assert!(volume.emissive_radiance.iter().sum::<f32>() > 0.0);
     }
 
     /// Smoke must stay passive — the emission field exists, so it would be
@@ -998,7 +1051,7 @@ mod tests {
             );
             assert!(
                 medium_from_particle("ExplosionFireball", &ParticleEmitter::explosion())
-                    .is_some_and(|v| v.profile == FogProfile::Explosion)
+                    .is_some_and(|v| v.profile == FogProfile::OilExplosion)
             );
         }
         assert!(medium_from_particle("MagicSparkle", &ParticleEmitter::magic_sparkles()).is_none());

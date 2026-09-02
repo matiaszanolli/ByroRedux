@@ -166,6 +166,12 @@ pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_EXPANSION_TIME_SECONDS;
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_IMPULSE_DURATION_SECONDS;
+pub const NUCLEAR_EXPLOSION_EXPANSION_SCALE: f32 =
+    byroredux_core::combustion::NUCLEAR_EXPLOSION_EXPANSION_SCALE;
+pub const NUCLEAR_EXPLOSION_BUOYANCY_SCALE: f32 =
+    byroredux_core::combustion::NUCLEAR_EXPLOSION_BUOYANCY_SCALE;
+pub const NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE: f32 =
+    byroredux_core::combustion::NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE;
 pub const COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND: f32 =
     byroredux_core::combustion::OVERPRESSURE_DISSIPATION_PER_SECOND;
 pub const COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2: f32 =
@@ -516,6 +522,10 @@ pub const FOG_VOLUME_PROFILE_FLAME: f32 =
     byroredux_core::ecs::FogProfile::Flame as u32 as f32;
 pub const FOG_VOLUME_PROFILE_EXPLOSION: f32 =
     byroredux_core::ecs::FogProfile::Explosion as u32 as f32;
+pub const FOG_VOLUME_PROFILE_EXPLOSION_OIL: f32 =
+    byroredux_core::ecs::FogProfile::OilExplosion as u32 as f32;
+pub const FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR: f32 =
+    byroredux_core::ecs::FogProfile::NuclearExplosion as u32 as f32;
 pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     (
         "FOG_VOLUME_PROFILE_HOMOGENEOUS",
@@ -526,6 +536,14 @@ pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     (
         "FOG_VOLUME_PROFILE_EXPLOSION",
         FOG_VOLUME_PROFILE_EXPLOSION,
+    ),
+    (
+        "FOG_VOLUME_PROFILE_EXPLOSION_OIL",
+        FOG_VOLUME_PROFILE_EXPLOSION_OIL,
+    ),
+    (
+        "FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR",
+        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     ),
 ];
 

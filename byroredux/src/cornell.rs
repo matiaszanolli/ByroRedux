@@ -254,7 +254,14 @@ pub(crate) const fn combustion_lab_manifest() -> CombustionLabManifest {
 
 /// Exact opt-in flag for the game-data-independent combustion harness.
 pub(crate) fn combustion_lab_mode(args: &[String]) -> bool {
-    args.iter().any(|arg| arg == "--combustion-lab")
+    args.iter()
+        .any(|arg| matches!(arg.as_str(), "--combustion-lab" | "--combustion-lab-nuclear"))
+}
+
+/// Select the high-yield variant of the combustion lab while retaining the
+/// same camera, materials, and reference flame for an apples-to-apples A/B.
+pub(crate) fn combustion_lab_nuclear_mode(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--combustion-lab-nuclear")
 }
 
 /// Vanilla Skyrim SE bronze-dragon display mesh used by the large glass-
@@ -901,6 +908,7 @@ fn setup_cornell_glass_dragon_room(world: &mut World, ctx: &mut VulkanContext) -
 pub(crate) fn setup_combustion_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
+    nuclear: bool,
 ) -> (Vec3, Vec3) {
     let manifest = combustion_lab_manifest();
     install_cornell_lighting(world, false);
@@ -1013,22 +1021,36 @@ pub(crate) fn setup_combustion_lab_scene(
             name: "combustion_lab_flame",
         },
     );
+    let explosion_kind = if nuclear {
+        CombustionProbeKind::NuclearExplosion {
+            start_delay_seconds: manifest.explosion_start_delay_seconds,
+            lifetime_seconds: manifest.explosion_lifetime_seconds,
+        }
+    } else {
+        CombustionProbeKind::Explosion {
+            start_delay_seconds: manifest.explosion_start_delay_seconds,
+            lifetime_seconds: manifest.explosion_lifetime_seconds,
+        }
+    };
+    let explosion_radius = if nuclear {
+        manifest.explosion_radius * 1.6
+    } else {
+        manifest.explosion_radius
+    };
     spawn_combustion_probe(
         world,
         CombustionProbeSpec {
-            kind: CombustionProbeKind::Explosion {
-                start_delay_seconds: manifest.explosion_start_delay_seconds,
-                lifetime_seconds: manifest.explosion_lifetime_seconds,
-            },
+            kind: explosion_kind,
             position: manifest.explosion_position,
-            half_extents: Vec3::splat(manifest.explosion_radius),
+            half_extents: Vec3::splat(explosion_radius),
             name: "combustion_lab_explosion",
         },
     );
 
     builder.finish();
     log::info!(
-        "Combustion lab ready: room=6x4x8 m, flame+explosion sources, hood underside={:.2} m",
+        "Combustion lab ready: room=6x4x8 m, flame+{} explosion sources, hood underside={:.2} m",
+        if nuclear { "nuclear" } else { "oil" },
         (manifest.baffle_center.y - manifest.baffle_half_extents.y) / LAB_UNITS_PER_METER,
     );
     (manifest.camera_position, manifest.camera_target)
@@ -1707,6 +1729,10 @@ enum CombustionProbeKind {
         start_delay_seconds: f32,
         lifetime_seconds: f32,
     },
+    NuclearExplosion {
+        start_delay_seconds: f32,
+        lifetime_seconds: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1732,10 +1758,16 @@ fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpec) {
             6.0,
         ),
         CombustionProbeKind::Explosion { .. } => (
-            FogProfile::Explosion,
+            FogProfile::OilExplosion,
             FogShape::Sphere,
             CombustionRegime::EXPLOSION,
             10.0,
+        ),
+        CombustionProbeKind::NuclearExplosion { .. } => (
+            FogProfile::NuclearExplosion,
+            FogShape::Sphere,
+            CombustionRegime::NUCLEAR_EXPLOSION,
+            12.0,
         ),
     };
     let emissive_radiance = regime
@@ -1759,11 +1791,18 @@ fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpec) {
             source: FogSource::RuntimeEffect,
         },
     );
-    if let CombustionProbeKind::Explosion {
-        start_delay_seconds,
-        lifetime_seconds,
-    } = spec.kind
-    {
+    let timeline = match spec.kind {
+        CombustionProbeKind::Explosion {
+            start_delay_seconds,
+            lifetime_seconds,
+        }
+        | CombustionProbeKind::NuclearExplosion {
+            start_delay_seconds,
+            lifetime_seconds,
+        } => Some((start_delay_seconds, lifetime_seconds)),
+        CombustionProbeKind::Flame => None,
+    };
+    if let Some((start_delay_seconds, lifetime_seconds)) = timeline {
         let now_seconds = { world.resource::<TotalTime>().0 };
         world.insert(
             e,
@@ -1851,6 +1890,9 @@ mod tests {
         assert!(!combustion_lab_mode(&args(&[])));
         assert!(!combustion_lab_mode(&args(&["--combustion-lab-extra"])));
         assert!(combustion_lab_mode(&args(&["--combustion-lab"])));
+        assert!(combustion_lab_mode(&args(&["--combustion-lab-nuclear"])));
+        assert!(combustion_lab_nuclear_mode(&args(&["--combustion-lab-nuclear"])));
+        assert!(!combustion_lab_nuclear_mode(&args(&["--combustion-lab"])));
     }
 
     #[test]

@@ -53,6 +53,20 @@ pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 = 0.35;
 /// Duration over which a one-shot source may add outward momentum.
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 = 1.5;
 
+/// Multiplier on the ordinary source-radius expansion speed for a nuclear
+/// blast. The transported velocity remains capped by the shared numerical
+/// safety limit, but a high-yield event must reach that limit quickly enough
+/// to form a room-scale shock front instead of looking like a larger torch.
+pub const NUCLEAR_EXPLOSION_EXPANSION_SCALE: f32 = 5.0;
+
+/// Relative buoyant lift retained by a nuclear cloud after its flash fades.
+pub const NUCLEAR_EXPLOSION_BUOYANCY_SCALE: f32 = 2.5;
+
+/// Extra aerosol mass seeded by a nuclear event. Nuclear clouds are broad and
+/// persistent; reusing the compact oil-blast soot yield makes their cap
+/// disappear before transport can shape it.
+pub const NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE: f32 = 2.25;
+
 /// First-order decay rate for transported specific overpressure.
 ///
 /// The pressure phase should survive long enough to expand a fireball beyond
@@ -220,6 +234,17 @@ impl CombustionRegime {
         ..Self::FLAME
     };
 
+    /// Initial flash state of a high-yield nuclear fireball. The higher
+    /// temperature makes the first frame read as a white-hot flash; the
+    /// larger source radiance and lower albedo let its light reach both the
+    /// volumetric composite and the derived surface-light path.
+    pub const NUCLEAR_EXPLOSION: Self = Self {
+        temperature_k: 4200.0,
+        reference_temperature_k: 4200.0,
+        reference_radiance: 64.0,
+        single_scatter_albedo: 0.16,
+    };
+
     pub const fn temperature_k(self) -> f32 {
         self.temperature_k
     }
@@ -256,9 +281,14 @@ mod tests {
         assert_eq!(CombustionRegime::EMBER.temperature_k(), 1100.0);
         assert_eq!(CombustionRegime::FLAME.temperature_k(), 1850.0);
         assert_eq!(CombustionRegime::EXPLOSION.temperature_k(), 2800.0);
+        assert_eq!(CombustionRegime::NUCLEAR_EXPLOSION.temperature_k(), 4200.0);
         assert_eq!(CombustionRegime::FLAME.reference_temperature_k(), 1850.0);
         assert_eq!(CombustionRegime::FLAME.reference_radiance(), 12.0);
         assert_eq!(CombustionRegime::EXPLOSION.reference_radiance(), 24.0);
+        assert_eq!(
+            CombustionRegime::NUCLEAR_EXPLOSION.reference_radiance(),
+            160.0
+        );
         assert_eq!(CombustionRegime::FLAME.single_scatter_albedo(), [0.25; 3]);
         assert_eq!(
             CombustionRegime::EXPLOSION.single_scatter_albedo(),
@@ -273,6 +303,9 @@ mod tests {
         assert!(SOOT_OXIDATION_FULL_TEMPERATURE_K > SOOT_OXIDATION_START_TEMPERATURE_K);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
+        assert!(NUCLEAR_EXPLOSION_EXPANSION_SCALE > 1.0);
+        assert!(NUCLEAR_EXPLOSION_BUOYANCY_SCALE > 1.0);
+        assert!(NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE > 1.0);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);
         assert!(MAX_DILUTION_RATE_PER_SECOND > 0.0);
         assert!(VORTICITY_CONFINEMENT_SPEED_MPS > 0.0);
@@ -313,17 +346,23 @@ mod tests {
         let explosion = CombustionRegime::EXPLOSION
             .emissive_radiance()
             .expect("explosion regime is finite");
+        let nuclear = CombustionRegime::NUCLEAR_EXPLOSION
+            .emissive_radiance()
+            .expect("nuclear regime is finite");
         assert!(ember
             .iter()
             .chain(flame.iter())
             .chain(explosion.iter())
+            .chain(nuclear.iter())
             .all(|v| v.is_finite()));
 
         let ember_luma = linear_srgb_luminance(ember);
         let flame_luma = linear_srgb_luminance(flame);
         let explosion_luma = linear_srgb_luminance(explosion);
+        let nuclear_luma = linear_srgb_luminance(nuclear);
         assert!(ember_luma < flame_luma * 0.25);
         assert!(explosion_luma > flame_luma);
+        assert!(nuclear_luma > flame_luma);
 
         let green_over_red = |rgb: [f32; 3]| rgb[1] / rgb[0].max(1.0e-6);
         assert!(green_over_red(ember) < green_over_red(flame));

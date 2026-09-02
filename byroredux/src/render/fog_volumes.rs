@@ -7,9 +7,9 @@ use byroredux_core::ecs::{
 use byroredux_core::math::Vec3;
 use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_luminance};
 use byroredux_renderer::vulkan::volumetrics::{
-    GpuFogVolume, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_FLAME,
-    FOG_VOLUME_PROFILE_HOMOGENEOUS, FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES,
-    WORLD_UNITS_PER_METER,
+    GpuFogVolume, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES, WORLD_UNITS_PER_METER,
 };
 
 use super::camera::FrustumPlanes;
@@ -39,7 +39,7 @@ pub(super) fn collect_fog_volumes(
             .and_then(|query| query.get(entity))
             .copied();
         let mut render_volume = *volume;
-        let explosion_age = if volume.profile == FogProfile::Explosion {
+        let explosion_age = if volume.profile.is_explosion() {
             match combustion {
                 Some(state) => match state.normalized_age(now_seconds) {
                     Some(age) => Some((age, state.lifetime_seconds)),
@@ -174,10 +174,12 @@ fn gpu_volume_from_ecs_with_explosion_age(
         FogProfile::Smoke => FOG_VOLUME_PROFILE_SMOKE,
         FogProfile::Flame => FOG_VOLUME_PROFILE_FLAME,
         FogProfile::Explosion => FOG_VOLUME_PROFILE_EXPLOSION,
+        FogProfile::OilExplosion => FOG_VOLUME_PROFILE_EXPLOSION_OIL,
+        FogProfile::NuclearExplosion => FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     };
     let base_emission = volume.emissive_radiance.map(sanitize_emission);
     let base_temperature = volume.emission_temperature_k.max(0.0);
-    let (emission, emission_temperature) = if profile == FOG_VOLUME_PROFILE_EXPLOSION {
+    let (emission, emission_temperature) = if volume.profile.is_explosion() {
         let age = explosion_age.map_or(0.0, |(age, _)| age);
         explosion_emission_state(base_emission, base_temperature, age)
     } else {
@@ -207,7 +209,7 @@ fn gpu_volume_from_ecs_with_explosion_age(
         // rejected, so a bad authored value dims a flame instead of poisoning
         // the froxel accumulation buffer with NaN.
         emission_temperature: [emission[0], emission[1], emission[2], emission_temperature],
-        profile_params: if profile == FOG_VOLUME_PROFILE_EXPLOSION {
+        profile_params: if volume.profile.is_explosion() {
             let (age, lifetime) = explosion_age.unwrap_or((0.0, 0.0));
             [profile, age.clamp(0.0, 1.0), lifetime.max(0.0), 0.0]
         } else {
@@ -360,6 +362,26 @@ mod tests {
             Some((0.375, 2.4)),
         )
         .unwrap();
+        let oil_explosion = gpu_volume_from_ecs_with_explosion_age(
+            make_volume(
+                FogSource::ParticleEmitter,
+                FogProfile::OilExplosion,
+                [24.0, 12.0, 2.0],
+            ),
+            GlobalTransform::IDENTITY,
+            Some((0.375, 2.4)),
+        )
+        .unwrap();
+        let nuclear_explosion = gpu_volume_from_ecs_with_explosion_age(
+            make_volume(
+                FogSource::RuntimeEffect,
+                FogProfile::NuclearExplosion,
+                [56.0, 30.0, 8.0],
+            ),
+            GlobalTransform::IDENTITY,
+            Some((0.125, 8.0)),
+        )
+        .unwrap();
 
         assert_eq!(authored.profile_params[0], FOG_VOLUME_PROFILE_HOMOGENEOUS);
         assert_eq!(smoke.profile_params[0], FOG_VOLUME_PROFILE_SMOKE);
@@ -373,6 +395,15 @@ mod tests {
             explosion.profile_params,
             [FOG_VOLUME_PROFILE_EXPLOSION, 0.375, 2.4, 0.0]
         );
+        assert_eq!(
+            oil_explosion.profile_params,
+            [FOG_VOLUME_PROFILE_EXPLOSION_OIL, 0.375, 2.4, 0.0]
+        );
+        assert_eq!(
+            nuclear_explosion.profile_params,
+            [FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR, 0.125, 8.0, 0.0]
+        );
+        assert_ne!(oil_explosion.profile_params[0], nuclear_explosion.profile_params[0]);
         assert!(
             linear_srgb_luminance(explosion.emission_temperature[..3].try_into().unwrap())
                 < linear_srgb_luminance([24.0, 12.0, 2.0]),

@@ -311,6 +311,8 @@ mod tests {
             ("FOG_VOLUME_PROFILE_SMOKE", format!("#define FOG_VOLUME_PROFILE_SMOKE {FOG_VOLUME_PROFILE_SMOKE:?}")),
             ("FOG_VOLUME_PROFILE_FLAME", format!("#define FOG_VOLUME_PROFILE_FLAME {FOG_VOLUME_PROFILE_FLAME:?}")),
             ("FOG_VOLUME_PROFILE_EXPLOSION", format!("#define FOG_VOLUME_PROFILE_EXPLOSION {FOG_VOLUME_PROFILE_EXPLOSION:?}")),
+            ("FOG_VOLUME_PROFILE_EXPLOSION_OIL", format!("#define FOG_VOLUME_PROFILE_EXPLOSION_OIL {FOG_VOLUME_PROFILE_EXPLOSION_OIL:?}")),
+            ("FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR", format!("#define FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR {FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR:?}")),
             // #1920 — 10 defines `build.rs` emits that this value-pin had
             // never covered (found by an audit sweep alongside the former
             // shadow-mask constants, which shipped without a pin).
@@ -344,6 +346,9 @@ mod tests {
             ("COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K", format!("#define COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K:?}")),
             ("EXPLOSION_EXPANSION_TIME_SECONDS", format!("#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}")),
             ("EXPLOSION_IMPULSE_DURATION_SECONDS", format!("#define EXPLOSION_IMPULSE_DURATION_SECONDS {EXPLOSION_IMPULSE_DURATION_SECONDS:?}")),
+            ("NUCLEAR_EXPLOSION_EXPANSION_SCALE", format!("#define NUCLEAR_EXPLOSION_EXPANSION_SCALE {NUCLEAR_EXPLOSION_EXPANSION_SCALE:?}")),
+            ("NUCLEAR_EXPLOSION_BUOYANCY_SCALE", format!("#define NUCLEAR_EXPLOSION_BUOYANCY_SCALE {NUCLEAR_EXPLOSION_BUOYANCY_SCALE:?}")),
+            ("NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE", format!("#define NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE {NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE:?}")),
             ("COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND", format!("#define COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND {COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND:?}")),
             ("COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2", format!("#define COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2 {COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2:?}")),
             ("COMBUSTION_MAX_DILUTION_RATE_PER_SECOND", format!("#define COMBUSTION_MAX_DILUTION_RATE_PER_SECOND {COMBUSTION_MAX_DILUTION_RATE_PER_SECOND:?}")),
@@ -868,7 +873,9 @@ mod tests {
     fn rt_lod_scale_and_counters_are_explicit_diagnostic_contracts() {
         let shader = include_str!("../shaders/triangle.frag");
         let bindings = include_str!("../shaders/include/bindings.glsl");
-        let draw = include_str!("vulkan/context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — the `GpuCamera` build these strings pin
+        // moved from `draw.rs` into `assemble_camera_and_lights.rs`.
+        let draw = include_str!("vulkan/context/assemble_camera_and_lights.rs");
         assert!(shader.contains("renderDebug.y == 0u"));
         assert!(shader.contains("uintBitsToFloat(renderDebug.y)"));
         assert!(shader.contains("bool rtLodTelemetryEnabled = renderDebug.z != 0u"));
@@ -961,6 +968,8 @@ mod tests {
             "FOG_VOLUME_PROFILE_SMOKE",
             "FOG_VOLUME_PROFILE_FLAME",
             "FOG_VOLUME_PROFILE_EXPLOSION",
+            "FOG_VOLUME_PROFILE_EXPLOSION_OIL",
+            "FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR",
         ] {
             assert!(
                 !src.contains(&format!("const float {name}")),

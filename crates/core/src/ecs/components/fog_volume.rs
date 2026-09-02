@@ -145,6 +145,33 @@ pub enum FogProfile {
     Flame = 2,
     /// A transient hot impulse that expands and cools into smoke.
     Explosion = 3,
+    /// A conventional fuel/propellant blast: compact hot fireball followed by
+    /// a dense, fast-cooling soot cloud. This is the default for legacy
+    /// explosion emitters whose authoring does not identify a special yield.
+    OilExplosion = 4,
+    /// A high-yield nuclear blast: an intense flash, fast radial impulse, and
+    /// a broad buoyant cap over a persistent rising stem.
+    NuclearExplosion = 5,
+}
+
+impl FogProfile {
+    /// Whether this profile owns a finite combustion timeline.
+    pub const fn is_explosion(self) -> bool {
+        matches!(
+            self,
+            Self::Explosion | Self::OilExplosion | Self::NuclearExplosion
+        )
+    }
+
+    /// Whether the blast should use high-yield mushroom-cloud dynamics.
+    pub const fn is_nuclear_explosion(self) -> bool {
+        matches!(self, Self::NuclearExplosion)
+    }
+
+    /// Whether the blast should use conventional fuel-fireball dynamics.
+    pub const fn is_oil_explosion(self) -> bool {
+        matches!(self, Self::Explosion | Self::OilExplosion)
+    }
 }
 
 /// Provenance of a fog volume, retained for diagnostics only.
@@ -254,6 +281,13 @@ mod tests {
         assert_eq!(FogProfile::Smoke as u32, 1);
         assert_eq!(FogProfile::Flame as u32, 2);
         assert_eq!(FogProfile::Explosion as u32, 3);
+        assert_eq!(FogProfile::OilExplosion as u32, 4);
+        assert_eq!(FogProfile::NuclearExplosion as u32, 5);
+        assert!(FogProfile::OilExplosion.is_explosion());
+        assert!(FogProfile::NuclearExplosion.is_explosion());
+        assert!(FogProfile::NuclearExplosion.is_nuclear_explosion());
+        assert!(FogProfile::OilExplosion.is_oil_explosion());
+        assert!(!FogProfile::Flame.is_explosion());
     }
 
     #[test]

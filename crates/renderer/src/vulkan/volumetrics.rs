@@ -40,7 +40,8 @@ use crate::shader_constants::{
     VISIBILITY_MASK_FULL, WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z,
 };
 pub use crate::shader_constants::{
-    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
     FOG_VOLUME_PROFILE_SMOKE,
 };
 use anyhow::{Context, Result};
@@ -183,7 +184,9 @@ pub struct GpuFogVolume {
     /// overwhelming majority — the emission branch is skipped for them.
     pub emission_temperature: [f32; 4],
     /// x = procedural density profile (`FOG_VOLUME_PROFILE_*`); for an
-    /// explosion, y = normalized age and z = lifetime seconds. w is reserved.
+    /// explosion, y = normalized age and z = lifetime seconds. Oil and
+    /// nuclear explosion profiles share the timeline but not the shader
+    /// morphology/dynamics.
     ///
     /// Source provenance belongs here instead of being inferred from albedo or
     /// emission in the shader: passive particle smoke and an authored fog box
@@ -196,7 +199,7 @@ fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
     volumes.iter().any(|volume| {
         let profile = volume.profile_params[0];
         profile.is_finite()
-            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION + 0.5)
+            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
                 .contains(&profile)
     })
 }
@@ -618,6 +621,19 @@ const COMBUSTION_LIGHT_MAX_RANGE_METERS: f32 = 64.0;
 /// `pointSpotAtten` treats half the uploaded cull radius as the physical
 /// inverse-square reach and uses the second half as a smooth cull window.
 const COMBUSTION_LIGHT_RANGE_EXTENSION: f32 = 2.0;
+/// Art-directed gain for converting the transported fire field into a point
+/// light. The moment is a froxel-integrated, escape-weighted source, while
+/// the surface path evaluates it as one inverse-square emitter; without this
+/// calibration the flame is visible but contributes almost no room light.
+/// Keep this separate from the volumetric emission so fire visibility and
+/// surface illumination can be tuned independently.
+const COMBUSTION_SURFACE_LIGHT_BOOST: f32 = 4.0;
+/// A nuclear cloud deliberately creates more luminous bins than an oil
+/// fireball. Keep each derived point-light contribution bounded while the
+/// source is alive; the broad volume still lights the room through multiple
+/// bins, but does not flatten every wall to white before the mushroom shape
+/// can be read.
+const NUCLEAR_COMBUSTION_SURFACE_LIGHT_SCALE: f32 = 0.22;
 
 /// Fixed-point ABI mirrored by `CombustionLightMoment` in
 /// `volumetrics_inject.comp` (std430: eight tightly packed uints).
@@ -668,7 +684,8 @@ fn combustion_light_from_moment(
         moment.radiant_r as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
         moment.radiant_g as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
         moment.radiant_b as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
-    ];
+    ]
+    .map(|channel| channel * COMBUSTION_SURFACE_LIGHT_BOOST);
     let luma = radiant[0] * 0.2126 + radiant[1] * 0.7152 + radiant[2] * 0.0722;
     if !luma.is_finite() || luma < COMBUSTION_LIGHT_CUTOFF_IRRADIANCE {
         return None;
@@ -760,7 +777,7 @@ fn combustion_light_is_inside_authored_source(
     source_volumes.iter().any(|volume| {
         let profile = volume.profile_params[0];
         let transported = profile.is_finite()
-            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION + 0.5)
+            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
                 .contains(&profile);
         transported
             && volume_contains_position(volume, light_position)
@@ -2422,7 +2439,7 @@ impl VolumetricsPipeline {
     /// slot's fence. One frame-slot of latency is deliberate: it removes a
     /// GPU->CPU stall while still following the advected/cooled field rather
     /// than the current source primitive.
-    pub fn append_combustion_surface_lights(
+pub fn append_combustion_surface_lights(
         &mut self,
         device: &ash::Device,
         frame: usize,
@@ -2463,13 +2480,22 @@ impl VolumetricsPipeline {
             })
             .sum();
         let authored_count = lights.len();
+        let nuclear_source_active = source_volumes.iter().any(|volume| {
+            (volume.profile_params[0] - FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR).abs() < 0.5
+        });
         let mut decoded_candidates = 0;
         let mut suppressed_candidates = 0;
         self.combustion_light_candidates.clear();
         for (bin_index, moment) in moments.into_iter().enumerate() {
-            let Some(light) = combustion_light_from_moment(bin_index, moment, camera_world) else {
+            let Some(mut light) = combustion_light_from_moment(bin_index, moment, camera_world) else {
                 continue;
             };
+            if nuclear_source_active {
+                light.color_type[..3]
+                    .iter_mut()
+                    .for_each(|channel| *channel *= NUCLEAR_COMBUSTION_SURFACE_LIGHT_SCALE);
+                light.position_radius[3] *= NUCLEAR_COMBUSTION_SURFACE_LIGHT_SCALE.sqrt();
+            }
             decoded_candidates += 1;
             // An authored LIGH inside a steady source volume is already the
             // content's surface-light surrogate. Suppress only while this
@@ -3181,7 +3207,14 @@ mod unit_tests {
         for (actual, expected) in light.position_radius[..3].iter().zip(expected) {
             assert!((actual - expected).abs() < 1.0e-3);
         }
-        assert_eq!(&light.color_type[..3], &[1.0, 0.5, 0.25]);
+        assert_eq!(
+            &light.color_type[..3],
+            &[
+                COMBUSTION_SURFACE_LIGHT_BOOST,
+                COMBUSTION_SURFACE_LIGHT_BOOST * 0.5,
+                COMBUSTION_SURFACE_LIGHT_BOOST * 0.25,
+            ]
+        );
         assert_eq!(light.params[2], VISIBILITY_MASK_FULL as f32);
         assert_eq!(light.params[3], ATTENUATION_MODEL_INVERSE_SQUARE as f32);
         assert!(
