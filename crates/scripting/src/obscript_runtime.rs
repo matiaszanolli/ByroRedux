@@ -599,6 +599,12 @@ fn parse_source_call(tokens: &[String]) -> Option<LegacyObscriptCall> {
         Some(LegacyObscriptCall::LoadOrder(
             LegacyObscriptLoadOrderCall::GetNumLoadedPlugins,
         ))
+    } else if command.eq_ignore_ascii_case("GetNthModName") && tokens.len() == 2 {
+        Some(LegacyObscriptCall::LoadOrder(
+            LegacyObscriptLoadOrderCall::GetNthModName {
+                index: tokens[1].parse().ok()?,
+            },
+        ))
     } else if command.starts_with("ext.") {
         let arguments = tokens[1..]
             .iter()
@@ -909,6 +915,17 @@ mod tests {
         expression
     }
 
+    fn compiled_numeric_expression(command: u16, value: i32) -> Vec<u8> {
+        let mut arguments = 1u16.to_le_bytes().to_vec();
+        arguments.push(b'n');
+        arguments.extend_from_slice(&value.to_le_bytes());
+        let mut expression = vec![b'X'];
+        expression.extend_from_slice(&command.to_le_bytes());
+        expression.extend_from_slice(&(arguments.len() as u16).to_le_bytes());
+        expression.extend_from_slice(&arguments);
+        expression
+    }
+
     fn compiled_sdk_expression(qualified_name: &str, arguments: &[ScriptValue]) -> Vec<u8> {
         let payload = encode_legacy_obscript_sdk_call(qualified_name, arguments).unwrap();
         let mut expression = vec![b'X'];
@@ -968,6 +985,14 @@ mod tests {
         condition
     }
 
+    fn compiled_numeric_condition_payload(command: u16, value: i32) -> Vec<u8> {
+        let expression = compiled_numeric_expression(command, value);
+        let mut condition = 0u16.to_le_bytes().to_vec();
+        condition.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        condition.extend_from_slice(&expression);
+        condition
+    }
+
     fn compiled_conditional(event: u16, condition_plugin: &str) -> Vec<u8> {
         let mut begin = event.to_le_bytes().to_vec();
         begin.extend_from_slice(&0u32.to_le_bytes());
@@ -1007,6 +1032,20 @@ mod tests {
         "#;
         let program = compile_legacy_obscript_program(&script(source), source).unwrap();
         assert_eq!(program.handler(LegacyObscriptEvent::GameMode).len(), 2);
+
+        let nth_name = r#"
+            begin GameMode
+                if GetNthModName 1
+                    set index to GetModIndex "Companion Pack.esp"
+                endif
+            end
+        "#;
+        assert!(compile_legacy_obscript_program(&script(nth_name), nth_name).is_some());
+        let invalid_nth_name = nth_name.replace("GetNthModName 1", "GetNthModName one");
+        assert!(
+            compile_legacy_obscript_program(&script(&invalid_nth_name), &invalid_nth_name)
+                .is_none()
+        );
 
         let conditional = r#"
             begin GameMode
@@ -1290,6 +1329,79 @@ mod tests {
         assert_eq!(
             world
                 .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn source_and_source_less_nth_mod_name_conditions_share_content_semantics() {
+        let source = r#"
+            begin GameMode
+                if GetNthModName 1
+                    set index to GetModIndex "Companion Pack.esp"
+                else
+                    set index to GetModIndex "Missing.esp"
+                endif
+            end
+        "#;
+        let mut source_world = World::new();
+        crate::register(&mut source_world);
+        set_legacy_obscript_content_catalog(&source_world, catalog());
+        let source_entity = source_world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut source_world,
+            source_entity,
+            &script(source),
+            None,
+        ));
+        source_world.insert(source_entity, OnCellLoadEvent);
+        legacy_obscript_load_order_system(&source_world, 0.0);
+
+        let mut begin = 21u16.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+        let mut compiled = framed(BEGIN, &begin);
+        compiled.extend(framed(IF, &compiled_numeric_condition_payload(0x1586, 1)));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Companion Pack.esp"),
+        ));
+        compiled.extend(framed(ELSE, &[0, 0]));
+        compiled.extend(framed(
+            SET_TO,
+            &compiled_assignment_payload(7, 0x14af, "Missing.esp"),
+        ));
+        compiled.extend(framed(END_IF, &[]));
+        compiled.extend(framed(END, &[]));
+
+        let mut record = script("");
+        record.source = None;
+        record.locals[1].index = 7;
+        record.compiled = compiled;
+        let mut bytecode_world = World::new();
+        crate::register(&mut bytecode_world);
+        set_legacy_obscript_content_catalog(&bytecode_world, catalog());
+        let bytecode_entity = bytecode_world.spawn();
+        assert!(attach_legacy_obscript_program(
+            &mut bytecode_world,
+            bytecode_entity,
+            &record,
+            Some(ObscriptDialect::Xnvse),
+        ));
+        bytecode_world.insert(bytecode_entity, OnCellLoadEvent);
+        legacy_obscript_load_order_system(&bytecode_world, 0.0);
+
+        assert_eq!(
+            source_world
+                .get::<ScriptVariables>(source_entity)
+                .unwrap()
+                .get_by_name("index"),
+            Some(1.0)
+        );
+        assert_eq!(
+            bytecode_world
+                .get::<ScriptVariables>(bytecode_entity)
                 .unwrap()
                 .get_by_name("index"),
             Some(1.0)

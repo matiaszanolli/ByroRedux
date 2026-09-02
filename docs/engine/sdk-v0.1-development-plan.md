@@ -670,6 +670,11 @@ typed, declaration validation happens before guest entry, and numeric results
 write through the same save-backed `ScriptVariables` path. This is an
 engine-level provider call, not an emulated extender version or injected
 native function.
+The preserved-source path now also lowers the bounded `GetNthModName` numeric
+literal probe already supported by the SCDA decoder. Its result is evaluated
+through the same immutable content catalog, so source-backed and source-less
+SCPT conditionals agree on the classic empty-string/missing-index behavior;
+non-numeric source arguments still reject the whole handler.
 `GetSourceModIndex`, reference construction, and all other xNVSE/OBSE commands
 remain explicit gaps. Command names and legacy result contracts are anchored
 to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)
@@ -1496,6 +1501,15 @@ worlds, and rejects malformed arguments without exposing raw ECS IDs. Papyrus
 object locals now retain that nullable opaque entity value and can pass it to a
 typed provider call; receiver-method dispatch and entity comparisons remain
 future work.
+
+Checkpoint: `feat(scripting): preserve SCPT load-order name probes`.
+
+The preserved-SCPT bridge now lowers source-backed `GetNthModName <index>`
+conditions through the existing bounded content-catalog adapter. A source and
+source-less fixture exercise the same branch result, while malformed numeric
+arguments reject translation before runtime attachment. The broader SCDA
+expression evaluator, non-literal argument resolution, `GetSourceModIndex`,
+reference construction, and unrelated extender commands remain future slices.
 
 ### 14.4 Exit gate
 
