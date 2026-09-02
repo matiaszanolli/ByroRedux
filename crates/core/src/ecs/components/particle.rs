@@ -307,6 +307,20 @@ pub struct ParticleEmitter {
     /// unconditionally, so BGEM-authored palette-remap / soft / lit
     /// particles never reached the shader. See #2610.
     pub effect_shader_flags: u32,
+    /// Bindless index of the greyscale→palette LUT texture the
+    /// `effect_shader_flags` palette bits
+    /// (`material_flag::EFFECT_PALETTE_{COLOR,ALPHA}`) index. Resolved at
+    /// the importer boundary the same way the mesh path resolves
+    /// `MaterialTextureHandles::greyscale_lut`; the renderer forwards this
+    /// verbatim, never re-resolving it.
+    ///
+    /// `0` (the bindless "no texture" sentinel `triangle.frag` gates its
+    /// palette sample on) for heuristic presets and for emitters that
+    /// authored no LUT. Pre-#3590 this was hardcoded `0` unconditionally,
+    /// so the palette bits above could never fire on any particle draw —
+    /// the *instruction* to remap reached the shader (#2610) but the
+    /// palette to remap through never did. See #3590.
+    pub greyscale_lut_index: u32,
     /// Live particle SoA. The emitter owns the dynamic state inline.
     pub particles: ParticleSoA,
 }
@@ -337,6 +351,7 @@ impl Default for ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -370,6 +385,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.6,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -404,6 +420,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -435,6 +452,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 2.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -472,6 +490,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -511,6 +530,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }
@@ -540,6 +560,7 @@ impl ParticleEmitter {
             force_fields: Vec::new(),
             start_size_variation: 0.0,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             particles: ParticleSoA::default(),
         }
     }

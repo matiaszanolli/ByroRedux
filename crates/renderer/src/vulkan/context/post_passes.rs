@@ -1095,11 +1095,22 @@ impl VulkanContext {
             if overlay.is_none() && ui_instance_idx.is_some() {
                 // Mirrors the warn-once the geometry pass carried for this
                 // case before the overlay moved (#2505 / D12-2026-08-07-03).
+                //
+                // #3594 — this condition is reachable via two distinct
+                // causes: `self.mesh_registry.get(ui_quad)` missing the
+                // handle entirely, or the mesh being registered but
+                // global-only (no per-mesh vertex/index buffer). The
+                // message used to name only the second; widened to cover
+                // both rather than mis-attributing the first.
+                // `ui_quad_handle == None` is NOT a live third cause here —
+                // `draw.rs` gates `ui_instance_idx` on it, so `zip` never
+                // short-circuits on that half.
                 static ONCE: std::sync::Once = std::sync::Once::new();
                 ONCE.call_once(|| {
                     log::warn!(
-                        "UI overlay quad has no per-mesh vertex/index buffer \
-                         (global-only) — skipping UI draw. #2505"
+                        "UI overlay quad is unavailable (not in the mesh \
+                         registry, or global-only with no per-mesh vertex/ \
+                         index buffer) — skipping UI draw. #2505"
                     );
                 });
             }

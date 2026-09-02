@@ -279,10 +279,15 @@ pub(super) fn emit_particles(
                 // inert while `greyscale_lut_index == 0`: `triangle.frag`
                 // gates its palette LUT sample on a non-zero index.
                 effect_shader_flags: em.effect_shader_flags,
-                // #890 Stage 2c — particles never carry the greyscale
-                // palette LUT either; the bindless 0 slot signals
-                // "no LUT" in the shader.
-                greyscale_lut_index: 0,
+                // #3590 — forward the LUT the importer boundary resolved
+                // (`scene/nif_loader.rs` / `cell_loader::spawn::
+                // spawn_particle_emitters`), the same verbatim-forward
+                // discipline `effect_shader_flags` above already follows.
+                // `0` (the bindless "no LUT" sentinel `triangle.frag` gates
+                // its palette sample on) for emitters that authored none.
+                // Pre-#3590 this was hardcoded `0` unconditionally, so the
+                // palette bits above could never fire on any particle draw.
+                greyscale_lut_index: em.greyscale_lut_index,
                 supplemental_texture_indices: [0; 16],
                 translucency_subsurface_color: [0.0; 3],
                 translucency_transmissive_scale: 0.0,
@@ -390,6 +395,41 @@ mod quantize_fade_tests {
         let commands = emit(&world);
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].effect_shader_flags, 0);
+    }
+
+    /// #3590 (REN-2026-08-30-D6-03) — the resolved greyscale→palette LUT
+    /// bindless index must reach the particle `DrawCommand`, the same
+    /// verbatim-forward discipline `effect_shader_flags` above already
+    /// follows. Pre-fix this was a hardcoded `0`, so the
+    /// `EFFECT_PALETTE_COLOR`/`EFFECT_PALETTE_ALPHA` bits
+    /// `forwards_authored_effect_shader_flags` pins could never fire on
+    /// any particle draw — the instruction to remap reached the shader,
+    /// but the palette to remap through never did.
+    #[test]
+    fn forwards_authored_greyscale_lut_index() {
+        let world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
+        {
+            let mut q = world.query_mut::<ParticleEmitter>().unwrap();
+            let (e, _) = q.iter_mut().next().map(|(e, _)| (e, ())).unwrap();
+            q.get_mut(e).unwrap().greyscale_lut_index = 42;
+        }
+        let commands = emit(&world);
+        assert_eq!(commands.len(), 1, "one live particle expected");
+        assert_eq!(
+            commands[0].greyscale_lut_index, 42,
+            "the importer-resolved LUT handle must ride through to the DrawCommand"
+        );
+    }
+
+    /// The unauthored case stays at `0` (the bindless "no LUT" sentinel
+    /// `triangle.frag` gates its palette sample on) — heuristic presets
+    /// and NIFs that authored no LUT must not fabricate a texture index.
+    #[test]
+    fn unauthored_greyscale_lut_index_stays_zero() {
+        let world = world_with_one_particle(Some(9), [0.0, 0.0, 0.0]);
+        let commands = emit(&world);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].greyscale_lut_index, 0);
     }
 
     #[test]

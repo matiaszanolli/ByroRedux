@@ -1084,6 +1084,16 @@ fn spawn_particle_emitters(
         // re-derived in the renderer.
         preset.effect_shader_flags =
             crate::cell_loader::pack_effect_shader_flags(em.effect_shader.as_ref());
+        // #3590 — see the sibling site in `scene/nif_loader.rs`: resolve the
+        // greyscale→palette LUT the palette bits above index. Gated on
+        // `Some` so an emitter with no authored LUT keeps bindless slot 0
+        // (the shader's "no LUT" sentinel) rather than `resolve_texture`'s
+        // neutral-fallback handle for an absent path.
+        preset.greyscale_lut_index = em
+            .greyscale_lut_map
+            .as_deref()
+            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
+            .unwrap_or(0);
 
         // Alpha-over fog/smoke and additive flame/ember are both participating
         // media, not transparent geometry. Replace the billboard system at the

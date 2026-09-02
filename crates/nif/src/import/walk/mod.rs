@@ -58,11 +58,30 @@ fn extract_particle_material(
         .texture_path
         .and_then(|path| pool.resolve(path).map(str::to_owned));
     let authored_blend = info.alpha_blend || info.alpha_blend_authored;
+    // #3590 — the greyscale→palette LUT texture the two `effect_shader`
+    // palette bits (`effect_palette_color`/`effect_palette_alpha`) index.
+    // Mirrors the mesh path's exact resolution order
+    // (`crates/nif/src/import/material/mod.rs`'s `greyscale_lut_map.or_else`
+    // fallback to `effect_shader.greyscale_texture`): prefer the dedicated
+    // `BSShaderTextureSet` slot 3 (FO4/FO76), fall back to the BGEM
+    // `greyscale_texture` field (the older/common authoring path) when the
+    // NIF didn't bind slot 3. Without this, `pack_effect_shader_flags`
+    // still sets the palette bits from `effect_shader` below, but nothing
+    // ever carries the palette itself past this boundary — see the issue.
+    let greyscale_lut_map = info
+        .greyscale_lut_map
+        .and_then(|path| pool.resolve(path).map(str::to_owned))
+        .or_else(|| {
+            info.effect_shader
+                .as_ref()
+                .and_then(|data| data.greyscale_texture.clone())
+        });
     ParticleMaterial {
         texture_path,
         src_blend: authored_blend.then_some(info.src_blend_mode),
         dst_blend: authored_blend.then_some(info.dst_blend_mode),
         effect_shader: info.effect_shader,
+        greyscale_lut_map,
     }
 }
 
@@ -73,6 +92,10 @@ struct ParticleMaterial {
     src_blend: Option<u8>,
     dst_blend: Option<u8>,
     effect_shader: Option<crate::import::BsEffectShaderData>,
+    /// #3590 — the greyscale→palette LUT texture path, when authored. See
+    /// [`extract_particle_material`]'s doc comment for the resolution
+    /// order.
+    greyscale_lut_map: Option<String>,
 }
 
 /// SK-D4-04 / #564 — return `true` when any of `node`'s extra_data refs
@@ -616,6 +639,7 @@ pub(super) fn walk_node_hierarchical(
                 src_blend: pmat.src_blend,
                 dst_blend: pmat.dst_blend,
                 effect_shader: pmat.effect_shader,
+                greyscale_lut_map: pmat.greyscale_lut_map,
                 local_translation: zup_point_to_yup(&ps.transform.translation),
                 local_rotation: zup_matrix_to_yup_quat(&ps.transform.rotation),
                 local_scale: ps.transform.scale,
@@ -1667,6 +1691,7 @@ pub(super) fn walk_node_particle_emitters_flat(
             src_blend: pmat.src_blend,
             dst_blend: pmat.dst_blend,
             effect_shader: pmat.effect_shader,
+            greyscale_lut_map: pmat.greyscale_lut_map,
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),

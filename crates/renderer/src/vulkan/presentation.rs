@@ -701,7 +701,8 @@ impl PresentationPipeline {
         const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
             assert!(
                 UI_PIPELINE_DYNAMIC_STATES.len() == 2,
-                "UI overlay path covers VIEWPORT + SCISSOR only —                  extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+                "UI overlay path covers VIEWPORT + SCISSOR only — \
+                 extend it before growing UI_PIPELINE_DYNAMIC_STATES",
             );
         };
         let viewport = vk::Viewport {

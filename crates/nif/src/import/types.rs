@@ -1551,6 +1551,17 @@ pub struct ImportedParticleEmitter {
     /// particle draws. Pre-#2610 the walker built this data and dropped it,
     /// so every particle `DrawCommand` shipped `effect_shader_flags: 0`.
     pub effect_shader: Option<BsEffectShaderData>,
+    /// #3590 — the greyscale→palette LUT texture the effect-shader
+    /// `effect_palette_color`/`effect_palette_alpha` bits (packed into
+    /// `effect_shader_flags` above) index. Prefers the dedicated
+    /// `BSShaderTextureSet` slot 3 (FO4/FO76), falls back to
+    /// `effect_shader`'s own `greyscale_texture` — mirrors
+    /// `ImportedMaterial::greyscale_lut`'s resolution order on the mesh
+    /// path. Pre-#3590 this was dropped entirely, so a particle system
+    /// that authored a palette remap forwarded the *instruction* to remap
+    /// without the palette to remap through, and rendered as the
+    /// un-remapped luminance sprite.
+    pub greyscale_lut_map: Option<String>,
     /// The particle block's own local translation (Y-up), relative to
     /// the host node. Pre-#1333 the `NiParticleSystem`'s `NiAVObjectData`
     /// base was parsed then dropped, so an emitter authored with a
@@ -1707,6 +1718,9 @@ pub struct ImportedParticleEmitterFlat {
     /// Mirror of [`ImportedParticleEmitter::effect_shader`] for the flat
     /// (cell-loader) path. See #2610.
     pub effect_shader: Option<BsEffectShaderData>,
+    /// Mirror of [`ImportedParticleEmitter::greyscale_lut_map`] for the
+    /// flat (cell-loader) path. See #3590.
+    pub greyscale_lut_map: Option<String>,
 }
 
 #[cfg(test)]

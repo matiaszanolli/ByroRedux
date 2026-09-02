@@ -626,6 +626,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // `cell_loader::spawn::spawn_particle_emitters`.
         preset.effect_shader_flags =
             crate::cell_loader::pack_effect_shader_flags(emitter.effect_shader.as_ref());
+        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
+        // palette bits above index, the same way the mesh path resolves
+        // `MaterialTextureHandles::greyscale_lut`. Gated on `Some`, not a
+        // bare `resolve_texture` call: an emitter that authored no LUT must
+        // keep reading bindless slot 0 (the shader's "no LUT" sentinel), not
+        // `resolve_texture`'s neutral-fallback handle for an absent path.
+        // Mirrored in `cell_loader::spawn::spawn_particle_emitters`.
+        preset.greyscale_lut_index = emitter
+            .greyscale_lut_map
+            .as_deref()
+            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
+            .unwrap_or(0);
 
         let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
         let texture_handle = if fog_volume.is_none() {

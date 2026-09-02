@@ -169,7 +169,28 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatK
             f.format == vk::Format::B8G8R8A8_SRGB
                 && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         })
-        .unwrap_or(formats[0])
+        .unwrap_or_else(|| {
+            // #3595 — #3426's UI-overlay exact-colour-round-trip argument
+            // (Ruffle's sRGB-encoded capture -> linearising sampler ->
+            // linear-space blend -> hardware sRGB re-encode on write) is
+            // premised on the swapchain attachment actually being
+            // `B8G8R8A8_SRGB` + `SRGB_NONLINEAR`. That pair is present on
+            // every desktop driver this project targets, so this arm has
+            // no observed hit — but a silent fallback under a documented
+            // invariant is still a gap: log it so a colour-shifted overlay
+            // on some future surface has a paper trail instead of "it just
+            // looks wrong".
+            let fallback = formats[0];
+            log::warn!(
+                "No B8G8R8A8_SRGB + SRGB_NONLINEAR surface format available; \
+                 falling back to {:?}/{:?}. The UI overlay's sRGB round-trip \
+                 (linearise on sample, hardware re-encode on write) depends \
+                 on an sRGB swapchain attachment — expect the overlay to \
+                 render too dark or washed out on this surface.",
+                fallback.format, fallback.color_space,
+            );
+            fallback
+        })
 }
 
 fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
@@ -285,5 +306,66 @@ impl SwapchainState {
                 .destroy_swapchain(self.swapchain, None);
             self.swapchain = vk::SwapchainKHR::null();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt(format: vk::Format, color_space: vk::ColorSpaceKHR) -> vk::SurfaceFormatKHR {
+        vk::SurfaceFormatKHR {
+            format,
+            color_space,
+        }
+    }
+
+    /// #3595 — the documented invariant (#3426's UI-overlay exact-colour-
+    /// round-trip argument) depends on this exact pair being selected when
+    /// the surface offers it, even if it isn't first in the list.
+    #[test]
+    fn choose_surface_format_prefers_srgb_b8g8r8a8_when_present() {
+        let formats = [
+            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(vk::Format::B8G8R8A8_SRGB, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        ];
+        let chosen = choose_surface_format(&formats);
+        assert_eq!(chosen.format, vk::Format::B8G8R8A8_SRGB);
+        assert_eq!(chosen.color_space, vk::ColorSpaceKHR::SRGB_NONLINEAR);
+    }
+
+    /// The fallback path #3595 adds a `log::warn!` to: when no
+    /// `B8G8R8A8_SRGB` + `SRGB_NONLINEAR` entry exists, the first
+    /// surface-advertised format is still returned (never a panic — a
+    /// missing sRGB pair is a colour-accuracy problem, not a fatal one).
+    #[test]
+    fn choose_surface_format_falls_back_to_the_first_advertised_format() {
+        let formats = [
+            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        ];
+        let chosen = choose_surface_format(&formats);
+        assert_eq!(chosen.format, vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(chosen.color_space, vk::ColorSpaceKHR::SRGB_NONLINEAR);
+    }
+
+    /// The right format alone isn't sufficient — a `B8G8R8A8_SRGB` entry
+    /// paired with a non-`SRGB_NONLINEAR` colour space must not match
+    /// either (both halves of the `find` predicate are load-bearing).
+    #[test]
+    fn choose_surface_format_requires_both_the_format_and_the_color_space() {
+        let formats = [
+            fmt(vk::Format::B8G8R8A8_SRGB, vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT),
+            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        ];
+        let chosen = choose_surface_format(&formats);
+        assert_eq!(
+            chosen.format,
+            vk::Format::B8G8R8A8_SRGB,
+            "falls back to formats[0] — the mismatched-color-space entry \
+             must not have matched the preference"
+        );
+        assert_eq!(chosen.color_space, vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT);
     }
 }
