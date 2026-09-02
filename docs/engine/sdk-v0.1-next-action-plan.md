@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: pending (`feat(sdk): integrate engine player identity alias`)
+Checkpoint: `0f42c0cc` (`feat(sdk): integrate engine player identity alias`)
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
