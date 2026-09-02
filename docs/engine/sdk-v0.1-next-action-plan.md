@@ -1,8 +1,8 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `77eb8f6d` (`feat(sdk): compare engine entity handles`)
-Date: 2026-09-01
+Checkpoint: `81b992e6` (`feat(sdk): preserve loaded plugin count aliases`)
+Date: 2026-09-02
 
 This is the hand-off plan after the first extended SDK implementation pass.
 The engine-owned boundary is useful already, but the SDK is not finished and
@@ -61,6 +61,9 @@ typed result and deferred mutation across a wait and save/reload boundary.
   lowers through the same bounded immutable content catalog as the existing
   SCDA opcode path. Source and source-less conditional fixtures agree, and a
   non-numeric source argument rejects translation before attachment.
+- **Delivered in this slice:** the `GetNumLoadedPlugins` source spelling now
+  normalizes through the shared catalog-count adapter, with strict zero-argument
+  validation and a live source fixture writing the engine's plugin count.
 - Extend the bounded SCDA expression evaluator and non-literal argument
   handling only for commands with a semantic SDK route.
 - Add the remaining safe load-order/content commands and explicit diagnostics
