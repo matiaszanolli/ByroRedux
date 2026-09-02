@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `44ad6b2b` (`feat(scripting): preserve SCPT load-order name probes`)
+Checkpoint: `77eb8f6d` (`feat(sdk): compare engine entity handles`)
 Date: 2026-09-01
 
 This is the hand-off plan after the first extended SDK implementation pass.
@@ -39,8 +39,11 @@ unsupported call.
   return `None`, and malformed arguments fail closed.
 - **Delivered with the player bridge:** Papyrus `ObjectReference` locals can
   hold nullable opaque entity results and pass them to typed provider calls;
-  receiver-method dispatch and entity comparisons remain intentionally out of
-  scope.
+  receiver-method dispatch remains intentionally out of scope.
+- **Delivered in this slice:** provider conditions can compare engine-owned
+  entity handles by stable identity with `==` and `!=`, including `None` for
+  missing-player/null object results. Ordered entity comparisons and runtime
+  type mismatches remain fail-closed.
 - Continue with receiver object expressions and the next justified latent
   primitive.
 - Add broader event coverage only when the canonical ECS payload and save
