@@ -37,7 +37,12 @@ unsupported call.
   engine's canonical `PlayerEntity` resource and the same stable generational
   entity-handle registry used by sandbox projections. No-player/flycam worlds
   return `None`, and malformed arguments fail closed.
-- Continue with object expressions and the next justified latent primitive.
+- **Delivered with the player bridge:** Papyrus `ObjectReference` locals can
+  hold nullable opaque entity results and pass them to typed provider calls;
+  receiver-method dispatch and entity comparisons remain intentionally out of
+  scope.
+- Continue with receiver object expressions and the next justified latent
+  primitive.
 - Add broader event coverage only when the canonical ECS payload and save
   behavior exist; preserve guard-free guest entry and whole-handler rejection
   on unsupported syntax.

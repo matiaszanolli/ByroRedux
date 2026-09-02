@@ -1492,7 +1492,10 @@ Checkpoint: `feat(sdk): integrate engine player identity alias`.
 the engine-owned provider host. A late-stage synchronization publishes the
 canonical `systems::PlayerEntity` body before callbacks; the host converts it
 to a stable generational `EntityRef`, returns `None` for flycam/no-player
-worlds, and rejects malformed arguments without exposing raw ECS IDs.
+worlds, and rejects malformed arguments without exposing raw ECS IDs. Papyrus
+object locals now retain that nullable opaque entity value and can pass it to a
+typed provider call; receiver-method dispatch and entity comparisons remain
+future work.
 
 ### 14.4 Exit gate
 

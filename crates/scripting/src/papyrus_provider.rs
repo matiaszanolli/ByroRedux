@@ -2063,6 +2063,7 @@ fn sdk_type(value: &Type) -> Option<ScriptValueType> {
         Type::Int => Some(ScriptValueType::Integer),
         Type::Float => Some(ScriptValueType::Float),
         Type::String => Some(ScriptValueType::String),
+        Type::Object(_) => Some(ScriptValueType::Entity),
         Type::Array(element) => match element.as_ref() {
             Type::Bool => Some(ScriptValueType::BooleanArray),
             Type::Int => Some(ScriptValueType::IntegerArray),
@@ -4944,6 +4945,67 @@ mod tests {
                     ],
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn game_get_player_binds_to_an_opaque_object_local() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                ObjectReference player
+                player = Game.GetPlayer()
+                WeatherNative.InspectEntity(player)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let extension = ExtensionId::new("org.example.weather").unwrap();
+        provider_catalog
+            .insert(&extension, &entity_declaration())
+            .unwrap();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE {
+                    Ok(ScriptValue::Entity(EntityRef::new(1, 7).unwrap()))
+                } else {
+                    Ok(ScriptValue::String("inspected".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            (
+                byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE.to_owned(),
+                Vec::new()
+            )
+        );
+        assert_eq!(calls[1].0, "ext.org.example.weather.inspect-entity");
+        assert_eq!(
+            calls[1].1,
+            vec![ScriptValue::Entity(EntityRef::new(1, 7).unwrap())]
         );
     }
 
