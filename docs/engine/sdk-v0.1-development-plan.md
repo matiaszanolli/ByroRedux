@@ -675,6 +675,9 @@ literal probe already supported by the SCDA decoder. Its result is evaluated
 through the same immutable content catalog, so source-backed and source-less
 SCPT conditionals agree on the classic empty-string/missing-index behavior;
 non-numeric source arguments still reject the whole handler.
+The shared load-order adapter now also preserves the `GetNumLoadedPlugins`
+source spelling as an explicit zero-argument catalog-count call, rejecting
+argument-bearing forms instead of silently accepting malformed records.
 `GetSourceModIndex`, reference construction, and all other xNVSE/OBSE commands
 remain explicit gaps. Command names and legacy result contracts are anchored
 to the [xNVSE implementation](https://github.com/xNVSE/NVSE/blob/master/nvse/nvse/Commands_Game.cpp)

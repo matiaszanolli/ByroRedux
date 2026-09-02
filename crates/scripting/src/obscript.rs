@@ -53,10 +53,14 @@ impl std::fmt::Display for ObscriptLoadOrderCallError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidArguments { command, expected } => {
-                write!(
-                    formatter,
-                    "{command} requires exactly one {expected} literal argument"
-                )
+                if *expected == "no arguments" {
+                    write!(formatter, "{command} does not accept arguments")
+                } else {
+                    write!(
+                        formatter,
+                        "{command} requires exactly one {expected} literal argument"
+                    )
+                }
             }
             Self::NumericOutOfRange => formatter
                 .write_str("GetNthModName numeric argument is outside the ObScript i32 range"),
@@ -439,6 +443,16 @@ pub fn legacy_load_order_call(
             expected: "string",
         }),
     };
+    let no_arguments = || {
+        if call.arguments.is_empty() {
+            Ok(())
+        } else {
+            Err(ObscriptLoadOrderCallError::InvalidArguments {
+                command: call.command,
+                expected: "no arguments",
+            })
+        }
+    };
     let result = match call.command {
         "IsModLoaded" => LegacyObscriptLoadOrderCall::IsModLoaded {
             plugin: string_argument()?,
@@ -446,7 +460,14 @@ pub fn legacy_load_order_call(
         "GetModIndex" => LegacyObscriptLoadOrderCall::GetModIndex {
             plugin: string_argument()?,
         },
-        "GetNumLoadedMods" => LegacyObscriptLoadOrderCall::GetNumLoadedMods,
+        "GetNumLoadedMods" => {
+            no_arguments()?;
+            LegacyObscriptLoadOrderCall::GetNumLoadedMods
+        }
+        "GetNumLoadedPlugins" => {
+            no_arguments()?;
+            LegacyObscriptLoadOrderCall::GetNumLoadedPlugins
+        }
         "GetNthModName" => {
             let index = match call.arguments.as_slice() {
                 [ObscriptArgument::Integer(value)] => *value,
@@ -492,7 +513,8 @@ fn malformed(decoded: &mut ObscriptDecode, byte_offset: usize, message: &'static
 mod tests {
     use super::*;
     use byroredux_sdk::compatibility::{
-        adapt_legacy_obscript_load_order, LegacyObscriptLoadOrderResult,
+        adapt_legacy_obscript_load_order, LegacyObscriptLoadOrderCall,
+        LegacyObscriptLoadOrderResult,
     };
     use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
 
@@ -623,6 +645,42 @@ mod tests {
         assert_eq!(
             adapt_legacy_obscript_load_order(&catalog, call),
             Ok(LegacyObscriptLoadOrderResult::Integer(1))
+        );
+    }
+
+    #[test]
+    fn compiled_get_num_loaded_plugins_preserves_catalog_count() {
+        let call = ObscriptCall {
+            command: "GetNumLoadedPlugins",
+            byte_offset: 0,
+            arguments: Vec::new(),
+        };
+        let call = legacy_load_order_call(&call)
+            .unwrap()
+            .expect("load-order command");
+        assert_eq!(call, LegacyObscriptLoadOrderCall::GetNumLoadedPlugins);
+
+        let catalog = ContentCatalog::new(vec![
+            PluginInfo::new("FalloutNV.esm", [1; 16], PluginKind::Regular).unwrap(),
+            PluginInfo::new("Companion.esp", [2; 16], PluginKind::Regular).unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            adapt_legacy_obscript_load_order(&catalog, call),
+            Ok(LegacyObscriptLoadOrderResult::Integer(2))
+        );
+
+        let malformed = ObscriptCall {
+            command: "GetNumLoadedPlugins",
+            byte_offset: 0,
+            arguments: vec![ObscriptArgument::Integer(1)],
+        };
+        assert_eq!(
+            legacy_load_order_call(&malformed),
+            Err(ObscriptLoadOrderCallError::InvalidArguments {
+                command: "GetNumLoadedPlugins",
+                expected: "no arguments",
+            })
         );
     }
 }

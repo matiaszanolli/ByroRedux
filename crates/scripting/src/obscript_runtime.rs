@@ -1028,10 +1028,17 @@ mod tests {
             begin GameMode
                 set loaded to IsModLoaded "Companion Pack.esp" ; exact basename
                 set index to GetModIndex "Companion Pack.esp"
+                set pluginCount to GetNumLoadedPlugins
             end
         "#;
-        let program = compile_legacy_obscript_program(&script(source), source).unwrap();
-        assert_eq!(program.handler(LegacyObscriptEvent::GameMode).len(), 2);
+        let mut source_record = script(source);
+        source_record.locals.push(ScriptLocalVar {
+            index: 2,
+            var_type: 2,
+            name: "pluginCount".to_owned(),
+        });
+        let program = compile_legacy_obscript_program(&source_record, source).unwrap();
+        assert_eq!(program.handler(LegacyObscriptEvent::GameMode).len(), 3);
 
         let nth_name = r#"
             begin GameMode
@@ -1095,6 +1102,40 @@ mod tests {
             end
         "#;
         assert!(compile_legacy_obscript_program(&script(filtered), filtered).is_none());
+    }
+
+    #[test]
+    fn source_get_num_loaded_plugins_executes_against_engine_content_catalog() {
+        let source = r#"
+            scn CompatibilityGate
+            begin GameMode
+                set pluginCount to GetNumLoadedPlugins
+            end
+        "#;
+        let mut world = World::new();
+        crate::register(&mut world);
+        set_legacy_obscript_content_catalog(&world, catalog());
+        let entity = world.spawn();
+        let mut record = script(source);
+        record.locals.push(ScriptLocalVar {
+            index: 2,
+            var_type: 2,
+            name: "pluginCount".to_owned(),
+        });
+        assert!(compile_legacy_obscript_program(&record, source).is_some());
+        assert!(attach_legacy_obscript_program(
+            &mut world, entity, &record, None,
+        ));
+
+        legacy_obscript_load_order_system(&world, 0.0);
+
+        assert_eq!(
+            world
+                .get::<ScriptVariables>(entity)
+                .unwrap()
+                .get_by_name("pluginCount"),
+            Some(2.0)
+        );
     }
 
     #[test]
