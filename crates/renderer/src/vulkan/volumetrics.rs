@@ -137,6 +137,16 @@ pub struct VolumetricsParams {
     /// clamped by [`VolumetricsPipeline::dispatch`] after successful-history
     /// time accounting.
     pub fog_reference: [f32; 4],
+    /// xy = normalized horizontal wind direction in renderer X/Z space,
+    /// z = base wind speed and w = gust amplitude, both in world units per
+    /// second. Wind is an external advection velocity; it is deliberately
+    /// kept separate from the transported local velocity so changing weather
+    /// cannot compound into an ever-growing field.
+    pub wind_params: [f32; 4],
+    /// x = gust cycles per second. The remaining lanes are reserved so this
+    /// stays a std140 vec4 and can grow into height/shear parameters without
+    /// changing the preceding ABI.
+    pub wind_gust: [f32; 4],
 }
 
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
@@ -2979,7 +2989,10 @@ mod unit_tests {
             "layout(set = 0, binding = 17) uniform sampler3D previousCombustionDynamics;",
             "layout(rgba16f, set = 0, binding = 22) uniform writeonly image3D combustionOptical;",
             "layout(set = 0, binding = 23) uniform sampler3D previousCombustionOptical;",
+            "vec4 wind_params;",
+            "vec4 wind_gust;",
             "vec3 blackbodyChromaticity(float kelvin)",
+            "vec3 atmosphericWindVelocity(vec3 worldPos)",
             "void transportCombustion(",
             "intersectUnitSphereSegment",
             "intersectUnitBoxSegment",
@@ -2994,7 +3007,8 @@ mod unit_tests {
             "chemistry.z = max(chemistry.z, sourceSigmaT);",
             "optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);",
             "dynamics.xz = mix(dynamics.xz, lateralTarget, velocityResponse);",
-            "vec3 sourcePosition = worldPos - midpointDynamics.xyz * dt;",
+            "vec3 sourcePosition = worldPos",
+            "midpointDynamics.xyz + midpointWind",
             "bool sourceInHistory = samplePreviousTransport(",
             "&& carriesCombustion(sourceChemistry, sourceOptical)",
             "bool incomingDynamicsFromNeighbors(",
@@ -3013,11 +3027,12 @@ mod unit_tests {
             "bool rigidBoundaryNormal(",
             "float inwardSpeed = min(dot(dynamics.xyz, boundaryNormal), 0.0);",
             "dynamics.xyz -= boundaryNormal * inwardSpeed;",
-            "vec3 predictedPosition = worldPos + dynamics.xyz * dt;",
+            "vec3 predictedPosition = worldPos",
+            "atmosphericWindVelocity(worldPos)",
             "float ageSeconds = age * lifetime;",
             "EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35",
             "radius / EXPLOSION_EXPANSION_TIME_SECONDS",
-            "compactCore * impulseEnvelope",
+            "ignitionCoverage * impulseEnvelope",
             ": densityProfile * smokeEnvelope * 0.38;",
             "float fuelFraction = clamp(chemistry.x, 0.0, 1.0);",
             "float oxidizer = 1.0 - fuelFraction;",

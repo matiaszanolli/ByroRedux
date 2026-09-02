@@ -556,6 +556,9 @@ fn fire_regime(host_name: &str, texture_path: Option<&str>) -> Option<Combustion
     if has_ember_token(host_name) || has_ember_token(texture_path) {
         return Some(CombustionRegime::EMBER);
     }
+    if has_gas_flame_token(host_name) || has_gas_flame_token(texture_path) {
+        return Some(CombustionRegime::GAS_FLAME);
+    }
     if has_flame_token(host_name) || has_flame_token(texture_path) {
         return Some(CombustionRegime::FLAME);
     }
@@ -580,6 +583,26 @@ fn has_flame_token(value: &str) -> bool {
     const FLAME_TOKENS: [&str; 6] = ["fire", "flame", "torch", "candle", "blaze", "campfire"];
     let value = value.to_ascii_lowercase();
     FLAME_TOKENS.iter().any(|token| value.contains(token))
+}
+
+/// Gas appliances need a compact blue reaction zone instead of the orange,
+/// soot-rich diffusion flame selected by the generic fire tokens. Keep the
+/// table deliberately source-oriented: a future magic or energy weapon can
+/// add a regime without pretending that an authored sprite tint is fuel
+/// chemistry.
+fn has_gas_flame_token(value: &str) -> bool {
+    const GAS_FLAME_TOKENS: [&str; 8] = [
+        "gas flame",
+        "gasflame",
+        "natural gas",
+        "naturalgas",
+        "methane",
+        "propane",
+        "butane",
+        "bunsen",
+    ];
+    let value = value.to_ascii_lowercase();
+    GAS_FLAME_TOKENS.iter().any(|token| value.contains(token))
 }
 
 fn has_explosion_token(value: &str) -> bool {
@@ -618,12 +641,18 @@ fn explosion_profile_for_particle(
     if has_fog_token(host_name) || has_fog_token(texture_path) {
         return None;
     }
-    let explosion = has_explosion_token(host_name) || has_explosion_token(texture_path);
+    // Some Fallout high-yield emitters are named for the weapon (`FatMan`,
+    // `MiniNuke`) rather than the event. Treat a nuclear signature as an
+    // explosion signature too, while keeping explicit smoke/fog names above
+    // authoritative.
+    let nuclear = has_nuclear_explosion_token(host_name)
+        || has_nuclear_explosion_token(texture_path);
+    let explosion = has_explosion_token(host_name)
+        || has_explosion_token(texture_path)
+        || nuclear;
     if !explosion {
         return None;
     }
-    let nuclear = has_nuclear_explosion_token(host_name)
-        || has_nuclear_explosion_token(texture_path);
     Some(if nuclear {
         FogProfile::NuclearExplosion
     } else {
@@ -783,6 +812,35 @@ mod tests {
         // Soot absorbs far more than it scatters — this is what makes the
         // emission term dominant rather than decorative.
         assert!(volume.single_scatter_albedo[0] < 0.5);
+    }
+
+    #[test]
+    fn gas_flame_uses_a_hotter_bluer_source_regime() {
+        if !fire_path_active() {
+            return;
+        }
+        let ordinary = fire_volume_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
+            .expect("ordinary flame");
+        let gas = fire_volume_from_particle(
+            "NaturalGasFlame01",
+            &ParticleEmitter::torch_flame(),
+        )
+        .expect("gas flame");
+        assert_eq!(
+            gas.emission_temperature_k,
+            CombustionRegime::GAS_FLAME.temperature_k()
+        );
+        assert!(gas.emission_temperature_k > ordinary.emission_temperature_k);
+        let ordinary_blue_ratio = ordinary.emissive_radiance[2]
+            / ordinary.emissive_radiance[0].max(1.0e-6);
+        let gas_blue_ratio =
+            gas.emissive_radiance[2] / gas.emissive_radiance[0].max(1.0e-6);
+        assert!(
+            gas_blue_ratio > ordinary_blue_ratio,
+            "gas flame must shift blueward: ordinary {:?}, gas {:?}",
+            ordinary.emissive_radiance,
+            gas.emissive_radiance
+        );
     }
 
     /// Embers are cooler than flame, so they must be both redder AND
@@ -1000,6 +1058,10 @@ mod tests {
             CombustionRegime::NUCLEAR_EXPLOSION.temperature_k()
         );
         assert!(volume.emissive_radiance.iter().sum::<f32>() > 0.0);
+
+        let weapon_named_emitter = explosion_volume_from_particle("FatMan", &emitter)
+            .expect("a weapon-named high-yield emitter must still become nuclear medium");
+        assert_eq!(weapon_named_emitter.profile, FogProfile::NuclearExplosion);
     }
 
     /// Smoke must stay passive — the emission field exists, so it would be

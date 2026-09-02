@@ -82,6 +82,11 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // the camera, or camera Y as a fallback. y = emissive history weight,
     // z = adaptive local-light cap, w = clamped simulation delta seconds.
     vec4 fog_reference;
+    // xy = normalized horizontal wind direction in renderer X/Z space,
+    // z = base speed and w = gust amplitude, in world units per second.
+    vec4 wind_params;
+    // x = gust cycles per second. Remaining lanes are reserved.
+    vec4 wind_gust;
 } params;
 
 // Phase 2c — scene TLAS. Updated each frame from the host side via
@@ -416,6 +421,9 @@ float localProfileRadius(
             abs(normalizedOffset.y - stemCenter) / max(stemHalfHeight, 0.05),
             length(normalizedOffset.xz - wobble * 0.45) / stemRadius
         );
+        // `cap` and `stem` are distance-like masks: values below one are
+        // inside. Taking their minimum therefore forms the volumetric union
+        // (the mushroom silhouette), rather than a fragile intersection.
         return mix(fireball, min(cap, stem), mushroomMature);
     }
 
@@ -451,7 +459,8 @@ float localDensityProfile(
     vec2 turbulence,
     float seed,
     float timeSeconds,
-    float explosionAge
+    float explosionAge,
+    float explosionAgeSeconds
 ) {
     float boundary = 1.0 - smoothstep(1.0 - edge, 1.0, profileRadius);
     if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
@@ -476,8 +485,12 @@ float localDensityProfile(
         // surrounded by opacity that did not emit.
         float evolvingBody = mix(core + shell * 0.40, shell + core * 0.16, smokeTransition);
         float nuclearCap = isNuclear
-            ? smoothstep(0.24, 0.58, explosionAge)
-                * (1.0 - smoothstep(0.88, 1.0, explosionAge))
+            // Use physical seconds here as well as in the geometry path. A
+            // nuclear source can have an 8 s authored lifetime, but its cap
+            // should begin forming around one second, not at 24% of that
+            // lifetime (which would delay the mushroom until 1.9 s).
+            ? smoothstep(0.35, 1.25, explosionAgeSeconds)
+                * (1.0 - smoothstep(4.8, 7.2, explosionAgeSeconds))
             : 0.0;
         float capBody = max(evolvingBody, nuclearCap * 0.75);
         float dissipate = isNuclear
@@ -661,7 +674,8 @@ bool evaluateLocalFogVolume(
         localTurbulence,
         seed,
         timeSeconds,
-        explosionAge
+        explosionAge,
+        explosionAgeSeconds
     );
     return densityProfile > 1.0e-6;
 }
@@ -1072,12 +1086,12 @@ void applyCombustionSources(
         float lifetime = max(volume.profile_params.z, 0.12);
         float ageSeconds = age * lifetime;
         float ignitionEnvelope = nuclearExplosion
-            ? 1.0 - smoothstep(0.06, 0.32, age)
-            : 1.0 - smoothstep(0.18, 0.52, age);
+            ? 1.0 - smoothstep(0.20, 1.0, ageSeconds)
+            : 1.0 - smoothstep(0.12, 0.75, ageSeconds);
         float smokeEnvelope = nuclearExplosion
-            ? smoothstep(0.10, 0.40, age)
+            ? smoothstep(0.35, 1.8, ageSeconds)
                 * (1.0 - smoothstep(0.96, 1.0, age))
-            : smoothstep(0.18, 0.72, age)
+            : smoothstep(0.35, 1.25, ageSeconds)
                 * (1.0 - smoothstep(0.88, 1.0, age));
         bool coldHistory = params.prev_camera_pos.w <= 0.5;
         float impulseEnvelope = 1.0 - smoothstep(
@@ -1750,6 +1764,8 @@ bool combustionPathBlocked(
     return true;
 }
 
+vec3 atmosphericWindVelocity(vec3 worldPos);
+
 // Semi-Lagrangian advection normally backtraces with the velocity already at
 // the destination. That is insufficient at a plume's leading edge: the empty
 // destination has zero velocity, so it can never discover the active cell
@@ -1792,7 +1808,7 @@ bool incomingDynamicsFromNeighbors(
             continue;
         }
         float closingSpeed = dot(
-            candidateDynamics.xyz,
+            candidateDynamics.xyz + atmosphericWindVelocity(candidatePosition),
             towardDestination / neighborDistance
         );
         if (closingSpeed <= 0.04) {
@@ -1815,6 +1831,34 @@ bool incomingDynamicsFromNeighbors(
         }
     }
     return found;
+}
+
+// Weather wind is an external advection field, not a force written into the
+// transported velocity image. Keeping the two separate is important: a gust
+// can change between frames without being integrated repeatedly into an
+// ever-growing velocity. The small spatial phase gives a coherent front to
+// the gust instead of making every smoke column pulse in lockstep. A mild
+// height shear lets the upper plume outrun its grounded source, which is what
+// exposes the roll-up/vortex structure instead of translating a rigid blob.
+vec3 atmosphericWindVelocity(vec3 worldPos) {
+    vec2 direction = params.wind_params.xy;
+    float directionLength = length(direction);
+    if (directionLength <= 1.0e-5) {
+        return vec3(0.0);
+    }
+    direction /= directionLength;
+    float baseSpeed = max(params.wind_params.z, 0.0);
+    float gustAmplitude = max(params.wind_params.w, 0.0);
+    float gustFrequency = max(params.wind_gust.x, 0.0);
+    float phase = params.temporal_params.z
+        * gustFrequency
+        * 2.0 * PI
+        + dot(worldPos.xz, direction) * 0.008;
+    float speed = max(baseSpeed + gustAmplitude * sin(phase), 0.0);
+    float heightMetres = (worldPos.y - params.fog_reference.x)
+        / WORLD_UNITS_PER_METER;
+    float shear = mix(0.72, 1.18, smoothstep(-2.0, 18.0, heightMetres));
+    return vec3(direction.x, 0.0, direction.y) * speed * shear;
 }
 
 // Advect in absolute world space even though storage is view-froxel aligned.
@@ -1856,7 +1900,9 @@ void transportCombustion(
                 destinationDynamicsExtended = true;
             }
         }
-        vec3 midpoint = worldPos - destinationDynamics.xyz * (0.5 * dt);
+        vec3 destinationWind = atmosphericWindVelocity(worldPos);
+        vec3 midpoint = worldPos
+            - (destinationDynamics.xyz + destinationWind) * (0.5 * dt);
         vec4 midpointChemistry;
         vec4 midpointDynamics;
         vec4 midpointOptical;
@@ -1868,7 +1914,9 @@ void transportCombustion(
                 midpointOptical)) {
             midpointDynamics = destinationDynamics;
         }
-        vec3 sourcePosition = worldPos - midpointDynamics.xyz * dt;
+        vec3 midpointWind = atmosphericWindVelocity(midpoint);
+        vec3 sourcePosition = worldPos
+            - (midpointDynamics.xyz + midpointWind) * dt;
         vec4 sourceChemistry;
         vec4 sourceDynamics;
         vec4 sourceOptical;
@@ -2171,7 +2219,8 @@ void transportCombustion(
         if (carriesCombustion(chemistry, optical)
             && dot(dynamics.xyz, dynamics.xyz) > 1.0e-8) {
             vec3 boundaryNormal;
-            vec3 predictedPosition = worldPos + dynamics.xyz * dt;
+            vec3 predictedPosition = worldPos
+                + (dynamics.xyz + atmosphericWindVelocity(worldPos)) * dt;
             if (combustionPathBlocked(
                     worldPos,
                     predictedPosition,

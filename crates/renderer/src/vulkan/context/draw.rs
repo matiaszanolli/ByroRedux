@@ -1479,6 +1479,14 @@ pub struct FrameInputs<'a> {
     /// of the camera's raw Y, which pre-fix made fog density follow the
     /// player vertically instead of thinning with real altitude.
     pub fog_height_reference: f32,
+    /// Shared atmospheric wind for volumetric advection. `[x, z, base_speed,
+    /// gust_amplitude]`, with the speeds in renderer world units per second;
+    /// the shader applies height shear and keeps this external to local
+    /// combustion velocity.
+    pub wind_params: [f32; 4],
+    /// `x = gust_frequency` in cycles per second. Remaining lanes are spare
+    /// std140-compatible slots for future atmospheric shear controls.
+    pub wind_gust: [f32; 4],
     /// Optional UI overlay texture handle.
     pub ui_texture_handle: Option<u32>,
     /// Sky / weather parameters.
@@ -1560,6 +1568,8 @@ impl VulkanContext {
             fog_clip,
             fog_power,
             fog_height_reference,
+            wind_params,
+            wind_gust,
             ui_texture_handle,
             sky_params,
             dof,
@@ -1787,6 +1797,8 @@ impl VulkanContext {
                 fog_single_scatter_albedo,
                 fog_coverage,
                 fog_height_reference,
+                wind_params,
+                wind_gust,
                 fog_volumes,
                 fsr_frame,
                 underwater,

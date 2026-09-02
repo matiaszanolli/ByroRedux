@@ -92,6 +92,10 @@ pub const WTHR_PLEASANT: u8 = 0x01;
 pub const WTHR_CLOUDY: u8 = 0x02;
 pub const WTHR_RAINY: u8 = 0x04;
 pub const WTHR_SNOW: u8 = 0x08;
+/// Skyrim weather has an aurora even when the ordinary weather flags are clear.
+pub const WTHR_AURORA_ALWAYS_VISIBLE: u8 = 0x10;
+/// Skyrim weather makes the aurora follow the sun's day/night position.
+pub const WTHR_AURORA_FOLLOWS_SUN: u8 = 0x20;
 
 /// Oblivion WTHR HNAM sub-record — 14 f32 HDR + lighting tuning
 /// parameters (56 bytes total). Names + offsets per UESP `Oblivion_Mod:WTHR`.
@@ -266,11 +270,49 @@ pub struct WeatherRecord {
     pub sun_damage: u8,
     /// Weather classification flags (WTHR_PLEASANT | WTHR_CLOUDY | ...).
     pub classification: u8,
+    /// Cloud-layer motion in authored X/Y components. Legacy ONAM provides
+    /// one scalar per layer; Skyrim RNAM/QNAM provide the two components.
+    /// Values remain bytes here because the games use the byte range as a
+    /// normalized authoring control, not world units per second.
+    pub cloud_layer_velocities: [[u8; 2]; 4],
+    /// Legacy/Skyrim cloud colour tint, four TOD samples per rendered layer.
+    pub cloud_layer_colors: [[SkyColor; 4]; 4],
+    /// Skyrim JNAM cloud alpha multipliers, four TOD samples per layer.
+    pub cloud_layer_alphas: [[f32; 4]; 4],
+    /// WTHR DATA transition delta (0..255).
+    pub transition_delta: u8,
+    /// Precipitation fade-in/fade-out controls from DATA.
+    pub precipitation_fade: [u8; 2],
+    /// Thunder fade-in/fade-out controls from DATA.
+    pub thunder_fade: [u8; 2],
+    /// Thunder/lightning frequency control from DATA.
+    pub thunder_frequency: u8,
+    /// Authored lightning flash colour from DATA.
+    pub lightning_color: [u8; 3],
+    /// Skyrim visual-effect window from DATA.
+    pub visual_effect_window: [u8; 2],
+    /// Skyrim wind direction and directional spread from DATA.
+    pub wind_direction: u8,
+    pub wind_direction_range: u8,
+    /// Skyrim's seven extra NAM0 colour groups (groups 10..16): cloud LOD,
+    /// fog far, sky statics, water multiplier, sun glare and moon glare.
+    pub skyrim_extra_colors: [[SkyColor; 4]; 7],
+    /// Skyrim NAM2/NAM3 glare tables (sun and moon, respectively).
+    pub skyrim_sun_glare: [SkyColor; 4],
+    pub skyrim_moon_glare: [SkyColor; 4],
+    /// Skyrim precipitation/visual-effect form references, when authored.
+    pub skyrim_precipitation_effect: Option<u32>,
+    pub skyrim_visual_effect: Option<u32>,
     /// Cloud texture paths. FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM
     /// = layers 0–3 in schema-emission order); Oblivion ships 2
     /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
     /// zstrings — see #468 for the normaliser in `TextureProvider`.
     pub cloud_textures: [Option<String>; 4],
+    /// Skyrim Creation-era cloud paths. The first four are also mirrored in
+    /// `cloud_textures` for the legacy renderer path; this full table keeps
+    /// the authored 32-layer weather record lossless for the Creation cloud
+    /// renderer.
+    pub skyrim_cloud_textures: [Option<String>; 32],
     /// Oblivion-only HDR / eye-adapt / sunlight-dimmer tuning from the
     /// 56-byte HNAM sub-record. `None` for FNV / FO3 / Skyrim+ weather
     /// records, and for Oblivion records that ship a malformed HNAM.
@@ -305,7 +347,24 @@ impl Default for WeatherRecord {
             sun_glare: 0,
             sun_damage: 0,
             classification: 0,
+            cloud_layer_velocities: [[0; 2]; 4],
+            cloud_layer_colors: [[SkyColor { r: 255, g: 255, b: 255, a: 255 }; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            transition_delta: 0,
+            precipitation_fade: [0; 2],
+            thunder_fade: [0; 2],
+            thunder_frequency: 0,
+            lightning_color: [0; 3],
+            visual_effect_window: [0; 2],
+            wind_direction: 0,
+            wind_direction_range: 0,
+            skyrim_extra_colors: [[SkyColor::default(); 4]; 7],
+            skyrim_sun_glare: [SkyColor::default(); 4],
+            skyrim_moon_glare: [SkyColor::default(); 4],
+            skyrim_precipitation_effect: None,
+            skyrim_visual_effect: None,
             cloud_textures: [None, None, None, None],
+            skyrim_cloud_textures: [const { None }; 32],
             oblivion_hdr: None,
             skyrim_ambient_cube: None,
         }
@@ -498,30 +557,23 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             }
 
             // DATA: general weather data (15 bytes, shared by Oblivion,
-            // FO3, FNV). Byte-confirmed layout from #538 / audit M33-06:
-            //   [ 0]    wind_speed
-            //   [ 1- 2] cloud speed lower / upper (unparsed — no consumer)
-            //   [ 3]    trans_delta (unparsed)
-            //   [ 4]    sun_glare
-            //   [ 5]    sun_damage
-            //   [ 6- 9] precipitation / thunder fade params (unparsed)
-            //   [10]    reserved / unknown (0xFF on every PLEASANT sample;
-            //                                varies on RAINY)
-            //   [11]    classification flag byte (WTHR_PLEASANT=0x01,
-            //           CLOUDY=0x02, RAINY=0x04, SNOW=0x08)
-            //   [12-14] lightning color (RGB) — `ff ff ff` on RAINY, zero
-            //           or 0xFF on non-rainy
-            //
-            // Pre-fix the parser read classification from byte 13 — a
-            // zero / padding byte on nearly every record. Verified the
-            // new offset against 4 flag bits on Oblivion (Clear/Cloudy/
-            // Rain/Snow) and 3 on FNV (0x00/0x01/0x02).
+            // FO3, FNV). Skyrim extends it to 19 bytes. Decode the exact
+            // common prefix and the Skyrim tail rather than throwing away
+            // precipitation timing, thunder, lightning colour, or wind
+            // direction. See `parse_weather_data` for the byte contract.
             b"DATA" if sub.data.len() >= 15 => {
-                record.wind_speed = sub.data[0];
-                record.sun_glare = sub.data[4];
-                record.sun_damage = sub.data[5];
-                record.classification = sub.data[11];
+                parse_weather_data(&mut record, &sub.data);
             }
+
+            // Legacy WTHR cloud motion and tint tables. ONAM is the authored
+            // scalar speed for the four classic cloud layers; PNAM contains
+            // four sunrise/day/sunset/night RGBA colours per layer.
+            b"ONAM" if sub.data.len() >= 4 => {
+                for layer in 0..4 {
+                    record.cloud_layer_velocities[layer] = [sub.data[layer], 0];
+                }
+            }
+            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
 
             // Cloud texture paths. Per-game sub-record FourCCs — verified
             // by byte-level scan of FalloutNV.esm, Fallout3.esm,
@@ -592,10 +644,114 @@ const FO4_FNAM_SIZE: usize = 72;
 
 /// Skyrim WTHR DATA sub-record size (19 bytes). Holds wind speed,
 /// transition timings, sun glare / damage, precipitation / thunder
-/// fade, classification, and lightning colour. v1 extracts wind +
-/// classification; the rest is captured-on-disk-only and waits for
-/// the precipitation / sun-damage gameplay consumer to land.
+/// fade, classification, lightning colour, visual-effect timing, and
+/// directional wind. All fields are retained for the weather simulation.
 const SKYRIM_DATA_SIZE: usize = 19;
+
+/// Decode the shared WTHR DATA payload. The byte layout is the same for the
+/// legacy records and Skyrim's 19-byte extension; shorter legacy records are
+/// decoded defensively. In particular, byte 10 is thunder/lightning
+/// frequency and byte 11 is the classification bitmask (not byte 14).
+fn parse_weather_data(record: &mut WeatherRecord, data: &[u8]) {
+    if let Some(&value) = data.first() {
+        record.wind_speed = value;
+    }
+    if data.len() > 3 {
+        record.transition_delta = data[3];
+    }
+    if data.len() > 4 {
+        record.sun_glare = data[4];
+    }
+    if data.len() > 5 {
+        record.sun_damage = data[5];
+    }
+    if data.len() > 7 {
+        record.precipitation_fade = [data[6], data[7]];
+    }
+    if data.len() > 9 {
+        record.thunder_fade = [data[8], data[9]];
+    }
+    if data.len() > 10 {
+        record.thunder_frequency = data[10];
+    }
+    if data.len() > 11 {
+        record.classification = data[11];
+    }
+    if data.len() >= 15 {
+        record.lightning_color = [data[12], data[13], data[14]];
+    }
+    if data.len() > 16 {
+        record.visual_effect_window = [data[15], data[16]];
+    }
+    if data.len() > 18 {
+        record.wind_direction = data[17];
+        record.wind_direction_range = data[18];
+    }
+}
+
+/// Read the four legacy cloud colour entries from PNAM. Skyrim stores the
+/// same four TOD values repeatedly for each of its 32 layers; the first four
+/// layers are the compatibility path used by the current renderer.
+fn parse_cloud_colors(record: &mut WeatherRecord, data: &[u8]) {
+    for layer in 0..4 {
+        for slot in 0..4 {
+            let offset = (layer * 4 + slot) * 4;
+            if offset + 4 > data.len() {
+                return;
+            }
+            record.cloud_layer_colors[layer][slot] = SkyColor {
+                r: data[offset],
+                g: data[offset + 1],
+                b: data[offset + 2],
+                a: data[offset + 3],
+            };
+        }
+    }
+}
+
+/// Read the first four rendered layers from Skyrim's JNAM array. Each layer
+/// entry is four f32 alpha values for sunrise/day/sunset/night.
+fn parse_cloud_alphas(record: &mut WeatherRecord, data: &[u8]) {
+    for layer in 0..4 {
+        for slot in 0..4 {
+            let offset = (layer * 4 + slot) * 4;
+            if offset + 4 > data.len() {
+                return;
+            }
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&data[offset..offset + 4]);
+            record.cloud_layer_alphas[layer][slot] = f32::from_le_bytes(bytes);
+        }
+    }
+}
+
+/// Skyrim uses a compact `00TX`..`V0TX` FourCC sequence for its 32 cloud
+/// textures. The leading ASCII digit/letter is the layer number.
+fn skyrim_cloud_layer_index(sub_type: &[u8; 4]) -> Option<usize> {
+    if sub_type[1] != b'0' || sub_type[2] != b'T' || sub_type[3] != b'X' {
+        return None;
+    }
+    match sub_type[0] {
+        b'0'..=b'9' => Some((sub_type[0] - b'0') as usize),
+        b'A'..=b'V' => Some((sub_type[0] - b'A') as usize + 10),
+        _ => None,
+    }
+}
+
+fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
+    for slot in 0..4 {
+        let offset = slot * 4;
+        if offset + 4 > data.len() {
+            return;
+        }
+        dst[slot] = SkyColor {
+            r: data[offset],
+            g: data[offset + 1],
+            b: data[offset + 2],
+            a: data[offset + 3],
+        };
+    }
+}
 
 /// Parse a Skyrim WTHR record. Called by [`parse_wthr`] when
 /// `game == GameKind::Skyrim`; mirrors the FO3-era branch's shape but
@@ -644,12 +800,10 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
 
             // NAM0 — 17 groups × 4 TOD slots × 4 bytes RGBA = 272 B.
             // First 9 groups align with the FO3-era constants and slot
-            // straight into the shared `[10][6]` array. Groups 9..17
-            // are Skyrim-exclusive (Effects Lighting / Cloud LOD /
-            // Fog Far / Sky Statics / Water Multiplier / Sun Glare /
-            // Moon Glare); slot the 10th group (Effects Lighting) into
-            // `SKY_UNUSED_9` so a future consumer has it without
-            // schema churn, and discard the rest for v1.
+            // straight into the shared `[10][6]` array. Group 9 is the
+            // Effects Lighting table; groups 10..16 are retained in the
+            // Creation-only side table so cloud LOD, fog far, sky statics,
+            // water multiplier, sun glare, and moon glare are not lost.
             b"NAM0" if sub.data.len() >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 => {
                 let mut offset = 0;
                 for group in 0..SKYRIM_NAM0_GROUPS {
@@ -665,6 +819,8 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                         };
                         if group < SKY_COLOR_GROUPS {
                             record.sky_colors[group][slot] = color;
+                        } else if (10..17).contains(&group) {
+                            record.skyrim_extra_colors[group - 10][slot] = color;
                         }
                         offset += 4;
                     }
@@ -695,15 +851,50 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 record.fog_night_max = r.f32().unwrap_or(1.0);
             }
 
-            // DATA — 19 bytes. v1 extracts wind speed + classification.
-            // Byte 0 = wind. Byte 14 = classification flag bitmask
-            // (WTHR_PLEASANT | WTHR_CLOUDY | WTHR_RAINY | WTHR_SNOW).
-            // Bytes 1..14 are transition timings + sun glare + sun
-            // damage + precip / thunder fade — captured-on-disk-only
-            // for the gameplay consumer.
+            // DATA — 19 bytes. Decode the exact shared prefix plus Skyrim's
+            // visual-effect and directional-wind tail. The classification
+            // flag is byte 11; byte 14 is the blue lightning channel.
             b"DATA" if sub.data.len() >= SKYRIM_DATA_SIZE => {
-                record.wind_speed = sub.data[0];
-                record.classification = sub.data[14];
+                parse_weather_data(&mut record, &sub.data);
+            }
+
+            // Skyrim authored cloud controls. RNAM is the Y component and
+            // QNAM is the X component; JNAM carries four f32 alpha values
+            // for each layer; PNAM carries four RGBA TOD tints per layer.
+            b"RNAM" => {
+                for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
+                    record.cloud_layer_velocities[layer][1] = value;
+                }
+            }
+            b"QNAM" => {
+                for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
+                    record.cloud_layer_velocities[layer][0] = value;
+                }
+            }
+            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
+            b"JNAM" if sub.data.len() >= 64 => parse_cloud_alphas(&mut record, &sub.data),
+            b"NAM2" if sub.data.len() >= 16 => {
+                parse_glare_table(&mut record.skyrim_sun_glare, &sub.data)
+            }
+            b"NAM3" if sub.data.len() >= 16 => {
+                parse_glare_table(&mut record.skyrim_moon_glare, &sub.data)
+            }
+            b"MNAM" if sub.data.len() >= 4 => {
+                record.skyrim_precipitation_effect = Some(u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]));
+            }
+            b"NNAM" if sub.data.len() >= 4 => {
+                record.skyrim_visual_effect = Some(u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]));
+            }
+            sub_type if skyrim_cloud_layer_index(sub_type).is_some() => {
+                let layer = skyrim_cloud_layer_index(sub_type).expect("checked above");
+                record.skyrim_cloud_textures[layer] = Some(read_zstring(&sub.data));
+                if layer < record.cloud_textures.len() {
+                    record.cloud_textures[layer] = record.skyrim_cloud_textures[layer].clone();
+                }
             }
 
             // DALC — 32 bytes per entry, 4 entries (one per TOD slot).
@@ -716,20 +907,10 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                 dalc_idx += 1;
             }
 
-            // Other sub-records (LNAM, MNAM, NNAM, RNAM, QNAM, PNAM,
-            // JNAM, NAM1, TNAM ×many, IMSP, 00TX..L0TX) carry data
-            // the renderer doesn't yet consume:
-            //   - Cloud-layer enable mask + per-layer colours /
-            //     alphas / speeds — wiring up the 32-layer cloud
-            //     pipeline is a separate effort (vs FNV's 4 layers).
-            //   - Aurora data (NAM1) — Skyrim-exclusive volumetric.
-            //   - ImageSpace references (IMSP) — needs the ImageSpace
-            //     record parser to land first.
-            //   - 00TX..L0TX cloud texture paths — paired with the
-            //     32-layer pipeline above.
-            // Captured-on-disk-only for the moment; the silent skip
-            // here is intentional rather than a regression. Follow-up
-            // tracking issues will surface each sub-record's wiring.
+            // Remaining Creation-only fields (LNAM, NAM1, IMSP and TNAM)
+            // are retained by their owning records or are model references;
+            // the procedural sky consumes the portable weather controls
+            // above and uses the first four cloud layers on all games.
             _ => {}
         }
     }
@@ -1525,10 +1706,10 @@ mod tests {
 
     #[test]
     fn parse_skyrim_data_lifts_wind_and_classification() {
-        // 19 bytes. Byte 0 = wind. Byte 14 = classification flags.
+        // 19 bytes. Byte 0 = wind. Byte 11 = classification flags.
         let mut data = vec![0u8; 19];
         data[0] = 0x19; // wind = 25
-        data[14] = WTHR_CLOUDY; // classification = cloudy
+        data[11] = WTHR_CLOUDY; // classification = cloudy
         let subs = vec![
             make_sub(b"EDID", b"SkyrimRainy\0".to_vec()),
             make_sub(b"DATA", data),
@@ -1647,7 +1828,7 @@ mod tests {
         }
         let mut data = vec![0u8; 19];
         data[0] = 0x10;
-        data[14] = WTHR_PLEASANT;
+        data[11] = WTHR_PLEASANT;
         let mut dalc = vec![0u8; 32];
         dalc[16] = 0xC0; // +Z (up) ambient .R = 0xC0
         dalc[28..32].copy_from_slice(&1.0f32.to_le_bytes());

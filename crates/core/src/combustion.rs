@@ -57,15 +57,16 @@ pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 = 1.5;
 /// blast. The transported velocity remains capped by the shared numerical
 /// safety limit, but a high-yield event must reach that limit quickly enough
 /// to form a room-scale shock front instead of looking like a larger torch.
-pub const NUCLEAR_EXPLOSION_EXPANSION_SCALE: f32 = 5.0;
+pub const NUCLEAR_EXPLOSION_EXPANSION_SCALE: f32 = 2.2;
 
 /// Relative buoyant lift retained by a nuclear cloud after its flash fades.
 pub const NUCLEAR_EXPLOSION_BUOYANCY_SCALE: f32 = 2.5;
 
-/// Extra aerosol mass seeded by a nuclear event. Nuclear clouds are broad and
-/// persistent; reusing the compact oil-blast soot yield makes their cap
-/// disappear before transport can shape it.
-pub const NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE: f32 = 2.25;
+/// Per-volume aerosol correction for a nuclear event. Its source footprint is
+/// already much broader than an oil blast, so increasing both footprint and
+/// density would turn the cap into an opaque wall before transport can shape
+/// it. The lower density still yields more total cloud mass after expansion.
+pub const NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE: f32 = 0.22;
 
 /// First-order decay rate for transported specific overpressure.
 ///
@@ -220,6 +221,20 @@ impl CombustionRegime {
         single_scatter_albedo: 0.25,
     };
 
+    /// Blue gas-flame source. Real gas flames are dominated by a compact,
+    /// blue chemiluminescent reaction zone rather than the broad orange soot
+    /// envelope of a diffusion flame. The transported solver still uses the
+    /// shared temperature/soot contract; the hotter source anchor makes that
+    /// colour distinction survive advection and gives future plasma/magic
+    /// sources a clear place to add their own regime instead of tinting a
+    /// particle texture at the last moment.
+    pub const GAS_FLAME: Self = Self {
+        temperature_k: 3400.0,
+        reference_temperature_k: 3400.0,
+        reference_radiance: 8.0,
+        single_scatter_albedo: 0.12,
+    };
+
     /// Cooled glowing charcoal after volatile flame combustion has ended.
     pub const EMBER: Self = Self {
         temperature_k: 1100.0,
@@ -280,6 +295,7 @@ mod tests {
     fn canonical_regimes_pin_one_shared_physical_contract() {
         assert_eq!(CombustionRegime::EMBER.temperature_k(), 1100.0);
         assert_eq!(CombustionRegime::FLAME.temperature_k(), 1850.0);
+        assert_eq!(CombustionRegime::GAS_FLAME.temperature_k(), 3400.0);
         assert_eq!(CombustionRegime::EXPLOSION.temperature_k(), 2800.0);
         assert_eq!(CombustionRegime::NUCLEAR_EXPLOSION.temperature_k(), 4200.0);
         assert_eq!(CombustionRegime::FLAME.reference_temperature_k(), 1850.0);
@@ -287,7 +303,7 @@ mod tests {
         assert_eq!(CombustionRegime::EXPLOSION.reference_radiance(), 24.0);
         assert_eq!(
             CombustionRegime::NUCLEAR_EXPLOSION.reference_radiance(),
-            160.0
+            64.0
         );
         assert_eq!(CombustionRegime::FLAME.single_scatter_albedo(), [0.25; 3]);
         assert_eq!(
@@ -305,7 +321,7 @@ mod tests {
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(NUCLEAR_EXPLOSION_EXPANSION_SCALE > 1.0);
         assert!(NUCLEAR_EXPLOSION_BUOYANCY_SCALE > 1.0);
-        assert!(NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE > 1.0);
+        assert!(NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE > 0.0);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);
         assert!(MAX_DILUTION_RATE_PER_SECOND > 0.0);
         assert!(VORTICITY_CONFINEMENT_SPEED_MPS > 0.0);
@@ -343,6 +359,9 @@ mod tests {
         let flame = CombustionRegime::FLAME
             .emissive_radiance()
             .expect("flame regime is finite");
+        let gas = CombustionRegime::GAS_FLAME
+            .emissive_radiance()
+            .expect("gas regime is finite");
         let explosion = CombustionRegime::EXPLOSION
             .emissive_radiance()
             .expect("explosion regime is finite");
@@ -352,19 +371,23 @@ mod tests {
         assert!(ember
             .iter()
             .chain(flame.iter())
+            .chain(gas.iter())
             .chain(explosion.iter())
             .chain(nuclear.iter())
             .all(|v| v.is_finite()));
 
         let ember_luma = linear_srgb_luminance(ember);
         let flame_luma = linear_srgb_luminance(flame);
+        let gas_luma = linear_srgb_luminance(gas);
         let explosion_luma = linear_srgb_luminance(explosion);
         let nuclear_luma = linear_srgb_luminance(nuclear);
         assert!(ember_luma < flame_luma * 0.25);
+        assert!(gas_luma > 0.0);
         assert!(explosion_luma > flame_luma);
         assert!(nuclear_luma > flame_luma);
 
         let green_over_red = |rgb: [f32; 3]| rgb[1] / rgb[0].max(1.0e-6);
         assert!(green_over_red(ember) < green_over_red(flame));
+        assert!(gas[2] / gas[0].max(1.0e-6) > flame[2] / flame[0].max(1.0e-6));
     }
 }

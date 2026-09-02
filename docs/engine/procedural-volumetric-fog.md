@@ -64,14 +64,24 @@ of them one physical and temporal contract.
   itself for velocity, receives zero, and a flame remains pinned to its source.
   Storage is view-aligned, but transport is world-space and therefore does not
   turn camera motion into fake fluid velocity.
+- Wind is the canonical `WindField` already resolved from EXAL/WTHR and shared
+  with foliage and water. The renderer passes its direction, base speed, gust
+  amplitude, and frequency into the combustion solver. RK2 backtracing uses
+  wind as an external X/Z advection velocity with mild vertical shear; local
+  combustion velocity remains separate, so weather changes do not integrate
+  into runaway speed. Solid-boundary rejection applies to the combined local
+  flow plus wind, allowing smoke to bend around walls while a blast's pressure
+  impulse and vorticity still create roll-up rather than a rigid translated
+  billboard.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
 - Local authoring is likewise translated once into a canonical `FogProfile`
-  (`Homogeneous`, `Smoke`, `Flame`, or `Explosion`). `FogSource` is diagnostic
-  provenance only. ECS and renderer code consume the profile directly and
-  never infer behavior from game identity, import source, blend mode, or a
-  coincidental combination of optical coefficients.
+  (`Homogeneous`, `Smoke`, `Flame`, or an explosion profile). Explosions are
+  split into conventional `OilExplosion` and high-yield `NuclearExplosion`;
+  `FogSource` is diagnostic provenance only. ECS and renderer code consume the
+  profile directly and never infer behavior from game identity, import source,
+  blend mode, or a coincidental combination of optical coefficients.
 - Authored LIGH records and procedural combustion both cross the render
   boundary as the same canonical `Emitter`: position in metres, radiant
   intensity in watts per steradian, and range in metres. The shared GPU
@@ -121,9 +131,10 @@ of them one physical and temporal contract.
   cell's fog.
 - Alpha-over particle systems whose host or texture identifies fog, smoke,
   mist, steam, vapor, cloud, or dust are replaced at the NIF→ECS boundary.
-  Thermally identified flame, ember, and explosion emitters cross the same
-  boundary as `Flame` or `Explosion` profiles regardless of blend mode;
-  non-thermal additive magic particles remain billboards.
+  Thermally identified flame, ember, gas-flame, and explosion emitters cross
+  the same boundary as canonical combustion sources regardless of blend mode;
+  non-thermal additive magic particles remain billboards until a later source
+  regime gives them an energy/plasma spectrum.
 - Particle preset selection inspects the sprite texture as well as the host
   node. This covers generic Bethesda hosts such as `SuperSpray01-Emitter`
   whose only smoke intent is `fxsmokewispsthin01.dds`. When the retained
@@ -153,13 +164,22 @@ material — soot — represented by the same canonical `FogVolume` source
 contract and transported combustion field. `FogProfile` controls how a source
 injects fuel, heat, soot, oxidizer, and momentum; it does not select a separate
 renderer. Homogeneous authored fog remains analytic, while `Smoke`, `Flame`,
-and `Explosion` feed the field and are not also rendered as pinned analytic
-bodies:
+and both explosion profiles feed the field and are not also rendered as pinned
+analytic bodies:
 
 | | extinction | single-scatter albedo | emission `L_e` |
 |---|---|---|---|
 | flame | high | **0.25** (soot absorbs) | blackbody at its temperature |
 | smoke | moderate | **0.9** (cooled soot scatters) | none |
+
+The current source regimes are deliberately distinct even when they share the
+same transported state: ordinary diffusion flame (1850 K, orange/yellow and
+soot-rich), gas flame (3400 K, blue-shifted and cleaner), oil explosion (2800 K
+flash with a compact radial fireball and dense soot), and nuclear explosion
+(4200 K flash with a broader pressure phase, slower cap/stem transition, and
+longer-lived buoyant aerosol). This is the source-physics seam that future
+magic and energy weapons should extend; their spectrum belongs in a new
+regime, not in a texture tint applied after transport.
 
 - Chemistry stores soot directly as optical extinction per world unit, avoiding
   a second arbitrary density-to-optics conversion. Fuel burns above a 720 K
@@ -171,10 +191,12 @@ bodies:
   and mixing, rather than the thermal envelope, disperse the visible cloud.
 - Persistent flames replenish a compact basal fuel/heat boundary, passive smoke
   replenishes soot and mild exhaust velocity, and explosions add a finite
-  radial heat/momentum impulse. A reset field seeds the explosion's current
-  normalized age directly; warm history receives a delta-scaled impulse so the
-  full blast cannot be added every frame. After an emitter disappears, a
-  20-second CPU latch keeps the solver advancing while soot decays below 3%.
+  radial heat/momentum impulse. Oil blasts use a compact fireball and fast soot
+  envelope; nuclear blasts use a wider, slower-expanding cap/stem source with
+  stronger buoyant lift. A reset field seeds the explosion's current normalized
+  age directly; warm history receives a delta-scaled impulse so the full blast
+  cannot be added every frame. After an emitter disappears, a 78-second CPU
+  latch keeps the solver advancing while soot decays below 3%.
 - The froxel emission source term is `sigma_a * L_e` with
   `sigma_a = sigma_t * (1 - albedo)`, evaluated per channel against the
   transported soot/fuel state, so emission moves and cools with the fluid
@@ -199,7 +221,8 @@ bodies:
   a cooling flame dims.
 - Temperatures are physical properties of the combustion regime, not look
   development: 1850 K for a hydrocarbon diffusion flame's luminous zone,
-  1100 K for embers and charcoal. Optical depth is pinned across the primitive
+  3400 K for a blue-shifted gas flame, 1100 K for embers and charcoal, 2800 K
+  for an oil fireball, and 4200 K for a nuclear flash. Optical depth is pinned across the primitive
   width rather than inverted from authored alpha, because an additive
   emitter's alpha encodes brightness, not opacity — this also keeps a bonfire
   exactly as translucent as a candle.
@@ -248,14 +271,20 @@ bodies:
 
 `--combustion-lab` builds a six-by-four-by-eight-metre Cornell room using the
 canonical 70 Bethesda units/metre conversion. A persistent 1850 K flame and a
-delayed 2800 K one-shot explosion feed ordinary `FogVolume` profiles beneath a
-rigid hood whose underside is 1.24 m above the floor. The harness contains no
-game identity or import shortcut: it validates the same parser-independent ECS
-and GPU contracts that shipped particle effects reach after translation.
+delayed 2800 K oil explosion feed ordinary `FogVolume` profiles beneath a
+rigid hood whose underside is 1.24 m above the floor. Add
+`--combustion-lab-nuclear` to replace that impulse with the 4200 K nuclear
+cap/stem case; its open upper volume leaves the high-yield cloud visible while
+the oil case remains the solid-boundary regression fixture. The harness
+contains no game identity or import shortcut: it validates the same
+parser-independent ECS and GPU contracts that shipped particle effects reach
+after translation.
 
 ```bash
 cargo run --release -- --combustion-lab
 BYROREDUX_RENDER_DEBUG_MODE=volume cargo run --release -- --combustion-lab
+cargo run --release -- --combustion-lab-nuclear
+BYROREDUX_RENDER_DEBUG_MODE=volume cargo run --release -- --combustion-lab-nuclear
 ```
 
 In the isolated volume view, verify a hot basal flame, a buoyant gray plume,

@@ -33,6 +33,8 @@ struct VolumetricsPassInputs<'a> {
     fog_single_scatter_albedo: f32,
     fog_coverage: f32,
     fog_height_reference: f32,
+    wind_params: [f32; 4],
+    wind_gust: [f32; 4],
     fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
 }
 
@@ -232,6 +234,8 @@ impl VulkanContext {
         fog_single_scatter_albedo: f32,
         fog_coverage: f32,
         fog_height_reference: f32,
+        wind_params: [f32; 4],
+        wind_gust: [f32; 4],
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
@@ -258,6 +262,8 @@ impl VulkanContext {
                 fog_single_scatter_albedo,
                 fog_coverage,
                 fog_height_reference,
+                wind_params,
+                wind_gust,
                 fog_volumes,
             },
         );
@@ -498,6 +504,8 @@ impl VulkanContext {
             fog_single_scatter_albedo,
             fog_coverage,
             fog_height_reference,
+            wind_params,
+            wind_gust,
             fog_volumes,
         } = inputs;
         // SAFETY: `cmd` is recording outside a render pass, and all volumetric,
@@ -709,6 +717,8 @@ impl VulkanContext {
                                         as f32,
                                     0.0,
                                 ],
+                                wind_params,
+                                wind_gust,
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);

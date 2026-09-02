@@ -13,6 +13,7 @@
 //! regression here would have to come from the module boundary rather than
 //! from edited logic.
 
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -483,6 +484,28 @@ impl App {
                 .world
                 .try_resource::<DeltaTime>()
                 .map_or(1000.0 / 60.0, |delta| delta.0 * 1000.0);
+            // The same canonical EXAL/WTHR wind that drives foliage and water
+            // now drives combustion advection. Keep the source contract in
+            // world units here; the shader adds it to local fire/smoke flow
+            // during backtracing instead of integrating weather repeatedly
+            // into the transported velocity image.
+            let wind = self
+                .world
+                .try_resource::<WindField>()
+                .map(|wind| *wind)
+                .unwrap_or_default();
+            let wind = if wind.is_well_formed() {
+                wind
+            } else {
+                WindField::CALM
+            };
+            let wind_params = [
+                wind.direction[0],
+                wind.direction[1],
+                wind.speed.max(0.0),
+                wind.gust_amplitude.max(0.0),
+            ];
+            let wind_gust = [wind.gust_frequency.max(0.0), 0.0, 0.0, 0.0];
             let image_space_modifier = self
                 .world
                 .try_resource::<byroredux_scripting::CinematicPresentationState>()
@@ -526,6 +549,8 @@ impl App {
                 fog_clip: frame.fog_clip,
                 fog_power: frame.fog_power,
                 fog_height_reference: frame.fog_height_reference,
+                wind_params,
+                wind_gust,
                 ui_texture_handle: ui_tex,
                 sky_params: &frame.sky,
                 dof,

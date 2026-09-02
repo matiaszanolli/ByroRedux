@@ -54,6 +54,7 @@
 //! `mat.set <id> color r g b` tweak fully recolors a probe.
 
 use byroredux_core::combustion::CombustionRegime;
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{
     CombustionState, FogBounds, FogProfile, FogShape, FogSource, FogVolume, GlobalTransform,
     LightSource, Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
@@ -912,6 +913,16 @@ pub(crate) fn setup_combustion_lab_scene(
 ) -> (Vec3, Vec3) {
     let manifest = combustion_lab_manifest();
     install_cornell_lighting(world, false);
+    // Give the standalone harness a stable crosswind so the same scene
+    // exposes external advection, plume shear, and blast roll-up without
+    // depending on a loaded WTHR record. The game path replaces this resource
+    // from the active weather just as it does for foliage and water.
+    world.insert_resource(WindField {
+        direction: [1.0, 0.0],
+        speed: 48.0,
+        gust_amplitude: 12.0,
+        gust_frequency: 0.18,
+    });
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
 
@@ -990,16 +1001,22 @@ pub(crate) fn setup_combustion_lab_scene(
         );
     }
 
-    let baffle = builder.box_mesh(manifest.baffle_half_extents.to_array());
-    spawn_object(
-        world,
-        baffle,
-        neutral,
-        manifest.baffle_center,
-        Quat::IDENTITY,
-        matte([0.55, 0.58, 0.62]),
-        "combustion_lab_overhead_baffle",
-    );
+    if !nuclear {
+        // The oil case keeps the hood so the same capture validates a solid
+        // boundary and tangential reappearance. A nuclear cloud is an open,
+        // high-yield event in this harness; leaving the hood out exposes its
+        // cap/stem silhouette instead of hiding it behind the fixture.
+        let baffle = builder.box_mesh(manifest.baffle_half_extents.to_array());
+        spawn_object(
+            world,
+            baffle,
+            neutral,
+            manifest.baffle_center,
+            Quat::IDENTITY,
+            matte([0.55, 0.58, 0.62]),
+            "combustion_lab_overhead_baffle",
+        );
+    }
 
     // A low, cool reference fill keeps the room legible before ignition. The
     // transported field's delayed radiant moments remain the dominant warm
@@ -1049,9 +1066,13 @@ pub(crate) fn setup_combustion_lab_scene(
 
     builder.finish();
     log::info!(
-        "Combustion lab ready: room=6x4x8 m, flame+{} explosion sources, hood underside={:.2} m",
+        "Combustion lab ready: room=6x4x8 m, flame+{} explosion sources, containment={}",
         if nuclear { "nuclear" } else { "oil" },
-        (manifest.baffle_center.y - manifest.baffle_half_extents.y) / LAB_UNITS_PER_METER,
+        if nuclear {
+            "open high-yield plume"
+        } else {
+            "rigid hood underside=1.24 m"
+        },
     );
     (manifest.camera_position, manifest.camera_target)
 }
