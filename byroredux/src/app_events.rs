@@ -489,6 +489,19 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Keep the engine-owned UI compatibility snapshot current before the
+        // scheduler runs provider callbacks. The manager is main-thread-only,
+        // so this small projection is the bridge into the sandbox host.
+        if let Some(ui) = self.ui_manager.as_ref() {
+            crate::extensions::extension_ui_menu_sync(
+                &self.world,
+                Some(ui.menu_name.as_str()),
+                ui.visible,
+            );
+        } else {
+            crate::extensions::extension_ui_menu_sync(&self.world, None, false);
+        }
+
         // Menu focus can change through engine code without a corresponding
         // winit event. Enforce modal ownership before the scheduler reads
         // InputState so a held movement key cannot leak for one frame.

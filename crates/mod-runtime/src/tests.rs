@@ -36,7 +36,7 @@ use byroredux_sdk::service::{
     PERKS_READ_CAPABILITY, PERKS_SERVICE, SCRIPT_FUNCTIONS_REGISTER_CAPABILITY, SESSION_EVENT,
     SESSION_PHASE_FILTER_FIELD, SETTINGS_READ_CAPABILITY, SETTINGS_REGISTER_CAPABILITY,
     SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY, STORAGE_READ_OWN_CAPABILITY,
-    STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
+    STORAGE_WRITE_OWN_CAPABILITY, UI_SERVICE, UPDATE_EVENT, WORLD_ENTITY_READ_CAPABILITY,
     WORLD_SPATIAL_READ_CAPABILITY, WORLD_SPATIAL_SERVICE,
 };
 use byroredux_sdk::storage::{
@@ -1723,6 +1723,10 @@ fn runtime_catalog_exposes_versioned_services_and_enforceable_capabilities() {
         .supports_capability(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY));
     assert_eq!(
         runtime.catalog().service_version(INPUT_SERVICE),
+        Some(&Version::new(0, 1, 0))
+    );
+    assert_eq!(
+        runtime.catalog().service_version(UI_SERVICE),
         Some(&Version::new(0, 1, 0))
     );
     assert_eq!(

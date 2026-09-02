@@ -538,6 +538,13 @@ bindings through `byro.input` using the SKSE control names and DirectInput-style
 key codes; unsupported physical polling, key injection, and unmapped devices
 remain policy gaps until their state and trust contracts are explicit.
 
+The first read-only UI alias is now engine-owned as well:
+`UI.IsMenuOpen` reads the active visible menu name through `byro.ui`. It is
+updated from the main-thread `UiManager` before provider callbacks run and
+returns false for hidden, absent, empty, or non-matching menus. Menu
+registration, arbitrary Scaleform object access, and menu mutation remain
+outside this slice.
+
 The exact source-alias pack covers global (`ObjKey == None`) `StorageUtil`
 integer, float, string, and Form get/has/set/unset/pluck calls plus integer and
 float adjustment. Each descriptor names
@@ -667,10 +674,12 @@ and [xOBSE implementation](https://github.com/llde/xOBSE/tree/master/obse/obse).
 The preflight CLI accepts loose `.psc`/`.pex` files and BSA/BA2 script
 archives. An opt-in real-mod gate scans Workshop Framework's unmodified
 compiled Fallout 4 scripts: its F4SE version probes map to `byro.context`,
-the two read-only Input mapping aliases map to `byro.input`, while
-`UI.IsMenuRegistered` and physical Input polling/injection remain explicit
-policy gaps. This keeps compatibility claims tied to shipping mod bytecode
-without checking third-party assets into the repository.
+the two read-only Input mapping aliases map to `byro.input`, and
+`UI.IsMenuOpen` maps to the active menu snapshot in `byro.ui`; menu
+registration, arbitrary Scaleform access, and physical Input
+polling/injection remain explicit policy gaps. This keeps compatibility claims
+tied to shipping mod bytecode without checking third-party assets into the
+repository.
 
 ## 8. v0.1 delivery phases
 
@@ -989,7 +998,9 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
 ### Wave C — presentation and tooling
 
 - UI/menu contributions and action routing without arbitrary Scaleform object
-  injection.
+  injection. **The read-only `UI.IsMenuOpen` alias is implemented through the
+  active main-thread `UiManager` snapshot; registration, mutation, and
+  arbitrary object access remain pending.**
 - Notifications, widgets, configuration panels, and localization.
 - Extension packaging, signing/trust policy, dependency diagnostics, profiling,
   and hot-reload where state migration makes it safe.
@@ -1002,8 +1013,10 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
   vanilla `GetFormFromFile` lookup, route through
   `byro.content.catalog.*`; engine-owned aliases are reserved against
   package shadowing. Two read-only `Input` mapping aliases are also live under
-  `byro.input.compat.*`; physical polling and injection remain unsupported.
-  Broader compatibility packs remain.**
+  `byro.input.compat.*`, and read-only `UI.IsMenuOpen` is live under
+  `byro.ui.compat.*`; physical polling/injection, menu registration, and
+  arbitrary Scaleform access remain unsupported. Broader compatibility packs
+  remain.**
 - Automated source/PEX scans that report supported, mapped, and unsupported
   calls before launch. **Decoded PEX call-site extraction and compatibility
   classification are implemented, including full-property bodies, optional
@@ -1446,6 +1459,14 @@ ID is validated against the named regular or light plugin in the immutable
 catalog and becomes a portable `FormRef`; missing plugins, zero/negative IDs,
 and out-of-range light or regular IDs return `None` without exposing numeric
 global FormIDs.
+
+Checkpoint: `feat(sdk): integrate UI menu state alias`.
+
+The first presentation compatibility alias now owns `UI.IsMenuOpen`. The
+engine projects the active visible menu name from the main-thread `UiManager`
+into a bounded host snapshot before provider callbacks, preserving exact menu
+name matching and fail-closed hidden/absent behavior. Menu registration,
+arbitrary Scaleform objects, and menu mutation remain future isolated-UI work.
 
 ### 14.4 Exit gate
 

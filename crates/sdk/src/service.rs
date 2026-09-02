@@ -105,6 +105,8 @@ pub const WORLD_SPATIAL_SERVICE: &str = "byro.world.spatial";
 pub const CONTENT_CATALOG_SERVICE: &str = "byro.content.catalog";
 /// Service providing read-only, engine-owned control-to-key bindings.
 pub const INPUT_SERVICE: &str = "byro.input";
+/// Service providing read-only state about the active engine-owned menu.
+pub const UI_SERVICE: &str = "byro.ui";
 /// Service providing bounded, principal-namespaced console callbacks.
 pub const CONSOLE_SERVICE: &str = "byro.console";
 /// Service providing typed calls from engine scripts into sandbox components.

@@ -16,7 +16,7 @@ use crate::script_function::{
 };
 use crate::service::{
     CONTENT_CATALOG_SERVICE, CONTEXT_SERVICE, EVENT_SERVICE, INPUT_SERVICE,
-    LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE,
+    LEGACY_CONTAINERS_SERVICE, PRINCIPAL_STORAGE_SERVICE, UI_SERVICE,
 };
 use crate::storage::{PrincipalStorageCommand, PrincipalStorageValue};
 use std::collections::{BTreeMap, BTreeSet};
@@ -194,6 +194,8 @@ pub const PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE: &str =
 /// Engine routes backing the read-only subset of SKSE's `Input` provider.
 pub const PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE: &str = "byro.input.compat.get-mapped-key";
 pub const PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE: &str = "byro.input.compat.get-mapped-control";
+/// Engine route backing the read-only subset of SKSE's `UI` provider.
+pub const PAPYRUS_UI_IS_MENU_OPEN_ROUTE: &str = "byro.ui.compat.is-menu-open";
 pub const PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE: &str =
     "byro.storage.compat.storage-util.get-int-value";
 pub const PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE: &str =
@@ -330,6 +332,41 @@ fn papyrus_input_declaration(
     }
 }
 
+fn papyrus_ui_declaration(
+    route: &'static str,
+    id: &str,
+    function: &str,
+    parameters: &[(&str, ScriptValueType)],
+    result: ScriptValueType,
+    description: &str,
+) -> EnginePapyrusFunctionDeclaration {
+    EnginePapyrusFunctionDeclaration {
+        route: route.to_owned(),
+        declaration: ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new(id).expect("built-in UI function ID is valid"),
+            component: ComponentId::new("ui").expect("built-in UI component ID is valid"),
+            parameters: parameters
+                .iter()
+                .cloned()
+                .map(|(id, value_type)| ScriptParameterDeclaration {
+                    id: ScriptParameterId::new(id).expect("built-in UI parameter ID is valid"),
+                    value_type,
+                    optional: false,
+                })
+                .collect(),
+            result: Some(ScriptResultDeclaration {
+                value_type: result,
+                optional: false,
+            }),
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "UI".to_owned(),
+                function: function.to_owned(),
+            }),
+            description: description.to_owned(),
+        },
+    }
+}
+
 /// Exact SKSE `Game` functions executable through the content catalog.
 pub fn papyrus_game_content_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
     vec![
@@ -457,6 +494,18 @@ pub fn papyrus_input_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
     ]
 }
 
+/// Exact read-only `UI` functions executable through the active menu snapshot.
+pub fn papyrus_ui_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
+    vec![papyrus_ui_declaration(
+        PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
+        "is-menu-open",
+        "IsMenuOpen",
+        &[("menu-name", ScriptValueType::String)],
+        ScriptValueType::Boolean,
+        "Return whether the named engine-owned menu is currently visible",
+    )]
+}
+
 /// One engine-owned binding projected into SKSE's Input key-code contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PapyrusInputBinding {
@@ -467,6 +516,23 @@ pub struct PapyrusInputBinding {
 
 pub const PAPYRUS_INPUT_AUTO_DEVICE: i32 = 0xff;
 pub const PAPYRUS_INPUT_UNBOUND_KEY: i32 = 0xff;
+
+/// Snapshot of the one active menu exposed by the current UI manager.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PapyrusUiMenuSnapshot {
+    pub active_menu: Option<String>,
+    pub visible: bool,
+}
+
+/// Resolve `UI.IsMenuOpen` against the current active-menu snapshot.
+pub fn adapt_papyrus_ui_is_menu_open(snapshot: &PapyrusUiMenuSnapshot, menu_name: &str) -> bool {
+    snapshot.visible
+        && !menu_name.is_empty()
+        && snapshot
+            .active_menu
+            .as_deref()
+            .is_some_and(|active| active == menu_name)
+}
 
 /// Resolve a control name using the current engine binding snapshot.
 pub fn adapt_papyrus_input_get_mapped_key(
@@ -1952,6 +2018,20 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
             value_kind,
             constraint,
         });
+    }
+    if provider.eq_ignore_ascii_case("UI") {
+        if function.eq_ignore_ascii_case("IsMenuOpen") {
+            return Some(SourceAlias {
+                provider: "UI",
+                function: "IsMenuOpen",
+                service: UI_SERVICE,
+                operation: "ui.menu-is-open",
+                value_kind: "bool",
+                constraint:
+                    "matches the active visible menu name exactly; empty names are never open",
+            });
+        }
+        return None;
     }
     if !provider.eq_ignore_ascii_case("StorageUtil") {
         return None;
@@ -3537,10 +3617,18 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         });
     }
     if provider.eq_ignore_ascii_case("UI") {
-        return Some(unsupported(
-            ExtenderFamily::Shared,
-            "arbitrary Scaleform object access is not exposed; use the future isolated UI contribution service",
-        ));
+        return Some(if source_alias(provider, function).is_some() {
+            native(
+                ExtenderFamily::Shared,
+                UI_SERVICE,
+                "an exact read-only alias targets the active engine-owned menu snapshot",
+            )
+        } else {
+            unsupported(
+                ExtenderFamily::Shared,
+                "arbitrary Scaleform object access and menu mutation are not exposed; use the future isolated UI contribution service",
+            )
+        });
     }
     None
 }
@@ -3714,6 +3802,45 @@ mod tests {
         );
         assert_eq!(
             classify_static_call("Input", "TapKey").unwrap().disposition,
+            CompatibilityDisposition::Unsupported
+        );
+    }
+
+    #[test]
+    fn ui_menu_alias_reads_only_the_active_visible_menu() {
+        let snapshot = PapyrusUiMenuSnapshot {
+            active_menu: Some("InventoryMenu".to_owned()),
+            visible: true,
+        };
+        assert!(adapt_papyrus_ui_is_menu_open(&snapshot, "InventoryMenu"));
+        assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, "inventorymenu"));
+        assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, "PauseMenu"));
+        assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, ""));
+        assert!(!adapt_papyrus_ui_is_menu_open(
+            &PapyrusUiMenuSnapshot {
+                visible: false,
+                ..snapshot
+            },
+            "InventoryMenu"
+        ));
+
+        let declarations = papyrus_ui_declarations();
+        assert_eq!(declarations.len(), 1);
+        declarations[0].declaration.validate().unwrap();
+        assert_eq!(
+            source_alias("ui", "ismenuopen").unwrap().service,
+            UI_SERVICE
+        );
+        assert_eq!(
+            classify_static_call("UI", "IsMenuOpen")
+                .unwrap()
+                .disposition,
+            CompatibilityDisposition::Native
+        );
+        assert_eq!(
+            classify_static_call("UI", "IsMenuRegistered")
+                .unwrap()
+                .disposition,
             CompatibilityDisposition::Unsupported
         );
     }

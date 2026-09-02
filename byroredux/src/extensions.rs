@@ -35,31 +35,32 @@ use byroredux_sdk::compatibility::{
     adapt_papyrus_game_get_mod_count, adapt_papyrus_game_get_mod_dependency_count,
     adapt_papyrus_game_get_mod_name, adapt_papyrus_game_get_nth_light_mod_dependency,
     adapt_papyrus_game_is_plugin_installed, adapt_papyrus_input_get_mapped_control,
-    adapt_papyrus_input_get_mapped_key, adapt_storage_util_global_form_filter,
-    adapt_storage_util_global_list, adapt_storage_util_global_prefix,
-    adapt_storage_util_global_scalar, parse_storage_util_list_route,
-    parse_storage_util_prefix_route, PapyrusInputBinding, StorageUtilListCall, StorageUtilListKind,
-    StorageUtilListOperation, StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind,
-    StorageUtilPrefixOperation, StorageUtilScalarCall, StorageUtilScalarResult,
-    PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE,
-    PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE,
-    PAPYRUS_GAME_GET_MOD_NAME_ROUTE, PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE,
-    PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE, PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE,
-    PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE, PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX,
-    PAPYRUS_MOD_EVENT_ROUTE_PREFIX, PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
-    PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    adapt_papyrus_input_get_mapped_key, adapt_papyrus_ui_is_menu_open,
+    adapt_storage_util_global_form_filter, adapt_storage_util_global_list,
+    adapt_storage_util_global_prefix, adapt_storage_util_global_scalar,
+    parse_storage_util_list_route, parse_storage_util_prefix_route, PapyrusInputBinding,
+    PapyrusUiMenuSnapshot, StorageUtilListCall, StorageUtilListKind, StorageUtilListOperation,
+    StorageUtilListResult, StorageUtilListValue, StorageUtilPrefixKind, StorageUtilPrefixOperation,
+    StorageUtilScalarCall, StorageUtilScalarResult, PAPYRUS_GAME_GET_FORM_FROM_FILE_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_LIGHT_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_LIGHT_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_MOD_BY_NAME_ROUTE, PAPYRUS_GAME_GET_MOD_COUNT_ROUTE,
+    PAPYRUS_GAME_GET_MOD_DEPENDENCY_COUNT_ROUTE, PAPYRUS_GAME_GET_MOD_NAME_ROUTE,
+    PAPYRUS_GAME_GET_NTH_LIGHT_MOD_DEPENDENCY_ROUTE, PAPYRUS_GAME_IS_PLUGIN_INSTALLED_ROUTE,
+    PAPYRUS_INPUT_GET_MAPPED_CONTROL_ROUTE, PAPYRUS_INPUT_GET_MAPPED_KEY_ROUTE,
+    PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX, PAPYRUS_MOD_EVENT_ROUTE_PREFIX,
+    PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+    PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE, PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+    PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
 };
 use byroredux_sdk::component::{
     ComponentSchema, ComponentStoreError, ComponentStoreLimits, ExtensionComponentStore,
@@ -352,6 +353,7 @@ pub(crate) struct ExtensionHost {
     script_functions: Vec<HostedScriptFunction>,
     papyrus_providers: PapyrusProviderCatalog,
     input_bindings: Vec<PapyrusInputBinding>,
+    ui_menu_snapshot: PapyrusUiMenuSnapshot,
 }
 
 impl ExtensionHost {
@@ -389,6 +391,7 @@ impl ExtensionHost {
             script_functions: Vec::new(),
             papyrus_providers: PapyrusProviderCatalog::engine_compatibility(),
             input_bindings: Vec::new(),
+            ui_menu_snapshot: PapyrusUiMenuSnapshot::default(),
         })
     }
 
@@ -789,6 +792,12 @@ impl ExtensionHost {
                     *keycode,
                 ))
             }
+            (PAPYRUS_UI_IS_MENU_OPEN_ROUTE, [ScriptValue::String(menu_name)]) => {
+                ScriptValue::Boolean(adapt_papyrus_ui_is_menu_open(
+                    &self.ui_menu_snapshot,
+                    menu_name,
+                ))
+            }
             (PAPYRUS_GAME_GET_MOD_COUNT_ROUTE, []) => ScriptValue::Integer(i64::from(
                 adapt_papyrus_game_get_mod_count(&self.content_catalog),
             )),
@@ -857,6 +866,12 @@ impl ExtensionHost {
                     function: qualified_name.to_owned(),
                     reason: "engine content-catalog alias received invalid typed arguments"
                         .to_owned(),
+                });
+            }
+            (route, _) if route.starts_with("byro.ui.") => {
+                return Err(ExtensionHostError::ScriptFunctionUnavailable {
+                    function: qualified_name.to_owned(),
+                    reason: "engine UI alias received invalid typed arguments".to_owned(),
                 });
             }
             _ => return self.invoke_script_function(qualified_name, arguments),
@@ -2180,6 +2195,12 @@ impl ExtensionHost {
     fn set_input_bindings(&mut self, bindings: Vec<PapyrusInputBinding>) {
         if self.input_bindings != bindings {
             self.input_bindings = bindings;
+        }
+    }
+
+    fn set_ui_menu_snapshot(&mut self, snapshot: PapyrusUiMenuSnapshot) {
+        if self.ui_menu_snapshot != snapshot {
+            self.ui_menu_snapshot = snapshot;
         }
     }
 
@@ -4197,6 +4218,26 @@ pub(crate) fn extension_input_bindings_sync_system(world: &World, _dt: f32) {
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
     host.set_input_bindings(bindings);
+}
+
+/// Publish the active engine-owned menu snapshot before provider callbacks run.
+pub(crate) fn extension_ui_menu_sync(world: &World, active_menu: Option<&str>, visible: bool) {
+    let snapshot = PapyrusUiMenuSnapshot {
+        active_menu: active_menu
+            .filter(|menu| visible && !menu.is_empty())
+            .map(str::to_owned),
+        visible,
+    };
+    let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
+        return;
+    };
+    let Some(host) = slot.host() else {
+        return;
+    };
+    let mut host = host
+        .lock()
+        .expect("ExtensionHost mutex poisoned by a host panic");
+    host.set_ui_menu_snapshot(snapshot);
 }
 
 /// Publish public engine configuration before sandbox callbacks run.
@@ -7780,6 +7821,64 @@ mod tests {
             adapt_papyrus_input_get_mapped_control(&host.input_bindings, 15),
             "Quick Inventory"
         );
+    }
+
+    #[test]
+    fn ui_alias_reads_the_active_engine_menu_snapshot() {
+        let mut host =
+            ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+        host.set_ui_menu_snapshot(PapyrusUiMenuSnapshot {
+            active_menu: Some("InventoryMenu".to_owned()),
+            visible: true,
+        });
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
+                &[ScriptValue::String("InventoryMenu".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(true)
+        );
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
+                &[ScriptValue::String("PauseMenu".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(false)
+        );
+        host.set_ui_menu_snapshot(PapyrusUiMenuSnapshot {
+            active_menu: Some("InventoryMenu".to_owned()),
+            visible: false,
+        });
+        assert_eq!(
+            host.invoke_owned_papyrus_provider(
+                None,
+                PAPYRUS_UI_IS_MENU_OPEN_ROUTE,
+                &[ScriptValue::String("InventoryMenu".to_owned())],
+            )
+            .unwrap(),
+            ScriptValue::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn ui_menu_sync_clears_hidden_or_absent_menus() {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(slot);
+
+        extension_ui_menu_sync(&world, Some("InventoryMenu"), true);
+        extension_ui_menu_sync(&world, Some("InventoryMenu"), false);
+
+        let host = host.lock().unwrap();
+        assert!(!adapt_papyrus_ui_is_menu_open(
+            &host.ui_menu_snapshot,
+            "InventoryMenu"
+        ));
     }
 
     #[test]

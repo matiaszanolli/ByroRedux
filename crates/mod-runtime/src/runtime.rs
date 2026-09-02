@@ -55,7 +55,7 @@ use byroredux_sdk::service::{
     REPUTATION_SERVICE, REPUTATION_WRITE_CAPABILITY, SCRIPT_FUNCTIONS_REGISTER_CAPABILITY,
     SCRIPT_FUNCTIONS_SERVICE, SESSION_EVENT, SETTINGS_READ_CAPABILITY,
     SETTINGS_REGISTER_CAPABILITY, SETTINGS_SERVICE, SETTINGS_WRITE_OWN_CAPABILITY,
-    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UPDATE_EVENT,
+    STORAGE_READ_OWN_CAPABILITY, STORAGE_WRITE_OWN_CAPABILITY, UI_SERVICE, UPDATE_EVENT,
     WORLD_ENTITY_READ_CAPABILITY, WORLD_PROJECTION_SERVICE, WORLD_SPATIAL_READ_CAPABILITY,
     WORLD_SPATIAL_SERVICE, WORLD_TRANSFORM_READ_CAPABILITY,
 };
@@ -520,6 +520,14 @@ impl SandboxRuntime {
         catalog
             .register_service(ServiceDescriptor {
                 id: ServiceId::new(INPUT_SERVICE)
+                    .map_err(|error| SandboxError::Link(error.to_string()))?,
+                version: Version::new(0, 1, 0),
+                required_capability: None,
+            })
+            .map_err(|error| SandboxError::Link(error.to_string()))?;
+        catalog
+            .register_service(ServiceDescriptor {
+                id: ServiceId::new(UI_SERVICE)
                     .map_err(|error| SandboxError::Link(error.to_string()))?,
                 version: Version::new(0, 1, 0),
                 required_capability: None,
