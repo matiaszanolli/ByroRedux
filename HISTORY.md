@@ -26,6 +26,71 @@ Commits hold that record.
 
 ---
 
+## Session 78 — "The Perfect Storm": weather/fog build-out, SDK dispatch continued, and a 40-issue correctness tail  (2026-09-01 → 2026-09-02, `14ab665d..cd316a56`, 36 commits)
+
+Three Claude Code threads ran against the same shared working directory at
+once this session — a weather/volumetric-fog feature build-out, a
+continuation of the SDK v0.1 dispatch layer, and a series of `/fix-issue`
+correctness batches — which produced the session's own most notable finding:
+four correctness fixes (#3702/#3703/#3704, and part of the #3703 test) landed
+inside the weather thread's own commits rather than their own, because that
+thread's `git commit` staged the whole dirty working tree while the
+correctness fixes were sitting uncommitted alongside it. All are verified
+correct and covered by their regression tests at HEAD; each was closed with a
+comment naming its actual landing commit rather than a history rewrite —
+interactive rebase isn't available in this environment, and rewriting a
+concurrent session's live commits is not a risk worth taking to tidy
+attribution.
+
+- **Weather & volumetric fog** — `WeatherSkyState` grew stars color, wind
+  speed, and authored wind direction (falling back to the existing
+  deterministic worldspace default only when a WTHR record doesn't author
+  one); fog volume profiles gained oil-fire and nuclear-explosion dynamics;
+  `volumetrics_inject.comp` and `composite.frag` were extended for the new
+  precipitation/wind/time-of-day parameters (`d924bf81`, `140d8bad`,
+  `dcdad31a`, `603006a4`, `27a04436`, `c1fdf662`, `cd316a56`).
+- **SDK v0.1 dispatch, continued** — engine-owned self provider receivers,
+  typed object receivers, receiver-expression evaluation, entity-handle
+  comparison, and loaded-plugin-count aliases now dispatch natively; a
+  save-format version bump covers the newly-computed provider receivers;
+  compatibility-route inventory and hand-off docs updated in step.
+- **Correctness tail (40 issues across 11 `/fix-issue` batches)** —
+  runtime-audit baseline/gate contract repair (#3550/3552-3556), NIF
+  version-gating + POM LOD + shader-contract hardening (#3621-3624), particle
+  greyscale LUT carried through the NIFAL boundary + sRGB swapchain warning
+  (#3590/3594/3595), `NiPSys*Ctlr` version gating + tangent producer parity
+  (#3174/3176/3177/3432), `NiControllerSequence` defaults +
+  `BSDistantObjectExtraData`/`BSFaceGenNiNode` dispatch (#3437/3461/3464/
+  3476), `material.rs` test split + `GpuMaterial` docstring fixes
+  (#2257/2491/2572), parallax height/pass resolution moved to the
+  parser→Material boundary (#3073), `Effect::Enable` counterpart + perks
+  allowlist + discovery-based save-scan roots (#3489/3491/3497/3500), and an
+  animation-system pair of batches: quantized material dedup + FSR bloom
+  barrier verification + `draw_frame` split into phase helpers
+  (#3246/3247/3282); RTTI restoration for 3 FNV float controllers + culled-
+  shape visibility import + FxHash'd animation hot path + `AnimationLayer`
+  blend-in zero-weight fix (#3327/3640/3677/3701); and a non-playing layer's
+  stalled blend-out timer + the `AnimationStack` root-motion path's
+  absolute-vs-delta bug + a multi-period text-key drop + LRU eviction now
+  biased away from clip-carrying cache entries (#3702/3703/3704/3705).
+- **Traceability tooling** — `scripts/check-acceptance-coverage.py`
+  generalizes the existing citation audit to catch a closed issue whose
+  acceptance criteria outrun its citing commits (the shape that let
+  #2372/EX-16 close twice on false premises); a live run over 3451 closed
+  issues flagged 30 under-cited among the 33 carrying a recognized criteria
+  heading.
+- **Renderer + launcher** — point/spot light range now derives from one
+  shared multiplier instead of two independently-drifting constants
+  (`ae71ace9`); the launcher's X11 support landed and its README status line
+  moved from "in progress" to "available".
+
+Net: tests 6905 → 7001 (+96); Rust src LOC ~520,455 → ~527,686 (+7231);
+source files 993 → 999 outside `tests/` dirs; open issue dirs 3679 → 3690
+(+11); workspace members unchanged at 33. Bench-of-record `34074b93` is now
+957 commits stale — still no GPU in this environment to refresh it.
+
+---
+
 ## Session 77 — "The Wizard of Oz": SDK v0.1 native dispatch, a launcher front end, and the EX-16 epic's honest close  (2026-08-29 → 2026-09-01, `81a74add..58f3d442`, 252 commits)
 
 The prior session unblocked Starfield CDB and closed 127 audit findings; this

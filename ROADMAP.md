@@ -12,49 +12,36 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-09-01 (session closeout — tests **6905**, +579 vs
-Session 76's 6326; Rust `src/` LOC **~520 455**, +62 980; workspace members
-**33**, +5 (three new crates — `boot-request`, `game-detect`, `settings-io`
-— plus two new tools — `byro-detect`, `byro-launcher`); open issue dirs
-**3679**, +267. 252 commits landed across Session 77, dominated by two
-threads: a large `byroredux-sdk` v0.1 build-out (native StorageUtil/
-JContainers/ModEvent dispatch, a typed Papyrus/ObScript provider-call
-boundary, Game/UI-menu-state/input-mapping/form-lookup integration — see
-`docs/engine/sdk-v0.1-development-plan.md` and its `-next-action-plan`
-hand-off doc) and a new **launcher front end** (P1–P3: Steam-install
-discovery via `crates/game-detect`, an eframe/glow Library/Play/Details/
-Settings UI in `tools/byro-launcher`, and the settings model shared with the
-engine via `crates/settings-io` — see `docs/engine/launcher.md`), plus a
-tail of `Fix #NNNN` correctness work (NAVM cross-tile connectivity, Havok
-packfile + `.uvd` container triage, Oblivion PGRD pathgrids, a light-disk-
-radius fix, a parallax alpha-height-bit fix) and a ~40-commit doc-rot batch.
-**This ritual caught two real regressions the session's own commits never
-surfaced**, both from code added without updating an adjacent guard: a
-`sdk_compat_command_formats_engine_service_mapping` test still asserted the
-pre-session `Mapped` disposition label for `StorageUtil.GetIntValue` after
-the SDK work legitimately promoted it to `Native` (test updated), and the
-new `StudioSession` editor-mode resource (SDK `--studio` asset-preview host)
-had no entry in `NOT_SAVED_BY_DESIGN`, tripping the save-registry
-completeness guard (allowlisted — it's tooling state over loose assets,
-never gameplay). **A methodology defect in this ritual itself was also
-caught and fixed**: `cargo test --workspace` without `--no-fail-fast` stops
-at the first failing binary, so the initial count under-reported by ~5 000
-tests (1836 vs the true 6905) — the skill's own repro command now pins
-`--no-fail-fast`. Five stale doc-path references were fixed (`settings.rs`
-moved core→a `settings/` module directory; two not-yet-built
-`compatibility.toml` mentions italicised; the crate count corrected 25→28).
-The close-time citation audit found 95 zero-citation closed issues, all of
-which already carried a proper closing comment (fixed-in-hash / duplicate-of
-/ superseded-by-split) — the discipline this ritual asks for was already
-being followed live, the script just can't see GitHub comments. The orphan
-audit found 5 candidates: 3 were genuinely fixed without a closing keyword
-and are now closed (#3776, #3780, #3786, all landed in the vaguely-named
-`d06f6df9`), 2 are still-open research-spike triage refs (#3809, #3810) and
-correctly left alone. The bench-of-record remains `34074b93` (2026-08-14),
-now **914 commits stale**; this environment still has no GPU for the
-required 75-run refresh, and this session's own hot-path touches were
-correctness fixes (parallax bit-masking, light-disk radius, a newly-live
-subsurface-scattering gate term), not new architecture — see R6a-stale-20.)
+**Last verified**: 2026-09-02 (session closeout — tests **7001**, +96 vs
+Session 77's 6905; Rust `src/` LOC **~527 686**, +7 231; workspace members
+unchanged at **33**; open issue dirs **3690**, +11. 36 commits landed across
+Session 78, run as three concurrent Claude Code threads against this shared
+working directory: a weather/volumetric-fog build-out (`WeatherSkyState`
+stars color/wind speed/authored wind direction, oil-fire and
+nuclear-explosion fog profiles, `volumetrics_inject.comp` +
+`composite.frag` extensions for the new precipitation/wind/time-of-day
+params), a continuation of the `byroredux-sdk` v0.1 dispatch layer (engine-
+owned self / typed object provider receivers, receiver-expression
+evaluation, entity-handle comparison, plugin-count aliases), and 40 issues
+across 11 `/fix-issue` correctness batches spanning NIF version-gating,
+material/water shader fixes, save-registry audit-gate repair, and an
+animation-system pair of batches (see HISTORY.md Session 78 for the full
+bucket list). **The three-concurrent-thread setup produced a real
+attribution defect this ritual surfaced**: one thread's `git commit` staged
+the whole dirty working tree, sweeping four correctness fixes (#3702,
+#3703, #3704, plus part of #3703's test) into that thread's own commits
+(`603006a4`, `27a04436`, `c1fdf662`) instead of their own — the code is
+verified correct and covered by regression tests at HEAD, and each issue
+was closed with a comment naming its actual landing commit rather than a
+history rewrite (interactive rebase isn't available in this environment,
+and rewriting a concurrent session's live commits isn't worth the risk).
+The close-time citation audit found 9 zero-citation closes in this range,
+all already carrying a proper closing comment; the orphan audit found 1
+candidate (`#3308`, a pre-existing forward-looking comment relocated by a
+prior session's refactor, not new — correctly left alone). The bench-of-
+record remains `34074b93` (2026-08-14), now **957 commits stale**; this
+environment still has no GPU for the required refresh, and none of this
+session's three threads touched hot-path architecture — see R6a-stale-20.)
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -1329,17 +1316,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-09-01 (session close, HEAD `58f3d442`). Every
+Ground-truth as of 2026-09-02 (session close, HEAD `cd316a56`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~520 455                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~555 246                 |
-| Source files (`.rs`, excl. `target/`)   | 1065 total · 993 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~527 686                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~563 145                 |
+| Source files (`.rs`, excl. `target/`)   | 1073 total · 999 outside `tests/` dirs |
 | Workspace members                       | 33 (28 crates + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **6905 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-01). Clean full-workspace run, including doc-tests. Note for future `/session-close` runs: without `--no-fail-fast`, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it — this session's first pass under-reported by ~5 000 tests (1836 vs the true 6905) for exactly that reason. Always pass `--no-fail-fast` for the ground-truth count. |
-| Open issue directories                  | 3679 (`.claude/issues/`)     |
+| Tests                                   | **7001 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-02). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905). |
+| Open issue directories                  | 3690 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **603 207** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships). Oblivion 8 032 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4; Starfield 99.98% aggregate; **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
