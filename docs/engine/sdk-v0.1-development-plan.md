@@ -111,7 +111,10 @@ branches with negation, short-circuit logical operators,
 same-type boolean/integer/float comparisons,
 and string equality/inequality. Arithmetic and string concatenation execute
 through the engine provider host, while object expressions, broader events,
-other latent primitives, and dynamic object dispatch remain open. Provider-bearing
+other latent primitives, and dynamic object dispatch remain open. A reserved
+`Self.Method(...)` route now supplies the current script owner's stable opaque
+`Entity` handle as the declaration's first argument; latent handlers using that
+receiver remain rejected until continuation ownership is persisted. Provider-bearing
 handlers support bounded `Utility.Wait` continuations that preserve locals and
 ordered branch/enclosing tails across save/load. Restored calls are reconciled
 against the live provider catalog before dispatch. Archive-backed VMAD handlers
@@ -1511,7 +1514,10 @@ handles (`==` and `!=`), including explicit `None` checks for a missing player
 or other nullable object result. Entity handles compare by stable generational
 identity, while ordered comparisons remain rejected before attachment and
 runtime value mismatches fail closed. Receiver-method dispatch and broader
-object expressions remain future substrate work.
+object expressions remain future substrate work. The bounded receiver slice is
+now available for `self.Method(...)` routes published under the reserved
+`Self` provider; declarations must expose a required first `Entity` parameter,
+and execution resolves `self` through the same engine-owned handle registry.
 
 Checkpoint: `feat(scripting): preserve SCPT load-order name probes`.
 

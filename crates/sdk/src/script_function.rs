@@ -142,12 +142,15 @@ pub struct ScriptResultDeclaration {
     pub optional: bool,
 }
 
-/// A legal static-call spelling accepted by Papyrus source and PEX bytecode.
+/// A legal provider-call spelling accepted by Papyrus source and PEX bytecode.
 ///
 /// Extension and function IDs deliberately use a broader namespaced grammar,
 /// so they cannot safely double as Papyrus identifiers. This explicit alias
 /// lets a package publish `WeatherNative.GetAt(...)` while the host still
 /// routes to the authenticated `ext.org.example.weather.weather-at` function.
+/// The engine reserves the `Self` provider for `self.Method(...)` receiver
+/// calls; those declarations expose the current owner's opaque `Entity` as
+/// their required first parameter.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PapyrusFunctionAlias {

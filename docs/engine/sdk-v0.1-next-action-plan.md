@@ -44,8 +44,12 @@ unsupported call.
   entity handles by stable identity with `==` and `!=`, including `None` for
   missing-player/null object results. Ordered entity comparisons and runtime
   type mismatches remain fail-closed.
-- Continue with receiver object expressions and the next justified latent
-  primitive.
+- **Delivered in this slice:** a reserved `self.Method(...)` spelling lowers
+  to `Self.Method` routes whose required first `Entity` parameter is resolved
+  from the current script owner. Latent handlers using `self` remain rejected
+  until continuation ownership is persisted.
+- Continue with receiver expressions for typed object locals and the next
+  justified latent primitive.
 - Add broader event coverage only when the canonical ECS payload and save
   behavior exist; preserve guard-free guest entry and whole-handler rejection
   on unsupported syntax.
