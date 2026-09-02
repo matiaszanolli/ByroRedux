@@ -270,6 +270,7 @@ mod tests {
             cloud_tile_scale_3: 0.3,
             cloud_texture_index_3: 10,
             current_dalc_cube: None,
+            weather: crate::components::WeatherSkyState::default(),
         }
     }
 

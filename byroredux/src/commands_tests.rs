@@ -360,6 +360,7 @@ fn light_dump_handles_missing_and_present_resources() {
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
         current_dalc_cube: None,
+        weather: crate::components::WeatherSkyState::default(),
     });
     world.insert_resource(GameTimeRes::new(10.5, 30.0));
     let emitter = world.spawn();

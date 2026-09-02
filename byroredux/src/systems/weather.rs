@@ -9,7 +9,8 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::World;
 
 use crate::components::{
-    CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherTransitionRes,
+    CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes,
+    WeatherSkyState, WeatherTransitionRes,
 };
 
 /// Build the time-of-day key table used by the `weather_system`
@@ -397,6 +398,108 @@ fn sample_wthr_colors(
     )
 }
 
+fn cloud_tod_slot(slot: usize) -> usize {
+    match slot {
+        byroredux_plugin::esm::records::weather::TOD_HIGH_NOON => {
+            byroredux_plugin::esm::records::weather::TOD_DAY
+        }
+        byroredux_plugin::esm::records::weather::TOD_MIDNIGHT => {
+            byroredux_plugin::esm::records::weather::TOD_NIGHT
+        }
+        slot => slot.min(3),
+    }
+}
+
+/// Sample cloud PNAM/JNAM tables and attach them to the static weather
+/// controls. The renderer receives only the current four-layer result, while
+/// WeatherDataRes retains all TOD samples for deterministic transitions.
+fn sample_weather_sky(
+    weather: &WeatherDataRes,
+    slot_a: usize,
+    slot_b: usize,
+    t: f32,
+) -> WeatherSkyState {
+    let mut sampled = weather.weather;
+    let a = cloud_tod_slot(slot_a);
+    let b = cloud_tod_slot(slot_b);
+    for layer in 0..4 {
+        let ca = weather.cloud_layer_colors[layer][a];
+        let cb = weather.cloud_layer_colors[layer][b];
+        let alpha_a = weather.cloud_layer_alphas[layer][a];
+        let alpha_b = weather.cloud_layer_alphas[layer][b];
+        sampled.cloud_tints[layer] = [
+            lerp1(ca[0], cb[0], t),
+            lerp1(ca[1], cb[1], t),
+            lerp1(ca[2], cb[2], t),
+            lerp1(alpha_a, alpha_b, t),
+        ];
+    }
+    sampled
+}
+
+fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSkyState {
+    let mut cloud_tints = [[0.0; 4]; 4];
+    for layer in 0..4 {
+        for channel in 0..4 {
+            cloud_tints[layer][channel] = lerp1(a.cloud_tints[layer][channel], b.cloud_tints[layer][channel], t);
+        }
+    }
+    let direction = [
+        lerp1(a.wind_direction[0], b.wind_direction[0], t),
+        lerp1(a.wind_direction[1], b.wind_direction[1], t),
+    ];
+    let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
+    WeatherSkyState {
+        cloud_tints,
+        precipitation: [
+            lerp1(a.precipitation[0], b.precipitation[0], t),
+            lerp1(a.precipitation[1], b.precipitation[1], t),
+        ],
+        thunder_frequency: lerp1(a.thunder_frequency, b.thunder_frequency, t),
+        lightning_color: lerp3(a.lightning_color, b.lightning_color, t),
+        sun_glare: lerp1(a.sun_glare, b.sun_glare, t),
+        moon_glare: lerp1(a.moon_glare, b.moon_glare, t),
+        aurora_intensity: lerp1(a.aurora_intensity, b.aurora_intensity, t),
+        aurora_follows_sun: if t < 0.5 {
+            a.aurora_follows_sun
+        } else {
+            b.aurora_follows_sun
+        },
+        wind_direction: if length > 1.0e-4 {
+            [direction[0] / length, direction[1] / length]
+        } else {
+            [1.0, 0.0]
+        },
+    }
+}
+
+fn lerp_cloud_velocities(a: [[f32; 2]; 4], b: [[f32; 2]; 4], t: f32) -> [[f32; 2]; 4] {
+    let mut result = [[0.0; 2]; 4];
+    for layer in 0..4 {
+        result[layer] = [lerp1(a[layer][0], b[layer][0], t), lerp1(a[layer][1], b[layer][1], t)];
+    }
+    result
+}
+
+/// Turn authored cloud velocity bytes into UV/sec. A zero vector means the
+/// record did not author Creation motion data, so preserve the established
+/// wind-driven fallback for legacy records.
+fn cloud_scroll_vectors(velocities: [[f32; 2]; 4], fallback_rate: f32) -> [[f32; 2]; 4] {
+    let fallback = [
+        [fallback_rate, fallback_rate * 0.3],
+        [-fallback_rate * 1.35, fallback_rate * 0.5],
+        [fallback_rate * 0.85, fallback_rate * 0.45],
+        [-fallback_rate * 1.15, fallback_rate * 0.6],
+    ];
+    let mut result = fallback;
+    for layer in 0..4 {
+        if velocities[layer][0].abs() > 1.0e-5 || velocities[layer][1].abs() > 1.0e-5 {
+            result[layer] = [velocities[layer][0] * 0.16, velocities[layer][1] * 0.16];
+        }
+    }
+    result
+}
+
 /// #993 — Skyrim DALC ambient cube TOD interpolation. The DALC array has
 /// 4 TOD slots (sunrise / day / sunset / night) while `sky_colors` has 6
 /// (4 + high_noon + midnight); fold high_noon→day and midnight→night per
@@ -540,6 +643,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     let (zenith, horizon, lower, sun_col, ambient, sunlight, fog_col) =
         sample_wthr_colors(&wd.sky_colors, slot_a, slot_b, t);
+    let weather_source = sample_weather_sky(&wd, slot_a, slot_b, t);
+    let cloud_velocities_source = wd.cloud_layer_velocities;
     // #2816 — sampled here, while `wd` is still borrowed, so the
     // cross-fade block below can blend it against the target's own
     // sample instead of re-reading the (by-then-replaced) live
@@ -579,6 +684,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         fog_far,
         fog_medium,
         dalc_cube,
+        weather,
+        cloud_layer_velocities,
     ) = if transition_t > 0.0 {
         let tr = world
             .try_resource::<WeatherTransitionRes>()
@@ -623,6 +730,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         // own isotropic ambient instead of holding the real cube at full
         // weight until it snaps to/from `None`.
         let target_dalc = sample_dalc_cube(target.skyrim_dalc_per_tod.as_ref(), b_a, b_b, b_t);
+        let target_weather = sample_weather_sky(target, b_a, b_b, b_t);
         let dalc_cube = match (dalc_source, target_dalc) {
             (Some(a), Some(b)) => Some(crate::components::DalcCubeYup::lerp(&a, &b, transition_t)),
             (Some(a), None) => Some(crate::components::DalcCubeYup::lerp(
@@ -650,6 +758,12 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             lerp1(fog_far, target_fog_far, transition_t),
             fog_medium.lerp(target_fog_medium, transition_t),
             dalc_cube,
+            lerp_weather_sky(weather_source, target_weather, transition_t),
+            lerp_cloud_velocities(
+                cloud_velocities_source,
+                target.cloud_layer_velocities,
+                transition_t,
+            ),
         )
     } else {
         (
@@ -664,6 +778,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             fog_far,
             fog_medium,
             dalc_source,
+            weather_source,
+            cloud_velocities_source,
         )
     };
 
@@ -736,7 +852,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // worldspace, but WTHR changes can occur without a worldspace reload;
     // SpeedTree sway and water-normal motion must follow those changes too.
     if let Some(mut wind) = world.try_resource_mut::<WindField>() {
-        *wind = WindField::from_weather_byte(weather_wind_speed, wind.direction);
+        *wind = WindField::from_weather_byte(weather_wind_speed, weather.wind_direction);
     }
 
     // Update SkyParamsRes.
@@ -750,6 +866,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;
+        sky.weather = weather;
         // #993 — DALC cube write-through. `None` on every non-Skyrim
         // cell, so the renderer's future consumer can branch on
         // `current_dalc_cube.is_some()` to gate the 6-axis sample.
@@ -773,35 +890,17 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // Wrap scroll at 1.0 so it never grows unboundedly; sampler
     // REPEAT makes the wrap invisible.
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
-        clouds.cloud_scroll[0] = (clouds.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
-        clouds.cloud_scroll[1] =
-            (clouds.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
-        // Layer 1 drifts in the opposite U direction at 1.35× speed.
-        // Creates visible parallax against layer 0 with no per-weather
-        // source needed. See #541 (ONAM/INAM decode) for eventual
-        // authoritative values.
-        clouds.cloud_scroll_1[0] =
-            (clouds.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
-        clouds.cloud_scroll_1[1] =
-            (clouds.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
-        // Layer 2 (WTHR ANAM) and layer 3 (BNAM) used to mirror layer 0
-        // and layer 1 verbatim — when ANAM/BNAM resolved to the same
-        // texture as DNAM/CNAM (or were absent), the four-layer composite
-        // collapsed to two visually identical pairs. Until WTHR ONAM
-        // (4 B, looks f32-ish) and INAM (304 B per-image transition data)
-        // are decoded as the authoritative per-weather scroll source,
-        // pick distinct multipliers so the four layers always have four
-        // visibly different drifts. Slower base U on the high layers
-        // matches the conventional cirrus-vs-stratus authoring pattern
-        // (cirrus drifts slowly relative to the lower deck). #899.
-        clouds.cloud_scroll_2[0] =
-            (clouds.cloud_scroll_2[0] + cloud_scroll_rate * 0.85 * dt).rem_euclid(1.0);
-        clouds.cloud_scroll_2[1] =
-            (clouds.cloud_scroll_2[1] + cloud_scroll_rate * 0.45 * dt).rem_euclid(1.0);
-        clouds.cloud_scroll_3[0] =
-            (clouds.cloud_scroll_3[0] - cloud_scroll_rate * 1.15 * dt).rem_euclid(1.0);
-        clouds.cloud_scroll_3[1] =
-            (clouds.cloud_scroll_3[1] + cloud_scroll_rate * 0.6 * dt).rem_euclid(1.0);
+        let scroll_vectors = cloud_scroll_vectors(cloud_layer_velocities, cloud_scroll_rate);
+        let scrolls = [
+            &mut clouds.cloud_scroll,
+            &mut clouds.cloud_scroll_1,
+            &mut clouds.cloud_scroll_2,
+            &mut clouds.cloud_scroll_3,
+        ];
+        for (scroll, velocity) in scrolls.into_iter().zip(scroll_vectors) {
+            scroll[0] = (scroll[0] + velocity[0] * dt).rem_euclid(1.0);
+            scroll[1] = (scroll[1] + velocity[1] * dt).rem_euclid(1.0);
+        }
     }
 
     // Update CellLightingRes — exterior cells only. Interior cells own
@@ -870,6 +969,10 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     let tr_target_wind = tr.target.wind_speed;
     let tr_target_precipitation = tr.target.precipitation;
     let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
+    let tr_target_cloud_velocities = tr.target.cloud_layer_velocities;
+    let tr_target_cloud_colors = tr.target.cloud_layer_colors;
+    let tr_target_cloud_alphas = tr.target.cloud_layer_alphas;
+    let tr_target_weather = tr.target.weather;
     // Lock-order boundary (#3263): weather_system holds WeatherDataRes while
     // reading WeatherTransitionRes. Do not move the WeatherDataRes write
     // above this drop or borrow `tr.target` through it; either change would
@@ -885,6 +988,10 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
         // the source weather's wind speed persists.
         wd.wind_speed = tr_target_wind;
         wd.precipitation = tr_target_precipitation;
+        wd.cloud_layer_velocities = tr_target_cloud_velocities;
+        wd.cloud_layer_colors = tr_target_cloud_colors;
+        wd.cloud_layer_alphas = tr_target_cloud_alphas;
+        wd.weather = tr_target_weather;
         // #1102 / REN-D15-002 — promote DALC ambient cube so the Skyrim
         // 6-axis directional ambient uses the target weather.
         wd.skyrim_dalc_per_tod = tr_target_dalc;
@@ -1558,6 +1665,10 @@ mod interior_gate_tests {
             skyrim_dalc_per_tod: None,
             wind_speed: 0,
             precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
         });
 
         world
@@ -1800,6 +1911,10 @@ mod seeded_at_wrong_tod_resample_tests {
             skyrim_dalc_per_tod: None,
             wind_speed: 0,
             precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
         });
 
         // The buggy seed: direction already correct (below-horizon
@@ -1825,6 +1940,7 @@ mod seeded_at_wrong_tod_resample_tests {
             cloud_tile_scale_3: 0.0,
             cloud_texture_index_3: 0,
             current_dalc_cube: None,
+            weather: crate::components::WeatherSkyState::default(),
         });
 
         weather_system(&world, 0.0);
@@ -1901,6 +2017,10 @@ mod dalc_cube_crossfade_tests {
             skyrim_dalc_per_tod: dalc,
             wind_speed: 0,
             precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
         }
     }
 
@@ -1937,6 +2057,7 @@ mod dalc_cube_crossfade_tests {
             cloud_tile_scale_3: 0.0,
             cloud_texture_index_3: 0,
             current_dalc_cube: None,
+            weather: crate::components::WeatherSkyState::default(),
         });
         world
     }

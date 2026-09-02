@@ -34,7 +34,9 @@ use byroredux_plugin::esm::cell::WorldspaceRecord;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{ClimateRecord, WeatherRecord};
 
-use crate::components::{CellLightingRes, DalcCubeYup, SkyParamsRes, WeatherDataRes};
+use crate::components::{
+    CellLightingRes, DalcCubeYup, SkyParamsRes, WeatherDataRes, WeatherSkyState,
+};
 
 /// On-disk distant-terrain family selected at the EXAL boundary.
 ///
@@ -1087,6 +1089,7 @@ pub(crate) fn translate_sky(
         cloud_tile_scale_3: s3,
         cloud_texture_index_3: c3,
         current_dalc_cube: None,
+        weather: weather_sky_state(wthr, TOD_DAY),
     }
 }
 
@@ -1118,6 +1121,82 @@ fn precipitation_from_weather(classification: u8) -> f32 {
         0.12
     } else {
         0.0
+    }
+}
+
+fn precipitation_components(classification: u8) -> [f32; 2] {
+    use byroredux_plugin::esm::records::weather::{WTHR_RAINY, WTHR_SNOW};
+    [
+        if classification & WTHR_RAINY != 0 { 1.0 } else { 0.0 },
+        if classification & WTHR_SNOW != 0 { 1.0 } else { 0.0 },
+    ]
+}
+
+/// Translate the authored non-colour WTHR controls into normalized render
+/// values. Per-TOD cloud tint is sampled by `weather_system`; this seed is
+/// useful for the first frame before that system has run.
+fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
+    use byroredux_plugin::esm::records::weather::{
+        WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
+    };
+    let slot = tod_slot.min(3);
+    let mut cloud_tints = [[1.0; 4]; 4];
+    for layer in 0..4 {
+        let color = wthr.cloud_layer_colors[layer][slot];
+        cloud_tints[layer] = [
+            color.r as f32 / 255.0,
+            color.g as f32 / 255.0,
+            color.b as f32 / 255.0,
+            (color.a as f32 / 255.0 * wthr.cloud_layer_alphas[layer][slot]).clamp(0.0, 1.0),
+        ];
+    }
+
+    let mut lightning_color = [
+        wthr.lightning_color[0] as f32 / 255.0,
+        wthr.lightning_color[1] as f32 / 255.0,
+        wthr.lightning_color[2] as f32 / 255.0,
+    ];
+    if lightning_color.iter().all(|c| *c <= 0.001) {
+        lightning_color = [1.0; 3];
+    }
+
+    let max_table_rgb = |table: &[byroredux_plugin::esm::records::weather::SkyColor; 4]| {
+        table
+            .iter()
+            .flat_map(|c| [c.r, c.g, c.b])
+            .max()
+            .unwrap_or(0) as f32
+            / 255.0
+    };
+    let authored_moon_glare = max_table_rgb(&wthr.skyrim_moon_glare)
+        .max(max_table_rgb(&wthr.skyrim_extra_colors[6]));
+    let moon_glare = if authored_moon_glare > 0.001 {
+        authored_moon_glare
+    } else {
+        0.35
+    };
+    let aurora_always = wthr.classification & WTHR_AURORA_ALWAYS_VISIBLE != 0;
+    let aurora_follows_sun = wthr.classification & WTHR_AURORA_FOLLOWS_SUN != 0;
+    let angle = (wthr.wind_direction as f32).to_radians();
+
+    WeatherSkyState {
+        cloud_tints,
+        precipitation: precipitation_components(wthr.classification),
+        thunder_frequency: wthr.thunder_frequency as f32 / 255.0,
+        lightning_color,
+        sun_glare: if wthr.sun_glare == 0 {
+            1.0
+        } else {
+            wthr.sun_glare as f32 / 255.0
+        },
+        moon_glare,
+        aurora_intensity: if aurora_always || aurora_follows_sun {
+            1.0
+        } else {
+            0.0
+        },
+        aurora_follows_sun,
+        wind_direction: [angle.cos(), angle.sin()],
     }
 }
 
@@ -1179,6 +1258,22 @@ pub(crate) fn translate_weather(
             DalcCubeYup::from_skyrim_zup(&cubes[3]),
         ]
     });
+    let mut cloud_layer_velocities = [[0.0f32; 2]; 4];
+    for (dst, src) in cloud_layer_velocities
+        .iter_mut()
+        .zip(wthr.cloud_layer_velocities.iter())
+    {
+        *dst = [src[0] as f32 / 255.0, src[1] as f32 / 255.0];
+    }
+    let mut cloud_layer_colors = [[[0.0f32; 3]; 4]; 4];
+    for (dst_layer, src_layer) in cloud_layer_colors
+        .iter_mut()
+        .zip(wthr.cloud_layer_colors.iter())
+    {
+        for (dst, src) in dst_layer.iter_mut().zip(src_layer.iter()) {
+            *dst = src.to_rgb_f32();
+        }
+    }
     let coverage = fog_coverage_from_weather(wthr.classification);
     let mut fog_media = [
         crate::fog::FogMedium::from_legacy_ramp(
@@ -1211,6 +1306,10 @@ pub(crate) fn translate_weather(
         // #1033 — WTHR DATA wind_speed drives per-weather cloud-scroll rate.
         wind_speed: wthr.wind_speed,
         precipitation: precipitation_from_weather(wthr.classification),
+        cloud_layer_velocities,
+        cloud_layer_colors,
+        cloud_layer_alphas: wthr.cloud_layer_alphas,
+        weather: weather_sky_state(wthr, 1),
     }
 }
 
@@ -1344,6 +1443,10 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         skyrim_dalc_per_tod: None,
         wind_speed: 0,
         precipitation: 0.0,
+        cloud_layer_velocities: [[0.0; 2]; 4],
+        cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+        cloud_layer_alphas: [[1.0; 4]; 4],
+        weather: WeatherSkyState::default(),
     }
 }
 

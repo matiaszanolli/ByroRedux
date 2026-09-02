@@ -54,6 +54,7 @@ fn healthy_exterior() -> (CellLightingRes, SkyParamsRes) {
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
         current_dalc_cube: None,
+        weather: crate::components::WeatherSkyState::default(),
     };
     (lighting, sky)
 }

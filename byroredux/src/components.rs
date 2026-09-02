@@ -1072,6 +1072,48 @@ impl DalcCubeYup {
     }
 }
 
+/// Runtime weather controls that affect the sky and screen-space atmosphere.
+/// Kept as one small copyable value so weather transitions can blend all
+/// authored effects together and every SkyParamsRes literal has one stable
+/// extension point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WeatherSkyState {
+    /// Current TOD-sampled cloud tint and alpha multiplier per rendered layer.
+    /// `[r, g, b, alpha]`, in raw monitor-space authoring units.
+    pub(crate) cloud_tints: [[f32; 4]; 4],
+    /// Rain and snow screen-space precipitation intensity.
+    pub(crate) precipitation: [f32; 2],
+    /// Thunder/lightning frequency, normalized from WTHR DATA.
+    pub(crate) thunder_frequency: f32,
+    /// RGB lightning flash colour.
+    pub(crate) lightning_color: [f32; 3],
+    /// Sun glare multiplier from WTHR DATA.
+    pub(crate) sun_glare: f32,
+    /// Moon glare multiplier from Skyrim NAM3 / Moon Glare colour data.
+    pub(crate) moon_glare: f32,
+    /// Skyrim aurora enable/intensity derived from WTHR classification.
+    pub(crate) aurora_intensity: f32,
+    pub(crate) aurora_follows_sun: bool,
+    /// Authored horizontal wind direction in renderer X/Z coordinates.
+    pub(crate) wind_direction: [f32; 2],
+}
+
+impl Default for WeatherSkyState {
+    fn default() -> Self {
+        Self {
+            cloud_tints: [[1.0, 1.0, 1.0, 1.0]; 4],
+            precipitation: [0.0; 2],
+            thunder_frequency: 0.0,
+            lightning_color: [1.0; 3],
+            sun_glare: 1.0,
+            moon_glare: 0.35,
+            aurora_intensity: 0.0,
+            aurora_follows_sun: false,
+            wind_direction: [1.0, 0.0],
+        }
+    }
+}
+
 /// Sky rendering parameters from WTHR records (exterior cells).
 /// Stored as an ECS resource so the render loop can read it per-frame.
 pub(crate) struct SkyParamsRes {
@@ -1129,6 +1171,9 @@ pub(crate) struct SkyParamsRes {
     /// UBO and replaces the temporary `AMBIENT_AO_FLOOR` constant in
     /// `triangle.frag` with a normal-driven cube sample.
     pub(crate) current_dalc_cube: Option<DalcCubeYup>,
+    /// Current TOD/transition-sampled precipitation, lightning, glare,
+    /// aurora, cloud tint, and wind-direction controls.
+    pub(crate) weather: WeatherSkyState,
 }
 impl Resource for SkyParamsRes {}
 
@@ -1232,6 +1277,14 @@ pub(crate) struct WeatherDataRes {
     /// WTHR precipitation intensity: rain is `1`, snow is a subtle wet-surface
     /// contribution, and clear/cloudy/unclassified weather is `0`.
     pub(crate) precipitation: f32,
+    /// Authored X/Y cloud motion controls for the four compatibility layers.
+    pub(crate) cloud_layer_velocities: [[f32; 2]; 4],
+    /// Authored PNAM cloud tint tables, four TOD samples per layer.
+    pub(crate) cloud_layer_colors: [[[f32; 3]; 4]; 4],
+    /// Authored JNAM cloud alpha tables, four TOD samples per layer.
+    pub(crate) cloud_layer_alphas: [[f32; 4]; 4],
+    /// Non-colour weather controls from DATA/NAM2/NAM3/classification.
+    pub(crate) weather: WeatherSkyState,
 }
 impl Resource for WeatherDataRes {}
 
