@@ -125,10 +125,10 @@ supported conditional branches; failure aborts that fragment's tail. Quest
 events, scene invocations,
 and ready latent continuations flush each fragment before the next one begins.
 The first curated extender-era pack is also executable without an extension
-package: eleven SKSE `Game` content calls
-cover regular/light counts, name-to-index and index-to-name lookup, active
-plugin, dependency-count, light-plugin master queries, and portable
-plugin-local form lookup. They preserve
+package: ten SKSE `Game` content calls plus the vanilla Papyrus
+`Game.GetFormFromFile` lookup cover regular/light counts, name-to-index and
+index-to-name lookup, active plugin, dependency-count, light-plugin master
+queries, and portable plugin-local form lookup. They preserve
 SKSE's exact `255` missing sentinel,
 `0x100 + lightIndex` combined-index encoding, and `0xffff` missing-light
 sentinel. Engine aliases cannot be shadowed by a package, while unrelated
@@ -964,8 +964,8 @@ four scalar `OnHit` attack/block parameters are projected under their authored
   broader events, other latent primitives, and dynamic object dispatch remain
   pending. The continuation queue is registered with the save system and revalidates saved
   routes against the live catalog before resuming.
-  Eleven exact SKSE `Game` content extensions are now engine-owned
-  catalog aliases: `GetModCount`,
+  Ten exact SKSE `Game` content extensions plus the vanilla Papyrus
+  `GetFormFromFile` call are now engine-owned catalog aliases: `GetModCount`,
   `GetFormFromFile`,
   `GetModByName`, `GetModName`, `IsPluginInstalled`, `GetLightModCount`,
   `GetLightModByName`, `GetLightModName`, `GetModDependencyCount`,
@@ -987,11 +987,11 @@ semantics. The SDK must not expose a fake operation that cannot be honored.
 ### Wave D — per-game compatibility packs
 
 - Curated SKSE, F4SE, xNVSE, and OBSE script API aliases backed by the common
-  service catalog. **The first exact SKSE pack is live: eleven `Game` regular
-  and light-plugin discovery, dependency-count, master-lookup, and portable
-  plugin-local form lookup calls route through `byro.content.catalog.*`;
-  engine-owned aliases are reserved against package shadowing. Broader
-  compatibility packs remain.**
+  service catalog. **The first exact SKSE pack is live: ten `Game` regular and
+  light-plugin discovery, dependency-count, and master-lookup calls, plus the
+  vanilla `GetFormFromFile` lookup, route through
+  `byro.content.catalog.*`; engine-owned aliases are reserved against
+  package shadowing. Broader compatibility packs remain.**
 - Automated source/PEX scans that report supported, mapped, and unsupported
   calls before launch. **Decoded PEX call-site extraction and compatibility
   classification are implemented, including full-property bodies, optional
