@@ -1499,8 +1499,16 @@ canonical `systems::PlayerEntity` body before callbacks; the host converts it
 to a stable generational `EntityRef`, returns `None` for flycam/no-player
 worlds, and rejects malformed arguments without exposing raw ECS IDs. Papyrus
 object locals now retain that nullable opaque entity value and can pass it to a
-typed provider call; receiver-method dispatch and entity comparisons remain
-future work.
+typed provider call; receiver-method dispatch remains future work.
+
+Checkpoint: `feat(sdk): compare engine entity handles`.
+
+Provider conditions now support identity comparisons for engine-owned entity
+handles (`==` and `!=`), including explicit `None` checks for a missing player
+or other nullable object result. Entity handles compare by stable generational
+identity, while ordered comparisons remain rejected before attachment and
+runtime value mismatches fail closed. Receiver-method dispatch and broader
+object expressions remain future substrate work.
 
 Checkpoint: `feat(scripting): preserve SCPT load-order name probes`.
 

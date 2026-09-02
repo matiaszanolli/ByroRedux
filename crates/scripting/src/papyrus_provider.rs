@@ -1914,6 +1914,10 @@ fn lower_provider_value(
         return Err(PapyrusProviderProgramError::NestingTooDeep);
     }
     let literal = match expression {
+        // Papyrus uses `None` as the null value for object references. Keep
+        // the lowered type Entity so it can participate in identity checks;
+        // assignment validation still rejects it for non-optional results.
+        Expr::NoneLit => Some((ScriptValue::None, ScriptValueType::Entity)),
         Expr::BoolLit(value) => Some((ScriptValue::Boolean(*value), ScriptValueType::Boolean)),
         Expr::IntLit(value) => Some((ScriptValue::Integer(*value), ScriptValueType::Integer)),
         Expr::FloatLit(value) => {
@@ -2029,13 +2033,16 @@ fn comparison_is_supported(
             PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
         ),
         ScriptValueType::Form
-        | ScriptValueType::Entity
         | ScriptValueType::BooleanArray
         | ScriptValueType::IntegerArray
         | ScriptValueType::FloatArray
         | ScriptValueType::StringArray
         | ScriptValueType::FormArray
         | ScriptValueType::EntityArray => false,
+        ScriptValueType::Entity => matches!(
+            operator,
+            PapyrusProviderComparison::Equal | PapyrusProviderComparison::NotEqual
+        ),
     }
 }
 
@@ -3280,6 +3287,22 @@ fn compare_condition_values(
             PapyrusProviderComparison::Equal => Ok(left == right),
             PapyrusProviderComparison::NotEqual => Ok(left != right),
             _ => Err("ordered string provider comparison reached execution".to_owned()),
+        },
+        (ScriptValue::Entity(left), ScriptValue::Entity(right)) => match operator {
+            PapyrusProviderComparison::Equal => Ok(left == right),
+            PapyrusProviderComparison::NotEqual => Ok(left != right),
+            _ => Err("ordered entity provider comparison reached execution".to_owned()),
+        },
+        (ScriptValue::None, ScriptValue::None) => match operator {
+            PapyrusProviderComparison::Equal => Ok(true),
+            PapyrusProviderComparison::NotEqual => Ok(false),
+            _ => Err("ordered null entity provider comparison reached execution".to_owned()),
+        },
+        (ScriptValue::Entity(_), ScriptValue::None)
+        | (ScriptValue::None, ScriptValue::Entity(_)) => match operator {
+            PapyrusProviderComparison::Equal => Ok(false),
+            PapyrusProviderComparison::NotEqual => Ok(true),
+            _ => Err("ordered nullable entity provider comparison reached execution".to_owned()),
         },
         _ => Err("provider comparison operands changed type at execution".to_owned()),
     }
@@ -5006,6 +5029,153 @@ mod tests {
         assert_eq!(
             calls[1].1,
             vec![ScriptValue::Entity(EntityRef::new(1, 7).unwrap())]
+        );
+    }
+
+    #[test]
+    fn entity_conditions_support_identity_and_nullable_none() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                ObjectReference player
+                player = Game.GetPlayer()
+                If player == player
+                    WeatherNative.WeatherAt(1, "same")
+                EndIf
+                If player != None
+                    WeatherNative.WeatherAt(2, "present")
+                EndIf
+                If player == None
+                    WeatherNative.WeatherAt(3, "unexpected")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let extension = ExtensionId::new("org.example.weather").unwrap();
+        provider_catalog.insert(&extension, &declaration()).unwrap();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE {
+                    Ok(ScriptValue::Entity(EntityRef::new(1, 7).unwrap()))
+                } else {
+                    Ok(ScriptValue::String("ok".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[0],
+            (
+                byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE.to_owned(),
+                Vec::new()
+            )
+        );
+        assert_eq!(calls[1].0, "ext.org.example.weather.weather-at");
+        assert_eq!(calls[1].1[0], ScriptValue::Integer(1));
+        assert_eq!(calls[2].0, "ext.org.example.weather.weather-at");
+        assert_eq!(calls[2].1[0], ScriptValue::Integer(2));
+    }
+
+    #[test]
+    fn entity_conditions_match_none_when_engine_player_is_missing() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                ObjectReference player
+                player = Game.GetPlayer()
+                If player == None
+                    WeatherNative.WeatherAt(3, "none")
+                EndIf
+                If player != None
+                    WeatherNative.WeatherAt(4, "unexpected")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut provider_catalog = PapyrusProviderCatalog::engine_compatibility();
+        let extension = ExtensionId::new("org.example.weather").unwrap();
+        provider_catalog.insert(&extension, &declaration()).unwrap();
+        let program = lower_provider_program(&script, &provider_catalog)
+            .unwrap()
+            .unwrap();
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                if route == byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE {
+                    Ok(ScriptValue::None)
+                } else {
+                    Ok(ScriptValue::String("ok".to_owned()))
+                }
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(provider_catalog), Some(callback));
+        let entity = world.spawn();
+        attach_papyrus_provider_program(&mut world, entity, program);
+        world.insert(entity, OnCellLoadEvent);
+
+        papyrus_provider_system(&world, 0.0);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            (
+                byroredux_sdk::compatibility::PAPYRUS_GAME_GET_PLAYER_ROUTE.to_owned(),
+                Vec::new()
+            )
+        );
+        assert_eq!(calls[1].0, "ext.org.example.weather.weather-at");
+        assert_eq!(calls[1].1[0], ScriptValue::Integer(3));
+    }
+
+    #[test]
+    fn entity_conditions_reject_ordered_comparisons() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnLoad()
+                ObjectReference player
+                player = Game.GetPlayer()
+                If player < player
+                    WeatherNative.WeatherAt(1, "unexpected")
+                EndIf
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            lower_provider_program(&script, &PapyrusProviderCatalog::engine_compatibility()),
+            Err(PapyrusProviderProgramError::UnsupportedStatement)
         );
     }
 
