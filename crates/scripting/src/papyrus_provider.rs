@@ -655,7 +655,7 @@ fn lower_ordered_arguments_from<T>(
 fn lower_provider_invocation(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Result<Option<PapyrusProviderInvocation>, PapyrusProviderLowerError> {
     let Expr::Call { callee, args } = expression else {
         return Ok(None);
@@ -666,8 +666,11 @@ fn lower_provider_invocation(
     let Expr::Ident(provider) = &object.node else {
         return Ok(None);
     };
+    let provider_name = provider.0.to_ascii_lowercase();
     let (route, receiver, parameter_offset) = if provider.0.eq_ignore_ascii_case(PAPYRUS_SELF_LOCAL)
-        && locals.get(PAPYRUS_SELF_LOCAL) == Some(&ScriptValueType::Entity)
+        && locals
+            .get(PAPYRUS_SELF_LOCAL)
+            .is_some_and(|local| local.value_type == ScriptValueType::Entity)
     {
         let Some(route) = catalog.resolve(PAPYRUS_SELF_PROVIDER, &member.node.0) else {
             if catalog.contains_provider(PAPYRUS_SELF_PROVIDER) {
@@ -686,6 +689,44 @@ fn lower_provider_invocation(
             })),
             1,
         )
+    } else if let Some(local) = locals.get(&provider_name) {
+        if local.value_type != ScriptValueType::Entity {
+            if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+                (route, None, 0)
+            } else {
+                if is_known_provider_call(&provider.0, &member.node.0, catalog) {
+                    return Err(PapyrusProviderLowerError::UnknownFunction {
+                        provider: provider.0.clone(),
+                        function: member.node.0.clone(),
+                    });
+                }
+                return Ok(None);
+            }
+        } else if let Some(object_type) = local.object_type.as_deref() {
+            if let Some(route) = catalog.resolve(object_type, &member.node.0) {
+                (
+                    route,
+                    Some(Box::new(PapyrusProviderArgument::Local {
+                        name: provider_name,
+                        value_type: ScriptValueType::Entity,
+                    })),
+                    1,
+                )
+            } else if catalog.contains_provider(object_type) {
+                return Err(PapyrusProviderLowerError::UnknownFunction {
+                    provider: object_type.to_owned(),
+                    function: member.node.0.clone(),
+                });
+            } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+                (route, None, 0)
+            } else {
+                return Ok(None);
+            }
+        } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
+            (route, None, 0)
+        } else {
+            return Ok(None);
+        }
     } else if let Some(route) = catalog.resolve(&provider.0, &member.node.0) {
         (route, None, 0)
     } else {
@@ -704,7 +745,7 @@ fn lower_provider_invocation(
         })
     {
         return Err(PapyrusProviderLowerError::UnsupportedArgument {
-            parameter: "self receiver".to_owned(),
+            parameter: "provider receiver".to_owned(),
         });
     }
     let arguments = lower_ordered_arguments_from(
@@ -718,7 +759,10 @@ fn lower_provider_invocation(
             }
             if let Expr::Ident(identifier) = expression {
                 let name = identifier.0.to_ascii_lowercase();
-                if locals.get(&name) == Some(&parameter.value_type) {
+                if locals
+                    .get(&name)
+                    .is_some_and(|local| local.value_type == parameter.value_type)
+                {
                     return Ok(PapyrusProviderArgument::Local {
                         name,
                         value_type: parameter.value_type,
@@ -1056,6 +1100,29 @@ struct PapyrusProviderParameterBinding {
     source: PapyrusProviderParameterSource,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PapyrusProviderLocalType {
+    value_type: ScriptValueType,
+    /// Case-folded Papyrus object name when this local came from `Type::Object`.
+    object_type: Option<String>,
+}
+
+impl PapyrusProviderLocalType {
+    fn scalar(value_type: ScriptValueType) -> Self {
+        Self {
+            value_type,
+            object_type: None,
+        }
+    }
+
+    fn object(value_type: ScriptValueType, object_type: &str) -> Self {
+        Self {
+            value_type,
+            object_type: Some(object_type.to_ascii_lowercase()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PapyrusProviderParameterSource {
     Entity,
@@ -1285,19 +1352,22 @@ fn lower_event_into(
     } else {
         None
     };
-    if !event
-        .body
-        .iter()
-        .any(|statement| statement_mentions_provider(&statement.node, catalog, 0))
-    {
-        return Ok(());
-    }
-    let mut locals = BTreeMap::from([(PAPYRUS_SELF_LOCAL.to_owned(), ScriptValueType::Entity)]);
+    let mut locals = BTreeMap::from([(
+        PAPYRUS_SELF_LOCAL.to_owned(),
+        PapyrusProviderLocalType::scalar(ScriptValueType::Entity),
+    )]);
     let mut parameters = if let Some(canonical) = canonical {
         lower_event_parameters(canonical, event, &mut locals)
     } else {
         lower_mod_event_parameters(event, &mut locals)?
     };
+    if !event
+        .body
+        .iter()
+        .any(|statement| statement_mentions_provider(&statement.node, catalog, &locals, 0))
+    {
+        return Ok(());
+    }
     let statements = lower_statements(&event.body, catalog, &mut locals, mod_event_sender, 0)?;
     if canonical.is_some() {
         parameters.retain(|parameter| statements_reference_local(&statements, &parameter.name));
@@ -1343,7 +1413,7 @@ fn lower_event_into(
 
 fn lower_mod_event_parameters(
     event: &Event,
-    locals: &mut BTreeMap<String, ScriptValueType>,
+    locals: &mut BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Result<Vec<PapyrusProviderParameterBinding>, PapyrusProviderProgramError> {
     event
         .params
@@ -1359,7 +1429,11 @@ fn lower_mod_event_parameters(
                 _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
             };
             let name = parameter.name.node.0.to_ascii_lowercase();
-            locals.insert(name.clone(), value_type);
+            let local_type = match &parameter.ty.node {
+                Type::Object(object) => PapyrusProviderLocalType::object(value_type, &object.0),
+                _ => PapyrusProviderLocalType::scalar(value_type),
+            };
+            locals.insert(name.clone(), local_type);
             Ok(PapyrusProviderParameterBinding {
                 name,
                 source: PapyrusProviderParameterSource::ModEventArgument { index, value_type },
@@ -1371,7 +1445,7 @@ fn lower_mod_event_parameters(
 fn lower_event_parameters(
     event_kind: PapyrusProviderEvent,
     event: &Event,
-    locals: &mut BTreeMap<String, ScriptValueType>,
+    locals: &mut BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Vec<PapyrusProviderParameterBinding> {
     let mut bindings = Vec::new();
     if matches!(
@@ -1383,7 +1457,12 @@ fn lower_event_parameters(
         if let Some(parameter) = event.params.first() {
             if matches!(&parameter.ty.node, Type::Object(_)) {
                 let name = parameter.name.node.0.to_ascii_lowercase();
-                locals.insert(name.clone(), ScriptValueType::Entity);
+                if let Type::Object(object) = &parameter.ty.node {
+                    locals.insert(
+                        name.clone(),
+                        PapyrusProviderLocalType::object(ScriptValueType::Entity, &object.0),
+                    );
+                }
                 bindings.push(PapyrusProviderParameterBinding {
                     name,
                     source: PapyrusProviderParameterSource::Entity,
@@ -1398,7 +1477,12 @@ fn lower_event_parameters(
         if let Some(parameter) = event.params.first() {
             if matches!(&parameter.ty.node, Type::Object(_)) {
                 let name = parameter.name.node.0.to_ascii_lowercase();
-                locals.insert(name.clone(), ScriptValueType::Form);
+                if let Type::Object(object) = &parameter.ty.node {
+                    locals.insert(
+                        name.clone(),
+                        PapyrusProviderLocalType::object(ScriptValueType::Form, &object.0),
+                    );
+                }
                 bindings.push(PapyrusProviderParameterBinding {
                     name,
                     source: PapyrusProviderParameterSource::Form,
@@ -1423,7 +1507,10 @@ fn lower_event_parameters(
             continue;
         }
         let name = parameter.name.node.0.to_ascii_lowercase();
-        locals.insert(name.clone(), ScriptValueType::Boolean);
+        locals.insert(
+            name.clone(),
+            PapyrusProviderLocalType::scalar(ScriptValueType::Boolean),
+        );
         bindings.push(PapyrusProviderParameterBinding { name, source });
     }
     bindings
@@ -1548,7 +1635,7 @@ fn value_references_local(value: &PapyrusProviderValue, name: &str) -> bool {
 fn lower_statements(
     statements: &[byroredux_papyrus::span::Spanned<Stmt>],
     catalog: &PapyrusProviderCatalog,
-    locals: &mut BTreeMap<String, ScriptValueType>,
+    locals: &mut BTreeMap<String, PapyrusProviderLocalType>,
     mod_event_sender: &PapyrusModEventSender,
     depth: usize,
 ) -> Result<Vec<PapyrusProviderStatement>, PapyrusProviderProgramError> {
@@ -1559,11 +1646,12 @@ fn lower_statements(
     for (statement_index, statement) in statements.iter().enumerate() {
         match &statement.node {
             Stmt::VarDecl(variable) => {
-                let Some(value_type) = sdk_type(&variable.ty.node) else {
+                let Some(local_type) = sdk_local_type(&variable.ty.node) else {
                     return Err(PapyrusProviderProgramError::UnsupportedLocal(
                         variable.name.node.0.clone(),
                     ));
                 };
+                let value_type = local_type.value_type;
                 let value = if let Some(initial) = &variable.initial_value {
                     lower_literal(&initial.node, value_type, false).ok_or_else(|| {
                         PapyrusProviderProgramError::UnsupportedLocal(variable.name.node.0.clone())
@@ -1572,7 +1660,7 @@ fn lower_statements(
                     default_value(value_type)
                 };
                 let key = variable.name.node.0.to_ascii_lowercase();
-                locals.insert(key.clone(), value_type);
+                locals.insert(key.clone(), local_type);
                 lowered.push(PapyrusProviderStatement::Declare { name: key, value });
             }
             Stmt::Assign { target, op, value } if *op == AssignOp::Eq => {
@@ -1582,7 +1670,7 @@ fn lower_statements(
                 let key = target.0.to_ascii_lowercase();
                 let expected = locals
                     .get(&key)
-                    .copied()
+                    .map(|local| local.value_type)
                     .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(target.0.clone()))?;
                 if let Some(call) = lower_provider_invocation(&value.node, catalog, locals)
                     .map_err(PapyrusProviderProgramError::Call)?
@@ -1754,7 +1842,7 @@ fn lower_mod_event_registration(
 
 fn lower_send_mod_event(
     expression: &Expr,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
     sender: &PapyrusModEventSender,
 ) -> Result<Option<PapyrusProviderStatement>, PapyrusProviderProgramError> {
     let Expr::Call { callee, args } = expression else {
@@ -1823,14 +1911,17 @@ fn lower_send_mod_event(
 fn lower_mod_event_argument(
     expression: &Expr,
     expected: ScriptValueType,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Result<PapyrusProviderArgument, PapyrusProviderProgramError> {
     if let Some(value) = lower_literal(expression, expected, false) {
         return Ok(PapyrusProviderArgument::Literal(value));
     }
     if let Expr::Ident(identifier) = expression {
         let name = identifier.0.to_ascii_lowercase();
-        if locals.get(&name) == Some(&expected) {
+        if locals
+            .get(&name)
+            .is_some_and(|local| local.value_type == expected)
+        {
             return Ok(PapyrusProviderArgument::Local {
                 name,
                 value_type: expected,
@@ -1873,7 +1964,7 @@ fn lower_wait(expression: &Expr) -> Result<Option<f32>, PapyrusProviderProgramEr
 fn lower_condition(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Result<PapyrusProviderCondition, PapyrusProviderProgramError> {
     lower_condition_at_depth(expression, catalog, locals, 0)
 }
@@ -1881,7 +1972,7 @@ fn lower_condition(
 fn lower_condition_at_depth(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
     depth: usize,
 ) -> Result<PapyrusProviderCondition, PapyrusProviderProgramError> {
     if depth > MAX_PROVIDER_HANDLER_NESTING {
@@ -1891,7 +1982,10 @@ fn lower_condition_at_depth(
         Expr::BoolLit(value) => Ok(PapyrusProviderCondition::Literal(*value)),
         Expr::Ident(identifier) => {
             let key = identifier.0.to_ascii_lowercase();
-            if locals.get(&key) == Some(&ScriptValueType::Boolean) {
+            if locals
+                .get(&key)
+                .is_some_and(|local| local.value_type == ScriptValueType::Boolean)
+            {
                 Ok(PapyrusProviderCondition::Local(key))
             } else {
                 Err(PapyrusProviderProgramError::UnknownLocal(
@@ -1967,7 +2061,7 @@ fn lower_condition_at_depth(
 fn lower_condition_value(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
 ) -> Result<(PapyrusProviderValue, ScriptValueType), PapyrusProviderProgramError> {
     lower_provider_value(expression, catalog, locals, 0)
 }
@@ -1975,7 +2069,7 @@ fn lower_condition_value(
 fn lower_provider_value(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
-    locals: &BTreeMap<String, ScriptValueType>,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
     depth: usize,
 ) -> Result<(PapyrusProviderValue, ScriptValueType), PapyrusProviderProgramError> {
     if depth > MAX_PROVIDER_HANDLER_NESTING {
@@ -2006,7 +2100,7 @@ fn lower_provider_value(
         let key = identifier.0.to_ascii_lowercase();
         let value_type = locals
             .get(&key)
-            .copied()
+            .map(|local| local.value_type)
             .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(identifier.0.clone()))?;
         return Ok((PapyrusProviderValue::Local(key), value_type));
     }
@@ -2151,6 +2245,16 @@ fn sdk_type(value: &Type) -> Option<ScriptValueType> {
     }
 }
 
+fn sdk_local_type(value: &Type) -> Option<PapyrusProviderLocalType> {
+    match value {
+        Type::Object(object) => Some(PapyrusProviderLocalType::object(
+            ScriptValueType::Entity,
+            &object.0,
+        )),
+        _ => sdk_type(value).map(PapyrusProviderLocalType::scalar),
+    }
+}
+
 fn default_value(value_type: ScriptValueType) -> ScriptValue {
     match value_type {
         ScriptValueType::Boolean => ScriptValue::Boolean(false),
@@ -2170,6 +2274,7 @@ fn default_value(value_type: ScriptValueType) -> ScriptValue {
 fn statement_mentions_provider(
     statement: &Stmt,
     catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
     depth: usize,
 ) -> bool {
     if depth > MAX_PROVIDER_HANDLER_NESTING {
@@ -2177,52 +2282,53 @@ fn statement_mentions_provider(
     }
     match statement {
         Stmt::Assign { target, value, .. } => {
-            expression_mentions_provider(&target.node, catalog, depth + 1)
-                || expression_mentions_provider(&value.node, catalog, depth + 1)
+            expression_mentions_provider(&target.node, catalog, locals, depth + 1)
+                || expression_mentions_provider(&value.node, catalog, locals, depth + 1)
         }
-        Stmt::Return(value) => value
-            .as_ref()
-            .is_some_and(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+        Stmt::Return(value) => value.as_ref().is_some_and(|value| {
+            expression_mentions_provider(&value.node, catalog, locals, depth + 1)
+        }),
         Stmt::If {
             condition,
             body,
             elseif_clauses,
             else_body,
         } => {
-            expression_mentions_provider(&condition.node, catalog, depth + 1)
+            expression_mentions_provider(&condition.node, catalog, locals, depth + 1)
                 || body
                     .iter()
-                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, locals, depth + 1))
                 || elseif_clauses.iter().any(|(condition, body)| {
-                    expression_mentions_provider(&condition.node, catalog, depth + 1)
-                        || body
-                            .iter()
-                            .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                    expression_mentions_provider(&condition.node, catalog, locals, depth + 1)
+                        || body.iter().any(|stmt| {
+                            statement_mentions_provider(&stmt.node, catalog, locals, depth + 1)
+                        })
                 })
                 || else_body.as_ref().is_some_and(|body| {
-                    body.iter()
-                        .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                    body.iter().any(|stmt| {
+                        statement_mentions_provider(&stmt.node, catalog, locals, depth + 1)
+                    })
                 })
         }
         Stmt::While { condition, body } => {
-            expression_mentions_provider(&condition.node, catalog, depth + 1)
+            expression_mentions_provider(&condition.node, catalog, locals, depth + 1)
                 || body
                     .iter()
-                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, depth + 1))
+                    .any(|stmt| statement_mentions_provider(&stmt.node, catalog, locals, depth + 1))
         }
         Stmt::ExprStmt(expression) => {
-            expression_mentions_provider(&expression.node, catalog, depth + 1)
+            expression_mentions_provider(&expression.node, catalog, locals, depth + 1)
         }
-        Stmt::VarDecl(variable) => variable
-            .initial_value
-            .as_ref()
-            .is_some_and(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+        Stmt::VarDecl(variable) => variable.initial_value.as_ref().is_some_and(|value| {
+            expression_mentions_provider(&value.node, catalog, locals, depth + 1)
+        }),
     }
 }
 
 fn expression_mentions_provider(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
+    locals: &BTreeMap<String, PapyrusProviderLocalType>,
     depth: usize,
 ) -> bool {
     if depth > MAX_PROVIDER_HANDLER_NESTING {
@@ -2237,6 +2343,12 @@ fn expression_mentions_provider(
                         &object.node,
                         Expr::Ident(provider)
                             if is_known_provider_call(&provider.0, &member.node.0, catalog)
+                                || locals
+                                    .get(&provider.0.to_ascii_lowercase())
+                                    .and_then(|local| local.object_type.as_deref())
+                                    .is_some_and(|object_type| {
+                                        catalog.resolve(object_type, &member.node.0).is_some()
+                                    })
                     )
             ) || matches!(
                 &callee.node,
@@ -2248,30 +2360,34 @@ fn expression_mentions_provider(
                     if byroredux_sdk::compatibility::method_source_alias(&member.node.0).is_some()
             );
             direct
-                || expression_mentions_provider(&callee.node, catalog, depth + 1)
-                || args
-                    .iter()
-                    .any(|arg| expression_mentions_provider(&arg.value.node, catalog, depth + 1))
+                || expression_mentions_provider(&callee.node, catalog, locals, depth + 1)
+                || args.iter().any(|arg| {
+                    expression_mentions_provider(&arg.value.node, catalog, locals, depth + 1)
+                })
         }
         Expr::MemberAccess { object, .. } => {
-            expression_mentions_provider(&object.node, catalog, depth + 1)
+            expression_mentions_provider(&object.node, catalog, locals, depth + 1)
         }
         Expr::Index { object, index } => {
-            expression_mentions_provider(&object.node, catalog, depth + 1)
-                || expression_mentions_provider(&index.node, catalog, depth + 1)
+            expression_mentions_provider(&object.node, catalog, locals, depth + 1)
+                || expression_mentions_provider(&index.node, catalog, locals, depth + 1)
         }
         Expr::UnaryOp { operand, .. } => {
-            expression_mentions_provider(&operand.node, catalog, depth + 1)
+            expression_mentions_provider(&operand.node, catalog, locals, depth + 1)
         }
         Expr::BinaryOp { left, right, .. } => {
-            expression_mentions_provider(&left.node, catalog, depth + 1)
-                || expression_mentions_provider(&right.node, catalog, depth + 1)
+            expression_mentions_provider(&left.node, catalog, locals, depth + 1)
+                || expression_mentions_provider(&right.node, catalog, locals, depth + 1)
         }
-        Expr::Cast { expr, .. } => expression_mentions_provider(&expr.node, catalog, depth + 1),
-        Expr::New { size, .. } => expression_mentions_provider(&size.node, catalog, depth + 1),
+        Expr::Cast { expr, .. } => {
+            expression_mentions_provider(&expr.node, catalog, locals, depth + 1)
+        }
+        Expr::New { size, .. } => {
+            expression_mentions_provider(&size.node, catalog, locals, depth + 1)
+        }
         Expr::ArrayLit(values) => values
             .iter()
-            .any(|value| expression_mentions_provider(&value.node, catalog, depth + 1)),
+            .any(|value| expression_mentions_provider(&value.node, catalog, locals, depth + 1)),
         _ => false,
     }
 }
@@ -2872,19 +2988,18 @@ fn validate_provider_call(
         return Err("saved provider route does not match the live catalog".to_owned());
     }
     let parameter_offset = if let Some(receiver) = &call.receiver {
-        if !alias.provider.eq_ignore_ascii_case(PAPYRUS_SELF_PROVIDER) {
-            return Err("saved provider receiver is not an engine self route".to_owned());
-        }
         let parameter = current
             .parameters
             .first()
             .filter(|parameter| {
                 parameter.value_type == ScriptValueType::Entity && !parameter.optional
             })
-            .ok_or_else(|| "saved self route has no required Entity receiver".to_owned())?;
+            .ok_or_else(|| "saved provider route has no required Entity receiver".to_owned())?;
         match &**receiver {
             PapyrusProviderArgument::Local { name, value_type }
-                if name == PAPYRUS_SELF_LOCAL && *value_type == parameter.value_type => {}
+                if !name.is_empty()
+                    && *name == name.to_ascii_lowercase()
+                    && *value_type == parameter.value_type => {}
             _ => return Err("saved provider receiver is invalid".to_owned()),
         }
         1
@@ -2950,19 +3065,22 @@ fn materialize_provider_arguments(
             .filter(|parameter| {
                 parameter.value_type == ScriptValueType::Entity && !parameter.optional
             })
-            .ok_or_else(|| "provider self receiver declaration is invalid".to_owned())?;
+            .ok_or_else(|| "provider receiver declaration is invalid".to_owned())?;
         let PapyrusProviderArgument::Local { name, value_type } = receiver.as_ref() else {
-            return Err("provider self receiver must be a local".to_owned());
+            return Err("provider receiver must be a local".to_owned());
         };
-        if name != PAPYRUS_SELF_LOCAL || *value_type != parameter.value_type {
-            return Err("provider self receiver local changed type".to_owned());
+        if name.is_empty()
+            || *name != name.to_ascii_lowercase()
+            || *value_type != parameter.value_type
+        {
+            return Err("provider receiver local changed type".to_owned());
         }
         let value = locals
             .get(name)
             .cloned()
-            .ok_or_else(|| "translated self receiver was not initialized".to_owned())?;
+            .ok_or_else(|| "translated provider receiver was not initialized".to_owned())?;
         if !value.matches(parameter.value_type, parameter.optional) {
-            return Err("translated self receiver changed type at execution".to_owned());
+            return Err("translated provider receiver changed type at execution".to_owned());
         }
         arguments.push(value);
     }
@@ -3632,6 +3750,42 @@ mod tests {
         catalog
     }
 
+    fn object_declaration() -> ScriptFunctionDeclaration {
+        ScriptFunctionDeclaration {
+            id: ScriptFunctionId::new("touch-object").unwrap(),
+            component: ComponentId::new("runtime").unwrap(),
+            parameters: vec![
+                ScriptParameterDeclaration {
+                    id: ScriptParameterId::new("receiver").unwrap(),
+                    value_type: ScriptValueType::Entity,
+                    optional: false,
+                },
+                ScriptParameterDeclaration {
+                    id: ScriptParameterId::new("value").unwrap(),
+                    value_type: ScriptValueType::Integer,
+                    optional: false,
+                },
+            ],
+            result: None,
+            papyrus: Some(PapyrusFunctionAlias {
+                provider: "ObjectReference".to_owned(),
+                function: "Touch".to_owned(),
+            }),
+            description: "Touch a typed object receiver".to_owned(),
+        }
+    }
+
+    fn object_catalog() -> PapyrusProviderCatalog {
+        let mut catalog = catalog();
+        catalog
+            .insert(
+                &ExtensionId::new("org.example.object").unwrap(),
+                &object_declaration(),
+            )
+            .unwrap();
+        catalog
+    }
+
     #[test]
     fn self_receiver_lowers_to_an_explicit_entity_argument() {
         let source = r#"
@@ -3724,6 +3878,95 @@ mod tests {
         assert_eq!(
             lower_provider_program(&script, &self_catalog()),
             Err(PapyrusProviderProgramError::UnsupportedStatement)
+        );
+    }
+
+    #[test]
+    fn typed_object_receiver_lowers_to_an_explicit_entity_argument() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnTriggerEnter(ObjectReference akActionRef)
+                akActionRef.Touch(7)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &object_catalog())
+            .unwrap()
+            .unwrap();
+        let [PapyrusProviderStatement::Call(call)] =
+            program.handler(PapyrusProviderEvent::OnTriggerEnter)
+        else {
+            panic!("expected one typed object provider call");
+        };
+        assert_eq!(
+            call.receiver,
+            Some(Box::new(PapyrusProviderArgument::Local {
+                name: "akactionref".to_owned(),
+                value_type: ScriptValueType::Entity,
+            }))
+        );
+        assert_eq!(
+            call.arguments,
+            [PapyrusProviderArgument::Literal(ScriptValue::Integer(7))]
+        );
+        assert_eq!(
+            call.route.qualified_name(),
+            "ext.org.example.object.touch-object"
+        );
+    }
+
+    #[test]
+    fn typed_object_receiver_dispatch_resolves_the_event_entity_handle() {
+        let source = r#"
+            ScriptName Fixture
+            Event OnTriggerEnter(ObjectReference akActionRef)
+                akActionRef.Touch(7)
+            EndEvent
+        "#;
+        let (script, errors) = parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let program = lower_provider_program(&script, &object_catalog())
+            .unwrap()
+            .unwrap();
+        let mut world = World::new();
+        crate::register(&mut world);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Arc::new(
+            move |_principal: Option<&PrincipalId>, route: &str, arguments: &[ScriptValue]| {
+                calls_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((route.to_owned(), arguments.to_vec()));
+                Ok(ScriptValue::None)
+            },
+        ) as Arc<PapyrusProviderCallback>;
+        set_papyrus_provider_runtime(&world, Arc::new(object_catalog()), Some(callback));
+        let resolver = Arc::new(|entity: EntityId| {
+            EntityRef::new(9, u64::from(entity) + 1).ok_or_else(|| "invalid test entity".to_owned())
+        }) as Arc<PapyrusProviderEntityResolver>;
+        set_papyrus_provider_entity_resolver(&world, Some(resolver));
+        let owner = world.spawn();
+        let activator = world.spawn();
+        attach_papyrus_provider_program(&mut world, owner, program);
+        world.insert(
+            owner,
+            OnTriggerEnterEvent {
+                triggerers: vec![activator],
+            },
+        );
+        papyrus_provider_system(&world, 0.0);
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [(
+                "ext.org.example.object.touch-object".to_owned(),
+                vec![
+                    ScriptValue::Entity(EntityRef::new(9, u64::from(activator) + 1).unwrap()),
+                    ScriptValue::Integer(7),
+                ],
+            )]
         );
     }
 
