@@ -93,6 +93,17 @@ Net: tests 6326 → **6905** (+579), Rust `src/` LOC ~457 475 → **~520 455**
 `34074b93`, now 914 commits stale — this session's hot-path touches were
 correctness fixes, not new architecture (see R6a-stale-20).
 
+Measurement note (added Session 78): the opening 6326 was re-measured at
+`81a74add` with the corrected `--no-fail-fast` command and reproduced
+*exactly*, so all +579 are genuinely new tests and none were recovered by the
+counting fix. `--no-fail-fast` only changes the total when a test binary
+actually fails — that tree had zero failures, which is why the two commands
+agreed there and diverged by ~5 000 mid-session. Every "Net: tests A → B" line
+before this entry was measured with the old command, so any session whose
+measurement run happened to hit a failing binary is under-reported by an
+unknown amount. Those figures are left as recorded; this note marks where the
+measurement changed rather than restating history.
+
 ---
 
 ## Session 76 — "The Da Vinci Code": Audit-bundle closeout: 127 issues, corpus gates tripled, CDB Phase 2 unblocked  (2026-08-29, `e350b7ab..f3f6b60c`, 34 commits)
