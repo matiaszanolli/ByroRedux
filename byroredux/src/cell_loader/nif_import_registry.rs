@@ -557,20 +557,61 @@ impl NifImportRegistry {
         self.core.insert(key.clone(), value);
         let t = self.next_tick;
         self.next_tick = self.next_tick.wrapping_add(1);
+        // #3705 — kept so the eviction loop below can exclude the entry
+        // just inserted by THIS call from victim candidacy (its own tick
+        // is always the newest, so plain LRU could never self-evict it,
+        // but the clip-handle-aware filter below picks by handle
+        // presence first — and a caller that sets the handle in a
+        // separate call *after* `insert` returns, rather than the
+        // batched before-insert order #1854 established, would make the
+        // freshly-inserted entry look handle-less for the very eviction
+        // sweep this call triggers).
+        let inserted_key = key.clone();
         self.access_tick.insert(key, t);
 
         let mut freed_clip_handles: Vec<u32> = Vec::new();
         if self.max_entries > 0 {
             while self.core.len() > self.max_entries {
-                // O(N) sweep over `access_tick`. For caches sized in
-                // the low thousands this is ~50 ns × N. A min-heap
-                // would bookkeep on every touch for the unlimited
-                // path's benefit only.
+                // #3705 / ECS-2026-08-30-D10-05 — plain LRU has no way to
+                // tell whether a live `AnimationPlayer` / `AnimationLayer`
+                // elsewhere in the `World` still plays a clip handle
+                // memoised here; a still-visible animated REFR whose model
+                // path just happens to be the coldest cache entry gets its
+                // clip silently and permanently emptied by
+                // `AnimationClipRegistry::release` below. A full fix needs
+                // either despawn-aware refcounting against every live
+                // holder or storing the source path on every animation
+                // component so a released clip can self-heal via
+                // `get_or_insert_by_path` — both bigger, riskier changes
+                // than this cache's own eviction policy (the latter also
+                // touches the save format, see #3701's `FORMAT_MAJOR`
+                // bump for the same component family). Short of that,
+                // bias eviction away from entries that carry a memoised
+                // clip handle at all: most cached models author no
+                // embedded controllers, so preferring the non-animated
+                // majority as LRU victims materially cuts the odds of
+                // hitting an animated one, without weakening the cache's
+                // actual memory bound (an all-animated cache still evicts
+                // via plain LRU once every candidate carries a handle).
+                //
+                // O(N) sweep(s) over `access_tick`, same cost class as the
+                // pre-existing plain-LRU scan below.
                 let victim = self
                     .access_tick
                     .iter()
+                    .filter(|(k, _)| {
+                        k.as_str() != inserted_key.as_str()
+                            && !self.clip_handles.contains_key(k.as_str())
+                    })
                     .min_by_key(|(_, &tick)| tick)
-                    .map(|(k, _)| k.clone());
+                    .map(|(k, _)| k.clone())
+                    .or_else(|| {
+                        self.access_tick
+                            .iter()
+                            .filter(|(k, _)| k.as_str() != inserted_key.as_str())
+                            .min_by_key(|(_, &tick)| tick)
+                            .map(|(k, _)| k.clone())
+                    });
                 let Some(victim_key) = victim else {
                     break;
                 };

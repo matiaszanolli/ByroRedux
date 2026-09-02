@@ -418,28 +418,110 @@ fn insert_returns_empty_vec_when_no_eviction() {
 /// handle (e.g. a NIF that authored no controllers, or a negative
 /// cache entry) does NOT appear in the freed-handles Vec — only
 /// entries that actually had a clip handle leak when un-released.
+///
+/// #3705 — eviction victim selection is now clip-handle-aware (prefers
+/// a non-animated candidate; see `eviction_prefers_a_non_animated_
+/// victim_over_an_older_animated_one`), so the first half of this test
+/// gives BOTH initial entries a handle to force a with-handle eviction
+/// via the plain-LRU fallback; the second half then evicts a genuinely
+/// handle-less entry to keep pinning the empty-freed-Vec case.
 #[test]
 fn insert_only_returns_freed_handles_for_evicted_entries_with_clips() {
     let mut reg = registry_with_cap(2);
-    // Two entries; `a.nif` has a clip handle, `b.nif` doesn't.
     let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("a.nif".into(), 7);
     let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
-    // (no set_clip_handle for "b.nif" — it authored no controllers)
+    reg.set_clip_handle("b.nif".into(), 8);
 
-    // Evict `a.nif` (least-recently inserted) — freed Vec carries 7.
+    // Both candidates carry a handle — falls back to plain LRU and
+    // evicts `a.nif` (oldest tick). freed Vec carries 7.
     let freed_a = reg.insert("c.nif".into(), Some(dummy_cached()));
+    // (no set_clip_handle for "c.nif" — it authored no controllers)
     assert_eq!(freed_a, vec![7]);
 
-    // Now evict `b.nif` — no clip handle was ever memoised, so
-    // freed Vec is empty (the cache entry still gets evicted; just
-    // nothing to release into AnimationClipRegistry).
+    // Now `b.nif` (handle) and `c.nif` (no handle) remain. The next
+    // eviction must prefer the handle-less `c.nif`, so freed Vec is
+    // empty (the cache entry still gets evicted; just nothing to
+    // release into AnimationClipRegistry).
     let freed_b = reg.insert("d.nif".into(), Some(dummy_cached()));
     assert!(
         freed_b.is_empty(),
-        "no clip handle on b.nif → empty freed Vec"
+        "no clip handle on c.nif → empty freed Vec"
     );
     assert_eq!(reg.evictions, 2);
+    assert_eq!(
+        reg.clip_handle_for("b.nif"),
+        Some(8),
+        "b.nif must have survived both evictions"
+    );
+}
+
+/// Regression for #3705 / ECS-2026-08-30-D10-05: plain LRU has no
+/// concept of "still animated and possibly still visible", so the
+/// coldest cache entry can be the one still driving a live
+/// `AnimationPlayer`. Eviction now prefers a victim with NO memoised
+/// clip handle over one that has one, even when the clip-carrying
+/// entry is strictly older. Mirrors `lru_cap_evicts_least_recently_
+/// inserted_entry` but gives the oldest entry a clip handle and
+/// checks it survives in favor of the next-oldest, non-animated one.
+#[test]
+fn eviction_prefers_a_non_animated_victim_over_an_older_animated_one() {
+    let mut reg = registry_with_cap(3);
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached())); // oldest tick
+    reg.set_clip_handle("a.nif".into(), 1); // ...but carries a live clip.
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached())); // next-oldest, no clip.
+    let _ = reg.insert("c.nif".into(), Some(dummy_cached()));
+    assert_eq!(reg.len(), 3);
+
+    // Fourth insert forces one eviction. Plain LRU would pick a.nif
+    // (oldest tick); the clip-aware policy must pick b.nif instead.
+    let freed = reg.insert("d.nif".into(), Some(dummy_cached()));
+
+    assert_eq!(reg.evictions, 1);
+    assert!(
+        reg.core.cache.contains_key("a.nif"),
+        "the animated (clip-carrying) entry must survive despite being \
+         the oldest — got cache: {:?}",
+        reg.core.cache.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !reg.core.cache.contains_key("b.nif"),
+        "the non-animated next-oldest entry must be the victim instead"
+    );
+    assert!(
+        freed.is_empty(),
+        "the evicted entry (b.nif) never had a clip handle, so nothing \
+         should be forwarded to AnimationClipRegistry::release"
+    );
+    assert_eq!(
+        reg.clip_handle_for("a.nif"),
+        Some(1),
+        "a.nif's clip handle must remain resolvable — it was not evicted"
+    );
+}
+
+/// Companion to the above: once EVERY remaining candidate carries a
+/// clip handle, cache pressure has to win — eviction falls back to
+/// plain LRU rather than refusing to evict (which would break the
+/// cap's actual memory bound).
+#[test]
+fn eviction_falls_back_to_plain_lru_when_every_candidate_is_animated() {
+    let mut reg = registry_with_cap(2);
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached())); // oldest
+    reg.set_clip_handle("a.nif".into(), 1);
+    let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
+    reg.set_clip_handle("b.nif".into(), 2);
+
+    let freed = reg.insert("c.nif".into(), Some(dummy_cached()));
+
+    assert_eq!(reg.evictions, 1);
+    assert!(
+        !reg.core.cache.contains_key("a.nif"),
+        "with no non-animated candidate left, the oldest (a.nif) must \
+         still be evicted rather than growing past the cap"
+    );
+    assert_eq!(freed, vec![1]);
+    assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }
 
 /// Regression for #862 / FNV-D3-NEW-03: the cell-stream worker filters

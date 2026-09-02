@@ -1730,6 +1730,13 @@ mod animation_system_e2e_tests {
         let (mut world, root, _bone, _) = build_skeleton_and_clip(bone_name);
         world.register::<RootMotionDelta>();
         world.register::<AnimationStack>();
+        // `animation_system_inner` early-returns the *entire* function
+        // (both the player and stack passes) when `AnimationPlayer`
+        // storage has never been created — production `boot.rs` always
+        // registers it regardless of whether a given entity uses a
+        // player or a stack, so this guard never fires there. Mirror
+        // that here even though this test drives no `AnimationPlayer`.
+        world.register::<AnimationPlayer>();
         let bone_sym = world.resource::<StringPool>().get(bone_name).unwrap();
 
         // x: 10 → 40 (30/s), z: -20 → 60 (80/s). Chosen so the absolute
