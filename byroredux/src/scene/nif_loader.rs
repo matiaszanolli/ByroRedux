@@ -998,6 +998,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let canonical_clamp_mode = material.texture_clamp_mode;
         let canonical_src_blend_mode = material.src_blend_mode;
         let canonical_dst_blend_mode = material.dst_blend_mode;
+        // #3073 (NIFAL-D1) — read the already-resolved canonical values
+        // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)`
+        // from the raw `mesh.material` tier at the `MaterialTextureHandles`
+        // insert below.
+        let canonical_parallax_height_scale = material.parallax_height_scale;
+        let canonical_parallax_max_passes = material.parallax_max_passes;
 
         let tex_handle = resolve_texture_with_clamp(
             ctx,
@@ -1135,8 +1141,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             MaterialTextureHandles {
                 textures: texture_handles,
                 normal_has_alpha,
-                parallax_height_scale: mesh.material.parallax_height_scale.unwrap_or(0.04),
-                parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
+                parallax_height_scale: canonical_parallax_height_scale,
+                parallax_max_passes: canonical_parallax_max_passes,
             },
         );
         if mesh_water {

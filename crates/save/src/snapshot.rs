@@ -127,7 +127,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// object types to saved continuation tails. Older saves cannot reconstruct
 /// the receiver expression or its dispatch type without changing a resumed
 /// handler's result, so they are rejected rather than default-filled.
-pub const FORMAT_MAJOR: u16 = 18;
+/// Version 19 (#3073, NIFAL-D1) adds `Material::parallax_height_scale` /
+/// `parallax_max_passes` as required fields on the registered `Material`
+/// column, resolved once at the parser→`Material` boundary instead of
+/// re-derived `.unwrap_or(0.04)`/`.unwrap_or(4.0)` at each spawn site. Like
+/// v10's `parallax_height_in_alpha`, the shared defaults happen to be the
+/// correct value for every pre-v19 snapshot — the bump is taken anyway per
+/// the same blanket rule that field's doc explains.
+pub const FORMAT_MAJOR: u16 = 19;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

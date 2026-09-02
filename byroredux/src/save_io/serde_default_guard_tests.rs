@@ -378,8 +378,14 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // persist in the same continuation value tree. The new tagged argument
     // shape makes v18 intentionally incompatible with v17 rather than
     // silently changing a resumed receiver dispatch.
-    const BASELINE_MAJOR: u16 = 18;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xed7a_74fc_57ff_9746;
+    // #3073 — `Material::parallax_height_scale` / `parallax_max_passes` are
+    // new required fields on the registered `Material` column, resolved
+    // once at the parser→`Material` boundary (mirrors v10's
+    // `parallax_height_in_alpha`, #3530). v19 is intentionally incompatible
+    // with v18 per the same blanket rule, even though the shared defaults
+    // happen to be correct for every pre-v19 snapshot.
+    const BASELINE_MAJOR: u16 = 19;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa033_e6c5_80d5_b72e;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

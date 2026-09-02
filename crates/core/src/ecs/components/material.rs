@@ -12,6 +12,14 @@ use crate::ecs::storage::Component;
 /// `F0 ~= 0.04` fallback.
 pub const DEFAULT_DIELECTRIC_IOR: f32 = 1.5;
 
+/// POM height scale used when a source format authors no parallax data.
+/// The Gamebryo `BSShaderPPLightingProperty` default. #3073.
+pub const DEFAULT_PARALLAX_HEIGHT_SCALE: f32 = 0.04;
+
+/// POM ray-march sample budget used when a source format authors no
+/// parallax data. Matches the Gamebryo PPLighting default. #3073.
+pub const DEFAULT_PARALLAX_MAX_PASSES: f32 = 4.0;
+
 /// Source-format-independent optical behavior applied before authored texture
 /// maps and scalar overlays are bound.
 ///
@@ -433,6 +441,20 @@ pub struct Material {
     /// [`Self::src_blend_mode`]; `7` = INV_SRC_ALPHA is the Gamebryo
     /// default). Copied verbatim from `ImportedMaterial::dst_blend_mode`.
     pub dst_blend_mode: u8,
+    /// POM height scale (`BSShaderPPLightingProperty.parallax_scale` or
+    /// Skyrim+ `ShaderTypeData::ParallaxOcc.scale`). Typical range
+    /// 0.02-0.08; [`DEFAULT_PARALLAX_HEIGHT_SCALE`] when unauthored.
+    ///
+    /// #3073 (NIFAL-D1) — same doctrine as [`Self::texture_clamp_mode`]:
+    /// resolved once here from `ImportedMaterial::parallax_height_scale`
+    /// so spawn sites read the canonical value instead of each carrying
+    /// its own `.unwrap_or(0.04)` fallback (pre-fix duplicated at both
+    /// `scene/nif_loader.rs` and `cell_loader/spawn/mesh_instance.rs`).
+    pub parallax_height_scale: f32,
+    /// POM ray-march sample budget (typically 4-16);
+    /// [`DEFAULT_PARALLAX_MAX_PASSES`] when unauthored. Same resolve-once
+    /// rationale as [`Self::parallax_height_scale`] (#3073).
+    pub parallax_max_passes: f32,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -578,6 +600,8 @@ impl Default for Material {
             parallax_height_in_alpha: false,
             src_blend_mode: 6,
             dst_blend_mode: 7,
+            parallax_height_scale: DEFAULT_PARALLAX_HEIGHT_SCALE,
+            parallax_max_passes: DEFAULT_PARALLAX_MAX_PASSES,
         }
     }
 }
@@ -1273,6 +1297,9 @@ impl Material {
         fix_scalar!(glass_refraction_scale);
         fix_scalar!(glass_blur_scale);
         fix_scalar!(glass_blur_scale_factor);
+        // #3073 — added alongside the resolve-once canonical fields.
+        fix_scalar!(parallax_height_scale);
+        fix_scalar!(parallax_max_passes);
 
         changed
     }

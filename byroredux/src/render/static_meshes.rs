@@ -338,12 +338,24 @@ pub(super) fn collect_static_mesh_draws(
                 let env_map_index = texture_indices.environment;
                 let env_mask_index = texture_indices.environment_mask;
                 let greyscale_lut_index = texture_indices.greyscale_lut;
+                // #3073 (NIFAL-D1) — `MaterialTextureHandles.parallax_*`
+                // is itself already the canonical resolved value (from
+                // `Material::parallax_height_scale`/`parallax_max_passes`,
+                // #3073); this `.unwrap_or` only covers draws with no
+                // `MaterialTextureHandles` at all (terrain / particles /
+                // water, none of which read `parallax_map_index`), so it
+                // shares the same named default rather than its own
+                // independently-typed magic number.
                 let parallax_height_scale = material_texture_handles
                     .map(|handles| handles.parallax_height_scale)
-                    .unwrap_or(0.04);
+                    .unwrap_or(
+                        byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
+                    );
                 let parallax_max_passes = material_texture_handles
                     .map(|handles| handles.parallax_max_passes)
-                    .unwrap_or(4.0);
+                    .unwrap_or(
+                        byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
+                    );
 
                 // Terrain splat tile index (#470). Only LAND terrain
                 // entities carry the component; statics pass `None`.

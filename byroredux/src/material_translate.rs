@@ -610,6 +610,16 @@ pub(crate) fn translate_material(
         parallax_height_in_alpha: source.parallax_height_in_alpha,
         src_blend_mode: source.src_blend_mode,
         dst_blend_mode: source.dst_blend_mode,
+        // #3073 (NIFAL-D1) — resolved once here instead of at each spawn
+        // site (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`
+        // used to each carry their own `.unwrap_or(0.04)` /
+        // `.unwrap_or(4.0)` reading straight off `ImportedMaterial`).
+        parallax_height_scale: source
+            .parallax_height_scale
+            .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE),
+        parallax_max_passes: source
+            .parallax_max_passes
+            .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(
@@ -2078,6 +2088,11 @@ mod canonical_completeness_harness {
             // #3462 — `true` because the struct default is `false`, so the
             // assertion below cannot false-pass against the default.
             parallax_height_in_alpha: true,
+            // #3073 — non-default values (struct default is 0.04/4.0) so
+            // the round-trip assertion below can't false-pass against the
+            // fallback the `None` arm would also produce.
+            parallax_height_scale: Some(0.06),
+            parallax_max_passes: Some(9.0),
             no_lighting_falloff: Some(NoLightingFalloff {
                 start_angle: 0.1,
                 stop_angle: 0.9,
@@ -2187,6 +2202,8 @@ mod canonical_completeness_harness {
         assert_eq!(material.src_blend_mode, 2);
         assert_eq!(material.dst_blend_mode, 3);
         assert!(material.parallax_height_in_alpha, "#3462");
+        assert_eq!(material.parallax_height_scale, 0.06, "#3073");
+        assert_eq!(material.parallax_max_passes, 9.0, "#3073");
         // The ordinary-dielectric arm of `material_optical_scalar`: this
         // fixture is `material_kind = 0`, so `ior` must be the shared
         // dielectric constant. The discriminated fire-refraction arm — the
@@ -2492,6 +2509,31 @@ mod canonical_completeness_harness {
         };
         let material = translate_material(&source, None, paths, 0);
         assert!(material.shader_type_fields.is_none());
+    }
+
+    /// #3073 (NIFAL-D1) — the other half of the `parallax_height_scale`
+    /// / `parallax_max_passes` copy: unauthored NIF content
+    /// (`ImportedMaterial::default()`, both fields `None`) must resolve
+    /// to the shared named defaults, not `0.0` (`Material`'s own struct
+    /// default would silently disable POM raymarching entirely if these
+    /// were ever copied with a bare `unwrap_or_default()`).
+    #[test]
+    fn translate_material_falls_back_to_shared_parallax_defaults_when_unauthored() {
+        use byroredux_core::ecs::components::material::{
+            DEFAULT_PARALLAX_HEIGHT_SCALE, DEFAULT_PARALLAX_MAX_PASSES,
+        };
+
+        let source = ImportedMaterial::default();
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+        assert_eq!(
+            material.parallax_height_scale,
+            DEFAULT_PARALLAX_HEIGHT_SCALE
+        );
+        assert_eq!(material.parallax_max_passes, DEFAULT_PARALLAX_MAX_PASSES);
     }
 
     /// #2572 (OBL-D5-02) — `resolve_normal_alpha_spec_roughness` post-mutates
