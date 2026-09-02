@@ -1,7 +1,7 @@
 # ByroRedux SDK: next action plan
 
 Status: **in progress**
-Checkpoint: `3bafb477` (`feat(sdk): dispatch engine-owned self provider receivers`)
+Checkpoint: `0f95449d` (`feat(sdk): dispatch typed object receivers`)
 Date: 2026-09-02
 
 This is the hand-off plan after the first extended SDK implementation pass.
@@ -38,8 +38,12 @@ unsupported call.
   entity-handle registry used by sandbox projections. No-player/flycam worlds
   return `None`, and malformed arguments fail closed.
 - **Delivered with the player bridge:** Papyrus `ObjectReference` locals can
-  hold nullable opaque entity results and pass them to typed provider calls;
-  receiver-method dispatch remains intentionally out of scope.
+  hold nullable opaque entity results and pass them to typed provider calls.
+- **Delivered in this slice:** event-projected typed object locals, including
+  `ObjectReference akActionRef`, can dispatch `akActionRef.Method(...)` when
+  the declared Papyrus object type has a matching provider route. The engine
+  resolves the local through the event's stable opaque entity handle and
+  prepends it to the required first `Entity` parameter.
 - **Delivered in this slice:** provider conditions can compare engine-owned
   entity handles by stable identity with `==` and `!=`, including `None` for
   missing-player/null object results. Ordered entity comparisons and runtime
@@ -48,8 +52,10 @@ unsupported call.
   to `Self.Method` routes whose required first `Entity` parameter is resolved
   from the current script owner. Latent handlers using `self` remain rejected
   until continuation ownership is persisted.
-- Continue with receiver expressions for typed object locals and the next
-  justified latent primitive.
+- Continue with receiver-producing expressions (for example, a provider call
+  returning an object) and the next justified latent primitive. Preserve the
+  current fail-closed rule for receiver calls across waits until continuation
+  ownership and resolved object locals are persisted safely.
 - Add broader event coverage only when the canonical ECS payload and save
   behavior exist; preserve guard-free guest entry and whole-handler rejection
   on unsupported syntax.
