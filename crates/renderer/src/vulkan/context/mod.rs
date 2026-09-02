@@ -2478,7 +2478,11 @@ mod egui_pending_output_tests {
 // Method implementations split across submodules:
 mod draw;
 pub use draw::FrameInputs;
+mod assemble_camera_and_lights;
+mod begin_frame_recording;
+mod build_and_upload_instances;
 mod depth_capture;
+mod dispatch_skin_and_cluster;
 mod geometry_pass;
 mod helpers;
 mod init;
@@ -2488,6 +2492,7 @@ mod resize;
 mod resources;
 mod screenshot;
 mod skinned_blas_refit;
+mod sync_and_acquire_frame;
 mod teardown;
 
 // destroy_allocator_owned_resources + impl Drop for VulkanContext moved

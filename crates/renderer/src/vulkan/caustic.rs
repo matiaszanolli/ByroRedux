@@ -1492,7 +1492,9 @@ mod tests {
         assert!(host.contains("write_storage_buffer(set, 9, &vertex_info)"));
         assert!(host.contains("write_storage_buffer(set, 10, &index_info)"));
 
-        let draw = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — the re-point moved from `draw.rs` into
+        // `sync_and_acquire_frame.rs`.
+        let draw = include_str!("context/sync_and_acquire_frame.rs");
         assert!(
             draw.contains("caustic.write_geometry_buffers"),
             "streaming buffer reallocations must refresh caustic geometry descriptors"

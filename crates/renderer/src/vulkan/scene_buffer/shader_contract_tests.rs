@@ -84,6 +84,11 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
     let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
     let triangle = include_str!("../../../shaders/triangle.frag");
+    // #3282 / TD1-2026-08-24-01 — the selected-ray ARM + its shared
+    // host-to-shader barrier moved from `draw.rs` into
+    // `build_and_upload_instances.rs`; the PUBLISH barrier (below) stays in
+    // `draw_frame`'s own tail in `draw.rs`, untouched by that split.
+    let build_instances = include_str!("../context/build_and_upload_instances.rs");
     let draw = include_str!("../context/draw.rs");
 
     assert!(bindings.contains("binding = 19) coherent buffer SelectedRayProbeBuffer"));
@@ -92,7 +97,7 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
     assert!(triangle.contains("atomicCompSwap(selectedRayProbeControl.y, 1u, 2u)"));
     assert!(triangle.contains("selectedRayProbeLightParams = lights[selectedLightDebug].params"));
     assert!(triangle.contains("atomicExchange(selectedRayProbeControl.y, 3u)"));
-    let arm_barrier = draw
+    let arm_barrier = build_instances
         .split_once("// Barrier: make the instance SSBO host write")
         .and_then(|(_, tail)| tail.split_once("// #1255").map(|(block, _)| block))
         .expect("selected-ray arm must precede the shared host-to-shader barrier");

@@ -220,7 +220,9 @@ mod tests {
     /// wait that proves both frame-in-flight readers have completed.
     #[test]
     fn draw_flushes_pending_morph_weights_after_waiting_both_fences() {
-        let draw = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — both the fence wait and the morph
+        // flush moved from `draw.rs` into `sync_and_acquire_frame.rs`.
+        let draw = include_str!("context/sync_and_acquire_frame.rs");
         let wait = draw
             .find(".wait_for_fences(")
             .expect("draw_frame must wait its in-flight fences");

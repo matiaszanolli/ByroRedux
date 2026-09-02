@@ -933,6 +933,19 @@ once that regression is fixed.
 Removal of TAA source, shaders, tests, timing, and flags is a separate follow-up
 after a defined validation period; it is not part of this change.
 
+**Post-hoc barrier validation (#3247, 2026-09-02).** `5bab2fed` (fixing #2796)
+moved bloom to run after `record_composite_pass`, adding a fresh
+`SHADER_READ_ONLY_OPTIMAL ↔ GENERAL` barrier pair around `scene_color` in
+`BloomPipeline::apply_to_scene` that shipped without a validation-layer run.
+Ran `BYRO_VALIDATION=1` for 300 frames each under `--upscaler fsr3` (the
+default) and `--upscaler taa` (exercises `record_native_blit`'s consumption of
+the same restored layout) on the default demo scene: sync-validation active
+and confirmed in the log both runs, `gpu_bloom` non-zero (pipeline actively
+dispatching) in both, zero `SYNC-HAZARD-*` / `VUID-VkImageMemoryBarrier-*`
+hits against `scene_image` in either. The only VUID present (×2, at pipeline
+creation — a wireframe-variant push-constant-range mismatch) is unrelated and
+pre-existing. Closed as verified — no barrier change needed.
+
 ## Approval boundary
 
 Approval authorizes execution phase 1 only, followed by the gates above. Until

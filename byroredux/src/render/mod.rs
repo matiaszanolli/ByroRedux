@@ -222,6 +222,35 @@ fn f32_sortable_u32(value: f32) -> u32 {
     }
 }
 
+/// Quantization step count shared by every continuous per-frame value fed
+/// into a `material_hash`/`hash_gpu_material_fields` dedup key: the
+/// particle color fade (`particles.rs`, #1795 / D2-NEW-02) and the
+/// animated material sinks (`static_meshes.rs`, #3246 / D7-01).
+const COLOR_FADE_STEPS: f32 = 32.0;
+
+/// Snap a continuous value to [`COLOR_FADE_STEPS`] discrete steps so
+/// nearly-identical values collapse onto the same quantized output — and
+/// therefore the same dedup hash — instead of each producing a distinct
+/// `MaterialTable` slot.
+///
+/// Originally particle-fade-only (#1795 / D2-NEW-02: same-emitter
+/// particles at nearly-identical ages collapsing onto ≤32 materials
+/// instead of one per particle per frame). #3246 / D7-01 reuses it for
+/// `static_meshes.rs`'s animated material sinks (`AnimatedAlpha`,
+/// `AnimatedShaderColor`/`Float`, `Animated{Ambient,Diffuse,Emissive,
+/// Specular}Color`): instances of the same clip attaching on different
+/// frames (streaming spawn, not a synchronized batch) otherwise hash to
+/// as many distinct `MaterialTable` slots as there are live phase offsets.
+/// Applied only to the animated-controller output, never to a static
+/// `Material`-sourced fallback, so authored (non-animated) precision is
+/// untouched. Domain is not restricted to `0.0..=1.0` — HDR emissive
+/// sinks can exceed 1.0 and still quantize correctly, just at the same
+/// absolute step size.
+#[inline]
+fn quantize_fade(t: f32) -> f32 {
+    (t * COLOR_FADE_STEPS).round() / COLOR_FADE_STEPS
+}
+
 /// Pack per-draw depth state (plus the wireframe pipeline-bind boundary)
 /// into a single u8 so consecutive same-state draws cluster: bit 0 =
 /// z_test, bit 1 = z_write, bit 2 = wireframe, bits 4-7 = z_function.

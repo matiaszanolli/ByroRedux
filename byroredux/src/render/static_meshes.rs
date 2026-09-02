@@ -35,7 +35,7 @@ use crate::components::{
 };
 
 use super::camera::FrustumPlanes;
-use super::f32_sortable_u32;
+use super::{f32_sortable_u32, quantize_fade};
 
 /// Include an LOD sphere when any part of it can intersect the conservative
 /// receiver-fade + directional-trace reach around the camera.
@@ -780,26 +780,32 @@ pub(super) fn collect_static_mesh_draws(
                     // (`NiMaterialColorController.target_color`), so a
                     // mesh with only an animated emissive keeps its
                     // static diffuse/ambient/specular untouched.
+                    // #3246 / D7-01 — `quantize_fade` on the *animated*
+                    // output only (never on the `unwrap_or` static
+                    // fallback): entities of the same clip attaching on
+                    // different streaming-spawn frames now collapse onto
+                    // ≤32 `MaterialTable` slots instead of one per phase
+                    // offset. See `super::quantize_fade`'s doc.
                     emissive_color: anim_emissive_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|c| c.0.to_array())
+                        .map(|c| c.0.to_array().map(quantize_fade))
                         .unwrap_or(emissive_color),
                     specular_strength,
                     specular_color: anim_specular_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|c| c.0.to_array())
+                        .map(|c| c.0.to_array().map(quantize_fade))
                         .unwrap_or(specular_color),
                     diffuse_color: anim_diffuse_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|c| c.0.to_array())
+                        .map(|c| c.0.to_array().map(quantize_fade))
                         .unwrap_or(diffuse_color),
                     ambient_color: anim_ambient_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|c| c.0.to_array())
+                        .map(|c| c.0.to_array().map(quantize_fade))
                         .unwrap_or(ambient_color),
                     vertex_offset: v_off,
                     index_offset: i_off,
@@ -839,10 +845,13 @@ pub(super) fn collect_static_mesh_draws(
                     // `Material.alpha`, same semantic as the color sinks
                     // above (`NiAlphaController` fully owns the role
                     // while active — fades, pulsing FX, VATS highlight).
+                    // #3246 / D7-01 — quantized like the color sinks
+                    // above; the static `mat.alpha` fallback stays at
+                    // full precision.
                     material_alpha: anim_alpha_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|a| a.0)
+                        .map(|a| quantize_fade(a.0))
                         .or_else(|| mat.map(|m| m.alpha))
                         .unwrap_or(1.0),
                     // #2221 — animated BSShaderProperty color/scalar.
@@ -855,15 +864,18 @@ pub(super) fn collect_static_mesh_draws(
                     // `BSLightingShaderPropertyColorController` /
                     // `BSEffectShaderProperty*Controller` targets this
                     // entity.
+                    //
+                    // #3246 / D7-01 — quantized like the other animated
+                    // sinks (see `super::quantize_fade`'s doc).
                     shader_color: anim_shader_color_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|c| c.0.to_array())
+                        .map(|c| c.0.to_array().map(quantize_fade))
                         .unwrap_or([0.0; 3]),
                     shader_float: anim_shader_float_q
                         .as_ref()
                         .and_then(|q| q.get(entity))
-                        .map(|f| f.0)
+                        .map(|f| quantize_fade(f.0))
                         .unwrap_or(0.0),
                     // Material tint for the one-bounce GI bounce colour
                     // (read at the ray hit as `hitInst.avgAlbedo`). Carries
@@ -937,6 +949,7 @@ pub(super) fn collect_static_mesh_draws(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::COLOR_FADE_STEPS;
 
     #[test]
     fn lod_shadow_reach_includes_intersecting_sphere() {
@@ -1006,25 +1019,31 @@ mod tests {
             1,
             "the mesh entity must produce a draw"
         );
+        // #3246 / D7-01 — animated sinks now go through `quantize_fade`
+        // before landing on the DrawCommand, so the expected values below
+        // route through the same function rather than restating its
+        // rounding by hand.
         let cmd = &draw_commands[0];
         assert_eq!(
-            cmd.material_alpha, 0.3,
+            cmd.material_alpha,
+            quantize_fade(0.3),
             "AnimatedAlpha must override the static Material.alpha (1.0) on the DrawCommand"
         );
         assert_eq!(
             cmd.diffuse_color,
-            [0.2, 0.4, 0.6],
+            [0.2, 0.4, 0.6].map(quantize_fade),
             "AnimatedDiffuseColor must override the static Material.diffuse_color on the DrawCommand"
         );
 
         let gpu_mat = &material_table.materials()[cmd.material_id as usize];
         assert_eq!(
-            gpu_mat.material_alpha, 0.3,
+            gpu_mat.material_alpha,
+            quantize_fade(0.3),
             "the animated alpha must survive to_gpu_material interning, not just the DrawCommand"
         );
         assert_eq!(
             [gpu_mat.diffuse_r, gpu_mat.diffuse_g, gpu_mat.diffuse_b],
-            [0.2, 0.4, 0.6],
+            [0.2, 0.4, 0.6].map(quantize_fade),
             "the animated diffuse color must survive to_gpu_material interning"
         );
     }
@@ -1087,8 +1106,12 @@ mod tests {
         );
 
         assert_eq!(draw_commands.len(), 1);
-        assert_eq!(draw_commands[0].shader_color, [0.1, 0.2, 0.3]);
-        assert_eq!(draw_commands[0].shader_float, 0.42);
+        // #3246 / D7-01 — quantized before landing on the DrawCommand.
+        assert_eq!(
+            draw_commands[0].shader_color,
+            [0.1, 0.2, 0.3].map(quantize_fade)
+        );
+        assert_eq!(draw_commands[0].shader_float, quantize_fade(0.42));
 
         let gpu_mat = &material_table.materials()[draw_commands[0].material_id as usize];
         assert_eq!(
@@ -1097,9 +1120,9 @@ mod tests {
                 gpu_mat.shader_color_g,
                 gpu_mat.shader_color_b
             ],
-            [0.1, 0.2, 0.3]
+            [0.1, 0.2, 0.3].map(quantize_fade)
         );
-        assert_eq!(gpu_mat.shader_float, 0.42);
+        assert_eq!(gpu_mat.shader_float, quantize_fade(0.42));
     }
 
     /// #2221 — an active base-color flipbook (`AnimatedTextureFlip` slot
@@ -1165,5 +1188,55 @@ mod tests {
 
         assert_eq!(draw_commands.len(), 1);
         assert_eq!(draw_commands[0].texture_handle, 7);
+    }
+
+    /// #3246 / D7-01 regression: a population of entities sharing one
+    /// animated-alpha clip but attaching on different streaming-spawn
+    /// frames (phase-jittered, not synchronized) must collapse onto a
+    /// bounded `MaterialTable` slot count — one `MaterialTable` slot per
+    /// live phase offset, not one per entity, is exactly the cardinality
+    /// blowup this fix closes. Pre-fix, every distinct raw `f32` phase
+    /// hashed to its own slot, so this test would have interned as many
+    /// materials as entities (200); post-fix it's bounded by
+    /// `COLOR_FADE_STEPS + 1` regardless of population size.
+    #[test]
+    fn phase_jittered_animated_alpha_population_dedups_to_bounded_material_count() {
+        let mut world = World::new();
+        const N: usize = 200;
+        for i in 0..N {
+            let entity = spawn_mesh_entity(&mut world);
+            // Continuous phase spread across the full 0.0..=1.0 fade
+            // domain — the "props spawn as the player approaches, not
+            // all at once" shape the issue describes.
+            let phase = i as f32 / N as f32;
+            world.insert(entity, AnimatedAlpha(phase));
+        }
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), N);
+        // `quantize_fade` bounds distinct alpha values to
+        // `COLOR_FADE_STEPS + 1` (0..=COLOR_FADE_STEPS inclusive); +1
+        // more for `MaterialTable::new()`'s seeded neutral-default slot
+        // 0, which every fresh table carries regardless of population.
+        let bound = COLOR_FADE_STEPS as usize + 1 + 1;
+        assert!(
+            material_table.len() <= bound,
+            "expected at most {bound} unique materials for {N} phase-jittered \
+             AnimatedAlpha entities (quantize_fade bound + neutral-default \
+             slot), got {}",
+            material_table.len()
+        );
     }
 }

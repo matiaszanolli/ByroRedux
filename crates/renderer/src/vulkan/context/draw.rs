@@ -6,15 +6,14 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::presentation::ImageSpaceModifierView;
 use super::super::scene_buffer::{
-    self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
-    INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
-    INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
-    MATERIAL_KIND_MULTI_LAYER_PARALLAX, MAX_INDIRECT_DRAWS,
+    self, MATERIAL_KIND_GLASS, MATERIAL_KIND_MULTI_LAYER_PARALLAX, MAX_INDIRECT_DRAWS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::upscaling::fsr_camera_parameters;
 use super::super::water::WaterDrawCommand;
+use super::assemble_camera_and_lights::CameraAssemblyOutput;
+use super::begin_frame_recording::BeginFrameOutput;
+use super::build_and_upload_instances::BuildInstancesOutput;
 use super::{DofView, DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -77,21 +76,21 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// a grid crossing — misfired on both ordinary walk/run speeds and every
 /// grid crossing, permanently defeating #1489's origin correction and
 /// forcing TAA/SVGF/FSR into a reset loop while the player simply moved.
-fn is_camera_cut(frame_counter: u32, camera_delta: f32, cam_forward_dot: f32) -> bool {
+pub(super) fn is_camera_cut(frame_counter: u32, camera_delta: f32, cam_forward_dot: f32) -> bool {
     frame_counter > 0 && (camera_delta > 256.0 || cam_forward_dot < 0.0)
 }
 
 /// The three frame-over-frame camera signals `draw_frame` derives before
 /// asking [`is_camera_cut`] for a verdict (#2197, extracted from
 /// `draw_frame`).
-struct CameraFrameDeltas {
+pub(super) struct CameraFrameDeltas {
     /// Absolute world-space distance the camera moved since last frame.
-    camera_delta: f32,
+    pub(super) camera_delta: f32,
     /// Dot product of this frame's and last frame's unit forward vectors.
-    cam_forward_dot: f32,
+    pub(super) cam_forward_dot: f32,
     /// Largest element-wise `|Δ|` between this and last frame's view-proj.
     /// Diagnostic only — deliberately NOT a cut signal, see below.
-    vp_max_abs_delta: f32,
+    pub(super) vp_max_abs_delta: f32,
 }
 
 /// Derive the frame-over-frame camera signals for cut detection.
@@ -113,7 +112,7 @@ struct CameraFrameDeltas {
 /// turn does in one frame. `vp_max_abs_delta` survives only as a per-frame
 /// debug-log field; keeping it here (rather than at the log site) documents
 /// that its exclusion from [`is_camera_cut`] is deliberate.
-fn camera_frame_deltas(
+pub(super) fn camera_frame_deltas(
     camera_pos: [f32; 3],
     prev_camera_position: [f32; 3],
     cam_forward: [f32; 3],
@@ -142,7 +141,7 @@ fn camera_frame_deltas(
 /// reuse anyway, so they're excluded regardless of ID collisions; skinned
 /// draws (`bone_offset != 0`) already have their own per-entity skin-pool
 /// history and never used this map.
-fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> bool {
+pub(super) fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> bool {
     bone_offset == 0 && !alpha_blend
 }
 
@@ -156,7 +155,7 @@ fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> bool {
 /// pool-exhaustion fallback) also gets `0`, falling back to the bind-pose
 /// hit-normal path `ray_hit.glsl` already had before this fix.
 #[inline]
-fn skinned_vertex_address_for_draw(
+pub(super) fn skinned_vertex_address_for_draw(
     bone_offset: u32,
     slot_address: Option<vk::DeviceAddress>,
 ) -> vk::DeviceAddress {
@@ -192,7 +191,7 @@ fn skinned_vertex_address_for_draw(
 /// path it used before #2219 — the same fallback a first-sight frame or a
 /// pool-exhaustion miss already gets.
 #[inline]
-fn skin_slot_backs_mesh(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool {
+pub(super) fn skin_slot_backs_mesh(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool {
     slot_vertex_count == mesh_vertex_count
 }
 
@@ -372,7 +371,7 @@ mod skinned_vertex_address_tests {
 /// about the sign is `triangle.frag`'s `DBG_VIZ_FSR_TEMPORAL` debug view,
 /// which hard-codes the FSR convention and was silently wrong under TAA
 /// before this fix.
-fn taa_jitter(
+pub(super) fn taa_jitter(
     taa_present: bool,
     taa_failed: bool,
     frame_counter: u32,
@@ -615,7 +614,7 @@ const DOF_MIN_FOCUS_DIST: f32 = 1.0e-3;
 /// disabled (`aperture <= 0.0`) or the focal distance is degenerate
 /// (`<= DOF_MIN_FOCUS_DIST`, #1525) — the latter guards against the
 /// sideways/NaN look-at the unbounded path would otherwise build.
-fn dof_effective_view_proj(
+pub(super) fn dof_effective_view_proj(
     dof: &DofView,
     frame_counter: u32,
     camera_pos: [f32; 3],
@@ -656,7 +655,7 @@ fn dof_effective_view_proj(
 /// Every other authored DOF field is preserved for the future
 /// output-resolution implementation — only `aperture` is forced to zero, and
 /// only while FSR is active.
-fn fsr_gated_dof(dof: DofView, fsr_active: bool) -> DofView {
+pub(super) fn fsr_gated_dof(dof: DofView, fsr_active: bool) -> DofView {
     if fsr_active {
         DofView {
             aperture: 0.0,
@@ -688,7 +687,7 @@ fn fsr_gated_dof(dof: DofView, fsr_active: bool) -> DofView {
 /// `reset = true` on the returned parameters after `is_camera_cut` fires,
 /// since that decision also drives `signal_temporal_discontinuity` and the
 /// `prev_view_proj` substitution.
-fn build_fsr_frame_parameters(
+pub(super) fn build_fsr_frame_parameters(
     active_dof: &DofView,
     fsr_jitter_pixel: Option<[f32; 2]>,
     fsr_reset_pending: bool,
@@ -720,32 +719,32 @@ fn build_fsr_frame_parameters(
 /// `fog_extinction_per_meter`/`fog_single_scatter_albedo`/
 /// `fog_height_reference`), and a positional call site could silently
 /// transpose two of them without a type error.
-struct CompositeParamsInputs<'a> {
-    fog_color: [f32; 3],
-    fog_near: f32,
-    fog_far: f32,
-    fog_extinction_per_meter: f32,
-    fog_single_scatter_albedo: f32,
-    fog_clip: f32,
-    fog_power: f32,
-    fog_height_reference: f32,
-    sky_params: &'a SkyParams,
-    render_debug_flags: u32,
-    render_debug_mode: u32,
-    frame_counter: u32,
-    volume_far_distance: f32,
+pub(super) struct CompositeParamsInputs<'a> {
+    pub(super) fog_color: [f32; 3],
+    pub(super) fog_near: f32,
+    pub(super) fog_far: f32,
+    pub(super) fog_extinction_per_meter: f32,
+    pub(super) fog_single_scatter_albedo: f32,
+    pub(super) fog_clip: f32,
+    pub(super) fog_power: f32,
+    pub(super) fog_height_reference: f32,
+    pub(super) sky_params: &'a SkyParams,
+    pub(super) render_debug_flags: u32,
+    pub(super) render_debug_mode: u32,
+    pub(super) frame_counter: u32,
+    pub(super) volume_far_distance: f32,
     /// Froxel grid depth (slice count) — #2470, `volumetrics::extent().depth`.
     /// Threaded into `sky_horizon.w` so the composite shader can remap
     /// `hybridSliceCoordinate`'s normalized depth onto the `sampler3D`
     /// texel-center grid before the `volumetricFroxel` tap.
-    froxel_slice_count: f32,
-    camera_pos: [f32; 3],
-    render_origin: byroredux_core::math::Vec3,
-    inv_vp_arr: [[f32; 4]; 4],
-    underwater: [f32; 4],
+    pub(super) froxel_slice_count: f32,
+    pub(super) camera_pos: [f32; 3],
+    pub(super) render_origin: byroredux_core::math::Vec3,
+    pub(super) inv_vp_arr: [[f32; 4]; 4],
+    pub(super) underwater: [f32; 4],
     /// Whether `water_caustic_accum` is genuinely live this session — see
     /// `CompositeParams::caustic_flags` (#2508).
-    water_caustic_active: bool,
+    pub(super) water_caustic_active: bool,
 }
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
@@ -753,7 +752,7 @@ struct CompositeParamsInputs<'a> {
 /// rationale: pure data assembly with no borrow-checker reason to stay
 /// inline). The caller still owns the `composite.upload_params` call and
 /// its error handling; only the field-by-field construction moved here.
-fn build_composite_params(
+pub(super) fn build_composite_params(
     inputs: CompositeParamsInputs<'_>,
 ) -> super::super::composite::CompositeParams {
     let CompositeParamsInputs {
@@ -1138,7 +1137,7 @@ mod fsr_frame_parameter_tests {
 /// alpha-test cutouts), particle billboards (kind 0, emissive), decals
 /// (`is_decal` excluded by the glass classifier), `BSEffectShaderProperty`
 /// FX cards (kind 101 — MATERIAL_KIND_EFFECT_SHADER).
-fn is_caustic_source(cmd: &DrawCommand) -> bool {
+pub(super) fn is_caustic_source(cmd: &DrawCommand) -> bool {
     cmd.alpha_blend && is_refractive_glass(cmd)
 }
 
@@ -1160,7 +1159,7 @@ fn is_caustic_source(cmd: &DrawCommand) -> bool {
 ///     roughness + not a decal). See #515 / #706.
 ///   * Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero inner-layer
 ///     refraction scale — real two-layer refractive surface.
-fn is_refractive_glass(cmd: &DrawCommand) -> bool {
+pub(super) fn is_refractive_glass(cmd: &DrawCommand) -> bool {
     if cmd.material_kind == MATERIAL_KIND_GLASS {
         return true;
     }
@@ -1177,7 +1176,7 @@ fn is_refractive_glass(cmd: &DrawCommand) -> bool {
 /// `bind_inverses` upload is pending) resets the streak to `0`;
 /// otherwise it grows by one. Extracted as a pure function so the
 /// counter arithmetic is unit-testable without a live `VulkanContext`.
-fn next_clean_skin_frames(current: u32, skin_state_dirty: bool) -> u32 {
+pub(super) fn next_clean_skin_frames(current: u32, skin_state_dirty: bool) -> u32 {
     if skin_state_dirty {
         0
     } else {
@@ -1192,7 +1191,7 @@ fn next_clean_skin_frames(current: u32, skin_state_dirty: bool) -> u32 {
 /// `skin_palette.comp` dispatch are all redundant until the next dirty
 /// frame. Mirrors the `MAX_FRAMES_IN_FLIGHT + 1` safety margin used by
 /// `SkinSlotPool::sweep`'s `min_idle` threshold.
-fn should_skip_skin_gpu_refresh(clean_skin_frames: u32) -> bool {
+pub(super) fn should_skip_skin_gpu_refresh(clean_skin_frames: u32) -> bool {
     clean_skin_frames > MAX_FRAMES_IN_FLIGHT as u32
 }
 
@@ -1514,7 +1513,7 @@ pub struct FrameInputs<'a> {
 impl VulkanContext {
     /// Publish CPU-staged morph weights after the dual-fence wait has proven
     /// no prior submission can still read their mapped buffers (#3244).
-    fn flush_pending_morph_weights(&mut self) -> Result<()> {
+    pub(super) fn flush_pending_morph_weights(&mut self) -> Result<()> {
         for (&entity, slot) in &mut self.morph_slots {
             slot.flush_pending_weights(&self.device)
                 .with_context(|| format!("flush MorphSlot weights for entity {entity}"))?;
@@ -1533,7 +1532,7 @@ impl VulkanContext {
     /// jitter itself and the DOF gate that exists to avoid conflicting with
     /// it — must key on this, not on mode selection. Sharing one accessor
     /// is what keeps the two from drifting apart again.
-    fn is_fsr_dispatch_active(&self) -> bool {
+    pub(super) fn is_fsr_dispatch_active(&self) -> bool {
         self.frame_upscaler
             .as_ref()
             .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
@@ -1605,340 +1604,27 @@ impl VulkanContext {
             return Ok(false);
         }
 
-        let frame = self.current_frame;
         let mut armed_selected_ray_probe_generation = None;
         let volumetric_time_seconds = self.volumetric_time_seconds;
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
-        // #1197 / PERF-DIM7-03 — reset per-frame descriptor-writes
-        // counters on both skin compute pipelines. The dispatch
-        // bodies bump these only when they actually call
-        // `vkUpdateDescriptorSets`; steady state stays at 0.
-        if let Some(ref p) = self.skin_compute {
-            p.reset_descriptor_writes_counter();
-        }
-        if let Some(ref p) = self.skin_palette {
-            p.reset_descriptor_writes_counter();
-        }
 
-        // Wait for this frame-in-flight slot AND the previous slot to be
-        // available. SVGF's temporal pass reads the previous slot's G-buffer
-        // images (mesh_id, motion, raw_indirect) — without waiting on the
-        // other slot's fence, a read-after-write hazard exists when the GPU
-        // hasn't finished the other slot's render pass. See #282.
-        //
-        // Cost: zero in practice — the GPU is rarely more than 1 frame
-        // behind the CPU, so the other fence is almost always signaled.
-        let fence_t0 = Instant::now();
-        // SAFETY: `in_flight[frame]` and `in_flight[prev]` are live fences; both were signal-targets of prior `queue_submit`s (or created pre-signaled), so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
-        unsafe {
-            let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
-            self.device
-                .wait_for_fences(
-                    &[
-                        self.frame_sync.in_flight[frame],
-                        self.frame_sync.in_flight[prev],
-                    ],
-                    true,
-                    u64::MAX,
-                )
-                .context("wait_for_fences")?;
-        }
-        t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
-
-        self.flush_pending_morph_weights()?;
-
-        // EX-05 / #2736 — harvest this slot's image-health counters from the
-        // *prior* use of the slot, then zero them for the frame about to be
-        // recorded. The fence wait above proves submission completed
-        // (device-side access scope only) — it does NOT by itself prove the
-        // GPU write is host-visible; that additionally requires the memory
-        // to be host-coherent (or an explicit invalidate). See
-        // `collect_image_health`'s doc comment for why that holds here.
-        // #2740 (REN-D4-04).
-        self.collect_image_health(frame);
-        if let Some(ref mut cluster_cull) = self.cluster_cull {
-            cluster_cull.collect_telemetry(&self.device, frame);
-        }
-        match self
-            .scene_buffers
-            .collect_selected_ray_probe(&self.device, frame)
-        {
-            Ok(Some(record)) => {
-                self.selected_ray_probe_result =
-                    Some(super::super::render_debug::SelectedRayProbeResult::from_gpu(record));
-            }
-            Ok(None) => {}
-            Err(error) => log::warn!("selected-ray probe readback failed: {error}"),
-        }
-        if self.renderer_config.rt_test_lod_telemetry {
-            match self
-                .scene_buffers
-                .collect_rt_lod_telemetry(&self.device, frame)
-            {
-                Ok(sample) if sample.fragments > 0 && self.frame_counter.is_multiple_of(60) => {
-                    let scale = self
-                        .renderer_config
-                        .rt_test_lod_scale_bits
-                        .map(f32::from_bits)
-                        .unwrap_or(6.0);
-                    log::info!(
-                        "rt-lod-telemetry: scale={scale:.6} fragments={} bins={:?} \
-                         reflection_traced={} reflection_lod_culled={} gi_traced={} \
-                         gi_lod_culled={}",
-                        sample.fragments,
-                        sample.bins,
-                        sample.reflection_traced,
-                        sample.reflection_lod_culled,
-                        sample.gi_traced,
-                        sample.gi_lod_culled,
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => log::warn!("RT-LOD telemetry readback failed: {error}"),
-            }
-        }
-
-        // #1194 — read this slot's TIMESTAMP results (from the prior
-        // cycle's use of this slot), then reset the pool for the
-        // upcoming frame. The fence wait above proves the prior
-        // submission for this slot is complete, so query results
-        // are guaranteed available — no host stall here. First-cycle
-        // reads return zero (active_bits never set yet); steady-state
-        // reads are one MAX_FRAMES_IN_FLIGHT cycle behind, which is
-        // fine for per-pass instrumentation.
-        if let Some(ref mut timers) = self.gpu_timers {
-            timers.read_and_reset(&self.device, frame);
-        }
-
-        // If a screenshot was captured last frame, the GPU is done — read it back.
-        self.screenshot_finish_readback();
-        // #3308 — same fence-proven timing as the screenshot readback above.
-        self.depth_capture_finish_readback();
-
-        // Acquire next swapchain image. Bracketed (Phase 9) so a
-        // FIFO-present-mode block waiting for the next image is
-        // surfaced in `CpuFrameTimings.acquire_ms` rather than
-        // disappearing into the gap between fence_wait and
-        // cmd_record. The acquire itself blocks until the image
-        // is available; on most desktop drivers + Wayland/X11
-        // compositors this is also where vsync ends up.
-        let acquire_t0 = Instant::now();
-        // SAFETY: swapchain + loader are live; `image_available[frame]` is an unsignaled binary semaphore (its prior signal was consumed by last cycle's submit wait on this slot) so acquiring into it is legal. The OUT_OF_DATE arm bails before the semaphore is depended on.
-        let (image_index, suboptimal) = unsafe {
-            match self.swapchain_state.swapchain_loader.acquire_next_image(
-                self.swapchain_state.swapchain,
-                u64::MAX,
-                self.frame_sync.image_available[frame],
-                vk::Fence::null(),
-            ) {
-                Ok((idx, suboptimal)) => (idx, suboptimal),
-                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(true),
-                Err(e) => anyhow::bail!("acquire_next_image: {:?}", e),
-            }
+        // #3282 / TD1-2026-08-24-01 — `draw_frame` was split into 5
+        // sibling-file phases (mirroring the existing `record_geometry_pass`
+        // / `record_post_passes` extraction pattern) to shrink this
+        // function. Pure code motion: every barrier, dispatch, and
+        // recording order below is unchanged from the pre-split function —
+        // see each phase's own module doc for its exact scope.
+        let Some((frame, img, suboptimal)) = self.sync_and_acquire_frame(&mut t)? else {
+            return Ok(true);
         };
-        t.acquire_ns = acquire_t0.elapsed().as_nanos() as u64;
 
-        let img = image_index as usize;
-
-        // From here through `queue_submit` below, `image_available[frame]`
-        // is signal-pending (set by the acquire above) and any `?`-
-        // propagated error would leak the signal into the next acquire,
-        // tripping VUID-vkAcquireNextImageKHR-semaphore-01779. Each
-        // fallible call between this point and the submit recovers via
-        // `recreate_image_available_for_frame` — sibling to the
-        // `in_flight` fence recovery already wired through
-        // `recreate_for_swapchain` (#908). See #910 / REN-D5-NEW-01.
-
-        // If this swapchain image is still in use by a different frame, wait.
-        let image_fence = self.frame_sync.images_in_flight[img];
-        if image_fence != vk::Fence::null() && image_fence != self.frame_sync.in_flight[frame] {
-            // SAFETY: `image_fence` is a live fence belonging to whichever frame last used this swapchain image; it was a `queue_submit` signal-target, so the wait terminates. Guarantees that image's prior frame finished before we reuse it. On error we clear the pending acquire signal before propagating.
-            unsafe {
-                if let Err(e) = self
-                    .device
-                    .wait_for_fences(&[image_fence], true, u64::MAX)
-                    .context("wait for image fence")
-                {
-                    let _ = self
-                        .frame_sync
-                        .recreate_image_available_for_frame(&self.device, frame);
-                    return Err(e);
-                }
-            }
-        }
-        self.frame_sync.images_in_flight[img] = self.frame_sync.in_flight[frame];
-
-        // #952 / REN-D1-NEW-04 — `reset_fences` MOVED to immediately
-        // before `queue_submit`. Pre-fix this ran here, then ~2200
-        // lines of `?`-propagated fallible work followed before the
-        // submit re-signaled the fence. Any error in that window left
-        // the fence UNSIGNALED with no pending submit, and the next
-        // frame's both-slots `wait_for_fences(..., u64::MAX)` at
-        // lines 174-183 blocked forever — logical deadlock matching
-        // the resize-path window closed by #908. Reorder narrows the
-        // window to a single fallible call; the submit-failure error
-        // arm below additionally recreates the fence to cover that
-        // residual case.
-
-        // Deferred-destroy tick. Runs AFTER `wait_for_fences` so every
-        // resource whose countdown reaches zero this frame is
-        // guaranteed unreferenced by any in-flight command buffer.
-        // Pre-#418 this ran at the TOP of `draw_frame`, before the
-        // fence wait — `AccelerationManager::tick_deferred_destroy`
-        // (and the `mesh_registry` / `texture_registry` siblings, all
-        // three destroy GPU resources) could free a BLAS / buffer /
-        // image the previous frame's TLAS or blit was still reading.
-        // Latent because `MAX_FRAMES_IN_FLIGHT`-conservative countdowns
-        // kept the window from ever closing, but a policy change that
-        // shortened the countdown would have turned this into a
-        // sync2-validated use-after-free.
-        //
-        // `texture_registry.begin_frame` advances the internal frame
-        // counter that the tick compares against — must run BEFORE the
-        // tick so the counter reflects "this frame" during the
-        // deferred-destroy decision.
-        self.texture_registry.begin_frame(&self.device, frame);
-        if let Some(ref alloc) = self.allocator {
-            self.mesh_registry
-                .tick_deferred_destroy(&self.device, alloc);
-            self.texture_registry
-                .tick_deferred_destroy(&self.device, alloc);
-            if let Some(ref mut accel) = self.accel_manager {
-                accel.tick_deferred_destroy(&self.device, alloc);
-            }
-        }
-
-        // Re-point the RT-shading global-geometry descriptor (bindings 8/9)
-        // to the CURRENT global SSBO for THIS frame-in-flight, every frame.
-        // The global vertex/index SSBO is reallocated to a brand-new
-        // `VkBuffer` whenever cell-stream growth marks geometry dirty
-        // (`MeshRegistry::rebuild_geometry_ssbo`), but the binding was
-        // written only ONCE at scene setup (`scene.rs::setup_scene`). Without
-        // this per-frame refresh the descriptor keeps naming the OLD buffer,
-        // which `rebuild_geometry_ssbo` defers to the destroy queue and
-        // `tick_deferred_destroy` (just above) frees `MAX_FRAMES_IN_FLIGHT`
-        // frames later — at which point the next RT hit-fetch
-        // (`getHitUV` / `getHitTriNormal`, bindings 8/9, on the
-        // reflection / refraction / GI paths) dereferences freed device
-        // memory → GPU page fault → ~TDR → `VK_ERROR_DEVICE_LOST`. The
-        // raster path never hit this because it re-fetches the buffer fresh
-        // each frame (`cmd_bind_vertex_buffers` below); only the once-bound
-        // RT descriptor dangled. Mirrors `write_tlas` (binding 2, re-pointed
-        // every frame): safe because `in_flight[frame]` was just waited on,
-        // so this frame's descriptor set is idle. See WATAL §0 device-loss
-        // hunt. (bindings 8/9 are PARTIALLY_BOUND, so the None case — no
-        // geometry yet / headless — leaves them validly unbound.)
-        if let (Some(vb), Some(ib)) = (
-            self.mesh_registry.global_vertex_buffer.as_ref(),
-            self.mesh_registry.global_index_buffer.as_ref(),
-        ) {
-            self.scene_buffers.write_geometry_buffers(
-                &self.device,
-                frame,
-                vb.buffer,
-                vb.size,
-                ib.buffer,
-                ib.size,
-            );
-            if let Some(ref caustic) = self.caustic {
-                caustic.write_geometry_buffers(
-                    &self.device,
-                    frame,
-                    vb.buffer,
-                    vb.size,
-                    ib.buffer,
-                    ib.size,
-                );
-            }
-        }
-
-        // Record command buffer. Indexed by frame-in-flight (not swapchain
-        // image) so the fence and command buffer share the same slot — #259.
-        // Safe because in_flight[frame] was just waited on, guaranteeing
-        // the GPU has finished with this cmd buffer's previous recording.
-        let cmd = self.command_buffers[frame];
-        // SAFETY: `cmd` is `command_buffers[frame]`, whose fence `in_flight[frame]` was just waited on above, so the GPU has finished its previous recording and the buffer is safe to reset. On error we clear the pending acquire signal before propagating.
-        unsafe {
-            if let Err(e) = self
-                .device
-                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-                .context("reset_command_buffer")
-            {
-                let _ = self
-                    .frame_sync
-                    .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
-            }
-        }
-
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        // SAFETY: `cmd` was just reset (above) and is in the initial state; it is recorded by this thread only, so beginning recording with ONE_TIME_SUBMIT is valid. On error we clear the pending acquire signal before propagating.
-        unsafe {
-            if let Err(e) = self
-                .device
-                .begin_command_buffer(cmd, &begin_info)
-                .context("begin_command_buffer")
-            {
-                let _ = self
-                    .frame_sync
-                    .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
-            }
-        }
-
-        // 8 color attachments + depth. Order must match the render pass:
-        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo,
-        //   6 fsr_reactive, 7 fsr_transparency, 8 depth.
-        let zero_f = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 0.0],
-            },
-        };
-        // #2466 / REN-D8-N01 — when `composite.frag`'s sky branch owns the
-        // background, the HDR attachment is a pure accumulator for whatever
-        // transparent geometry draws over the sky: composite now adds
-        // `direct` on top of `compute_sky(dir)` weighted by the alpha
-        // coverage lane (`pipeline::coverage_alpha_factors`), instead of
-        // discarding it. An opaque placeholder clear there would tint every
-        // such pixel (and feed the bloom pyramid a flat wash), so clear to
-        // transparent black — zero colour, zero coverage — leaving the
-        // caller's `clear_color` for frames composite actually shows it on
-        // (interiors and the loose-NIF demo). The gate is
-        // `sky_params.is_exterior`, the *same* value that becomes
-        // `depth_params.x` above, so host and shader cannot disagree about
-        // who owns the background.
-        let hdr_clear = if sky_params.is_exterior {
-            [0.0, 0.0, 0.0, 0.0]
-        } else {
-            clear_color
-        };
-        let clear_values = [
-            vk::ClearValue {
-                color: vk::ClearColorValue { float32: hdr_clear },
-            },
-            zero_f, // normal
-            zero_f, // motion
-            vk::ClearValue {
-                // Mesh ID: 0 reserved for background (shader writes id + 1).
-                color: vk::ClearColorValue {
-                    uint32: [0, 0, 0, 0],
-                },
-            },
-            zero_f, // raw_indirect (background: no light)
-            zero_f, // albedo (background: no color)
-            // Both FSR masks clear to zero — "fully described by depth and
-            // motion" — and only transparent draws MAX-blend a value in.
-            zero_f, // fsr_reactive
-            zero_f, // fsr_transparency
-            vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 1.0,
-                    stencil: 0,
-                },
-            },
-        ];
+        let BeginFrameOutput {
+            cmd,
+            clear_values,
+            instance_map,
+            tlas_t0,
+        } = self.begin_frame_recording(frame, draw_commands, clear_color, sky_params)?;
 
         // Main framebuffer is now per-frame-in-flight (not per-swapchain-image).
         // Each frame slot has its own HDR color image, so no read-after-write
@@ -1952,1701 +1638,82 @@ impl VulkanContext {
             })
             .clear_values(&clear_values);
 
-        // Pre-compute the shared `draw_idx → ssbo_idx` map once so the
-        // TLAS `instance_custom_index` values stay in lockstep with the
-        // compacted SSBO positions regardless of which filter rejects a
-        // draw_cmd. Before #419 the TLAS path used the raw enumerate
-        // index while the SSBO builder used `gpu_instances.len()` —
-        // identical only while `mesh_registry.get()` never returned None
-        // for a submitted command. A single evicted mesh would shift
-        // every subsequent SSBO entry by one while TLAS custom indices
-        // stayed put, producing silently-wrong material/transform reads
-        // on every RT hit downstream (shadows / reflections / GI /
-        // caustics / primary-hit fallback in `triangle.frag`). See
-        // `AccelerationManager::build_tlas` (`vulkan::acceleration::tlas`) and
-        // the SSBO builder below — both must honour this map. (#2692 — the
-        // path anchor here predated the `acceleration.rs` → `acceleration/`
-        // split; symbols survive refactors, file paths do not.)
-        let tlas_t0 = Instant::now();
-        let instance_map: Vec<Option<u32>> = super::super::acceleration::build_instance_map(
-            draw_commands.len(),
-            super::super::scene_buffer::MAX_INSTANCES,
-            |i| {
-                self.mesh_registry
-                    .get(draw_commands[i].mesh_handle)
-                    .is_some()
-            },
-        );
-        // M29 Phase 2: TLAS build moved to AFTER bone upload + skin
-        // chain (compute dispatch + BLAS refit) so the TLAS sees this
-        // frame's skinned poses with zero lag. instance_map computed
-        // here stays valid through the move — it's a pure function of
-        // draw_commands + mesh_registry state.
-
-        // Drain the completed transported combustion field before uploading
-        // scene lights. This is intentionally a renderer boundary: the app
-        // submits canonical medium primitives, while only the renderer owns
-        // the advected/cooled field that actually emits this delayed light.
-        let mut frame_lights = std::mem::take(&mut self.frame_lights_scratch);
-        frame_lights.clear();
-        frame_lights.extend_from_slice(lights);
-        if let Some(ref mut volumetrics) = self.volumetrics {
-            if let Err(error) = volumetrics.append_combustion_surface_lights(
-                &self.device,
-                frame,
-                fog_volumes,
-                &mut frame_lights,
-            ) {
-                log::warn!("combustion surface-light readback failed: {error}");
-            }
-        }
-        // The app already sorts authored local lights for the fixed-prefix GI
-        // scan. Re-sort after adding field-derived lights using the canonical
-        // score carried by GpuLight itself; directional lights remain pinned.
-        let directional_count = frame_lights
-            .iter()
-            .take_while(|light| light.color_type[3] > 1.5)
-            .count();
-        frame_lights[directional_count..]
-            .sort_unstable_by(|a, b| b.gi_priority_score().total_cmp(&a.gi_priority_score()));
-        let lights = frame_lights.as_slice();
-
-        // Upload scene data (lights + camera) BEFORE the render pass begins.
-        self.scene_buffers
-            .upload_lights(&self.device, frame, lights)
-            .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
-        // `tlas_written[frame]` lags one frame per FIF slot — on the
-        // first frame each slot gets a successful TLAS, this still reads
-        // `false` because `write_tlas` runs later in `draw_frame` (see
-        // the `patch_camera_rt_flag` site post-TLAS-build). The first-
-        // frame fallback to `rt_flag = 0.0` is corrected in-place after
-        // `write_tlas` flips the bit, so frame 0 still gets RT-enabled
-        // shading at GPU-submit time. See #1227 / REN-D8-NEW-21.
-        let rt_flag =
-            if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
-                1.0
-            } else {
-                0.0
-            };
-
-        // TAA sub-pixel jitter via Halton(2,3) sequence. Each frame shifts
-        // the projection by a different sub-pixel offset in NDC so that
-        // temporal blending reconstructs a super-sampled result. The offset
-        // is applied in the vertex shader AFTER motion vector computation so
-        // reprojection is jitter-free.
-        //
-        // Period 16 (#1093 / REN-D11-002) — see `taa_jitter`'s doc comment
-        // for the corrected rationale (2026-08-31): the "natural period"
-        // framing this comment used to repeat here was mathematically
-        // false and misidentified which sample % 8 misses; do not re-quote
-        // it, the real reason for 16 over 8 is not re-derived.
-        // #1932 / TAA-D13-01 — gate on `!self.taa_failed` too, matching the
-        // dispatch gate above and `upload_params`. Without it, a permanent
-        // TAA failure would leave composite reading raw un-resolved HDR
-        // (per #479's fallback) while geometry kept rendering with a
-        // per-frame Halton sub-pixel offset — full-frame shimmer instead of
-        // a stable pinhole fallback image.
-        let (jx, jy, fsr_jitter_pixel, fsr_reset_pending) = match self.renderer_config.upscaler {
-            super::super::upscaling::UpscalerMode::Taa => {
-                let (jx, jy) = taa_jitter(
-                    self.taa.is_some(),
-                    self.taa_failed,
-                    self.frame_counter,
-                    self.frame_extents.render.width as f32,
-                    self.frame_extents.render.height as f32,
-                );
-                (jx, jy, None, false)
-            }
-            super::super::upscaling::UpscalerMode::Fsr3(_) => {
-                if !self.is_fsr_dispatch_active() {
-                    (0.0, 0.0, None, false)
-                } else {
-                    let fsr = self
-                        .fsr_temporal
-                        .as_ref()
-                        .expect("FSR mode must own temporal state");
-                    let sample = fsr.current();
-                    (
-                        sample.ndc[0],
-                        sample.ndc[1],
-                        Some(sample.pixel),
-                        fsr.reset_pending(),
-                    )
-                }
-            }
-        };
-
-        // Camera-relative render origin (#markarth-precision). Computed
-        // ONCE by `render::camera::assemble_camera` (the same un-jittered
-        // camera position it used to build the RELATIVE `view_proj`) and
-        // threaded in via `FrameInputs::render_origin` (#2043 / PERF-D9-04)
-        // — this consumer no longer recomputes `snap_render_origin`
-        // independently, so the rebased per-instance models below and the
-        // uploaded matrices are structurally guaranteed to agree on the
-        // origin rather than relying on both call sites happening to be
-        // passed the same value. Uploaded `view_proj` / `inv_view_proj` are
-        // relative; the vertex shader reconstructs the absolute world
-        // position as `worldPos_rel + renderOrigin`. Passes that
-        // reconstruct world from an inverse VP either add the origin back
-        // where absolute space is required (cluster_cull, caustic_splat,
-        // volumetrics_inject) or stay fully relative with a relative
-        // camera position (ssao, composite — origin-invariant differences
-        // only). See `GpuCamera::render_origin` (#1492).
-        let render_origin = byroredux_core::math::Vec3::from_array(input_render_origin);
-        // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
-        // rationale and the #1525 degenerate-`focus_dist` guard live in
-        // `dof_effective_view_proj`.
-        // FSR forces the pinhole path — rationale in `fsr_gated_dof`.
-        //
-        // #2518 — gate on FSR actually *dispatching*, not merely on FSR
-        // mode being selected. `fsr_temporal` is `Some` for the whole of
-        // `UpscalerMode::Fsr3(..)`, including when the FSR context never got
-        // created or `dispatch_failure` has latched. In those states the
-        // frame runs completely unjittered on the native blit (the jitter
-        // gate above sets `fsr_jitter_pixel = None` and `jx/jy = 0.0` on
-        // exactly this predicate), so the stated rationale — that the
-        // independent Halton(5,7) lens sequence would conflict with FSR's
-        // own projection jitter — does not apply, yet authored DOF was
-        // still being silently dropped. Both facts now come from one
-        // predicate so they cannot diverge again.
-        let active_dof = fsr_gated_dof(dof, self.is_fsr_dispatch_active());
-        let (effective_vp, effective_cam_pos) = dof_effective_view_proj(
-            &active_dof,
-            self.frame_counter,
-            camera_pos,
-            render_origin,
-            view_proj,
-        );
-        let vp = &effective_vp;
-        let mut fsr_frame = match build_fsr_frame_parameters(
-            &active_dof,
-            fsr_jitter_pixel,
-            fsr_reset_pending,
-            frame_time_delta_ms,
-        ) {
-            Ok(params) => params,
-            Err(e) => {
-                let _ = unsafe {
-                    // SAFETY: this early-return happens after the swapchain
-                    // image acquire but before any batch is submitted this
-                    // frame (the `return` below aborts before `queue_submit`),
-                    // `frame < MAX_FRAMES_IN_FLIGHT` per the caller's frame
-                    // index, and `self.device` is the same device that
-                    // allocated the existing semaphore.
-                    self.frame_sync
-                        .recreate_image_available_for_frame(&self.device, frame)
-                };
-                return Err(e);
-            }
-        };
-        // Automatic camera-cut detection catches debug teleports and scripted
-        // snaps that do not flow through the cell-transition reset hooks.
-        // Signal derivation + rationale in `camera_frame_deltas`.
-        let previous_camera_position = self.prev_camera_position;
-        let CameraFrameDeltas {
-            camera_delta,
-            cam_forward_dot,
-            vp_max_abs_delta,
-        } = camera_frame_deltas(
-            camera_pos,
-            self.prev_camera_position,
-            active_dof.cam_forward,
-            self.prev_cam_forward,
-            vp,
-            &self.prev_view_proj,
-        );
-        let camera_cut = is_camera_cut(self.frame_counter, camera_delta, cam_forward_dot);
-        if camera_cut {
-            self.signal_temporal_discontinuity(8);
-            if let Some(ref mut frame) = fsr_frame {
-                frame.reset = true;
-            }
-        }
-        // #1489 / REN2-04 — `prev_view_proj` is relative to LAST frame's
-        // render origin O₁; this frame's geometry (per-instance models, bone
-        // palettes) is rebased by the CURRENT origin O₂. On a 4096-grid
-        // crossing the two differ and every motion vector would be off by
-        // ΔO — a one-frame full-screen TAA flash + SVGF history drop per
-        // crossing. Right-multiplying by `translation(O₂ − O₁)` makes the
-        // uploaded matrix consume current-origin positions exactly:
-        // `M·(x − O₂) = prev_vp·(x − O₁)`. Off the jump frame ΔO = 0 and
-        // the correction is the identity.
-        let pvp = if camera_cut {
-            // Reset history and emit zero velocity on the cut frame. Keeping
-            // the old matrix here would feed extreme motion into the
-            // disocclusion filters even though their history was flushed.
-            *vp
-        } else {
-            origin_corrected_prev_view_proj(
-                &self.prev_view_proj,
-                self.prev_render_origin,
-                [render_origin.x, render_origin.y, render_origin.z],
-            )
-        };
-        // Precompute inverse(viewProj) once on the CPU so shaders
-        // (cluster culling, SSAO) can read it directly from the UBO
-        // instead of computing a ~100 ALU-op matrix inverse per invocation.
-        let vp_mat = byroredux_core::math::Mat4::from_cols_array(vp);
-        let inv_vp = vp_mat.inverse();
-        let inv_vp_cols = inv_vp.to_cols_array();
-        let inv_vp_arr = [
-            [
-                inv_vp_cols[0],
-                inv_vp_cols[1],
-                inv_vp_cols[2],
-                inv_vp_cols[3],
-            ],
-            [
-                inv_vp_cols[4],
-                inv_vp_cols[5],
-                inv_vp_cols[6],
-                inv_vp_cols[7],
-            ],
-            [
-                inv_vp_cols[8],
-                inv_vp_cols[9],
-                inv_vp_cols[10],
-                inv_vp_cols[11],
-            ],
-            [
-                inv_vp_cols[12],
-                inv_vp_cols[13],
-                inv_vp_cols[14],
-                inv_vp_cols[15],
-            ],
-        ];
-        // Camera-static detection for progressive temporal accumulation.
-        // The view-proj here is jitter-free (TAA sub-pixel jitter is applied
-        // later in the vertex shader), so a matrix unchanged frame-to-frame
-        // means a parked camera. Computed BEFORE the camera UBO is built so
-        // the flag can ride `dof_params.w` into triangle.frag's GI-seed
-        // decorrelation, and BEFORE `prev_view_proj` is overwritten below.
-        let camera_static = vp
-            .iter()
-            .zip(self.prev_view_proj.iter())
-            .all(|(a, b)| (a - b).abs() < 1.0e-6);
-        let camera = scene_buffer::GpuCamera {
-            view_proj: [
-                [vp[0], vp[1], vp[2], vp[3]],
-                [vp[4], vp[5], vp[6], vp[7]],
-                [vp[8], vp[9], vp[10], vp[11]],
-                [vp[12], vp[13], vp[14], vp[15]],
-            ],
-            prev_view_proj: [
-                [pvp[0], pvp[1], pvp[2], pvp[3]],
-                [pvp[4], pvp[5], pvp[6], pvp[7]],
-                [pvp[8], pvp[9], pvp[10], pvp[11]],
-                [pvp[12], pvp[13], pvp[14], pvp[15]],
-            ],
-            inv_view_proj: inv_vp_arr,
-            // w = monotonic frame counter for temporal jitter seed in
-            // shadow rays. Masked to the bottom 24 bits before the
-            // `u32 → f32` cast so consecutive frames remain
-            // distinguishable for the full uptime of the process:
-            // f32's mantissa stops resolving ±1 increments above 2^24,
-            // so a raw cast at frame 16_777_217 would map to the same
-            // `cameraPos.w` as frame 16_777_216 and the RT noise
-            // patterns (reservoir streaming, shadow / reflection /
-            // refraction jitter, GI hemisphere) would freeze. Wrap at
-            // 2^24 instead — the noise pattern repeats every ~3.2 days
-            // at 60 FPS (acceptable; TAA accumulation absorbs the
-            // discontinuity). See #1161 / REN-D9-NEW-08.
-            position: [
-                effective_cam_pos[0],
-                effective_cam_pos[1],
-                effective_cam_pos[2],
-                (self.frame_counter & 0xFFFFFF) as f32,
-            ],
-            flags: [
-                rt_flag,
-                ambient_color[0],
-                ambient_color[1],
-                ambient_color[2],
-            ],
-            screen: [
-                self.frame_extents.render.width as f32,
-                self.frame_extents.render.height as f32,
-                fog_near,
-                fog_far,
-            ],
-            fog: [
-                fog_color[0],
-                fog_color[1],
-                fog_color[2],
-                if fog_extinction_per_meter > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                }, // fog enabled flag
-            ],
-            // jitter[2] carries the debug-bypass bitmask for the
-            // fragment shader (see `parse_render_debug_flags_env` and
-            // `triangle.frag`'s `floatBitsToUint(jitter.z)` branches).
-            // Zero-bits → free no-op; non-zero → debug paths active.
-            //
-            // jitter[3] carries the per-frame `is_exterior` flag
-            // (#1125 / REN-D9-NEW-01). 1.0 = exterior cell (real TOD-
-            // driven SkyParamsRes loaded), 0.0 = interior cell (or no
-            // exterior load yet — `SkyParamsRes` absent so
-            // `build_sky_params` returned `SkyParams::default()` with
-            // clear-noon-blue zenith). The shader uses this to gate
-            // `skyTint`-blended fallbacks in `traceReflection` /
-            // refraction miss so sealed interiors don't bleed
-            // daylight tint into glass refractions.
-            jitter: [
-                jx,
-                jy,
-                // REND-#1451 — OR the runtime legacy-attenuation toggle
-                // (console-driven via LightTuning) onto the env-set
-                // debug bitmask so both paths reach the shader's
-                // `DBG_LEGACY_LIGHT_ATTEN` branch.
-                f32::from_bits(
-                    self.render_debug_flags
-                        | if self.light_atten_legacy {
-                            crate::shader_constants::DBG_LEGACY_LIGHT_ATTEN
-                        } else {
-                            0
-                        },
-                ),
-                if sky_params.is_exterior { 1.0 } else { 0.0 },
-            ],
-            // #925 / REN-D15-NEW-03 — mirror the composite's
-            // `sky_zenith.xyz` here so triangle.frag's window-portal
-            // escape transmits a sky tint matching whatever
-            // `compute_sky` paints behind the world. Same source of
-            // truth → same TOD/weather cross-fade behaviour at no
-            // extra upload cost.
-            //
-            // w = sun_angular_radius (rad). Plumbed from SkyParams so
-            // PCSS-lite directional-shadow disk jitter in triangle.frag
-            // is tunable per-cell / per-TOD without a shader recompile.
-            // See #1023 / REN-D20-NEW-01.
-            sky_tint: [
-                sky_params.zenith_color[0],
-                sky_params.zenith_color[1],
-                sky_params.zenith_color[2],
-                sky_params.sun_angular_radius,
-            ],
-            // #3323 — the exterior sky, carried through interior cells so
-            // the window-portal escape in `triangle.frag` transmits the
-            // live TOD colour instead of `SkyParams::default()`'s
-            // clear-noon blue. Deliberately a separate lane from
-            // `sky_tint` above: widening `zenith_color` itself on
-            // interiors would also move `CompositeParams::sky_zenith`,
-            // which is the interior sky leak #2226 removed.
-            exterior_sky_tint: [
-                sky_params.exterior_zenith_color[0],
-                sky_params.exterior_zenith_color[1],
-                sky_params.exterior_zenith_color[2],
-                0.0,
-            ],
-            // #1210 — sun direction + intensity, plumbed for water.frag's
-            // caustic synthesis (shadow ray to sun → refract on miss).
-            // SkyParams.sun_direction is already unit-length and in
-            // world space. w carries authored intensity so the caustic
-            // splat scales with TOD / weather (dawn / dusk = dimmer
-            // caustics, noon = peak).
-            sun_direction: [
-                sky_params.sun_direction[0],
-                sky_params.sun_direction[1],
-                sky_params.sun_direction[2],
-                sky_params.sun_intensity,
-            ],
-            // x = aperture half-radius (0.0 → pinhole, DOF jitter skipped),
-            // y = focal distance.
-            // z = REND-#1451 point/spot attenuation knee fraction,
-            // consumed by `pointSpotAtten` in triangle.frag (0 → shader
-            // default 0.5). Live-tunable via the `light.atten` console
-            // command for the controlled bench.
-            // w = camera_static flag (1.0 = parked). triangle.frag reads it
-            // to advance the GI noise seed every frame when parked, so the
-            // dark indirect-lit floor converges ~4× faster (TARGET 1).
-            dof_params: [
-                active_dof.aperture,
-                active_dof.focus_dist,
-                self.light_atten_knee,
-                if camera_static { 1.0 } else { 0.0 },
-            ],
-            // #markarth-precision — camera-relative render origin in xyz.
-            // Vertex/deferred shaders add this back to recover the absolute
-            // world position from the relative `view_proj` space.
-            //
-            // `w` is NOT padding (REN-LOW L-10 / #2164): it carries the
-            // FSR one-frame-reset flag, read by `triangle.frag`'s FSR-reset
-            // debug view. Any shader that treats this as a free slot will
-            // fight that consumer — same trap as #1928's
-            // `VolumetricsParams.render_origin.w`.
-            render_origin: [
-                render_origin.x,
-                render_origin.y,
-                render_origin.z,
-                if fsr_reset_pending { 1.0 } else { 0.0 },
-            ],
-            render_debug: [
-                self.render_debug_mode.shader_value(),
-                self.renderer_config.rt_test_lod_scale_bits.unwrap_or(0),
-                u32::from(self.renderer_config.rt_test_lod_telemetry),
-                0,
-            ],
-        };
-        self.rt_flag_last_frame =
-            match self
-                .scene_buffers
-                .upload_camera(&self.device, frame, &camera)
-            {
-                Ok(()) => rt_flag > 0.5,
-                Err(error) => {
-                    log::warn!("Failed to upload camera: {error}");
-                    false
-                }
-            };
-        // #993 — upload the per-TOD-lerped 6-axis directional ambient
-        // cube (Skyrim WTHR.DALC). When the cell carries no DALC
-        // (FNV / FO3 / Oblivion), `sky_params.dalc_cube` is `None`;
-        // we upload a disabled cube so the fragment shader stays on
-        // its AMBIENT_AO_FLOOR fallback path. The `flags.x` field is
-        // the runtime gate the shader reads.
-        let dalc_gpu = if let Some(cube) = sky_params.dalc_cube {
-            super::super::scene_buffer::GpuDalcCube {
-                pos_x: [cube.pos_x[0], cube.pos_x[1], cube.pos_x[2], 0.0],
-                neg_x: [cube.neg_x[0], cube.neg_x[1], cube.neg_x[2], 0.0],
-                pos_y: [cube.pos_y[0], cube.pos_y[1], cube.pos_y[2], 0.0],
-                neg_y: [cube.neg_y[0], cube.neg_y[1], cube.neg_y[2], 0.0],
-                pos_z: [cube.pos_z[0], cube.pos_z[1], cube.pos_z[2], 0.0],
-                neg_z: [cube.neg_z[0], cube.neg_z[1], cube.neg_z[2], 0.0],
-                specular_fresnel: [
-                    cube.specular[0],
-                    cube.specular[1],
-                    cube.specular[2],
-                    cube.fresnel_power,
-                ],
-                flags: [1.0, 0.0, 0.0, 0.0],
-            }
-        } else {
-            super::super::scene_buffer::GpuDalcCube::default()
-        };
-        self.scene_buffers
-            .upload_dalc(&self.device, frame, &dalc_gpu)
-            .unwrap_or_else(|e| log::warn!("Failed to upload DALC cube: {e}"));
-        // `camera_static` was computed above (before the camera UBO was
-        // built) so the flag could ride `dof_params.w` into triangle.frag's
-        // GI-seed decorrelation; it is reused here for the SVGF / TAA /
-        // caustic param uploads. Store this frame's viewProj as next frame's
-        // "previous" for motion vectors — together with the origin it was
-        // built against, so next frame's upload can origin-correct it
-        // (#1489 / REN2-04).
-        // #2171 — capture the origin delta BEFORE `prev_render_origin` is
-        // overwritten on the next line. The trace below used to subtract
-        // the field after the assignment, so it printed exactly zero every
-        // frame — actively arguing "no origin crossing happened" on
-        // precisely the frames the ghosting investigation was looking at.
-        let origin_delta = [
-            render_origin.x - self.prev_render_origin[0],
-            render_origin.y - self.prev_render_origin[1],
-            render_origin.z - self.prev_render_origin[2],
-        ];
-
-        self.prev_view_proj = *vp;
-        self.prev_camera_position = camera_pos;
-        self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
-        self.prev_cam_forward = active_dof.cam_forward;
-
-        // #1874 diagnostic — ghosted diagonal double-image investigation.
-        // Cheap, stateless (uses only locals already computed above) trace
-        // of the exact values Dim 10 reasoned about statically: the
-        // render-origin/view-proj delta this frame carries and whether a
-        // discontinuity-recovery window is active. Enable via
-        // `RUST_LOG=byroredux_renderer::vulkan::context::draw=trace` to
-        // correlate a live repro's cell-transition frame against these
-        // numbers instead of guessing from static analysis alone. Safe to
-        // leave in — trace level, zero new state, filtered out by default.
-        log::trace!(
-            "camera frame={} static={} svgf_recovery_frames={} render_origin_delta=({:.3},{:.3},{:.3}) vp_max_abs_delta={:.6}",
-            self.frame_counter,
+        let CameraAssemblyOutput {
+            frame_lights,
+            camera_cut,
             camera_static,
-            self.svgf_recovery_frames,
-            origin_delta[0],
-            origin_delta[1],
-            origin_delta[2],
-            vp_max_abs_delta,
-        );
-
-        // D6-04 / #1811 — track how many consecutive frames had no
-        // skinned-pose change and no pending first-sight bind_inverses
-        // upload. Any dirty signal resets the streak so the forthcoming
-        // upload/copy/dispatch trio (below) always runs at least once
-        // per change, and for the next `MAX_FRAMES_IN_FLIGHT` frames
-        // after that so every per-frame `bone_world` buffer copy sees
-        // the fresh value at least once (same safety margin as the
-        // `MAX_FRAMES_IN_FLIGHT + 1` sweep threshold in
-        // `SkinSlotPool::sweep` / `build_skinned_palettes`).
-        let skin_state_dirty = !pose_dirty.is_empty() || !bind_inverse_pending_uploads.is_empty();
-        self.clean_skin_frames = next_clean_skin_frames(self.clean_skin_frames, skin_state_dirty);
-        let skip_skin_gpu_refresh = should_skip_skin_gpu_refresh(self.clean_skin_frames);
-
-        // M29.5/M29.6 — upload bone_world (per-frame) and any pending
-        // first-sight bind_inverses (write-once persistent SSBO). The
-        // skin_palette dispatch below reads both:
-        //   - bone_world from the per-frame DEVICE_LOCAL pair
-        //   - bind_inverses from the persistent DEVICE_LOCAL SSBO
-        // and writes the existing palette SSBO that raster +
-        // skin_vertices.comp consume.
-        //
-        // D6-04 / #1811 — skipped entirely once `skip_skin_gpu_refresh`
-        // is true: every live frame-in-flight buffer already holds
-        // today's (unchanged) bone_world content, so the staging
-        // memcpy + device copy would just rewrite identical bytes.
-        if !skip_skin_gpu_refresh {
-            if !bone_world.is_empty() {
-                self.scene_buffers
-                    .upload_bone_worlds(&self.device, frame, bone_world)
-                    .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
-            }
-            self.scene_buffers
-                .record_bone_world_copy(&self.device, cmd, frame);
-        }
-
-        // M29.6 — drain pending bind_inverses first-sight uploads.
-        // Two-stage: write into HOST_VISIBLE staging, then record
-        // per-slot cmd_copy_buffer regions into the persistent SSBO,
-        // followed by a single TRANSFER → COMPUTE_SHADER barrier.
-        // No-op when the pending list is empty (steady-state).
-        let pending_capped = if !bind_inverse_pending_uploads.is_empty() {
-            self.scene_buffers
-                .upload_pending_bind_inverses(&self.device, bind_inverse_pending_uploads)
-                .unwrap_or_else(|e| {
-                    log::warn!("Failed to upload pending bind_inverses: {e}");
-                    0
-                })
-        } else {
-            0
-        };
-        if pending_capped > 0 {
-            let pending_slots: Vec<u32> = bind_inverse_pending_uploads
-                .iter()
-                .take(pending_capped)
-                .map(|(s, _)| *s)
-                .collect();
-            self.scene_buffers.record_pending_bind_inverse_copies(
-                &self.device,
-                cmd,
-                &pending_slots,
-                pending_capped,
-            );
-        }
-
-        // M29.5/M29.6 — dispatch the palette-build compute pass.
-        // Writes the existing `bone_device_buffers[frame]` SSBO that
-        // raster (`triangle.vert:147-204` inline-skinning, set 1
-        // binding 3 + binding 12) and `skin_vertices.comp` (set 0
-        // binding 1 in SkinComputePipeline) read. Emits the
-        // COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
-        // barrier on the palette buffer after the dispatch so both
-        // downstream consumers see well-defined data.
-        if let Some(ref mut skin_palette) = self.skin_palette {
-            let bone_byte_size = self.scene_buffers.bone_input_upload_bytes(frame);
-            // Each palette slot is one mat4 = 64 B. Skip the dispatch
-            // entirely when there are no skinned bones this frame —
-            // the palette buffer retains its prior contents (slot 0
-            // identity from a previous frame's write, or zero on
-            // frame 0), so any raster sampling at `bone_offset = 0`
-            // either reads identity (post-warm) or garbage that
-            // never gets shaded (no entity points there).
-            let bone_count =
-                (bone_byte_size as usize / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
-            // D6-04 / #1811 — also skip once `skip_skin_gpu_refresh` is
-            // true: the palette buffer already holds the correct output
-            // for today's (unchanged) bone_world + bind_inverses, so a
-            // full-range recompute would just rewrite identical data.
-            if bone_count > 0 && !skip_skin_gpu_refresh {
-                let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
-                let bind_inverse_buf = self.scene_buffers.bind_inverses_persistent().buffer;
-                let bind_inverse_size = self.scene_buffers.bone_buffer_size();
-                let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
-                let palette_size = self.scene_buffers.bone_buffer_size();
-                // SAFETY: `cmd` is recording (begin_command_buffer succeeded above); the bone-world / bind-inverse / palette buffers are live SSBOs for this frame and `bone_count > 0`. The COMPUTE_SHADER_WRITE -> SHADER_READ buffer barrier afterward sequences the palette write before its compute + vertex consumers; no concurrent recording of this buffer.
-                unsafe {
-                    skin_palette.dispatch(
-                        &self.device,
-                        cmd,
-                        frame,
-                        super::super::skin_compute::PaletteDispatchBuffers {
-                            bone_world_buffer: bone_world_buf,
-                            bone_world_buffer_size: bone_byte_size,
-                            bind_inverse_buffer: bind_inverse_buf,
-                            bind_inverse_buffer_size: bind_inverse_size,
-                            palette_buffer: palette_buf,
-                            palette_buffer_size: palette_size,
-                        },
-                        super::super::skin_compute::SkinPalettePushConstants { bone_count },
-                    );
-                    // COMPUTE_SHADER_WRITE → SHADER_READ barrier on the
-                    // palette buffer covers both downstream consumers:
-                    // `skin_vertices.comp` (compute read in this same
-                    // command buffer below) and `triangle.vert` (vertex
-                    // read during the raster pass).
-                    let palette_barrier = vk::BufferMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .buffer(palette_buf)
-                        .offset(0)
-                        .size(palette_size);
-                    self.device.cmd_pipeline_barrier(
-                        cmd,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::PipelineStageFlags::COMPUTE_SHADER
-                            | vk::PipelineStageFlags::VERTEX_SHADER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[palette_barrier],
-                        &[],
-                    );
-                }
-            }
-        }
-
-        self.record_skinned_blas_refit(cmd, frame, draw_commands, pose_dirty);
-
-        // ── TLAS build (relocated from top of frame) ─────────────────
-        // Picks up just-refit per-skinned-entity BLAS via the
-        // `bone_offset != 0` override in `build_tlas`. Static draws
-        // continue using the per-mesh `blas_entries` table.
-        self.tlas_build_succeeded_last_frame = false;
-        // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas`
-        // records into `cmd`; the following barrier sequences ray-query reads.
-        unsafe {
-            if let Some(ref mut accel) = self.accel_manager {
-                if let Some(alloc) = self.allocator.as_ref() {
-                    if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_tlas_build_start(&self.device, cmd, frame);
-                    }
-                    let tlas_build_failed = if let Err(e) = accel.build_tlas(
-                        &self.device,
-                        alloc,
-                        cmd,
-                        draw_commands,
-                        &instance_map,
-                        frame,
-                    ) {
-                        log::warn!("TLAS build failed: {e}");
-                        // #2673 / CONC-D1-NEW-01 — defence in depth for
-                        // the warn-only policy above. `tlas_written` is
-                        // otherwise a one-way latch, so a slot that ever
-                        // had a TLAS keeps `rt_flag = 1.0` forever and
-                        // every RT path (shadows, reflections, GI, water
-                        // refraction) keeps ray-querying binding 2 on a
-                        // frame whose build never landed. Re-point the
-                        // binding at whatever AS the manager still owns
-                        // (post-#2673 a failed resize keeps the previous
-                        // one alive), then clear the latch and drop
-                        // `rt_flag` so this frame degrades to non-RT
-                        // shading instead. The next successful build
-                        // re-latches and re-patches it to 1.0 via the
-                        // `first_tlas_this_slot` path below.
-                        if let Some(stale_handle) = accel.tlas_handle(frame) {
-                            self.scene_buffers
-                                .write_tlas(&self.device, frame, stale_handle);
-                        }
-                        // Ordered after `write_tlas`, which latches the
-                        // flag `true` as a side effect.
-                        self.scene_buffers.tlas_written[frame] = false;
-                        if let Err(e) =
-                            self.scene_buffers
-                                .patch_camera_rt_flag(&self.device, frame, 0.0)
-                        {
-                            log::warn!("Failed to clear rt_flag after TLAS build failure: {e}");
-                        }
-                        self.rt_flag_last_frame = false;
-                        true
-                    } else {
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_tlas_build_end(&self.device, cmd, frame);
-                        }
-                        false
-                    };
-
-                    // Memory barrier: AS writes → ray-query consumers
-                    // (FRAGMENT_SHADER for main render pass +
-                    // COMPUTE_SHADER for caustic_splat.comp and the
-                    // volumetrics inject dispatch). See #415 for the
-                    // COMPUTE_SHADER widening.
-                    // AS_BUILD_KHR → FRAGMENT_SHADER|COMPUTE_SHADER
-                    //
-                    // #2931 / CON-D2-01 — this runs on BOTH arms, not just
-                    // the success arm. It does not only publish the TLAS
-                    // build: `record_skinned_blas_refit` ran earlier in this
-                    // same command buffer, and this is the frame's ONLY
-                    // AS_WRITE → AS_READ barrier, so it is what makes those
-                    // refits visible too.
-                    //
-                    // Clearing `rt_flag` on the failure arm is not
-                    // sufficient cover. `rt_flag` gates the FRAGMENT
-                    // consumers; the volumetrics inject dispatch gates on
-                    // `accel.tlas_handle(frame)` instead
-                    // (`post_passes.rs::record_volumetrics_pass`), and
-                    // post-#2673 a failed build deliberately keeps the
-                    // previous AS alive — so `tlas_handle` is still `Some`,
-                    // volumetrics still ray-queries from COMPUTE, and
-                    // without this barrier it reads skinned BLAS whose
-                    // refit writes were never made visible.
-                    //
-                    // An extra barrier on a path that only runs when a TLAS
-                    // build has already failed costs nothing measurable;
-                    // skipping it is a real RAW hazard.
-                    memory_barrier(
-                        &self.device,
-                        cmd,
-                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                        vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                        vk::PipelineStageFlags::FRAGMENT_SHADER
-                            | vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                    );
-
-                    if !tlas_build_failed {
-                        if let Some(tlas_handle) = accel.tlas_handle(frame) {
-                            self.tlas_build_succeeded_last_frame = true;
-                            // Capture whether this is the first time the
-                            // TLAS lands for this FIF slot — `write_tlas`
-                            // flips `tlas_written[frame] = true`, but
-                            // we want to know if it WAS false before.
-                            let first_tlas_this_slot = !self.scene_buffers.tlas_written[frame];
-                            self.scene_buffers
-                                .write_tlas(&self.device, frame, tlas_handle);
-                            // #1227 / REN-D8-NEW-21 — earlier in this
-                            // frame `rt_flag` was uploaded as 0.0 because
-                            // `tlas_written[frame]` was still false at
-                            // camera-UBO upload time. Now that the TLAS
-                            // exists and the descriptor is wired, patch
-                            // `flags[0]` to 1.0 in-place so the upcoming
-                            // render pass sees RT enabled on this very
-                            // frame. Without this, frame 0 + frame 1
-                            // (one per FIF slot) render with RT shading
-                            // off and TAA dissolves the flash across
-                            // ~5 frames on every cell-load. Only fires
-                            // on RT-capable hardware AND only on the
-                            // slot's first valid-TLAS frame — steady
-                            // state pays nothing.
-                            if first_tlas_this_slot && self.device_caps.ray_query_supported {
-                                self.rt_flag_last_frame = match self
-                                    .scene_buffers
-                                    .patch_camera_rt_flag(&self.device, frame, 1.0)
-                                {
-                                    Ok(()) => true,
-                                    Err(error) => {
-                                        log::warn!("Failed to patch rt_flag post-TLAS: {error}");
-                                        false
-                                    }
-                                };
-                            }
-                        }
-                        // #1792 — `pending_bytes = 0`: no in-flight batch
-                        // context at this per-frame call site.
-                        accel.evict_unused_blas(&self.device, alloc, 0);
-                    }
-                }
-            }
-        }
-        t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
-
-        // ── Cluster light culling (compute dispatch) ─────────────────
-        //
-        // Runs after light + camera uploads, before the render pass.
-        // The compute shader reads lights/camera and writes cluster SSBOs
-        // that the fragment shader reads during the render pass.
-        // SAFETY: `cmd` is recording; `cc` (cluster-cull pipeline) and its per-frame cluster SSBOs are live. The leading HOST_WRITE -> COMPUTE barrier makes the host-written light/camera buffers visible before `dispatch`; the trailing COMPUTE_WRITE -> FRAGMENT_READ barrier sequences the cluster SSBO outputs before the render pass reads them.
-        unsafe {
-            if let Some(ref mut cc) = self.cluster_cull {
-                // Barrier: host writes to light/camera SSBOs must be visible
-                // to the compute shader before dispatch. Required by Vulkan
-                // spec even for HOST_COHERENT memory. Instance data is NOT
-                // uploaded yet — it is built and uploaded after this dispatch.
-                // HOST → COMPUTE_SHADER (light/camera UBO flush)
-                memory_barrier(
-                    &self.device,
-                    cmd,
-                    vk::PipelineStageFlags::HOST,
-                    vk::AccessFlags::HOST_WRITE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ,
-                );
-
-                if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_cluster_cull_start(&self.device, cmd, frame);
-                }
-                cc.dispatch(&self.device, cmd, frame);
-                if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_cluster_cull_end(&self.device, cmd, frame);
-                }
-                // Barrier: compute writes → fragment reads on cluster SSBOs.
-                // COMPUTE_SHADER → FRAGMENT_SHADER (cluster SSBO outputs)
-                memory_barrier(
-                    &self.device,
-                    cmd,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::AccessFlags::SHADER_WRITE,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::AccessFlags::SHADER_READ,
-                );
-            }
-        }
-
-        // ── Build instance SSBO + draw batches ────────────────────────
-        //
-        // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
-        // commands with the same (pipeline_key, render_layer, mesh_handle) are
-        // merged into a single instanced draw call.
-        //
-        // The two working vectors are held on `self` as scratch buffers
-        // (`gpu_instances_scratch`, `batches_scratch`). `mem::take` moves
-        // them out so the rest of draw_frame can continue borrowing other
-        // fields of `self` without fighting the borrow checker; at the
-        // bottom of the function they are moved back, amortizing their
-        // capacity across frames. Error-path early returns lose the
-        // amortization for one frame only — acceptable since the draw
-        // has already failed. See issue #243.
-        let ssbo_t0 = Instant::now();
-        let mut gpu_instances: Vec<GpuInstance> = std::mem::take(&mut self.gpu_instances_scratch);
-        gpu_instances.clear();
-        gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
-        let mut previous_models = std::mem::take(&mut self.previous_models_scratch);
-        previous_models.clear();
-        previous_models.reserve(draw_commands.len() + 1);
-        let mut current_rigid_models = std::mem::take(&mut self.current_rigid_models_scratch);
-        current_rigid_models.clear();
-        current_rigid_models.reserve(draw_commands.len());
-        let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
-        batches.clear();
-        batches.reserve(draw_commands.len());
-        // #2468 — scene-dirty accumulators for the caustic accumulator's
-        // parked-camera EMA, gathered inside the loop below where the
-        // matrices are already hot rather than in a second pass. Two
-        // complementary signals, because they cover disjoint draws:
-        //   * `rigid_instance_moved` — the rigid-history compare the loop
-        //     already performs, which is free here and catches an occluder
-        //     crossing between light and glass, or physics clutter settling.
-        //   * `caustic_scene_key` — the placement of the caustic SOURCES
-        //     themselves (a glass door swinging open). Those are
-        //     alpha-blended, so `uses_rigid_motion_history` excludes them
-        //     from the compare above and they need their own key.
-        // Skinned actors are covered by `pose_dirty`, and the light rig is
-        // folded into the key after the loop.
-        let mut rigid_instance_moved = false;
-        let mut caustic_scene_key = crate::vulkan::caustic::caustic_key_seed();
-
-        // Sort contract for draw_commands is owned by render.rs
-        // `build_render_data`. The per-field cluster order is covered
-        // by the unit test `render::sort_key_clusters_by_alpha_decal_twosided`
-        // (#500 D3-M2). A duplicate debug_assert here drifted out of
-        // sync with the real key and was removed rather than kept in
-        // lockstep across two crates.
-        for draw_cmd in draw_commands {
-            let Some(mesh) = self.mesh_registry.get(draw_cmd.mesh_handle) else {
-                continue;
-            };
-
-            let instance_idx = gpu_instances.len() as u32;
-            let m = &draw_cmd.model_matrix;
-            let skip_batch = !draw_cmd.in_raster || draw_cmd.is_water;
-            let current_model = rebase_model_matrix(m, render_origin);
-            let uses_rigid_history =
-                uses_rigid_motion_history(draw_cmd.bone_offset, draw_cmd.alpha_blend);
-            let previous_source = if uses_rigid_history && !camera_cut {
-                self.previous_rigid_models
-                    .get(&draw_cmd.entity_id)
-                    .unwrap_or(m)
-            } else {
-                m
-            };
-            previous_models.push(rebase_model_matrix(previous_source, render_origin));
-            if uses_rigid_history {
-                // #2468 — `previous_source` is this entity's last submitted
-                // model matrix (or `m` itself on first sight / camera cut),
-                // so an inequality here is exactly "this instance moved".
-                rigid_instance_moved |= previous_source != m;
-                current_rigid_models.insert(draw_cmd.entity_id, *m);
-            }
-            if is_caustic_source(draw_cmd) {
-                for v in current_model.iter().flatten() {
-                    caustic_scene_key =
-                        crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
-                }
-            }
-
-            // #1260 / PERF-D3-NEW-05 — flag-bit assembly is rasterizer-
-            // only state. The non-uniform-scale dot products feed the
-            // vertex shader's inverse-transpose path (triangle.vert
-            // line 175); ALPHA_BLEND / FLAT_SHADING / TERRAIN_SPLAT /
-            // RENDER_LAYER are all read only by the rasterized fragment
-            // shader (`inst.flags & ...` at triangle.frag:1011 / 1074 /
-            // 1119 / 1231 / 1728); CAUSTIC_SOURCE is gated by the
-            // meshId G-buffer (caustic_splat.comp:170-172), which only
-            // contains pixels for in-frustum rasterized geometry. The
-            // RT hit paths read `hitInst.vertexOffset / indexOffset /
-            // materialId / avgAlbedo* / textureIndex` (triangle.frag:
-            // 438 / 543 / 2981 / 2147) but NEVER `hitInst.flags`.
-            // Therefore off-frustum + water entries can ship `flags=0`
-            // and skip the entire assembly block — the SSBO slot still
-            // serves the RT contract (#516) via model+mesh refs +
-            // material_id + avg_albedo, which are written
-            // unconditionally below.
-            let flags = if skip_batch {
-                0u32
-            } else {
-                // Detect non-uniform scale from the model matrix column
-                // lengths. If the 3 column vectors of the upper-3x3
-                // have different lengths, the vertex shader must use
-                // inverse-transpose for normals. Otherwise it can skip
-                // the expensive inverse (~40 ALU ops). Three dot
-                // products is trivial compared to the per-vertex savings.
-                let col0_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
-                let col1_sq = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
-                let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
-                let has_non_uniform_scale = {
-                    let tol = 0.001;
-                    (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
-                };
-                // Per-instance flags — see INSTANCE_FLAG_* constants in
-                // scene_buffer.rs. CPU-side assembly must stay in
-                // lockstep with the fragment shader's `flags & N` checks.
-                //   bit 0 = non-uniform scale
-                //   bit 1 = NiAlphaProperty blend bit
-                //   bit 2 = caustic source — real refractive surface
-                //           (#922 / REN-D13-NEW-01). Gate matches the
-                //           upstream glass classification in
-                //           `render::build_render_data` (#515 / #706):
-                //           engine-classified `MATERIAL_KIND_GLASS`
-                //           (alpha-blend + low metal + low roughness +
-                //           not a decal) OR Skyrim+ `MultiLayerParallax`
-                //           (kind 11) with a non-zero inner-layer
-                //           refraction scale.
-                //   bit 3 = terrain splat (set in cell_loader for LAND
-                //           entities, #470).
-                let mut f = if has_non_uniform_scale {
-                    INSTANCE_FLAG_NON_UNIFORM_SCALE
-                } else {
-                    0u32
-                };
-                if draw_cmd.alpha_blend {
-                    f |= INSTANCE_FLAG_ALPHA_BLEND;
-                    // #1653 — tells the fragment shader the diffuse carries
-                    // a GENUINE authored alpha channel. When clear (BC1 and
-                    // other alpha-less formats) the shader pins texColor.a
-                    // to 1.0 unless an alpha test is active, so a BC1
-                    // 3-colour block's index-3 texel (a==0 in opaque
-                    // regions, an RGB-fidelity encoder choice) can't leak
-                    // transparency into the discard / decalWeight /
-                    // finalAlpha paths on a pure-blend mesh. BC1 decodes as
-                    // BC1_RGBA so its 1-bit punch-through still drives
-                    // alpha-test cutouts (2aac5351). `handle_has_alpha` is
-                    // false for BC1_RGBA (`format_has_alpha` excludes it)
-                    // and true for BC2/BC3/BC7/RGBA, so the FNV picture/
-                    // table blend keeps its authored alpha. Cheap cached
-                    // lookup (same map as the gi_albedo mean below), gated
-                    // on alpha_blend so the opaque majority pays nothing.
-                    if self
-                        .texture_registry
-                        .handle_has_alpha(draw_cmd.texture_handle)
-                    {
-                        f |= INSTANCE_FLAG_DIFFUSE_ALPHA;
-                    }
-                }
-                if is_caustic_source(draw_cmd) {
-                    f |= INSTANCE_FLAG_CAUSTIC_SOURCE;
-                }
-                if let Some(tile_idx) = draw_cmd.terrain_tile_index {
-                    f |= INSTANCE_FLAG_TERRAIN_SPLAT;
-                    f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
-                }
-                // #869 — NiShadeProperty.flags==0 flat-shading:
-                // fragment shader replaces interpolated normal with
-                // the per-face derivative when this bit is set.
-                if draw_cmd.flat_shading {
-                    f |= INSTANCE_FLAG_FLAT_SHADING;
-                }
-                // #renderlayer — pack the 2-bit layer discriminant
-                // into bits 4..5 for the fragment shader's debug-viz
-                // branch (BYROREDUX_RENDER_DEBUG=0x40 tints fragments
-                // by layer).
-                f |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
-                    << INSTANCE_RENDER_LAYER_SHIFT;
-                f
-            };
-
-            // R1 Phase 6 — `GpuInstance` carries only per-DRAW data
-            // now: model + mesh refs + bone_offset + flags +
-            // material_id + caustic-source avg_albedo. Every
-            // per-material field reads through `materials[material_id]`
-            // in the fragment shader.
-            //
-            // #1628 — fold the diffuse texture's texel-mean into the GI
-            // bounce albedo. `draw_cmd.avg_albedo` is the material tint
-            // (diffuse_color); multiplying it by the texture's average
-            // texel colour gives the true surface mean a textured wall
-            // bleeds into the one-bounce GI, instead of the flat tint.
-            // The mean is computed once at DDS upload and cached per
-            // handle, so this is a cheap lookup + multiply. Untextured /
-            // normal-map / BC7 handles return `None` and keep the tint.
-            let gi_albedo = match self
-                .texture_registry
-                .handle_avg_rgb(draw_cmd.texture_handle)
-            {
-                Some(mean) => [
-                    draw_cmd.avg_albedo[0] * mean[0],
-                    draw_cmd.avg_albedo[1] * mean[1],
-                    draw_cmd.avg_albedo[2] * mean[2],
-                ],
-                None => draw_cmd.avg_albedo,
-            };
-            // REN-2026-07-28-02 / #2219 — skinned instances' secondary-ray
-            // hit-normal reconstruction needs the deformed (post-skin)
-            // vertex positions, not the bind-pose global vertex SSBO
-            // `getHitTriNormal` otherwise reads unconditionally. Look up
-            // this entity's SkinSlot (populated earlier this frame by the
-            // skin-dispatch chain) and query its output buffer's GPU
-            // address; `ray_hit.glsl` dereferences it via
-            // GL_EXT_buffer_reference for `boneOffset != 0` instances
-            // instead of the bind-pose path. Zero for rigid draws and for
-            // skinned draws with no slot yet (first-sight frame, or a
-            // pool-exhaustion fallback) — the shader's own `boneOffset !=
-            // 0` branch means a stray zero address is never dereferenced
-            // by a rigid draw, and a skinned draw with no slot yet already
-            // has no primed skinned BLAS this frame either, so falling
-            // back to the bind-pose hit-normal path is consistent with
-            // what the rest of the RT pipeline does for that draw.
-            let slot_address = (draw_cmd.bone_offset != 0)
-                .then(|| self.skin_slots.get(&draw_cmd.entity_id))
-                .flatten()
-                // #2402 — the slot must have been sized for THIS mesh. The
-                // refit path's capacity reconciliation skips non-RT-capable
-                // meshes entirely, so a remap onto one leaves a stale slot
-                // live for a few frames; publishing its address would have
-                // the fragment shader index a raw device address with the
-                // new mesh's (possibly larger) index range.
-                // #2402 — this filter must stay IN FRONT of the address read: a
-                // slot that no longer backs this mesh must contribute no address,
-                // cached or queried.
-                .filter(|slot| skin_slot_backs_mesh(slot.vertex_count(), mesh.vertex_count))
-                // #3469 — a plain field read. This was a `vkGetBufferDeviceAddress`
-                // call per skinned draw per frame, in the innermost
-                // O(visible-instance) loop, for an address that is fixed for the
-                // buffer's lifetime. `skin_pool_live = 83` on
-                // `skyrim_se-WhiterunDragonsreach` and several draws per NPC put it
-                // in the hundreds of driver round-trips per frame in that cell.
-                .map(|slot| slot.output_address());
-            let skinned_vertex_address =
-                skinned_vertex_address_for_draw(draw_cmd.bone_offset, slot_address);
-            // #3231 — GPU morph-target blending. Same shape as the
-            // skinned_vertex_address lookup just above, including the
-            // "backs this mesh" safety filter (#2402's hazard applies
-            // identically here — see `morph_slot_backs_mesh`'s doc).
-            // v1-scoped to skinned meshes only (`bone_offset != 0`),
-            // matching MorphSlot's current spawn-time creation site.
-            let morph_slot_fields = (draw_cmd.bone_offset != 0)
-                .then(|| self.morph_slots.get(&draw_cmd.entity_id))
-                .flatten()
-                .filter(|slot| {
-                    morph_slot_backs_mesh(
-                        slot.vertex_count(),
-                        slot.target_count(),
-                        mesh.vertex_count,
-                    )
-                })
-                .map(|slot| {
-                    (
-                        slot.delta_address(),
-                        slot.weight_address(),
-                        slot.target_count(),
-                    )
-                });
-            let (morph_delta_address, morph_weight_address, morph_target_count) =
-                morph_gpu_fields_for_draw(morph_slot_fields);
-            gpu_instances.push(GpuInstance {
-                // #markarth-precision — rebase the model translation by the
-                // camera-relative render origin so `model * pos` stays near 0
-                // in the shader (full f32 precision; large worldspace offsets
-                // like MarkarthWorld's ~-176000 otherwise quantize fine detail
-                // into spikes). The shader adds render_origin back for the
-                // absolute world position. Columns 0-2 (rotation/scale) are
-                // unchanged; only the translation column (m[12..14]) shifts.
-                model: current_model,
-                texture_index: draw_cmd.texture_handle,
-                bone_offset: draw_cmd.bone_offset,
-                vertex_offset: mesh.global_vertex_offset,
-                index_offset: mesh.global_index_offset,
-                vertex_count: mesh.vertex_count,
-                flags,
-                material_id: draw_cmd.material_id,
-                // Reuse the layout's former padding lane for per-material IOR.
-                // caustic_splat.comp names this offset `ior`; other shaders
-                // keep treating it as padding, so the std430 ABI is unchanged.
-                ior: draw_cmd.ior,
-                avg_albedo_r: gi_albedo[0],
-                avg_albedo_g: gi_albedo[1],
-                avg_albedo_b: gi_albedo[2],
-                // Stable across per-frame sort/batch changes. Zero remains
-                // reserved for synthetic/default instances.
-                surface_id: draw_cmd.entity_id.wrapping_add(1),
-                skinned_vertex_address,
-                _reserved: [0; 2],
-                morph_delta_address,
-                morph_weight_address,
-                morph_target_count,
-                _reserved2a: 0,
-                _reserved2b: 0,
-                _reserved2c: 0,
-            });
-
-            // Frustum-culled draws still need an SSBO entry so RT hit
-            // shaders that land on their TLAS instance read the right
-            // material / transform (#516).
-            //
-            // REN-LOW L-8 / #2164 — "transform" needs a caveat. Since the
-            // render-origin rebase, `GpuInstance.model` is render-origin
-            // *relative*, while the TLAS an RT hit arrives through is
-            // absolute. Rotation and scale are therefore usable from a hit
-            // shader; translation is NOT. The only current RT reader
-            // (`raytrace.glsl::getHitTriNormal`) is translation-invariant,
-            // so nothing is wrong today — but a future hit-position
-            // reconstruction built on `.model[3]` would land `renderOrigin`
-            // (up to ~176k units on MarkarthWorld) from the true hit. Add
-            // `+ renderOrigin.xyz` if you ever need absolute position here.
-            //
-            // Skip batch formation — they
-            // have no rasterized pixels this frame. Breaking the batch
-            // chain here also avoids accidentally extending a previous
-            // batch across a gap in the SSBO layout (`first_instance +
-            // instance_count` would point past an off-screen draw).
-            //
-            // Water surfaces are also skipped here: their `GpuInstance`
-            // SSBO slot is populated (so the water pipeline's vertex
-            // shader can read the model matrix via `gl_InstanceIndex`),
-            // but they render through the dedicated water pipeline in
-            // a separate pass below — not through the triangle / blend
-            // pipeline batches.
-            if skip_batch {
-                continue;
-            }
-
-            // Two-sided is NOT a key axis (#930) — both opaque and
-            // blended pipelines declare CULL_MODE as dynamic state, so
-            // two-sided rendering uses per-draw `cmd_set_cull_mode`
-            // not a separate pipeline. Wireframe IS a key axis (#869)
-            // because `polygon_mode` is static pipeline state — LINE
-            // and FILL each need their own pipeline.
-            let order_dependent_glass = is_refractive_glass(draw_cmd);
-            let pipeline_key = if draw_cmd.alpha_blend {
-                PipelineKey::Blended {
-                    src: draw_cmd.src_blend,
-                    dst: draw_cmd.dst_blend,
-                    wireframe: draw_cmd.wireframe,
-                    preserve_opaque_gbuffer: order_dependent_glass,
-                }
-            } else {
-                PipelineKey::Opaque {
-                    wireframe: draw_cmd.wireframe,
-                }
-            };
-
-            // Extend the current batch if this draw shares the same
-            // state AND is contiguous in the SSBO (no culled draws in
-            // the gap). The contiguity check is new with #516 — before
-            // the in_raster split the SSBO idx always advanced 1:1
-            // with the batch-eligible iterations, so contiguity was
-            // implicit. Now an off-screen draw pushes an SSBO entry
-            // but skips batch formation, so the next rasterized draw
-            // might land at a non-contiguous `instance_idx`.
-            // #renderlayer — depth bias is selected from the per-layer
-            // ladder via `DrawCommand::render_layer`. `RenderLayer::Decal`
-            // subsumes both the legacy `is_decal` and `needs_depth_bias`
-            // bits — alpha-tested rugs / posters / fences and true
-            // NIF-flagged decals all carry `render_layer == Decal` set
-            // at cell-load time.
-            let render_layer = draw_cmd.render_layer;
-
-            // #2165 — split-eligibility is a material property, resolved
-            // once here at emit time. Part of the batch merge key: a
-            // glass draw and a particle draw that happen to agree on
-            // every pipeline/depth axis must not fold together, or the
-            // merged batch would take one population's path for both.
-            if let Some(batch) = batches.last_mut() {
-                if batch.mesh_handle == draw_cmd.mesh_handle
-                    && batch.pipeline_key == pipeline_key
-                    && batch.two_sided == draw_cmd.two_sided
-                    && batch.render_layer == render_layer
-                    && batch.z_test == draw_cmd.z_test
-                    && batch.z_write == draw_cmd.z_write
-                    && batch.z_function == draw_cmd.z_function
-                    && batch.order_dependent_glass == order_dependent_glass
-                    && batch.first_instance + batch.instance_count == instance_idx
-                {
-                    batch.instance_count += 1;
-                    continue;
-                }
-            }
-
-            // Start a new batch.
-            batches.push(DrawBatch {
-                mesh_handle: draw_cmd.mesh_handle,
-                pipeline_key,
-                two_sided: draw_cmd.two_sided,
-                render_layer,
-                first_instance: instance_idx,
-                instance_count: 1,
-                index_count: mesh.index_count,
-                global_index_offset: mesh.global_index_offset,
-                global_vertex_offset: mesh.global_vertex_offset as i32,
-                z_test: draw_cmd.z_test,
-                z_write: draw_cmd.z_write,
-                z_function: draw_cmd.z_function,
-                order_dependent_glass,
-            });
-        }
-
-        // #2913 / REN-D1-01 — pin the AS↔SSBO index contract.
-        //
-        // `build_instance_map` (above) is documented as the single source of
-        // truth that the TLAS `instance_custom_index` and the compacted SSBO
-        // position must agree on, but only ONE of its two consumers actually
-        // reads it: `build_tlas_instances` indexes `instance_map[i]`, while
-        // the SSBO builder above re-derives the same compaction from
-        // `gpu_instances.len()` behind its own copy of the predicate. They
-        // agree today purely because both spell the `mesh_registry.get()`
-        // reject identically, ~800 lines apart in one function. #419 removed
-        // the divergence but not the fragility, and nothing `cargo test` can
-        // see would catch its return.
-        //
-        // This is the one point where the two counts must match EXACTLY: the
-        // draw loop has finished and the UI quad (which the map does not
-        // cover) has not been appended yet. A mismatch means a `continue` was
-        // added to the SSBO loop without a matching term in the map's
-        // predicate — which silently shifts every later SSBO entry while the
-        // TLAS custom indices stay put, so every RT hit reads the wrong
-        // `GpuInstance` (wrong model matrix, wrong `material_id`, wrong
-        // `surface_id`). That is the severity table's CRITICAL
-        // "SSBO index mismatch" row, and it fails silently — garbage
-        // material/transform in shadows/reflections/GI, not a crash or a
-        // validation error.
-        //
-        // debug_assert, matching the sibling `previous_models` pin below: the
-        // condition is an internal-consistency invariant that can only break
-        // via a code change, never via content, so it cannot fire on a user's
-        // machine mid-recording the way the content-dependent MAX_INSTANCES
-        // check could (#956).
-        debug_assert_eq!(
-            gpu_instances.len(),
-            instance_map.iter().flatten().count(),
-            "AS<->SSBO index contract broken: the SSBO compaction produced {} \
-             entries but build_instance_map mapped {} draw commands. A filter \
-             was added to one compaction and not the other (#419 / #2913).",
-            gpu_instances.len(),
-            instance_map.iter().flatten().count(),
-        );
-
-        // Append UI instance (if needed) BEFORE the bulk upload so it's
-        // included in the single flush. Avoids the need for a separate raw
-        // pointer write + flush that was missing on non-coherent memory (#189).
-        let ui_instance_idx =
-            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
-                let idx = gpu_instances.len() as u32;
-                let instance = GpuInstance {
-                    texture_index: ui_tex,
-                    ..GpuInstance::default()
-                };
-                previous_models.push(instance.model);
-                gpu_instances.push(instance);
-                Some(idx)
-            } else {
-                None
-            };
-
-        // #2468 — finish the caustic scene key with the light rig. Every
-        // splat is a refraction of a specific light through a specific
-        // surface, so a lantern being carried, a light being coloured /
-        // dimmed by a weather or script change, or a light entering or
-        // leaving the visible set all move the pool. `lights` is bounded
-        // by the streaming-RIS visible set, so this is a short loop.
-        caustic_scene_key =
-            crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, lights.len() as f32);
-        for light in lights {
-            for v in light
-                .position_radius
-                .iter()
-                .chain(light.color_type.iter())
-                .chain(light.direction_angle.iter())
-                .chain(light.params.iter())
-            {
-                caustic_scene_key =
-                    crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
-            }
-        }
-        // The accumulator's history is valid only when nothing that
-        // determines a splat's landing point changed: the camera (the
-        // pre-#2468 gate), the light rig or caustic-source placement (the
-        // key), rigid instances (the compare in the loop above), or
-        // skinned poses (`pose_dirty` — a walking NPC's torch shadow).
-        let caustic_scene_static = !rigid_instance_moved
-            && pose_dirty.is_empty()
-            && caustic_scene_key == self.prev_caustic_scene_key;
-        self.prev_caustic_scene_key = caustic_scene_key;
-        let caustic_history_valid = camera_static && caustic_scene_static;
-
-        // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning
-        // the `MAX_INSTANCES` SSBO allocation. Post-#992 the mesh_id
-        // G-buffer is `R32_UINT` (bit 31 = ALPHA_BLEND_NO_HISTORY,
-        // bits 0..30 = id + 1, ceiling 0x7FFFFFFF), and `MAX_INSTANCES`
-        // is sized at `0x40000` (262144) to absorb dense Skyrim/FO4
-        // city cells (~50K REFRs) with ~5× headroom. The SSBO is
-        // sized to `MAX_INSTANCES`, so writes past that index would
-        // overrun the GPU-side allocation. `upload_instances` clamps to
-        // MAX_INSTANCES in release; we log and continue rather than
-        // panicking inside an active command-buffer recording (#956 /
-        // REN-D5-NEW-05 — a debug_assert! at this site leaks the
-        // in-flight cmd buffer on unwind).
-        if gpu_instances.len() > super::super::scene_buffer::MAX_INSTANCES {
-            static ONCE: std::sync::Once = std::sync::Once::new();
-            ONCE.call_once(|| {
-                log::error!(
-                    "RP-1: visible instance count {} exceeds MAX_INSTANCES ({}). \
-                     Instances past the cap are silently dropped. \
-                     Bump MAX_INSTANCES or partition draws.",
-                    gpu_instances.len(),
-                    super::super::scene_buffer::MAX_INSTANCES,
-                );
-            });
-        }
-        // Upload all instance data (scene + UI) to the SSBO in one flush.
-        if !gpu_instances.is_empty() {
-            debug_assert_eq!(gpu_instances.len(), previous_models.len());
-            self.scene_buffers
-                .upload_instances(&self.device, frame, &gpu_instances)
-                .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
-            self.scene_buffers
-                .upload_previous_models(&self.device, frame, &previous_models)
-                .unwrap_or_else(|e| log::warn!("Failed to upload previous models: {e}"));
-        }
-
-        // R1 Phase 4 — upload the deduplicated material table. The
-        // fragment shader reads `materials[instance.materialId]` for
-        // migrated fields (Phase 4: roughness; Phases 5–6: the rest).
-        // Empty table means no draws → no material reads, so the
-        // upload is skipped harmlessly.
-        if !materials.is_empty() {
-            self.scene_buffers
-                .upload_materials(&self.device, frame, materials)
-                .unwrap_or_else(|e| log::warn!("Failed to upload materials: {e}"));
-        }
-
-        // Feed the last retired main-pass timestamp into the hysteretic ray
-        // allocator, then upload a fresh per-frame counter + loop limits.
-        // Timer brackets are conservative upper bounds and cannot safely be
-        // summed; use the slower controlled pass as the quality signal.
-        let measured_lighting_ms = self
-            .gpu_timers
-            .as_ref()
-            .map(|timers| {
-                let snapshot = timers.last_snapshot();
-                snapshot.main_render_ms.max(snapshot.volumetrics_ms)
-            })
-            .filter(|ms| *ms > 0.0);
-        self.scene_buffers
-            .reset_ray_budget(
-                &self.device,
-                frame,
-                measured_lighting_ms,
-                self.renderer_config.rt_test_ray_quality_tier,
-            )
-            .unwrap_or_else(|e| log::warn!("Failed to upload adaptive ray budget: {e}"));
-
-        // Reupload the terrain tile SSBO when cell load mutated it.
-        // The slab is static until the next cell transition — #497
-        // moved it to a single DEVICE_LOCAL buffer uploaded via a
-        // transient staging copy, so one upload per dirty transition
-        // is enough. The scratch Vec lives on self so its 32 KB
-        // capacity amortizes across cell loads — `mem::take` moves it
-        // out so the fill can run while `&self.scene_buffers` consumes
-        // the slice. #496.
-        let mut tile_scratch: Vec<GpuTerrainTile> = std::mem::take(&mut self.terrain_tile_scratch);
-        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
-            let allocator = self.allocator.as_ref().expect("allocator missing");
-            self.scene_buffers
-                .upload_terrain_tiles(
-                    &self.device,
-                    allocator,
-                    &self.graphics_queue,
-                    self.transfer_pool,
-                    &tile_scratch,
-                )
-                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
-        }
-        self.terrain_tile_scratch = tile_scratch;
-
-        // Build + upload indirect-draw commands for this frame (#309).
-        // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
-        // the same order as `batches` so the draw loop can reference a
-        // contiguous range of the buffer for each pipeline group.
-        // Populated regardless of `device_caps.multi_draw_indirect_supported`
-        // — the upload is ~N × 20 B for small N, and this keeps the
-        // indirect path always ready when it is enabled.
-        if !batches.is_empty() && self.device_caps.multi_draw_indirect_supported {
-            let indirect_scratch = &mut self.indirect_draws_scratch;
-            indirect_scratch.clear();
-            indirect_scratch.extend(batches.iter().map(|b| vk::DrawIndexedIndirectCommand {
-                index_count: b.index_count,
-                instance_count: b.instance_count,
-                first_index: b.global_index_offset,
-                vertex_offset: b.global_vertex_offset,
-                first_instance: b.first_instance,
-            }));
-            // #2504 / D12-2026-08-07-02 — unlike the neighbouring data-SSBO
-            // uploads above (stale content there only misrenders), the
-            // indirect buffer's contents are fetched and executed by the
-            // GPU. A failed upload must force the direct-draw fallback for
-            // this frame in `record_geometry_pass` (`use_indirect` reads
-            // `indirect_upload_ok`) rather than let `cmd_draw_indexed_
-            // indirect` read stale or uninitialized commands.
-            self.indirect_upload_ok = self
-                .scene_buffers
-                .upload_indirect_draws(&self.device, frame, indirect_scratch)
-                .map_err(|e| {
-                    log::warn!(
-                        "Failed to upload indirect draws: {e} — falling back to direct draws this frame"
-                    )
-                })
-                .is_ok();
-        }
-        t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
-        // #3467 — drained here rather than measured here: the rebuild runs in
-        // `render_one_frame` before `draw_frame` is entered, so this is the
-        // first point in the frame that owns a `FrameTimings` to put it in.
-        t.geometry_rebuild_ns = self.mesh_registry.take_geometry_rebuild_ns();
-
-        // Pre-populate the blend pipeline cache for any new (src, dst)
-        // combos this frame. Resolved up-front because the hot draw
-        // loop only takes `&self.device` for `cmd_bind_pipeline` and
-        // can't reborrow `&mut self` to lazy-create. After this loop
-        // every `PipelineKey::Blended` has a corresponding cache entry.
-        // See #392 / #930 (two-sided dropped from key).
-        // #1259 / PERF-D3-NEW-04 — pre-fix this loop did
-        // `blend_pipeline_cache.contains_key` per batch (M = blended
-        // batch count, typically 300-500 on a Skyrim exterior). After
-        // the first few cell-load frames every (src, dst, wireframe)
-        // combo is cached and the per-batch lookup always hits —
-        // O(M) wasted work per frame in steady state.
-        //
-        // Two-stage swap: collect distinct keys into the persistent
-        // `blend_seen_scratch` HashSet (O(M) inserts, but on a
-        // typically-tiny set — the same 3-5 distinct combos repeat
-        // across hundreds of batches), then walk the small set once.
-        // The subset check after the walk also lets us skip the
-        // creation pass entirely when every seen key is cached —
-        // the common steady-state path.
-        self.blend_seen_scratch.clear();
-        for batch in &batches {
-            if let PipelineKey::Blended {
-                src,
-                dst,
-                wireframe,
-                preserve_opaque_gbuffer,
-            } = batch.pipeline_key
-            {
-                // Normalize cache key against the device-cap gate so a
-                // disabled-wireframe device hits the same slot it would
-                // for a regular opaque blend. Matches the gate in
-                // `get_or_create_blend_pipeline`. #869.
-                let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
-                self.blend_seen_scratch
-                    .insert((src, dst, wireframe, preserve_opaque_gbuffer));
-            }
-        }
-        // Skip the creation pass when every seen key is already cached
-        // (the steady-state fast path — after warmup, no new pipeline
-        // creation needed).
-        let all_cached = self
-            .blend_seen_scratch
-            .iter()
-            .all(|key| self.blend_pipeline_cache.contains_key(key));
-        if !all_cached {
-            // Collect missing keys into a local Vec so we can release
-            // the borrow on `blend_seen_scratch` before calling
-            // `get_or_create_blend_pipeline` (which takes `&mut self`
-            // and would re-borrow scratch via the cache field).
-            let missing: Vec<(u8, u8, bool, bool)> = self
-                .blend_seen_scratch
-                .iter()
-                .filter(|key| !self.blend_pipeline_cache.contains_key(key))
-                .copied()
-                .collect();
-            for (src, dst, wireframe, preserve_opaque_gbuffer) in missing {
-                if let Err(e) =
-                    self.get_or_create_blend_pipeline(src, dst, wireframe, preserve_opaque_gbuffer)
-                {
-                    log::error!(
-                        "Failed to create blend pipeline (src={src}, dst={dst}, \
-                         preserve_opaque_gbuffer={preserve_opaque_gbuffer}): {e}; \
-                         draws using this combo will fall back to opaque pipeline"
-                    );
-                }
-            }
-        }
-
-        // Upload composite params (fog + sky) up-front so the bulk host
-        // barrier below covers this UBO's HOST_WRITE too (#909 /
-        // REN-D1-NEW-03). All inputs are available from `draw_frame`'s
-        // parameters; the composite pass itself runs much later, after
-        // the render pass + SVGF / TAA / SSAO / Bloom, but the barrier
-        // doesn't care when the consumer runs as long as it's been
-        // emitted before the consumer.
-        if let Some(ref mut composite) = self.composite {
-            let composite_params = build_composite_params(CompositeParamsInputs {
-                fog_color,
-                fog_near,
-                fog_far,
-                fog_extinction_per_meter,
-                fog_single_scatter_albedo,
-                fog_clip,
-                fog_power,
-                fog_height_reference,
-                sky_params,
-                render_debug_flags: self.render_debug_flags,
-                render_debug_mode: self.render_debug_mode.shader_value(),
-                frame_counter: self.frame_counter,
-                volume_far_distance: self
-                    .volumetrics
-                    .as_ref()
-                    .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
-                        volume.far_distance_world()
-                    }),
-                froxel_slice_count: self
-                    .volumetrics
-                    .as_ref()
-                    .map_or(1.0, |volume| volume.extent().depth as f32),
-                camera_pos,
-                render_origin,
-                inv_vp_arr,
-                underwater,
-                water_caustic_active: self.water_caustic_accum.is_some(),
-            });
-            if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
-                log::warn!("composite upload_params failed: {e}");
-            }
-        }
-
-        // SVGF temporal params UBO — uploaded BEFORE the bulk barrier
-        // below so its HOST_WRITE → UNIFORM_READ at COMPUTE_SHADER fold
-        // into the same execution dependency the bulk barrier already
-        // emits for composite. Mirrors the composite-UBO fold from
-        // #909 / REN-D1-NEW-03. See #961 / REN-D10-NEW-04. The α state
-        // machine is host-side and depends on `svgf_recovery_frames`
-        // (advanced at end-of-tick); it does NOT depend on anything
-        // produced by the render pass below.
-        if !self.svgf_failed {
-            if let Some(ref mut svgf) = self.svgf {
-                let (alpha_color, alpha_moments, next_frames) =
-                    crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
-                self.svgf_recovery_frames = next_frames;
-                // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
-                if let Err(e) = unsafe {
-                    svgf.upload_params(
-                        &self.device,
-                        frame,
-                        alpha_color,
-                        alpha_moments,
-                        camera_static,
-                    )
-                } {
-                    log::warn!("svgf upload_params failed: {e}");
-                }
-            }
-        }
-
-        // TAA UBO — fold into the bulk barrier below (#1397 / NCPS-03).
-        // upload_params writes the host-visible param_buffers[frame];
-        // the HOST→COMPUTE dependency is covered by the bulk barrier's
-        // dst_stage = COMPUTE_SHADER, so no per-dispatch barrier is needed.
-        if !self.taa_failed {
-            if let Some(ref mut taa) = self.taa {
-                if let Err(e) = taa.upload_params(&self.device, frame) {
-                    log::warn!("TAA upload_params failed: {e}");
-                }
-            }
-        }
-
-        // Water material UBO — upload before the shared HOST→FRAGMENT
-        // barrier below. The per-draw push constant now carries only the
-        // compact array index, so this is the sole material-data upload.
-        if let Some(ref mut water) = self.water {
-            if let Err(error) = water.upload_params(&self.device, frame, water_commands) {
-                log::warn!("water parameter upload failed: {error}; skipping water this frame");
-            }
-        }
-
-        // Bloom UBOs — #2037 / GPU-D5-01: every down/upsample param UBO
-        // is a pure function of the (construction-time-fixed) mip
-        // extents, so `BloomPipeline::new` writes them once and a
-        // resize (which rebuilds the whole pipeline) re-enters that
-        // same write. No per-frame upload needed here; only the
-        // input_view descriptor update (which depends on the
-        // render-pass HDR output) stays in dispatch().
-
-        let selected_ray_probe_request = self
-            .pending_selected_ray_probe
-            .map(|request| (request.generation, request.pixel));
-        if let Err(error) = self.scene_buffers.arm_selected_ray_probe(
-            &self.device,
+            effective_vp,
+            pvp,
+            inv_vp_arr,
+            render_origin,
+            previous_camera_position,
+            fsr_frame,
+        } = self.assemble_camera_and_lights(
             frame,
-            selected_ray_probe_request,
-        ) {
-            log::warn!("selected-ray probe arm failed: {error}");
-        } else {
-            armed_selected_ray_probe_generation =
-                selected_ray_probe_request.map(|(generation, _)| generation);
-        }
+            lights,
+            fog_volumes,
+            view_proj,
+            camera_pos,
+            input_render_origin,
+            ambient_color,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            sky_params,
+            dof,
+            frame_time_delta_ms,
+        )?;
+        let vp = &effective_vp;
 
-        // Barrier: make the instance SSBO host write (and any remaining
-        // light/camera/bone host writes) visible to the vertex + fragment
-        // shaders in the upcoming render pass. Also covers all UBO host
-        // writes uploaded above (composite, SVGF, TAA, bloom) — each
-        // write completes before this barrier and the barrier's dst_stage
-        // includes COMPUTE_SHADER, so every post-render-pass compute
-        // consumer that had its UBO folded here needs no per-dispatch
-        // HOST→COMPUTE barrier. Fold history: composite (#909 /
-        // REN-D1-NEW-03), SVGF (#961 / REN-D10-NEW-04), TAA + bloom
-        // (#1397 / NCPS-03). Required by Vulkan spec even for
-        // HOST_COHERENT memory.
-        // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
-        // SAFETY: `cmd` is recording. This single HOST_WRITE -> VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT barrier makes every host-written buffer this frame (instance SSBO + composite/SVGF/TAA/bloom UBOs) visible to its shader consumers before the render pass; required by spec even for HOST_COHERENT memory.
-        unsafe {
-            memory_barrier(
-                &self.device,
-                cmd,
-                vk::PipelineStageFlags::HOST,
-                vk::AccessFlags::HOST_WRITE,
-                vk::PipelineStageFlags::VERTEX_SHADER
-                    | vk::PipelineStageFlags::FRAGMENT_SHADER
-                    | vk::PipelineStageFlags::COMPUTE_SHADER
-                    | vk::PipelineStageFlags::DRAW_INDIRECT,
-                vk::AccessFlags::SHADER_READ
-                    | vk::AccessFlags::SHADER_WRITE
-                    | vk::AccessFlags::UNIFORM_READ
-                    | vk::AccessFlags::INDIRECT_COMMAND_READ,
-            );
-        }
+        self.dispatch_skin_and_cluster(
+            cmd,
+            frame,
+            draw_commands,
+            bone_world,
+            bind_inverse_pending_uploads,
+            pose_dirty,
+            &instance_map,
+            tlas_t0,
+            &mut t,
+        );
 
-        // #1255 / Phase C of #1210 — clear the water-caustic
-        // accumulator BEFORE the main render pass begins. water.frag
-        // (the live Phase D/E consumer) atomic-adds into it during
-        // the main pass; the post-render-pass barrier below
-        // sequences those writes to the composite read.
-        // Skipped when the accumulator failed init (None) — graceful
-        // degrade matches the rest of the renderer's optional-pipeline
-        // policy.
-        if let Some(ref wca) = self.water_caustic_accum {
-            // SAFETY: `cmd` is recording and outside the render pass; `wca` (water-caustic accumulator) and its per-frame buffer are live. The clear is recorded before the main pass that atomic-adds into it, and the post-pass barrier sequences those writes to the composite read.
-            unsafe { wca.clear_pre_render_pass(&self.device, cmd, frame) };
-        }
+        let lights = frame_lights.as_slice();
+        let BuildInstancesOutput {
+            gpu_instances,
+            previous_models,
+            mut current_rigid_models,
+            batches,
+            ui_instance_idx,
+            caustic_history_valid,
+        } = self.build_and_upload_instances(
+            cmd,
+            frame,
+            draw_commands,
+            render_origin,
+            camera_cut,
+            camera_static,
+            pose_dirty,
+            lights,
+            &instance_map,
+            ui_texture_handle,
+            materials,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            sky_params,
+            camera_pos,
+            inv_vp_arr,
+            underwater,
+            water_commands,
+            &mut armed_selected_ray_probe_generation,
+            &mut t,
+        );
 
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(
@@ -3944,7 +2011,7 @@ impl VulkanContext {
 
         // Present.
         let swapchains = [self.swapchain_state.swapchain];
-        let image_indices = [image_index];
+        let image_indices = [img as u32];
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_semaphores)
             .swapchains(&swapchains)
@@ -4069,7 +2136,7 @@ impl VulkanContext {
 /// Rebase an absolute column-major model matrix into the current camera-relative
 /// render-origin space. Current and previous rigid transforms use the same
 /// origin so [`origin_corrected_prev_view_proj`] can project both coherently.
-fn rebase_model_matrix(
+pub(super) fn rebase_model_matrix(
     model: &[f32; 16],
     render_origin: byroredux_core::math::Vec3,
 ) -> scene_buffer::GpuPreviousModel {
@@ -4095,7 +2162,7 @@ fn rebase_model_matrix(
 /// composition), so motion vectors stay valid across 4096-unit grid
 /// crossings; without it the jump frame produced full-screen garbage motion
 /// vectors (TAA aliasing flash + SVGF full-frame history drop).
-fn origin_corrected_prev_view_proj(
+pub(super) fn origin_corrected_prev_view_proj(
     prev_vp: &[f32; 16],
     prev_origin: [f32; 3],
     cur_origin: [f32; 3],

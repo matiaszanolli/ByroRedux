@@ -525,7 +525,9 @@ fn instance_map_kept_count_is_capped_the_same_way_the_ssbo_is() {
 /// skinned refits reach it unpublished.
 #[test]
 fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
-    let src = include_str!("../../context/draw.rs");
+    // #3282 / TD1-2026-08-24-01 — the TLAS build this test pins moved from
+    // `draw.rs` into `dispatch_skin_and_cluster.rs`.
+    let src = include_str!("../../context/dispatch_skin_and_cluster.rs");
 
     let barrier = src
         .find("vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR")

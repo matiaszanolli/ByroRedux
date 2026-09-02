@@ -1451,7 +1451,9 @@ mod tests {
     /// `skin_compute_dispatch_guards_descriptor_writes_on_cache_miss`.
     #[test]
     fn palette_dispatch_buffers_are_sourced_from_scene_buffers_not_mesh_registry() {
-        let src = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — the construction site moved from
+        // `draw.rs` into `dispatch_skin_and_cluster.rs`.
+        let src = include_str!("context/dispatch_skin_and_cluster.rs");
         let call_site = src
             .find("super::super::skin_compute::PaletteDispatchBuffers {")
             .expect("PaletteDispatchBuffers construction site moved or was removed");
@@ -1506,7 +1508,9 @@ mod tests {
     /// fails the regression-test predicate.
     #[test]
     fn draw_frame_resets_descriptor_writes_counter() {
-        let src = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — the frame-start reset moved from
+        // `draw.rs` into `sync_and_acquire_frame.rs`.
+        let src = include_str!("context/sync_and_acquire_frame.rs");
         assert!(
             src.contains("reset_descriptor_writes_counter"),
             "draw_frame must reset both skin compute descriptor-writes \
@@ -1653,7 +1657,9 @@ mod device_address_caching_tests {
     /// value that could have been resolved once at creation.
     #[test]
     fn draw_frame_resolves_no_buffer_device_addresses() {
-        const DRAW: &str = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — the per-instance loop this guards moved
+        // from `draw.rs` into `build_and_upload_instances.rs`.
+        const DRAW: &str = include_str!("context/build_and_upload_instances.rs");
         assert!(
             !DRAW.contains("get_buffer_device_address"),
             "#3469: `draw.rs` queries a buffer device address again. Addresses \
@@ -1670,7 +1676,9 @@ mod device_address_caching_tests {
     /// wrong-geometry bug.
     #[test]
     fn cached_skin_address_read_stays_behind_the_backing_filter() {
-        const DRAW: &str = include_str!("context/draw.rs");
+        // #3282 / TD1-2026-08-24-01 — this call site moved from `draw.rs`
+        // into `build_and_upload_instances.rs`.
+        const DRAW: &str = include_str!("context/build_and_upload_instances.rs");
         let filter = DRAW
             .find("skin_slot_backs_mesh(slot.vertex_count()")
             .expect("#2402 backing filter must still guard the skinned-draw address");

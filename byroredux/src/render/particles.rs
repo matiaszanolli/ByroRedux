@@ -26,26 +26,7 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use super::camera::FrustumPlanes;
-use super::f32_sortable_u32;
-
-/// Quantization step count for the particle color fade (#1795 / D2-NEW-02).
-///
-/// `material_hash` hashes `emissive_color`/`emissive_mult` at raw f32 bit
-/// precision with no tolerance, so a continuous `age/life` fade produces a
-/// distinct hash — and therefore a fresh `GpuMaterial` upload — for nearly
-/// every live particle every frame, inverting the ~97% dedup-hit rate the
-/// #781 fast path assumes. Snapping the fade parameter to 32 steps before
-/// the color LERP collapses same-emitter particles onto ≤32 materials; the
-/// banding is imperceptible on additive billboards.
-const COLOR_FADE_STEPS: f32 = 32.0;
-
-/// Snap a `0.0..=1.0` fade parameter to [`COLOR_FADE_STEPS`] discrete
-/// steps, so distinct particles at nearly-identical ages collapse onto
-/// the same quantized value and therefore the same `material_hash`.
-/// #1795 / D2-NEW-02.
-fn quantize_fade(t: f32) -> f32 {
-    (t * COLOR_FADE_STEPS).round() / COLOR_FADE_STEPS
-}
+use super::{f32_sortable_u32, quantize_fade};
 
 /// Preserve the per-particle spawn-size variation while applying the
 /// emitter's authored grow/fade curve as a scale. The old path interpolated
@@ -321,8 +302,8 @@ pub(super) fn emit_particles(
 mod quantize_fade_tests {
     use super::{
         emit_particles, particle_roll, particle_size_at_age, quantize_fade, FrustumPlanes,
-        COLOR_FADE_STEPS,
     };
+    use super::super::COLOR_FADE_STEPS;
     use byroredux_core::ecs::{ParticleEmitter, TextureHandle, World};
     use byroredux_core::math::{Mat4, Vec3};
     use byroredux_renderer::MaterialTable;
