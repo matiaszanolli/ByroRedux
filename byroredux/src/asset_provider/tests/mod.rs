@@ -6,6 +6,7 @@
 
 mod archive_siblings;
 mod bgsm_merge;
+mod facegen_texture_fallback;
 mod material_flags;
 mod material_path;
 mod starfield_mat;

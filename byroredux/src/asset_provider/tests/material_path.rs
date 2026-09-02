@@ -304,6 +304,51 @@ fn normalize_texture_path_strips_leading_data_forward_slash() {
     assert_eq!(out.as_ref(), "textures/landscape/foo.dds");
 }
 
+/// `is_facegen_tool_path` (#3555) — the exact vanilla Oblivion case:
+/// `facegen\ears\human\EarsHuman.dds`, canonicalised (via
+/// `normalize_texture_path`, which always prepends `textures\`) to
+/// `textures\facegen\ears\human\EarsHuman.dds`, must be recognised.
+#[test]
+fn is_facegen_tool_path_matches_the_canonicalised_ears_case() {
+    let canonical = normalize_texture_path("facegen\\ears\\human\\EarsHuman.dds");
+    assert!(is_facegen_tool_path(&canonical));
+}
+
+/// `is_facegen_tool_path` — an already-canonical path (the shape
+/// `derive_present_normal_map_path` passes in) is recognised the same way,
+/// without needing a second `normalize_texture_path` pass.
+#[test]
+fn is_facegen_tool_path_matches_an_already_canonical_path() {
+    assert!(is_facegen_tool_path(
+        "textures\\facegen\\ears\\human\\EarsHuman_n.dds"
+    ));
+}
+
+/// `is_facegen_tool_path` — a real `textures\facegendata\…` per-NPC path
+/// (the FO4/Skyrim prebaked FaceGen convention, `npc_spawn.rs`'s
+/// `prebaked_facegen_tint_path`) must NOT match: `facegendata` shares a
+/// prefix with `facegen` but is a distinct, real archive folder that
+/// already resolves correctly and must not be routed through the basename
+/// scan fallback.
+#[test]
+fn is_facegen_tool_path_rejects_the_real_facegendata_folder() {
+    assert!(!is_facegen_tool_path(
+        "textures\\actors\\character\\facegendata\\facetint\\skyrim.esm\\00013bbe.dds"
+    ));
+    assert!(!is_facegen_tool_path(
+        "textures\\facegendata\\facetint\\skyrim.esm\\00013bbe.dds"
+    ));
+}
+
+/// `is_facegen_tool_path` — an ordinary, unrelated texture path is not a
+/// false positive.
+#[test]
+fn is_facegen_tool_path_rejects_an_unrelated_path() {
+    assert!(!is_facegen_tool_path(
+        "textures\\characters\\imperial\\earshuman.dds"
+    ));
+}
+
 /// Rule 3: `/` → `\` separator normalisation. Live case from BGSM
 /// `root_material_path` fields authored with forward slashes.
 #[test]

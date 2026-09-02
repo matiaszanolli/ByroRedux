@@ -175,11 +175,12 @@ cannot diff its own baseline:
 | Metric | Source | Direction |
 |--------|--------|-----------|
 | `entities_total` | `bench:` `entities=` (or `stats` `Entities:`) | within ±2 % (tolerance — see note) |
-| `tex_missing_unique_paths` | `tex.missing` summary line | ≤ baseline |
+| `tex_missing_base_color` | `tex.missing` — count of `[slot=base_color]` lines | ≤ baseline (strict gate) |
+| `tex_missing_all_slots` | `tex.missing` summary line (`N unique missing textures:`) | **informational** — report Δ, never gating (see note) |
 | `mesh_cache_failed_count` | `mesh.cache failed` summary | ≤ baseline |
 | `light_count_point` | `light.dump` `LightSource emitters: N` | exact match |
 | `light_count_directional` | `light.dump` — count of `kind=Directional` rows in the emitter dump | exact match |
-| `skin_pool_live` | `.engine.log` last `skin=L/M+S` (`L`) | ≤ baseline |
+| `skin_pool_live` | `.engine.log` last `skin=L/M+S` (`L`) | **advisory** — report Δ, gate only via `skin_pool_max`/`skin_pool_overflow_attempts` below (see note) |
 | `skin_pool_max` | `.engine.log` last `skin=L/M+S` (`M`) | exact match |
 | `skin_pool_overflow_attempts` | `.engine.log` last `skin=L/M+S` (`S`) | `== 0` (exact) |
 | `bench_fps_p50` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
@@ -219,9 +220,9 @@ Quirks of these scalars (don't fabricate around them):
   — `fnv` 30, `fo3` 11, `oblivion` 8, `skyrim_se` 28, `fo4` 685. All five
   baselined cells are interiors and every one dumps
   `directional_color = [0.000, 0.000, 0.000]`.
-  **Baselines carry no `light_count_point` row yet** — the values above were
-  observed, not captured as gates. Add the row on the next `--regen` capture
-  rather than hand-writing it into a `.tsv`.
+  **Baselines carry a `light_count_point` row as of the #3556 (RT-10) fix** —
+  the values above are what got committed; a future `--regen` still overwrites
+  them like any other row.
 
 > **`bench_fps_*` / `bench_frame_*_ms` is advisory, not gating (RT-2, #1701).**
 > `wall_fps` and the per-frame `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms`
@@ -254,6 +255,32 @@ Quirks of these scalars (don't fabricate around them):
 > clean pass, not a finding. Regenerate the baseline with `--regen` only when a
 > deliberate change moves it past the band.
 
+> **`tex_missing_unique_paths` is split into two rows (#3550, RT-4).**
+> `ff177576` (#3349, "per-slot tex.missing") widened `tex.missing` from
+> walking only `TextureHandle` (base-color) to walking the full 26-role
+> `MaterialTextureHandles` set, but the single `tex_missing_unique_paths`
+> gate still compared the new 26-slot total against baselines captured on
+> the 1-slot surface — a metric-definition change disguised as a
+> regression, on every game, every sweep. `tex_missing_base_color` (count
+> the `[slot=base_color]` bucket lines) is the strict, baseline-comparable
+> gate; `tex_missing_all_slots` (the command's own summary count) is
+> informational only — report its Δ, never raise it as a finding, since no
+> pre-#3349 baseline is comparable to it and it has no history to diff
+> against yet. Once `tex_missing_all_slots` has its own regenerated
+> baseline lineage across a few sweeps, promote it to a real gate.
+
+> **`skin_pool_live` is advisory, `skin_pool_max` / `skin_pool_overflow_attempts`
+> are the hard gate (#3553, RT-7).** `skin_pool_live` (entities currently
+> holding a bone-palette slot) tracks total scene population the same way
+> `entities_total` does, and creeps for the same benign reason — it is not
+> an independent signal of a `SkinSlotPool` (#1284) problem. The pair that
+> actually carries that signal is `skin_pool_overflow_attempts` (must stay
+> `0` — any nonzero value means at least one entity is rendering in bind
+> pose for lack of a slot) and `skin_pool_max` (the cap itself, exact
+> match). Report `skin_pool_live`'s Δ for visibility; only
+> `skin_pool_overflow_attempts` moving off `0` or `skin_pool_max` changing
+> gates.
+
 Write the extracted scalars to `/tmp/audit/runtime/<game>-<cell>.current.tsv`.
 
 ## Phase 4: Diff against baseline
@@ -269,9 +296,10 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
   metric, severity per magnitude (see `_audit-severity.md`). `bench_fps_*` is
   **advisory** (see the Phase 3 note): list its Δ in the report table but never
   emit it as a finding regardless of magnitude.
-  - HIGH: `tex_missing_*` or `mesh_cache_failed_count` grew;
-    `skin_pool_overflow_attempts` moved off `0` (any spill = at least one
-    entity rendering in bind pose for lack of a slot — pin to #1284
+  - HIGH: `tex_missing_base_color` or `mesh_cache_failed_count` grew (NOT
+    `tex_missing_all_slots` — informational, never a finding, see the Phase 3
+    note); `skin_pool_overflow_attempts` moved off `0` (any spill = at least
+    one entity rendering in bind pose for lack of a slot — pin to #1284
     `SkinSlotPool` cap + descriptor-pool fix, `a3c2836a`).
   - MEDIUM: any other count moved against direction.
   - LOW: count drift within ±5 % on a tolerance metric.
@@ -287,17 +315,17 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 
    | Game | Cell | Status | Δ vs baseline |
    |------|------|--------|---------------|
-   | fnv  | FreesideAtomicWrangler | PASS              | tex_missing 1→1, fps 141→143 |
-   | fo4  | InstituteBioScience    | REGRESSION (HIGH) | tex_missing_unique 1→6 (+5)   |
+   | fnv  | FreesideAtomicWrangler | PASS              | tex_missing_base_color 1→1, fps 141→143 |
+   | fo4  | InstituteBioScience    | REGRESSION (HIGH) | tex_missing_base_color 1→6 (+5)   |
    | fo3  | MegatonPlayerHouse     | BASELINE CREATED  | first run                     |
 
    ## Findings
 
-   ### RT-1: tex_missing_unique_paths grew on fo4 InstituteBioScience
+   ### RT-1: tex_missing_base_color grew on fo4 InstituteBioScience
    - **Severity**: HIGH
    - **Game**: fo4
    - **Cell**: InstituteBioScience
-   - **Baseline**: 1 unique missing texture path
+   - **Baseline**: 1 unique missing base-color texture path
    - **Current**: 6 (+5)
    - **Suggested Fix**: re-run `tex.missing entities` to find the responsible
      REFRs; bisect against the last commit touching the resolution chain

@@ -70,6 +70,59 @@ impl Archive {
             Archive::Ba2(a) => a.list_files(),
         }
     }
+
+    /// Find an entry by basename only, ignoring its stored folder path,
+    /// case-insensitively. Unlike [`Self::list_files`] (deliberately blank
+    /// for BSA — see that method's doc), this uses each backend's own real
+    /// file table: `BsaArchive::list_files` and `Ba2Archive::list_files`
+    /// both return every entry.
+    ///
+    /// #3555 — exists for exactly one caller, [`is_facegen_tool_path`]'s
+    /// fallback in `texture.rs`. A handful of vanilla Oblivion head-part
+    /// NIFs author a FaceGen SDK export-tool path instead of the real
+    /// archive path; there is no cheap hashed key for "the file with this
+    /// name, wherever it actually lives," so this does a full scan. Only
+    /// call it on an already-confirmed miss from the normal `contains`/
+    /// `extract` fast path — never as a general-purpose lookup.
+    pub(crate) fn find_by_basename(&self, path: &str) -> Option<String> {
+        let basename = path.rsplit(['\\', '/']).next().unwrap_or(path);
+        let files: Vec<&str> = match self {
+            Archive::Bsa(a) => a.list_files(),
+            Archive::Ba2(a) => a.list_files(),
+        };
+        files
+            .into_iter()
+            .find(|f| {
+                f.rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(f)
+                    .eq_ignore_ascii_case(basename)
+            })
+            .map(str::to_string)
+    }
+}
+
+/// Whether a canonicalised texture path carries a FaceGen SDK
+/// export-tool prefix instead of a real Data-relative one.
+///
+/// #3555 — three vanilla Oblivion head-part NIFs (`earshuman.nif`,
+/// `earshighelf.nif`, `earswoodelf.nif`) author their shared ear texture as
+/// `facegen\ears\human\EarsHuman.dds` — the FaceGen tool's own internal
+/// export path, baked in uncorrected — instead of the archive's real
+/// `textures\characters\imperial\earshuman.dds`. Verified against the
+/// shipped BSAs directly (not guessed): unlike the `.spt` `trees\` case
+/// (#3528), where `trees\` really is a top-level archive folder, there is
+/// **no** `facegen\` folder anywhere in Oblivion's archives — rooting or
+/// unrooting the prefix can never resolve it. [`TextureProvider`]'s
+/// basename fallback is the correct recovery instead.
+///
+/// Checked on the already-canonicalised key (post [`normalize_texture_path`],
+/// which always prepends `textures\` when missing) so it matches regardless
+/// of whether the caller's `path` was the raw authored string or an
+/// already-canonical one — see the two call sites in `texture.rs`.
+pub(crate) fn is_facegen_tool_path(canonical: &str) -> bool {
+    let bytes = canonical.as_bytes();
+    bytes.len() >= 17 && bytes[..17].eq_ignore_ascii_case(b"textures\\facegen\\")
 }
 
 impl byroredux_ui::ScaleformResourceProvider for Archive {

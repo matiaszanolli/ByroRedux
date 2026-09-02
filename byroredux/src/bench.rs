@@ -514,13 +514,17 @@ mod runtime_baseline_schema_tests {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
-    /// Every metric the README's schema block lists. `bench_fps_*` are
-    /// advisory (RT-2 / #1701) but still stored, so they must still be
-    /// present and parseable.
+    /// Every metric the README's schema block lists. `bench_fps_*` and
+    /// `tex_missing_all_slots`/`skin_pool_live` are advisory (RT-2 / #1701,
+    /// RT-4 / #3550, RT-7 / #3553) but still stored, so they must still be
+    /// present and parseable — this test checks presence/numeric-ness only,
+    /// not gating direction (that's `SKILL.md` §Phase 3/4's job).
     const REQUIRED_METRICS: &[&str] = &[
         "entities_total",
-        "tex_missing_unique_paths",
+        "tex_missing_base_color",
+        "tex_missing_all_slots",
         "mesh_cache_failed_count",
+        "light_count_point",
         "light_count_directional",
         "skin_pool_live",
         "skin_pool_max",

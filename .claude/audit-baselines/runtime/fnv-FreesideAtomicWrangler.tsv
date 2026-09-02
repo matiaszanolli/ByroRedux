@@ -1,3 +1,4 @@
+# regenerated: 2026-09-02 (#3550/#3553/#3554/#3556 — RT-4/RT-7/RT-8/RT-10 metric-contract fixes)
 # regenerated: 2026-08-26 (#3288 — see docs/audits/AUDIT_RUNTIME_2026-08-26.md)
 #
 # entities_total 9271 -> 7174 (-22.6%) is NOT a regression. Bisected to
@@ -34,17 +35,43 @@
 # with the same justification; it keeps a residual batch-split regression
 # (96 -> 164) while its gpu_calls half recovered (9 -> 9).
 #
+#
+# ── 2026-09-02: #3550 (RT-4) + #3553 (RT-7) + #3554 (RT-8) + #3556 (RT-10) ──
+#
+# #3550/RT-4 — `tex_missing_unique_paths` split into `tex_missing_base_color`
+# (strict gate) + `tex_missing_all_slots` (informational); see
+# `.claude/commands/audit-runtime/SKILL.md` §Phase 3. base_color stays 1
+# (EXACT PASS per the RT-4 evidence table); all_slots is a new,
+# non-gating row at 6 (the full 26-role surface, #3349).
+#
+# #3553/RT-7 — skin_pool_live 206 -> 217 (+11). skin_pool_overflow_attempts
+# stays 0 and skin_pool_max stays 1364 on all five games — no pressure on
+# the #1284 cap, continuing the documented benign-creep line. Regenerated;
+# now advisory, not a hard gate (see skin_pool_max/overflow_attempts).
+#
+# #3554/RT-8 — entities_total 7174 -> 7342 (+2.34%, just past the +/-2%
+# band). bench_draws_cmds is unchanged, so this is body-count creep, not
+# render-load growth — the same benign pattern as the #1705/RT-3 note
+# below. Regenerated.
+#
+# #3556/RT-10 — light_count_directional was derived from block presence
+# (always 1, could never fail — #3424); the real per-emitter dump measures
+# 0 directional / 30 point. Added light_count_point, corrected
+# light_count_directional.
+#
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
-entities_total              7174
-tex_missing_unique_paths    1
-mesh_cache_failed_count     0
-light_count_directional     1
-skin_pool_live              206
-skin_pool_max               1364
-skin_pool_overflow_attempts 0
-bench_fps_p50               65.4
-bench_fps_avg               65.4
-bench_draws_cmds            2110
-bench_draws_batches         109
-bench_draws_gpu_calls       26
+entities_total	7342
+tex_missing_base_color	1
+tex_missing_all_slots	6
+mesh_cache_failed_count	0
+light_count_point	30
+light_count_directional	0
+skin_pool_live	217
+skin_pool_max	1364
+skin_pool_overflow_attempts	0
+bench_fps_p50	65.4
+bench_fps_avg	65.4
+bench_draws_cmds	2110
+bench_draws_batches	109
+bench_draws_gpu_calls	26

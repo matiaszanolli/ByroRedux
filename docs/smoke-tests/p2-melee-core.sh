@@ -331,7 +331,14 @@ debug_commands "save.info $P2_SAVE_SLOT" "$save_info_log" \
     || fail "could not verify slot $P2_SAVE_SLOT"
 grep -Fq "slot $P2_SAVE_SLOT: VALID" "$save_info_log" \
     || fail "slot $P2_SAVE_SLOT did not decode as a valid container"
-grep -Eq '^  Inventory: [0-9]+ rows' "$save_info_log" \
+# #3552 (RT-6) — no `^` anchor: `byro-dbg` prints `DebugResponse::Value`
+# via `serde_json::to_string_pretty` (`tools/byro-dbg/src/display.rs`),
+# which renders the whole multi-line save.info dump as ONE JSON-escaped
+# line (`\n` stays a literal two-char escape). An anchored match can never
+# find "  Inventory: N rows" mid-line, so this gate was permanently red on
+# a healthy build. Every other assertion in this script already avoids the
+# anchor by using `grep -F`.
+grep -Eq '  Inventory: [0-9]+ rows' "$save_info_log" \
     || fail "slot $P2_SAVE_SLOT carries no Inventory column — gate 5 is unassertable"
 echo "smoke[p2-melee-core]: PASS -- slot $P2_SAVE_SLOT written and verified with an Inventory column"
 

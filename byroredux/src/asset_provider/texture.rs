@@ -35,7 +35,7 @@ impl TextureProvider {
                 return Some(data);
             }
         }
-        None
+        self.extract_via_facegen_tool_path_fallback(&normalized)
     }
 
     /// Whether a texture exists, without extracting or decompressing it.
@@ -44,6 +44,28 @@ impl TextureProvider {
         self.texture_archives
             .iter()
             .any(|archive| archive.contains(normalized.as_ref()))
+            || (is_facegen_tool_path(&normalized)
+                && self
+                    .texture_archives
+                    .iter()
+                    .any(|archive| archive.find_by_basename(&normalized).is_some()))
+    }
+
+    /// #3555 — see [`is_facegen_tool_path`]'s doc. Only tried once every
+    /// archive's canonical-key lookup above has already missed, so it
+    /// changes nothing for a texture that already resolves normally.
+    fn extract_via_facegen_tool_path_fallback(&self, normalized: &str) -> Option<Vec<u8>> {
+        if !is_facegen_tool_path(normalized) {
+            return None;
+        }
+        for archive in &self.texture_archives {
+            if let Some(key) = archive.find_by_basename(normalized) {
+                if let Ok(data) = archive.extract(&key) {
+                    return Some(data);
+                }
+            }
+        }
+        None
     }
 
     /// Extract a mesh (NIF) from mesh archives. Path is normalised

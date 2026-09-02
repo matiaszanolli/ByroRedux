@@ -1,3 +1,4 @@
+# regenerated: 2026-09-02 (#3550/#3556 — RT-4/RT-10 metric-contract fixes)
 # regenerated: 2026-08-27 (#3005 — partial: draw-split + entities only)
 # corrected:   2026-08-28 (#3407 — the draw-split rows below were wrong)
 #
@@ -65,12 +66,30 @@
 # light_count_directional) were NOT re-captured in this session and are
 # carried forward from 2026-06-14 unchanged — do not read them as re-verified.
 #
+#
+# ── 2026-09-02: #3550 (RT-4) + #3556 (RT-10) ────────────────────────────────
+#
+# #3550/RT-4 — `tex_missing_unique_paths` split into `tex_missing_base_color`
+# (strict gate) + `tex_missing_all_slots` (informational); see
+# `.claude/commands/audit-runtime/SKILL.md` §Phase 3. base_color stays 0
+# (EXACT PASS per the RT-4 evidence table, re-confirmed live 2026-08-30 —
+# this row is no longer stale despite the PARTIAL REFRESH note above);
+# all_slots is a new, non-gating row at 12 (the full 26-role surface, #3349).
+#
+# #3556/RT-10 — light_count_directional was derived from block presence
+# (always 1, could never fail — #3424); the real per-emitter dump measures
+# 0 directional / 11 point. Added light_count_point, corrected
+# light_count_directional. Both are freshly captured, unlike the PARTIAL
+# REFRESH note above (which predates the per-emitter dump entirely).
+#
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
 entities_total	3493
-tex_missing_unique_paths	0
+tex_missing_base_color	0
+tex_missing_all_slots	12
 mesh_cache_failed_count	3
-light_count_directional	1
+light_count_point	11
+light_count_directional	0
 skin_pool_live	7
 skin_pool_max	1364
 skin_pool_overflow_attempts	0

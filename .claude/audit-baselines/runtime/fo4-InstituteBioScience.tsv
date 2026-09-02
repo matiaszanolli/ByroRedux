@@ -1,3 +1,4 @@
+# regenerated: 2026-09-02 (#3550/#3553/#3554/#3556 — RT-4/RT-7/RT-8/RT-10 metric-contract fixes)
 # regenerated: 2026-08-22 (#3006 — RT-2026-08-16-07 root-caused and re-baselined)
 # RT-1/#2215: bench_draws_gpu_calls 40 -> 42, bench_draws_batches 272 -> 753.
 # Same draw_sort_key depth-primary-for-alpha-over mechanism as the FNV regen
@@ -40,11 +41,41 @@
 # bench_draws_batches/gpu_calls both fell substantially (753->296, 42->16);
 # both metrics only gate on an INCREASE past baseline x1.1, so this is a
 # clean pass, not a finding.
-entities_total	18256
-tex_missing_unique_paths	1
+#
+# ── 2026-09-02: #3550 (RT-4) + #3553 (RT-7) + #3554 (RT-8) + #3556 (RT-10) ──
+#
+# #3550/RT-4 — `tex_missing_unique_paths` split into `tex_missing_base_color`
+# (strict gate) + `tex_missing_all_slots` (informational); see
+# `.claude/commands/audit-runtime/SKILL.md` §Phase 3. base_color stays 1
+# (EXACT PASS per the RT-4 evidence table); all_slots is a new, non-gating
+# row at 16 (the full 26-role surface, #3349).
+#
+# #3553/RT-7 — skin_pool_live 248 -> 299 (+51). skin_pool_overflow_attempts
+# stays 0 and skin_pool_max stays 1364 — no pressure on the #1284 cap,
+# continuing the benign-creep line already documented above. Regenerated;
+# now advisory, not a hard gate (see skin_pool_max/overflow_attempts).
+#
+# #3554/RT-8 — entities_total 18256 -> 19399 (+6.26%, past the +/-2% band).
+# Re-verified benign the same way as every prior entry in this file:
+# bench_draws_cmds moved only +1.3% over the same window, i.e. proportional
+# body-count creep, not render-load growth — the mirror of the RT-8 issue's
+# own skyrim_se counter-example, where cmds moved +5.0% alongside its
+# entities spike and was NOT treated as benign. `bench_draws_cmds` itself
+# is left at its last directly-measured value (3949) since this pass did
+# not re-capture the draw split, only entities_total + skin_pool_live per
+# the mitigating-evidence check above.
+#
+# #3556/RT-10 — light_count_directional was derived from block presence
+# (always 1, could never fail — #3424); the real per-emitter dump measures
+# 0 directional / 685 point. Added light_count_point, corrected
+# light_count_directional.
+entities_total	19399
+tex_missing_base_color	1
+tex_missing_all_slots	16
 mesh_cache_failed_count	0
-light_count_directional	1
-skin_pool_live	248
+light_count_point	685
+light_count_directional	0
+skin_pool_live	299
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
 bench_fps_p50	44.3

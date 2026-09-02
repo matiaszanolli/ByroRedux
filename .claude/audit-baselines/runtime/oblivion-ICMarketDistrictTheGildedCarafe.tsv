@@ -1,3 +1,4 @@
+# regenerated: 2026-09-02 (#3550/#3555/#3556 — RT-4/RT-9/RT-10 metric-contract fixes)
 # regenerated: 2026-08-26 (#3288 — first live re-run since 2026-08-06; see
 # docs/audits/AUDIT_RUNTIME_2026-08-26.md)
 # entities_total 701 -> 705 (+0.6%, inside the +/-2% band) and the draw split
@@ -6,17 +7,50 @@
 # one of the five baselines regenerated this pass. fnv / fo3 / skyrim_se each
 # carry a metric past a gating threshold in the WRONG direction and were left
 # stale on purpose, so the evidence survives (RT-2026-08-26-01/02/04).
+#
+# ── 2026-09-02: #3550 (RT-4) + #3555 (RT-9) + #3556 (RT-10) ────────────────
+#
+# #3550/RT-4 — `tex_missing_unique_paths` split into `tex_missing_base_color`
+# (strict gate, comparable across the #3349 metric-surface widening) and
+# `tex_missing_all_slots` (informational). See
+# `.claude/commands/audit-runtime/SKILL.md` §Phase 3.
+#
+# #3555/RT-9 — `tex_missing_base_color` was 1 (the only genuine tex_missing
+# delta across all five 2026-08-30-audited cells): `facegen\ears\human\
+# earshuman.dds` (and its `_n` sibling) missed. Root-caused against the real
+# archives (not guessed) — there is no `facegen\` top-level folder anywhere
+# in Oblivion's BSAs; three vanilla NIFs (`earshuman.nif`, `earshighelf.nif`,
+# `earswoodelf.nif`) bake in a FaceGen SDK export-tool path instead of the
+# real `textures\characters\imperial\earshuman.dds`. Fixed with a
+# basename-fallback lookup gated on the `textures\facegen\` prefix
+# (`byroredux/src/asset_provider/{archive,texture}.rs`). Verified end-to-end
+# against the real archive
+# (`cargo test -p byroredux --bin byroredux facegen_tool_path -- --ignored`,
+# both the diffuse and `_n` sibling now resolve) — row regenerated to 0.
+#
+# #3556/RT-10 — `light_count_directional` was derived from the mere presence
+# of a `CellLightingRes` block, so it read a constant `1` on all five games
+# and could never fail (#3424). The engine now parses the real per-emitter
+# dump (`5f970bae`). Oblivion measures 2 directional / 8 point emitters
+# (the two synthetic directionals are RT-11's finding, not a regression
+# here). Added the new `light_count_point` row and corrected
+# `light_count_directional` to the measured value.
+#
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
-entities_total              705
-tex_missing_unique_paths    0
-mesh_cache_failed_count     0
-light_count_directional     1
-skin_pool_live              4
-skin_pool_max               1364
-skin_pool_overflow_attempts 0
-bench_fps_p50               377.6
-bench_fps_avg               377.6
-bench_draws_cmds            325
-bench_draws_batches         20
-bench_draws_gpu_calls       2
+# skin_pool_live: advisory, not a hard gate — see skin_pool_max /
+# skin_pool_overflow_attempts instead (#3553 / RT-7).
+entities_total	705
+tex_missing_base_color	0
+tex_missing_all_slots	8
+mesh_cache_failed_count	0
+light_count_point	8
+light_count_directional	2
+skin_pool_live	4
+skin_pool_max	1364
+skin_pool_overflow_attempts	0
+bench_fps_p50	377.6
+bench_fps_avg	377.6
+bench_draws_cmds	325
+bench_draws_batches	20
+bench_draws_gpu_calls	2
