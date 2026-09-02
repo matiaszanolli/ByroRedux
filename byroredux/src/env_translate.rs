@@ -1127,8 +1127,16 @@ fn precipitation_from_weather(classification: u8) -> f32 {
 fn precipitation_components(classification: u8) -> [f32; 2] {
     use byroredux_plugin::esm::records::weather::{WTHR_RAINY, WTHR_SNOW};
     [
-        if classification & WTHR_RAINY != 0 { 1.0 } else { 0.0 },
-        if classification & WTHR_SNOW != 0 { 1.0 } else { 0.0 },
+        if classification & WTHR_RAINY != 0 {
+            1.0
+        } else {
+            0.0
+        },
+        if classification & WTHR_SNOW != 0 {
+            1.0
+        } else {
+            0.0
+        },
     ]
 }
 
@@ -1168,8 +1176,8 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
             .unwrap_or(0) as f32
             / 255.0
     };
-    let authored_moon_glare = max_table_rgb(&wthr.skyrim_moon_glare)
-        .max(max_table_rgb(&wthr.skyrim_extra_colors[6]));
+    let authored_moon_glare =
+        max_table_rgb(&wthr.skyrim_moon_glare).max(max_table_rgb(&wthr.skyrim_extra_colors[6]));
     let moon_glare = if authored_moon_glare > 0.001 {
         authored_moon_glare
     } else {
@@ -1334,6 +1342,7 @@ const FB_LOWER: [f32; 3] = [
     FB_HORIZON[2] * 0.3,
 ];
 const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
+const FB_STARS_COLOR: [f32; 3] = [0.75, 0.8, 1.0];
 /// Sunrise-begin / sunrise-end / sunset-begin / sunset-end breakpoints used
 /// whenever no climate record drives them — the **one** declaration (#2812).
 ///
@@ -1424,6 +1433,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         (SKY_AMBIENT, FB_AMBIENT),
         (SKY_SUNLIGHT, FB_SUNLIGHT),
         (SKY_SUN, FB_SUN_COLOR),
+        (byroredux_plugin::esm::records::weather::SKY_STARS, FB_STARS_COLOR),
         // #541 — `weather_system` also reads SKY_LOWER for the below-horizon
         // branch; synthetic value matches the procedural `FB_LOWER`.
         (SKY_LOWER, FB_LOWER),
@@ -3257,6 +3267,20 @@ mod tests {
             wind_speed: 7,
             ..Default::default()
         };
+        w.classification = byroredux_plugin::esm::records::weather::WTHR_RAINY
+            | byroredux_plugin::esm::records::weather::WTHR_AURORA_ALWAYS_VISIBLE;
+        w.sun_glare = 128;
+        w.thunder_frequency = 64;
+        w.lightning_color = [10, 20, 30];
+        w.wind_direction = 90;
+        w.cloud_layer_velocities[0] = [32, 16];
+        w.cloud_layer_colors[0][1] = SkyColor {
+            r: 80,
+            g: 90,
+            b: 100,
+            a: 200,
+        };
+        w.cloud_layer_alphas[0][1] = 0.5;
         w.sky_colors[SKY_UPPER][TOD_DAY] = SkyColor {
             r: 255,
             g: 0,
@@ -3275,6 +3299,21 @@ mod tests {
             crate::fog::FogMedium::from_legacy_ramp(300.0, 400.0, Some(0.4))
         );
         assert_eq!(wd.wind_speed, 7);
+        assert_eq!(wd.cloud_layer_velocities[0], [32.0 / 255.0, 16.0 / 255.0]);
+        assert_eq!(
+            wd.cloud_layer_colors[0][1],
+            [80.0 / 255.0, 90.0 / 255.0, 100.0 / 255.0]
+        );
+        assert_eq!(wd.cloud_layer_alphas[0][1], 0.5);
+        assert_eq!(wd.weather.precipitation, [1.0, 0.0]);
+        assert!((wd.weather.thunder_frequency - 64.0 / 255.0).abs() < 1e-6);
+        assert_eq!(
+            wd.weather.lightning_color,
+            [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0]
+        );
+        assert!(wd.weather.wind_direction[0].abs() < 1e-6);
+        assert!((wd.weather.wind_direction[1] - 1.0).abs() < 1e-6);
+        assert_eq!(wd.weather.aurora_intensity, 1.0);
         // No climate → the validated `climate_tod_hours` fallback.
         assert_eq!(wd.tod_hours, [6.0, 10.0, 18.0, 22.0]);
         // FNV/FO3/Oblivion WTHR (no DALC sub-records) → None.

@@ -2174,7 +2174,9 @@ fn raster_pom_marcher_samples_height_at_an_explicit_lod() {
          before the divergent march loop"
     );
     assert!(
-        sampling.contains("float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha, float lod)"),
+        sampling.contains(
+            "float sampleParallaxHeight(uint idx, vec2 uv, bool heightInAlpha, float lod)"
+        ),
         "sampleParallaxHeight must take an explicit lod parameter"
     );
     assert!(
@@ -2284,10 +2286,12 @@ fn bindless_index_bits_are_masked_at_every_textures_subscript() {
 }
 
 fn collect_shader_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
     for entry in entries {
-        let path = entry.unwrap_or_else(|e| panic!("dir entry under {}: {e}", dir.display())).path();
+        let path = entry
+            .unwrap_or_else(|e| panic!("dir entry under {}: {e}", dir.display()))
+            .path();
         if path.is_dir() {
             collect_shader_files(&path, out);
             continue;

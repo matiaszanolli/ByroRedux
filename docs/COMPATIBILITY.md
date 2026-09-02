@@ -152,13 +152,13 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[x]` | Time-of-day interpolation | — | |
 | `[x]` | CLMT climate records | — | Sunrise/sunset/moon-phase hours parsed |
 | `[x]` | Procedural sky fallback | ✖ | For cells with no WTHR |
-| `[~]` | WTHR record coverage | Full weather | Precipitation, lightning, aurora, sun-glare fields **parsed**; only color/cloud/fog **rendered** |
+| `[~]` | WTHR record coverage | Full weather | DATA timing/frequency/lightning/wind controls, PNAM/JNAM cloud tint/motion, Skyrim extra sky tables and 32 cloud paths parsed; four portable cloud layers are rendered across all games |
 | `[~]` | REGN region records | Region weather/sound/objects | Dispatched; region-driven ambient + fog density pending |
 | `[~]` | Interior fill lighting split | — | 0.6× unshadowed fill; heuristic, not data-driven |
-| `[ ]` | Moons & stars | Skydome moon/star planes | Weather record has the fields; nothing renders them |
-| `[ ]` | Precipitation (rain / snow particles) | Particle weather | |
-| `[ ]` | Aurora (Skyrim) | — | |
-| `[ ]` | Lightning strikes | — | |
+| `[x]` | Moons & stars | Skydome moon/star planes | Procedural moon disc and hashed star field use the live TOD palette and WTHR star colour |
+| `[x]` | Precipitation (rain / snow particles) | Particle weather | Exterior screen-space rain/snow overlay with separate streak/flake behaviour; close impacts remain authored particle work |
+| `[x]` | Aurora (Skyrim) | — | Procedural animated aurora gated by Skyrim WTHR aurora flags |
+| `[x]` | Lightning strikes | — | Deterministic weather-frequency flashes with authored DATA lightning colour |
 
 ## 6. World, cells & streaming
 

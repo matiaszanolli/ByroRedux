@@ -2449,7 +2449,7 @@ impl VolumetricsPipeline {
     /// slot's fence. One frame-slot of latency is deliberate: it removes a
     /// GPU->CPU stall while still following the advected/cooled field rather
     /// than the current source primitive.
-pub fn append_combustion_surface_lights(
+    pub fn append_combustion_surface_lights(
         &mut self,
         device: &ash::Device,
         frame: usize,
@@ -2497,7 +2497,8 @@ pub fn append_combustion_surface_lights(
         let mut suppressed_candidates = 0;
         self.combustion_light_candidates.clear();
         for (bin_index, moment) in moments.into_iter().enumerate() {
-            let Some(mut light) = combustion_light_from_moment(bin_index, moment, camera_world) else {
+            let Some(mut light) = combustion_light_from_moment(bin_index, moment, camera_world)
+            else {
                 continue;
             };
             if nuclear_source_active {

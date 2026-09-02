@@ -244,7 +244,9 @@ fn flat_import_skips_modifier_only_blocks() {
 /// `effect_shader_capture_tests::fully_populated_fo4_shader`'s shape at a
 /// smaller scale (that helper lives in a sibling test module and isn't
 /// `pub`, so this is a separate minimal fixture, not a duplicate).
-fn effect_shader_with_greyscale_texture(path: &str) -> crate::blocks::shader::BSEffectShaderProperty {
+fn effect_shader_with_greyscale_texture(
+    path: &str,
+) -> crate::blocks::shader::BSEffectShaderProperty {
     use crate::blocks::base::NiObjectNETData;
     crate::blocks::shader::BSEffectShaderProperty {
         net: NiObjectNETData {
@@ -332,8 +334,7 @@ fn hierarchical_import_carries_effect_shader_greyscale_lut_to_the_particle_emitt
     assert!(
         em.effect_shader
             .as_ref()
-            .is_some_and(|data| data.greyscale_texture.as_deref()
-                == Some("fx/palette_grad.dds")),
+            .is_some_and(|data| data.greyscale_texture.as_deref() == Some("fx/palette_grad.dds")),
         "effect_shader.greyscale_texture must also survive — it's what \
          pack_effect_shader_flags reads to set the palette bits"
     );

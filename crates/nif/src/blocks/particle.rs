@@ -924,8 +924,8 @@ pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Resul
         BlockRef::NULL
     };
     let _modifier_name = stream.read_string()?; // NiPSysModifierCtlr
-    // Data (Ref) — until=10.1.0.103, the legacy slot the interpolator ref
-    // above replaced since=10.1.0.104. Was never read at any version. (#3174)
+                                                // Data (Ref) — until=10.1.0.103, the legacy slot the interpolator ref
+                                                // above replaced since=10.1.0.104. Was never read at any version. (#3174)
     let _data_ref = if stream.version().has_keyframe_controller_data() {
         stream.read_block_ref()?
     } else {

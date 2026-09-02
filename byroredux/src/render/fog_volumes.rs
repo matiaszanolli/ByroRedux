@@ -403,7 +403,10 @@ mod tests {
             nuclear_explosion.profile_params,
             [FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR, 0.125, 8.0, 0.0]
         );
-        assert_ne!(oil_explosion.profile_params[0], nuclear_explosion.profile_params[0]);
+        assert_ne!(
+            oil_explosion.profile_params[0],
+            nuclear_explosion.profile_params[0]
+        );
         assert!(
             linear_srgb_luminance(explosion.emission_temperature[..3].try_into().unwrap())
                 < linear_srgb_luminance([24.0, 12.0, 2.0]),

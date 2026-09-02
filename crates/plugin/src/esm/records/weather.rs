@@ -348,7 +348,12 @@ impl Default for WeatherRecord {
             sun_damage: 0,
             classification: 0,
             cloud_layer_velocities: [[0; 2]; 4],
-            cloud_layer_colors: [[SkyColor { r: 255, g: 255, b: 255, a: 255 }; 4]; 4],
+            cloud_layer_colors: [[SkyColor {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 255,
+            }; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             transition_delta: 0,
             precipitation_fade: [0; 2],
@@ -881,12 +886,18 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             }
             b"MNAM" if sub.data.len() >= 4 => {
                 record.skyrim_precipitation_effect = Some(u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
                 ]));
             }
             b"NNAM" if sub.data.len() >= 4 => {
                 record.skyrim_visual_effect = Some(u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
                 ]));
             }
             sub_type if skyrim_cloud_layer_index(sub_type).is_some() => {
@@ -1795,8 +1806,14 @@ mod tests {
         assert_eq!(w.visual_effect_window, [3, 4]);
         assert_eq!(w.wind_direction, 180);
         assert_eq!(w.wind_direction_range, 20);
-        assert_eq!(w.skyrim_cloud_textures[10].as_deref(), Some("sky\\cloud10.dds"));
-        assert_eq!(w.skyrim_cloud_textures[31].as_deref(), Some("sky\\cloud31.dds"));
+        assert_eq!(
+            w.skyrim_cloud_textures[10].as_deref(),
+            Some("sky\\cloud10.dds")
+        );
+        assert_eq!(
+            w.skyrim_cloud_textures[31].as_deref(),
+            Some("sky\\cloud31.dds")
+        );
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\cloud0.dds"));
         assert_eq!(w.skyrim_precipitation_effect, Some(0x1234_5678));
         assert_eq!(w.skyrim_visual_effect, Some(0x8765_4321));

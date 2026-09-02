@@ -10,11 +10,15 @@
 //! (`crates/nif/src/import/walk/mod.rs`).
 
 use super::super::*;
-use crate::blocks::controller::{NiPreSplitDataController, NiSingleInterpController, NiTimeControllerBase};
+use crate::blocks::controller::{
+    NiPreSplitDataController, NiSingleInterpController, NiTimeControllerBase,
+};
 use crate::blocks::interpolator::{BoolInterpolatorKind, NiBoolInterpolator};
 use crate::types::BlockRef;
 
-use super::{identity_transform, make_ni_node, make_ni_tri_shape, make_tri_shape_data, scene_from_blocks};
+use super::{
+    identity_transform, make_ni_node, make_ni_tri_shape, make_tri_shape_data, scene_from_blocks,
+};
 
 /// `NiPreSplitDataController` typed as `NiVisController` (RTTI-preserved
 /// since #2562/#2563) — the same block shape a real embedded visibility

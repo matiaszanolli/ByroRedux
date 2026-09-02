@@ -907,7 +907,11 @@ pub(super) fn build_composite_params(
         ],
         weather_aurora: [
             sky_params.weather.aurora_intensity,
-            if sky_params.weather.aurora_follows_sun { 1.0 } else { 0.0 },
+            if sky_params.weather.aurora_follows_sun {
+                1.0
+            } else {
+                0.0
+            },
             0.0,
             0.0,
         ],

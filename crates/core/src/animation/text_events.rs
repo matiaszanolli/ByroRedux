@@ -60,46 +60,64 @@ pub fn visit_text_key_events(
                 visit(*t, *sym);
             }
         }
-    } else if curr_time == prev_time
+        return;
+    }
+
+    // #3034 / #3704 — a `CycleType::Loop` step whose applied delta spans at
+    // least one full `duration` traverses one or more complete periods that
+    // the ordinary (prev, curr] / wrap scan below can't see on its own — that
+    // scan only examines the *final* partial leg, which is empty (`prev ==
+    // curr`) for a step landing on an exact multiple of `duration` and
+    // otherwise only covers the residual beyond the last full period. Fire
+    // every key once first — the semantically defensible reading for
+    // "how many periods you can't individually enumerate" a single frame
+    // affords — then still fall through to the normal scan below for the
+    // final partial crossing.
+    //
+    // #3034 originally gated this on `curr_time == prev_time` (an exact
+    // multiple only); #3704 widens it to `applied_delta.abs() >= duration`
+    // so a hitch bigger than one period but NOT an exact multiple (e.g.
+    // duration=0.5, delta=1.3 → 2.6 periods, landing on a residual, not
+    // back on the start instant) no longer silently drops every key outside
+    // that residual window. A key inside the residual window now fires
+    // twice this tick — once for the full periods it was genuinely also
+    // crossed during, once for the precise final leg — rather than once.
+    //
+    // #3470 — `applied_delta != 0.0` is still required: `prev == curr` (or,
+    // now, a large `|delta|`) on a Loop clip needs a genuine non-zero applied
+    // delta to mean "periods elapsed" rather than "the playhead didn't move".
+    // `App::resumed` runs the scheduler once with `dt == 0.0` to prime
+    // transform state; without this guard every looping clip in the scene
+    // would fire ALL of its text keys on that priming tick, before any had
+    // been crossed. `AnimationTextKeyEvents` feeds
+    // `cinematic_animation_event_system`, which writes `QuestStageState`, so
+    // a spurious batch could advance quest state at launch. It also covers
+    // the `speed == 0` / `frequency == 0` paused-clip variants, and the
+    // worse latent one: `finite_time_delta` folds a non-finite
+    // `dt * speed * frequency` to `0.0` (#3258), so a clip reaching the
+    // registry with a NaN/inf frequency from a producer other than
+    // `anim_convert` would otherwise have fired every key on EVERY frame,
+    // forever.
+    //
+    // `Clamp` and `Reverse` never reach this arm: `Clamp` saturates at
+    // `duration` and stays there on every subsequent frame (a *settled*
+    // clip, not a wrap — see `clamped_completion_key_fires_once_at_clip_end`,
+    // which must stay silent there), and `Reverse`'s ping-pong fold is
+    // handled entirely by the `reverse_direction` arm above.
+    if applied_delta.abs() >= clip.duration
         && applied_delta != 0.0
         && clip.duration > 0.0
         && clip.cycle_type == CycleType::Loop
     {
-        // #3034 — a `CycleType::Loop` clip whose delta this step is an
-        // exact multiple of `duration` (one full period, or several) wraps
-        // back onto the same instant it started from. The normal forward
-        // scan below is the half-open window `(prev, curr]`, which is empty
-        // when `prev == curr`, so every text key silently drops instead of
-        // firing for the period(s) actually traversed. Fire each key once —
-        // the semantically defensible reading for a single frame — rather
-        // than falling through to the empty result.
-        //
-        // #3470 — `applied_delta != 0.0` is what makes that reading correct.
-        // `prev == curr` on a Loop clip has TWO causes and the pair carries no
-        // period count: N full periods (this arm), or the playhead simply not
-        // moving. The zero case is live — `App::resumed` runs the scheduler
-        // once with `dt == 0.0` to prime transform state, so pre-fix every
-        // looping clip in the scene fired ALL of its text keys on the priming
-        // tick, before any had been crossed. `AnimationTextKeyEvents` feeds
-        // `cinematic_animation_event_system`, which writes `QuestStageState`,
-        // so a spurious batch could advance quest state at launch. It also
-        // covers the `speed == 0` / `frequency == 0` paused-clip variants, and
-        // the worse latent one: `finite_time_delta` folds a non-finite
-        // `dt * speed * frequency` to `0.0` (#3258), so a clip reaching the
-        // registry with a NaN/inf frequency from a producer other than
-        // `anim_convert` would otherwise have fired every key on EVERY frame,
-        // forever.
-        //
-        // `Clamp` and `Reverse` never reach this arm: `Clamp` saturates at
-        // `duration` and stays there on every subsequent frame (a *settled*
-        // clip, not a wrap — see `clamped_completion_key_fires_once_at_clip_end`,
-        // which must stay silent there), and `Reverse`'s ping-pong fold is
-        // handled entirely by the `reverse_direction` arm above.
         for (t, sym) in &clip.text_keys {
             visit(*t, *sym);
         }
-    } else if curr_time >= prev_time {
-        // Normal forward progression (no wrap).
+    }
+
+    if curr_time >= prev_time {
+        // Normal forward progression (no wrap) — also the final partial
+        // leg's window for the widened arm above (empty when `prev ==
+        // curr`, matching the pre-#3704 exact-multiple behavior exactly).
         for (t, sym) in &clip.text_keys {
             if *t > prev_time && *t <= curr_time {
                 visit(*t, *sym);

@@ -341,7 +341,7 @@ fn ni_texturing_property_apply_mode_decodes_from_both_homes() {
         }
         data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
         data.push(0); // base slot: has = 0 (read unconditionally)
-        // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                      // #3623 — dark/detail/gloss/glow are also read unconditionally.
         data.push(0); // dark has = 0
         data.push(0); // detail has = 0
         data.push(0); // gloss has = 0
@@ -495,8 +495,8 @@ fn parse_ni_texturing_property_with_zero_shader_maps() {
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
     data.push(0); // glow has = 0
-    // num_decals = texture_count.saturating_sub(8) = 0 → no loop.
-    // num_shader_textures = 0 as u32 (4 bytes).
+                  // num_decals = texture_count.saturating_sub(8) = 0 → no loop.
+                  // num_shader_textures = 0 as u32 (4 bytes).
     data.extend_from_slice(&0u32.to_le_bytes());
 
     let expected_len = data.len();
@@ -544,7 +544,7 @@ fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
     data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0 → None
-    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                  // #3623 — dark/detail/gloss/glow are also read unconditionally.
     data.push(0); // dark has = 0
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
@@ -588,7 +588,7 @@ fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
     data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0 → None
-    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                  // #3623 — dark/detail/gloss/glow are also read unconditionally.
     data.push(0); // dark has = 0
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
@@ -629,7 +629,7 @@ fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
     data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1 (present pre-20.1.0.1)
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
     data.push(0); // base_texture has = 0
-    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                  // #3623 — dark/detail/gloss/glow are also read unconditionally.
     data.push(0); // dark has = 0
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
@@ -778,7 +778,7 @@ fn parse_ni_texturing_property_shader_map_consumes_has_transform_bool() {
     // `has: bool` even when texture_count=0. Set it to 0 for an empty
     // slot entry.
     data.push(0); // base_texture has = 0
-    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                  // #3623 — dark/detail/gloss/glow are also read unconditionally.
     data.push(0); // dark has = 0
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
@@ -859,7 +859,7 @@ fn parse_ni_texturing_property_with_empty_shader_map_entry() {
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     data.extend_from_slice(&1u32.to_le_bytes()); // texture_count
     data.push(0); // base_texture has=0
-    // #3623 — dark/detail/gloss/glow are also read unconditionally.
+                  // #3623 — dark/detail/gloss/glow are also read unconditionally.
     data.push(0); // dark has = 0
     data.push(0); // detail has = 0
     data.push(0); // gloss has = 0
@@ -1245,8 +1245,8 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
                                                  // `Has Base Texture` — the version-dependent bool, 32-bit here.
     data.extend_from_slice(&0u32.to_le_bytes()); // base_texture has = false (32-bit)
-    // #3623 — dark/detail/gloss/glow are also read unconditionally, and at
-    // this pre-4.1.0.1 version the bool is 32-bit like base_texture's.
+                                                 // #3623 — dark/detail/gloss/glow are also read unconditionally, and at
+                                                 // this pre-4.1.0.1 version the bool is 32-bit like base_texture's.
     data.extend_from_slice(&0u32.to_le_bytes()); // dark has = false (32-bit)
     data.extend_from_slice(&0u32.to_le_bytes()); // detail has = false (32-bit)
     data.extend_from_slice(&0u32.to_le_bytes()); // gloss has = false (32-bit)

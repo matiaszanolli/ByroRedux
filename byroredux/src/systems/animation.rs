@@ -915,8 +915,13 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     if let Some(name) = clip.accum_root_name {
                         if best.as_ref().is_none_or(|(_, bw, ..)| ew > *bw) {
-                            best =
-                                Some((name, ew, layer.clip_handle, layer.prev_time, layer.local_time));
+                            best = Some((
+                                name,
+                                ew,
+                                layer.clip_handle,
+                                layer.prev_time,
+                                layer.local_time,
+                            ));
                         }
                     }
                 }

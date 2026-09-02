@@ -9,8 +9,8 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::World;
 
 use crate::components::{
-    CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes,
-    WeatherSkyState, WeatherTransitionRes,
+    CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherSkyState,
+    WeatherTransitionRes,
 };
 
 /// Build the time-of-day key table used by the `weather_system`
@@ -446,7 +446,11 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
     let mut cloud_tints = [[0.0; 4]; 4];
     for layer in 0..4 {
         for channel in 0..4 {
-            cloud_tints[layer][channel] = lerp1(a.cloud_tints[layer][channel], b.cloud_tints[layer][channel], t);
+            cloud_tints[layer][channel] = lerp1(
+                a.cloud_tints[layer][channel],
+                b.cloud_tints[layer][channel],
+                t,
+            );
         }
     }
     let direction = [
@@ -483,7 +487,10 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
 fn lerp_cloud_velocities(a: [[f32; 2]; 4], b: [[f32; 2]; 4], t: f32) -> [[f32; 2]; 4] {
     let mut result = [[0.0; 2]; 4];
     for layer in 0..4 {
-        result[layer] = [lerp1(a[layer][0], b[layer][0], t), lerp1(a[layer][1], b[layer][1], t)];
+        result[layer] = [
+            lerp1(a[layer][0], b[layer][0], t),
+            lerp1(a[layer][1], b[layer][1], t),
+        ];
     }
     result
 }

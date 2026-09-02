@@ -703,7 +703,7 @@ fn ni_psys_modifier_ctlr_family_reads_data_ref_below_10_1_0_104() {
         bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
         bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
         bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
-        // No interpolator ref at this version (since=10.1.0.104).
+                                                         // No interpolator ref at this version (since=10.1.0.104).
         bytes.extend_from_slice(&0u32.to_le_bytes()); // modifier_name (empty)
         bytes.extend_from_slice(&77i32.to_le_bytes()); // Data ref (until=10.1.0.103)
         let mut stream = NifStream::new(&bytes, &header);
@@ -857,8 +857,8 @@ fn bs_named_float_interp_controller_family_preserves_rtti() {
         bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
         bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
         bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
-        // NiSingleInterpController: interpolator_ref (4 B) — the only
-        // field any of these three carry beyond the base.
+                                                         // NiSingleInterpController: interpolator_ref (4 B) — the only
+                                                         // field any of these three carry beyond the base.
         bytes.extend_from_slice(&42i32.to_le_bytes());
         assert_eq!(bytes.len(), 30);
         let mut stream = NifStream::new(&bytes, &header);
@@ -875,11 +875,7 @@ fn bs_named_float_interp_controller_family_preserves_rtti() {
             .unwrap_or_else(|| {
                 panic!("{type_name} did not downcast to BsNamedFloatInterpController")
             });
-        assert_eq!(
-            ctrl.base.interpolator_ref.index(),
-            Some(42),
-            "{type_name}"
-        );
+        assert_eq!(ctrl.base.interpolator_ref.index(), Some(42), "{type_name}");
         assert_eq!(stream.position() as usize, bytes.len(), "{type_name}");
     }
 }

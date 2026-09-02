@@ -144,7 +144,9 @@ fn import_sequence_dispatches_keyframe_controller_alias() {
 #[test]
 fn import_sequence_dispatches_bs_named_float_controllers() {
     use crate::blocks::controller::NiControllerSequence;
-    use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType, NiFloatData, NiFloatInterpolator};
+    use crate::blocks::interpolator::{
+        FloatKey, KeyGroup, KeyType, NiFloatData, NiFloatInterpolator,
+    };
     use crate::types::BlockRef;
 
     // Scene layout: [0] NiFloatData (one key), [1] NiFloatInterpolator → [0].

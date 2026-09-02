@@ -1133,7 +1133,9 @@ mod tests {
         let src = include_str!("../../shaders/water.frag");
         assert!(
             src.contains("float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.38")
-                && src.contains("float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.38")
+                && src.contains(
+                    "float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.38"
+                )
                 && src.contains("The old 0.45/0.30/0.15 prefix"),
             "procedural water gradients must differentiate the same weighted height field"
         );

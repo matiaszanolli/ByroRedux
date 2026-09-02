@@ -701,11 +701,8 @@ pub(crate) fn setup_scene(
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
     if combustion_lab {
-        let (pos, target) = crate::cornell::setup_combustion_lab_scene(
-            world,
-            ctx,
-            combustion_lab_nuclear,
-        );
+        let (pos, target) =
+            crate::cornell::setup_combustion_lab_scene(world, ctx, combustion_lab_nuclear);
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

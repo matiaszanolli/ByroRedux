@@ -300,10 +300,10 @@ pub(super) fn emit_particles(
 
 #[cfg(test)]
 mod quantize_fade_tests {
+    use super::super::COLOR_FADE_STEPS;
     use super::{
         emit_particles, particle_roll, particle_size_at_age, quantize_fade, FrustumPlanes,
     };
-    use super::super::COLOR_FADE_STEPS;
     use byroredux_core::ecs::{ParticleEmitter, TextureHandle, World};
     use byroredux_core::math::{Mat4, Vec3};
     use byroredux_renderer::MaterialTable;

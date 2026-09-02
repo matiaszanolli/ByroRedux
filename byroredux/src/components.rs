@@ -2152,9 +2152,7 @@ mod fx_hash_guard_tests {
             "NameIndex.map must stay FxHashMap (#3677)"
         );
         assert!(
-            src.contains(
-                "pub(crate) map: FxHashMap<EntityId, FxHashMap<FixedString, EntityId>>"
-            ),
+            src.contains("pub(crate) map: FxHashMap<EntityId, FxHashMap<FixedString, EntityId>>"),
             "SubtreeCache.map must stay FxHashMap (#3677)"
         );
     }

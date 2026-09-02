@@ -187,7 +187,8 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatK
                  (linearise on sample, hardware re-encode on write) depends \
                  on an sRGB swapchain attachment — expect the overlay to \
                  render too dark or washed out on this surface.",
-                fallback.format, fallback.color_space,
+                fallback.format,
+                fallback.color_space,
             );
             fallback
         })
@@ -326,8 +327,14 @@ mod tests {
     #[test]
     fn choose_surface_format_prefers_srgb_b8g8r8a8_when_present() {
         let formats = [
-            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
-            fmt(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(
+                vk::Format::B8G8R8A8_UNORM,
+                vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            ),
+            fmt(
+                vk::Format::R8G8B8A8_UNORM,
+                vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            ),
             fmt(vk::Format::B8G8R8A8_SRGB, vk::ColorSpaceKHR::SRGB_NONLINEAR),
         ];
         let chosen = choose_surface_format(&formats);
@@ -342,8 +349,14 @@ mod tests {
     #[test]
     fn choose_surface_format_falls_back_to_the_first_advertised_format() {
         let formats = [
-            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
-            fmt(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(
+                vk::Format::B8G8R8A8_UNORM,
+                vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            ),
+            fmt(
+                vk::Format::R8G8B8A8_UNORM,
+                vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            ),
         ];
         let chosen = choose_surface_format(&formats);
         assert_eq!(chosen.format, vk::Format::B8G8R8A8_UNORM);
@@ -356,8 +369,14 @@ mod tests {
     #[test]
     fn choose_surface_format_requires_both_the_format_and_the_color_space() {
         let formats = [
-            fmt(vk::Format::B8G8R8A8_SRGB, vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT),
-            fmt(vk::Format::B8G8R8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            fmt(
+                vk::Format::B8G8R8A8_SRGB,
+                vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
+            ),
+            fmt(
+                vk::Format::B8G8R8A8_UNORM,
+                vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            ),
         ];
         let chosen = choose_surface_format(&formats);
         assert_eq!(
@@ -366,6 +385,9 @@ mod tests {
             "falls back to formats[0] — the mismatched-color-space entry \
              must not have matched the preference"
         );
-        assert_eq!(chosen.color_space, vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT);
+        assert_eq!(
+            chosen.color_space,
+            vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
+        );
     }
 }

@@ -948,8 +948,8 @@ pub(super) fn collect_static_mesh_draws(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::COLOR_FADE_STEPS;
+    use super::*;
 
     #[test]
     fn lod_shadow_reach_includes_intersecting_sphere() {

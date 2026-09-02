@@ -293,7 +293,9 @@ pub(crate) fn combustion_state_from_particle(
     emitter: &ParticleEmitter,
     start_time_seconds: f32,
 ) -> Option<CombustionState> {
-    volume.profile.is_explosion()
+    volume
+        .profile
+        .is_explosion()
         .then(|| CombustionState::one_shot(start_time_seconds, emitter.life))
 }
 
@@ -645,11 +647,9 @@ fn explosion_profile_for_particle(
     // `MiniNuke`) rather than the event. Treat a nuclear signature as an
     // explosion signature too, while keeping explicit smoke/fog names above
     // authoritative.
-    let nuclear = has_nuclear_explosion_token(host_name)
-        || has_nuclear_explosion_token(texture_path);
-    let explosion = has_explosion_token(host_name)
-        || has_explosion_token(texture_path)
-        || nuclear;
+    let nuclear =
+        has_nuclear_explosion_token(host_name) || has_nuclear_explosion_token(texture_path);
+    let explosion = has_explosion_token(host_name) || has_explosion_token(texture_path) || nuclear;
     if !explosion {
         return None;
     }
@@ -821,20 +821,16 @@ mod tests {
         }
         let ordinary = fire_volume_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
             .expect("ordinary flame");
-        let gas = fire_volume_from_particle(
-            "NaturalGasFlame01",
-            &ParticleEmitter::torch_flame(),
-        )
-        .expect("gas flame");
+        let gas = fire_volume_from_particle("NaturalGasFlame01", &ParticleEmitter::torch_flame())
+            .expect("gas flame");
         assert_eq!(
             gas.emission_temperature_k,
             CombustionRegime::GAS_FLAME.temperature_k()
         );
         assert!(gas.emission_temperature_k > ordinary.emission_temperature_k);
-        let ordinary_blue_ratio = ordinary.emissive_radiance[2]
-            / ordinary.emissive_radiance[0].max(1.0e-6);
-        let gas_blue_ratio =
-            gas.emissive_radiance[2] / gas.emissive_radiance[0].max(1.0e-6);
+        let ordinary_blue_ratio =
+            ordinary.emissive_radiance[2] / ordinary.emissive_radiance[0].max(1.0e-6);
+        let gas_blue_ratio = gas.emissive_radiance[2] / gas.emissive_radiance[0].max(1.0e-6);
         assert!(
             gas_blue_ratio > ordinary_blue_ratio,
             "gas flame must shift blueward: ordinary {:?}, gas {:?}",

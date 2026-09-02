@@ -255,8 +255,12 @@ pub(crate) const fn combustion_lab_manifest() -> CombustionLabManifest {
 
 /// Exact opt-in flag for the game-data-independent combustion harness.
 pub(crate) fn combustion_lab_mode(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| matches!(arg.as_str(), "--combustion-lab" | "--combustion-lab-nuclear"))
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--combustion-lab" | "--combustion-lab-nuclear"
+        )
+    })
 }
 
 /// Select the high-yield variant of the combustion lab while retaining the
@@ -1912,7 +1916,9 @@ mod tests {
         assert!(!combustion_lab_mode(&args(&["--combustion-lab-extra"])));
         assert!(combustion_lab_mode(&args(&["--combustion-lab"])));
         assert!(combustion_lab_mode(&args(&["--combustion-lab-nuclear"])));
-        assert!(combustion_lab_nuclear_mode(&args(&["--combustion-lab-nuclear"])));
+        assert!(combustion_lab_nuclear_mode(&args(&[
+            "--combustion-lab-nuclear"
+        ])));
         assert!(!combustion_lab_nuclear_mode(&args(&["--combustion-lab"])));
     }
 

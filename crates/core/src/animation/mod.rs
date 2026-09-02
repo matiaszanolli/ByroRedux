@@ -550,7 +550,9 @@ mod tests {
         let mut registry = AnimationClipRegistry::new();
         let handle = registry.add(clip);
         let mut stack = AnimationStack::new();
-        stack.layers.push(AnimationLayer::new(handle).with_blend_in(1.0));
+        stack
+            .layers
+            .push(AnimationLayer::new(handle).with_blend_in(1.0));
 
         let mut previous_weight = stack.layers[0].effective_weight();
         assert_eq!(previous_weight, 0.0, "blend-in must still start at zero");
@@ -858,6 +860,54 @@ mod tests {
         // must still fire exactly once, not N times (ONCE-EACH).
         let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false, 6.0f32);
         assert_eq!(events, vec!["hit", "end"]);
+    }
+
+    /// Regression: #3704 / ECS-2026-08-30-D10-04. #3034's arm only fired
+    /// when `curr_time == prev_time` — an EXACT multiple of `duration`. A
+    /// hitch bigger than one period but landing on a residual (not an
+    /// exact multiple) fell through that arm entirely and only scanned the
+    /// small residual window, silently dropping any key outside it.
+    ///
+    /// Worked example from the issue: `duration = 0.5`, `prev = 0.1`,
+    /// `delta = 1.3` (2.6 periods) → `local_time = 1.4 % 0.5 = 0.4`. Two
+    /// keys: `"a"` at 0.2 (inside the residual window `(0.1, 0.4]`) and
+    /// `"b"` at 0.45 (outside it, crossed only during the full periods).
+    /// Pre-fix, `"b"` never fires — the bug this pins.
+    #[test]
+    fn text_key_multi_period_hitch_with_residual_still_fires_every_key() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 0.5,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: FxHashMap::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(0.2, pool.intern("a")), (0.45, pool.intern("b"))],
+        };
+
+        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4, false, 1.3f32);
+
+        assert!(
+            events.contains(&"b".to_string()),
+            "a key outside the residual window but inside a full period \
+             traversed by the hitch must still fire — got {events:?}"
+        );
+        // "a" lies inside the residual window too, so it fires twice: once
+        // from the full-periods pass, once from the final partial leg —
+        // both real crossings, not a double-count of the same one.
+        assert_eq!(
+            events,
+            vec!["a".to_string(), "b".to_string(), "a".to_string()],
+            "got {events:?}"
+        );
     }
 
     /// #3470 — the `Loop` sibling of the `Clamp` guard below, and the case
