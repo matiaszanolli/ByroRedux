@@ -434,6 +434,11 @@ fn sample_weather_sky(
             lerp1(alpha_a, alpha_b, t),
         ];
     }
+    sampled.stars_color = lerp3(
+        weather.sky_colors[byroredux_plugin::esm::records::weather::SKY_STARS][slot_a],
+        weather.sky_colors[byroredux_plugin::esm::records::weather::SKY_STARS][slot_b],
+        t,
+    );
     sampled
 }
 
@@ -457,6 +462,7 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
         ],
         thunder_frequency: lerp1(a.thunder_frequency, b.thunder_frequency, t),
         lightning_color: lerp3(a.lightning_color, b.lightning_color, t),
+        stars_color: lerp3(a.stars_color, b.stars_color, t),
         sun_glare: lerp1(a.sun_glare, b.sun_glare, t),
         moon_glare: lerp1(a.moon_glare, b.moon_glare, t),
         aurora_intensity: lerp1(a.aurora_intensity, b.aurora_intensity, t),
@@ -470,6 +476,7 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
         } else {
             [1.0, 0.0]
         },
+        wind_speed: lerp1(a.wind_speed, b.wind_speed, t),
     }
 }
 
@@ -498,6 +505,12 @@ fn cloud_scroll_vectors(velocities: [[f32; 2]; 4], fallback_rate: f32) -> [[f32;
         }
     }
     result
+}
+
+#[inline]
+fn advance_cloud_scroll(scroll: &mut [f32; 2], velocity: [f32; 2], dt: f32) {
+    scroll[0] = (scroll[0] + velocity[0] * dt).rem_euclid(1.0);
+    scroll[1] = (scroll[1] + velocity[1] * dt).rem_euclid(1.0);
 }
 
 /// #993 — Skyrim DALC ambient cube TOD interpolation. The DALC array has
@@ -891,16 +904,10 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // REPEAT makes the wrap invisible.
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
         let scroll_vectors = cloud_scroll_vectors(cloud_layer_velocities, cloud_scroll_rate);
-        let scrolls = [
-            &mut clouds.cloud_scroll,
-            &mut clouds.cloud_scroll_1,
-            &mut clouds.cloud_scroll_2,
-            &mut clouds.cloud_scroll_3,
-        ];
-        for (scroll, velocity) in scrolls.into_iter().zip(scroll_vectors) {
-            scroll[0] = (scroll[0] + velocity[0] * dt).rem_euclid(1.0);
-            scroll[1] = (scroll[1] + velocity[1] * dt).rem_euclid(1.0);
-        }
+        advance_cloud_scroll(&mut clouds.cloud_scroll, scroll_vectors[0], dt);
+        advance_cloud_scroll(&mut clouds.cloud_scroll_1, scroll_vectors[1], dt);
+        advance_cloud_scroll(&mut clouds.cloud_scroll_2, scroll_vectors[2], dt);
+        advance_cloud_scroll(&mut clouds.cloud_scroll_3, scroll_vectors[3], dt);
     }
 
     // Update CellLightingRes — exterior cells only. Interior cells own

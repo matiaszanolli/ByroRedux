@@ -182,6 +182,36 @@ impl Component for AnimationStack {
 /// Advance all layers in a stack, handling blend-in/out timing.
 pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistry, dt: f32) {
     for layer in &mut stack.layers {
+        // Blend timers are wall-clock, not clip-clock: `play()` schedules a
+        // layer's blend-out unconditionally, whether or not that layer is
+        // `playing` (a paused layer can still be cross-faded away). They
+        // must therefore tick regardless of `playing`, or a paused layer
+        // scheduled for fade-out sits at `blend_out_remaining ==
+        // blend_time` forever, `cleanup_finished` never retires it, and it
+        // holds full weight (`effective_weight()`'s `remaining/total == 1.0`)
+        // indefinitely (#3702).
+        if layer.blend_in_remaining > 0.0 {
+            layer.blend_in_remaining = (layer.blend_in_remaining - dt).max(0.0);
+            // #3701 — write the ramped weight every tick, not just at
+            // completion. `blend_in_target` is what `with_blend_in`
+            // captured `weight` as before zeroing it; `weight` itself is
+            // the live value `effective_weight()` now reads directly.
+            let progress = if layer.blend_in_total > 0.0 {
+                1.0 - (layer.blend_in_remaining / layer.blend_in_total)
+            } else {
+                1.0
+            };
+            layer.weight = layer.blend_in_target * progress;
+            if layer.blend_in_remaining <= 0.0 {
+                // Blend-in complete — land exactly on target rather than
+                // whatever the last floating-point progress step produced.
+                layer.weight = layer.blend_in_target;
+            }
+        }
+        if layer.blend_out_remaining > 0.0 {
+            layer.blend_out_remaining = (layer.blend_out_remaining - dt).max(0.0);
+        }
+
         if !layer.playing {
             continue;
         }
@@ -223,29 +253,6 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
                 layer.local_time = local_time;
                 layer.reverse_direction = reverse_direction;
             }
-        }
-
-        // Advance blend timers.
-        if layer.blend_in_remaining > 0.0 {
-            layer.blend_in_remaining = (layer.blend_in_remaining - dt).max(0.0);
-            // #3701 — write the ramped weight every tick, not just at
-            // completion. `blend_in_target` is what `with_blend_in`
-            // captured `weight` as before zeroing it; `weight` itself is
-            // the live value `effective_weight()` now reads directly.
-            let progress = if layer.blend_in_total > 0.0 {
-                1.0 - (layer.blend_in_remaining / layer.blend_in_total)
-            } else {
-                1.0
-            };
-            layer.weight = layer.blend_in_target * progress;
-            if layer.blend_in_remaining <= 0.0 {
-                // Blend-in complete — land exactly on target rather than
-                // whatever the last floating-point progress step produced.
-                layer.weight = layer.blend_in_target;
-            }
-        }
-        if layer.blend_out_remaining > 0.0 {
-            layer.blend_out_remaining = (layer.blend_out_remaining - dt).max(0.0);
         }
     }
 

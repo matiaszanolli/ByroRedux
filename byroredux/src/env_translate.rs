@@ -1137,7 +1137,7 @@ fn precipitation_components(classification: u8) -> [f32; 2] {
 /// useful for the first frame before that system has run.
 fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
     use byroredux_plugin::esm::records::weather::{
-        WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
+        SKY_STARS, WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
     };
     let slot = tod_slot.min(3);
     let mut cloud_tints = [[1.0; 4]; 4];
@@ -1184,6 +1184,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         precipitation: precipitation_components(wthr.classification),
         thunder_frequency: wthr.thunder_frequency as f32 / 255.0,
         lightning_color,
+        stars_color: wthr.sky_colors[SKY_STARS][slot].to_rgb_f32(),
         sun_glare: if wthr.sun_glare == 0 {
             1.0
         } else {
@@ -1197,6 +1198,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         },
         aurora_follows_sun,
         wind_direction: [angle.cos(), angle.sin()],
+        wind_speed: wthr.wind_speed as f32 / 255.0,
     }
 }
 
@@ -1402,6 +1404,7 @@ pub(crate) fn procedural_fallback_sky(sun_dir: [f32; 3]) -> SkyParamsRes {
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
         current_dalc_cube: None,
+        weather: WeatherSkyState::default(),
     }
 }
 

@@ -5,9 +5,9 @@
 //! camera/scene UBO. No mutation of any of `build_render_data`'s output
 //! Vecs.
 
-use byroredux_core::ecs::World;
+use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::SkyDalcCube;
-use byroredux_renderer::SkyParams;
+use byroredux_renderer::{SkyParams, SkyWeatherParams};
 
 use crate::components::{CellLightingRes, CloudSimState, DalcCubeYup, SkyParamsRes};
 
@@ -130,6 +130,19 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
             )
         })
         .unwrap_or_default();
+    let weather = SkyWeatherParams {
+        cloud_tints: sky_res.weather.cloud_tints,
+        precipitation: sky_res.weather.precipitation,
+        thunder_frequency: sky_res.weather.thunder_frequency,
+        lightning_color: sky_res.weather.lightning_color,
+        stars_color: sky_res.weather.stars_color,
+        sun_glare: sky_res.weather.sun_glare,
+        moon_glare: sky_res.weather.moon_glare,
+        aurora_intensity: sky_res.weather.aurora_intensity,
+        aurora_follows_sun: sky_res.weather.aurora_follows_sun,
+        wind_direction: sky_res.weather.wind_direction,
+        wind_speed: sky_res.weather.wind_speed,
+    };
     SkyParams {
         zenith_color: sky_res.zenith_color,
         // On an exterior the two are the same sky by definition; the lane
@@ -178,6 +191,7 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         // `is_interior` return above handles every interior case), kept
         // as a defensive `or_else` rather than removed outright.
         dalc_cube: interior_cube.or_else(|| sky_res.current_dalc_cube.map(renderer_dalc_cube)),
+        weather,
     }
 }
 

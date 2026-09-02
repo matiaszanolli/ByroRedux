@@ -757,6 +757,44 @@ pub struct SkyDalcCube {
     pub fresnel_power: f32,
 }
 
+/// Current weather controls consumed by the composite sky pass. Values are
+/// normalized at the application EXAL boundary and interpolated there, so
+/// the renderer remains independent of WTHR's per-game byte layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkyWeatherParams {
+    /// `[r, g, b, alpha]` cloud tint for the four compatibility layers.
+    pub cloud_tints: [[f32; 4]; 4],
+    /// `[rain, snow]` precipitation intensity.
+    pub precipitation: [f32; 2],
+    pub thunder_frequency: f32,
+    pub lightning_color: [f32; 3],
+    pub stars_color: [f32; 3],
+    pub sun_glare: f32,
+    pub moon_glare: f32,
+    pub aurora_intensity: f32,
+    pub aurora_follows_sun: bool,
+    pub wind_direction: [f32; 2],
+    pub wind_speed: f32,
+}
+
+impl Default for SkyWeatherParams {
+    fn default() -> Self {
+        Self {
+            cloud_tints: [[1.0, 1.0, 1.0, 1.0]; 4],
+            precipitation: [0.0; 2],
+            thunder_frequency: 0.0,
+            lightning_color: [1.0; 3],
+            stars_color: [0.75, 0.8, 1.0],
+            sun_glare: 1.0,
+            moon_glare: 0.35,
+            aurora_intensity: 0.0,
+            aurora_follows_sun: false,
+            wind_direction: [1.0, 0.0],
+            wind_speed: 0.0,
+        }
+    }
+}
+
 /// Sky rendering parameters passed per-frame to the composite shader.
 /// Populated from WTHR records for exterior cells or a procedural fallback.
 pub struct SkyParams {
@@ -851,6 +889,8 @@ pub struct SkyParams {
     /// falls back to the legacy `AMBIENT_AO_FLOOR` path on those games.
     /// See #993 / REN-AMBIENT-DALC.
     pub dalc_cube: Option<SkyDalcCube>,
+    /// Current weather effects and cloud tint state.
+    pub weather: SkyWeatherParams,
 }
 
 /// Depth-of-field parameters for the current frame.
@@ -936,6 +976,7 @@ impl Default for SkyParams {
             // None ⇒ shader fallback to AMBIENT_AO_FLOOR. Skyrim cells
             // overwrite from per-TOD-lerped WTHR.DALC.
             dalc_cube: None,
+            weather: SkyWeatherParams::default(),
         }
     }
 }

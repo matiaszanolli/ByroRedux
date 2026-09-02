@@ -1087,6 +1087,8 @@ pub(crate) struct WeatherSkyState {
     pub(crate) thunder_frequency: f32,
     /// RGB lightning flash colour.
     pub(crate) lightning_color: [f32; 3],
+    /// Current TOD-sampled star colour from WTHR SKY_STARS.
+    pub(crate) stars_color: [f32; 3],
     /// Sun glare multiplier from WTHR DATA.
     pub(crate) sun_glare: f32,
     /// Moon glare multiplier from Skyrim NAM3 / Moon Glare colour data.
@@ -1096,6 +1098,8 @@ pub(crate) struct WeatherSkyState {
     pub(crate) aurora_follows_sun: bool,
     /// Authored horizontal wind direction in renderer X/Z coordinates.
     pub(crate) wind_direction: [f32; 2],
+    /// Normalized WTHR wind speed for precipitation drift.
+    pub(crate) wind_speed: f32,
 }
 
 impl Default for WeatherSkyState {
@@ -1105,11 +1109,13 @@ impl Default for WeatherSkyState {
             precipitation: [0.0; 2],
             thunder_frequency: 0.0,
             lightning_color: [1.0; 3],
+            stars_color: [0.75, 0.8, 1.0],
             sun_glare: 1.0,
             moon_glare: 0.35,
             aurora_intensity: 0.0,
             aurora_follows_sun: false,
             wind_direction: [1.0, 0.0],
+            wind_speed: 0.0,
         }
     }
 }
