@@ -1401,7 +1401,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             let clip = crate::anim_convert::convert_nif_clip(nif_embedded_clip, &mut pool);
             drop(pool);
             let mut registry = world.resource_mut::<AnimationClipRegistry>();
-            registry.add(clip)
+            // #3764 (SAFE-2026-08-30-D8-01) — was the un-keyed `registry.add(clip)`,
+            // the #790 dedup mechanism's opt-out. This function is invoked once
+            // per NPC skeleton/body/head/equipped item, so any NPC-worn NIF
+            // carrying an embedded controller stack registered a fresh,
+            // un-freeable clip copy on every spawn and every cell reload — the
+            // sibling KF loader (`npc_spawn.rs`) already routes through
+            // `get_or_insert_by_path`; this path had skipped it.
+            registry.get_or_insert_by_path(label.to_string(), || clip)
         };
         // #2221 — attach the non-transform sinks before playback starts.
         // Same contract as the cell-loader path in `cell_loader/spawn.rs`:
@@ -1443,6 +1450,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let mut player = AnimationPlayer::new(clip_handle).with_phase(phase);
         if let Some(root) = root {
             player.root_entity = Some(root);
+            // #3764 (SAFE-2026-08-30-D8-01) — parent the player entity into
+            // the NIF's own subtree so cell unload's despawn walk reaches it.
+            // Pre-fix this entity had no `Parent` link at all and outlived
+            // every cell that spawned it — a second, entity-level leak on
+            // the same path as the clip-registration one above.
+            add_child(world, root, player_entity);
         }
         world.insert(player_entity, player);
         log::info!(
@@ -1476,11 +1489,68 @@ mod tests {
         loose_asset_path, parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT,
     };
     use crate::asset_provider::TextureProvider;
+    use byroredux_core::animation::AnimationClipRegistry;
     use byroredux_core::ecs::World;
     use byroredux_core::string::StringPool;
 
     const FACE_TINT: &str =
         "textures\\actors\\character\\facegendata\\facetint\\skyrim.esm\\0001a670.dds";
+
+    /// #3764 (SAFE-2026-08-30-D8-01) — pins the exact mechanism the fix in
+    /// `load_nif_bytes_with_skeleton`'s embedded-clip branch now uses:
+    /// `registry.get_or_insert_by_path(label.to_string(), || clip)` instead
+    /// of the un-keyed `registry.add(clip)`. Two NPCs sharing one part NIF
+    /// (e.g. the same armor mesh worn by two guards) call
+    /// `load_nif_bytes_with_skeleton` with the same `label` each time; this
+    /// simulates that at the registry call shape directly — building a
+    /// synthetic NIF byte buffer with an embedded `NiControllerSequence`
+    /// chain for a true end-to-end fixture is a much larger undertaking
+    /// than the fix itself, and the underlying dedup mechanism this now
+    /// routes through is already exhaustively covered by
+    /// `get_or_insert_by_path_dedupes_repeated_calls` and its siblings in
+    /// `crates/core/src/animation/registry.rs`.
+    #[test]
+    fn embedded_clip_registration_dedupes_by_label_across_repeated_spawns() {
+        fn empty_clip() -> byroredux_core::animation::AnimationClip {
+            byroredux_core::animation::AnimationClip {
+                name: String::new(),
+                duration: 0.0,
+                cycle_type: byroredux_core::animation::CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: None,
+                channels: Default::default(),
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        }
+
+        let mut registry = AnimationClipRegistry::default();
+        let label = "meshes\\armor\\raider\\raidercuirass_gnd.nif";
+
+        // `load_nif_bytes_with_skeleton`'s fix routes the already-built
+        // `clip` through `|| clip` (see the issue's own suggested fix), so
+        // the build itself isn't skipped on a hit — only the registry
+        // INSERT is deduped. Two independently-built (but content-equal)
+        // clips model that shape exactly.
+        let handle_npc_a = registry.get_or_insert_by_path(label.to_string(), empty_clip);
+        let handle_npc_b = registry.get_or_insert_by_path(label.to_string(), empty_clip);
+
+        assert_eq!(
+            handle_npc_a, handle_npc_b,
+            "two spawns sharing one part NIF must share one registered clip handle"
+        );
+        assert_eq!(
+            registry.len(),
+            1,
+            "the second spawn must not register a fresh, un-freeable clip copy — \
+             pre-fix this was 2 (the #790 leak shape reintroduced on the NPC path)"
+        );
+    }
 
     #[test]
     fn facegen_diffuse_override_targets_only_skin_tint_head() {
