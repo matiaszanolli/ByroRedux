@@ -48,22 +48,39 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
     retained
 }
 
-/// Promote every entity in `retained` out of cell ownership by removing its
-/// `CellRoot` component, if it has one.
+/// Strip `CellRoot` from the subset of `victims` that are currently
+/// cinematic-retained — NOT the world's whole retained set.
 ///
-/// `retained` is a whole-world property (see [`cinematic_retained_entities`])
-/// — call this once per unload batch, not once per victim cell. #3690: the
-/// pre-fix code repeated both the scan that produces `retained` and this
-/// removal loop once per root in `unload_cells`, even though the input
-/// can't change between those calls and is empty in every session that
-/// isn't mid-cinematic.
-fn release_cinematic_retention(world: &mut World, retained: &HashSet<EntityId>) {
+/// #3254 (ECS-2026-08-24-06): the pre-fix strip ran world-wide, once per
+/// unload batch, against every currently-retained entity regardless of
+/// which cell (if any) was actually unloading. `HorseTetherState` is
+/// never removed anywhere in production code, so the retention predicate
+/// can never become false on its own — the moment `cinematic_retained_
+/// entities` first returns non-empty, the very next unload *anywhere in
+/// the world* stripped `CellRoot` from the tethered cart, its horse, its
+/// rider, and their whole render hierarchy, with no path that ever
+/// re-adds it. That cart became a permanent orphan (rendered forever,
+/// GPU handles held forever) even though the unloading cell had nothing
+/// to do with it.
+///
+/// Scoping the strip to `victims ∩ retained` — this cell's own victims
+/// that happen to be retained — means a retained entity keeps its
+/// `CellRoot`, and stays fully reversible if its tether/cinematic state
+/// ends first (nothing to undo — it was never touched), right up until
+/// its own home cell actually tries to reclaim it. That narrower case is
+/// still a real gap (no re-adoption path exists once the strip does
+/// fire) — see #3254's follow-up for making retention fully reversible;
+/// this closes the "any unrelated unload orphans it immediately"
+/// half, which is the one with no legitimate reason to fire at all.
+fn strip_retained_cell_root(world: &mut World, victims: &[EntityId], retained: &HashSet<EntityId>) {
     if retained.is_empty() {
         return;
     }
     if let Some(mut roots) = world.query_mut::<CellRoot>() {
-        for &entity in retained {
-            roots.remove(entity);
+        for &entity in victims {
+            if retained.contains(&entity) {
+                roots.remove(entity);
+            }
         }
     }
 }
@@ -118,7 +135,6 @@ impl UnloadPhaseTimings {
 #[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
     let retained = cinematic_retained_entities(world);
-    release_cinematic_retention(world, &retained);
     let _ = unload_cell_inner(world, ctx, cell_root, &retained);
     let _ = finish_unload_batch(world, ctx);
 }
@@ -132,7 +148,9 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 ///
 /// The cinematic-retention set (see [`cinematic_retained_entities`]) is a
 /// whole-world property that can't change across this batch's roots, so it
-/// is computed and applied once here — not once per root — per #3690.
+/// is computed once here — not once per root — per #3690. What each root
+/// does with it (strip `CellRoot` only from *its own* retained victims,
+/// #3254) still happens per root, inside [`unload_cell_inner`].
 #[tracing::instrument(name = "unload_cells", skip_all, fields(cell_count = cell_roots.len()))]
 pub fn unload_cells(
     world: &mut World,
@@ -145,7 +163,6 @@ pub fn unload_cells(
     }
     let phase_started = Instant::now();
     let retained = cinematic_retained_entities(world);
-    release_cinematic_retention(world, &retained);
     timings.ownership_index = phase_started.elapsed();
     for &cell_root in cell_roots {
         timings.absorb(unload_cell_inner(world, ctx, cell_root, &retained));
@@ -192,8 +209,9 @@ pub(super) fn drain_cell_victims(world: &mut World, cell_root: EntityId) -> Vec<
 
 /// `retained`: the whole-world cinematic-retention set (see
 /// [`cinematic_retained_entities`]) for the current unload batch. Callers
-/// compute and apply it (via [`release_cinematic_retention`]) once per
-/// batch, not once per cell — see #3690.
+/// compute it once per batch, not once per cell (#3690); applying it —
+/// via [`strip_retained_cell_root`], scoped to each cell's own victims
+/// (#3254) — still happens once per root, here.
 fn unload_cell_inner(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -210,6 +228,11 @@ fn unload_cell_inner(
     // an empty victim set — `unload_cell` is idempotent.
     let mut victims: Vec<EntityId> = drain_cell_victims(world, cell_root);
     if !retained.is_empty() {
+        // #3254 — strip CellRoot only from THIS cell's own victims that
+        // are retained, not the world's whole retained set. See
+        // `strip_retained_cell_root`'s doc for why the world-wide version
+        // was wrong.
+        strip_retained_cell_root(world, &victims, retained);
         victims.retain(|entity| !retained.contains(entity));
     }
     timings.ownership_index = phase_started.elapsed();
@@ -705,12 +728,12 @@ mod cinematic_retention_tests {
         assert!(!retained.contains(&unrelated));
     }
 
-    /// #3690 — `release_cinematic_retention` is the extracted, once-per-batch
-    /// half of what used to run inline (and per victim cell) inside
-    /// `unload_cell_inner`. A retained entity that still carries `CellRoot`
-    /// loses it; an entity outside the retained set is untouched.
+    /// #3254 — `strip_retained_cell_root` scopes the strip to `victims`,
+    /// not the whole `retained` set. A retained entity that IS one of
+    /// this cell's own victims still loses its `CellRoot`; a non-retained
+    /// victim is untouched.
     #[test]
-    fn release_removes_cell_root_only_from_retained_entities() {
+    fn strip_removes_cell_root_only_from_retained_victims_of_this_cell() {
         let mut world = World::new();
         world.register::<CellRoot>();
         let retained_entity = world.spawn();
@@ -720,16 +743,47 @@ mod cinematic_retention_tests {
         world.insert(other_entity, CellRoot(some_root));
 
         let retained: HashSet<EntityId> = [retained_entity].into_iter().collect();
-        release_cinematic_retention(&mut world, &retained);
+        let victims = vec![retained_entity, other_entity];
+        strip_retained_cell_root(&mut world, &victims, &retained);
 
         let roots = world.query::<CellRoot>().expect("CellRoot registered");
         assert!(
             roots.get(retained_entity).is_none(),
-            "a retained entity must lose its CellRoot"
+            "a retained entity that IS a victim of this cell must lose its CellRoot"
         );
         assert!(
             roots.get(other_entity).is_some(),
-            "an entity outside the retained set must keep its CellRoot"
+            "a non-retained victim must keep its CellRoot"
+        );
+    }
+
+    /// #3254 (ECS-2026-08-24-06) — the regression this issue's own
+    /// completeness checklist asks for: a retained entity that is NOT a
+    /// victim of the cell currently unloading (its own home cell is
+    /// unaffected — e.g. a cart tethered near a wholly different part of
+    /// the worldspace) must be left alone. Pre-fix, the strip ran against
+    /// the world's whole retained set on every unload anywhere, so this
+    /// entity would have lost its `CellRoot` the instant ANY cell
+    /// unloaded — permanently, since nothing ever re-adds it.
+    #[test]
+    fn strip_leaves_a_retained_entity_untouched_when_it_is_not_a_victim_of_this_cell() {
+        let mut world = World::new();
+        world.register::<CellRoot>();
+        let elsewhere_retained_entity = world.spawn();
+        let some_root = world.spawn();
+        world.insert(elsewhere_retained_entity, CellRoot(some_root));
+
+        // This entity IS globally retained (e.g. a tethered cart), but it
+        // is not among the victims of the cell unloading right now.
+        let retained: HashSet<EntityId> = [elsewhere_retained_entity].into_iter().collect();
+        let victims_of_an_unrelated_cell: Vec<EntityId> = vec![];
+        strip_retained_cell_root(&mut world, &victims_of_an_unrelated_cell, &retained);
+
+        let roots = world.query::<CellRoot>().expect("CellRoot registered");
+        assert!(
+            roots.get(elsewhere_retained_entity).is_some(),
+            "an unrelated cell's unload must not touch a retained entity that \
+             isn't one of its own victims — see #3254"
         );
     }
 
@@ -738,14 +792,14 @@ mod cinematic_retention_tests {
     /// unload. Observable half of that contract: an empty retained set
     /// leaves every `CellRoot` in place.
     #[test]
-    fn release_is_a_no_op_for_an_empty_retained_set() {
+    fn strip_is_a_no_op_for_an_empty_retained_set() {
         let mut world = World::new();
         world.register::<CellRoot>();
         let entity = world.spawn();
         let some_root = world.spawn();
         world.insert(entity, CellRoot(some_root));
 
-        release_cinematic_retention(&mut world, &HashSet::new());
+        strip_retained_cell_root(&mut world, &[entity], &HashSet::new());
 
         let roots = world.query::<CellRoot>().expect("CellRoot registered");
         assert!(roots.get(entity).is_some());
