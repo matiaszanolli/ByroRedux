@@ -83,50 +83,188 @@ fn delta_columns_carry_only_session_stable_fields() {
     );
 }
 
+/// A `MUTABLE_DELTA_COLUMNS` type's disposition once the scan below finds a
+/// production removal site for it (SAVE-D1-2026-08-30-02 / #3793).
+enum RemovalDisposition {
+    /// A reconciler in `execute_pending_save_loads`' tail rebuilds the
+    /// removal after `apply_deltas` — must be called from `save_io.rs`.
+    Reconciler(&'static str),
+    /// Explicitly audited as needing no reconciler, with the reason
+    /// stated here instead of the column silently not appearing in
+    /// `RECONCILED` at all (which is indistinguishable, to a reader,
+    /// from "nobody checked").
+    NoReconcilerNeeded(&'static str),
+}
+
 /// #3488 — the additive-only overlay cannot express a removal, so any
 /// `MUTABLE_DELTA_COLUMNS` type that a *production* path removes at runtime
 /// needs a reconciler in `execute_pending_save_loads`' tail, exactly as
-/// `Dead` has `reconcile_dead_actor_runtime_state` (#3022). Otherwise the
-/// removal silently fails to survive a live load on any entity that outlives
-/// the cell reload — which the process-lifetime player body always does.
+/// `Dead` has `reconcile_dead_actor_runtime_state` (#3022) — UNLESS the
+/// removal is on an entity that never outlives a cell reload, in which case
+/// [`RemovalDisposition::NoReconcilerNeeded`] states why. Otherwise the
+/// removal silently fails to survive a live load on any entity that
+/// outlives the cell reload — which the process-lifetime player body
+/// always does.
 ///
-/// Rust has no reflection for "which components does this crate remove", so
-/// this scans the tree for production `world.remove::<T>` sites the same way
-/// the sibling above pins the column set: by hand-audited list. Adding one
-/// makes this fail and forces the maintainer to write the reconciler.
+/// SAVE-D1-2026-08-30-02 (#3793) — this used to claim it "scans the tree"
+/// but only grepped two fixed strings for one hardcoded column
+/// (`EquippedWeapon`), so a removal through any other spelling — notably
+/// the local `remove_component::<T>` helper duplicated in
+/// `npc_spawn/ai_package.rs` and `combat.rs` — was invisible to it. It now
+/// does what the doc always claimed: walks the same scan roots
+/// [`super::registry_completeness_tests::discover_scan_roots`] finds,
+/// strips test code, and matches BOTH `remove::<T>(` (covers
+/// `world.remove::<T>(`) and `remove_component::<T>(` (the helper) against
+/// every `MUTABLE_DELTA_COLUMNS` name. Adding a new removal site — under
+/// either spelling — now makes this fail until `RECONCILED` states its
+/// disposition.
 #[test]
 fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
+    use super::registry_completeness_tests::{collect_rs_files, discover_scan_roots};
+
     /// Every `MUTABLE_DELTA_COLUMNS` type with a production (non-test)
-    /// `world.remove::<T>` site, paired with the reconciler that rebuilds
-    /// the removal after `apply_deltas`.
-    const RECONCILED: &[(&str, &str)] = &[
+    /// removal site, paired with its audited disposition.
+    const RECONCILED: &[(&str, RemovalDisposition)] = &[
         // inventory.rs' `reconcile_equipped_weapon` else-arm, reached from
         // the pause menu's unequip action (main.rs' `inventory_actions`).
-        ("EquippedWeapon", "reconcile_player_equipped_weapon"),
+        (
+            "EquippedWeapon",
+            RemovalDisposition::Reconciler("reconcile_player_equipped_weapon"),
+        ),
+        // npc_spawn/ai_package.rs' `clear_all_ai_behavior_state` removes
+        // these six via the local `remove_component::<T>` helper when an
+        // actor's package re-evaluates to a different procedure. Audited
+        // by the AUDIT_SAVE_2026-08-30 report (SAVE-D1-2026-08-30-02) as
+        // needing no reconciler: every carrier is an NPC actor, which the
+        // cell reload destroys and rebuilds from scratch (fresh package
+        // evaluation re-derives whichever of these it needs) — unlike
+        // `EquippedWeapon`/`Dead`, no entity that outlives a reload
+        // (the process-lifetime player body) ever carries them.
+        (
+            "WanderState",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
+        (
+            "TravelState",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
+        (
+            "Traveled",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
+        (
+            "GuardState",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
+        (
+            "PatrolState",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
+        (
+            "Escorted",
+            RemovalDisposition::NoReconcilerNeeded(
+                "NPC-only carrier; destroyed and rebuilt by the cell reload",
+            ),
+        ),
     ];
 
     let save_io = include_str!("../save_io.rs");
-    for (column, reconciler) in RECONCILED {
+    for (column, disposition) in RECONCILED {
         assert!(
             MUTABLE_DELTA_COLUMNS.contains(column),
             "{column} is listed as reconciled but is no longer a delta column"
         );
-        assert!(
-            save_io.contains(reconciler),
-            "{column} is removed at runtime but `{reconciler}` is not called from \
-             save_io.rs — the additive-only overlay would leave the live component \
-             standing after a load (#3488)"
-        );
+        match disposition {
+            RemovalDisposition::Reconciler(reconciler) => {
+                assert!(
+                    save_io.contains(reconciler),
+                    "{column} is removed at runtime but `{reconciler}` is not called from \
+                     save_io.rs — the additive-only overlay would leave the live component \
+                     standing after a load (#3488)"
+                );
+            }
+            RemovalDisposition::NoReconcilerNeeded(reason) => {
+                assert!(
+                    !reason.is_empty(),
+                    "{column}'s NoReconcilerNeeded exemption must state a reason, not be silent"
+                );
+            }
+        }
     }
 
-    // The audit half: `EquippedWeapon` must still be the only delta column a
-    // production path removes. `Dead` is removed nowhere; every other
-    // `world.remove::<T>` in the tree is inside a `#[cfg(test)]` module.
-    let inventory = include_str!("../inventory.rs");
+    // The scan itself (#3793): find every production removal site for a
+    // MUTABLE_DELTA_COLUMNS type, matching both `remove::<T>(` (the
+    // `world.remove::<T>(` idiom) and `remove_component::<T>(` (the local
+    // helper duplicated in ai_package.rs/combat.rs — its own body is
+    // `query.remove(actor)`, which carries no type name, so only the
+    // *call site* spelling is greppable).
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for root in discover_scan_roots(manifest) {
+        collect_rs_files(&root, &mut files);
+    }
+
+    let mut removed_columns = std::collections::BTreeSet::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("SAVE-D1-2026-08-30-02 guard can't read {}: {e}", path.display()));
+        // Same test-code stripping as the SAVE-D1-12 guard: repository
+        // convention keeps cfg(test) modules at file tails; standalone
+        // *_tests.rs files are all-test.
+        if path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.ends_with("_tests"))
+            || path.components().any(|part| part.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let production_src = src.split("#[cfg(test)]").next().unwrap_or(&src);
+        for column in MUTABLE_DELTA_COLUMNS {
+            let direct = format!("remove::<{column}>(");
+            let via_helper = format!("remove_component::<{column}>(");
+            if production_src.contains(&direct) || production_src.contains(&via_helper) {
+                removed_columns.insert(*column);
+            }
+        }
+    }
+
+    let reconciled_columns: std::collections::BTreeSet<&str> =
+        RECONCILED.iter().map(|(name, _)| *name).collect();
+
+    let undocumented: Vec<&str> = removed_columns
+        .difference(&reconciled_columns)
+        .copied()
+        .collect();
     assert!(
-        inventory.contains("world.remove::<EquippedWeapon>(player)"),
-        "the removal this reconciler exists for moved — re-check whether \
-         `reconcile_player_equipped_weapon` still covers it (#3488)"
+        undocumented.is_empty(),
+        "found a production removal site for MUTABLE_DELTA_COLUMNS type(s) \
+         {undocumented:?} with no entry in RECONCILED — the additive-only \
+         overlay cannot express a removal (#3488). Add an entry: either \
+         `RemovalDisposition::Reconciler(\"fn_name\")` if the removal needs \
+         one, or `RemovalDisposition::NoReconcilerNeeded(\"reason\")` if the \
+         carrier entity never outlives a cell reload.",
+    );
+
+    let stale: Vec<&str> = reconciled_columns
+        .difference(&removed_columns.iter().copied().collect())
+        .copied()
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "RECONCILED lists {stale:?} but the scan found no production removal \
+         site for it any more — the removal this entry documents moved or \
+         was deleted; re-verify and update RECONCILED (#3793)",
     );
 }
 

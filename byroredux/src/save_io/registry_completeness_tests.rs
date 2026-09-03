@@ -8,7 +8,11 @@ use super::*;
 /// unreadable directory — a moved/renamed scan root should fail loud,
 /// not silently scan nothing (same posture as the `SAVE_TYPE_SOURCES`
 /// guard in the sibling `serde_default_guard_tests`).
-fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+///
+/// `pub(super)` (rather than private) so the sibling `round_trip_tests`
+/// module can reuse this and [`discover_scan_roots`] instead of
+/// duplicating the walk — see SAVE-D1-2026-08-30-02 / #3793.
+pub(super) fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
             "SAVE-D1-12 guard can't read directory {} ({e}); a scan root \
@@ -44,7 +48,7 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// crate's `impl Component`/`impl Resource` surface is either registered
 /// or carries a `NOT_SAVED_BY_DESIGN` entry, so there is no blind spot
 /// left to open by omission.
-fn discover_scan_roots(manifest: &std::path::Path) -> Vec<std::path::PathBuf> {
+pub(super) fn discover_scan_roots(manifest: &std::path::Path) -> Vec<std::path::PathBuf> {
     let workspace_crates = manifest.join("../crates");
     let mut roots = vec![manifest.join("src")];
     let entries = std::fs::read_dir(&workspace_crates).unwrap_or_else(|e| {
