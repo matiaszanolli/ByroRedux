@@ -1302,3 +1302,108 @@ fn parse_ni_texturing_property_at_v4_0_0_2_rejects_8_bit_bool_layout() {
          parser silently regressed back to a fixed-width bool read"
     );
 }
+
+/// #2565 (OBL-D1-04) — `TexDesc`'s `Unknown Short 1` field
+/// (`until="4.1.0.12"`) was never read anywhere. v4.0.0.2 is deep enough
+/// in that band to also exercise the PS2 L/K shorts (`until="10.4.0.1"`)
+/// in the same read — both are independent, narrower legacy-only fields
+/// nested inside the pre-20.1.0.3 `Clamp Mode`/`Filter Mode`/`UV Set`
+/// branch. An exact `stream.position()` match proves all three legacy
+/// u32s AND both trailing shorts (PS2 L/K, 4 B) AND `Unknown Short 1`
+/// (2 B) are consumed — 18 bytes total, no `Has Texture Transform` byte
+/// (that field is `since="10.1.0.0"`, absent here).
+#[test]
+fn parse_ni_texturing_property_at_v4_0_0_2_reads_ps2_lk_and_unknown_short1() {
+    let header = NifHeader {
+        version: NifVersion::V4_0_0_2,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref = NULL
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
+    data.extend_from_slice(&0u16.to_le_bytes()); // NiProperty.Flags
+    data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = APPLY_MODULATE
+    data.extend_from_slice(&1u32.to_le_bytes()); // texture_count = 1 (base only)
+    data.extend_from_slice(&1u32.to_le_bytes()); // base_texture has = true (32-bit bool)
+    data.extend_from_slice(&7i32.to_le_bytes()); // source_ref
+    data.extend_from_slice(&3u32.to_le_bytes()); // Clamp Mode = WRAP_S_WRAP_T
+    data.extend_from_slice(&2u32.to_le_bytes()); // Filter Mode
+    data.extend_from_slice(&0u32.to_le_bytes()); // UV Set
+    data.extend_from_slice(&1i16.to_le_bytes()); // PS2 L
+    data.extend_from_slice(&(-75i16).to_le_bytes()); // PS2 K (nif.xml default)
+    data.extend_from_slice(&0xBEEFu16.to_le_bytes()); // Unknown Short 1
+    // No `Has Texture Transform` — `since="10.1.0.0"`, absent at v4.0.0.2.
+    data.extend_from_slice(&0u32.to_le_bytes()); // dark has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // detail has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // gloss has = false (32-bit)
+    data.extend_from_slice(&0u32.to_le_bytes()); // glow has = false (32-bit)
+    // No shader-textures trailer: `since="10.0.1.0"`, absent at v4.0.0.2.
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiTexturingProperty::parse(&mut stream)
+        .expect("v4.0.0.2 NiTexturingProperty with PS2 L/K + Unknown Short 1 must parse");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "PS2 L/K (4 bytes) and Unknown Short 1 (2 bytes) must both be \
+         consumed — a miss here misaligns every following block"
+    );
+    let base = prop.base_texture.expect("base slot is populated");
+    assert_eq!(base.clamp_mode, 3, "authored clamp mode must still decode correctly");
+}
+
+/// #2565 (OBL-D1-04) — nif.xml gates `Clamp Mode`/`Filter Mode`/`UV Set`
+/// `until="20.0.0.5"` and `Flags` `since="20.1.0.3"`: DIFFERENT
+/// thresholds, not complementary halves of one cutoff.
+/// `20.1.0.0`..`20.1.0.2` sits strictly between them, where nif.xml
+/// declares NEITHER representation present on disk. Pre-fix, the `else`
+/// branch keyed only on `< V20_1_0_3`, so it over-read the 12-byte
+/// legacy layout for this band. Tests both edges of the 3-micro-version
+/// gap directly against `read_tex_desc_body` (the shared helper both
+/// `read_tex_desc` and the shader-map trailer now call) — pure
+/// stream-position + value assertions, no `NiTexturingProperty`
+/// prologue needed since this function starts right after `Source`.
+#[test]
+fn tex_desc_body_reads_nothing_for_the_20_1_0_x_gap_band() {
+    for version in [NifVersion::V20_1_0_0, NifVersion::V20_1_0_2] {
+        let header = NifHeader {
+            version,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 11,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        // Has Texture Transform (since=10.1.0.0, present here) = false —
+        // the only byte this gap band's TexDesc body should consume.
+        let data = vec![0u8];
+        let mut stream = NifStream::new(&data, &header);
+        let (flags, clamp_mode, transform) = NiTexturingProperty::read_tex_desc_body(&mut stream)
+            .unwrap_or_else(|e| panic!("{version} must parse: {e}"));
+        assert_eq!(flags, 0, "{version}: neither Clamp/Filter/UV Set nor Flags exists here");
+        assert_eq!(clamp_mode, 0, "{version}: no clamp mode to decode");
+        assert!(transform.is_none());
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "{version}: must consume exactly the trailing has_transform byte, \
+             not the 12-byte legacy Clamp/Filter/UV Set layout"
+        );
+    }
+}

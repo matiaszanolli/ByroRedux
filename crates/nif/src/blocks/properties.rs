@@ -422,23 +422,16 @@ impl NiTexturingProperty {
                     // old code skipped it, putting the parser 1 or
                     // 33 bytes short per entry and cascading into every
                     // following block. See #119 / audit NIF-302.
+                    //
+                    // #2565 — the body read (everything past `Source`)
+                    // is `read_tex_desc_body`, shared with the primary
+                    // `read_tex_desc` reader so this trailer can't drift
+                    // out of byte-exact lockstep with it again. Pre-fix
+                    // this inline copy omitted the PS2 L/K shorts the
+                    // primary reader correctly read for the same
+                    // pre-20.1.0.3 version band.
                     let _source_ref = stream.read_block_ref()?;
-                    if stream.version() >= NifVersion::V20_1_0_3 {
-                        let _flags = stream.read_u16_le()?;
-                    } else {
-                        let _clamp = stream.read_u32_le()?;
-                        let _filter = stream.read_u32_le()?;
-                        let _uv_set = stream.read_u32_le()?;
-                    }
-                    // nif.xml: `Has Texture Transform` + conditional
-                    // 32-byte body are both `since="10.1.0.0"`. Mirrors
-                    // the same gate inside `read_tex_desc`.
-                    if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
-                        let has_transform = stream.read_byte_bool()?;
-                        if has_transform {
-                            let _ = Self::read_tex_transform(stream)?;
-                        }
-                    }
+                    let (_flags, _clamp_mode, _transform) = Self::read_tex_desc_body(stream)?;
                     let _map_id = stream.read_u32_le()?;
                 }
             }
@@ -477,35 +470,66 @@ impl NiTexturingProperty {
             return Ok(None);
         }
         let source_ref = stream.read_block_ref()?;
+        let (flags, clamp_mode, transform) = Self::read_tex_desc_body(stream)?;
+        Ok(Some(TexDesc {
+            source_ref,
+            flags,
+            clamp_mode,
+            transform,
+        }))
+    }
 
-        if stream.version() >= NifVersion::V20_1_0_3 {
+    /// Read the `TexDesc` body — everything AFTER the leading `Has
+    /// <slot> Texture` bool and the `Source` ref. #2565 (OBL-D1-04):
+    /// factored out so both `read_tex_desc` and the shader-map trailer
+    /// loop's inline reader (`NiTexturingProperty::parse`, "Shader
+    /// textures trailer") share one byte-exact implementation and can't
+    /// drift out of lockstep again — pre-fix, the trailer read PS2 L/K
+    /// in its `if`/`else` shape but silently omitted the two PS2 shorts
+    /// the primary reader correctly read for the same version band.
+    ///
+    /// Field order and gating verified against the authoritative
+    /// `nif.xml` `TexDesc` struct (niftools/nifxml, not guessed):
+    /// - `Clamp Mode` (u32) / `Filter Mode` (u32) / `UV Set` (u32) —
+    ///   `until="20.0.0.5"`.
+    /// - `Flags` (u16, `TexturingMapFlags`) — `since="20.1.0.3"`.
+    /// - `Max Anisotropy` (u16) — `since="20.5.0.4"`. Not decoded: no
+    ///   currently-supported game ships `NiTexturingProperty` at or past
+    ///   that version (FO3/FNV top out at `V20_2_0_7`; Skyrim+ dropped
+    ///   `NiTexturingProperty` for the `BSShaderProperty` family
+    ///   entirely), so this field is unreachable in practice — tracked
+    ///   here rather than guessed at.
+    /// - `PS2 L` / `PS2 K` (2×i16) — `until="10.4.0.1"`, independent of
+    ///   the Clamp/Filter/UV-Set gate above (a strict subset of it).
+    /// - `Unknown Short 1` (u16) — `until="4.1.0.12"`, likewise a strict
+    ///   subset. Never read anywhere pre-fix — the gap this issue's
+    ///   evidence names.
+    /// - `Has Texture Transform` (bool) — `since="10.1.0.0"` — always
+    ///   present for any version this parser reaches (10.1.0.0 predates
+    ///   every other gate above), so it's read once, unconditionally on
+    ///   the version check, after the three-way split below.
+    ///
+    /// `Clamp Mode` (`until="20.0.0.5"`) and `Flags` (`since="20.1.0.3"`)
+    /// are gated by DIFFERENT thresholds, not complementary halves of one
+    /// cutoff — `20.1.0.0`..`20.1.0.2` sits strictly between them, where
+    /// nif.xml declares NEITHER field present on disk. Pre-fix, the
+    /// `else` branch keyed only on `< V20_1_0_3`, so it over-read 12
+    /// bytes (Clamp/Filter/UV Set) for that 3-micro-version gap band that
+    /// nif.xml says carries none of them. Unexercised on the live
+    /// corpus — no file in that band carries a `NiTexturingProperty` —
+    /// but a real spec-conformance gap on reachable (NifSkope-exported
+    /// Oblivion mod) content.
+    fn read_tex_desc_body(
+        stream: &mut NifStream,
+    ) -> io::Result<(u16, u8, Option<TexTransform>)> {
+        let (flags, clamp_mode) = if stream.version() >= NifVersion::V20_1_0_3 {
             let flags = stream.read_u16_le()?;
             // Raw `TexturingMapFlags`: clamp mode is the top nibble. See
-            // `TexDesc::clamp_mode` for why this is decoded here and not by
-            // the consumer (#3516).
+            // `TexDesc::clamp_mode` for why this is decoded here and not
+            // by the consumer (#3516).
             let clamp_mode = ((flags >> 12) & 0xF) as u8;
-            // nif.xml: Has Texture Transform (bool) since 10.1.0.0,
-            // present in every modern file. We read the 32-byte TexDesc
-            // transform body when the bool is set and store it on the
-            // returned TexDesc; the old parser skipped it, which caused
-            // #219 (per-slot UV transforms lost).
-            let transform = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
-                let has_transform = stream.read_byte_bool()?;
-                if has_transform {
-                    Some(Self::read_tex_transform(stream)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            Ok(Some(TexDesc {
-                source_ref,
-                flags,
-                clamp_mode,
-                transform,
-            }))
-        } else {
+            (flags, clamp_mode)
+        } else if stream.version() <= NifVersion::V20_0_0_5 {
             let clamp_mode = stream.read_u32_le()?;
             let filter_mode = stream.read_u32_le()?;
             let uv_set = stream.read_u32_le()?;
@@ -516,30 +540,45 @@ impl NiTexturingProperty {
                 let _ps2_l = stream.read_u16_le()?;
                 let _ps2_k = stream.read_u16_le()?;
             }
+            // #2565 — nif.xml `Unknown Short 1`, `until="4.1.0.12"`.
+            // Never read anywhere pre-fix.
+            if stream.version() <= NifVersion::V4_1_0_12 {
+                let _unknown_short1 = stream.read_u16_le()?;
+            }
 
-            let transform = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
-                let has_transform = stream.read_byte_bool()?;
-                if has_transform {
-                    Some(Self::read_tex_transform(stream)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Synthesized layout — clamp in the LOW nibble here, unlike the
-            // raw word above (#3516).
+            // Synthesized layout — clamp in the LOW nibble here, unlike
+            // the raw word above (#3516).
             let flags = ((clamp_mode & 0xF) as u16)
                 | (((filter_mode & 0xF) as u16) << 4)
                 | (((uv_set & 0xF) as u16) << 8);
-            Ok(Some(TexDesc {
-                source_ref,
-                flags,
-                clamp_mode: (clamp_mode & 0xF) as u8,
-                transform,
-            }))
-        }
+            (flags, (clamp_mode & 0xF) as u8)
+        } else {
+            // #2565 — the 20.1.0.0-20.1.0.2 gap: nif.xml gates
+            // Clamp/Filter/UV Set `until="20.0.0.5"` and Flags
+            // `since="20.1.0.3"`, leaving these three micro-versions with
+            // neither representation on disk. Nothing to read here;
+            // default to zero (unexercised on the live corpus).
+            (0u16, 0u8)
+        };
+
+        // nif.xml: Has Texture Transform (bool) since 10.1.0.0, present
+        // in every modern file (predates every gate above, so this is
+        // reached unconditionally past that floor). We read the 32-byte
+        // TexDesc transform body when the bool is set and store it on
+        // the returned TexDesc; the old parser skipped it, which caused
+        // #219 (per-slot UV transforms lost).
+        let transform = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
+            let has_transform = stream.read_byte_bool()?;
+            if has_transform {
+                Some(Self::read_tex_transform(stream)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok((flags, clamp_mode, transform))
     }
 
     /// Read a 32-byte `TexTransform`: Translation (2 f32) + Scale (2 f32)
