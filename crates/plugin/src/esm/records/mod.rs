@@ -104,7 +104,7 @@ use super::cell::{CellData, EsmCellIndex, StaticObject, TextureSet};
 use super::reader::{EsmReader, FormIdRemap, GameKind};
 use anyhow::{Context, Result};
 use byroredux_core::character::CharacterRulesProfile;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ── #1118 / TD9-003 split — see `index.rs` and `grup_walker.rs` ─────
 mod grup_walker;
@@ -268,6 +268,13 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut warned_movs = false;
     let mut warned_mswp = false;
     let mut warned_pdcl = false;
+    // #3722 — every OTHER label reaching the anonymous catch-all below
+    // (i.e. every top-level GRUP with no dispatch arm at all) is
+    // deduplicated through this set so `skipped_unconsumed_groups` gets
+    // exactly one entry per distinct label, not one per group occurrence —
+    // the routing-coverage signal, without per-record spam on a
+    // multi-million-record master.
+    let mut seen_unconsumed_labels: HashSet<[u8; 4]> = HashSet::new();
 
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
@@ -489,6 +496,15 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 )?;
             }
             _ => {
+                // #3722 — name every genuinely-unrouted label in
+                // `skipped_unconsumed_groups` (not just PDCL's dedicated
+                // arm above) so the routing-coverage signal is available
+                // at runtime instead of needing an external walker.
+                // Deduplicated per distinct label, matching the O(distinct
+                // labels) cost the issue's own suggested fix calls for.
+                if seen_unconsumed_labels.insert(label) {
+                    index.skipped_unconsumed_groups.push(label);
+                }
                 reader.skip_group(&group);
             }
         }

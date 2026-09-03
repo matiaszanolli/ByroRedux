@@ -1025,6 +1025,51 @@ fn pdcl_group_consciously_skipped_and_counted() {
     );
 }
 
+/// Regression: #3722 — a top-level GRUP with NO dispatch arm at all (the
+/// anonymous `_ => skip_group` catch-all, not one of the named
+/// consciously-skipped labels like `PDCL`) must still land in
+/// `skipped_unconsumed_groups`. Pre-fix the catch-all silently discarded
+/// the label entirely — the routing-coverage signal (95 unrouted labels on
+/// Starfield) was invisible at runtime and had to be computed externally.
+#[test]
+fn genuinely_unrouted_label_is_recorded_in_skip_telemetry() {
+    let unrouted: [u8; 4] = *b"ZZZZ"; // not a real Bethesda FourCC; no dispatch arm anywhere
+    let record = build_record(b"ZZZZ", 0xBEEF_00FF, &[(b"EDID", b"NotARealRecord\0".to_vec())]);
+    let group = wrap_group(b"ZZZZ", &record);
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&group);
+    let index = parse_esm(&tes4).unwrap();
+
+    assert!(
+        index.skipped_unconsumed_groups.contains(&unrouted),
+        "an unrouted label must be recorded in skip telemetry, not lost to the anonymous catch-all"
+    );
+}
+
+/// Regression: #3722 sibling — an unrouted label must be deduplicated in
+/// `skipped_unconsumed_groups`: one entry per distinct label, not one per
+/// group occurrence, matching the O(distinct labels) cost the fix targets.
+#[test]
+fn genuinely_unrouted_label_is_recorded_once_across_multiple_groups() {
+    let unrouted: [u8; 4] = *b"ZZZZ";
+    let record_a = build_record(b"ZZZZ", 0xBEEF_0001, &[]);
+    let record_b = build_record(b"ZZZZ", 0xBEEF_0002, &[]);
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&wrap_group(b"ZZZZ", &record_a));
+    tes4.extend_from_slice(&wrap_group(b"ZZZZ", &record_b));
+    let index = parse_esm(&tes4).unwrap();
+
+    assert_eq!(
+        index
+            .skipped_unconsumed_groups
+            .iter()
+            .filter(|&&l| l == unrouted)
+            .count(),
+        1,
+        "a repeated unrouted label must be recorded once per parse, not once per group"
+    );
+}
+
 /// Regression: #442 — a top-level `CREA` GRUP must dispatch to
 /// `parse_npc` (schema is NPC_-shaped) and land in
 /// `EsmIndex.creatures`. Pre-fix the whole group fell through to
