@@ -157,7 +157,10 @@ struct Dx10Chunk {
     // Today the BA2 reader extracts full DDS files; once M40 streams mip
     // ranges, these per-chunk bounds are how the renderer requests the
     // subset it needs without re-reading the whole texture.
-    #[allow(dead_code)]
+    //
+    // `start_mip` is already a live read (the monotonic-order validation
+    // below), so it needs no `#[allow(dead_code)]` — only `end_mip` is
+    // still write-only, reserved for M40 (#1761/TD8-004).
     start_mip: u16,
     #[allow(dead_code)]
     end_mip: u16,

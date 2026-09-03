@@ -1,19 +1,42 @@
-# TD8-004: Dx10Chunk::start_mip now read — #[allow(dead_code)] redundant; end_mip set-never-read
-
-_Filed 2026-06-26 as #1761 from docs/audits/AUDIT_TECH_DEBT_2026-06-26.md (immutable snapshot; query `gh issue view 1761` for live state)._
+# #1761 — TD8-004: Dx10Chunk::start_mip now read — its #[allow(dead_code)] is redundant; end_mip set-never-read
 
 **Severity**: LOW · **Dimension**: 8 — Dead Code
-**Location**: `crates/bsa/src/ba2.rs:144-151`
-**Status**: NEW · **Audit**: TD8-004
+**Location**: `crates/bsa/src/ba2.rs::Dx10Chunk`
 
-## Description
-The `#[allow(dead_code)]` block at ba2.rs:144-151 reserves both `Dx10Chunk::start_mip` and `end_mip` for M40 streaming (#1049). But `start_mip` is now a **live read** — the monotonic-order validation at ba2.rs:621/626 uses it (`chunks.windows(2).all(|w| w[0].start_mip <= w[1].start_mip)`). So its `#[allow(dead_code)]` is now redundant. `end_mip` is written at ba2.rs:600 and never read back.
+## Fix
 
-## Evidence
-`grep -n 'end_mip' ba2.rs` → only def (151) + construction (600), 0 reads. `start_mip` → also read at 621, 626, 630, 635.
+Verified the premise against current code: `start_mip` is read at 4 sites
+(the monotonic-order validation `chunks.windows(2).all(|w| w[0].start_mip
+<= w[1].start_mip)` plus its two warning-message `.map(|c| c.start_mip)`
+calls), so its `#[allow(dead_code)]` is redundant. `end_mip` is written at
+construction and never read anywhere — confirmed via a fresh grep, matching
+the issue's own evidence exactly.
 
-## Suggested Fix
-Lowest-risk: remove the now-redundant `#[allow(dead_code)]` on `start_mip` (the actionable bit). Keep `end_mip` + its attribute as the documented #1049 M40 reserve, OR delete `end_mip` if M40 will reconstruct chunk bounds on demand.
+Applied the issue's own suggested lowest-risk fix: removed `start_mip`'s
+now-redundant `#[allow(dead_code)]`, kept `end_mip`'s as the documented
+M40 (#1049) streaming reserve, and extended the existing M40 doc comment
+to record why the two fields are no longer treated identically.
 
-## Completeness Checks
-- [ ] **TESTS**: `cargo build -p byroredux-bsa` clean with `start_mip`'s attribute removed (no dead-code warning ⇒ confirms it's read)
+## TESTS (issue's own checklist item)
+
+The issue's own stated test is structural, not behavioral: `cargo build
+-p byroredux-bsa` staying clean with `start_mip`'s attribute removed is
+itself the proof that it's a live read (the compiler's own dead-code
+lint is the check here — no dedicated `#[test]` fn adds anything a
+compiler warning doesn't already cover for an attribute-only change with
+no runtime behavior).
+
+**Verification, not reintroduce-and-revert** (no behavioral test to
+revert): confirmed `cargo check -p byroredux-bsa --tests` is clean with
+zero warnings after removing the attribute — if `start_mip` were not
+actually read, `#[warn(dead_code)]` (on by default) would have fired.
+
+## Verification
+
+- `cargo check -p byroredux-bsa --tests`: clean, zero warnings (proves
+  `start_mip` is genuinely read).
+- `cargo test -q -p byroredux-bsa`: all non-ignored tests passing (the
+  ignored ones need real BSA/BA2 game data on disk, unaffected either
+  way).
+- `cargo test -q --no-fail-fast` (full workspace): **7159 passing, 0
+  failing** (no new tests — attribute-only change).
