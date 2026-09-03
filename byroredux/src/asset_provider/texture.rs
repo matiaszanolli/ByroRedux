@@ -273,13 +273,24 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
     let mut provider = TextureProvider::new();
     let mut mesh_requested = false;
     let mut textures_requested = false;
+    // #2584 — one already-opened-paths set per pool, reused across every
+    // `--bsa` / `--textures-bsa` occurrence in this run, so a sibling
+    // auto-loaded from an earlier archive is recognised if the user also
+    // lists it explicitly later.
+    let mut mesh_opened: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut textures_opened: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--textures-bsa" => {
                 if let Some(path) = args.get(i + 1) {
                     textures_requested = true;
-                    open_with_numeric_siblings(path, "textures", &mut provider.texture_archives);
+                    open_with_numeric_siblings(
+                        path,
+                        "textures",
+                        &mut provider.texture_archives,
+                        &mut textures_opened,
+                    );
                     i += 2;
                     continue;
                 }
@@ -287,7 +298,12 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
                     mesh_requested = true;
-                    open_with_numeric_siblings(path, "mesh", &mut provider.mesh_archives);
+                    open_with_numeric_siblings(
+                        path,
+                        "mesh",
+                        &mut provider.mesh_archives,
+                        &mut mesh_opened,
+                    );
                     i += 2;
                     continue;
                 }

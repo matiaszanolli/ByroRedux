@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 /// A game archive that can extract files by path.
 /// Wraps either a BSA (Oblivion–Skyrim SE) or BA2 (FO4–Starfield) archive.
 pub(crate) enum Archive {
@@ -415,7 +417,32 @@ pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
 /// or a mid-series archive we must not re-expand.
 ///
 /// All cases are harmless when a sibling simply doesn't exist (skipped).
-pub(crate) fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive>) {
+///
+/// `opened_paths` tracks every archive path (ASCII-lowercased, matching
+/// Bethesda's own filesystem case-insensitivity) this pool has already
+/// opened, across every call for this pool in the current
+/// `build_texture_provider` run. #2584 (SK-D5-LZ4-LOW-01): a user who
+/// still explicitly lists every series member (e.g. both `Meshes0.bsa`
+/// and `Meshes1.bsa`) would otherwise get `Meshes1.bsa` opened twice —
+/// once explicitly, once as the auto-loaded sibling of `Meshes0.bsa` —
+/// wasting a directory `HashMap` + file handle and leaving lookup order
+/// between the two copies non-deterministic. Checked before both the
+/// primary open and each sibling open, per the issue's own suggested fix.
+pub(crate) fn open_with_numeric_siblings(
+    path: &str,
+    kind: &str,
+    archives: &mut Vec<Archive>,
+    opened_paths: &mut HashSet<String>,
+) {
+    if !mark_opened(path, opened_paths) {
+        log::info!(
+            "Skipping {} archive '{}' — already opened (explicit re-list of an \
+             auto-loaded sibling, or a repeated CLI argument)",
+            kind,
+            path
+        );
+        return;
+    }
     match Archive::open(path) {
         Ok(a) => {
             log::info!("Opened {} archive: '{}'", kind, path);
@@ -430,6 +457,14 @@ pub(crate) fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut 
         if !std::path::Path::new(&sibling).is_file() {
             continue;
         }
+        if !mark_opened(&sibling, opened_paths) {
+            log::info!(
+                "Skipping sibling {} archive '{}' — already opened",
+                kind,
+                sibling
+            );
+            continue;
+        }
         match Archive::open(&sibling) {
             Ok(a) => {
                 log::info!("Opened sibling {} archive: '{}'", kind, sibling);
@@ -440,6 +475,24 @@ pub(crate) fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut 
             }
         }
     }
+}
+
+/// Case-fold `path` and record it as opened. Returns `true` the first
+/// time a given (case-insensitive) path is seen, `false` on every
+/// subsequent call for the same path — the de-dup decision
+/// [`open_with_numeric_siblings`] gates both its primary and sibling
+/// opens on. Split out as a pure `HashSet` operation (#2584) so the
+/// de-dup logic itself is unit-testable without needing real archive
+/// files on disk — `open_with_numeric_siblings` needs a genuine BSA/BA2
+/// file to reach its `Archive::open` calls, but this decision doesn't.
+///
+/// Case-insensitive comparison matches Bethesda's own filesystem
+/// case-insensitivity convention (the same one `numeric_sibling_paths`
+/// and this codebase's other path-keyed lookups already follow) — a user
+/// typing `"skyrim - meshes1.bsa"` where the auto-loaded sibling computed
+/// `"Skyrim - Meshes1.bsa"` must still be recognised as the same archive.
+fn mark_opened(path: &str, opened_paths: &mut HashSet<String>) -> bool {
+    opened_paths.insert(path.to_ascii_lowercase())
 }
 
 /// The numeric-sibling naming rule, re-exported from `byroredux-bsa`.
@@ -453,8 +506,62 @@ pub(crate) use byroredux_bsa::numeric_sibling_paths;
 
 #[cfg(test)]
 mod tests {
-    use super::sniff_magic_from;
+    use super::{mark_opened, sniff_magic_from};
+    use std::collections::HashSet;
     use std::io::Read;
+
+    /// #2584 (SK-D5-LZ4-LOW-01) — the exact scenario the issue describes:
+    /// a user who explicitly lists every series member. Simulates
+    /// `open_with_numeric_siblings` opening `Meshes0.bsa` and
+    /// auto-loading its sibling `Meshes1.bsa`, then the user's own
+    /// explicit `--bsa "Skyrim - Meshes1.bsa"` argument arriving later —
+    /// must be recognised as already opened, not opened a second time.
+    #[test]
+    fn explicitly_relisted_auto_loaded_sibling_is_recognised_as_already_opened() {
+        let mut opened = HashSet::new();
+        assert!(
+            mark_opened("Skyrim - Meshes0.bsa", &mut opened),
+            "the primary archive is new — first call must return true"
+        );
+        assert!(
+            mark_opened("Skyrim - Meshes1.bsa", &mut opened),
+            "the auto-loaded sibling is new — first call must return true"
+        );
+        assert!(
+            !mark_opened("Skyrim - Meshes1.bsa", &mut opened),
+            "the user's explicit re-list of the same sibling must be recognised \
+             as already opened, not opened a second time"
+        );
+    }
+
+    /// Case-insensitive: Bethesda's own filesystem convention. A user
+    /// typing a different case than the auto-computed sibling path must
+    /// still be caught by the de-dup check.
+    #[test]
+    fn mark_opened_is_case_insensitive() {
+        let mut opened = HashSet::new();
+        assert!(mark_opened("Skyrim - Meshes1.bsa", &mut opened));
+        assert!(
+            !mark_opened("skyrim - meshes1.bsa", &mut opened),
+            "a case-different re-list of the same path must still de-dup"
+        );
+        assert!(
+            !mark_opened("SKYRIM - MESHES1.BSA", &mut opened),
+            "case-insensitivity must hold for any case variant, not just lowercase"
+        );
+    }
+
+    /// Distinct paths — including mid-series digits, which
+    /// `numeric_sibling_paths` deliberately does not auto-expand — must
+    /// never collide in the de-dup set.
+    #[test]
+    fn distinct_paths_are_independent() {
+        let mut opened = HashSet::new();
+        assert!(mark_opened("Skyrim - Meshes1.bsa", &mut opened));
+        assert!(mark_opened("Skyrim - Meshes2.bsa", &mut opened));
+        assert!(mark_opened("Skyrim - Textures0.bsa", &mut opened));
+        assert_eq!(opened.len(), 3);
+    }
 
     /// Wraps a `Read` and counts every byte actually pulled through it —
     /// the "byte-counting reader wrapper" from #2615's completeness
