@@ -9,15 +9,15 @@
 use super::{
     build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
     lod_water_recenter_delta, parse_extracted_nifs, pre_parse_cell_panic_safe,
-    stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
-    PayloadDecision, StreamingDeltas, StreamingLatencySummary, StreamingTelemetry,
-    StreamingWorkerTimings,
+    pre_parse_model_skip_reason, recv_next_batch_request, stale_pending_coords, world_pos_to_grid,
+    JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas,
+    StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
 };
-use crate::cell_loader::UnloadPhaseTimings;
 use crate::asset_provider::TextureProvider;
+use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::Vec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -245,6 +245,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     telemetry.record_worker(StreamingWorkerTimings {
         queue_wait: Duration::from_millis(6),
         worker: Duration::from_millis(8),
+        batch_duplicate_skips: 4,
         ..StreamingWorkerTimings::default()
     });
     telemetry.record_apply_slice(Duration::from_millis(3), true);
@@ -268,6 +269,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert_eq!(telemetry.apply_slices.samples, 1);
     assert_eq!(telemetry.lod_slices.samples, 1);
     assert_eq!(telemetry.worker_parse.samples, 1);
+    assert_eq!(telemetry.worker_batch_duplicate_skips, 4);
     assert_eq!(telemetry.unload_despawn.max, Duration::from_millis(5));
     assert_eq!(telemetry.unload_finalization.max, Duration::from_millis(6));
     assert_eq!(telemetry.queued_cells, 7);
@@ -279,6 +281,9 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert!(telemetry
         .bench_line()
         .contains("unload_despawn_max_ms=5.00 unload_finalize_max_ms=6.00"));
+    assert!(telemetry
+        .bench_line()
+        .contains("worker_batch_duplicate_skips=4"));
 }
 
 /// EX-06 / #2376 — every phase must report a distribution, not just an
@@ -340,6 +345,7 @@ fn bench_line_emits_per_phase_distributions() {
     telemetry.record_worker(StreamingWorkerTimings {
         queue_wait: Duration::from_millis(4),
         worker: Duration::from_millis(6),
+        batch_duplicate_skips: 2,
         ..StreamingWorkerTimings::default()
     });
 
@@ -508,6 +514,53 @@ fn worker_panic_safe_passes_through_normal_payload() {
     assert_eq!(payload.generation, 5);
     assert_eq!(payload.parsed.len(), 1);
     assert!(payload.parsed.contains_key("test/model.nif"));
+}
+
+// ── Same-dispatch NIF memo (#3670) ───────────────────────────────
+
+#[test]
+fn pre_parse_filter_checks_the_frozen_cache_before_the_batch_memo() {
+    let cached_keys = HashSet::from([String::from("cached.nif")]);
+    let batch_keys = HashSet::from([String::from("shared.nif")]);
+
+    assert_eq!(
+        pre_parse_model_skip_reason("cached.nif", &cached_keys, &batch_keys),
+        Some(PreParseModelSkip::Cached)
+    );
+    assert_eq!(
+        pre_parse_model_skip_reason("shared.nif", &cached_keys, &batch_keys),
+        Some(PreParseModelSkip::BatchDuplicate)
+    );
+    assert_eq!(
+        pre_parse_model_skip_reason("fresh.nif", &cached_keys, &batch_keys),
+        None
+    );
+}
+
+#[test]
+fn worker_batch_memo_is_cleared_at_an_empty_queue_boundary() {
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    request_tx.send(1u8).unwrap();
+    request_tx.send(2u8).unwrap();
+
+    let mut batch_keys = HashSet::from([String::from("shared.nif")]);
+    assert_eq!(
+        recv_next_batch_request(&request_rx, &mut batch_keys),
+        Some(1)
+    );
+    assert_eq!(
+        recv_next_batch_request(&request_rx, &mut batch_keys),
+        Some(2)
+    );
+
+    // With no queued request left, disconnecting the producer exercises the
+    // same empty-queue branch without making the test wait indefinitely.
+    drop(request_tx);
+    assert_eq!(recv_next_batch_request(&request_rx, &mut batch_keys), None);
+    assert!(
+        batch_keys.is_empty(),
+        "keys from one dispatch must not survive its empty-queue boundary"
+    );
 }
 
 // ── #856 / C6-NEW-03 — join_with_timeout regression coverage ─────

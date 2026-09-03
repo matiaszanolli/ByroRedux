@@ -177,6 +177,11 @@ pub struct StreamingTelemetry {
     pub unload_finalization: StreamingLatencySummary,
     pub worker_queue: StreamingLatencySummary,
     pub worker_parse: StreamingLatencySummary,
+    /// Number of NIFs skipped because an earlier request in the same worker
+    /// drain already produced them. This is separate from cache hits: the
+    /// batch memo closes the gap left by the frozen per-request cache snapshot
+    /// (#3670).
+    pub worker_batch_duplicate_skips: u64,
     pub apply_slices: StreamingLatencySummary,
     pub lod_slices: StreamingLatencySummary,
     pub superseded_full_detail: u64,
@@ -260,6 +265,9 @@ impl StreamingTelemetry {
             self.worker_payloads = self.worker_payloads.saturating_add(1);
             self.worker_queue.record(timings.queue_wait);
             self.worker_parse.record(timings.worker);
+            self.worker_batch_duplicate_skips = self
+                .worker_batch_duplicate_skips
+                .saturating_add(timings.batch_duplicate_skips as u64);
         }
     }
 
@@ -327,6 +335,7 @@ impl StreamingTelemetry {
              unload_despawn_max_ms={:.2} unload_finalize_max_ms={:.2} \
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
+             worker_batch_duplicate_skips={} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} \
              lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
              unsettled_full={} unsettled_lod={} {} {} {} {} {} {}",
@@ -355,6 +364,7 @@ impl StreamingTelemetry {
             self.worker_queue.max_ms(),
             self.worker_parse.average_ms(),
             self.worker_parse.max_ms(),
+            self.worker_batch_duplicate_skips,
             self.apply_slices.samples,
             self.apply_slices.average_ms(),
             self.apply_slices.max_ms(),
@@ -390,6 +400,9 @@ fn phase_distribution(label: &str, summary: &StreamingLatencySummary) -> String 
 pub struct StreamingWorkerTimings {
     pub queue_wait: Duration,
     pub worker: Duration,
+    /// NIFs omitted because an earlier request in the current worker queue
+    /// batch already produced the same canonical key (#3670).
+    pub batch_duplicate_skips: usize,
     /// Worker names observed by the parallel NIF parse fan-out. Empty for the
     /// serial branch. This is both useful telemetry and the observable that
     /// keeps #3089's dedicated-pool routing falsifiable (#3211).
@@ -1113,7 +1126,14 @@ fn cell_pre_parse_worker(
     // `PRE_PARSE_RAYON_MIN` fresh NIFs, defeating the whole point of
     // running cell parsing on its own thread in the first place.
     let stream_pool = build_stream_parse_pool();
-    while let Ok(req) = request_rx.recv() {
+    // A dispatch queues several cells synchronously, so the receiver's
+    // backlog is the natural batch boundary. Keep the memo only while that
+    // backlog remains non-empty; once recv_next_batch_request observes an
+    // empty queue it clears the keys before blocking for the next dispatch.
+    // This bounds the set by one dispatch and prevents a later, independent
+    // crossing from losing a needed payload to an old memo entry.
+    let mut batch_keys = HashSet::new();
+    while let Some(req) = recv_next_batch_request(&request_rx, &mut batch_keys) {
         let LoadCellRequest {
             gx,
             gy,
@@ -1132,6 +1152,7 @@ fn cell_pre_parse_worker(
                 &wctx,
                 &tex_provider,
                 &cached_keys,
+                &mut batch_keys,
                 &stream_pool,
             )
         });
@@ -1143,6 +1164,31 @@ fn cell_pre_parse_worker(
         }
     }
     log::info!("cell-stream worker thread exiting");
+}
+
+/// Receive the next request while preserving a worker batch memo only across
+/// an already-queued run of requests. The try_recv probe is important: a
+/// plain blocking recv cannot tell whether the queue was empty between two
+/// dispatches, so a memo would otherwise survive for the worker's whole life.
+fn recv_next_batch_request<T>(
+    request_rx: &mpsc::Receiver<T>,
+    batch_keys: &mut HashSet<String>,
+) -> Option<T> {
+    if batch_keys.is_empty() {
+        return request_rx.recv().ok();
+    }
+
+    match request_rx.try_recv() {
+        Ok(req) => Some(req),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            batch_keys.clear();
+            None
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+            batch_keys.clear();
+            request_rx.recv().ok()
+        }
+    }
 }
 
 /// Run `f` (the cell pre-parse) inside a panic guard. If `f` panics,
@@ -1289,6 +1335,30 @@ fn parse_extracted_nifs(
     (results, names)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreParseModelSkip {
+    Cached,
+    BatchDuplicate,
+}
+
+/// Apply the two cache layers in the same order as the production
+/// pre-parse filter. The request snapshot wins when a key is present in both
+/// sets; otherwise the worker memo suppresses a result already emitted by an
+/// earlier request in this dispatch batch (#3670).
+fn pre_parse_model_skip_reason(
+    key: &str,
+    cached_keys: &HashSet<String>,
+    batch_keys: &HashSet<String>,
+) -> Option<PreParseModelSkip> {
+    if cached_keys.contains(key) {
+        Some(PreParseModelSkip::Cached)
+    } else if batch_keys.contains(key) {
+        Some(PreParseModelSkip::BatchDuplicate)
+    } else {
+        None
+    }
+}
+
 /// Pre-parse one exterior cell's unique, uncached static NIFs for the
 /// main-thread streaming drain.
 ///
@@ -1314,6 +1384,7 @@ fn pre_parse_cell(
     wctx: &ExteriorWorldContext,
     tex_provider: &TextureProvider,
     cached_keys: &HashSet<String>,
+    batch_keys: &mut HashSet<String>,
     stream_pool: &rayon::ThreadPool,
 ) -> LoadCellPayload {
     let mut parsed: HashMap<String, Option<PartialNifImport>> = HashMap::new();
@@ -1354,6 +1425,7 @@ fn pre_parse_cell(
     // is dominant for the steady-state workload.
     let mut model_paths: HashSet<String> = HashSet::new();
     let mut skipped_cached = 0usize;
+    let mut skipped_batch_duplicates = 0usize;
     for refr in &cell.references {
         let Some(model_path) = wctx
             .record_index
@@ -1385,18 +1457,26 @@ fn pre_parse_cell(
         // parsed + imported twice. Both loaders now route through the
         // one shared normaliser.
         let key = canonical_model_path_key(model_path);
-        if cached_keys.contains(&key) {
-            skipped_cached += 1;
-            continue;
+        match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
+            Some(PreParseModelSkip::Cached) => {
+                skipped_cached += 1;
+                continue;
+            }
+            Some(PreParseModelSkip::BatchDuplicate) => {
+                skipped_batch_duplicates += 1;
+                continue;
+            }
+            None => {}
         }
         model_paths.insert(key);
     }
-    if skipped_cached > 0 {
+    if skipped_cached > 0 || skipped_batch_duplicates > 0 {
         log::debug!(
-            "[stream-worker] cell ({},{}): {} cached models skipped, {} unique to parse",
+            "[stream-worker] cell ({},{}): {} cached models skipped, {} batch duplicates skipped, {} unique to parse",
             gx,
             gy,
             skipped_cached,
+            skipped_batch_duplicates,
             model_paths.len(),
         );
     }
@@ -1455,6 +1535,11 @@ fn pre_parse_cell(
     // dedicated pool and returns the actual worker names as an observable.
     let (results, parallel_parse_threads) =
         parse_extracted_nifs(extracted, stream_pool, tex_provider);
+    // Record only keys for which this request emitted a result, including a
+    // negative result. A parser panic caught by the outer request guard
+    // therefore does not poison the rest of the batch with keys it never
+    // produced.
+    batch_keys.extend(results.iter().map(|(key, _)| key.clone()));
     parsed.extend(results);
 
     LoadCellPayload {
@@ -1463,6 +1548,7 @@ fn pre_parse_cell(
         generation,
         timings: StreamingWorkerTimings {
             parallel_parse_threads,
+            batch_duplicate_skips: skipped_batch_duplicates,
             ..StreamingWorkerTimings::default()
         },
         parsed,
