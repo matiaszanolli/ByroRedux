@@ -1,73 +1,103 @@
 # #3682 — PERF-D2-2026-08-30-03: the per-instance `GpuInstance` loop probes two `std::collections::HashMap`s per draw per frame, and the #3061 guard structurally cannot see them
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D2-2026-08-30-03`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,renderer,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3682
+**Severity**: LOW · **Dimension**: Draw & Instancing
+**Location**: `crates/renderer/src/texture_registry.rs`
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+`TextureRegistry::handle_has_alpha` / `handle_avg_rgb` resolved through
+`std::collections::HashMap<TextureHandle, _>` (SipHash-1-3), read once (or
+twice — unconditionally for `avg_rgb`, gated on alpha-blend for
+`has_alpha`) per `DrawCommand` in the `GpuInstance` build loop — up to
+~3,949 probes/frame on `fo4-InstituteBioScience`, the highest-volume site
+in the #1368 → #2174 → #2923 → #3045 → #3061 hot-path-hashing cluster.
 
-- **Severity**: LOW
-- **Dimension**: Draw & Instancing
-- **Location**: `crates/renderer/src/texture_registry.rs:134` (`texture_has_alpha: HashMap<TextureHandle, bool>`) and `:141` (`texture_avg_rgb: HashMap<TextureHandle, [f32; 3]>`); read sites `crates/renderer/src/vulkan/context/draw.rs:2939-2942` and `:2981-2990`
-- **Status**: NEW — a new site of the #3061 (CLOSED) hot-path-hashing cluster, in a file that cluster's fix and guard never covered
-- **Description**: In the `for draw_cmd in draw_commands` loop that builds `GpuInstance`,
-  `handle_avg_rgb(draw_cmd.texture_handle)` is called **unconditionally for every draw command**
-  (outside the `skip_batch` gate, because RT hits read `avg_albedo` off off-frustum instances), and
-  `handle_has_alpha(draw_cmd.texture_handle)` is called for every alpha-blend draw. Both resolve
-  through `std::collections::HashMap` — SipHash-1-3 — over a `TextureHandle` key that is a **dense
-  index** (`let handle = self.textures.len() as TextureHandle;`, `texture_registry.rs:678`) into the
-  registry's own `textures: Vec<TextureEntry>` (`:127`). This is the per-frame per-entity keyspace the
-  #2923 hot-path-hashing rule names, in the crate the rule names, and it is the highest-volume site in
-  the cluster — once per `DrawCommand`, i.e. up to 3 949 probes/frame on `fo4-InstituteBioScience`,
-  against #3061's morph/skin sites which are bounded by skinned-entity count.
-  The guard that exists to stop this cluster drifting back is a source-text scan whose corpus is
-  `include_str!("mod.rs")` + `init.rs` + `draw.rs` + `skinned_blas_refit.rs`
-  (`crates/renderer/src/vulkan/context/mod.rs:2823-2828`, `:2877`, `:2882`, `:2977`) — `texture_registry.rs`
-  is outside it, so these two fields are invisible to it by construction.
-- **Evidence**:
-  ```rust
-  // crates/renderer/src/vulkan/context/draw.rs:2981-2990 — no gate above it
-  let gi_albedo = match self
-      .texture_registry
-      .handle_avg_rgb(draw_cmd.texture_handle)
-  { Some(mean) => [ /* … */ ], None => draw_cmd.avg_albedo };
-  ```
-  ```rust
-  // crates/renderer/src/texture_registry.rs:718-720
-  pub fn handle_avg_rgb(&self, handle: TextureHandle) -> Option<[f32; 3]> {
-      self.texture_avg_rgb.get(&handle).copied()
-  }
-  ```
-  Both maps are written only at the two DDS-load points (`:693`, `:1001`, `:1013`) — load-time, never
-  per frame — so nothing about them is DoS-facing (unlike `path_map: HashMap<String, …>` at `:128`,
-  which should stay std). The remaining three callers of `handle_has_alpha`
-  (`byroredux/src/cell_loader/terrain.rs:692`, `byroredux/src/cell_loader/spawn/mesh_instance.rs:853`,
-  `byroredux/src/scene/nif_loader.rs:1104`) are all load-time.
-- **Impact**: Small but strictly-wasted CPU on the frame's largest loop, growing linearly with draw
-  count — i.e. worst exactly on the cell (`fo4-InstituteBioScience`, 44.3 FPS p50) that is already the
-  slowest of the five. No correctness effect. The structural half matters more than the cycles: the
-  guard the project added after revisiting this cluster four times (#1368 → #2174 → #2923 → #3061)
-  cannot observe the two busiest remaining sites.
-- **Related**: #3061 (CLOSED — the conversion landed for `skin_slots` / `morph_slots` /
-  `failed_skin_slots` / `failed_skin_blas` / `blend_pipeline_cache` / `blend_seen_scratch`), #2923,
-  #2174, #1368; `PERF-D6-2026-08-24-01` (`AUDIT_PERFORMANCE_2026-08-24.md`, the morph sibling, same class)
-- **Suggested Fix**: Because `TextureHandle` is a dense index into `textures`, the right fix removes
-  the hashing rather than swapping the hasher: move `has_alpha: bool` and `avg_rgb: Option<[f32; 3]>`
-  onto `TextureEntry` and make both accessors `self.textures.get(handle as usize)`. If that is too
-  invasive, `FxHashMap` is the minimum. Either way, extend the #3061 source-scan corpus to include
-  `texture_registry.rs` so the cluster cannot re-grow outside `context/`.
+Took the issue's own first-choice suggested fix rather than its "minimum"
+fallback (`FxHashMap`): `TextureHandle` is a dense index into
+`textures: Vec<TextureEntry>` (`let handle = self.textures.len() as
+TextureHandle` at every push site), so there is nothing to hash at all.
+Moved `has_alpha: bool` and `avg_rgb: Option<[f32; 3]>` onto `TextureEntry`
+itself and made both accessors a direct `Vec` index:
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+```rust
+pub fn handle_has_alpha(&self, handle: TextureHandle) -> bool {
+    self.textures
+        .get(handle as usize)
+        .is_some_and(|entry| entry.has_alpha)
+}
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+pub fn handle_avg_rgb(&self, handle: TextureHandle) -> Option<[f32; 3]> {
+    self.textures.get(handle as usize).and_then(|e| e.avg_rgb)
+}
+```
+
+Updated all 5 `TextureEntry` push sites (`set_fallback`,
+`set_neutral_fallback`, `load_dds_with_clamp`, the deferred-upload
+`queue_or_hit_for_view` reservation, `create_dynamic_rgba_texture`) to
+default `has_alpha: false, avg_rgb: None`, and the two places that
+previously wrote through the HashMaps (`load_dds_with_clamp`'s
+synchronous path, `flush_pending_uploads`'s deferred-upload closure) to
+write `self.textures[handle as usize].has_alpha = ...` /
+`.avg_rgb = Some(...)` directly instead. Removed both `HashMap` fields
+from `TextureRegistry` entirely.
+
+## SIBLING (issue's own checklist item)
+
+The 3 load-time-only callers of `handle_has_alpha` named in the issue's
+own evidence (`byroredux/src/cell_loader/terrain.rs`,
+`byroredux/src/cell_loader/spawn/mesh_instance.rs`,
+`byroredux/src/scene/nif_loader.rs`) needed no changes — they call through
+the same public accessor, whose signature is unchanged.
+
+`path_map: HashMap<String, TextureHandle>` on the same struct correctly
+stays `std::collections::HashMap` — the issue's own evidence section notes
+it's the one DoS-facing map here (keyed by attacker-influenced path
+strings from mod content), unlike the two per-`TextureHandle` maps this
+fix removed.
+
+Per the issue's own suggested fix's second half, extended the #3061
+source-scan guard (`crates/renderer/src/vulkan/context/mod.rs::
+rigid_history_hasher_tests`) with
+`texture_alpha_and_avg_rgb_are_not_hashed_by_texture_handle`, scanning
+`texture_registry.rs` — the file every prior sweep in this lineage (#1368
+through #3061) stayed inside `context/` and never covered.
+
+## TESTS (issue's own checklist item)
+
+Neither accessor had a direct regression test before this fix. Added two,
+pinning both halves of the old `HashMap`'s "absent key → default" contract
+that the new `Vec`-index version must preserve without indexing out of
+bounds:
+- `handle_has_alpha_reads_the_seeded_flag_and_defaults_false_out_of_range`
+- `handle_avg_rgb_reads_the_seeded_value_and_is_none_out_of_range`
+
+Extended the #3061 guard with
+`texture_alpha_and_avg_rgb_are_not_hashed_by_texture_handle`, asserting
+`texture_registry.rs` declares neither field as a per-`TextureHandle`
+`HashMap`/`FxHashMap` and that `TextureEntry` carries both fields directly.
+
+**Reintroduce-and-revert verification**, three separate probes:
+1. Reverted `handle_has_alpha` to an unconditional `false` — confirmed the
+   new accessor test failed on the seeded-value assertion.
+2. Reverted `handle_avg_rgb` to an unconditional `None` — confirmed its
+   accessor test failed the same way.
+3. Reintroduced a commented-out
+   `texture_has_alpha: HashMap<TextureHandle, bool>` field-declaration
+   line into `TextureRegistry` (simulating the cluster re-growing) —
+   confirmed the new guard test failed with the expected message.
+
+Restored the fix after each probe and reran — all 44 `texture_registry`
+tests and all 3 `rigid_history_hasher_tests` pass again.
+
+## Verification
+
+- `cargo check -p byroredux-renderer --tests`: clean, zero warnings.
+- `cargo test -p byroredux-renderer --lib texture_registry`: 44 tests
+  passing, 0 failing (+2 new).
+- `cargo test -p byroredux-renderer --lib context::rigid_history_hasher_tests`:
+  3 tests passing, 0 failing (+1 new).
+- `cargo test -q -p byroredux-renderer`: 826 tests passing (+3), 0
+  failing.
+- `cargo check -p byroredux --tests`: clean (downstream crate).
+- `cargo test -q --no-fail-fast` (full workspace): **7111 passing, 0
+  failing**.

@@ -92,11 +92,11 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
                 texture: None,
                 pending_destroy: VecDeque::new(),
                 ref_count: 0,
+                has_alpha: false,
+                avg_rgb: None,
             })
             .collect(),
         path_map: HashMap::new(),
-        texture_has_alpha: HashMap::new(),
-        texture_avg_rgb: HashMap::new(),
         fallback_handle: 0,
         neutral_fallback_handle: 1,
         cube_fallback_handle: None,
@@ -244,12 +244,16 @@ fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegist
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: u32::MAX,
+        has_alpha: false,
+        avg_rgb: None,
     });
     reg.fallback_handle = 0;
     reg.textures.push(TextureEntry {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: initial_ref_count,
+        has_alpha: false,
+        avg_rgb: None,
     });
     // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT entry the
     // pre-#610 cache lookups (`acquire_by_path` / `get_by_path`)
@@ -414,12 +418,16 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 2,
+        has_alpha: false,
+        avg_rgb: None,
     });
     reg.path_map.insert(clamp_keyed_path("table.dds", 3), 2);
     reg.textures.push(TextureEntry {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 1,
+        has_alpha: false,
+        avg_rgb: None,
     });
     reg.path_map.insert(clamp_keyed_path("lamp.dds", 3), 3);
 
@@ -431,6 +439,49 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
     assert!(!reg.path_map.contains_key("textures/chair.dds|3"));
     assert!(!reg.path_map.contains_key("textures/table.dds|3"));
     assert!(reg.path_map.contains_key("textures/lamp.dds|3"));
+}
+
+/// #3682 — `handle_has_alpha` moved from a `HashMap<TextureHandle, bool>`
+/// probe to a direct `Vec` index on `TextureEntry`. Pin both halves of the
+/// contract the old map's `.get(&handle).copied().unwrap_or(false)`
+/// carried: a seeded in-range handle reads its stored flag, and a handle
+/// past the end of `textures` reads `false` rather than panicking (the
+/// map's "absent key" case had no in-range/out-of-range distinction; the
+/// `Vec` version must still cover both without indexing out of bounds).
+#[test]
+fn handle_has_alpha_reads_the_seeded_flag_and_defaults_false_out_of_range() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+        has_alpha: true,
+        avg_rgb: None,
+    });
+    assert!(reg.handle_has_alpha(0));
+    assert!(
+        !reg.handle_has_alpha(1),
+        "an out-of-range handle must read false, not panic"
+    );
+}
+
+/// #3682 — same move, same contract, for `handle_avg_rgb`.
+#[test]
+fn handle_avg_rgb_reads_the_seeded_value_and_is_none_out_of_range() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+        has_alpha: false,
+        avg_rgb: Some([0.25, 0.5, 0.75]),
+    });
+    assert_eq!(reg.handle_avg_rgb(0), Some([0.25, 0.5, 0.75]));
+    assert_eq!(
+        reg.handle_avg_rgb(1),
+        None,
+        "an out-of-range handle must read None, not panic"
+    );
 }
 
 #[test]

@@ -117,6 +117,26 @@ struct TextureEntry {
     ///
     /// Invariant: `texture.is_some() iff ref_count > 0`.
     ref_count: u32,
+    /// The DDS format carries an alpha channel, captured at load. Gates the
+    /// normal-alpha-as-spec path: Skyrim/Gamebryo author the gloss mask in
+    /// the normal-map alpha, but BC5/BC4/BC1 normals have none (`.a`
+    /// samples as 1.0). `false` for handles never loaded from DDS
+    /// (fallbacks, reserved-but-unflushed).
+    ///
+    /// #3682 — was a sibling `HashMap<TextureHandle, bool>` keyed by this
+    /// same dense index; moved onto the entry itself so the per-draw read
+    /// in the `GpuInstance` build loop (up to ~4k probes/frame) is a
+    /// direct `Vec` index instead of a SipHash-1-3 hash.
+    has_alpha: bool,
+    /// Average texel colour of the diffuse texture, in raw monitor
+    /// (sRGB-encoded) space, captured at DDS load (#1628). Folded into the
+    /// GI bounce albedo so a textured surface bleeds its mean texel
+    /// colour rather than the flat material tint. `None` for fallback
+    /// handles, normal/mask maps, BC7, and any handle never loaded from a
+    /// diffuse-colour DDS.
+    ///
+    /// #3682 — same move as `has_alpha`, same reason.
+    avg_rgb: Option<[f32; 3]>,
 }
 
 /// Bindless texture registry.
@@ -126,19 +146,6 @@ struct TextureEntry {
 pub struct TextureRegistry {
     textures: Vec<TextureEntry>,
     path_map: HashMap<String, TextureHandle>,
-    /// Per-handle "the DDS format carries an alpha channel" flag, captured at
-    /// load. Gates the normal-alpha-as-spec path: Skyrim/Gamebryo author the
-    /// gloss mask in the normal-map alpha, but BC5/BC4/BC1 normals have none
-    /// (`.a` samples as 1.0). Populated only at the two DDS-load points;
-    /// absent handles (fallbacks, reserved-but-unflushed) read `false`.
-    texture_has_alpha: HashMap<TextureHandle, bool>,
-    /// Per-handle average texel colour in raw monitor (sRGB-encoded) space,
-    /// captured at DDS load (#1628). Folded into the GI bounce albedo so a
-    /// textured surface bleeds its mean texel colour rather than the flat
-    /// material tint. Populated only at the two DDS-load points and only for
-    /// diffuse-colour formats — absent handles (fallbacks, normal/mask maps,
-    /// BC7) keep the material tint unchanged.
-    texture_avg_rgb: HashMap<TextureHandle, [f32; 3]>,
     /// Magenta-checker handle — "this entity should have had a
     /// texture, but the file isn't in the archive / failed to load."
     /// Diagnostic indicator; visible artefact in-game.
@@ -393,8 +400,6 @@ impl TextureRegistry {
         // no `Drop` impl, so `destroy()` + the subsequent `return` frees the
         // GPU resources exactly once.
         let mut partial = Self {
-            texture_has_alpha: HashMap::new(),
-            texture_avg_rgb: HashMap::new(),
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
@@ -542,6 +547,8 @@ impl TextureRegistry {
             texture: Some(fallback_texture),
             pending_destroy: VecDeque::new(),
             ref_count: u32::MAX,
+            has_alpha: false,
+            avg_rgb: None,
         });
         self.fallback_handle = handle;
         Ok(())
@@ -570,6 +577,8 @@ impl TextureRegistry {
             texture: Some(neutral_texture),
             pending_destroy: VecDeque::new(),
             ref_count: u32::MAX,
+            has_alpha: false,
+            avg_rgb: None,
         });
         self.neutral_fallback_handle = handle;
         Ok(())
@@ -691,16 +700,18 @@ impl TextureRegistry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            has_alpha: super::vulkan::dds::format_has_alpha(meta.format),
+            avg_rgb: None,
         });
         self.path_map.insert(normalized, handle);
-        self.texture_has_alpha
-            .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
         // #1542: for a to-be-expanded 16/24-bpp source the raw bytes aren't
         // RGBA8 yet, so `average_rgb` would misread them; skip. Numeric slots
         // likewise never feed the diffuse GI-albedo cache.
         if color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
             if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
-                self.texture_avg_rgb.insert(handle, avg);
+                if let Some(entry) = self.textures.get_mut(handle as usize) {
+                    entry.avg_rgb = Some(avg);
+                }
             }
         }
 
@@ -712,11 +723,15 @@ impl TextureRegistry {
     /// normals (BC5/BC4/BC1) and handles never loaded from DDS (fallbacks).
     /// Gates the normal-alpha-as-spec gloss path (Skyrim/Gamebryo author the
     /// gloss mask in the normal alpha; BC5 normals have none).
+    ///
+    /// #3682 — direct `Vec` index into the dense-handle-keyed registry
+    /// instead of a `HashMap` probe; this is read once per draw command in
+    /// the `GpuInstance` build loop, the busiest read site in the cluster
+    /// #3061 already converted the rest of.
     pub fn handle_has_alpha(&self, handle: TextureHandle) -> bool {
-        self.texture_has_alpha
-            .get(&handle)
-            .copied()
-            .unwrap_or(false)
+        self.textures
+            .get(handle as usize)
+            .is_some_and(|entry| entry.has_alpha)
     }
 
     /// Average texel colour of the diffuse texture at `handle`, in raw
@@ -725,8 +740,12 @@ impl TextureRegistry {
     /// DDS. Folded into the GI bounce albedo (#1628) so textured surfaces
     /// bleed their mean texel colour, not just the flat material tint.
     /// Computed once at upload; this is a cheap cached lookup.
+    ///
+    /// #3682 — same `Vec`-index move as `handle_has_alpha`; this is the
+    /// unconditional (every draw command, not just alpha-blend ones)
+    /// sibling read in the same loop.
     pub fn handle_avg_rgb(&self, handle: TextureHandle) -> Option<[f32; 3]> {
-        self.texture_avg_rgb.get(&handle).copied()
+        self.textures.get(handle as usize).and_then(|e| e.avg_rgb)
     }
 
     /// Enqueue a DDS upload for batched flush. Counterpart of
@@ -897,6 +916,11 @@ impl TextureRegistry {
             texture: None,
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            // Populated by `flush_pending_uploads` once the DDS header is
+            // parsed; `false`/`None` until then, matching the pre-#3682
+            // HashMap's "absent handle reads false/None" contract.
+            has_alpha: false,
+            avg_rgb: None,
         });
         self.path_map.insert(normalized, handle);
         self.pending_dds_uploads.push(PendingDdsUpload {
@@ -1008,10 +1032,9 @@ impl TextureRegistry {
                         );
                         continue;
                     }
-                    self.texture_has_alpha.insert(
-                        upload.handle,
-                        super::vulkan::dds::format_has_alpha(meta.format),
-                    );
+                    if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
+                        entry.has_alpha = super::vulkan::dds::format_has_alpha(meta.format);
+                    }
                     // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
                     // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
                     // `average_rgb` for it (it would misread the packed
@@ -1020,7 +1043,9 @@ impl TextureRegistry {
                     if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
                         if let Some(avg) = super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
                         {
-                            self.texture_avg_rgb.insert(upload.handle, avg);
+                            if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
+                                entry.avg_rgb = Some(avg);
+                            }
                         }
                     }
                     let pixel_data = super::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
@@ -1278,6 +1303,10 @@ impl TextureRegistry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            // Dynamic RGBA textures (UI, procedural) are never diffuse-DDS
+            // loads — no alpha-channel gloss signal, no GI-albedo tint.
+            has_alpha: false,
+            avg_rgb: None,
         });
 
         Ok(handle)

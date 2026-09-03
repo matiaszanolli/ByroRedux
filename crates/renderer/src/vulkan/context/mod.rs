@@ -3037,6 +3037,40 @@ mod rigid_history_hasher_tests {
             );
         }
     }
+
+    /// #3682 — same cluster (#1368 → #2174 → #2923 → #3045 → #3061), but
+    /// the fix taken here is the issue's own first-choice option rather
+    /// than its "minimum" fallback: instead of swapping
+    /// `std::collections::HashMap` for `FxHashMap` on a per-`TextureHandle`
+    /// map, the two hottest per-draw reads in this cluster (`has_alpha` /
+    /// `avg_rgb`, read once or twice per `GpuInstance` built — up to ~4k
+    /// probes/frame) were moved onto `TextureEntry` itself. `TextureHandle`
+    /// is a dense index into `textures: Vec<TextureEntry>`, so there is
+    /// nothing left to hash. `texture_registry.rs` sat outside every prior
+    /// `context/`-only sweep in this lineage; extends the corpus into it so
+    /// the cluster can't quietly re-grow there.
+    #[test]
+    fn texture_alpha_and_avg_rgb_are_not_hashed_by_texture_handle() {
+        let src = include_str!("../../texture_registry.rs");
+        for field in ["texture_has_alpha", "texture_avg_rgb"] {
+            assert!(
+                !src.contains(&format!("{field}: HashMap<TextureHandle"))
+                    && !src.contains(&format!("{field}: FxHashMap<TextureHandle")),
+                "`{field}` reappeared as a per-handle hash map — \
+                 `TextureHandle` is a dense index into `textures: \
+                 Vec<TextureEntry>`, so this belongs on `TextureEntry` \
+                 itself, not behind any hasher (#3682)",
+            );
+        }
+        for field_decl in ["has_alpha: bool,", "avg_rgb: Option<[f32; 3]>,"] {
+            assert!(
+                src.contains(field_decl),
+                "`TextureEntry` no longer declares `{field_decl}` — the \
+                 per-draw read in the `GpuInstance` build loop depends on \
+                 this being a direct `Vec` index (#3682)",
+            );
+        }
+    }
 }
 
 // #2480 / REN-D23-2026-08-07-01 — FSR startup-failure must promote to TAA,
