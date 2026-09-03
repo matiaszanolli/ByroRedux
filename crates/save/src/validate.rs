@@ -12,7 +12,7 @@
 //! the binary, which owns that resource — call [`validate_world`] first,
 //! then layer game-specific checks on top.
 
-use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
+use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer, AnimationStack};
 use byroredux_core::character::CharacterLevel;
 use byroredux_core::ecs::components::{
     Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Material,
@@ -363,7 +363,13 @@ fn validate_saved_entity_references(
 }
 
 /// Every `AnimationPlayer.clip_handle` must resolve in the clip registry,
-/// and its `root_entity` (if set) must be a spawned id.
+/// and its `root_entity` (if set) must be a spawned id. #3791 extends the
+/// same two checks to `AnimationStack` (`root_entity` + each layer's
+/// `clip_handle`) and `Seated.animation_restore.clip_handle` — two other
+/// **registered, saved** columns carrying the identical reference classes
+/// that this gate used to check only on `AnimationPlayer`.
+/// (`Seated.furniture`, the `EntityId` half of `Seated`, is already
+/// checked by `validate_saved_entity_references`.)
 fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<ValidationError>) {
     // #3649 — `AnimationClipRegistry` BEFORE `AnimationPlayer`, matching the
     // order `animation_system_inner` establishes every frame: its doc comment
@@ -373,31 +379,102 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // opposing acquisition is a write it is a hard blocking edge, not a
     // reader-reader one. `docs/engine/ecs.md`'s canonical table now carries
     // the pair so the next crate does not have to re-derive it.
+    //
+    // #3791 — `AnimationStack` follows the identical order: the same
+    // `animation_system_inner` acquires `AnimationClipRegistry` at its top
+    // (line ~530) and only reaches its `AnimationStack` query much later in
+    // the same function body, so registry-before-stack is the established
+    // production order here too. `Seated` has no known co-acquisition with
+    // the registry anywhere in production code (`sandbox_seat_system_inner`
+    // captures `AnimationPlayer` fields directly, never touching the
+    // registry) — registry-first is used for consistency with the two
+    // columns above, not because an inversion is known to be unsafe.
+    //
+    // Each column below is queried independently (`if let Some(q) = ...`,
+    // not a function-wide early return) so a synthetic/partial world
+    // missing one column still validates the others — `AnimationPlayer`'s
+    // own early-return shape predates this and is left as the narrowest
+    // possible diff; matching `validate_saved_entity_references`'s
+    // per-column style for the two new checks below.
     let registry = world.try_resource::<AnimationClipRegistry>();
-    let Some(q) = world.query::<AnimationPlayer>() else {
-        return;
-    };
 
-    for (entity, player) in q.iter() {
-        if let Some(reg) = registry.as_ref() {
-            if reg.get(player.clip_handle).is_none() {
-                errors.push(ValidationError {
-                    entity,
-                    kind: ValidationKind::AnimationClip,
-                    detail: format!(
-                        "clip_handle {} not in AnimationClipRegistry",
-                        player.clip_handle
-                    ),
-                });
+    if let Some(q) = world.query::<AnimationPlayer>() {
+        for (entity, player) in q.iter() {
+            if let Some(reg) = registry.as_ref() {
+                if reg.get(player.clip_handle).is_none() {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::AnimationClip,
+                        detail: format!(
+                            "clip_handle {} not in AnimationClipRegistry",
+                            player.clip_handle
+                        ),
+                    });
+                }
+            }
+            if let Some(root) = player.root_entity {
+                if root >= next_entity {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::DanglingEntity,
+                        detail: format!("AnimationPlayer.root_entity {root} was never spawned"),
+                    });
+                }
             }
         }
-        if let Some(root) = player.root_entity {
-            if root >= next_entity {
-                errors.push(ValidationError {
-                    entity,
-                    kind: ValidationKind::DanglingEntity,
-                    detail: format!("AnimationPlayer.root_entity {root} was never spawned"),
-                });
+    }
+
+    // #3791 — forward-latent today (the only `AnimationStack::new()` in the
+    // tree is `#[cfg(all(test, feature = "inspect"))]`), but registered, so
+    // a future producer inherits this gate instead of an unguarded column.
+    if let Some(q) = world.query::<AnimationStack>() {
+        for (entity, stack) in q.iter() {
+            if let Some(root) = stack.root_entity {
+                if root >= next_entity {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::DanglingEntity,
+                        detail: format!("AnimationStack.root_entity {root} was never spawned"),
+                    });
+                }
+            }
+            if let Some(reg) = registry.as_ref() {
+                for (i, layer) in stack.layers.iter().enumerate() {
+                    if reg.get(layer.clip_handle).is_none() {
+                        errors.push(ValidationError {
+                            entity,
+                            kind: ValidationKind::AnimationClip,
+                            detail: format!(
+                                "AnimationStack.layers[{i}].clip_handle {} not in \
+                                 AnimationClipRegistry",
+                                layer.clip_handle
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // #3791 — `Seated.animation_restore.clip_handle` is production-
+    // populated (`sandbox_seat_system` captures it, `clear_ambient_behavior`
+    // writes it back) and is exactly the session-local handle class the
+    // `AnimationClipRegistry` allowlist itself rejects that resource for —
+    // riding to disk inside a saved column with no gate on the way out.
+    if let Some(q) = world.query::<Seated>() {
+        for (entity, seated) in q.iter() {
+            if let Some(reg) = registry.as_ref() {
+                if reg.get(seated.animation_restore.clip_handle).is_none() {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::AnimationClip,
+                        detail: format!(
+                            "Seated.animation_restore.clip_handle {} not in \
+                             AnimationClipRegistry",
+                            seated.animation_restore.clip_handle
+                        ),
+                    });
+                }
             }
         }
     }
@@ -514,7 +591,10 @@ fn validate_material_finiteness(world: &World, errors: &mut Vec<ValidationError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::components::{InventoryIndex, ItemInstanceId, ItemStack};
+    use byroredux_core::animation::AnimationLayer;
+    use byroredux_core::ecs::components::{
+        InventoryIndex, ItemInstanceId, ItemStack, SeatedAnimationRestore,
+    };
     use byroredux_core::ecs::resources::ItemInstance;
     use byroredux_core::math::Vec3;
     use std::num::NonZeroU32;
@@ -649,6 +729,128 @@ mod tests {
         assert!(errors
             .iter()
             .all(|error| error.kind == ValidationKind::DanglingEntity));
+    }
+
+    // ── #3791 — AnimationStack / Seated share AnimationPlayer's gates ──
+
+    /// A dangling `AnimationStack.root_entity` must fail the gate exactly
+    /// like `AnimationPlayer.root_entity` does — SAVE-D4-2026-08-30-03's
+    /// first named sibling.
+    #[test]
+    fn dangling_animation_stack_root_entity_is_rejected() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let never_spawned = world.next_entity_id() + 10;
+        world.insert(
+            actor,
+            AnimationStack {
+                layers: Vec::new(),
+                root_entity: Some(never_spawned),
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::DanglingEntity);
+    }
+
+    /// An `AnimationStack` layer's `clip_handle` not present in the clip
+    /// registry must fail the gate — the second reference class this
+    /// column carries with no prior check.
+    #[test]
+    fn stale_animation_stack_layer_clip_handle_is_rejected() {
+        let mut world = World::new();
+        world.insert_resource(AnimationClipRegistry::new()); // empty
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            AnimationStack {
+                layers: vec![AnimationLayer::new(999)],
+                root_entity: None,
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::AnimationClip);
+    }
+
+    /// `Seated.animation_restore.clip_handle` not present in the clip
+    /// registry must fail the gate. This is the production-populated half
+    /// SAVE-D4-2026-08-30-03 flagged: `sandbox_seat_system` captures it,
+    /// `clear_ambient_behavior` writes it back onto the live
+    /// `AnimationPlayer` — a session-local registry index riding to disk
+    /// with no gate on the way out, pre-fix.
+    #[test]
+    fn stale_seated_animation_restore_clip_handle_is_rejected() {
+        let mut world = World::new();
+        world.insert_resource(AnimationClipRegistry::new()); // empty
+        let actor = world.spawn();
+        let furniture = world.spawn();
+        world.insert(
+            actor,
+            Seated {
+                furniture,
+                animation_restore: SeatedAnimationRestore {
+                    clip_handle: 999,
+                    ..Default::default()
+                },
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::AnimationClip);
+    }
+
+    /// Sanity: a healthy `AnimationStack` (resolvable clip, spawned root)
+    /// and a healthy `Seated.animation_restore` pass clean — the new gates
+    /// reject only what's actually stale, not every stack/seat.
+    #[test]
+    fn healthy_animation_stack_and_seated_restore_are_clean() {
+        let mut world = World::new();
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(byroredux_core::animation::AnimationClip {
+            name: String::new(),
+            duration: 0.0,
+            cycle_type: byroredux_core::animation::CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: Default::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        });
+        world.insert_resource(registry);
+
+        let root = world.spawn();
+        world.insert(
+            root,
+            AnimationStack {
+                layers: vec![AnimationLayer::new(handle)],
+                root_entity: Some(root),
+            },
+        );
+
+        let actor = world.spawn();
+        let furniture = world.spawn();
+        world.insert(
+            actor,
+            Seated {
+                furniture,
+                animation_restore: SeatedAnimationRestore {
+                    clip_handle: handle,
+                    ..Default::default()
+                },
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     /// #2947 — the exemption `REDERIVED_NOT_SAVED` documents

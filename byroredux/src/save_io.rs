@@ -108,7 +108,14 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // EscortState/Seated are deliberately NOT here — they carry
     // `EntityId` fields (`target_entity`/`furniture`), the same
     // session-local-reference hazard `#1696` already excluded
-    // `AnimationPlayer.root_entity` for. Those three still ride the full
+    // `AnimationPlayer.root_entity` for. `Seated` carries a SECOND,
+    // independent session-local-handle hazard too (#3333/#3791):
+    // `animation_restore.clip_handle` is an `AnimationClipRegistry` index
+    // — precisely the handle class the registry's own allowlist entry
+    // rejects it for ("numeric handles are session-local"). Both hazards
+    // are checked pre-save by `validate_animation`
+    // (`crates/save/src/validate.rs`), not just the `EntityId` one this
+    // comment used to name alone. Those three still ride the full
     // register_component round-trip above, just not the live overlay.
     "WanderState",
     "TravelState",
