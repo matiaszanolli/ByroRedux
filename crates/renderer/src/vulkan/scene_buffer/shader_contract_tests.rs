@@ -1460,10 +1460,21 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
 /// pattern's intended interpretation. #2688 / SAFE-D6-01 — covers the
 /// scalar types `GpuMaterial` actually declares; extend if a future field
 /// needs a vector/matrix type here.
+///
+/// #3684 (PERF-D4-2026-08-30-04) — extended with `GpuCamera`'s
+/// fixed-size-array shapes: rustfmt always renders these with the exact
+/// spacing matched here (`[f32; 4]`, `[[f32; 4]; 4]`), so this is a plain
+/// string match, not a general array-type parser.
 fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
     matches!(
         (rust_ty, glsl_ty),
-        ("f32", "float") | ("u32", "uint") | ("i32", "int") | ("bool", "bool")
+        ("f32", "float")
+            | ("u32", "uint")
+            | ("i32", "int")
+            | ("bool", "bool")
+            | ("[f32; 4]", "vec4")
+            | ("[u32; 4]", "uvec4")
+            | ("[[f32; 4]; 4]", "mat4")
     )
 }
 
@@ -2144,6 +2155,155 @@ fn gpu_instance_glsl_declarations_never_use_a_3_component_vector_type() {
                  instead, matching every other padding lane in this struct."
             );
         }
+    }
+}
+
+// ── CameraUBO five-way GLSL lockstep (#3684 / PERF-D4-2026-08-30-04) ──
+
+/// #3684 — `struct GpuCamera` (declared in GLSL as `uniform CameraUBO { ... }`)
+/// is hand-duplicated across the same five sources `GpuInstance` is
+/// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
+/// `cluster_cull.comp`, `caustic_splat.comp`), but — unlike `GpuInstance`,
+/// `GpuLight`, and `GpuMaterial` — had no lockstep test at all: only a
+/// `size_of::<GpuCamera>() == 368` pin and a SPIR-V block-SIZE reflection
+/// check, both blind to a within-size field reorder (`skyTint` ↔
+/// `sunDirection` — two adjacent `vec4`s in a struct that is entirely
+/// `vec4`s) or a type flip (`uvec4 renderDebug` → `vec4`, whose bits are
+/// read back via `floatBitsToUint`/`bitcast`). #2688 established that
+/// exact type-flip class as byte-lethal for `GpuMaterial`; the camera had
+/// no equivalent guard.
+///
+/// Reuses the same two-leg pattern `GpuLight`/`GpuInstance` established:
+/// mirror-vs-mirror across the five GLSL copies via `strip_struct_body`
+/// (CameraUBO has no multi-name declarations, so the simpler raw-line
+/// comparison `GpuLight` uses is sufficient — `parse_glsl_struct_fields`'s
+/// multi-name handling `GpuInstance` needs isn't required here), then a
+/// second, TYPED leg against the Rust `#[repr(C)] struct GpuCamera` that
+/// checks name, order, AND scalar/array type via
+/// [`rust_glsl_scalar_type_matches`] — extended by this same fix to
+/// recognize `GpuCamera`'s `[f32; 4]`/`[u32; 4]`/`[[f32; 4]; 4]` shapes,
+/// which no prior struct in this file needed (`GpuMaterial` is bare
+/// scalars only).
+///
+/// Deliberately does NOT call [`assert_mirror_list_is_complete`] /
+/// [`shader_sources_declaring`]: those require `decl` to be the START of
+/// the trimmed source line (after stripping any `//` comment), which
+/// matches a plain `struct X {` declaration but not
+/// `layout(set = N, binding = M) uniform CameraUBO {` — the `layout(...)`
+/// qualifier always precedes it. Loosening that shared, already-tested
+/// helper (used by three other structs' lockstep tests) to a bare
+/// substring match would reopen the exact false-positive the doc comment
+/// on `shader_sources_declaring` names as the reason it isn't one already
+/// (`skin_vertices.comp`'s comment *mentioning* `struct GpuInstance` while
+/// declaring none). A sixth shader adding `CameraUBO` without joining this
+/// SOURCES list is a real but narrower gap than the field-lockstep defect
+/// this test exists to close, and isn't in the issue's own suggested fix.
+#[test]
+fn camera_ubo_glsl_copies_stay_in_lockstep() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
+        ),
+        (
+            "triangle.vert",
+            include_str!("../../../shaders/triangle.vert"),
+        ),
+        ("water.vert", include_str!("../../../shaders/water.vert")),
+        (
+            "cluster_cull.comp",
+            include_str!("../../../shaders/cluster_cull.comp"),
+        ),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+    ];
+
+    let mut reference: Option<(&str, Vec<String>)> = None;
+    for (name, src) in SOURCES {
+        let body = extract_struct_body(src, "uniform CameraUBO {")
+            .unwrap_or_else(|| panic!("{name}: no longer declares `uniform CameraUBO {{`"));
+        let fields = strip_struct_body(body);
+        assert!(
+            fields.len() >= 13,
+            "{name}: parsed only {} CameraUBO field lines — parser likely broke",
+            fields.len()
+        );
+        match &reference {
+            None => reference = Some((name, fields)),
+            Some((ref_name, ref_fields)) => {
+                assert_eq!(
+                    ref_fields, &fields,
+                    "CameraUBO layout mismatch: `{ref_name}` vs `{name}`. All five GLSL copies \
+                     of `uniform CameraUBO` must declare identical fields in the same order \
+                     (Shader Struct Sync invariant, #3684) — a drift here silently corrupts \
+                     camera data (view/projection matrices, lighting, motion vectors) for \
+                     whichever copy lags behind."
+                );
+            }
+        }
+    }
+
+    // Second leg: name, order, AND type against the Rust `#[repr(C)]`
+    // struct — the offset source of truth.
+    let (_, first_src) = SOURCES[0];
+    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "uniform CameraUBO {");
+    let rust_src = include_str!("gpu_types.rs");
+    let rust_typed = parse_rust_struct_fields_typed(rust_src, "pub struct GpuCamera");
+
+    let rust_fields: Vec<String> = rust_typed.iter().map(|(_, n)| n.clone()).collect();
+    let glsl_fields: Vec<String> = glsl_typed.iter().map(|(_, n)| n.clone()).collect();
+    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
+    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
+
+    assert_eq!(
+        rust_norm.len(),
+        glsl_norm.len(),
+        "GpuCamera field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
+         `struct GpuCamera` (gpu_types.rs) and its five GLSL `CameraUBO` mirrors must stay in \
+         lockstep — see #3684.",
+        rust_norm.len(),
+        rust_fields,
+        glsl_norm.len(),
+        glsl_fields,
+    );
+
+    // #3684 — two fields are named differently on purpose between the Rust
+    // struct and every GLSL mirror: Rust `position` is GLSL `cameraPos`,
+    // and Rust `flags` is GLSL `sceneFlags`. Both are consistent across
+    // all five GLSL copies (this test's own first leg already proved
+    // that), so they're a deliberate naming choice — the GLSL side names
+    // things by what a shader author reads at the call site, the Rust
+    // side by what the CPU struct field is. Recorded explicitly here
+    // rather than silently loosening the check, so any OTHER field name
+    // mismatch (a real drift) still fails loud.
+    const KNOWN_NAME_ALIASES: &[(&str, &str)] =
+        &[("position", "cameraPos"), ("flags", "sceneFlags")];
+    for (i, (r_raw, g_raw)) in rust_fields.iter().zip(glsl_fields.iter()).enumerate() {
+        let names_match = normalize_ident(r_raw) == normalize_ident(g_raw);
+        let aliased = KNOWN_NAME_ALIASES
+            .iter()
+            .any(|(rust_name, glsl_name)| rust_name == r_raw && glsl_name == g_raw);
+        assert!(
+            names_match || aliased,
+            "GpuCamera field #{i} ORDER mismatch: Rust `{r_raw}` vs GLSL `{g_raw}`. Every GLSL \
+             `uniform CameraUBO` mirror must declare fields in the SAME order as the Rust \
+             `#[repr(C)]` struct — see #3684.",
+        );
+    }
+
+    for (i, ((rust_ty, rust_name), (glsl_ty, glsl_name))) in
+        rust_typed.iter().zip(glsl_typed.iter()).enumerate()
+    {
+        assert!(
+            rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
+            "GpuCamera field #{i} TYPE mismatch: Rust `{rust_name}: {rust_ty}` vs GLSL \
+             `{glsl_ty} {glsl_name}`. A within-size type reinterpretation (e.g. `uvec4` <-> \
+             `vec4`) preserves field order and struct size but corrupts the value read through \
+             the mismatched type — see #3684 (the #2688 GpuMaterial precedent for this exact \
+             class of defect).",
+        );
     }
 }
 

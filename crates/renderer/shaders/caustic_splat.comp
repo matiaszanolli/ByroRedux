@@ -59,8 +59,8 @@ layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
-// MUST match `GpuCamera` in `scene_buffer.rs` — both field order AND
-// field count. Pre-#1028 the trailing `skyTint` was omitted; caustic
+// MUST match `GpuCamera` in `scene_buffer/gpu_types.rs` — both field order
+// AND field count. Pre-#1028 the trailing `skyTint` was omitted; caustic
 // compute only consumes `viewProj` / `cameraPos` today, so the
 // truncation was benign, but the declaration size must equal the
 // bound UBO range to keep the sibling-consumer audit (R-D6-01) in

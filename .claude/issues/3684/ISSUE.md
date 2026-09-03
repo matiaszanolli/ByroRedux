@@ -1,77 +1,82 @@
-# #3684 — PERF-D4-2026-08-30-04: `CameraUBO` is the only hand-duplicated GPU struct with no field name/order/type lockstep test — it is pinned by size alone
+# #3684 — PERF-D4-2026-08-30-04: CameraUBO is the only hand-duplicated GPU struct with no field name/order/type lockstep test
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D4-2026-08-30-04`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,renderer,shaders,test-gap,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3684
+**Severity**: LOW · **Dimension**: SSBO Sizing & Upload
+**Location**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs` (`GpuCamera`), the five GLSL `uniform CameraUBO` declarations
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+Added `camera_ubo_glsl_copies_stay_in_lockstep`, following the two-leg
+pattern `GpuLight`/`GpuInstance` already established: leg 1 (mirror-vs-
+mirror across all five GLSL copies via `strip_struct_body`, matching
+`GpuLight`'s simpler approach since CameraUBO has no multi-name
+declarations), leg 2 (typed name/order/type comparison against the Rust
+`#[repr(C)] struct GpuCamera`, matching `GpuMaterial`'s typed leg).
 
-- **Severity**: LOW
-- **Dimension**: SSBO Sizing & Upload
-- **Location**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs:359` (`pub struct GpuCamera`), `crates/renderer/src/vulkan/reflect.rs:606-641`
-  (`camera_ubo_size_matches_gpu_camera_in_every_shader`),
-  `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs:66-79`
-  (`gpu_camera_is_368_bytes`); the five GLSL declarations at
-  `crates/renderer/shaders/include/bindings.glsl:280`, `triangle.vert:106`, `water.vert:83`,
-  `cluster_cull.comp:57`, `caustic_splat.comp:68`
-- **Status**: NEW (test-gap; **no live drift** — all five declarations verified identical at
-  368 B this session)
-- **Description**: Every other multi-copy GPU struct in this crate has a parsed, field-by-field
-  lockstep test: `GpuInstance` across five GLSL mirrors plus the Rust struct
-  (`gpu_instance_glsl_copies_stay_in_lockstep`, #2748), `GpuLight` across four
-  (`gpu_light_glsl_copies_stay_in_lockstep`, #1916), `GpuMaterial` against
-  `include/bindings.glsl` including a per-field scalar-type check
-  (`gpu_material_glsl_field_order_matches_rust_struct`, #1657 / #2688). `CameraUBO` — declared
-  by hand in five GLSL sources and read by six shaders — has neither. Its only guards are
-  `size_of::<GpuCamera>() == 368` on the Rust side and a SPIR-V *block size* reflection pin on
-  the shipped `.spv`. Both are blind to a within-size reorder (`skyTint` ↔ `sunDirection`,
-  say — two adjacent `vec4`s in a struct that is entirely `vec4`s) and to a type flip
-  (`uvec4 renderDebug` → `vec4`, whose contents are bitcast flags). #2688 established that exact
-  type-flip class as "byte-lethal" for `GpuMaterial` and added a check; the camera got none.
+Extended `rust_glsl_scalar_type_matches` (shared by `GpuMaterial`'s own
+type-check leg) to recognize `GpuCamera`'s fixed-size-array field shapes
+— `[f32; 4]` ↔ `vec4`, `[u32; 4]` ↔ `uvec4`, `[[f32; 4]; 4]` ↔ `mat4` —
+since no prior struct in this file needed array/matrix types (`GpuMaterial`
+is bare scalars only, per that function's own doc comment anticipating
+exactly this extension).
 
-  The parser infrastructure to close it already exists in the same file
-  (`parse_glsl_struct_fields_typed` / `parse_rust_struct_fields_typed`,
-  `shader_contract_tests.rs:1260-1300`).
+Repointed the four stale `scene_buffer.rs` shader comments (`triangle.vert`,
+`caustic_splat.comp`, `cluster_cull.comp` ×2) at `scene_buffer/gpu_types.rs`
+— the file that struct actually lives in since the Session 34 split — per
+the issue's own "adjacent, same root" note.
 
-  Adjacent, same root: four shader sources still direct the reader to `scene_buffer.rs` for the
-  camera contract — `caustic_splat.comp:62`, `cluster_cull.comp:51`, `cluster_cull.comp:59`,
-  `triangle.vert:99` (the last spells out `crates/renderer/src/vulkan/scene_buffer.rs`). That
-  file was split into `scene_buffer/` in Session 34; the struct now lives in
-  `scene_buffer/gpu_types.rs`.
-- **Evidence**:
-  ```rust
-  // reflect.rs:632-641 — size only, no field identity
-  let size = uniform_block_size_by_name(spv, "CameraUBO")…;
-  assert_eq!(size, expected, "{name}.spv CameraUBO is {size} B but GpuCamera is {expected} B …");
-  ```
-  ```rust
-  // shader_contract_tests.rs:1746-1748, on the GpuInstance test — naming the precedent
-  /// … the full lockstep guard `GpuMaterial` and `GpuLight` already have.
-  ```
-- **Impact**: None today. The exposure is that the camera UBO's five hand-maintained copies are
-  the least-guarded GPU contract in the renderer, in a repo where this exact class has recurred
-  eight times (#417, #1447, #1493, #1657, #1916, #2688, #2748, #3231) and where a same-size
-  reorder produces wrong lighting/motion-vector math with no validation-layer signal.
-- **Related**: #2748, #1916, #1657, #2688, #1447; #3447 (the stale "352 B … plus ten" prose in
-  `gpu_camera_is_368_bytes`'s own doc comment is already listed in that issue's locations and is
-  **not** re-reported here).
-- **Suggested Fix**: Add `camera_ubo_glsl_copies_stay_in_lockstep` alongside the `GpuLight` and
-  `GpuInstance` tests, parsing `uniform CameraUBO` out of the five GLSL sources with the
-  existing typed parser and comparing name, order and scalar type against
-  `pub struct GpuCamera`. Repoint the four stale `scene_buffer.rs` shader comments at
-  `scene_buffer/gpu_types.rs` in the same change.
+## A genuine, pre-existing finding surfaced while writing the typed leg
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+Two `GpuCamera` fields are named differently between the Rust struct and
+every GLSL mirror: Rust `position` is GLSL `cameraPos`, and Rust `flags`
+is GLSL `sceneFlags`. Both differences are **consistent across all five
+GLSL copies** (leg 1 proves that), so this is a deliberate naming
+convention (GLSL side names things by shader-author-facing meaning, Rust
+side by the CPU struct field), not a drift bug — but it would have made a
+strict name-equality check permanently red. Recorded as an explicit,
+narrow two-entry alias table (`KNOWN_NAME_ALIASES`) rather than silently
+loosening the check, so any *other*, genuinely accidental name mismatch
+still fails loud.
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+## SIBLING (issue's own checklist item)
+
+The four stale `scene_buffer.rs` references were the issue's own named
+sibling finding — fixed above, in the same change.
+
+Deliberately did **not** call `assert_mirror_list_is_complete` /
+`shader_sources_declaring` for the five-source completeness check those
+other tests get: that shared helper requires its `decl` argument to be
+the exact START of a trimmed source line, which matches a plain `struct
+X {` declaration but not `layout(set = N, binding = M) uniform CameraUBO
+{` — the `layout(...)` qualifier always precedes it. Loosening that
+already-tested, shared helper (used by three other structs' lockstep
+tests) to a bare substring match would reopen the exact false-positive
+its own doc comment names as the reason it isn't one already
+(`skin_vertices.comp`'s comment *mentioning* `struct GpuInstance` while
+declaring none). A sixth shader adding `CameraUBO` without joining this
+test's `SOURCES` list is a real but narrower gap than the field-lockstep
+defect this fix closes, and wasn't part of the issue's own suggested fix.
+
+## TESTS (issue's own checklist item)
+
+Verified the guard actually catches the regression it exists to prevent
+(this session's established quality bar) with three separate probes,
+each reverted after confirming:
+
+- **Within-size reorder**: swapped `skyTint`/`sunDirection` in one of the
+  five GLSL mirrors (`bindings.glsl`) — leg 1 caught it (layout mismatch
+  between mirrors).
+- **Type flip in one mirror**: changed `uvec4 renderDebug` to `vec4
+  renderDebug` in a single file — leg 1 caught it (mirror disagreement).
+- **Type flip in all five mirrors** (the class leg 1 alone *cannot* see,
+  since all five would then agree with each other): changed `uvec4
+  renderDebug` to `vec4` in every mirror — leg 2's type check caught it,
+  correctly reporting the Rust/GLSL type mismatch specifically.
+
+## Verification
+
+- `cargo check --workspace --tests`: clean (one pre-existing, unrelated
+  `unused_mut` warning in `esm/records/grup_walker.rs` predates this fix).
+- `cargo test -q -p byroredux-renderer`: 817 tests passing, 0 failing
+  (+1 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7097 passing, 0
+  failing**.

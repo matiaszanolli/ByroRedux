@@ -96,7 +96,7 @@ layout(std430, set = 1, binding = 18) readonly buffer PreviousModelBuffer {
 };
 
 // Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
-// MUST match `GpuCamera` in `crates/renderer/src/vulkan/scene_buffer.rs`
+// MUST match `GpuCamera` in `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`
 // in both field order AND field count. Pre-#1028 (R-D6-01) this block
 // terminated at `jitter`, omitting the trailing `skyTint` field that
 // `GpuCamera` carries. The vertex shader didn't consume `skyTint` so
