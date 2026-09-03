@@ -468,9 +468,23 @@ Atomic Command holotape (`closeHolotape`, high-score get/set, action animation,
 and registered-sound controls), for 138 total. A full 311-movie sweep of
 `Fallout4 - Interface.ba2` (#2966, 2026-08-19) measured 131 more distinct
 `BGSCodeObj` methods actually called by shipped menus but missing from those
-138; the catalog was regenerated to the union, 269 entries, with `kind`
-(`Command`/`Request`) inferred from name prefix (`Get*`/`Is*`/`Should*`/
-`Can*`/`get*`). 45 of the 269 are unreferenced by that one archive — kept,
+138; the catalog was regenerated to the union, 269 entries, with the 131
+sweep-added entries' `kind` (`Command`/`Request`) inferred from name prefix
+(`Get*`/`Is*`/`Should*`/`Can*`/`get*`) rather than measured against source —
+the original 138 had `kind` read directly from F4CF's reconstructed AS3 /
+the installed-ABC inventory instead. #3773 — pre-fix, the array carried no
+marker distinguishing the two provenances, so a maintainer had to re-derive
+which 131 were guessed before trusting any entry's `kind`; every
+`ScaleformHostMethod` now carries a `provenance:
+ScaleformKindProvenance::{Measured, HeuristicNamePrefix}` field
+(`crates/ui/src/catalog.rs`) recording exactly this split, pinned by
+`fallout4_catalog_provenance_split_matches_the_2966_sweep`. The heuristic's
+own boundary is demonstrably imprecise — every `Request`-classified entry
+happens to match the prefix set, while at least 16 `Command`-classified
+names carry query-shaped verbs (`Request*`, `Check*`, `Validate*`, …) the
+prefix rule doesn't cover — so a `HeuristicNamePrefix` `Command` is a weaker
+claim than a `Measured` one, not a wrong one; none of the 16 are asserted
+misclassified. 45 of the 269 are unreferenced by that one archive — kept,
 since Far Harbor/Nuka-World/Vault-Tec Workshop/Automatron/Creation Club
 content lives in separate archives this measurement didn't have on disk to
 sweep. The catalog preserves case because FO4 contains forms such as
