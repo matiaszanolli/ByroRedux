@@ -133,6 +133,58 @@ pub fn inflate_bounded<R: io::Read>(
     Ok(buf)
 }
 
+/// [`inflate_bounded`]'s zlib-specific sibling, for the codec that can
+/// actually attempt the #3720 recovery below. Takes the raw compressed
+/// bytes rather than a pre-built decoder — unlike the generic function,
+/// this one may need to build a *second* decoder over the same bytes.
+///
+/// #3720 (ESM-2026-08-30-D8-01) found shipped ESM records carrying a
+/// well-formed DEFLATE stream behind a corrupt Adler-32 trailer —
+/// `flate2::ZlibDecoder` validates that trailer and errors even though
+/// every byte inflated cleanly (confirmed against real data:
+/// `FalloutNV.esm` LAND `0x00150FC0`, The Strip exterior). #3812
+/// (BSA-2026-09-02) is the sibling gap: `inflate_bounded`'s BSA/BA2/CSG
+/// zlib call sites had the identical exposure with no way to retry, since
+/// they only ever saw an already-constructed decoder. On a zlib failure,
+/// this retries as raw DEFLATE (skip the 2-byte zlib header, no trailer to
+/// validate) and accepts the recovery ONLY when its length exactly matches
+/// `declared` — a length mismatch means the stream itself is bad, not just
+/// its checksum, so the original zlib error surfaces instead. LZ4 call
+/// sites are unaffected (no zlib trailer to mis-validate) and keep calling
+/// [`inflate_bounded`] directly.
+pub fn inflate_bounded_zlib(compressed: &[u8], declared: usize, label: &str) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(declared);
+    if let Err(zlib_err) = flate2::read::ZlibDecoder::new(compressed)
+        .take(declared as u64 + 1)
+        .read_to_end(&mut buf)
+    {
+        buf.clear();
+        let raw_ok = compressed.len() >= 2
+            && flate2::read::DeflateDecoder::new(&compressed[2..])
+                .take(declared as u64 + 1)
+                .read_to_end(&mut buf)
+                .is_ok()
+            && buf.len() == declared;
+        if !raw_ok {
+            return Err(zlib_err);
+        }
+        log::warn!(
+            "{label}: zlib Adler-32 trailer mismatch on an otherwise well-formed \
+             stream, recovered via raw DEFLATE ({declared} bytes, exact match)"
+        );
+    }
+    if buf.len() > declared {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{label} inflated past its declared uncompressed size \
+                 {declared} — archive is corrupt or hostile (decompression bomb)"
+            ),
+        ));
+    }
+    Ok(buf)
+}
+
 /// Upper bound on the summed byte total across every chunk of a single
 /// multi-chunk record (e.g. one BA2 DX10 texture's per-mip chunk list).
 /// Each chunk's own size is already capped at [`MAX_CHUNK_BYTES`], but a
@@ -355,5 +407,74 @@ mod inflate_bounded_tests {
         let data = vec![7u8; 1024];
         assert!(inflate_bounded(ZlibDecoder::new(&zlib(&data)[..]), 1023, "test").is_err());
         assert!(inflate_bounded(ZlibDecoder::new(&zlib(&data)[..]), 1024, "test").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod inflate_bounded_zlib_tests {
+    use super::inflate_bounded_zlib;
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).expect("encode");
+        e.finish().expect("finish")
+    }
+
+    /// #3812 (BSA-2026-09-02), mirroring #3720's
+    /// `compressed_record_with_corrupt_adler32_trailer_recovers_via_raw_deflate`:
+    /// a well-formed DEFLATE stream behind a corrupt Adler-32 trailer must
+    /// still decode, recovered via a raw-DEFLATE retry.
+    #[test]
+    fn corrupt_adler32_trailer_recovers_via_raw_deflate() {
+        let data = b"a compressed BSA chunk that is otherwise perfectly fine";
+        let mut compressed = zlib(data);
+        // Flip the last 4 bytes — the zlib Adler-32 trailer sits at the very
+        // end, after the DEFLATE data.
+        let len = compressed.len();
+        for byte in &mut compressed[len - 4..] {
+            *byte ^= 0xFF;
+        }
+
+        let out = inflate_bounded_zlib(&compressed, data.len(), "test")
+            .expect("a checksum-only failure must still recover via raw DEFLATE");
+        assert_eq!(out, data);
+    }
+
+    /// #3812 sibling, mirroring #3720's
+    /// `compressed_record_with_corrupt_deflate_body_still_errors`: corrupting
+    /// the DEFLATE *body* (not just the trailer) must still be a hard error
+    /// — the retry only masks a bad checksum on an otherwise-correct stream,
+    /// never a genuinely corrupt one.
+    #[test]
+    fn corrupt_deflate_body_still_errors() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(2000).collect();
+        let mut compressed = zlib(&data);
+        // Corrupt the byte immediately after the 2-byte zlib header — the
+        // start of the DEFLATE block itself (block-type/length bits), not
+        // a byte deep in a long literal run where a flip can leave the
+        // decoded length (though not content) untouched and this test's
+        // length-only assertion would miss it. Mirrors #3720's own
+        // `compressed_record_with_corrupt_deflate_body_still_errors`,
+        // which corrupts at the identical `compressed_start + 2` offset.
+        compressed[2] ^= 0xFF;
+
+        assert!(
+            inflate_bounded_zlib(&compressed, data.len(), "test").is_err(),
+            "a body-level corruption must not be silently recovered"
+        );
+    }
+
+    /// The raw-DEFLATE retry must never fire on an ordinary, well-formed
+    /// stream — this pins that the fast path still returns the right bytes
+    /// with no spurious retry/warn.
+    #[test]
+    fn well_formed_stream_needs_no_retry() {
+        let data = b"nothing wrong with this chunk at all";
+        let compressed = zlib(data);
+        let out = inflate_bounded_zlib(&compressed, data.len(), "test").expect("clean decode");
+        assert_eq!(out, data);
     }
 }

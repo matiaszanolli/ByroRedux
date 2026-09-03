@@ -60,7 +60,6 @@
 use crate::safety::{
     checked_chunk_size, checked_chunk_size_usize, checked_chunk_total, checked_entry_count,
 };
-use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -731,8 +730,10 @@ fn decompress_chunk(
             // it without limit. Under-runs keep the lenient `Ok` + warn below
             // (#812 / #2618); over-runs are rejected. Sibling of the BSA-side
             // fix in `archive/extract.rs`.
-            let decoder = ZlibDecoder::new(packed);
-            let buf = crate::safety::inflate_bounded(decoder, unpacked_size, "BA2 zlib chunk")?;
+            // #3812 — the zlib-specific sibling, so a checksum-only
+            // failure can retry as raw DEFLATE (#3720's recovery, ported).
+            let buf =
+                crate::safety::inflate_bounded_zlib(packed, unpacked_size, "BA2 zlib chunk")?;
             if buf.len() != unpacked_size {
                 // #812 / FO4-D2-NEW-02 — `read_to_end` honours deflate's
                 // self-terminating end-of-stream marker mid-buffer so a

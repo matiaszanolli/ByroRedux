@@ -23,7 +23,6 @@
 //! resolves it, decompressing (and caching) only the chunks it touches.
 
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
-use flate2::read::ZlibDecoder;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -330,8 +329,10 @@ impl CsgArchive {
         // decoder itself; `inflate_bounded` raises the same `InvalidData` at
         // the ceiling instead of past it. The explicit check is kept as
         // defense-in-depth and to keep this arm's message.
-        let raw = crate::safety::inflate_bounded(
-            ZlibDecoder::new(&comp[..]),
+        // #3812 — the zlib-specific sibling, so a checksum-only failure
+        // can retry as raw DEFLATE (#3720's recovery, ported).
+        let raw = crate::safety::inflate_bounded_zlib(
+            &comp,
             CSG_CHUNK_SIZE,
             &format!("CSG chunk {idx}"),
         )?;

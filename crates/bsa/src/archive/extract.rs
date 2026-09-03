@@ -7,7 +7,6 @@
 
 use super::{normalize_path, BsaArchive, BSA_V_SKYRIM_SE};
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize};
-use flate2::read::ZlibDecoder;
 use std::io::{self, Read, Seek, SeekFrom};
 
 impl BsaArchive {
@@ -148,9 +147,12 @@ impl BsaArchive {
                 )?;
                 (buf, "LZ4 frame")
             } else {
-                let decoder = ZlibDecoder::new(&compressed[..]);
-                let buf = crate::safety::inflate_bounded(
-                    decoder,
+                // #3812 — the zlib-specific sibling, not `inflate_bounded`
+                // directly: it needs the raw compressed bytes so it can
+                // retry as raw DEFLATE if the stream fails only its
+                // Adler-32 trailer check (#3720's recovery, ported).
+                let buf = crate::safety::inflate_bounded_zlib(
+                    &compressed,
                     original_size,
                     &format!("BSA zlib '{path}'"),
                 )?;
