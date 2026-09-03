@@ -1011,6 +1011,9 @@ pub(crate) fn build_render_data(
     // deciding which branch a runtime baseline takes. Read the TSVs directly
     // rather than transcribing counts here, per the audit's cite-don't-copy
     // rule — a number copied here is a number that rots.
+    // The 2026-09-03 captures in those five TSVs are all below the gate,
+    // including FO4: its large total command stream does not establish that
+    // the parallel raster branch ran.
     //
     // The constant is unaffected: the crossover table above is what places it,
     // and it still holds. This note exists so the next person tuning it does

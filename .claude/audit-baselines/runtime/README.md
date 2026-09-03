@@ -35,7 +35,7 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	48.7
 bench_fps_avg	49.1
 bench_draws_cmds	1183
-bench_draws_raster_cmds	1183
+bench_draws_raster_cmds	256
 bench_draws_batches	96
 bench_draws_gpu_calls	9
 ```

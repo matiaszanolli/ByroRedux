@@ -1,4 +1,4 @@
-# regenerated: 2026-09-02 (#3550/#3555/#3556 — RT-4/RT-9/RT-10 metric-contract fixes)
+# regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-26 (#3288 — first live re-run since 2026-08-06; see
 # docs/audits/AUDIT_RUNTIME_2026-08-26.md)
 # entities_total 701 -> 705 (+0.6%, inside the +/-2% band) and the draw split
@@ -52,5 +52,6 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	377.6
 bench_fps_avg	377.6
 bench_draws_cmds	325
+bench_draws_raster_cmds	133
 bench_draws_batches	20
 bench_draws_gpu_calls	2

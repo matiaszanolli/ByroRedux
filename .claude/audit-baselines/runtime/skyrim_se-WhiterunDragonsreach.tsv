@@ -1,4 +1,4 @@
-# regenerated: 2026-09-02 (#3550/#3556 — RT-4/RT-10 metric-contract fixes; RT-7/RT-8 rows held stale, see below)
+# regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-06 (RT-2 / #2216)
 # entities_total 6044 -> 8126 (+34.4%) and skin_pool_live 0 -> 83: both far
 # past #2216's original measurement (+5.74% / 25) — the same benign-creep
@@ -95,5 +95,6 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	161.9
 bench_fps_avg	161.9
 bench_draws_cmds	2342
+bench_draws_raster_cmds	14
 bench_draws_batches	9
 bench_draws_gpu_calls	2

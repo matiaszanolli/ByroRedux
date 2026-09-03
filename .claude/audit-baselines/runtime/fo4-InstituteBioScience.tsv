@@ -1,4 +1,4 @@
-# regenerated: 2026-09-02 (#3550/#3553/#3554/#3556 — RT-4/RT-7/RT-8/RT-10 metric-contract fixes)
+# regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-22 (#3006 — RT-2026-08-16-07 root-caused and re-baselined)
 # RT-1/#2215: bench_draws_gpu_calls 40 -> 42, bench_draws_batches 272 -> 753.
 # Same draw_sort_key depth-primary-for-alpha-over mechanism as the FNV regen
@@ -81,5 +81,6 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	44.3
 bench_fps_avg	44.3
 bench_draws_cmds	3949
+bench_draws_raster_cmds	256
 bench_draws_batches	296
 bench_draws_gpu_calls	16

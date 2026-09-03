@@ -1,4 +1,4 @@
-# regenerated: 2026-09-02 (#3550/#3553/#3554/#3556 — RT-4/RT-7/RT-8/RT-10 metric-contract fixes)
+# regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-26 (#3288 — see docs/audits/AUDIT_RUNTIME_2026-08-26.md)
 #
 # entities_total 9271 -> 7174 (-22.6%) is NOT a regression. Bisected to
@@ -73,5 +73,6 @@ skin_pool_overflow_attempts	0
 bench_fps_p50	65.4
 bench_fps_avg	65.4
 bench_draws_cmds	2110
+bench_draws_raster_cmds	283
 bench_draws_batches	109
 bench_draws_gpu_calls	26
