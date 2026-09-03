@@ -420,8 +420,16 @@ impl App {
         use byroredux_core::ecs::components::MeshHandle;
         use byroredux_core::ecs::GlobalTransform;
 
-        let meshes = self.world.query::<MeshHandle>()?;
+        // #3695 (ECS-D1-01) — `GlobalTransform` before `MeshHandle`,
+        // matching the canonical acquisition order `docs/engine/ecs.md`
+        // fixes and the edge `build_render_data`'s static-mesh pass
+        // (`render/static_meshes.rs`) establishes on the same pair. The
+        // prior MeshHandle-then-GlobalTransform order was the inverse —
+        // safe today (both sites run on the main thread), but an inverted
+        // pair still aborts a debug build under BYRO_LOCK_ORDER_CHECK=1
+        // once both sites are observed in one process.
         let globals = self.world.query::<GlobalTransform>()?;
+        let meshes = self.world.query::<MeshHandle>()?;
         let mut min = byroredux_core::math::Vec3::splat(f32::INFINITY);
         let mut max = byroredux_core::math::Vec3::splat(f32::NEG_INFINITY);
         let mut count = 0u32;
@@ -989,6 +997,47 @@ mod tests {
             exit_pos < 400,
             "the `event_loop.exit()` must sit in set_upscaler_mode's own Err arm, \
              not somewhere further down the file (#2156)",
+        );
+    }
+
+    /// #3695 (ECS-D1-01) — `scene_centroid_distance` must acquire
+    /// `GlobalTransform` before `MeshHandle`, matching the canonical order
+    /// `build_render_data`'s static-mesh pass (`render/static_meshes.rs`)
+    /// establishes on the same pair; the inverse order (pre-fix) is a real
+    /// edge for the cross-thread `BYRO_LOCK_ORDER_CHECK` graph, since both
+    /// sites are reachable in one process (`--bench-hold` renders through
+    /// `build_render_data` and can also call this method).
+    ///
+    /// Static source check, not a live one: `scene_centroid_distance` is a
+    /// method on `App`, which needs a real Vulkan device to construct —
+    /// same "cargo test cannot induce this" reasoning as
+    /// `upscaler_switch_failure_exits_the_event_loop` above. Scoped to the
+    /// function body (`fn scene_centroid_distance` to its closing brace at
+    /// column 4) so a `GlobalTransform`/`MeshHandle` mention anywhere else
+    /// in the file can't produce a false pass.
+    #[test]
+    fn scene_centroid_distance_acquires_global_transform_before_mesh_handle() {
+        let src = include_str!("app_step.rs");
+        let fn_start = src
+            .find("fn scene_centroid_distance(")
+            .expect("scene_centroid_distance must still exist under this name");
+        let body = &src[fn_start..];
+        let fn_end = body
+            .find("\n    }\n")
+            .expect("scene_centroid_distance's closing brace (4-space indent) not found");
+        let body = &body[..fn_end];
+
+        let global_pos = body
+            .find("self.world.query::<GlobalTransform>()")
+            .expect("scene_centroid_distance must acquire GlobalTransform via self.world.query");
+        let mesh_pos = body
+            .find("self.world.query::<MeshHandle>()")
+            .expect("scene_centroid_distance must acquire MeshHandle via self.world.query");
+        assert!(
+            global_pos < mesh_pos,
+            "scene_centroid_distance acquires MeshHandle before GlobalTransform — this is \
+             the inverse of build_render_data's static-mesh pass order and re-opens the \
+             #3695 lock-order cycle",
         );
     }
 }

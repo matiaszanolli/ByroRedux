@@ -1,56 +1,59 @@
-# #3695 — ECS-2026-08-30-D1-01: scene_centroid_distance inverts the canonical GlobalTransform → MeshHandle order, closing a live 2-cycle against build_render_data
-
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
+# #3695 — ECS-D1-01: scene_centroid_distance inverts the canonical GlobalTransform → MeshHandle order
 
 **Severity**: MEDIUM · **Dimension**: Lock Ordering & Deadlock
-**Location**: `byroredux/src/app_step.rs` (`App::scene_centroid_distance`, ~:406-411); opposing edge at `byroredux/src/render/static_meshes.rs` (~:99-100)
-**Source**: `docs/audits/AUDIT_ECS_2026-08-30.md` (ECS-D1-01)
+**Location**: `byroredux/src/app_step.rs` (`App::scene_centroid_distance`); opposing edge at `byroredux/src/render/static_meshes.rs`
 
-## Description
+## Fix
 
-`docs/engine/ecs.md` fixes one process-wide acquisition order for the hierarchy/skinning/bounds cluster:
+Swapped the two acquisitions in `scene_centroid_distance` so
+`GlobalTransform` is taken first, matching `render/static_meshes.rs`'s
+static-mesh pass and the canonical order `docs/engine/ecs.md` fixes for
+this cluster. One-line reorder per the issue's own suggested fix, no
+behavior difference — the loop body (`for (entity, _) in meshes.iter()`,
+`globals.get(entity)`) reads both queries identically regardless of
+acquisition order.
 
-```
-CharacterController -> RapierHandles -> Transform -> Parent -> Children ->
-GlobalTransform -> SkinnedMesh -> MeshHandle -> LocalBound -> WorldBound ->
-Name -> StringPool
-```
+## SIBLING (issue's own checklist item)
 
-("skipping types is fine, reordering them is not").
+Swept every `query::<MeshHandle>()` / `query_mut::<MeshHandle>()` call
+site in the tree for the same inverted pair. Only `render/static_meshes.rs`
+(canonical) and the now-fixed `app_step.rs` combine `MeshHandle` with
+`GlobalTransform` in one function; the rest (`ownership_sample.rs`,
+`npc_spawn.rs`, `commands/world_info.rs`, `cell_loader/unload.rs`) never
+acquire `GlobalTransform` alongside `MeshHandle`, so there's no inversion
+risk there. `crates/debug-server/src/evaluator.rs` acquires both, but
+already in the correct order (`Transform, Parent, Children,
+GlobalTransform, SkinnedMesh, MeshHandle, Name` — an exact match to the
+`docs/engine/ecs.md` chain) — no fix needed.
 
-`App::scene_centroid_distance` acquires `MeshHandle` first and then `GlobalTransform`, holding both across the centroid loop — the inverse of that order, and the inverse of the edge `build_render_data`'s static-mesh pass establishes on the same two types. Neither guard is scoped or dropped between acquisition and use, so both edges are real observations for the `BYRO_LOCK_ORDER_CHECK` graph.
+## LOCK_ORDER (issue's own checklist item)
 
-## Evidence
+No `RwLock` scope changed — both `let` bindings are held for the same
+span as before (until the end of the function), only their relative
+acquisition order swapped.
 
-```rust
-// byroredux/src/app_step.rs:410-411 — MeshHandle -> GlobalTransform (inverted)
-let meshes = self.world.query::<MeshHandle>()?;
-let globals = self.world.query::<GlobalTransform>()?;
-```
+## TESTS (issue's own checklist item)
 
-```rust
-// byroredux/src/render/static_meshes.rs:99-100 — GlobalTransform -> MeshHandle (canonical)
-let tq = world.query::<GlobalTransform>();
-let mq = world.query::<MeshHandle>();
-```
+`scene_centroid_distance` is a private method on `App`, which needs a
+real Vulkan device to construct — not unit-testable live, the same
+"`cargo test` cannot induce this" situation this file's own
+`upscaler_switch_failure_exits_the_event_loop` test already documents and
+handles via a static source scan. Added
+`scene_centroid_distance_acquires_global_transform_before_mesh_handle`
+following that exact precedent: scopes to the function body (start of
+`fn scene_centroid_distance` to its closing brace) and asserts the
+`self.world.query::<GlobalTransform>()` text position precedes
+`self.world.query::<MeshHandle>()`'s.
 
-Both sites are reachable in one process: `scene_centroid_distance` is called from `measure_bench_subject_distance` (`byroredux/src/app_step.rs:390`) and the bench-camera orbit setup, and a `--bench-frames` / `--bench-hold` run also renders frames through `build_render_data`.
+Verified the guard actually catches a regression (this session's
+established quality bar): reverted the acquisition order back to
+`MeshHandle` first, reran — the test failed with the exact expected
+message, then restored the fix and confirmed a clean pass again.
 
-## Impact
+## Verification
 
-No live deadlock — both sites run on the main thread and cannot overlap. The concrete cost is the one `docs/engine/ecs.md` warns about directly: "an inverted pair that is *safe* still aborts a debug build once both sites run." A debug build with `BYRO_LOCK_ORDER_CHECK=1` (the CI lock-order job, #1410 / #2137) panics on whichever observation lands second, taking down a bench run for a non-bug. It also erodes the one invariant that makes future promotion of either site to a parallel system safe by construction.
-
-## Related
-
-- #3445 (`studio_host` `Name -> StringPool` inversion, OPEN, MEDIUM — same class, same non-scheduler blast radius), #3446, #2388
-- #3260 / #3303 are the scheduler-side HIGH precedents
-- **#3580** (`combat_approach_line_of_sight_reaches`, `PhysicsWorld -> RapierHandles`) is a **different** cycle in the same detector — filed separately by the concurrency audit. Fixing one does not fix the other.
-
-## Suggested Fix
-
-Swap the two acquisitions in `byroredux/src/app_step.rs` so `GlobalTransform` is taken first, matching `byroredux/src/render/static_meshes.rs`. One-line change, no behaviour difference.
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files (other `MeshHandle`/`GlobalTransform` pairs, other non-scheduler acquisition sites)
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **TESTS**: A regression test pins this specific fix
+- `cargo check -p byroredux --tests`: clean.
+- `cargo test -q -p byroredux --bin byroredux`: 1,869 tests passing, 0
+  failing (+1 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7090 passing, 0
+  failing**.
