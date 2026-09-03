@@ -201,6 +201,20 @@ impl NiDynamicEffectData {
             // #981 — bulk-read affected-nodes u32 array.
             let count = stream.read_u32_le()? as usize;
             stream.read_u32_array(count)?
+        } else if pre_fo4 && stream.version() <= NifVersion::V4_0_0_2 {
+            // #3717 — nif.xml gives `NiDynamicEffect` a SECOND
+            // affected-nodes field group, gated `until="4.0.0.2"`:
+            // `Affected Nodes` (`Ptr`, <= 3.3.0.13) or
+            // `Affected Node Pointers` (`uint`, 4.0.0.0..=4.0.0.2). Both
+            // sub-ranges are byte-identical on disk — a `count: u32`
+            // followed by `count` 4-byte entries — only the field's
+            // name/type annotation in nif.xml differs between them, so
+            // one read covers both. Oblivion's own `Data/` ships 5 files
+            // in this band (v3.3.0.13 / v4.0.0.2 markers); none carries a
+            // `NiLight` or `NiTextureEffect`, so this arm is untested
+            // against real content — covered by a synthetic fixture.
+            let count = stream.read_u32_le()? as usize;
+            stream.read_u32_array(count)?
         } else {
             Vec::new()
         };
@@ -520,5 +534,95 @@ mod niavobject_version_gate_tests {
             bytes.len(),
             "u32 flags must consume exactly 4 bytes"
         );
+    }
+}
+
+#[cfg(test)]
+mod ni_dynamic_effect_data_version_gate_tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+
+    fn header_at(version: NifVersion) -> NifHeader {
+        NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// #3717 — nif.xml's SECOND `NiDynamicEffect` affected-nodes field
+    /// group (`until="4.0.0.2"`) was never read at all; the parser only
+    /// implemented the `since="10.1.0.0"` pair. No vanilla file in the
+    /// 624,702-file corpus this project has parsed carries a `NiLight` /
+    /// `NiTextureEffect` in this band, so this is a synthetic fixture —
+    /// the issue's own suggested-fix note that there is no vanilla sample
+    /// to regress against.
+    #[test]
+    fn v4_0_0_2_reads_the_affected_nodes_array() {
+        let header = header_at(NifVersion::V4_0_0_2);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // Num Affected Nodes
+        bytes.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+        bytes.extend_from_slice(&0x9abc_def0u32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiDynamicEffectData::parse(&mut stream)
+            .expect("v4.0.0.2 NiDynamicEffect tail should parse");
+        assert!(
+            data.switch_state,
+            "no switch_state field below v10.1.0.106 — must default true"
+        );
+        assert_eq!(data.affected_nodes, vec![0x1234_5678, 0x9abc_def0]);
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "the pre-4.0.0.2 affected-nodes array must be consumed exactly \
+             — a miss here under-reads by 4 + 4×N bytes and cascades, since \
+             files this old have no block_sizes recovery anchor"
+        );
+    }
+
+    /// The lower sub-range (`Affected Nodes` as `Ptr`, `until="3.3.0.13"`)
+    /// is byte-identical on disk to the `4.0.0.0..=4.0.0.2` `uint` arm —
+    /// pin that the same gate covers it too.
+    #[test]
+    fn v3_3_0_13_reads_the_affected_nodes_array() {
+        let header = header_at(NifVersion::V3_3_0_13);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0xdead_beefu32.to_le_bytes());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiDynamicEffectData::parse(&mut stream)
+            .expect("v3.3.0.13 NiDynamicEffect tail should parse");
+        assert_eq!(data.affected_nodes, vec![0xdead_beef]);
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// The (4.0.0.2, 10.1.0.0) gap window has neither field group — must
+    /// read nothing, matching `NiAVObjectData`'s own documented gap-window
+    /// discipline (`niavobject_version_gate_tests::
+    /// gap_window_reads_neither_bv_nor_collision_ref`) applied to this
+    /// sibling field.
+    #[test]
+    fn gap_window_reads_nothing() {
+        let header = header_at(NifVersion::V10_0_0_0);
+        let bytes: Vec<u8> = Vec::new();
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiDynamicEffectData::parse(&mut stream)
+            .expect("gap-window NiDynamicEffect tail should parse");
+        assert!(data.switch_state);
+        assert!(data.affected_nodes.is_empty());
+        assert_eq!(stream.position() as usize, 0);
     }
 }
