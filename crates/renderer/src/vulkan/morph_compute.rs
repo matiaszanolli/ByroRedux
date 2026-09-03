@@ -172,14 +172,18 @@ impl MorphSlot {
 
     /// Stage current-frame weights without touching GPU-visible memory.
     /// `draw_frame` flushes this handoff only after its dual-fence wait.
-    pub fn stage_weights(&mut self, weights: Vec<f32>) {
-        debug_assert_eq!(
-            weights.len(),
-            self.target_count as usize,
-            "MorphSlot::stage_weights: weights length must equal target_count"
-        );
-        self.pending_weights = weights;
-        self.pending_weights_dirty = true;
+    ///
+    /// #3687 (PERF-D6-2026-08-30-02) — writes directly into the slot's
+    /// own pre-sized `pending_weights` buffer via `weight_at(i)` (see
+    /// [`stage_weights_into`] below for the comparison logic), instead of
+    /// taking an owned `Vec<f32>` and replacing `pending_weights`
+    /// wholesale — which threw away that permanently-right-sized buffer
+    /// and made the caller `collect()` a fresh one every frame for every
+    /// live slot (one malloc + one free per morphed entity per frame on
+    /// the per-frame render path), and always marked the slot dirty even
+    /// when nothing changed.
+    pub fn stage_weights(&mut self, weight_at: impl FnMut(usize) -> f32) {
+        self.pending_weights_dirty |= stage_weights_into(&mut self.pending_weights, weight_at);
     }
 
     /// Copy staged weights into mapped GPU memory. This must only be called
@@ -214,6 +218,33 @@ impl MorphSlot {
     }
 }
 
+/// Write `weight_at(i)` into `pending[i]` for every index, in ascending
+/// order, only overwriting an entry when the new value actually differs
+/// from what's already there. Returns whether ANY entry changed — the
+/// caller ORs this into `pending_weights_dirty` rather than setting it
+/// unconditionally, so `flush_pending_weights` can genuinely early-out
+/// on a steady-state frame where nothing moved.
+///
+/// #3687 (PERF-D6-2026-08-30-02) — pulled out of [`MorphSlot::
+/// stage_weights`] as a free function so this pure CPU-side comparison
+/// loop is unit-testable on a plain `Vec<f32>`, without needing the live
+/// Vulkan device `MorphSlot::create` requires for its GPU buffers. An
+/// exact bit-pattern compare (`!=`) is safe here — these are copied
+/// verbatim from the animation system's sampled output, not recomputed
+/// via lossy arithmetic that could drift between frames even when
+/// logically unchanged.
+fn stage_weights_into(pending: &mut [f32], mut weight_at: impl FnMut(usize) -> f32) -> bool {
+    let mut changed = false;
+    for (i, slot) in pending.iter_mut().enumerate() {
+        let new = weight_at(i);
+        if *slot != new {
+            *slot = new;
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     /// #3244 — mapped morph weights may only be written after the dual-fence
@@ -230,5 +261,59 @@ mod tests {
             .find("self.flush_pending_morph_weights()")
             .expect("draw_frame must flush staged morph weights");
         assert!(wait < flush, "morph host write must follow the fence wait");
+    }
+
+    // ── #3687 (PERF-D6-2026-08-30-02) ─────────────────────────────────
+
+    use super::stage_weights_into;
+
+    #[test]
+    fn writes_every_index_in_order() {
+        let mut pending = vec![0.0f32; 4];
+        let source = [1.0, 2.0, 3.0, 4.0];
+        let changed = stage_weights_into(&mut pending, |i| source[i]);
+        assert_eq!(pending, source);
+        assert!(changed, "a fresh (all-zero) buffer must report a change");
+    }
+
+    #[test]
+    fn identical_values_report_no_change() {
+        let mut pending = vec![1.0, 2.0, 3.0];
+        let source = pending.clone();
+        let changed = stage_weights_into(&mut pending, |i| source[i]);
+        assert_eq!(pending, source, "unchanged values must stay exactly as they were");
+        assert!(
+            !changed,
+            "re-staging byte-identical weights must not report a change — this is \
+             what lets flush_pending_weights' dirty-flag early-out actually fire \
+             in steady state (#3687)"
+        );
+    }
+
+    #[test]
+    fn one_differing_value_reports_a_change_and_only_that_slot_moves() {
+        let mut pending = vec![1.0, 2.0, 3.0];
+        let source = [1.0, 99.0, 3.0]; // only index 1 differs
+        let changed = stage_weights_into(&mut pending, |i| source[i]);
+        assert_eq!(pending, source);
+        assert!(changed, "a single differing weight must still report a change");
+    }
+
+    #[test]
+    fn does_not_allocate_a_new_buffer() {
+        // #3687's whole point: the destination buffer's identity (pointer)
+        // must survive a stage — the pre-fix `stage_weights(Vec<f32>)`
+        // replaced `pending_weights` wholesale, freeing the old allocation
+        // and handing back a brand-new one every call.
+        let mut pending = vec![0.0f32; 4];
+        let ptr_before = pending.as_ptr();
+        let cap_before = pending.capacity();
+        stage_weights_into(&mut pending, |i| i as f32);
+        assert_eq!(
+            pending.as_ptr(),
+            ptr_before,
+            "stage_weights_into must write in place, not reallocate the buffer"
+        );
+        assert_eq!(pending.capacity(), cap_before);
     }
 }

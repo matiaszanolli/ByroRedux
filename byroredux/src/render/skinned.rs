@@ -286,9 +286,9 @@ pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::
         let Some(weights) = weights_q.get(entity) else {
             continue;
         };
-        let target_count = slot.target_count() as usize;
-        let flat: Vec<f32> = (0..target_count).map(|i| weights.get(i)).collect();
-        slot.stage_weights(flat);
+        // #3687 — writes directly into `slot`'s own pending-weights
+        // buffer via the closure, no per-frame `Vec` allocation.
+        slot.stage_weights(|i| weights.get(i));
     }
 }
 
