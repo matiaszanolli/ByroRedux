@@ -1,48 +1,71 @@
-# #3696 — ECS-2026-08-30-D1-02: the recursive-read fast path skips record_and_check, so a re-entrant read can silently close an ABBA cycle
-
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
+# #3696 — ECS-D1-02: the recursive-read fast path skips record_and_check, so a re-entrant read can silently close an ABBA cycle
 
 **Severity**: LOW · **Dimension**: Lock Ordering & Deadlock
-**Location**: `crates/core/src/ecs/lock_tracker.rs` (`track_read`, the `if recursive_read` branch, ~:94-110)
-**Source**: `docs/audits/AUDIT_ECS_2026-08-30.md` (ECS-D1-02)
+**Location**: `crates/core/src/ecs/lock_tracker.rs` (`track_read`, the `recursive_read` branch)
 
-## Description
+## Fix
 
-`track_read` returns from the recursive-read branch *before* the `#[cfg(debug_assertions)]` `record_and_check` block that every other acquisition runs. The module doc justifies this as "re-entrant read acquires on the same type are handled by the thread-local tracker's count and don't add edges" — true for the *outgoing* edge, but the branch also skips the **incoming** edges `held_other -> T` and, with them, the reachability probe.
+Moved the `#[cfg(debug_assertions)]` `global_order::record_and_check` block
+above the `if recursive_read { ... return; }` early return, per the
+issue's own suggested fix. A recursive read adds no new *outgoing* edge
+(same type, same thread — the module doc's existing justification stays
+correct for that half), but it's still an *incoming* observation: if this
+thread already holds some other type `H` and a prior acquisition recorded
+`T -> H`, re-reading `T` while `H` is held is exactly the "acquire T while
+H held" pattern that closes the `H -> T -> H` cycle — and pre-fix, the
+early return skipped the reachability probe (#2675) entirely for that
+case.
 
-A thread that holds `A`, acquires `B` (recording `A -> B`), and then re-reads `A` while both are held is establishing `B -> A`; that closes a cycle the detector would otherwise panic on, and it is neither recorded nor tested.
+`type_id` needed explicit exclusion from `held_others` for this to work:
+on the non-recursive path it's naturally absent (the row hasn't been
+inserted into `LOCKS` yet), but a recursive read's row **is** already in
+the map — without filtering it out, every recursive read would present a
+trivial self-loop (`T` "held while acquiring" `T`) and panic
+unconditionally, not just on a real cycle. Added `.filter(|(id, _)| **id
+!= type_id)` to the `held_others` construction.
 
-## Evidence
+Preserved the #2384 property the original comment calls out: the check
+still runs before any mutation (both the recursive `read_count` bump and
+the fresh-acquisition insert), so a panic here leaves `LOCKS` exactly as
+it was before the call — no orphaned half-acquired state either way.
 
-```rust
-// crates/core/src/ecs/lock_tracker.rs — the early return
-if recursive_read {
-    let mut map = locks.borrow_mut();
-    let entry = map.get_mut(&type_id).expect("recursive read row vanished");
-    if entry.read_count == 1 { log::warn!( /* #2386 hazard warning */ ); }
-    entry.read_count = entry.read_count.saturating_add(1);
-    return;                       // <- returns before record_and_check below
-}
-#[cfg(debug_assertions)]
-{
-    let held_others = locks.borrow().iter() /* ... */;
-    global_order::record_and_check(type_id, type_name, &held_others);
-}
-```
+## SIBLING (issue's own checklist item — "`track_write`'s equivalent path checked for the same gap")
 
-## Impact
+`track_write` has no equivalent gap: it has no recursive/re-entrant
+branch at all — a same-type write-after-write or write-after-read always
+panics in the checks above `record_and_check`, so by the time execution
+reaches that block, any existing entry for `type_id` (if the checks above
+didn't already panic) is guaranteed absent or already invalid. There's no
+early-return path in `track_write` that skips the check the way
+`track_read`'s recursive branch did.
 
-A narrow blind spot in a debug-only, opt-in detector. Partly mitigated: the same branch already emits the #2386 recursive-read hazard warning, so the situation is not silent — but that warning names the type, not the cycle, and #3249 (OPEN) records that it carries no call-site information either.
+## LOCK_ORDER (issue's own checklist item)
 
-## Related
+No `RwLock` scope changed — this is a reorder of two existing operations
+(the check, and the recursive branch's mutation) within `track_read`
+itself, not a change to what's held or for how long.
 
-#2675 (the reachability generalisation this branch bypasses), #3249, #2386.
+## TESTS (issue's own checklist item — "a re-entrant read that closes a B->A edge must panic under BYRO_LOCK_ORDER_CHECK")
 
-## Suggested Fix
+Extended the existing `global_graph_detector_end_to_end` test (which
+already force-enables the detector for its own duration via
+`global_order::set_enabled_for_tests(true)`, so no new
+`BYRO_LOCK_ORDER_CHECK` env-var plumbing was needed) with a new scenario,
+following its established `Restore`-guard / `catch_unwind` pattern
+exactly: hold `Recur1`, acquire `Recur2` (records `Recur1 -> Recur2`),
+then re-read `Recur1` while `Recur2` is still held — this must panic,
+since it's the literal `B -> A` closing case the issue describes.
 
-Move the `record_and_check` block above the `if recursive_read` return (excluding `type_id` itself from `held_others`, which it already is by construction on the non-recursive path), so a re-entrant read is checked against the graph even though it adds no outgoing edge.
+Verified the guard actually catches the regression (this session's
+established quality bar): temporarily moved the check back to its
+pre-fix position (after the recursive-read return), reran — the new
+scenario failed with exactly the expected assertion message, then
+restored the fix and confirmed a clean pass again.
 
-## Completeness Checks
-- [ ] **SIBLING**: `track_write`'s equivalent path checked for the same gap
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **TESTS**: A regression test pins this specific fix (a re-entrant read that closes a B->A edge must panic under `BYRO_LOCK_ORDER_CHECK`)
+## Verification
+
+- `cargo check -p byroredux-core --tests`: clean.
+- `cargo test -q -p byroredux-core --lib`: 727 tests passing, 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7090 passing, 0
+  failing** (unchanged — this fix extended an existing test's body rather
+  than adding a new `#[test]` function).

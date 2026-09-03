@@ -91,6 +91,40 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
                 false
             }
         };
+        // #3696 (ECS-D1-02) — run the global lock-order check ahead of the
+        // `recursive_read` early return, not just on the fresh-acquisition
+        // path. The module doc's "re-entrant reads don't add edges" is true
+        // for the *outgoing* edge (same type, same thread — nothing new to
+        // record from T's perspective), but a recursive read is still an
+        // *incoming* observation for whatever else this thread already
+        // holds: if this thread holds H and re-reads T while some other
+        // thread previously recorded `T -> H`, this acquisition closes the
+        // `H -> T -> H` cycle right here — exactly the reachability check
+        // every other acquisition gets (#2675), and pre-fix the recursive
+        // branch returned before ever reaching it.
+        //
+        // `type_id` must be filtered out of `held_others` explicitly here:
+        // on the non-recursive path below it's absent by construction (the
+        // row hasn't been inserted yet), but a recursive read's row is
+        // already in the map — including it would present a trivial
+        // self-loop (`T` "held while acquiring" `T`) that panics
+        // unconditionally on every recursive read, not just a real cycle.
+        //
+        // #2384 — the global check can panic. Running it before either
+        // mutation below (the recursive bump or the fresh insert) keeps
+        // the same "no orphaned half-acquired state" property: a panic
+        // here leaves `LOCKS` exactly as it was before this call.
+        #[cfg(debug_assertions)]
+        {
+            let held_others = locks
+                .borrow()
+                .iter()
+                .filter(|(id, _)| **id != type_id)
+                .map(|(id, state)| (*id, state.type_name))
+                .collect::<Vec<_>>();
+            global_order::record_and_check(type_id, type_name, &held_others);
+        }
+
         if recursive_read {
             let mut map = locks.borrow_mut();
             let entry = map.get_mut(&type_id).expect("recursive read row vanished");
@@ -107,19 +141,6 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             }
             entry.read_count = entry.read_count.saturating_add(1);
             return;
-        }
-
-        // #2384 — the global check can panic. Run it before inserting the
-        // incoming row so catch_unwind cannot orphan an acquisition which no
-        // RAII guard has been constructed to own yet.
-        #[cfg(debug_assertions)]
-        {
-            let held_others = locks
-                .borrow()
-                .iter()
-                .map(|(id, state)| (*id, state.type_name))
-                .collect::<Vec<_>>();
-            global_order::record_and_check(type_id, type_name, &held_others);
         }
 
         locks.borrow_mut().insert(
@@ -644,6 +665,8 @@ mod tests {
     struct Abba5;
     struct Abba6;
     struct Abba7;
+    struct Recur1;
+    struct Recur2;
 
     /// Single combined test for the global-graph detector — three
     /// scenarios run sequentially within one test body so the runtime
@@ -768,6 +791,36 @@ mod tests {
             assert!(
                 is_clean(),
                 "cycle-closing panic must not poison thread-local state"
+            );
+
+            // Scenario 4b (#3696 / ECS-D1-02): a recursive read must still
+            // be checked against the graph, even though it adds no new
+            // *outgoing* edge. Hold Recur1, acquire Recur2 (records
+            // Recur1 -> Recur2), then re-read Recur1 while Recur2 is still
+            // held — this thread now holds Recur2 and is "acquiring"
+            // Recur1 again, the incoming half of a Recur2 -> Recur1 edge
+            // that would close the 2-cycle. Pre-fix the recursive-read
+            // early return skipped `record_and_check` entirely and this
+            // never panicked.
+            global_order::reset();
+            let recur1 = TypeId::of::<Recur1>();
+            let recur2 = TypeId::of::<Recur2>();
+            track_read(recur1, "Recur1");
+            track_read(recur2, "Recur2"); // records Recur1 -> Recur2
+            let panicked = std::panic::catch_unwind(|| {
+                track_read(recur1, "Recur1"); // recursive read, closes the cycle
+            })
+            .is_err();
+            assert!(
+                panicked,
+                "a recursive read that closes a cycle must panic, not be silently \
+                 skipped by the recursive-read early return (#3696)"
+            );
+            untrack_read(recur1);
+            untrack_read(recur2);
+            assert!(
+                is_clean(),
+                "a caught recursive-read cycle panic must leave no orphaned tracker row"
             );
 
             // Scenario 5 (#2387): the headline cross-thread guarantee through
