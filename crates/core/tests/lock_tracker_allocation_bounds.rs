@@ -60,11 +60,23 @@ fn allocs_during<R>(f: impl FnOnce() -> R) -> (usize, R) {
 
 #[test]
 fn nested_read_lock_costs_no_more_than_an_isolated_one_when_disabled() {
-    assert!(
-        std::env::var_os("BYRO_LOCK_ORDER_CHECK").is_none(),
-        "this test measures the default-disabled fast path; it is meaningless \
-         (and may legitimately differ) with BYRO_LOCK_ORDER_CHECK set"
-    );
+    // #3819 — early-return, not `assert!`. This test measures the
+    // default-disabled fast path; it is meaningless (and may legitimately
+    // differ) with `BYRO_LOCK_ORDER_CHECK` set. CI's dedicated
+    // `lock-order-check` job runs the whole workspace test suite with
+    // that var set (`.github/workflows/ci.yml`), so an `assert!` here
+    // made this job permanently red regardless of any real lock-order
+    // regression — the assertion was correct about *why* the
+    // measurement is meaningless, but treated "not applicable in this
+    // mode" as a test failure instead of a skip.
+    if std::env::var_os("BYRO_LOCK_ORDER_CHECK").is_some() {
+        eprintln!(
+            "skipping nested_read_lock_costs_no_more_than_an_isolated_one_when_disabled: \
+             BYRO_LOCK_ORDER_CHECK is set, this test only measures the default-disabled \
+             fast path"
+        );
+        return;
+    }
 
     let mut world = World::new();
     let e = world.spawn();

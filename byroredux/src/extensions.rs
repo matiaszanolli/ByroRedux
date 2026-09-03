@@ -5075,8 +5075,18 @@ fn capture_spatial_snapshot(world: &World) -> SpatialSnapshot {
     let forms = forms_by_entity(world);
     let mut references = BTreeMap::<FormRef, SpatialReference>::new();
     let mut truncated = false;
-    let global_transforms = world.query::<GlobalTransform>();
+    // #3819 — `Transform` before `GlobalTransform`, not the reverse. Both
+    // queries are held live through the whole loop below (`.as_ref()` on
+    // each), so the acquisition order here is real, not incidental — and
+    // this was the one site in the whole codebase acquiring the pair in
+    // `GlobalTransform → Transform` order while every other site
+    // (`make_transform_propagation_system`, `ragdoll_writeback_system`,
+    // `escort`/`follow`/`guard`/`travel` systems) acquires
+    // `Transform → GlobalTransform`, closing a cross-thread ABBA cycle
+    // the `BYRO_LOCK_ORDER_CHECK=1` graph correctly flagged. See
+    // `docs/engine/ecs.md`'s documented cluster order.
     let local_transforms = world.query::<Transform>();
+    let global_transforms = world.query::<GlobalTransform>();
     for (&entity, &form) in &forms {
         let position = global_transforms
             .as_ref()
@@ -5563,12 +5573,21 @@ fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
         return;
     }
     let apply = (|| -> Result<(), String> {
-        let resolver = world
-            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
-            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
+        // #3819 — `ActorValues` before `GlobalFormIdResolver`, not the
+        // reverse. This was the one site acquiring the pair in
+        // `GlobalFormIdResolver → ActorValues` order while
+        // `capture_entity_projections` (above) acquires
+        // `ActorValues → GlobalFormIdResolver`, closing a cross-thread
+        // ABBA cycle the `BYRO_LOCK_ORDER_CHECK=1` graph correctly
+        // flagged. `resolver` is dropped immediately after the read loop
+        // below (it is unused past that point) so it also doesn't
+        // overlap the later `query_mut::<ActorValues>()` write pass.
         let values = world
             .query::<ActorValues>()
             .ok_or_else(|| "ActorValues storage is unavailable".to_owned())?;
+        let resolver = world
+            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
         let mut staged = BTreeMap::<EntityId, ActorValues>::new();
         for command in &commands {
             let actor_value = resolver
@@ -5613,6 +5632,7 @@ fn apply_pending_actor_value_writes(world: &World, host: &mut ExtensionHost) {
             }
         }
         drop(values);
+        drop(resolver);
         let mut live = world
             .query_mut::<ActorValues>()
             .ok_or_else(|| "ActorValues storage disappeared before commit".to_owned())?;
@@ -5709,12 +5729,19 @@ fn apply_pending_reputation_writes(world: &World, host: &mut ExtensionHost) {
         return;
     }
     let apply = (|| -> Result<(), String> {
-        let resolver = world
-            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
-            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
+        // #3819 — `FactionReputation` before `GlobalFormIdResolver`, not
+        // the reverse. Same fix as `apply_pending_actor_value_writes`
+        // above: this was the one site acquiring the pair in
+        // `GlobalFormIdResolver → FactionReputation` order while
+        // `capture_entity_projections` acquires
+        // `FactionReputation → GlobalFormIdResolver`, closing a
+        // cross-thread ABBA cycle.
         let live = world
             .query::<FactionReputation>()
             .ok_or_else(|| "FactionReputation storage is unavailable".to_owned())?;
+        let resolver = world
+            .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .ok_or_else(|| "active form resolver is unavailable".to_owned())?;
         let mut staged = BTreeMap::<EntityId, FactionReputation>::new();
         for command in commands {
             let reputation = resolver

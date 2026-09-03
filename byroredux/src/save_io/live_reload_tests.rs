@@ -268,12 +268,23 @@ fn quest_stage_and_objective_state_survive_snapshot_round_trip() {
         !restored_stages.get_stage_done(quest, 20),
         "never-visited stage stays false"
     );
+    // #3819 — drop before acquiring `QuestObjectiveState` below. The
+    // `BYRO_LOCK_ORDER_CHECK=1` thread-local graph tracks acquisitions by
+    // TYPE, not by which `World` instance a `ResourceRead` came from — an
+    // un-dropped guard here (its lexical scope runs to the end of this
+    // test fn) would still record a `QuestStageState → QuestObjectiveState`
+    // edge against this thread even though `overlay_world` below is a
+    // completely different `World`. Without this drop (and the matching
+    // one after `restored_objectives`), that edge plus the reverse one at
+    // `overlay_stages` closes a same-thread cycle and panics.
+    drop(restored_stages);
 
     let restored_objectives = restored_world.resource::<QuestObjectiveState>();
     let status = restored_objectives.get(quest, 10);
     assert!(status.displayed);
     assert!(status.completed);
     assert!(!status.failed);
+    drop(restored_objectives);
 
     // Live M45.1 overlay path (restore_resources — resource-only, no
     // entity clear/respawn).
