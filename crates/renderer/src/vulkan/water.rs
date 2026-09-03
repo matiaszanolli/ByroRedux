@@ -156,6 +156,10 @@ pub struct GpuWaterParams {
     pub optical: [f32; 4],
 }
 
+// SAFETY: every field is `[f32; 4]` or `[u32; 4]` — homogeneous scalar
+// arrays tile the struct's declared size with no implicit padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for GpuWaterParams {}
+
 impl GpuWaterParams {
     /// Pack `normal_map_index` as a float bit-pattern. The shader
     /// recovers the integer via `floatBitsToUint(push.misc.z)`.

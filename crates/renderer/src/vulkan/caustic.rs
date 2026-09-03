@@ -189,6 +189,10 @@ pub struct CausticParams {
     pub tune: [f32; 4],
 }
 
+// SAFETY: two `[f32; 4]` fields — homogeneous scalar arrays tile the
+// struct's declared size with no implicit padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for CausticParams {}
+
 struct CausticSlot {
     image: vk::Image,
     /// The slot's only `VkImageView`, used for both roles: `r32ui` storage

@@ -55,6 +55,15 @@ pub struct Vertex {
     pub tangent: [f32; 4],
 }
 
+// SAFETY: every field is a `[f32; N]`/`[u32; 4]`/`[u8; 4]` array — Rust's
+// `#[repr(C)]` gives an array the same alignment as its element type (NOT
+// GLSL std430's inflated 16-byte vec3/vec4 alignment), and every field's
+// byte length here is already a multiple of that alignment, so no gap is
+// inserted between or after any of them. Confirmed against the struct's
+// own documented tight 104 B layout (20 f32 + 4 u32 + 8 u8 = 80+16+8 =
+// 104, matching `size_of::<Vertex>()` exactly, zero slack) (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for Vertex {}
+
 impl Vertex {
     /// Construct a rigid (non-skinned) vertex. Bone indices and weights
     /// are zeroed; the shader's `sum(weights) < epsilon` check routes
@@ -285,6 +294,10 @@ pub struct UiVertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
 }
+
+// SAFETY: two `[f32; N]` fields, both 4-byte (element-type) aligned under
+// `#[repr(C)]` — no implicit padding possible (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for UiVertex {}
 
 impl UiVertex {
     pub const fn new(position: [f32; 3], uv: [f32; 2]) -> Self {

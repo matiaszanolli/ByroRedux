@@ -33,6 +33,11 @@ pub(crate) struct SsaoParams {
     camera_pos: [f32; 4],
 }
 
+// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
+// scalar/vector arrays tile the struct's declared size with no implicit
+// padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for SsaoParams {}
+
 pub struct SsaoPipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,

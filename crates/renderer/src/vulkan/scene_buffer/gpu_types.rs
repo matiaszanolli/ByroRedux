@@ -4,6 +4,8 @@
 //! impls. Byte layout is shader-contract-critical — see the layout tests in
 //! [`super::gpu_instance_layout_tests`].
 
+use crate::vulkan::buffer::NoUninit;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuTerrainTile {
@@ -339,6 +341,10 @@ pub(crate) struct GpuSelectedRayProbe {
     pub light_params: [f32; 4],
 }
 
+// SAFETY: every field is `[f32; 4]` or `[u32; 4]` — homogeneous scalar
+// arrays tile the struct's declared size with no implicit padding (#3761).
+unsafe impl NoUninit for GpuSelectedRayProbe {}
+
 impl GpuSelectedRayProbe {
     pub(crate) const STATUS_DISABLED: u32 = 0;
     pub(crate) const STATUS_ARMED: u32 = 1;
@@ -579,6 +585,11 @@ impl Default for GpuCamera {
     }
 }
 
+// SAFETY: every field is `[f32; 4]`, `[u32; 4]`, or `[[f32; 4]; 4]` —
+// homogeneous scalar/vector arrays tile the struct's declared size with no
+// implicit padding (#3761).
+unsafe impl NoUninit for GpuCamera {}
+
 /// 6-axis directional ambient cube uploaded to set 1 binding 14 as a
 /// UBO. Sourced from Skyrim `WTHR.DALC` records, axis-swapped to engine
 /// Y-up by `byroredux/src/components.rs::DalcCubeYup::from_skyrim_zup`,
@@ -636,3 +647,7 @@ impl Default for GpuDalcCube {
         }
     }
 }
+
+// SAFETY: every field is `[f32; 4]` — homogeneous scalar arrays tile the
+// struct's declared size with no implicit padding (#3761).
+unsafe impl NoUninit for GpuDalcCube {}

@@ -520,7 +520,7 @@ impl MeshRegistry {
     /// contract from the draw side via the `is_water` flag, so a
     /// future code path adding water to BLAS can't silently
     /// reintroduce ray self-hits.
-    pub fn upload<V: Copy>(
+    pub fn upload<V: crate::vulkan::buffer::NoUninit>(
         &mut self,
         ctx: GpuUploadCtx,
         vertices: &[V],

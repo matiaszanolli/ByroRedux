@@ -149,6 +149,11 @@ pub struct VolumetricsParams {
     pub wind_gust: [f32; 4],
 }
 
+// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
+// vec4-shaped arrays already satisfy the struct's `align(16)`, so no
+// implicit padding is introduced (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for VolumetricsParams {}
+
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
 pub const MAX_GPU_FOG_VOLUMES: usize = 128;
 /// Camera-centered world-space cluster resolution used for local fog.
@@ -205,6 +210,11 @@ pub struct GpuFogVolume {
     pub profile_params: [f32; 4],
 }
 
+// SAFETY: six `[f32; 4]` fields — homogeneous vec4-shaped arrays already
+// satisfy the struct's `align(16)`, so no implicit padding is introduced
+// (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for GpuFogVolume {}
+
 fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
     volumes.iter().any(|volume| {
         let profile = volume.profile_params[0];
@@ -248,12 +258,22 @@ impl Default for GpuFogVolumeUpload {
     }
 }
 
+// SAFETY: `count` is `[u32; 4]` (16 B) and `volumes` is an array of the
+// already-`NoUninit` `GpuFogVolume` (each 96 B, a multiple of 16) — both
+// fields' sizes are 16-byte multiples, so `#[repr(C)]` places no padding
+// between or after them (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for GpuFogVolumeUpload {}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct GpuFogClusterEntry {
     offset: u32,
     count: u32,
 }
+
+// SAFETY: two `u32` fields — tiles the struct's declared size with no
+// implicit padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for GpuFogClusterEntry {}
 
 /// A fresh fog-cluster entry array with `offset` seeded to its final,
 /// permanent value (`cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER`) — a pure
@@ -568,6 +588,9 @@ pub(crate) struct IntegrationParams {
     /// w = depth-slice count. Distances are in world units.
     grid: [f32; 4],
 }
+
+// SAFETY: one `[f32; 4]` field — no implicit padding possible (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for IntegrationParams {}
 
 /// Derive the froxel volume from the *render* extent. This is deliberately
 /// downstream of the FSR preset query: using output resolution here would

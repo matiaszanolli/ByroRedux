@@ -1,93 +1,92 @@
-# #3761 — SAFE-2026-08-30-D4-01: `GpuBuffer::write_mapped`'s SAFETY comment asserts "`T: Copy` guarantees no padding" — false for the generic bound
+# #3761 — SAFE-2026-08-30-D4-01: GpuBuffer::write_mapped's SAFETY comment asserts a false invariant
 
-**Labels**: bug, renderer, medium, safety
+**Severity**: MEDIUM · **Location**: `crates/renderer/src/vulkan/buffer.rs` — `GpuBuffer::write_mapped`, `create_device_local_buffer`, `create_vertex_buffer`
+**Source**: `docs/audits/AUDIT_SAFETY_2026-08-30.md` (SAFE-D4-01)
 
----
+`write_mapped<T: Copy>`'s SAFETY comment claimed `T: Copy guarantees no
+padding/drop concerns` — false: `Copy` says nothing about padding, only
+about the absence of `Drop` glue. A `Copy` `#[repr(C)]` type whose fields
+don't tile its size has uninitialised padding bytes, and viewing it as
+`&[u8]` (as `write_mapped` does, then reads via `copy_from_slice`) is UB by
+Rust's uninit-byte rules — this is exactly the invariant `bytemuck::NoUninit`
+exists to encode. Latent, not live: every current call site happened to
+pass a padding-free type. `create_device_local_buffer` (the function
+`write_mapped`'s sibling `create_vertex_buffer` bottoms out in) carried the
+identical false claim, unaddressed by the same #2683 that fixed this
+function's three other false SAFETY assertions.
 
-- **Severity**: MEDIUM
-- **Dimension**: 4 — Unsafe-Block Discipline
-- **Location**: `crates/renderer/src/vulkan/buffer.rs` — `GpuBuffer::write_mapped`
-- **Source**: `docs/audits/AUDIT_SAFETY_2026-08-30.md` (`SAFE-D4-01`), HEAD `64f64480`
+**Premise correction**: the issue's own evidence claims "the crate is
+already a workspace dependency (`crates/nif` uses `AnyBitPattern`)" —
+**false**. `bytemuck` is not a dependency anywhere in this workspace;
+`crates/nif/src/stream.rs`'s `AnyBitPattern` is a **local, hand-rolled**
+unsafe trait, whose own doc comment explicitly says "kept local to avoid a
+new dependency." Verified via a workspace-wide grep before implementing.
+This matters: the issue's primary suggested fix (`T: bytemuck::NoUninit`,
+`bytemuck::cast_slice`) would require adding a new external crate, which
+this project's fix-issue convention requires user approval for. Given the
+premise was false and the project already has a working local-trait
+precedent for exactly this problem shape, the fix mirrors that precedent
+instead of adding the dependency.
 
-## Description
+## Fix implemented
 
-```rust
-pub fn write_mapped<T: Copy>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
-    // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
-    // valid and aligned (from a live slice), and size_of_val gives the
-    // exact byte length.
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
-    };
-```
+A local `pub unsafe trait NoUninit: Copy {}` in `buffer.rs`, matching
+`crates/nif`'s `AnyBitPattern` pattern exactly (same rationale, same
+"kept local to avoid a new dependency" framing) but encoding the opposite
+direction of the same invariant — `AnyBitPattern` is for reading arbitrary
+bytes *into* a `T`; `NoUninit` is for treating an already-valid `T`'s bytes
+as exportable `u8` data, which is what `write_mapped` does, so it does not
+need `AnyBitPattern`'s `Default` bound. `write_mapped`, `create_device_local_buffer`,
+and `create_vertex_buffer` all changed from `T: Copy` to `T: NoUninit`
+(with `mesh::MeshRegistry::upload<V>` following the same chain), and the
+SAFETY comments now state the real, compiler-enforced invariant instead of
+the false one.
 
-**`T: Copy` guarantees no `Drop` glue, but it says nothing about padding.** A `Copy`
-`#[repr(C)]` struct whose fields do not tile its size (or one carrying
-`#[repr(C, align(N))]` with a field sum that is not a multiple of `N`) has uninitialised
-padding bytes, and materialising a `&[u8]` over them — then reading them in the
-`copy_from_slice` below — is **UB by Rust's uninit-byte rules**.
+Also added `unsafe impl<T: NoUninit, const N: usize> NoUninit for [T; N] {}`
+— a fixed-size array of a `NoUninit` element has no padding either (an
+array's layout is exactly `N` copies of the element's layout with no gaps),
+and several call sites pass an owned array directly as `T`.
 
-This is precisely the invariant `bytemuck::Pod` exists to encode, and the crate is already
-a workspace dependency (`crates/nif` uses `AnyBitPattern`).
+Every type that instantiates any of these three functions across the crate
+now carries an explicit, individually-reasoned `unsafe impl NoUninit for X {}`
+— the compiler surfaced every real call site by refusing to build until
+each was covered, which found **more** types than the issue's own "19 call
+sites" enumeration: `GpuFogClusterEntry`, `GpuFogVolumeUpload`,
+`IntegrationParams`, `SvgfTemporalParams` (the `write_mapped` family),
+plus `Vertex` and `UiVertex` (the sibling `create_vertex_buffer` family,
+found via the SIBLING check below). Each impl's safety comment states the
+specific field-layout reasoning (homogeneous scalar/vector arrays under
+`#[repr(C)]`, which — unlike GLSL std430 — gives an array only its
+element's natural alignment, not an inflated 16-byte vec3/vec4 alignment;
+`Vertex`'s comment cross-checks against the struct's own documented tight
+104 B layout).
 
-This is a *distinct* false claim from the three that **#2683** corrected in the same
-function: that issue fixed the `aligned_flush_range` "contained in the allocation"
-assertions and left the `T: Copy` line untouched. This is the exact class the safety brief
-prioritises — a commented `unsafe` block whose **stated invariant is false** — rather than
-a missing comment.
+**SIBLING** (issue's own checklist item — "other `from_raw_parts`-over-`T:
+Copy` byte views in the renderer crate"): found and fixed two more, both in
+`buffer.rs`: `create_device_local_buffer<T: Copy>` (the exact same false
+"T: Copy guarantees no padding" comment as `write_mapped`) and
+`create_vertex_buffer<T: Copy>` (its caller, which delegates to the former
+with no unsafe of its own — needed the same bound tightening to keep the
+chain sound end-to-end). `mesh::MeshRegistry::upload<V: Copy>` — the actual
+public entry point most callers use — was the same chain one level further
+out and needed the same fix. The four `from_raw_parts` sites in
+`scene_buffer/descriptors.rs` are typed directly to already-`NoUninit`-covered
+structs (`GpuMaterial`/`GpuInstance`/`DrawCommand`/`GpuLight`), not a bare
+generic `T`, so no separate fix was needed there.
 
-## Evidence
+**UNSAFE** (issue's own checklist item — verify no new unsafe is
+introduced beyond the fix's own): the fix *removes* the false-premise
+unsafe reasoning and replaces it with a true one; every new `unsafe impl
+NoUninit for X {}` carries its own safety comment stating exactly which
+field-layout property makes it sound.
 
-- The bound is `T: Copy`, not `T: Pod` / `T: AnyBitPattern` / `T: NoUninit` (re-verified at
-  HEAD).
-- All 19 live call sites were enumerated and each `T` inspected; **every one is a
-  `#[repr(C)]` GPU-contract struct that happens to be padding-free**: `GpuCamera`,
-  `GpuDalcCube`, `GpuSelectedRayProbe`, `SsaoParams`, `DownsampleParams`, `UpsampleParams`,
-  `CausticParams`, `CompositeParams`, `TaaParams`, `GpuWaterParams`,
-  `vk::AccelerationStructureInstanceKHR`, and `&[u8]`.
-- The two `#[repr(C, align(16))]` types — the ones where trailing padding *would* be
-  introduced — are `VolumetricsParams` (all `mat4`/`vec4` fields) and `GpuFogVolume`
-  (6 × `vec4` = 96 B, pinned by an `assert_eq!(size_of::<GpuFogVolume>(), 96)`). Both are
-  clean.
-- So this is a **latent** soundness gap, not a live one: nothing in the signature stops the
-  next caller from passing a padded type, and **no test would catch it**.
+**TESTS** (issue's own checklist item — "the `NoUninit` bound is the test;
+confirm all 19 call sites still compile"): confirmed directly. The bound
+tightening is inherently compiler-enforced — `cargo check -p
+byroredux-renderer` and `cargo check -p byroredux` both compile clean with
+zero new warnings, and the full renderer suite (816 tests) plus the full
+workspace suite pass unchanged.
 
-## Impact
-
-No current miscompile or corruption. The exposure is that a future `write_mapped` caller
-with a padded `#[repr(C)]` param struct — **the natural thing to write when adding a new
-compute pass** — silently introduces UB (reading uninit bytes) and simultaneously uploads
-indeterminate padding to the GPU, **with the SAFETY comment actively vouching for it**. It
-also nudges anyone reading the file toward believing `Copy ⇒ no padding`, which is wrong
-and reusable in the wrong direction.
-
-## Suggested Fix
-
-Tighten the bound rather than the prose — the invariant then becomes compiler-enforced:
-
-```rust
-pub fn write_mapped<T: bytemuck::NoUninit>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
-    // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised (no
-    // implicit padding), so the byte view contains no uninit bytes. The
-    // pointer is valid and aligned (from a live slice) and `size_of_val`
-    // gives the exact borrowed length.
-    let bytes: &[u8] = bytemuck::cast_slice(data);
-```
-
-(`bytemuck::cast_slice` removes the `unsafe` entirely.) Each of the ~13 param structs then
-needs `#[derive(bytemuck::NoUninit)]` (or `Pod`), **which is itself the drift guard being
-asked for**. If the derive churn is unwanted, the minimum fix is to correct the comment to
-state the *real* invariant — "every current call site passes a `#[repr(C)]` type whose
-fields tile its size; a padded `T` would make this unsound" — so the next caller is warned
-instead of reassured.
-
-## Related
-
-#2683 (CLOSED — corrected the other three false SAFETY assertions in this same function,
-left this one); #84 (CLOSED — `write_mapped` silent truncation, the sibling robustness
-issue); `crates/nif/src/stream.rs` (the correct pattern: `T: AnyBitPattern`).
-
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant — here the fix *removes* an `unsafe`; verify no new one is introduced
-- [ ] **SIBLING**: Same pattern checked in related files — other `from_raw_parts`-over-`T: Copy` byte views in the renderer crate
-- [ ] **TESTS**: A regression test pins this specific fix — the `NoUninit` bound is the test; confirm all 19 call sites still compile
+Full workspace: `cargo test --no-fail-fast` 7069 passing, 0 failing
+(unchanged — this fix adds no new runtime tests, only compile-time
+guarantees).

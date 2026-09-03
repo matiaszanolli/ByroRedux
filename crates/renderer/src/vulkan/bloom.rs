@@ -102,12 +102,18 @@ pub(crate) struct DownsampleParams {
     inv_resolutions: [f32; 4],
 }
 
+// SAFETY: one `[f32; 4]` field — no implicit padding possible (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for DownsampleParams {}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct UpsampleParams {
     /// xy = 1 / smaller_resolution, zw = 1 / dst_resolution
     inv_resolutions: [f32; 4],
 }
+
+// SAFETY: one `[f32; 4]` field — no implicit padding possible (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for UpsampleParams {}
 
 struct BloomMip {
     image: vk::Image,

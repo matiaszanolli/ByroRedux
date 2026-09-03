@@ -85,6 +85,9 @@ pub struct TaaParams {
     pub params: [f32; 4],
 }
 
+// SAFETY: two `[f32; 4]` fields — no implicit padding possible (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for TaaParams {}
+
 struct HistorySlot {
     image: vk::Image,
     view: vk::ImageView,

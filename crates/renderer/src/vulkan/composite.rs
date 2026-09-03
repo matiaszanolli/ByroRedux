@@ -154,6 +154,11 @@ pub struct CompositeParams {
     pub caustic_flags: [f32; 4],
 }
 
+// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
+// scalar/vector arrays tile the struct's declared size with no implicit
+// padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for CompositeParams {}
+
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
 /// for all real-world scene brightness, supports alpha for glass blending.
 pub const HDR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;

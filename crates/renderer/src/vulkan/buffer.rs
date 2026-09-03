@@ -8,6 +8,63 @@ use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
 
+/// #3761 (SAFE-2026-08-30-D4-01) — `GpuBuffer::write_mapped` used to bound
+/// its generic parameter on `T: Copy` and claim in its SAFETY comment that
+/// this "guarantees no padding" — false: `Copy` says nothing about padding,
+/// only about the absence of `Drop` glue. A `Copy` `#[repr(C)]` type whose
+/// fields don't tile its size has uninitialised padding bytes, and viewing
+/// it as `&[u8]` (as `write_mapped` does) reads those bytes — UB by Rust's
+/// uninit-byte rules, and simultaneously uploads indeterminate padding to
+/// the GPU.
+///
+/// This pins the requirement at the type level instead: adding a new
+/// `write_mapped` call site now forces an explicit, auditable `unsafe impl`
+/// rather than compiling by accident on the strength of `Copy` alone.
+/// (Equivalent in intent to `bytemuck::NoUninit`; kept local rather than
+/// adding `bytemuck` as a new workspace dependency, mirroring
+/// `crates/nif/src/stream.rs`'s own local `AnyBitPattern` trait — the two
+/// traits encode different directions of the same "no uninit bytes"
+/// invariant: `AnyBitPattern` is for reading arbitrary bytes INTO a `T`,
+/// `NoUninit` is for treating an already-valid `T`'s bytes as exportable
+/// `u8` data, which is what `write_mapped` does. `NoUninit` therefore does
+/// NOT require `Default` the way `AnyBitPattern` does.)
+///
+/// # Safety
+/// Implement only for types where every byte of a valid instance is
+/// initialised — i.e. a `#[repr(C)]` (or primitive/array) type whose
+/// declared fields tile its full size with no implicit padding.
+// `pub`, not `pub(crate)`: `write_mapped` itself is `pub` (external
+// crates may call it in principle, even though today's only caller is
+// within this crate), and a `pub` method's generic bound cannot be a
+// less-visible trait — see `private_bounds` below if this regresses.
+pub unsafe trait NoUninit: Copy {}
+
+macro_rules! impl_no_uninit {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            // SAFETY: each of these is a primitive, or a `#[repr(C)]`
+            // aggregate whose fields are themselves all scalars/arrays
+            // that tile the struct's declared size with no padding —
+            // verified per-type at the call site this trait exists to
+            // guard (#3761).
+            unsafe impl NoUninit for $t {}
+        )+
+    };
+}
+
+impl_no_uninit!(u8, u32, f32, vk::AccelerationStructureInstanceKHR);
+
+// A fixed-size array of a `NoUninit` element has no padding either — an
+// array's layout is exactly `N` copies of the element's own layout, with no
+// bytes between them (`std::mem::size_of::<[T; N]>() == N *
+// size_of::<T>()` always holds in Rust). Several `write_mapped` call sites
+// pass an owned array directly as `T` (e.g. `&[[GpuFogClusterEntry; 4096]]`
+// via `slice::from_ref`) rather than a slice of the element type.
+// SAFETY: see the reasoning above — `[T; N]`'s layout is `N` copies of
+// `T`'s layout with no gaps, so if `T` has no uninit bytes, neither does
+// `[T; N]`.
+unsafe impl<T: NoUninit, const N: usize> NoUninit for [T; N] {}
+
 /// MEM-2-5 / #680 — startup assertion that a freshly-allocated
 /// `MemoryLocation::CpuToGpu` allocation came back with a persistent
 /// host mapping. `gpu-allocator` 0.27 maps `CpuToGpu` linear
@@ -756,7 +813,7 @@ impl GpuBuffer {
 
     /// Create a vertex buffer in DEVICE_LOCAL memory via staging upload.
     /// When `rt_enabled` is true, adds usage flags needed for BLAS builds.
-    pub fn create_vertex_buffer<T: Copy>(
+    pub fn create_vertex_buffer<T: NoUninit>(
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
@@ -1157,8 +1214,11 @@ impl GpuBuffer {
     ///
     /// If the allocation is not HOST_COHERENT, an explicit flush is
     /// performed to make the write visible to the GPU.
-    pub fn write_mapped<T: Copy>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
-        // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
+    pub fn write_mapped<T: NoUninit>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
+        // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised
+        // (no implicit `#[repr(C)]` padding), so the byte view below
+        // contains no uninitialised bytes — the class of UB `T: Copy` alone
+        // does NOT rule out (#3761 / SAFE-2026-08-30-D4-01). The pointer is
         // valid and aligned (from a live slice), and size_of_val gives the
         // exact byte length.
         let bytes: &[u8] = unsafe {
@@ -1305,7 +1365,7 @@ impl GpuBuffer {
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Create a DEVICE_LOCAL buffer and upload data via a CpuToGpu staging buffer.
-    pub fn create_device_local_buffer<T: Copy>(
+    pub fn create_device_local_buffer<T: NoUninit>(
         ctx: GpuUploadCtx,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
@@ -1339,9 +1399,12 @@ impl GpuBuffer {
             allocator.clone(),
         );
 
-        // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
-        // valid and aligned (from a live slice), and size_of_val gives the
-        // exact byte length. The borrow is bounded by this scope.
+        // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised
+        // (no implicit padding), so the byte view below contains no
+        // uninitialised bytes (#3761 / SAFE-2026-08-30-D4-01 — this used to
+        // be the same false `T: Copy` claim as `write_mapped`). The pointer
+        // is valid and aligned (from a live slice), size_of_val gives the
+        // exact byte length, and the borrow is bounded by this scope.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
