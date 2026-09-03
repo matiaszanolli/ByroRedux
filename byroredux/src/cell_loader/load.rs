@@ -18,9 +18,11 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::{CellLightingRes, CellRootIndex};
 
-use super::load_order::parse_record_indexes_in_load_order;
+use super::load_order::{parse_record_indexes_in_load_order, LoadOrder};
 use super::references::load_references;
+use super::references::{ReferenceLoadJob, ReferenceLoadProgress};
 use super::water;
+use super::FrameTimeBudget;
 
 /// Result of loading a cell.
 /// Where the wall clock of one interior cell load went, by phase.
@@ -35,9 +37,10 @@ use super::water;
 ///
 /// Mirrors [`super::UnloadPhaseTimings`], which the exterior streaming path
 /// already reports — the same phase-attribution shape, on the load side.
-/// This does **not** move the work off the render thread or chunk it against
-/// `STREAMING_APPLY_BUDGET`; it makes the next step decidable against a
-/// measurement instead of a guess.
+/// The synchronous entry point still drives all phases on the caller's
+/// thread, while the interior door-transition path uses
+/// [`InteriorCellApplyJob`] to chunk the reference phase against the shared
+/// `STREAMING_APPLY_BUDGET`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CellLoadPhaseTimings {
     /// `parse_record_indexes_in_load_order` — full-record parse of the
@@ -746,6 +749,335 @@ pub fn load_cell_with_masters(
     })
 }
 
+/// Resumable main-thread application of one interior cell.
+///
+/// The existing public [`load_cell_with_masters`] path remains synchronous,
+/// but a door transition can retain this job between frames. ESM parsing and
+/// the atomic precombined/water prefix happen in [`Self::begin`]; the large
+/// REFR phase advances through the same cursor as exterior streaming, so
+/// SCOL/PKIN expansion and multi-NIF NPC spawns do not monopolize one frame.
+/// Every slice stamps its newly-created entities onto the root, making a
+/// cancelled partial load reclaimable through the normal unload path.
+pub(crate) struct InteriorCellApplyJob {
+    masters: Vec<String>,
+    esm_path: String,
+    cell_editor_id: String,
+    index: esm::records::EsmIndex,
+    load_order: LoadOrder,
+    cell_root: EntityId,
+    pc_spawned: usize,
+    references: Option<Box<ReferenceLoadJob>>,
+    phases: CellLoadPhaseTimings,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum InteriorCellApplyProgress {
+    Pending(InteriorCellApplyJob),
+    Complete(CellLoadResult),
+}
+
+impl InteriorCellApplyJob {
+    /// Parse and install the atomic prefix of an interior load.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin(
+        masters: &[String],
+        esm_path: &str,
+        cell_editor_id: &str,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mut mat_provider: Option<&mut MaterialProvider>,
+    ) -> anyhow::Result<Self> {
+        let plugin_paths: Vec<&str> = masters
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(esm_path))
+            .collect();
+        let mut phases = CellLoadPhaseTimings::default();
+        let phase_started = Instant::now();
+        let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+        phases.esm_parse = phase_started.elapsed();
+
+        let cell_key = cell_editor_id.to_ascii_lowercase();
+        let cell = index.cells.cells.get(&cell_key).ok_or_else(|| {
+            let needle = cell_key.as_str();
+            let matches: Vec<&str> = index
+                .cells
+                .cells
+                .values()
+                .filter(|c| c.editor_id.to_ascii_lowercase().contains(needle))
+                .take(20)
+                .map(|c| c.editor_id.as_str())
+                .collect();
+            let (label, examples) = if matches.is_empty() {
+                let prefix_len = needle.len().min(4);
+                let prefix = &needle[..prefix_len];
+                let prefix_matches: Vec<&str> = index
+                    .cells
+                    .cells
+                    .values()
+                    .filter(|c| c.editor_id.to_ascii_lowercase().starts_with(prefix))
+                    .take(20)
+                    .map(|c| c.editor_id.as_str())
+                    .collect();
+                if prefix_matches.is_empty() {
+                    let any: Vec<&str> = index
+                        .cells
+                        .cells
+                        .values()
+                        .take(20)
+                        .map(|c| c.editor_id.as_str())
+                        .collect();
+                    ("first 20 cells", any)
+                } else {
+                    ("cells matching prefix", prefix_matches)
+                }
+            } else {
+                ("cells containing substring", matches)
+            };
+            anyhow::anyhow!(
+                "Cell '{}' not found. {} interior cells available. {} ({}): {:?}",
+                cell_editor_id,
+                index.cells.cells.len(),
+                label,
+                examples.len(),
+                examples,
+            )
+        })?;
+
+        log::info!(
+            "Loading cell '{}' (form {:08X}): {} placed references",
+            cell.editor_id,
+            cell.form_id,
+            cell.references.len(),
+        );
+
+        // Register the reclaim root before any GPU/ECS work. This mirrors
+        // ExteriorCellApplyJob::begin and makes even a first-slice cancel
+        // safe.
+        let cell_root = world.spawn();
+        register_cell_root(world, cell_root);
+        world.insert(cell_root, CellFormId(cell.form_id));
+        let prefix_first = world.next_entity_id();
+
+        let phase_started = Instant::now();
+        let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+            cell,
+            Vec3::ZERO,
+            world,
+            ctx,
+            tex_provider,
+            mat_provider.as_deref_mut(),
+            esm_path,
+            &plugin_paths,
+        );
+        phases.precombined = phase_started.elapsed();
+
+        // Keep water in the atomic prefix. Its texture resolve is flushed by
+        // the reference phase's completion path, so it must be present before
+        // that phase can finish.
+        if let Some(water_height) = water::interior_water_height(cell.water_height) {
+            let (water_center, water_half_extent) = water::interior_water_placement(
+                cell.references.iter().map(|reference| reference.position),
+            );
+            if water::spawn_water_plane(
+                world,
+                ctx,
+                tex_provider,
+                &index.waters,
+                water_height,
+                cell.water_type_form,
+                cell.water_velocity,
+                water_center,
+                water_half_extent,
+                None,
+            )
+            .is_none()
+            {
+                log::warn!(
+                    "  Cell '{}': water plane spawn failed — no water will render",
+                    cell.editor_id
+                );
+            }
+        }
+        // Entity IDs are monotonic, so this range covers only the entities
+        // created by the precombined/water prefix, not the root itself.
+        stamp_cell_root_range(world, cell_root, prefix_first, world.next_entity_id());
+
+        Ok(Self {
+            masters: masters.to_vec(),
+            esm_path: esm_path.to_string(),
+            cell_editor_id: cell_editor_id.to_string(),
+            index,
+            load_order,
+            cell_root,
+            pc_spawned,
+            references: None,
+            phases,
+        })
+    }
+
+    /// Advance the REFR phase against the caller's frame deadline.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance(
+        mut self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mat_provider: Option<&mut MaterialProvider>,
+        budget: &mut FrameTimeBudget,
+    ) -> InteriorCellApplyProgress {
+        let cell_key = self.cell_editor_id.to_ascii_lowercase();
+        let cell = self
+            .index
+            .cells
+            .cells
+            .get(&cell_key)
+            .expect("interior cell existed when its apply job began");
+        let absorbed =
+            super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, self.pc_spawned);
+        let first_entity = world.next_entity_id();
+        let phase_started = Instant::now();
+        let progress = super::references::load_references_budgeted(
+            &cell.references,
+            &self.index.cells,
+            &self.index,
+            &self.index.races,
+            self.index.game,
+            world,
+            ctx,
+            tex_provider,
+            mat_provider,
+            &self.cell_editor_id,
+            &self.load_order,
+            absorbed,
+            self.references.take(),
+            budget,
+        );
+        self.phases.references = self
+            .phases
+            .references
+            .saturating_add(phase_started.elapsed());
+        stamp_cell_root_range(world, self.cell_root, first_entity, world.next_entity_id());
+
+        match progress {
+            ReferenceLoadProgress::Pending(references) => {
+                self.references = Some(references);
+                super::references::flush_pending_cell_textures_on_yield(ctx);
+                InteriorCellApplyProgress::Pending(self)
+            }
+            ReferenceLoadProgress::Complete(result) => {
+                self.finish(world, ctx, tex_provider, result)
+            }
+        }
+    }
+
+    /// Reclaim all ECS/GPU work produced by an unfinished interior load.
+    pub(crate) fn cancel(mut self, world: &mut World, ctx: &mut VulkanContext) {
+        if let Some(references) = self.references.take() {
+            references.cancel(world);
+        }
+        super::unload_cell(world, ctx, self.cell_root);
+    }
+
+    fn finish(
+        self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        result: super::references::RefLoadResult,
+    ) -> InteriorCellApplyProgress {
+        let InteriorCellApplyJob {
+            masters,
+            esm_path,
+            cell_editor_id,
+            index,
+            load_order,
+            cell_root,
+            mut phases,
+            ..
+        } = self;
+        let cell_key = cell_editor_id.to_ascii_lowercase();
+        let cell = index
+            .cells
+            .cells
+            .get(&cell_key)
+            .expect("interior cell existed when its apply job began");
+        let phase_started = Instant::now();
+        let resolved_lighting = resolve_cell_lighting(cell, &index);
+        log::info!("Cell lighting: {:?}", resolved_lighting);
+
+        let navmesh_first = world.next_entity_id();
+        crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
+        stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
+        crate::asset_provider::populate_scene_runtime(world, &index);
+        crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
+
+        let cell_name = cell.editor_id.clone();
+        let entity_count = result.entity_count;
+        let center = result.center;
+        let region_ambient =
+            crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
+        let previous_music_form = world
+            .try_resource::<crate::components::RegionAmbientRes>()
+            .and_then(|r| r.music_form);
+        if previous_music_form != region_ambient.music_form {
+            crate::asset_provider::dispatch_region_ambient_music(
+                world,
+                &index.sounds,
+                region_ambient.music_form,
+            );
+        }
+
+        ensure_globals_resource(world, &index.globals);
+        let form_resolver =
+            super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
+                &load_order,
+                &index.record_types,
+                &index.factions,
+            );
+        world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(form_resolver);
+        world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
+        world.insert_resource(super::CurrentCellContext {
+            cell_editor_id: cell_editor_id.clone(),
+            esm_path,
+            masters,
+        });
+
+        debug_assert_eq!(
+            ctx.texture_registry.pending_dds_upload_count(),
+            0,
+            "interior cell load left DDS uploads unflushed — a resolve_texture \
+             call has moved below load_references' flush (#3320)"
+        );
+
+        phases.finalization = phase_started.elapsed();
+        log::info!(
+            "Cell load phases: esm_parse={:.3}s precombined={:.3}s references={:.3}s \
+             finalization={:.3}s total={:.3}s dominant={}",
+            phases.esm_parse.as_secs_f32(),
+            phases.precombined.as_secs_f32(),
+            phases.references.as_secs_f32(),
+            phases.finalization.as_secs_f32(),
+            phases.total().as_secs_f32(),
+            phases
+                .dominant()
+                .map(|(name, share)| format!("{name} ({:.0}%)", share * 100.0))
+                .unwrap_or_else(|| "none".to_string()),
+        );
+
+        InteriorCellApplyProgress::Complete(CellLoadResult {
+            cell_name,
+            entity_count,
+            center,
+            lighting: resolved_lighting,
+            region_ambient,
+            phases,
+        })
+    }
+}
+
 const XCLL_INHERIT_AMBIENT: u32 = 0x001;
 const XCLL_INHERIT_DIRECTIONAL_COLOR: u32 = 0x002;
 const XCLL_INHERIT_FOG_COLOR: u32 = 0x004;
@@ -965,6 +1297,35 @@ mod stamp_cell_root_range_tests {
 
 #[cfg(test)]
 mod tests {
+    /// #3671 — the resumable interior path must use the existing reference
+    /// cursor and stamp every yielded slice before returning it to App. The
+    /// source check keeps this invariant CI-reachable without requiring a
+    /// Vulkan device or shipped ESM archives.
+    #[test]
+    fn interior_apply_job_is_budgeted_and_reclaimable() {
+        let source = include_str!("load.rs");
+        let job_start = source
+            .find("pub(crate) struct InteriorCellApplyJob")
+            .expect("the interior apply job must exist");
+        let body = &source[job_start..];
+        let advance_start = body
+            .find("pub(crate) fn advance(")
+            .expect("the interior apply job must expose advance");
+        let body = &body[advance_start..];
+        assert!(
+            body.contains("load_references_budgeted("),
+            "interior apply must share the resumable reference cursor (#3671)"
+        );
+        assert!(
+            body.contains("stamp_cell_root_range(world, self.cell_root, first_entity"),
+            "each interior slice must stamp its newly-created entity range (#3671)"
+        );
+        assert!(
+            source.contains("references.cancel(world)") && source.contains("unload_cell(world, ctx, self.cell_root)"),
+            "cancelling an interior job must release both reference continuations and its cell root (#3671)"
+        );
+    }
+
     /// #3320 — pin the load-order invariant that makes interior water render.
     ///
     /// `spawn_water_plane` reserves a bindless slot via `resolve_texture` and

@@ -94,6 +94,7 @@ pub use transition::{
     LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
     QueuedDoorTransition, TransitionDestination,
 };
+pub(crate) use transition::{InteriorCellApply, InteriorCellApplyProgress};
 // `clear_current_exterior_identity` is an internal teardown helper (only
 // `streaming_helpers::drain_streaming_state` calls it) — `pub(crate)`, not
 // part of the crate's external `pub` surface the block above re-exports.

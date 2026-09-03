@@ -567,6 +567,10 @@ struct App {
     /// and synchronously loads / unloads the deltas via the per-cell
     /// loader.
     streaming: Option<streaming::WorldStreamingState>,
+    /// Resumable interior door transition. The job and its providers stay
+    /// alive across frames until the REFR/NPC phase completes or is
+    /// cancelled by a replacement transition/shutdown (#3671).
+    interior_transition: Option<cell_loader::InteriorCellApply>,
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
@@ -624,6 +628,11 @@ impl Drop for App {
     /// Idempotent with the `CloseRequested` handler — `remove_resource`
     /// and `Option::take` are both no-ops the second time.
     fn drop(&mut self) {
+        // An unfinished interior apply owns GPU/ECS objects under its cell
+        // root. Reclaim those before the renderer is torn down; simply
+        // dropping the cursor would leave the partial cell's handles in the
+        // live registries during shutdown (#3671).
+        self.cancel_interior_cell_apply();
         // INVARIANT (REG-08 / #1640, #1477): remove the `AllocatorResource`
         // (the ECS allocator clone) BEFORE `renderer.take()` drops the
         // `VulkanContext`. Reversing these two lines re-arms the
@@ -810,6 +819,7 @@ impl App {
             screenshot_requested: false,
             screenshot_deadline_frames: 0,
             streaming: None,
+            interior_transition: None,
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,

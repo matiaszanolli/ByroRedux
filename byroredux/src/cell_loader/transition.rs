@@ -14,9 +14,9 @@
 //!
 //! This module owns the resource types + the orchestrator. The actual
 //! load/unload primitives live in their existing siblings
-//! (`load::load_cell_with_masters`, `unload::unload_cell`); this layer
-//! threads them together with the correct state machine for each of
-//! the four transition pairs.
+//! (`load::load_cell_with_masters`, `load::InteriorCellApplyJob`,
+//! `unload::unload_cell`); this layer threads them together with the correct
+//! state machine for each of the four transition pairs.
 //!
 //! Pairs handled:
 //! - **Interior → Interior**: unload current interior (via
@@ -39,6 +39,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
 
+use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::DoorTeleport;
 
 /// Plugin-load configuration captured at engine boot. The transition
@@ -434,6 +435,127 @@ pub struct InteriorCellRequest<'a> {
     pub dest_rot_zup: [f32; 3],
 }
 
+/// App-owned state for a resumable interior door transition.
+///
+/// The providers must live for the whole apply, not just the frame that
+/// parses the destination. Keeping them beside the job also prevents a
+/// partially-loaded cell from borrowing a provider that the next frame has
+/// already dropped.
+pub(crate) struct InteriorCellApply {
+    pub(crate) job: super::load::InteriorCellApplyJob,
+    pub(crate) tex_provider: TextureProvider,
+    pub(crate) mat_provider: MaterialProvider,
+    pub(crate) dest_pos_zup: [f32; 3],
+    pub(crate) dest_rot_zup: [f32; 3],
+    pub(crate) dest_label: String,
+}
+
+pub(crate) enum InteriorCellApplyProgress {
+    Pending(InteriorCellApply),
+    Complete { dest_label: String, cam_pos: Vec3 },
+}
+
+impl InteriorCellApply {
+    pub(crate) fn begin(
+        world: &mut byroredux_core::ecs::World,
+        ctx: &mut byroredux_renderer::VulkanContext,
+        tex_provider: TextureProvider,
+        mut mat_provider: MaterialProvider,
+        request: InteriorCellRequest<'_>,
+        dest_label: String,
+    ) -> anyhow::Result<Self> {
+        let InteriorCellRequest {
+            editor_id,
+            masters,
+            esm_path,
+            dest_pos_zup,
+            dest_rot_zup,
+        } = request;
+        let job = super::load::InteriorCellApplyJob::begin(
+            masters,
+            esm_path,
+            editor_id,
+            world,
+            ctx,
+            &tex_provider,
+            Some(&mut mat_provider),
+        )?;
+        Ok(Self {
+            job,
+            tex_provider,
+            mat_provider,
+            dest_pos_zup,
+            dest_rot_zup,
+            dest_label,
+        })
+    }
+
+    pub(crate) fn advance(
+        self,
+        world: &mut byroredux_core::ecs::World,
+        ctx: &mut byroredux_renderer::VulkanContext,
+        budget: &mut super::FrameTimeBudget,
+    ) -> InteriorCellApplyProgress {
+        let Self {
+            job,
+            tex_provider,
+            mut mat_provider,
+            dest_pos_zup,
+            dest_rot_zup,
+            dest_label,
+        } = self;
+        match job.advance(world, ctx, &tex_provider, Some(&mut mat_provider), budget) {
+            super::load::InteriorCellApplyProgress::Pending(job) => {
+                InteriorCellApplyProgress::Pending(Self {
+                    job,
+                    tex_provider,
+                    mat_provider,
+                    dest_pos_zup,
+                    dest_rot_zup,
+                    dest_label,
+                })
+            }
+            super::load::InteriorCellApplyProgress::Complete(result) => {
+                let cam_pos = finish_interior_cell_load(
+                    world,
+                    result,
+                    position_zup_to_yup(dest_pos_zup),
+                    rotation_zup_to_yup_quat(dest_rot_zup),
+                );
+                InteriorCellApplyProgress::Complete {
+                    dest_label,
+                    cam_pos,
+                }
+            }
+        }
+    }
+
+    pub(crate) fn cancel(
+        self,
+        world: &mut byroredux_core::ecs::World,
+        ctx: &mut byroredux_renderer::VulkanContext,
+    ) {
+        self.job.cancel(world, ctx);
+    }
+}
+
+/// Apply the non-ECS-camera side effects shared by synchronous and resumable
+/// interior loads after the reference phase has completed.
+pub(crate) fn finish_interior_cell_load(
+    world: &mut byroredux_core::ecs::World,
+    result: super::load::CellLoadResult,
+    dest_pos: Vec3,
+    dest_rot: Quat,
+) -> Vec3 {
+    world.insert_resource(result.phases);
+    super::apply_interior_cell_lighting(world, result.lighting.as_ref());
+    world.insert_resource(result.region_ambient);
+    reposition_camera(world, dest_pos, dest_rot);
+    crate::systems::ground_character_body_at(world, dest_pos);
+    dest_pos
+}
+
+#[allow(dead_code)]
 pub fn load_interior_cell(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -459,49 +581,9 @@ pub fn load_interior_cell(
         mat_provider,
     )
     .map_err(|e| format!("{e:#}"))?;
-    // #3559 — a door-walk load blocks the render thread exactly as the
-    // startup load does, so record its phase split too.
-    world.insert_resource(result.phases);
-
-    // #1340 — apply the loaded interior's lighting (the startup `--cell`
-    // path does this too, via the same helper). Without it the door-walked
-    // interior keeps the previous cell's `CellLightingRes`: stale
-    // ambient/fog + the exterior directional sun leaking into a sealed
-    // interior (the failure #1282 gated on `is_interior`). Always called
-    // (not gated on `Some`) so a cell with no `XCLL`/resolvable `LTMP`
-    // still gets the engine-default interior fallback, not a stale carry-
-    // over from the exterior cell just departed (FNV-D1-01).
-    super::apply_interior_cell_lighting(world, result.lighting.as_ref());
-    // EX-16 item 1 (#2372) — same always-insert reasoning as lighting
-    // above: a door-walk into a region-less cell must clear whatever
-    // ambient directive the departed cell left behind, not inherit it.
-    world.insert_resource(result.region_ambient);
-
     let dest_pos = position_zup_to_yup(dest_pos_zup);
     let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);
-    reposition_camera(world, dest_pos, dest_rot);
-    // #1874 — `reposition_camera` only moves the CAMERA. In
-    // `PlayerMode::Character` the physics capsule stays behind in the
-    // just-unloaded source cell; `camera_follow_system` (Stage::Late,
-    // every frame) pins the camera to "body position + eye_height,"
-    // so on the very next tick it would snap the camera straight back
-    // toward the stale (often now ungrounded / free-falling through
-    // unloaded geometry) capsule — undoing this reposition and
-    // re-triggering a fresh, unsignaled camera discontinuity every
-    // frame until the capsule happened to settle. That recurring
-    // fight, not a single bad motion vector, is what let a ghosted/
-    // doubled TAA-SVGF history artifact "stick" indefinitely after a
-    // door transition. No-ops harmlessly in FlyCam mode (no player
-    // body to snap).
-    //
-    // #2869 — this was `snap_character_body_to_camera`, which derives the
-    // body from the camera by subtracting `eye_height`. The camera has just
-    // been placed at the FLOOR-level XTEL destination, so that buried the
-    // capsule ~116 BU below the destination floor. `dest_pos` is the floor,
-    // so ground the body against it directly and let the camera follow from
-    // the body — the same direction cold start works in.
-    crate::systems::ground_character_body_at(world, dest_pos);
-    Ok(dest_pos)
+    Ok(finish_interior_cell_load(world, result, dest_pos, dest_rot))
 }
 
 /// Log header used by both interior and exterior orchestrator entries.

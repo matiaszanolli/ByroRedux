@@ -282,10 +282,33 @@ impl App {
     /// that landed the same frame). No-op when the queue is empty,
     /// which is the steady-state case.
     pub(crate) fn step_debug_loads(&mut self) {
+        // A debug load is destructive and must not race a resumable door
+        // transition. Leave the request queued while the interior job gets
+        // its next budget slice; it will drain on the first idle frame.
+        let debug_load_pending = self
+            .world
+            .try_resource::<byroredux_core::ecs::debug_load::PendingDebugLoadSlot>()
+            .is_some_and(|slot| !slot.0.is_empty());
+        if debug_load_pending && self.interior_transition.is_some() {
+            return;
+        }
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
         crate::debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
+    }
+
+    /// Cancel an unfinished interior apply and reclaim every object already
+    /// spawned under its cell root. Used by shutdown and kept as a single
+    /// choke point so future transition sources cannot accidentally drop a
+    /// live cursor without running its cleanup path.
+    pub(crate) fn cancel_interior_cell_apply(&mut self) {
+        let Some(apply) = self.interior_transition.take() else {
+            return;
+        };
+        if let Some(ctx) = self.renderer.as_mut() {
+            apply.cancel(&mut self.world, ctx);
+        }
     }
 
     /// Drive the active camera along the `--bench-camera` path.
@@ -661,6 +684,16 @@ impl App {
     /// then overlays the form-id-keyed mutable game-state deltas. No-op
     /// when nothing is queued — the steady-state case.
     pub(crate) fn step_save_loads(&mut self) {
+        // Save-load teardown is destructive too. Defer it until a resumable
+        // interior transition has either completed or been explicitly
+        // replaced, preserving the transition's ownership boundary.
+        let save_load_pending = self
+            .world
+            .try_resource::<crate::save_io::PendingSaveLoadSlot>()
+            .is_some_and(|slot| slot.snapshot.is_some());
+        if save_load_pending && self.interior_transition.is_some() {
+            return;
+        }
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
@@ -682,8 +715,9 @@ impl App {
     /// Dispatches on the destination variant:
     ///
     /// * `Interior` — tear down any active exterior streaming state
-    ///   (drain `state.loaded`, shutdown the worker thread), then
-    ///   call `cell_loader::load_interior_cell` for the destination.
+    ///   (drain `state.loaded`, shutdown the worker thread), then start an
+    ///   App-owned `InteriorCellApply` cursor for the destination. The
+    ///   reference/NPC phase advances on later frames.
     /// * `Exterior` — tear down current interior (if any), tear down
     ///   existing streaming state, build a fresh `ExteriorWorldContext` +
     ///   `WorldStreamingState` for the destination worldspace,
@@ -739,8 +773,52 @@ impl App {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
-        let Some(pending) = cell_loader::take_pending_transition(&self.world) else {
-            return;
+        let pending = if self.interior_transition.is_some() {
+            match cell_loader::take_pending_transition(&self.world) {
+                Some(replacement) => {
+                    // A newer transition supersedes the unfinished one.
+                    // Reclaim its partial cell before dispatching the new
+                    // destination, so no old REFR/NPC handles survive the
+                    // handoff.
+                    if let Some(apply) = self.interior_transition.take() {
+                        log::info!("Transition: cancelling unfinished interior apply");
+                        apply.cancel(&mut self.world, ctx);
+                    }
+                    replacement
+                }
+                None => {
+                    let apply = self
+                        .interior_transition
+                        .take()
+                        .expect("interior transition was present above");
+                    let deadline = Instant::now() + Self::STREAMING_APPLY_BUDGET;
+                    let mut budget = cell_loader::FrameTimeBudget::until(deadline);
+                    match apply.advance(&mut self.world, ctx, &mut budget) {
+                        cell_loader::InteriorCellApplyProgress::Pending(next) => {
+                            self.interior_transition = Some(next);
+                        }
+                        cell_loader::InteriorCellApplyProgress::Complete {
+                            dest_label,
+                            cam_pos,
+                        } => {
+                            log::info!(
+                                "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
+                                dest_label,
+                                cam_pos.x,
+                                cam_pos.y,
+                                cam_pos.z,
+                            );
+                            ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                        }
+                    }
+                    return;
+                }
+            }
+        } else {
+            let Some(pending) = cell_loader::take_pending_transition(&self.world) else {
+                return;
+            };
+            pending
         };
 
         let dest_label = cell_loader::log_transition_header(&pending);
@@ -768,13 +846,14 @@ impl App {
                         &mut self.streaming,
                     );
                 }
+                cell_loader::unload_current_interior(&mut self.world, ctx);
                 let tex_provider = crate::asset_provider::build_texture_provider(&args);
-                let mut mat_provider = crate::asset_provider::build_material_provider(&args);
-                match cell_loader::load_interior_cell(
+                let mat_provider = crate::asset_provider::build_material_provider(&args);
+                match cell_loader::InteriorCellApply::begin(
                     &mut self.world,
                     ctx,
-                    &tex_provider,
-                    Some(&mut mat_provider),
+                    tex_provider,
+                    mat_provider,
                     cell_loader::InteriorCellRequest {
                         editor_id: &editor_id,
                         masters: &masters,
@@ -782,17 +861,9 @@ impl App {
                         dest_pos_zup: pending.destination_position_zup,
                         dest_rot_zup: pending.destination_rotation_zup,
                     },
+                    dest_label.clone(),
                 ) {
-                    Ok(cam_pos) => {
-                        log::info!(
-                            "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
-                            dest_label,
-                            cam_pos.x,
-                            cam_pos.y,
-                            cam_pos.z,
-                        );
-                        ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
-                    }
+                    Ok(apply) => self.interior_transition = Some(apply),
                     Err(e) => {
                         log::error!("Cell transition to {} FAILED: {}", dest_label, e);
                     }
@@ -970,6 +1041,34 @@ mod tests {
     #[test]
     fn door_transition_keeps_its_historical_default_radius() {
         assert_eq!(exterior_transition_radius(&[]), 5);
+    }
+
+    /// #3671 — interior transitions must retain the resumable reference
+    /// cursor instead of calling the historical unlimited wrapper in the
+    /// frame-boundary dispatcher.
+    #[test]
+    fn interior_transition_uses_the_shared_budgeted_apply_job() {
+        let src = include_str!("app_step.rs");
+        let fn_start = src
+            .find("pub(crate) fn step_cell_transition(")
+            .expect("step_cell_transition must still exist");
+        let body = &src[fn_start..];
+        let body_end = body
+            .find("\n    }\n}\n\n/// Preserve the historical")
+            .expect("step_cell_transition body boundary not found");
+        let body = &body[..body_end];
+        assert!(
+            body.contains("InteriorCellApply::begin("),
+            "interior transitions must create the resumable apply state (#3671)"
+        );
+        assert!(
+            body.contains("FrameTimeBudget::until(deadline)"),
+            "interior transition slices must use the shared frame deadline (#3671)"
+        );
+        assert!(
+            body.contains("InteriorCellApplyProgress::Pending"),
+            "the dispatcher must retain a pending interior cursor across frames (#3671)"
+        );
     }
 
     /// #2156 / RL-D6-03 — the other half of the fix (the rollback itself

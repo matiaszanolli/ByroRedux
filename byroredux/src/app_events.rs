@@ -40,6 +40,7 @@ impl App {
     pub(crate) fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Shutdown requested");
         crate::extensions::shutdown_extension_host(&self.world);
+        self.cancel_interior_cell_apply();
         if let (Some(ref mut state), Some(ref mut ctx)) =
             (self.streaming.as_mut(), self.renderer.as_mut())
         {
