@@ -54,6 +54,14 @@ esm = "FalloutNV.esm"
 # (including the NCR guard towers) — and any future asset it patches — to
 # resolve/override the same way retail's archive priority does.
 default_bsas = ["Update.bsa", "Fallout - Meshes.bsa"]
+# #3788 — footstep audio, water-splash acoustics, and REGN ambient (M44)
+# all early-return silently with no --sounds-bsa supplied at all; this was
+# never a design decision, just an omission (the profile parser's own unit
+# test already declares this exact shape). 2,700/3,189 (84.7%) of FNV
+# SOUN.FNAM paths resolve inside this one archive, including the canonical
+# footstep/splash paths byte-for-byte. `Fallout - Voices1.bsa` deliberately
+# NOT added — 105,517 entries, no dialogue consumer exists yet.
+default_sounds_bsas = ["Fallout - Sound.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
 default_materials_bsas = []
 # F6 (2026-05-26) — all entries verified via

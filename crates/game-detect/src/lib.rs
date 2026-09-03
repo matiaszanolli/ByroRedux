@@ -204,6 +204,40 @@ mod tests {
         );
     }
 
+    /// #3788 — `--game fnv` must supply a `--sounds-bsa`, or the three M44
+    /// audio consumers (footstep, water splash, REGN ambient) silently
+    /// early-return with nothing to distinguish "no archive" from "not
+    /// implemented". Reads the real shipped file, same pattern as
+    /// `fnv_profile_lists_update_bsa_before_the_base_meshes_archive` above.
+    #[test]
+    fn fnv_profile_declares_a_sounds_archive() {
+        let path = std::path::Path::new("../../assets/debug_profiles.toml");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let document: toml::Table = toml::from_str(&text).unwrap();
+        let fnv = document["profiles"]["fnv"]
+            .as_table()
+            .expect("shipped profiles have no `fnv` block");
+        let default_sounds_bsas = fnv
+            .get("default_sounds_bsas")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            !default_sounds_bsas.is_empty(),
+            "fnv.default_sounds_bsas must not be empty — footstep audio, water-splash \
+             acoustics, and REGN ambient all silently early-return with no --sounds-bsa \
+             supplied at all (#3788)",
+        );
+        assert!(
+            default_sounds_bsas.contains(&"Fallout - Sound.bsa"),
+            "fnv.default_sounds_bsas {default_sounds_bsas:?} must list Fallout - Sound.bsa \
+             (84.7% of FNV SOUN.FNAM paths resolve inside it, incl. the canonical \
+             footstep/splash paths byte-for-byte)",
+        );
+    }
+
     #[test]
     fn configured_roots_are_read_back_as_candidates() {
         let dir = tempfile::tempdir().unwrap();

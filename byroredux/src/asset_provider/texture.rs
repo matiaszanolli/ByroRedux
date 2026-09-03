@@ -167,6 +167,11 @@ pub(crate) fn try_load_default_footstep(
     sounds: &SoundArchiveProvider,
 ) {
     if sounds.is_empty() {
+        // #3788 — a boot-time, once-only log distinguishing "no --sounds-bsa
+        // was supplied at all" from the CANONICAL-not-found warn below, so a
+        // silent footstep audio isn't indistinguishable from "not
+        // implemented" when auditing a launch that omitted the flag.
+        log::info!("M44 Phase 3.5: no --sounds-bsa archive supplied — footstep sound skipped");
         return;
     }
     // Vanilla FNV ships dirt-walk footsteps with left/right
@@ -205,6 +210,8 @@ pub(crate) fn try_load_default_water_splash(
     sounds: &SoundArchiveProvider,
 ) {
     if sounds.is_empty() {
+        // #3788 — same rationale as try_load_default_footstep's info log.
+        log::info!("water acoustics: no --sounds-bsa archive supplied — splash sound skipped");
         return;
     }
     const CANDIDATES: &[&str] = &[
