@@ -6,8 +6,8 @@
 //! decisions live next to their tests.
 
 use super::constants::{
-    BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_THRESHOLD,
-    TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
+    BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_JITTER,
+    SKINNED_BLAS_REFIT_THRESHOLD, TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
 };
 use crate::vulkan::context::DrawCommand;
 use anyhow::{Context, Result};
@@ -99,13 +99,26 @@ where
     }
 }
 
-/// Pure predicate: does a skinned BLAS with `refit_count` refits
-/// since its last fresh BUILD warrant a drop+rebuild this frame?
+/// Effective per-entity refit limit. The stable entity-ID offset spreads a
+/// continuously animating cohort over one second at 60 FPS while keeping the
+/// base rebuild cadence unchanged (#3669).
+#[inline]
+pub(super) fn skinned_blas_refit_limit(entity_id: u32) -> u32 {
+    SKINNED_BLAS_REFIT_THRESHOLD.saturating_add(if SKINNED_BLAS_REFIT_JITTER == 0 {
+        0
+    } else {
+        entity_id % SKINNED_BLAS_REFIT_JITTER
+    })
+}
+
+/// Pure predicate: does a skinned BLAS with refit_count refits
+/// since its last fresh BUILD warrant a drop+rebuild this frame for this
+/// entity?
 /// Pulled out so the threshold logic is unit-testable without a
 /// Vulkan context.
 #[inline]
-pub(super) fn should_rebuild_skinned_blas_after(refit_count: u32) -> bool {
-    refit_count >= SKINNED_BLAS_REFIT_THRESHOLD
+pub(super) fn should_rebuild_skinned_blas_after(entity_id: u32, refit_count: u32) -> bool {
+    refit_count >= skinned_blas_refit_limit(entity_id)
 }
 
 /// #907 — pure check that the caller-supplied vertex / index counts

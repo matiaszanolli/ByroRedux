@@ -31,7 +31,9 @@ mod predicates;
 mod tlas;
 mod types;
 
-pub use constants::{MAX_STATIC_BLAS_RESTORES_PER_FRAME, SKINNED_BLAS_REFIT_THRESHOLD};
+pub use constants::{
+    MAX_STATIC_BLAS_RESTORES_PER_FRAME, SKINNED_BLAS_REFIT_JITTER, SKINNED_BLAS_REFIT_THRESHOLD,
+};
 pub use predicates::{build_instance_map, plan_static_blas_restore};
 pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
 

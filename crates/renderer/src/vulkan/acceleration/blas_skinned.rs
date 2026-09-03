@@ -649,7 +649,7 @@ impl AccelerationManager {
     pub fn should_rebuild_skinned_blas(&self, entity_id: EntityId) -> bool {
         self.skinned_blas
             .get(&entity_id)
-            .map(|entry| should_rebuild_skinned_blas_after(entry.refit_count))
+            .map(|entry| should_rebuild_skinned_blas_after(entity_id, entry.refit_count))
             .unwrap_or(false)
     }
 

@@ -89,20 +89,47 @@ fn fire_refraction_surface_excluded_even_with_in_tlas_set() {
 #[test]
 fn skinned_blas_rebuild_predicate_thresholds() {
     // Below threshold — keep refitting.
-    assert!(!should_rebuild_skinned_blas_after(0));
-    assert!(!should_rebuild_skinned_blas_after(1));
+    assert!(!should_rebuild_skinned_blas_after(0, 0));
+    assert!(!should_rebuild_skinned_blas_after(0, 1));
     assert!(!should_rebuild_skinned_blas_after(
+        0,
         SKINNED_BLAS_REFIT_THRESHOLD - 1
     ));
-    // At threshold — fire.
+    // Entity zero has no offset, so it fires at the base threshold.
     assert!(should_rebuild_skinned_blas_after(
+        0,
         SKINNED_BLAS_REFIT_THRESHOLD
+    ));
+    // Entity one is delayed by one frame, proving adjacent entities do not
+    // all rebuild on the same threshold frame.
+    assert!(!should_rebuild_skinned_blas_after(
+        1,
+        SKINNED_BLAS_REFIT_THRESHOLD
+    ));
+    assert!(should_rebuild_skinned_blas_after(
+        1,
+        SKINNED_BLAS_REFIT_THRESHOLD + 1
     ));
     // Above threshold — fire (caller missed a frame; still rebuild).
     assert!(should_rebuild_skinned_blas_after(
-        SKINNED_BLAS_REFIT_THRESHOLD + 1
+        59,
+        SKINNED_BLAS_REFIT_THRESHOLD + 59
     ));
-    assert!(should_rebuild_skinned_blas_after(u32::MAX));
+    assert!(should_rebuild_skinned_blas_after(59, u32::MAX));
+}
+
+#[test]
+fn skinned_blas_rebuild_jitter_repeats_only_after_one_full_window() {
+    assert_eq!(skinned_blas_refit_limit(0), SKINNED_BLAS_REFIT_THRESHOLD);
+    assert_eq!(
+        skinned_blas_refit_limit(59),
+        SKINNED_BLAS_REFIT_THRESHOLD + 59
+    );
+    assert_eq!(skinned_blas_refit_limit(60), SKINNED_BLAS_REFIT_THRESHOLD);
+    assert_eq!(
+        skinned_blas_refit_limit(u32::MAX),
+        SKINNED_BLAS_REFIT_THRESHOLD + (u32::MAX % SKINNED_BLAS_REFIT_JITTER)
+    );
 }
 
 // ── #907 / REN-D12-NEW-01 — refit-counts VUID guard ────────────

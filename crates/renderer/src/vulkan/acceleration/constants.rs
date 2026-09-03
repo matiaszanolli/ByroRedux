@@ -67,6 +67,12 @@ pub(super) const MIN_BLAS_BUDGET_BYTES: vk::DeviceSize = 256 * 1024 * 1024;
 /// far past the original BVH. See #679 / AS-8-9.
 pub const SKINNED_BLAS_REFIT_THRESHOLD: u32 = 600;
 
+/// Maximum deterministic per-entity offset added to the skinned-BLAS
+/// refit threshold. Entity IDs distribute a cohort across this many frames,
+/// so continuously animated NPCs do not all drop and rebuild their BLAS in
+/// the same frame (#3669).
+pub const SKINNED_BLAS_REFIT_JITTER: u32 = 60;
+
 /// How often to check the eviction threshold inside the batched BLAS
 /// build. Every N buffers created we test
 /// [`should_evict_mid_batch`]; eviction runs only when needed, so the

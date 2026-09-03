@@ -69,8 +69,9 @@ pub struct BlasEntry {
     /// a long animation cycle (an NPC walking 30s) eventually has
     /// the refit BLAS noticeably slower to traverse than a fresh
     /// BUILD. The renderer compares this counter against
-    /// [`SKINNED_BLAS_REFIT_THRESHOLD`] each frame and triggers a
-    /// drop+rebuild when the threshold is reached. See #679 / AS-8-9.
+    /// SKINNED_BLAS_REFIT_THRESHOLD plus its stable per-entity jitter
+    /// each frame and triggers a drop+rebuild when that limit is reached.
+    /// See #679 / AS-8-9 and #3669.
     pub refit_count: u32,
     /// Vertex / index counts the original fresh BUILD was sized for.
     /// `refit_skinned_blas` validates the caller-supplied counts
