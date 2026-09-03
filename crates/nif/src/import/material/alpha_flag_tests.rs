@@ -59,6 +59,35 @@ fn alpha_test_and_blend_preserves_authored_blend_for_glass_only() {
     assert!(info.effective_alpha_blend(Some("TriShape:0"), &pool));
 }
 
+/// #3797 — bit 13 (0x2000, "No Sorter") decodes into `MaterialInfo::no_sorter`.
+#[test]
+fn no_sorter_bit_sets_flag() {
+    let mut info = MaterialInfo::default();
+    apply_alpha_flags(&mut info, &alpha_prop(0x2000, 128));
+    assert!(info.no_sorter);
+    // No Sorter is independent of blend/test — flags=0x2000 alone
+    // authors neither.
+    assert!(!info.alpha_blend);
+    assert!(!info.alpha_test);
+}
+
+#[test]
+fn no_sorter_bit_absent_leaves_flag_false() {
+    let mut info = MaterialInfo::default();
+    apply_alpha_flags(&mut info, &alpha_prop(0x0001, 128)); // blend only
+    assert!(!info.no_sorter);
+}
+
+/// #3797 — No Sorter must not be clobbered by, or clobber, the
+/// independent blend-enable bit when both are set on the same property.
+#[test]
+fn no_sorter_bit_coexists_with_alpha_blend() {
+    let mut info = MaterialInfo::default();
+    apply_alpha_flags(&mut info, &alpha_prop(0x2001, 128)); // blend + no_sorter
+    assert!(info.no_sorter);
+    assert!(info.alpha_blend);
+}
+
 #[test]
 fn neither_bit_leaves_defaults() {
     let mut info = MaterialInfo::default();

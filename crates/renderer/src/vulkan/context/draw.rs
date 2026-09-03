@@ -2484,6 +2484,7 @@ mod is_caustic_source_tests {
             src_blend: 6,
             dst_blend: 7,
             two_sided: false,
+            no_sorter: false,
             wireframe: false,
             flat_shading: false,
             is_decal: false,

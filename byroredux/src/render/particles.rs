@@ -150,6 +150,9 @@ pub(super) fn emit_particles(
                 src_blend: em.src_blend,
                 dst_blend: em.dst_blend,
                 two_sided: true, // billboard quads are single-faced; cull-off avoids back-face flicker on extreme angles
+                // No NiAlphaProperty on procedural particle billboards —
+                // always participate in the depth sort. #3797.
+                no_sorter: false,
                 // Particles never use wireframe (sprites don't render
                 // line-by-line) or flat-shading (no per-face geometry
                 // — billboards are screen-aligned quads). #869.

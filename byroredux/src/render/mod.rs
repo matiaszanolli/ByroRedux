@@ -374,10 +374,13 @@ fn compute_directional_upload(
 /// `byroredux_core::ecs::components::SceneFlags::DISABLE_SORTING`, see
 /// that constant's doc for the verified Gamebryo semantics) never
 /// reaches this key — every alpha-blended draw goes through the global
-/// back-to-front sort below regardless. Deliberately left unwired; see
-/// the `SceneFlags` doc for why.
+/// back-to-front sort below regardless *unless* it opted out via
+/// `no_sorter` (see slot 3, #3797). `no_sorter` is a coarser opt-out
+/// than `DISABLE_SORTING` (state-clustered fallback, not real file
+/// order — this key still has no file-order data source) but it is the
+/// one authored per-shape control the mapping actually reads.
 ///
-/// All branches return the same 11-tuple shape so the compiler accepts
+/// All branches return the same 12-tuple shape so the compiler accepts
 /// a single key closure. Per-branch semantics:
 ///   Slot 0       = `!in_raster` priority bit — `0` for in-frustum
 ///                 (rasterized) draws, `1` for off-frustum RT-only
@@ -400,42 +403,62 @@ fn compute_directional_upload(
 ///                 over it.
 ///   Slot 2       = transparent blend class: additive (`0`) before true
 ///                 alpha-over (`1`). Opaque also uses `0`.
-///   Opaque      — slots 3/4 = render layer/two-sided; slots 5/6 = 0
-///                 (blend factors unused); slot 7 = depth_state; slot 8 =
-///                 mesh (cluster key); slot 9 = sort_depth
-///                 (front-to-back); slot 10 = entity_id tiebreaker (#506).
-///   Additive    — order-independent, so slots 3–9 retain state/mesh
+///   Slot 3       = `no_sorter` partition (#3797, `NiAlphaProperty.flags`
+///                 bit 13, "No Sorter"). Only meaningful for true
+///                 alpha-over (slot 2 == 1): `0` keeps the existing
+///                 global back-to-front order (slot 4 = `!sort_depth`),
+///                 `1` switches that draw to the SAME state-clustered
+///                 shape the additive branch uses (slots 4-10 =
+///                 render_layer/two_sided/blend/depth_state/mesh, then
+///                 `sort_depth` only as a within-mesh tiebreaker) — the
+///                 best available fallback for "the author said don't
+///                 depth-sort me" given this key has no real file-order
+///                 data. The two groups do NOT interleave by raw depth
+///                 against each other; that partition is the necessary
+///                 cost of honouring the opt-out. Opaque and additive
+///                 always write `0` here (or, harmlessly, `no_sorter`'s
+///                 raw value where it doesn't change anything) — the
+///                 slot exists to keep arity uniform across branches.
+///   Opaque      — slots 4/5 = render layer/two-sided; slots 6/7 = 0
+///                 (blend factors unused); slot 8 = depth_state; slot 9 =
+///                 mesh (cluster key); slot 10 = sort_depth
+///                 (front-to-back); slot 11 = entity_id tiebreaker (#506).
+///   Additive    — order-independent, so slots 4–10 retain state/mesh
 ///                 clustering: render layer, two-sided, blend factors,
 ///                 depth_state, mesh, then sort_depth. This keeps particles
 ///                 instance-batchable (#1649/#1994).
-///   Alpha-over  — slot 3 = !sort_depth (global back-to-front order), then
-///                 render layer, two-sided, blend factors, depth_state and
-///                 mesh as tie-breakers in slots 4–9. Depth must precede
-///                 every raster-state boundary: grouping by render layer
-///                 first lets a distant puddle/decal draw after nearer
-///                 glass and appear as a rectangular patch on the glass.
+///   Alpha-over, sorted (slot 3 == 0) — slot 4 = !sort_depth (global
+///                 back-to-front order), then render layer, two-sided,
+///                 blend factors, depth_state and mesh as tie-breakers in
+///                 slots 5–10. Depth must precede every raster-state
+///                 boundary: grouping by render layer first lets a
+///                 distant puddle/decal draw after nearer glass and
+///                 appear as a rectangular patch on the glass.
+///   Alpha-over, no_sorter (slot 3 == 1) — slots 4–10 mirror the Additive
+///                 shape (state-clustered, depth only a tiebreaker at
+///                 slot 10). See slot 3's note above for why.
 ///
-/// D2-NEW-05 (#1806): every branch's `depth_state` slot (7 for Opaque and
-/// additive Transparent, 8 for alpha-over Transparent) also carries the
-/// `wireframe` pipeline-bind boundary, packed into `pack_depth_state`'s
+/// D2-NEW-05 (#1806): every branch's `depth_state` slot (8 for Opaque and
+/// additive Transparent, 9 for sorted alpha-over Transparent) also carries
+/// the `wireframe` pipeline-bind boundary, packed into `pack_depth_state`'s
 /// spare bit 2 — see that function's doc comment. Without it a wireframe
 /// draw could land mid-run among fill draws of the same mesh/depth state
 /// and split the batch.
 ///
-/// Opaque/additive slot 3 widened from `is_decal as u8` to
+/// Opaque/additive slot 4 widened from `is_decal as u8` to
 /// `render_layer as u32` (#renderlayer), matching the per-layer depth-bias
-/// state-change boundary in `DrawBatch`. Alpha-over deliberately places
-/// this boundary after depth for correct compositing.
+/// state-change boundary in `DrawBatch`. Sorted alpha-over deliberately
+/// places this boundary after depth for correct compositing.
 ///
 /// The entity_id final slot makes `par_sort_unstable_by_key` behave
 /// deterministically across runs: without it, rayon's work-stealing
-/// could reorder commands whose 11-tuple prefix tied, breaking
+/// could reorder commands whose 12-tuple prefix tied, breaking
 /// capture/replay and screenshot-diff workflows on scenes with many
 /// identical-mesh / identical-depth entries (e.g. exterior rock
 /// fields at a fixed camera distance).
 pub(crate) fn draw_sort_key(
     cmd: &DrawCommand,
-) -> (u8, u8, u8, u32, u32, u32, u32, u32, u32, u32, u32) {
+) -> (u8, u8, u8, u8, u32, u32, u32, u32, u32, u32, u32, u32) {
     // Off-frustum RT-only entries cluster at the END of the sorted
     // array. Cap-on-overflow at `upload_instances` drops them first,
     // never raster draws. See the doc comment above + the
@@ -492,6 +515,39 @@ pub(crate) fn draw_sort_key(
                 rt_only,
                 composition_phase,
                 0u8, // additive before alpha-over
+                cmd.no_sorter as u8, // #3797 — inert here; additive is
+                // already order-independent, so this slot only keeps
+                // arity uniform with the other two branches.
+                cmd.render_layer as u32,
+                cmd.two_sided as u32,
+                cmd.src_blend as u32,
+                cmd.dst_blend as u32,
+                pack_depth_state(cmd) as u32,
+                cmd.mesh_handle,
+                cmd.sort_depth,
+                cmd.entity_id,
+            )
+        } else if cmd.no_sorter {
+            // #3797 — `NiAlphaProperty.flags` bit 13 ("No Sorter"): the
+            // shape author opted out of the global back-to-front sort
+            // below. `DrawCommand` carries no real "accumulation/file
+            // order" hint today (see the #2459 note above), so the best
+            // available fallback is the SAME state-clustered shape the
+            // additive branch above uses — render_layer/two_sided/blend/
+            // depth_state/mesh dominate, and `sort_depth` is only a
+            // within-mesh tiebreaker. This restores batchability for
+            // opted-out draws instead of forcing them through a sort
+            // their own author asked to skip. Slot 3 (`no_sorter_flag`)
+            // still partitions this run from the depth-sorted run below
+            // it — the two groups do NOT interleave by raw depth against
+            // each other, which is the necessary cost of honouring the
+            // opt-out: the flag is a statement that this shape's authored
+            // layering does not depend on the global back-to-front order.
+            (
+                rt_only,
+                composition_phase,
+                1u8, // still composites after additive transparent draws
+                cmd.no_sorter as u8,
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
                 cmd.src_blend as u32,
@@ -534,6 +590,7 @@ pub(crate) fn draw_sort_key(
                 rt_only,
                 composition_phase,
                 1u8, // after additive transparent draws
+                0u8, // no_sorter is false in this branch
                 !cmd.sort_depth,
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
@@ -549,6 +606,9 @@ pub(crate) fn draw_sort_key(
             rt_only,
             0u8,
             0u8,
+            cmd.no_sorter as u8, // #3797 — inert here; opaque draws
+            // never reach the alpha-over back-to-front sort in the
+            // first place, so this slot only keeps arity uniform.
             cmd.render_layer as u32,
             cmd.two_sided as u32,
             0,

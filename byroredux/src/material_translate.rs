@@ -81,7 +81,8 @@
 //! the `translate()` step, not a new type.
 
 use crate::components::{
-    decal_uses_implicit_alpha_blend, AlphaBlend, IsDecalMesh, MaterialTextureHandles, TwoSided,
+    decal_uses_implicit_alpha_blend, AlphaBlend, IsDecalMesh, MaterialTextureHandles, NoSorter,
+    TwoSided,
 };
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::components::water::{
@@ -697,6 +698,13 @@ pub(crate) fn attach_blend_and_facing_markers(
     if raw.two_sided {
         world.insert(entity, TwoSided);
     }
+    // #3797 — NiAlphaProperty.flags bit 13 ("No Sorter"). Consumed by
+    // the alpha-over sort key's slot 3 (render/mod.rs::draw_sort_key);
+    // harmless on opaque/additive draws where the flag doesn't affect
+    // ordering.
+    if raw.no_sorter {
+        world.insert(entity, NoSorter);
+    }
 }
 
 /// Canonical `Material` for a drawn surface that has **no source material
@@ -1137,6 +1145,28 @@ mod tests {
             ..Default::default()
         };
         assert!(markers_for(&raw).2);
+    }
+
+    /// #3797 — `ImportedMaterial::no_sorter` (from `NiAlphaProperty.flags`
+    /// bit 13) attaches the `NoSorter` marker, and only when authored.
+    #[test]
+    fn no_sorter_flag_attaches_the_no_sorter_marker() {
+        let raw = ImportedMaterial {
+            no_sorter: true,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        let entity = world.spawn();
+        attach_blend_and_facing_markers(&mut world, entity, &raw, 3, 9);
+        assert!(world.get::<NoSorter>(entity).is_some());
+    }
+
+    #[test]
+    fn no_no_sorter_flag_attaches_no_marker() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        attach_blend_and_facing_markers(&mut world, entity, &ImportedMaterial::default(), 3, 9);
+        assert!(world.get::<NoSorter>(entity).is_none());
     }
 
     /// #2490 — both spawn sites must reach the markers through the single

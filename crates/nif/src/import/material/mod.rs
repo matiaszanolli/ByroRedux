@@ -605,6 +605,15 @@ pub(super) struct MaterialInfo {
     /// [`Self::texture_clamp_mode_consumed`] enforces.
     pub refraction_strength_consumed: bool,
     pub two_sided: bool,
+    /// `NiAlphaProperty.flags` bit 13 (0x2000, "No Sorter") — the shape
+    /// author's per-draw instruction to `NiAlphaAccumulator` to skip
+    /// the depth sort and draw in accumulation (file/state-clustered)
+    /// order instead. Census (#3797, 2026-09-02): 74/8032 Oblivion
+    /// meshes set it (concentrated in Ayleid ruin interiors, shipwrecks,
+    /// moss/rubble clutter — `Oblivion - Meshes.bsa`), 0/10989 FO3 and
+    /// 0/14881 FNV. Consumed by the alpha-over sort key's slot 3
+    /// (`byroredux/src/render/mod.rs::draw_sort_key`).
+    pub no_sorter: bool,
     pub is_decal: bool,
     /// Object/model-space normal map (vs the default tangent-space). Set
     /// from the FO4 `F4SF1::Model_Space_Normals` shader-flag bit (or the
@@ -1165,6 +1174,7 @@ impl Default for MaterialInfo {
             env_map_scale_consumed: false,
             refraction_strength_consumed: false,
             two_sided: false,
+            no_sorter: false,
             is_decal: false,
             model_space_normals: false,
             emissive_color: [0.0, 0.0, 0.0],
@@ -1460,6 +1470,7 @@ impl MaterialInfo {
             alpha_threshold: self.alpha_threshold,
             alpha_test_func: self.alpha_test_func,
             two_sided: self.two_sided,
+            no_sorter: self.no_sorter,
             is_decal: self.is_decal,
             is_pbr: false,
             has_translucency: false,
@@ -1560,6 +1571,9 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
     } else if blend {
         info.alpha_blend = true;
     }
+    // #3797 — bit 13 (0x2000, "No Sorter"): the shape author opted this
+    // draw out of NiAlphaAccumulator's depth sort. See [`Self::no_sorter`].
+    info.no_sorter = alpha.flags & 0x2000 != 0;
     // Mark the property as consumed regardless of whether either bit
     // fired. A flags=0 NiAlphaProperty is still a valid statement of
     // intent ("this shape authored no blending"); the cascade gate

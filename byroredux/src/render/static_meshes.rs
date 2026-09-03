@@ -30,8 +30,8 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, IsDecalMesh, IsFxMesh, IsLodTerrain, MaterialTextureHandles, TerrainTileSlot,
-    TwoSided,
+    AlphaBlend, IsDecalMesh, IsFxMesh, IsLodTerrain, MaterialTextureHandles, NoSorter,
+    TerrainTileSlot, TwoSided,
 };
 
 use super::camera::FrustumPlanes;
@@ -101,6 +101,7 @@ pub(super) fn collect_static_mesh_draws(
     let tex_q = world.query::<TextureHandle>();
     let alpha_q = world.query::<AlphaBlend>();
     let two_sided_q = world.query::<TwoSided>();
+    let no_sorter_q = world.query::<NoSorter>();
     let vis_q = world.query::<AnimatedVisibility>();
     let mat_q = world.query::<Material>();
     // #525 — `AnimatedUvTransform` overrides the static
@@ -268,6 +269,14 @@ pub(super) fn collect_static_mesh_draws(
                     .map(|a| (a.src_blend, a.dst_blend))
                     .unwrap_or((6, 7)); // SRC_ALPHA / INV_SRC_ALPHA defaults
                 let two_sided = two_sided_q
+                    .as_ref()
+                    .map(|q| q.get(entity).is_some())
+                    .unwrap_or(false);
+                // #3797 — NiAlphaProperty.flags bit 13 ("No Sorter"):
+                // the shape author opted this draw out of the alpha-over
+                // depth sort. Read by the sort key at
+                // `render/mod.rs::alpha_over_sort_key`, not here.
+                let no_sorter = no_sorter_q
                     .as_ref()
                     .map(|q| q.get(entity).is_some())
                     .unwrap_or(false);
@@ -724,6 +733,7 @@ pub(super) fn collect_static_mesh_draws(
                     src_blend,
                     dst_blend,
                     two_sided,
+                    no_sorter,
                     // #869 — NiWireframeProperty routes to the
                     // `vk::PolygonMode::LINE` pipeline variant. Falls
                     // back to FILL silently when the device lacks

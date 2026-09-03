@@ -524,6 +524,10 @@ pub struct ImportedMaterial {
     pub alpha_threshold: f32,
     pub alpha_test_func: u8,
     pub two_sided: bool,
+    /// `NiAlphaProperty.flags` bit 13 (0x2000, "No Sorter"). See
+    /// `crates/nif/src/import/material/mod.rs::MaterialInfo::no_sorter`
+    /// for the census and consuming sort key. #3797.
+    pub no_sorter: bool,
     pub is_decal: bool,
     pub is_pbr: bool,
     pub has_translucency: bool,
@@ -663,6 +667,7 @@ impl Default for ImportedMaterial {
             alpha_threshold: 0.5,
             alpha_test_func: 6,
             two_sided: false,
+            no_sorter: false,
             is_decal: false,
             is_pbr: false,
             has_translucency: false,

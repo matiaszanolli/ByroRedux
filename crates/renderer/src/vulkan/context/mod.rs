@@ -95,6 +95,13 @@ pub struct DrawCommand {
     /// when `alpha_blend` is true. 7 = INV_SRC_ALPHA (default).
     pub dst_blend: u8,
     pub two_sided: bool,
+    /// `NiAlphaProperty.flags` bit 13 (0x2000, "No Sorter") — the shape
+    /// author opted this draw out of Gamebryo's `NiAlphaAccumulator`
+    /// depth sort, asking for accumulation (state-clustered) order
+    /// instead. See #3797 and the alpha-over sort key's slot 3 doc
+    /// below `build_render_data`'s sort routine
+    /// (`byroredux/src/render/mod.rs`).
+    pub no_sorter: bool,
     /// `NiWireframeProperty` flag — when true the batch routes to the
     /// `vk::PolygonMode::LINE` pipeline variant. Falls back to FILL
     /// silently when the device lacks `fillModeNonSolid`. See #869.
@@ -2580,6 +2587,7 @@ mod draw_command_tests {
             src_blend: 6,
             dst_blend: 7,
             two_sided: false,
+            no_sorter: false,
             wireframe: false,
             flat_shading: false,
             is_decal: false,

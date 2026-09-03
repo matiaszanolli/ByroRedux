@@ -12,6 +12,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         src_blend: 6,
         dst_blend: 7,
         two_sided,
+        no_sorter: false,
         wireframe: false,
         flat_shading: false,
         is_decal,
@@ -225,6 +226,71 @@ fn alpha_over_sorts_back_to_front_across_render_layers() {
 
     assert_eq!(cmds[0].entity_id, 2, "far alpha-over surface draws first");
     assert_eq!(cmds[1].entity_id, 1, "near glass composites last");
+}
+
+/// Regression for #3797: `NiAlphaProperty.flags` bit 13 ("No Sorter")
+/// opts a shape out of the global back-to-front sort that
+/// `alpha_over_sorts_back_to_front_across_render_layers` (above) pins for
+/// ordinary alpha-over draws. A near `no_sorter` glass pane must NOT
+/// composite after a far ordinary alpha-over puddle just because it is
+/// nearer the camera — depth no longer governs its position at all.
+#[test]
+fn no_sorter_draw_does_not_follow_the_depth_sort() {
+    use byroredux_core::ecs::components::RenderLayer;
+
+    let mut near_no_sorter_glass = cmd(true, false, true);
+    near_no_sorter_glass.no_sorter = true;
+    near_no_sorter_glass.render_layer = RenderLayer::Architecture;
+    near_no_sorter_glass.sort_depth = 100; // nearer than the puddle below
+    near_no_sorter_glass.entity_id = 1;
+
+    let mut far_sorted_puddle = cmd(true, true, false);
+    far_sorted_puddle.render_layer = RenderLayer::Decal;
+    far_sorted_puddle.sort_depth = 900;
+    far_sorted_puddle.entity_id = 2;
+
+    let mut cmds = [near_no_sorter_glass, far_sorted_puddle];
+    cmds.sort_by_key(draw_sort_key);
+
+    // Pre-fix (both draws depth-sorted): far puddle (id 2) would draw
+    // first, same as `alpha_over_sorts_back_to_front_across_render_layers`.
+    // Post-fix: the sorted (non-`no_sorter`) partition always precedes the
+    // `no_sorter` partition (slot 3), regardless of relative depth.
+    assert_eq!(
+        cmds[0].entity_id, 2,
+        "the depth-sorted draw stays in its own partition ahead of no_sorter draws"
+    );
+    assert_eq!(cmds[1].entity_id, 1, "the no_sorter draw is not depth-ordered against it");
+}
+
+/// Regression for #3797: a `no_sorter` alpha-over shape falls back to the
+/// SAME state-clustered shape the additive branch uses (mirrors
+/// `additive_same_mesh_draws_stay_contiguous_for_instancing`), so an
+/// author who opted out of depth sorting gets batchability back instead
+/// of being torn apart by an unrelated intervening depth value.
+#[test]
+fn no_sorter_same_mesh_draws_stay_contiguous_for_instancing() {
+    let depths = [100u32, 900, 300];
+    let mut cmds = Vec::new();
+    for (i, &d) in depths.iter().enumerate() {
+        for mesh in [7u32, 9u32] {
+            let mut c = cmd(true, false, false);
+            c.no_sorter = true;
+            c.src_blend = 6;
+            c.dst_blend = 7; // true alpha-over, not additive
+            c.mesh_handle = mesh;
+            c.sort_depth = d;
+            c.entity_id = (i as u32) * 2 + mesh;
+            cmds.push(c);
+        }
+    }
+    cmds.sort_by_key(draw_sort_key);
+    let meshes: Vec<u32> = cmds.iter().map(|c| c.mesh_handle).collect();
+    assert_eq!(
+        meshes,
+        vec![7, 7, 7, 9, 9, 9],
+        "no_sorter alpha-over draws group by mesh instead of interleaving by depth"
+    );
 }
 
 /// Regression for #499: interleaved additive and alpha-blend draws

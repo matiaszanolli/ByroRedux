@@ -46,6 +46,15 @@ impl Component for TwoSided {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker component for `NiAlphaProperty.flags` bit 13 (0x2000, "No
+/// Sorter") — the shape author opted this draw out of Gamebryo's
+/// `NiAlphaAccumulator` depth sort. See #3797.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NoSorter;
+impl Component for NoSorter {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// REFR placement carries an XTEL teleport destination — this entity is
 /// a door whose activation transports the player to another cell.
 ///

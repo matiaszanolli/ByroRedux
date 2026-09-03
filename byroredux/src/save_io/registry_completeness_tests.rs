@@ -426,6 +426,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NavPath", "cached single-tile NAVM waypoint path (EX-16 item 3 Phase 3 / #2372), rederived on demand from resident NavmeshTile data by navmesh_path::path_from_resident_tiles — same posture as NavmeshTile itself, never lossy gameplay state"),
         ("NavmeshTile", "NAVM geometry residency plumbing (EX-16 item 2 / #2372), rederived identically from the plugin's parsed NavmRecord every cell/tile load — same posture as DoorTeleport/Locked"),
         ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
+        ("NoSorter", "marker for NiAlphaProperty.flags bit 13 (\"No Sorter\", #3797), rederived identically from NIF material data every load — same posture as TwoSided"),
         ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
         ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
         ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
