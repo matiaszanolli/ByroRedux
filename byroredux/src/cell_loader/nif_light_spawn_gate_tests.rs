@@ -245,6 +245,115 @@ fn light_radius_or_default_handles_nan() {
     assert!(result.is_finite());
 }
 
+// ── #3557 (RT-11) — exporter-artifact default-light de-dup ────────
+
+/// The headline regression: two REFRs each placing a mesh that carries
+/// an identically-named `__max_default_light` node must yield exactly
+/// ONE `LightSource` entity, not two byte-identical ones. Simulated
+/// here as two separate `spawn_nif_lights` calls sharing one `World`
+/// (matching how `spawn_placed_instances` is invoked once per REFR from
+/// the cell loader's REFR loop — see the issue's own evidence).
+#[test]
+fn spawn_nif_lights_deduplicates_known_exporter_artifact_by_name() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::string::StringPool::new());
+    let artifact_light = || ImportedLight {
+        translation: [0.0, 0.0, 0.0],
+        direction: [0.8947, 0.3716, 0.2478],
+        color: [1.0, 1.0, 1.0],
+        radius: 512.0,
+        kind: LightKind::Directional,
+        outer_angle: 0.0,
+        affected_node_names: Vec::new(),
+        name: Some(std::sync::Arc::from("__max_default_light")),
+    };
+
+    // First contributing NIF/REFR.
+    spawn_nif_lights(
+        &mut world,
+        &[artifact_light()],
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+    // Second contributing NIF/REFR — identical artifact light.
+    spawn_nif_lights(
+        &mut world,
+        &[artifact_light()],
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+
+    let count = world
+        .query::<LightSource>()
+        .map(|q| q.iter().count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 1,
+        "two REFRs contributing the same synthetic default light must \
+         yield one emitter, not double its contribution"
+    );
+}
+
+/// An ordinary content light sharing a name (however unlikely) across
+/// two REFRs must NOT be deduplicated — only names on the exporter-
+/// artifact allowlist trigger the #3557 skip.
+#[test]
+fn spawn_nif_lights_does_not_deduplicate_ordinary_named_lights() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::string::StringPool::new());
+    let named_light = || ImportedLight {
+        translation: [0.0, 0.0, 0.0],
+        direction: [0.0, 0.0, -1.0],
+        color: [0.9, 0.6, 0.2],
+        radius: 256.0,
+        kind: LightKind::Point,
+        outer_angle: 0.0,
+        affected_node_names: Vec::new(),
+        name: Some(std::sync::Arc::from("Torch01Light")),
+    };
+
+    spawn_nif_lights(
+        &mut world,
+        &[named_light()],
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+    spawn_nif_lights(
+        &mut world,
+        &[named_light()],
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+
+    let count = world
+        .query::<LightSource>()
+        .map(|q| q.iter().count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 2,
+        "an ordinary content light name must never be deduplicated, \
+         only names on the exporter-artifact allowlist"
+    );
+}
+
+#[test]
+fn known_exporter_artifact_light_name_matches_only_the_documented_name() {
+    assert!(is_known_exporter_artifact_light_name("__max_default_light"));
+    assert!(!is_known_exporter_artifact_light_name("Torch01Light"));
+    assert!(!is_known_exporter_artifact_light_name(""));
+    // Case-sensitive on purpose — the allowlist is evidence-bound to the
+    // exact confirmed string, not a heuristic.
+    assert!(!is_known_exporter_artifact_light_name("__MAX_DEFAULT_LIGHT"));
+}
+
 // ── M46.0 / #561 multi-plugin helpers ─────────────────────────────
 
 #[test]

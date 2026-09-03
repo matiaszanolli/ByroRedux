@@ -943,6 +943,26 @@ fn spawn_placement_root(
     (placement_root, placement_fid)
 }
 
+/// Names of well-known 3ds Max / exporter default-light artifacts that a
+/// NIF export can carry through verbatim, one per contributing mesh.
+///
+/// #3557 (RT-11) — `__max_default_light` is the one confirmed instance:
+/// measured on Oblivion's `ICMarketDistrictTheGildedCarafe`, two REFRs
+/// each placing a mesh with an identical `NiDirectionalLight` node named
+/// `__max_default_light` produced two byte-identical synthetic emitters,
+/// doubling their contribution to the cell's lighting. `spawn_nif_lights`
+/// below de-duplicates by name, but only for names on this allowlist —
+/// an ordinary content light sharing a name with another (however
+/// unlikely) is never affected.
+///
+/// No other exporter-artifact light names are confirmed in this
+/// codebase's corpus today (SIBLING check, #3557) — extend this
+/// allowlist when one turns up rather than widening the match to a
+/// heuristic.
+pub(crate) fn is_known_exporter_artifact_light_name(name: &str) -> bool {
+    name == "__max_default_light"
+}
+
 /// Spawn a `LightSource` entity per authored NIF light with a
 /// non-trivial diffuse contribution. Split out of
 /// `spawn_placed_instances` (#2057). Widened to `pub(crate)` by #2530 /
@@ -976,6 +996,18 @@ pub(crate) fn spawn_nif_lights(
         // Predicate kept in lockstep with `is_spawnable_nif_light`.
         if !is_spawnable_nif_light(light) {
             continue;
+        }
+        // #3557 (RT-11) — de-duplicate known exporter-artifact default
+        // lights by name. Gated on the allowlist first (cheap, and
+        // almost always false), so the `find_by_name` scan only runs
+        // for the rare artifact case, not on every ordinary content
+        // light. Ordinary lights keep spawning even if two REFRs
+        // happen to share a name — this only skips names confirmed to
+        // be exporter leftovers, not a general "first name wins" rule.
+        if let Some(ref nif_name) = light.name {
+            if is_known_exporter_artifact_light_name(nif_name) && world.find_by_name(nif_name).is_some() {
+                continue;
+            }
         }
         let nif_pos = Vec3::new(
             light.translation[0],

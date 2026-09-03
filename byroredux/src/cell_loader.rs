@@ -159,7 +159,8 @@ pub(crate) use work_budget::FrameTimeBudget;
 pub(crate) use load::{register_cell_root, stamp_cell_root, stamp_cell_root_range};
 #[cfg(test)]
 pub(crate) use spawn::{
-    count_spawnable_nif_lights, is_spawnable_nif_light, light_radius_or_default, spawn_nif_lights,
+    count_spawnable_nif_lights, is_known_exporter_artifact_light_name, is_spawnable_nif_light,
+    light_radius_or_default, spawn_nif_lights,
 };
 #[cfg(test)]
 pub(crate) use unload::collect_victim_gpu_handles;
