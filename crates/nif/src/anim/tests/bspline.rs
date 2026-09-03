@@ -79,3 +79,65 @@ fn bspline_channel_slice_dequantizes() {
     assert!((out[2] - 5.0).abs() < 1e-4);
     assert!((out[3] - 10.0).abs() < 1e-4);
 }
+
+// #3765 (SAFE-2026-08-30-D9-01) — `translation_offset` / `translation_half_range`
+// (and the rotation/scale/float siblings) are raw f32s read off disk with no
+// validation. A NaN/±Inf in either poisoned every dequantized control point
+// and `deboor_cubic` propagated it into the sampled channel unfiltered — the
+// mainline keyframe converters (`sanitize_keyframe_streams`, #1443) and the
+// pose-fallback branches (`is_flt_max`) were already gated; this sampled path,
+// the whole point of the block, had neither. `channel_slice` is the single
+// choke point all four callers (float channel; transform channel's
+// translation/rotation/scale) funnel through, so a fixture here pins all four
+// at once.
+#[test]
+fn bspline_channel_slice_rejects_nan_offset() {
+    let raw: Vec<i16> = vec![0, 32767, -32767, 0];
+    assert!(
+        channel_slice(0, &raw, 4, 1, f32::NAN, 5.0).is_none(),
+        "a NaN offset must drop the whole channel to the pose fallback, \
+         not produce a NaN-poisoned control point"
+    );
+}
+
+#[test]
+fn bspline_channel_slice_rejects_nan_half_range() {
+    let raw: Vec<i16> = vec![0, 32767, -32767, 0];
+    assert!(
+        channel_slice(0, &raw, 4, 1, 10.0, f32::NAN).is_none(),
+        "a NaN half_range must drop the whole channel to the pose fallback"
+    );
+}
+
+#[test]
+fn bspline_channel_slice_rejects_infinite_quantization_params() {
+    let raw: Vec<i16> = vec![0, 32767, -32767, 0];
+    assert!(channel_slice(0, &raw, 4, 1, f32::INFINITY, 5.0).is_none());
+    assert!(channel_slice(0, &raw, 4, 1, f32::NEG_INFINITY, 5.0).is_none());
+    assert!(channel_slice(0, &raw, 4, 1, 10.0, f32::INFINITY).is_none());
+    assert!(channel_slice(0, &raw, 4, 1, 10.0, f32::NEG_INFINITY).is_none());
+}
+
+/// Belt-and-braces layer: even with finite `offset`/`half_range`, a
+/// pathologically large (but still finite) `half_range` can overflow
+/// `deboor_cubic`'s repeated blending into a non-finite sampled value. This
+/// pins that the sampled-value guards added at the three `push` call sites
+/// (`extract_float_channel_bspline`, `extract_transform_channel_bspline`'s
+/// translation/scale) actually reject such a value rather than propagating
+/// it — reproduced directly against `dequant`/`deboor_cubic`, the same
+/// primitives those call sites use.
+#[test]
+fn bspline_dequant_and_deboor_can_overflow_and_the_guard_catches_it() {
+    // `dequant`'s ratio term (`raw / 32767.0`) is bounded to [-1, 1], so
+    // `offset + ratio * half_range` alone only overflows when `offset` and
+    // the scaled `half_range` are both already near f32::MAX and add past
+    // it — both individually finite, both individually pass
+    // `is_key_value_sane`, exactly the "finite but pathological" case the
+    // belt-and-braces guard exists for.
+    let poisoned = dequant(32767, f32::MAX, f32::MAX);
+    assert!(!poisoned.is_finite(), "test fixture sanity: this must overflow");
+    assert!(
+        !is_key_value_sane(poisoned),
+        "the sampled-value guard must recognize this as unsafe to push as a key"
+    );
+}

@@ -239,10 +239,15 @@ pub fn extract_float_channel_bspline(
             0.0
         };
         let p = deboor_cubic(&cps, n_cp, 1, u);
-        keys.push(AnimFloatKey {
-            time: t,
-            value: p[0],
-        });
+        // #3765 (SAFE-2026-08-30-D9-01) belt-and-braces — `channel_slice`
+        // already rejects a non-finite offset/half_range before this
+        // point, but a pathologically large (still finite) half_range
+        // can overflow to non-finite through `deboor_cubic`'s repeated
+        // blending. Skip the sample rather than push a poisoned key; the
+        // sampler interpolates across the gap from its finite neighbors.
+        if is_key_value_sane(p[0]) {
+            keys.push(AnimFloatKey { time: t, value: p[0] });
+        }
     }
 
     if keys.is_empty() {
@@ -331,13 +336,17 @@ pub fn extract_transform_channel_bspline(
         if let Some(ref cps) = trans_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_TRANS_STRIDE, u);
             let zup = [p[0], p[1], p[2]];
-            translation_keys.push(TranslationKey {
-                time: t,
-                value: zup_to_yup_pos(zup),
-                forward: [0.0, 0.0, 0.0],
-                backward: [0.0, 0.0, 0.0],
-                tbc: None,
-            });
+            // #3765 (SAFE-2026-08-30-D9-01) belt-and-braces — see the
+            // matching comment in `extract_float_channel_bspline`.
+            if zup.iter().all(|v| is_key_value_sane(*v)) {
+                translation_keys.push(TranslationKey {
+                    time: t,
+                    value: zup_to_yup_pos(zup),
+                    forward: [0.0, 0.0, 0.0],
+                    backward: [0.0, 0.0, 0.0],
+                    tbc: None,
+                });
+            }
         } else {
             let pose = [
                 interp.transform.translation.x,
@@ -394,13 +403,17 @@ pub fn extract_transform_channel_bspline(
         // Scale. Same FLT_MAX gate.
         if let Some(ref cps) = scale_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_SCALE_STRIDE, u);
-            scale_keys.push(ScaleKey {
-                time: t,
-                value: p[0],
-                forward: 0.0,
-                backward: 0.0,
-                tbc: None,
-            });
+            // #3765 (SAFE-2026-08-30-D9-01) belt-and-braces — see the
+            // matching comment in `extract_float_channel_bspline`.
+            if is_key_value_sane(p[0]) {
+                scale_keys.push(ScaleKey {
+                    time: t,
+                    value: p[0],
+                    forward: 0.0,
+                    backward: 0.0,
+                    tbc: None,
+                });
+            }
         } else if !is_flt_max(interp.transform.scale) {
             scale_keys.push(ScaleKey {
                 time: t,
@@ -478,8 +491,23 @@ pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> 
 }
 
 /// Slice the compact control-point array for a single channel and
-/// dequantize it. Returns `None` when the handle is invalid (`u32::MAX`)
-/// or when the slice would run off the end of the data buffer.
+/// dequantize it. Returns `None` when the handle is invalid (`u32::MAX`),
+/// when the slice would run off the end of the data buffer, or when the
+/// quantization parameters themselves are non-finite.
+///
+/// #3765 (SAFE-2026-08-30-D9-01) — `offset`/`half_range` are raw `f32`s
+/// read off disk with no validation (`interpolator.rs`). `dequant`
+/// multiplies every control point by `half_range` and adds `offset`, so a
+/// NaN/±Inf in either poisons every dequantized control point, and
+/// `deboor_cubic` propagates it into the sampled channel unfiltered — the
+/// mainline keyframe converters are gated by `is_key_value_sane` (#1443)
+/// and the pose-fallback branches by `is_flt_max`, but this sampled path
+/// (the whole point of the block) had neither. This is the single choke
+/// point all four callers (`extract_float_channel_bspline`'s scalar
+/// channel, `extract_transform_channel_bspline`'s translation/rotation/
+/// scale channels) funnel through, so gating here covers all of them —
+/// a rejected channel returns `None`, which the caller already routes to
+/// the existing, correctly-gated pose fallback.
 pub fn channel_slice(
     handle: u32,
     raw: &[i16],
@@ -489,6 +517,14 @@ pub fn channel_slice(
     half_range: f32,
 ) -> Option<Vec<f32>> {
     if handle == u32::MAX {
+        return None;
+    }
+    if !is_key_value_sane(offset) || !is_key_value_sane(half_range) {
+        log::debug!(
+            "NiBSplineCompTransformInterpolator: non-finite quantization \
+             parameter (offset={offset}, half_range={half_range}) — \
+             dropping channel to the pose fallback",
+        );
         return None;
     }
     let start = handle as usize;
