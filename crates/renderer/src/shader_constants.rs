@@ -193,6 +193,250 @@ mod tests {
         }
     }
 
+    /// Top-level constants are the shader-side equivalent of public API:
+    /// they are visible to every function in a stage and are easy to mistake
+    /// for a cross-shader contract. Keep the exceptions explicit and scoped
+    /// by file; a new top-level literal must either move into
+    /// `shader_constants_data.rs` or make its local-only status a deliberate
+    /// review decision.
+    const SHADER_LOCAL_CONSTANT_EXEMPTIONS: &[(&str, &str)] = &[
+        ("ssao.comp", "PI"),
+        ("ssao.comp", "NUM_SAMPLES"),
+        ("svgf_atrous.comp", "SIGMA_N"),
+        ("svgf_atrous.comp", "SIGMA_L"),
+        ("svgf_atrous.comp", "SIGMA_A"),
+        ("svgf_atrous.comp", "EPS"),
+        ("svgf_atrous.comp", "DEPTH_EPS"),
+        ("volumetrics_inject.comp", "PI"),
+        ("volumetrics_inject.comp", "AMBIENT_TEMPERATURE_K"),
+        ("volumetrics_inject.comp", "IGNITION_TEMPERATURE_K"),
+        ("volumetrics_inject.comp", "MAX_COMBUSTION_TEMPERATURE_K"),
+        ("volumetrics_inject.comp", "MAX_COMBUSTION_SPEED_MPS"),
+        (
+            "volumetrics_inject.comp",
+            "COMBUSTION_WALL_FRICTION_PER_SECOND",
+        ),
+        ("volumetrics_inject.comp", "COMBUSTION_FUEL_VAPOUR_SIGMA_T"),
+        (
+            "volumetrics_inject.comp",
+            "COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO",
+        ),
+        (
+            "volumetrics_inject.comp",
+            "COMBUSTION_LIGHT_TRANSMITTANCE_STEPS",
+        ),
+        (
+            "volumetrics_inject.comp",
+            "COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS",
+        ),
+    ];
+
+    fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {
+        include_str!("shader_constants_data.rs")
+            .lines()
+            .filter_map(|line| {
+                let declaration = line.trim_start().strip_prefix("pub const ")?;
+                let (name, _) = declaration.split_once(':')?;
+                is_screaming_shader_name(name.trim()).then_some(name.trim())
+            })
+            .collect()
+    }
+
+    fn is_screaming_shader_name(name: &str) -> bool {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit())
+            && name.chars().any(|ch| ch.is_ascii_uppercase())
+    }
+
+    /// Return top-level `const float|uint|int NAME =` declarations without
+    /// treating comments or function-local constants as declarations of the
+    /// shader's public surface. This is a deliberately small GLSL lexer: the
+    /// source files do not need a full parser for this provenance check.
+    fn top_level_shader_constants(src: &str) -> Vec<(usize, String)> {
+        let bytes = src.as_bytes();
+        let mut tokens = Vec::new();
+        let mut block_comment = false;
+        let mut brace_depth = 0usize;
+        let mut index = 0usize;
+
+        while index < bytes.len() {
+            if block_comment {
+                if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    block_comment = false;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                block_comment = true;
+                index += 2;
+                continue;
+            }
+
+            if bytes[index].is_ascii_alphabetic() || bytes[index] == b'_' {
+                let start = index;
+                index += 1;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+                {
+                    index += 1;
+                }
+                tokens.push((src[start..index].to_owned(), start, brace_depth));
+                continue;
+            }
+
+            match bytes[index] {
+                b'{' => {
+                    tokens.push(("{".to_owned(), index, brace_depth));
+                    brace_depth += 1;
+                }
+                b'}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    tokens.push(("}".to_owned(), index, brace_depth));
+                }
+                b'=' => tokens.push(("=".to_owned(), index, brace_depth)),
+                _ => {}
+            }
+            index += 1;
+        }
+
+        let mut declarations = Vec::new();
+        for window in tokens.windows(4) {
+            let [(qualifier, position, qualifier_depth), (ty, _, ty_depth), (name, _, name_depth), (equals, _, equals_depth)] =
+                window
+            else {
+                continue;
+            };
+            if *qualifier_depth == 0
+                && *ty_depth == 0
+                && *name_depth == 0
+                && *equals_depth == 0
+                && qualifier == "const"
+                && matches!(ty.as_str(), "float" | "uint" | "int")
+                && is_screaming_shader_name(name)
+                && equals == "="
+            {
+                let line = src[..*position]
+                    .bytes()
+                    .filter(|&byte| byte == b'\n')
+                    .count()
+                    + 1;
+                declarations.push((line, name.clone()));
+            }
+        }
+        declarations
+    }
+
+    fn renderer_shader_sources() -> Vec<(String, String)> {
+        let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let mut paths = std::fs::read_dir(shader_dir)
+            .expect("renderer shader directory must be readable")
+            .map(|entry| {
+                entry
+                    .expect("renderer shader directory entry must be readable")
+                    .path()
+            })
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("frag") | Some("vert") | Some("comp")
+                )
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .expect("renderer shader path must have a filename")
+                    .to_string_lossy()
+                    .into_owned();
+                let source = std::fs::read_to_string(&path)
+                    .expect("renderer shader source must be readable");
+                (name, source)
+            })
+            .collect()
+    }
+
+    fn shader_constant_provenance_violations(
+        shader: &str,
+        source: &str,
+        shared_names: &std::collections::HashSet<&'static str>,
+    ) -> Vec<String> {
+        top_level_shader_constants(source)
+            .into_iter()
+            .filter_map(|(line, name)| {
+                let exempt = SHADER_LOCAL_CONSTANT_EXEMPTIONS
+                    .iter()
+                    .any(|&(file, local)| file == shader && local == name);
+                if shared_names.contains(name.as_str()) {
+                    Some(format!(
+                        "{shader}:{line}: {name} redeclares a shared shader constant; use the generated header"
+                    ))
+                } else if exempt {
+                    None
+                } else {
+                    Some(format!(
+                        "{shader}:{line}: {name} is a new top-level shader constant; add it to shader_constants_data.rs or document a file-scoped exemption"
+                    ))
+                }
+            })
+            .collect()
+    }
+
+    /// #3815 / TD7-2026-09-03 — scan the complete shader directory rather
+    /// than maintaining a growing per-name allowlist. The shared-name branch
+    /// also keeps the older redeclaration class load-bearing: a `#define`
+    /// from the generated header must not be shadowed by a local `const`.
+    #[test]
+    fn every_top_level_shader_constant_has_one_provenance() {
+        let shared_names = shader_constant_data_names();
+        let violations = renderer_shader_sources()
+            .into_iter()
+            .flat_map(|(shader, source)| {
+                shader_constant_provenance_violations(&shader, &source, &shared_names)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            violations.is_empty(),
+            "shader constant provenance violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn shader_constant_provenance_gate_rejects_synthetic_shared_redeclaration() {
+        let shared_names = shader_constant_data_names();
+        let violations = shader_constant_provenance_violations(
+            "synthetic.frag",
+            "const float BLOOM_INTENSITY = 0.5;\n",
+            &shared_names,
+        );
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("BLOOM_INTENSITY"));
+
+        // A genuinely stage-local value remains legal only because its
+        // file/name pair is explicitly recorded above.
+        assert!(shader_constant_provenance_violations(
+            "ssao.comp",
+            "const float PI = 3.14159265359;\n",
+            &shared_names,
+        )
+        .is_empty());
+    }
+
     #[test]
     fn max_bones_per_mesh_matches_core() {
         assert_eq!(
