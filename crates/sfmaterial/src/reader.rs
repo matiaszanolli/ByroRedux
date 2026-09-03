@@ -517,6 +517,29 @@ fn read_value(
     read_user_class(state, type_ref, cur, is_diff)
 }
 
+/// #2633 (SF-D3-05) — insert a field value, rejecting a duplicate field
+/// name instead of the silent `BTreeMap::insert` overwrite (last-wins).
+/// The Gibbed reference implementation uses `Dictionary.Add`, which
+/// throws on a duplicate key; a `CLAS` declaring the same field name
+/// twice, or a `DIFF` naming the same field index twice, silently kept
+/// the second value pre-fix — a wrong-value risk, not a parse-error
+/// risk, for a class shape this parser should instead reject outright.
+fn insert_field(
+    fields: &mut BTreeMap<String, Value>,
+    class_name: &str,
+    field_name: String,
+    value: Value,
+) -> Result<()> {
+    if fields.contains_key(&field_name) {
+        return Err(Error::DuplicateFieldName {
+            class_name: class_name.to_string(),
+            field_name,
+        });
+    }
+    fields.insert(field_name, value);
+    Ok(())
+}
+
 fn read_user_class(
     state: &mut State,
     type_ref: TypeReference,
@@ -540,7 +563,7 @@ fn read_user_class(
                 chunk_fields.push(field.clone());
             } else {
                 let v = read_value(state, field.type_ref, cur, is_diff)?;
-                fields.insert(field.name.clone(), v);
+                insert_field(&mut fields, &class_name, field.name.clone(), v)?;
             }
         }
     } else {
@@ -560,7 +583,7 @@ fn read_user_class(
                 chunk_fields.push(field);
             } else {
                 let v = read_value(state, field.type_ref, cur, is_diff)?;
-                fields.insert(field.name.clone(), v);
+                insert_field(&mut fields, &class_name, field.name.clone(), v)?;
             }
         }
     }
@@ -580,7 +603,7 @@ fn read_user_class(
             // User class — read its body from the next OBJT/USER/DIFF/USRD chunk.
             consume_object(state)?
         };
-        fields.insert(field.name, value);
+        insert_field(&mut fields, &class_name, field.name, value)?;
     }
 
     Ok(Value::Object(ObjectInstance {
@@ -740,6 +763,45 @@ fn read_u32_le(bytes: &[u8], pos: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2633 (SF-D3-05) — `insert_field` must reject a duplicate field
+    /// name instead of silently keeping the second value
+    /// (`BTreeMap::insert`'s own overwrite-on-collision behaviour), the
+    /// exact "silent wrong value" gap the issue names. Mirrors the
+    /// Gibbed reference's `Dictionary.Add`, which throws on a duplicate
+    /// key — a `CLAS` declaring the same field name twice, or a `DIFF`
+    /// naming the same field index twice, must now be a real parse
+    /// error, not a last-wins overwrite.
+    #[test]
+    fn insert_field_rejects_a_duplicate_field_name() {
+        let mut fields: BTreeMap<String, Value> = BTreeMap::new();
+        insert_field(&mut fields, "TestClass", "first".to_string(), Value::I32(1))
+            .expect("first insert of a fresh field name must succeed");
+        insert_field(&mut fields, "TestClass", "second".to_string(), Value::I32(2))
+            .expect("a distinct field name must not collide with the first");
+
+        let err = insert_field(&mut fields, "TestClass", "first".to_string(), Value::I32(99))
+            .expect_err("re-declaring an already-present field name must fail");
+        match err {
+            Error::DuplicateFieldName {
+                class_name,
+                field_name,
+            } => {
+                assert_eq!(class_name, "TestClass");
+                assert_eq!(field_name, "first");
+            }
+            other => panic!("expected DuplicateFieldName, got {other:?}"),
+        }
+
+        // The pre-existing value must survive untouched — no partial
+        // overwrite on the rejected insert. `Value` has no `PartialEq`,
+        // so match the variant directly rather than `assert_eq!`.
+        match fields.get("first") {
+            Some(Value::I32(1)) => {}
+            other => panic!("expected the original Value::I32(1) untouched, got {other:?}"),
+        }
+        assert_eq!(fields.len(), 2, "the rejected insert must not add a new entry");
+    }
 
     /// SF-D3-AUDIT-01 / #2100 — `probe_header` must validate the header +
     /// chunk index WITHOUT walking (or even semantically checking) the

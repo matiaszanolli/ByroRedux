@@ -74,6 +74,16 @@ pub enum Error {
     #[error("DIFF chunk requested a field index {idx} but the class has only {count} fields")]
     DiffFieldOutOfRange { idx: u16, count: usize },
 
+    #[error(
+        "class {class_name:?} declares field {field_name:?} more than once — the Gibbed \
+         reference (Dictionary.Add) hard-fails on this rather than silently keeping the \
+         last value"
+    )]
+    DuplicateFieldName {
+        class_name: String,
+        field_name: String,
+    },
+
     #[error("object/list/map chunk had {leftover} trailing bytes after read")]
     ObjectTrailingBytes { leftover: usize },
 
