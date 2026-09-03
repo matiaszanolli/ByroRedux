@@ -15,3 +15,13 @@ GEMINI.md
 # MCP server config — carries a personal Apify API token, do NOT commit
 .mcp.json
 .codex/config.toml
+
+# #3746 — one-shot audit-probe example binaries. `crates/*/examples/_tmp_*`
+# is the established scratch-probe naming convention (see any historical
+# `/audit-*` skill); ignoring it here makes "don't commit scratch probes"
+# self-enforcing instead of relying on session discipline. #3150/#3746
+# already swept the 98 that had accumulated in git history before this
+# rule landed — this only prevents new ones from landing the same way.
+# A probe worth keeping should lose the `_tmp_` prefix and get a real,
+# documented name (see watr_wind_census.rs, esm_dim8_bench.rs, sf_smoke.rs).
+crates/*/examples/_tmp_*

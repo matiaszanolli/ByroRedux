@@ -52,6 +52,8 @@ mod streaming_helpers;
 mod studio_host;
 mod systems;
 mod ui_input;
+#[cfg(test)]
+mod workspace_hygiene_tests;
 
 use anyhow::Result;
 use byroredux_core::console::CommandRegistry;
