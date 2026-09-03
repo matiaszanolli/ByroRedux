@@ -16,9 +16,18 @@
 //! See issue #488 — pre-existing inline test at
 //! `records/mod.rs::tests::parse_real_fnv_esm_record_counts` was
 //! hardcoded-path only and had no `total >= 13_684` floor.
+//!
+//! #3741 (TD2-2026-08-30-01) — every `BYROREDUX_*_DATA` env var name and
+//! Steam-path default below is a `test_paths::*_ENV`/`*_DEFAULT`
+//! constant reference, not a re-typed literal. This file used to
+//! hardcode both 42 times independently of `esm::test_paths` (which
+//! `pub(crate)`-blocked this very file from reaching it) and had
+//! drifted while doing it — `BYROREDUX_OBL_DATA` here vs
+//! `BYROREDUX_OBLIVION_DATA` there for the identical game.
 
 use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::test_paths;
 use std::path::PathBuf;
 
 /// Resolve a `Data/` directory from an env var, falling back to the
@@ -76,8 +85,8 @@ const FO4_TOTAL_FLOOR: usize = 122_000;
 #[ignore]
 fn dlccoast_header_classifies_as_fallout4() {
     let Some(data) = data_dir(
-        "BYROREDUX_FO4_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        test_paths::FO4_ENV,
+        test_paths::FO4_DEFAULT,
     ) else {
         eprintln!("[FO4/DLCCoast] skipping: game data unavailable");
         return;
@@ -96,8 +105,8 @@ fn dlccoast_header_classifies_as_fallout4() {
 #[ignore]
 fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[FNV/GLOB] skipping: game data unavailable");
         return;
@@ -116,8 +125,8 @@ fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
 #[ignore]
 fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
     let Some(data) = data_dir(
-        "BYROREDUX_OBL_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        test_paths::OBLIVION_ENV,
+        test_paths::OBLIVION_DEFAULT,
     ) else {
         eprintln!("[Oblivion/GLOB] skipping: game data unavailable");
         return;
@@ -136,8 +145,8 @@ fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
 #[ignore]
 fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[FNV AVIF] skipping: game data unavailable");
         return;
@@ -189,8 +198,8 @@ fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
 #[ignore]
 fn skyrim_health_resolves_to_authored_avif_form_id() {
     let Some(data) = data_dir(
-        "BYROREDUX_SKYRIMSE_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        test_paths::SKYRIM_SE_ENV,
+        test_paths::SKYRIM_SE_DEFAULT,
     ) else {
         eprintln!("[Skyrim AVIF] skipping: game data unavailable");
         return;
@@ -252,8 +261,8 @@ struct RosterCase {
 const ROSTER_CASES: &[RosterCase] = &[
     RosterCase {
         label: "FNV",
-        env: "BYROREDUX_FNV_DATA",
-        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        env: test_paths::FNV_ENV,
+        fallback: test_paths::FNV_DEFAULT,
         master: "FalloutNV.esm",
         profile: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         attributes: byroredux_core::character::AttributeSet::FALLOUT,
@@ -262,8 +271,8 @@ const ROSTER_CASES: &[RosterCase] = &[
     },
     RosterCase {
         label: "FO3",
-        env: "BYROREDUX_FO3_DATA",
-        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+        env: test_paths::FO3_ENV,
+        fallback: test_paths::FO3_DEFAULT,
         master: "Fallout3.esm",
         profile: byroredux_core::character::CharacterRulesProfile::FALLOUT3,
         attributes: byroredux_core::character::AttributeSet::FALLOUT,
@@ -272,8 +281,8 @@ const ROSTER_CASES: &[RosterCase] = &[
     },
     RosterCase {
         label: "FO4",
-        env: "BYROREDUX_FO4_DATA",
-        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        env: test_paths::FO4_ENV,
+        fallback: test_paths::FO4_DEFAULT,
         master: "Fallout4.esm",
         profile: byroredux_core::character::CharacterRulesProfile::FALLOUT4,
         attributes: byroredux_core::character::AttributeSet::FALLOUT,
@@ -284,8 +293,8 @@ const ROSTER_CASES: &[RosterCase] = &[
     },
     RosterCase {
         label: "Skyrim",
-        env: "BYROREDUX_SKYRIMSE_DATA",
-        fallback: "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        env: test_paths::SKYRIM_SE_ENV,
+        fallback: test_paths::SKYRIM_SE_DEFAULT,
         master: "Skyrim.esm",
         profile: byroredux_core::character::CharacterRulesProfile::SKYRIM,
         attributes: byroredux_core::character::AttributeSet::SKYRIM,
@@ -294,8 +303,8 @@ const ROSTER_CASES: &[RosterCase] = &[
     },
     RosterCase {
         label: "Oblivion",
-        env: "BYROREDUX_OBL_DATA",
-        fallback: "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        env: test_paths::OBLIVION_ENV,
+        fallback: test_paths::OBLIVION_DEFAULT,
         master: "Oblivion.esm",
         profile: byroredux_core::character::CharacterRulesProfile::OBLIVION,
         attributes: byroredux_core::character::AttributeSet::TES_CLASSIC,
@@ -412,8 +421,8 @@ fn charal_rosters_and_derived_keys_resolve_on_every_shipped_master() {
 #[ignore]
 fn skyrim_default_water_promotes_underwater_tail() {
     let Some(data) = data_dir(
-        "BYROREDUX_SKYRIMSE_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        test_paths::SKYRIM_SE_ENV,
+        test_paths::SKYRIM_SE_DEFAULT,
     ) else {
         eprintln!("[Skyrim WATR] skipping: game data unavailable");
         return;
@@ -468,44 +477,44 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
     // finite and usable for every shipped record.
     let masters = [
         (
-            "BYROREDUX_OBL_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            test_paths::OBLIVION_ENV,
+            test_paths::OBLIVION_DEFAULT,
             "Oblivion.esm",
             "Oblivion",
         ),
         (
-            "BYROREDUX_FNV_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
             "FalloutNV.esm",
             "FNV",
         ),
         (
-            "BYROREDUX_FO3_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
             "Fallout3.esm",
             "FO3",
         ),
         (
-            "BYROREDUX_SKYRIMSE_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
             "Skyrim.esm",
             "Skyrim SE",
         ),
         (
-            "BYROREDUX_FO4_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+            test_paths::FO4_ENV,
+            test_paths::FO4_DEFAULT,
             "Fallout4.esm",
             "FO4",
         ),
         (
-            "BYROREDUX_FO76_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data",
+            test_paths::FO76_ENV,
+            test_paths::FO76_DEFAULT,
             "SeventySix.esm",
             "FO76",
         ),
         (
-            "BYROREDUX_STARFIELD_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+            test_paths::STARFIELD_ENV,
+            test_paths::STARFIELD_DEFAULT,
             "Starfield.esm",
             "Starfield",
         ),
@@ -663,8 +672,8 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
 #[ignore]
 fn fnv_armo_female_meshes_are_parsed_and_selected() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[#3416] skipping: FNV data unavailable");
         return;
@@ -751,8 +760,8 @@ fn fnv_armo_female_meshes_are_parsed_and_selected() {
 #[ignore]
 fn fo4_duplicate_region_armas_collapse_on_real_data() {
     let Some(data) = data_dir(
-        "BYROREDUX_FO4_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        test_paths::FO4_ENV,
+        test_paths::FO4_DEFAULT,
     ) else {
         eprintln!("[#3411] skipping: FO4 data unavailable");
         return;
@@ -839,8 +848,8 @@ fn fo4_duplicate_region_armas_collapse_on_real_data() {
 #[ignore]
 fn fo4_ruleset_uses_only_authored_avif_outputs() {
     let Some(data) = data_dir(
-        "BYROREDUX_FO4_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        test_paths::FO4_ENV,
+        test_paths::FO4_DEFAULT,
     ) else {
         eprintln!("[FO4 AVIF] skipping: game data unavailable");
         return;
@@ -861,8 +870,8 @@ fn fo4_ruleset_uses_only_authored_avif_outputs() {
 #[ignore]
 fn parse_rate_fnv_esm() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[FNV] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
         return;
@@ -1453,8 +1462,8 @@ fn parse_rate_fnv_esm() {
 #[ignore]
 fn parse_rate_fo3_esm() {
     let Some(data) = data_dir(
-        "BYROREDUX_FO3_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+        test_paths::FO3_ENV,
+        test_paths::FO3_DEFAULT,
     ) else {
         eprintln!("[FO3] skipping: BYROREDUX_FO3_DATA unset and fallback path missing");
         return;
@@ -1686,8 +1695,8 @@ fn parse_rate_fo3_esm() {
 #[ignore]
 fn parse_rate_oblivion_esm() {
     let Some(data) = data_dir(
-        "BYROREDUX_OBL_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        test_paths::OBLIVION_ENV,
+        test_paths::OBLIVION_DEFAULT,
     ) else {
         eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
         return;
@@ -1932,8 +1941,8 @@ fn parse_rate_oblivion_esm() {
 #[ignore]
 fn parse_rate_fo4_esm() {
     let Some(data) = data_dir(
-        "BYROREDUX_FO4_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        test_paths::FO4_ENV,
+        test_paths::FO4_DEFAULT,
     ) else {
         eprintln!("[FO4] skipping: BYROREDUX_FO4_DATA unset and fallback path missing");
         return;
@@ -2248,8 +2257,8 @@ fn parse_rate_fo4_esm() {
 #[ignore]
 fn race_oblivion_data_and_subs_against_vanilla() {
     let Some(data) = data_dir(
-        "BYROREDUX_OBL_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        test_paths::OBLIVION_ENV,
+        test_paths::OBLIVION_DEFAULT,
     ) else {
         eprintln!("[OBL/RACE] skip: data dir missing");
         return;
@@ -2362,8 +2371,8 @@ fn race_oblivion_data_and_subs_against_vanilla() {
 #[ignore]
 fn clas_oblivion_knight_against_vanilla() {
     let Some(data) = data_dir(
-        "BYROREDUX_OBL_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        test_paths::OBLIVION_ENV,
+        test_paths::OBLIVION_DEFAULT,
     ) else {
         eprintln!("[OBL/CLAS] skip: data dir missing");
         return;
@@ -2621,8 +2630,8 @@ fn parse_fo4_architecture_fixture_populates_typed_maps() {
 #[ignore]
 fn dump_prospector_saloon_refrs() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[dump] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
         return;
@@ -2736,8 +2745,8 @@ fn dump_prospector_saloon_refrs() {
 #[ignore]
 fn parse_rate_fnv_pack_pldt_location() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[FNV] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
         return;
@@ -2845,44 +2854,44 @@ fn installed_masters_per_water_scalars_are_not_decoded_constants() {
     // Same master list as `installed_masters_water_fields_are_finite_and_ordered`.
     let masters = [
         (
-            "BYROREDUX_OBL_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            test_paths::OBLIVION_ENV,
+            test_paths::OBLIVION_DEFAULT,
             "Oblivion.esm",
             "Oblivion",
         ),
         (
-            "BYROREDUX_FNV_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
             "FalloutNV.esm",
             "FNV",
         ),
         (
-            "BYROREDUX_FO3_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
             "Fallout3.esm",
             "FO3",
         ),
         (
-            "BYROREDUX_SKYRIMSE_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
             "Skyrim.esm",
             "Skyrim SE",
         ),
         (
-            "BYROREDUX_FO4_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+            test_paths::FO4_ENV,
+            test_paths::FO4_DEFAULT,
             "Fallout4.esm",
             "FO4",
         ),
         (
-            "BYROREDUX_FO76_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data",
+            test_paths::FO76_ENV,
+            test_paths::FO76_DEFAULT,
             "SeventySix.esm",
             "FO76",
         ),
         (
-            "BYROREDUX_STARFIELD_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+            test_paths::STARFIELD_ENV,
+            test_paths::STARFIELD_DEFAULT,
             "Starfield.esm",
             "Starfield",
         ),
@@ -2982,14 +2991,14 @@ fn installed_masters_per_water_scalars_are_not_decoded_constants() {
 fn installed_fallout_masters_decode_the_dnam_visual_tail() {
     let masters = [
         (
-            "BYROREDUX_FNV_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
             "FalloutNV.esm",
             "FNV",
         ),
         (
-            "BYROREDUX_FO3_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
             "Fallout3.esm",
             "FO3",
         ),
@@ -3084,14 +3093,14 @@ fn installed_fallout_masters_read_the_watr_head_not_the_simulator_tail() {
 
     let masters = [
         (
-            "BYROREDUX_FO3_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
             "Fallout3.esm",
             "FO3",
         ),
         (
-            "BYROREDUX_FNV_DATA",
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
             "FalloutNV.esm",
             "FNV",
         ),
@@ -3216,8 +3225,8 @@ fn installed_fallout_masters_read_the_watr_head_not_the_simulator_tail() {
 #[ignore]
 fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
     let Some(data) = data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
     ) else {
         eprintln!("[FNV/LVLI] skipping: game data unavailable");
         return;
@@ -3312,8 +3321,8 @@ fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
 #[ignore]
 fn skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
     let Some(data) = data_dir(
-        "BYROREDUX_SKYRIMSE_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        test_paths::SKYRIM_SE_ENV,
+        test_paths::SKYRIM_SE_DEFAULT,
     ) else {
         eprintln!("[Skyrim/LVLI] skipping: game data unavailable");
         return;

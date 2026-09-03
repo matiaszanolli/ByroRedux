@@ -1,61 +1,65 @@
-# #3741 — TD2-2026-08-30-01: the game-data path helper built to end path hardcoding is `pub(crate)`, so its own package's integration tests re-hardcode 42 Steam roots (134 workspace-wide)
+# #3741 — TD2-2026-08-30-01: test_paths.rs was pub(crate), so parse_real_esm.rs re-hardcoded 42 Steam roots
 
-**Labels**: bug, medium, tech-debt, esm-plugin
+**Severity**: MEDIUM · **Location**: `crates/plugin/src/esm/test_paths.rs`, `crates/plugin/src/esm/mod.rs`, `crates/plugin/tests/parse_real_esm.rs`
+**Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (TD2-2026-08-30-01)
 
----
+`test_paths.rs` (#1058) centralizes the `BYROREDUX_<GAME>_DATA` env-var
+override shape for real-data integration tests, but was declared `#[cfg(test)]
+pub(crate) mod test_paths;`. An integration test under `tests/` links the
+crate as a *normal* (non-test) dependency, so it structurally cannot reach a
+`pub(crate)` item, nor one gated on `#[cfg(test)]` (that gate only applies
+within the crate's own `cargo test` compilation unit) — `pub(crate)` alone
+wasn't the whole story. `crates/plugin/tests/parse_real_esm.rs` re-hardcoded
+the same Steam roots 42 times instead, and diverged while doing it: it used
+`BYROREDUX_OBL_DATA` where `test_paths.rs` used `BYROREDUX_OBLIVION_DATA`
+for the identical game — a real, confirmed instance (not just a theoretical
+risk) of the exact "env var not consulted the same way everywhere" failure
+#1058 set out to remove. It also used `BYROREDUX_FO76_DATA`, an env var
+`test_paths.rs` had no accessor for at all despite its own module doc
+listing FO76 among the covered games.
 
-- **Severity**: MEDIUM
-- **Dimension**: 2 — Duplication
-- **Location**: `crates/plugin/src/esm/test_paths.rs`; visibility declared at `crates/plugin/src/esm/mod.rs` (`pub(crate) mod test_paths;`); the 42 open-coded sites at `crates/plugin/tests/parse_real_esm.rs`
-- **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (`TD2-2026-08-30-01`), HEAD `64f64480`
+## Fix implemented
 
-## Description
+Per the issue's own cheaper option 2 (scoped to `crates/plugin` — the 134
+workspace-wide occurrences across 7 crates are the larger option-1 "medium
+effort" `crates/test-paths` dev-dependency crate, not attempted here):
 
-`test_paths.rs` was created by **#1058** for exactly this. Its own module doc states the
-intent:
+- `test_paths.rs`: every accessor `pub(crate) fn` → `pub fn`; added the
+  missing `fo76_data_dir()` (closing the module-doc-vs-implementation gap);
+  refactored each game's `(env_var, default)` pair into `pub const
+  <GAME>_ENV`/`<GAME>_DEFAULT` string constants, so both function-call sites
+  and `const`-context sites (a `RosterCase` struct array, several tuple
+  arrays) can reference the same literals without re-typing them.
+- `esm/mod.rs`: `#[cfg(test)] pub(crate) mod test_paths;` → `pub mod
+  test_paths;` (unconditional — the module has no test-only dependencies, so
+  compiling it unconditionally costs nothing).
+- `parse_real_esm.rs`: all 84 literal occurrences (42 env-var strings + 42
+  path strings) replaced with `test_paths::<GAME>_ENV`/`<GAME>_DEFAULT`
+  references. `BYROREDUX_OBL_DATA` is now `BYROREDUX_OBLIVION_DATA`
+  everywhere — the divergence is closed, not preserved. The file's own
+  `data_dir(env_var, fallback) -> Option<PathBuf>` wrapper (existence-checked,
+  skip-on-miss — a slightly more defensive shape than the bare
+  `*_data_dir()` accessors) is unchanged; only its call sites' literal
+  arguments changed.
 
-> "Pre-#1058 each test hardcoded the audit author's Steam install path; this module
-> centralises the override shape so every test resolves the same way."
+**SIBLING** (issue's own checklist item): the 134-occurrence, 7-crate figure
+is real but out of scope for this fix — it's the larger option-1 effort the
+issue itself marks "medium" (a new `crates/test-paths` dev-dependency crate),
+distinct from the "small" fix implemented here. Not attempted in this pass;
+the remaining 6 crates (`bsa`, `nif`, `audio`, `facegen`, `spt`, `sfmaterial`,
+`byroredux/tests`) keep their own per-file helpers as `test_paths.rs`'s own
+doc already documented as an accepted scope boundary from #1058.
 
-It provides 12 `pub(crate) fn` accessors, each an env-var override
-(`BYROREDUX_<GAME>_DATA`) falling back to the reference machine's Steam path.
+**TESTS** (issue's own checklist item): two new tests in `test_paths.rs` —
+`every_env_name_follows_the_documented_shape` pins the `BYROREDUX_<GAME>_DATA`
+naming convention for all 7 games (guards against a future divergent name
+like the `BYROREDUX_OBL_DATA` this fix just closed), and
+`data_dir_accessors_fall_back_to_their_documented_default_when_unset` pins
+each accessor's default-path fallback. Also ran the real integration suite
+directly against the mounted game data (`cargo test -p byroredux-plugin
+--test parse_real_esm -- --ignored`) — all 24 tests pass with the
+newly-unified paths, confirming the fix works functionally, not just
+compiles.
 
-**It is declared `pub(crate) mod test_paths;`.** An integration test under `tests/` is a
-*separate crate*, so `crates/plugin/tests/parse_real_esm.rs` — in the same package —
-structurally cannot call it. The result: that one file re-hardcodes the same Steam roots
-**42 times**.
-
-Workspace-wide the literal `"/mnt/data/SteamLibrary/steamapps/common/..."` appears
-**134 times** at HEAD (the report measured 119 three days earlier — it is still growing)
-across `crates/plugin`, `crates/nif`, `crates/bsa`, `crates/spt`, `crates/audio`,
-`crates/facegen`, `crates/sfmaterial` and `byroredux/tests`, covering 7 distinct game
-roots.
-
-## Amplification — why this is not the default LOW
-
-This is duplicated logic with *divergent* behaviour, not just repeated text.
-`test_paths.rs` guarantees every accessor consults its env override first; the open-coded
-sites each re-implement that override by hand — some do
-(`std::env::var("BYROREDUX_FNV_DATA").unwrap_or(...)`), and whether *all* do is
-unverifiable by inspection at that scale. A site that forgets the env var is a test that
-silently skips on any machine but one, which is the failure mode #1058 set out to remove
-and did not finish removing.
-
-## Suggested Fix — the module already names its own consolidation site
-
-`test_paths.rs`'s own doc says *"promoting to a workspace-level utility crate is out of
-scope for the issue that introduced this module (#1058)"*. That is the fix, one increment
-later. Two options, in order of preference:
-
-1. A tiny `crates/test-paths` dev-dependency crate carrying the 12 accessors plus the
-   `nif/tests/common::Game` `default_path()` / `mesh_archive()` convention it already
-   mirrors. Every crate lists it under `[dev-dependencies]`; all 134 literals collapse to
-   7 constants in one file. *(medium)*
-2. Cheaper interim: change `pub(crate) mod test_paths` to `pub mod test_paths` gated
-   behind a `test-paths` feature enabled in the plugin crate's own `[dev-dependencies]`
-   self-reference — unblocks `parse_real_esm.rs`'s 42 sites immediately without touching
-   the other crates. *(small)*
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files (all 7 crates carrying hardcoded roots)
-- [ ] **TESTS**: A regression test pins this specific fix
+Full workspace: `cargo test --no-fail-fast` 7062 passing, 0 failing (+2 new
+tests).

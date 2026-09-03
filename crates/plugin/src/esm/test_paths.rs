@@ -19,6 +19,24 @@
 //! binary's tests) keep their per-file helpers — promoting to a
 //! workspace-level utility crate is out of scope for the issue that
 //! introduced this module (#1058).
+//!
+//! #3741 (TD2-2026-08-30-01) — `pub`, not `pub(crate)`, and no longer
+//! `#[cfg(test)]`: an integration test under `tests/` is a separate
+//! crate that links this one as a *normal* (non-test) dependency, so it
+//! structurally cannot reach a `pub(crate)` item, nor one gated on
+//! `#[cfg(test)]` (that gate only applies within this crate's own
+//! `cargo test` compilation unit). `crates/plugin/tests/parse_real_esm.rs`
+//! (in the same package) re-hardcoded these same roots 42 times instead
+//! — and diverged while doing it: it used `BYROREDUX_OBL_DATA` where
+//! this module used `BYROREDUX_OBLIVION_DATA` for the identical game, a
+//! real instance of exactly the "env var not consulted the same way
+//! everywhere" failure #1058 set out to remove. `parse_real_esm.rs`'s own
+//! `data_dir(env_var, fallback)` wrapper (existence-checked,
+//! skip-on-miss — a slightly more defensive shape than the bare
+//! `*_data_dir()` accessors below) is unchanged; only its call sites'
+//! literal arguments now reference the
+//! `*_ENV`/`*_DEFAULT` constants below instead of re-typing the
+//! literals a third time.
 
 use std::path::PathBuf;
 
@@ -32,70 +50,149 @@ fn data_dir(env_var: &str, default: &str) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(default))
 }
 
-pub(crate) fn oblivion_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_OBLIVION_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
-    )
+pub const OBLIVION_ENV: &str = "BYROREDUX_OBLIVION_DATA";
+pub const OBLIVION_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data";
+pub fn oblivion_data_dir() -> PathBuf {
+    data_dir(OBLIVION_ENV, OBLIVION_DEFAULT)
 }
 
-pub(crate) fn fnv_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_FNV_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
-    )
+pub const FNV_ENV: &str = "BYROREDUX_FNV_DATA";
+pub const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+pub fn fnv_data_dir() -> PathBuf {
+    data_dir(FNV_ENV, FNV_DEFAULT)
 }
 
-pub(crate) fn fo3_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_FO3_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
-    )
+pub const FO3_ENV: &str = "BYROREDUX_FO3_DATA";
+pub const FO3_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data";
+pub fn fo3_data_dir() -> PathBuf {
+    data_dir(FO3_ENV, FO3_DEFAULT)
 }
 
-pub(crate) fn skyrim_se_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_SKYRIMSE_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-    )
+pub const SKYRIM_SE_ENV: &str = "BYROREDUX_SKYRIMSE_DATA";
+pub const SKYRIM_SE_DEFAULT: &str =
+    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data";
+pub fn skyrim_se_data_dir() -> PathBuf {
+    data_dir(SKYRIM_SE_ENV, SKYRIM_SE_DEFAULT)
 }
 
-pub(crate) fn fo4_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_FO4_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
-    )
+pub const FO4_ENV: &str = "BYROREDUX_FO4_DATA";
+pub const FO4_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data";
+pub fn fo4_data_dir() -> PathBuf {
+    data_dir(FO4_ENV, FO4_DEFAULT)
 }
 
-pub(crate) fn starfield_data_dir() -> PathBuf {
-    data_dir(
-        "BYROREDUX_STARFIELD_DATA",
-        "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
-    )
+/// #3741 — the module doc has always listed FO76 among the covered
+/// games, but no accessor existed for it; `parse_real_esm.rs`'s own
+/// (now-removed) hardcoded copy was the only place `BYROREDUX_FO76_DATA`
+/// was consulted at all.
+pub const FO76_ENV: &str = "BYROREDUX_FO76_DATA";
+pub const FO76_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data";
+pub fn fo76_data_dir() -> PathBuf {
+    data_dir(FO76_ENV, FO76_DEFAULT)
+}
+
+pub const STARFIELD_ENV: &str = "BYROREDUX_STARFIELD_DATA";
+pub const STARFIELD_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data";
+pub fn starfield_data_dir() -> PathBuf {
+    data_dir(STARFIELD_ENV, STARFIELD_DEFAULT)
 }
 
 // ── ESM convenience accessors (the actual hot-path callers) ──────────
 
-pub(crate) fn oblivion_esm() -> PathBuf {
+pub fn oblivion_esm() -> PathBuf {
     oblivion_data_dir().join("Oblivion.esm")
 }
 
-pub(crate) fn fnv_esm() -> PathBuf {
+pub fn fnv_esm() -> PathBuf {
     fnv_data_dir().join("FalloutNV.esm")
 }
 
-pub(crate) fn fo3_esm() -> PathBuf {
+pub fn fo3_esm() -> PathBuf {
     fo3_data_dir().join("Fallout3.esm")
 }
 
-pub(crate) fn skyrim_se_esm() -> PathBuf {
+pub fn skyrim_se_esm() -> PathBuf {
     skyrim_se_data_dir().join("Skyrim.esm")
 }
 
-pub(crate) fn fo4_esm() -> PathBuf {
+pub fn fo4_esm() -> PathBuf {
     fo4_data_dir().join("Fallout4.esm")
 }
 
-pub(crate) fn starfield_esm() -> PathBuf {
+pub fn starfield_esm() -> PathBuf {
     starfield_data_dir().join("Starfield.esm")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #3741 — every `*_ENV` constant must follow the documented
+    /// `BYROREDUX_<GAME>_DATA` shape. Pins the canonical name so a future
+    /// caller (in this crate or a `tests/` sibling) cannot silently
+    /// reintroduce a divergent one — `BYROREDUX_OBL_DATA` for the same
+    /// game `BYROREDUX_OBLIVION_DATA` names here was exactly this failure.
+    #[test]
+    fn every_env_name_follows_the_documented_shape() {
+        for env in [
+            OBLIVION_ENV,
+            FNV_ENV,
+            FO3_ENV,
+            SKYRIM_SE_ENV,
+            FO4_ENV,
+            FO76_ENV,
+            STARFIELD_ENV,
+        ] {
+            assert!(
+                env.starts_with("BYROREDUX_") && env.ends_with("_DATA"),
+                "{env} does not match the documented BYROREDUX_<GAME>_DATA shape"
+            );
+        }
+    }
+
+    /// Every `*_data_dir()` accessor must fall back to its documented
+    /// default when the env var is unset — this is the behavior every
+    /// caller (`parse_real_esm.rs` included) relies on for a clean skip
+    /// rather than a panic on a machine with no override set.
+    ///
+    /// Runs with the env var explicitly removed rather than assuming it
+    /// is unset in CI, since `cargo test` runs all tests in one process
+    /// and a developer's shell could have one of these exported.
+    #[test]
+    fn data_dir_accessors_fall_back_to_their_documented_default_when_unset() {
+        // SAFETY: `std::env::remove_var` is unsafe in this Rust edition
+        // because env vars are process-global and concurrent access from
+        // other threads is a data race. Tests run in separate threads by
+        // default, but every one of the seven vars this touches is
+        // exclusive to this test (no other test in this crate sets or
+        // reads any of them), so there is no actual concurrent access to
+        // race against.
+        for (env, default, accessor) in [
+            (
+                OBLIVION_ENV,
+                OBLIVION_DEFAULT,
+                oblivion_data_dir as fn() -> PathBuf,
+            ),
+            (FNV_ENV, FNV_DEFAULT, fnv_data_dir as fn() -> PathBuf),
+            (FO3_ENV, FO3_DEFAULT, fo3_data_dir as fn() -> PathBuf),
+            (
+                SKYRIM_SE_ENV,
+                SKYRIM_SE_DEFAULT,
+                skyrim_se_data_dir as fn() -> PathBuf,
+            ),
+            (FO4_ENV, FO4_DEFAULT, fo4_data_dir as fn() -> PathBuf),
+            (FO76_ENV, FO76_DEFAULT, fo76_data_dir as fn() -> PathBuf),
+            (
+                STARFIELD_ENV,
+                STARFIELD_DEFAULT,
+                starfield_data_dir as fn() -> PathBuf,
+            ),
+        ] {
+            // SAFETY: see the comment above the loop.
+            unsafe {
+                std::env::remove_var(env);
+            }
+            assert_eq!(accessor(), PathBuf::from(default));
+        }
+    }
 }
