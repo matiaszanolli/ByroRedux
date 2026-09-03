@@ -1,26 +1,39 @@
 # #3723 — ESM-2026-08-30-D2-02: Skyrim AMMO.DATA is 20 bytes on disk, not the 16 the decoder's comment claims
 
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
-
-**Severity**: LOW · **Dimension**: Sub-Record Byte Accounting
-**Record / Sub-record**: `AMMO` / `DATA`
-**Location**: `crates/plugin/src/esm/records/items.rs` (the `Skyrim | Fallout76 | Starfield` AMMO DATA arm, ~:648-657)
+**Severity**: LOW · **Location**: `crates/plugin/src/esm/records/items.rs::parse_ammo`
 **Source**: `docs/audits/AUDIT_ESM_2026-08-30.md` (ESM-2026-08-30-D2-02)
 
-## Description
+The `Skyrim | Fallout76 | Starfield` AMMO DATA arm's own comment claimed 16 bytes
+(`projectile_form, flags, damage, value`). Census over `Skyrim.esm`: 35/35 records are 20 bytes;
+the trailing `f32` at offset 16 is `0.1` in every one — a real, uniform per-arrow weight
+`common.weight` was silently dropping.
 
-The comment reads *"Skyrim AMMO DATA (16 bytes): projectile_form(u32), flags(u32), damage(f32), value(u32)"*. Census over `Skyrim.esm`: **35/35** records are **20** bytes.
+## Verification
 
-The decoded first 16 are correct; bytes 16..20 are an undecoded `f32` whose value is `0.1` in every one of the 35 records — consistent with an authored per-arrow weight, which `common.weight` currently leaves at `0` (`CommonItemFields` sets weight from no sub-record on this path).
+Independently re-derived the census against the mounted `Skyrim.esm` (throwaway
+`crates/plugin/examples/_tmp_skyrim_ammo_data_census.rs`, deleted after use) — confirmed exactly:
+**35/35 AMMO DATA sub-records, all 20 bytes, trailing f32 = 0.1 in all 35**, matching the audit's
+own count precisely.
 
-## Impact
+## Fix implemented
 
-Small and uniform, but the comment is factually wrong about the on-disk size, which is the kind of stale schema note that misleads the next field addition — and a real (if tiny) weight field is dropped.
+Corrected the comment (20 bytes) and read the trailing weight behind a `remaining() >= 4` check
+(explicit, rather than relying solely on `f32_or_default`'s built-in truncation leniency) so a
+genuine short record still decodes cleanly with weight left at `0`. `Fallout76`/`Starfield`
+remain bundled in the same arm, unchanged — **explicitly not assumed 20-byte-Skyrim-shaped**;
+they still need their own census before any length-dependent change, per the issue's own
+deferral.
 
-## Suggested Fix
+Regression tests (issue's own TESTS checklist item): the existing
+`skyrim_ammo_data_is_projectile_form_flags_damage_value` (a deliberately truncated 16-byte
+fixture) now also asserts `weight == 0.0` — proving a short record doesn't panic. New
+`skyrim_ammo_data_includes_trailing_weight` pins the real, full 20-byte shape (a real Skyrim
+form ID, `0x0001397D`, from the census) to `weight ≈ 0.1`.
 
-Correct the comment and read the trailing `f32` behind a `remaining() >= 4` check so a genuine 16-byte Skyrim LE record still decodes. FO76 / Starfield share this arm and need their own census before being assumed 20-byte.
+**SIBLING** (issue's own checklist item): census-verified `parse_weap`'s Skyrim WEAP DATA arm
+too (same throwaway-probe methodology) — **2,484/2,484 records confirmed exactly 10 bytes**,
+matching its existing test's assumption; no bug found there. `parse_armo` has no per-game DATA
+dispatch to check. This closes out the sibling gap #3716 (BOOK) flagged as belonging to this
+issue.
 
-## Completeness Checks
-- [ ] **SIBLING**: The other Skyrim-grouped item `DATA` arms checked against a real census of on-disk lengths
-- [ ] **TESTS**: A regression test pins a real 20-byte Skyrim AMMO `DATA` payload including the trailing weight
+Full workspace: `cargo test --no-fail-fast` 7049 passing, 0 failing.

@@ -658,14 +658,29 @@ pub fn parse_ammo(
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
-                    // Skyrim AMMO DATA (16 bytes): projectile_form(u32),
-                    // flags(u32), damage(f32), value(u32). "Ignores weapon
-                    // resistance" etc. live in the flags bitfield.
+                    // #3723 (ESM-2026-08-30-D2-02) — Skyrim AMMO DATA is 20
+                    // bytes on disk, not the 16 this comment used to claim:
+                    // projectile_form(u32), flags(u32), damage(f32),
+                    // value(u32), weight(f32). "Ignores weapon resistance"
+                    // etc. live in the flags bitfield. Census over
+                    // Skyrim.esm (independently re-verified): 35/35 AMMO
+                    // DATA sub-records are 20 bytes, and the trailing f32
+                    // is `0.1` in every one — a real, uniform per-arrow
+                    // weight `common.weight` previously left at 0.
+                    // `remaining() >= 4` before reading it rather than
+                    // relying solely on `f32_or_default`'s built-in
+                    // truncation leniency, so a genuine 16-byte record
+                    // (FO76/Starfield share this arm and have not had
+                    // their own census run — not assumed 20-byte-Skyrim-
+                    // shaped) still decodes cleanly with weight left at 0.
                     GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
                         projectile_form = r.u32_or_default();
                         let _flags = r.u32_or_default();
                         damage = r.f32_or_default();
                         common.value = r.u32_or_default();
+                        if r.remaining() >= 4 {
+                            common.weight = r.f32_or_default();
+                        }
                     }
                 }
             }
@@ -1713,7 +1728,11 @@ mod tests {
     #[test]
     fn skyrim_ammo_data_is_projectile_form_flags_damage_value() {
         // Skyrim AMMO DATA: projectile_form(u32) + flags(u32) + damage(f32)
-        //                 + value(u32). No clipRounds, no speed.
+        //                 + value(u32) [+ weight(f32), #3723 — this fixture
+        // is deliberately the truncated 16-byte shape, to pin that a short
+        // record still decodes cleanly (weight stays 0) rather than
+        // panicking; skyrim_ammo_data_includes_trailing_weight below pins
+        // the real, full 20-byte shape]. No clipRounds, no speed.
         let mut data = Vec::new();
         data.extend_from_slice(&0xC0DEu32.to_le_bytes()); // projectile form
         data.extend_from_slice(&0x1u32.to_le_bytes()); // flags
@@ -1722,6 +1741,10 @@ mod tests {
         let subs = vec![sub(b"EDID", b"ArrowIron\0"), sub(b"DATA", &data)];
         let item = parse_ammo(0x139BE, &subs, GameKind::Skyrim, &None);
         assert_eq!(item.common.value, 1);
+        assert_eq!(
+            item.common.weight, 0.0,
+            "a truncated (16-byte) record must not panic; weight defaults to 0"
+        );
         match item.kind {
             ItemKind::Ammo {
                 damage,
@@ -1738,5 +1761,28 @@ mod tests {
             }
             _ => panic!("expected Ammo kind"),
         }
+    }
+
+    /// #3723 (ESM-2026-08-30-D2-02) — the real, full 20-byte Skyrim AMMO
+    /// `DATA` payload (`ArrowIron`'s own shape, `0x0001397D` from the
+    /// mounted `Skyrim.esm`, independently re-verified: 35/35 records are
+    /// 20 bytes, trailing weight `0.1` in all of them). The decoder's own
+    /// comment used to claim 16 bytes and silently dropped this field.
+    #[test]
+    fn skyrim_ammo_data_includes_trailing_weight() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0xC0DEu32.to_le_bytes()); // projectile form
+        data.extend_from_slice(&0x1u32.to_le_bytes()); // flags
+        data.extend_from_slice(&8.0f32.to_le_bytes()); // damage
+        data.extend_from_slice(&1u32.to_le_bytes()); // value
+        data.extend_from_slice(&0.1f32.to_le_bytes()); // weight (bytes 16..20)
+        assert_eq!(data.len(), 20);
+        let subs = vec![sub(b"DATA", &data)];
+        let item = parse_ammo(0x0001_397D, &subs, GameKind::Skyrim, &None);
+        assert!(
+            (item.common.weight - 0.1).abs() < 1e-6,
+            "the trailing f32 at offset 16 must reach common.weight, got {}",
+            item.common.weight
+        );
     }
 }
