@@ -594,8 +594,11 @@ while). Struck-through items are done; the remaining two are genuinely open.
 6. **GMST sourcing** — partially wired. GMST parsing and the editor-ID lookup
    exist (`crates/plugin/src/esm/records/global.rs`,
    `EsmIndex::game_setting_float`), and Skyrim's XP curve now overlays the
-   authored `fXPLevelUpBase`, `fXPLevelUpMult`, and `fXPPerSkillRank` values
-   with sourced fallbacks. The Fallout derived-skill constants
+   authored `fXPLevelUpBase` and `fXPLevelUpMult` values with sourced
+   fallbacks — only the level curve is GMST-authored; the skill-rank
+   coefficient (`xp_per_skill_rank`) is engine-owned, not a
+   `fXPPerSkillRank` GMST (#3221: no shipped Skyrim master defines one; the
+   read was withdrawn 2026-08-24). The Fallout derived-skill constants
    (`SKILL_BASE`, `SKILL_ATTR_MULT`, `SKILL_LUCK_MULT` — the `fAVDSkill*`
    GMSTs) remain hardcoded and are the remaining GMST seam.
 7. ~~**TES family**~~ — shipped for Oblivion (`tes.rs`) and Skyrim

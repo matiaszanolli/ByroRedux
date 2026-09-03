@@ -1,78 +1,81 @@
-# #3221 — SKY-2026-08-20-D4-02: fXPPerSkillRank is authored by no shipped Skyrim master — the third GMST of the #2942 fix is a permanent silent no-op behind a "GMST-sourced" claim (remainder half; reachability half is #3170)
+# #3221 — SKY-2026-08-20-D4-02 (remainder): fXPPerSkillRank is authored by no shipped Skyrim master
 
-**Issue**: #3221 — https://github.com/matiaszanolli/ByroRedux/issues/3221
-**Finding ID**: `SKY-2026-08-20-D4-02`
-**Severity**: LOW
-**Dimension**: 4 — per-title data semantics
-**Audit**: `/audit-skyrim` — `docs/audits/AUDIT_SKYRIM_2026-08-20.md` (HEAD `bb0b92f2`, 2026-08-20 comprehensive suite)
-**Labels**: low, legacy-compat, gameplay, bug
-**Filed**: 2026-08-20 · `/audit-publish`
+**Severity**: LOW · **Dimension**: Character leveling (CHARAL)
+**Location**: `crates/core/src/character/leveling.rs`, `docs/engine/charal.md`
 
----
+## Investigation — the code half was already fixed
 
-**Audit**: `/audit-skyrim` — `docs/audits/AUDIT_SKYRIM_2026-08-20.md` (Dim 4), HEAD `bb0b92f2`
-**Finding ID**: `SKY-2026-08-20-D4-02` (**remainder half** — see Scope)
+Verified the premise against current code first, per standing practice.
+`LevelingModel::with_gmst` (`crates/core/src/character/leveling.rs`)
+requests exactly two GMSTs — `fXPLevelUpBase` and `fXPLevelUpMult` —
+and carries `xp_per_skill_rank` through untouched:
 
-- **Severity**: LOW
-- **Status**: NEW
-
-## Scope — what this issue is and is not
-
-`SKY-2026-08-20-D4-02` reported **two independent reasons** the Skyrim leveling GMST overlay never runs:
-
-1. **Unreachable** — `CharacterRulesProfile::SKYRIM` carries `ruleset: RulesetBuilder::None`, so `build_ruleset` returns `None` before the `with_gmst` line. → **already filed as #3170, not re-filed here.**
-2. **One of the three GMST names does not exist in the game.** → **this issue.**
-
-## Location
-
-- `crates/core/src/character/leveling.rs:92` — `xp_per_skill_rank: gmst("fXPPerSkillRank").unwrap_or(xp_per_skill_rank)`
-- Docstring citing it: `crates/core/src/character/leveling.rs:66`
-- The capture document that asserts it is authored: `docs/engine/charal-skyrim-ruleset.md:711-720` ("XP / level curve — **LOCKED**")
-
-## Description
-
-`1c9b8d7a` ("Source Skyrim leveling values from GMST", *Fix #2942*) reads three GMSTs by name. Two exist. **`fXPPerSkillRank` is authored by no shipped Skyrim plugin**, so even once #3170's reachability is fixed, that lookup is a permanent silent no-op that quietly retains the hard-coded `1.0` while the code and the capture document both claim it is GMST-sourced.
-
-This is the `feedback_no_guessing` failure mode: an unverified constant name shipped behind a "GMST-sourced" claim, in a commit that closed an issue about exactly that.
-
-## Evidence
-
-Independent byte-scan for the literal EDID strings across every installed Skyrim master (`Skyrim.esm`, `Update.esm`, `Dawnguard.esm`, `HearthFires.esm`, `Dragonborn.esm`):
-
-```
-Skyrim.esm       fXPPerSkillRank=0   fXPLevelUpBase=1   fXPLevelUpMult=1
-Update.esm       fXPPerSkillRank=0   fXPLevelUpBase=0   fXPLevelUpMult=0
-Dawnguard.esm    fXPPerSkillRank=0   fXPLevelUpBase=0   fXPLevelUpMult=0
-HearthFires.esm  fXPPerSkillRank=0   fXPLevelUpBase=0   fXPLevelUpMult=0
-Dragonborn.esm   fXPPerSkillRank=0   fXPLevelUpBase=0   fXPLevelUpMult=0
-
-every distinct "fXP*" string in Skyrim.esm:  fXPLevelUpBase, fXPLevelUpMult
+```rust
+Self::SkillXp {
+    xp_base: gmst("fXPLevelUpBase").unwrap_or(xp_base),
+    xp_mult: gmst("fXPLevelUpMult").unwrap_or(xp_mult),
+    xp_per_skill_rank,
+    ...
+}
 ```
 
-A GMST EDID sweep over the same masters agrees: `Skyrim.esm` holds 1 584 `GMST` records, and the complete `fXP*` set install-wide is `{fXPLevelUpBase, fXPLevelUpMult}`.
+The `fXPPerSkillRank` read this issue describes as "a permanent silent
+no-op" does not exist in the current tree at all — it was withdrawn
+2026-08-24 as a settled design decision (per
+`docs/audits/AUDIT_CHARACTER_2026-08-30.md`'s own
+CHAR-2026-08-30-D6-02 finding, which traced the same discrepancy this
+issue's remaining half is about). An existing regression test already
+pins the exact fix this issue's own TESTS checklist asks for —
+`skyrim_gmst_overlay_reads_only_authored_curve_settings` asserts
+`requested.into_inner() == ["fXPLevelUpBase", "fXPLevelUpMult"]`, an
+exact-match pin stronger than the "subset of a checked-in name list"
+the checklist requested.
 
-The two names that **do** exist match `LevelingModel::SKYRIM`'s hard-coded values exactly (`fXPLevelUpBase = 75.0`, `fXPLevelUpMult = 25.0`, vs `xp_base: 75.0, xp_mult: 25.0`) — the sourced constants are right; only the third name is not a GMST.
+`docs/engine/charal-skyrim-ruleset.md`'s capture (the doc this issue's
+own suggested fix named for correction) was also already fixed — line
+717 already reads "that coefficient is an engine rule, not a
+`fXPPerSkillRank` GMST."
 
-`docs/engine/charal-skyrim-ruleset.md:712-714` states: *"Skyrim's character XP curve is authored by the GMST settings `fXPLevelUpBase`, `fXPLevelUpMult`, and `fXPPerSkillRank`"*, sourced to UESP. Whatever UESP documents, the shipped data does not carry that record, so the parser can never supply it.
+## What was actually still stale
 
-## Impact
+`docs/engine/charal.md` §8 item 6 — a *different* document from the two
+above — still claimed *"Skyrim's XP curve now overlays the authored
+`fXPLevelUpBase`, `fXPLevelUpMult`, and `fXPPerSkillRank` values with
+sourced fallbacks"*, contradicting both the code and its own sibling
+capture document. This exact contradiction is independently documented
+as `AUDIT_CHARACTER_2026-08-30.md`'s CHAR-2026-08-30-D6-02 finding
+(same underlying issue, filed against the one artifact that hadn't
+caught up yet).
 
-**None at runtime today** — the code is unreachable on Skyrim (#3170), which is why this is LOW.
+## Fix
 
-It matters because the next person to wire `RulesetBuilder::Skyrim` inherits a silent no-op behind a documented "GMST-sourced, mods may override" claim, and because `#2942` and `#2945` are both closed on the strength of that claim.
+Corrected `charal.md` §8 item 6: dropped `fXPPerSkillRank` from the
+overlay sentence, and added the same half-clause the (already-correct)
+capture document uses — "only the level curve is GMST-authored; the
+skill-rank coefficient is engine-owned" — plus a citation back to this
+issue and the 2026-08-24 withdrawal date, so a future reader lands on
+the explanation instead of re-discovering the same contradiction a
+third time.
 
-## Related
+## SIBLING (issue's own checklist item — "every other `gmst(\"…\")`
+literal in `crates/core/src/character/` checked, see #3173")
 
-- **#3170** — the reachability half of the same finding (already filed; **do not duplicate**)
-- **#2942** (CLOSED) — closed by `1c9b8d7a`, the commit that introduced the name
-- **#2945** (CLOSED) — closed by adding the `charal-skyrim-ruleset.md` "XP / level curve — LOCKED" section that asserts the name
-- **#3173** — the same class one layer down: GMST names cited for the Fallout skill auto-calc coefficients that no shipped master authors
+The issue explicitly scopes this to the already-separately-filed #3173
+(the Fallout `fAVDSkill*` derived-skill GMST class). Confirmed #3173 is
+already **CLOSED** — the sibling class is fully covered there, nothing
+further needed here.
 
-## Suggested Fix
+## TESTS (issue's own checklist item)
 
-Either drop the `fXPPerSkillRank` lookup and mark the `1.0` as an engine constant with its real provenance, **or** replace it with a name verified present in `Skyrim.esm`. Correct `charal-skyrim-ruleset.md:711-720` in the same change so the capture stops asserting an unauthored GMST.
+Already covered by the pre-existing
+`skyrim_gmst_overlay_reads_only_authored_curve_settings` test (see
+above) — no new test needed for a documentation-only fix with an
+existing exact-match code pin already in place.
 
-## Completeness Checks
-- [ ] **SIBLING**: every other `gmst("…")` literal in `crates/core/src/character/` is checked against the shipped masters for the same class of error (see #3173)
-- [ ] **TESTS**: a test asserts the GMST names the code reads are a subset of a checked-in, data-derived name list — so a fabricated name fails at test time rather than at runtime
-- [ ] **DOCS**: `charal-skyrim-ruleset.md` no longer claims an unauthored GMST
+## Verification
+
+- `cargo test -q -p byroredux-core --lib character::leveling::`: 8
+  passing, 0 failing (unchanged — confirms the existing pin already
+  covers this).
+- `cargo test -q --no-fail-fast` (full workspace): **7181 passing, 0
+  failing** (doc-only change, no new tests).
