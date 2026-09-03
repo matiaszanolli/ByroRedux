@@ -41,9 +41,18 @@ impl ConsoleCommand for TexMissingCommand {
             let mat = mat_q.get(entity);
             let path = mat
                 .and_then(|m| m.texture_path.as_deref())
-                .or_else(|| mat.and_then(|m| m.material_path.as_deref()))
-                .unwrap_or("<no path, no material>");
-            bucket(format!("{path}  [slot=base_color]"), entity);
+                .or_else(|| mat.and_then(|m| m.material_path.as_deref()));
+            // #3558 (RT-12) — bucket by the same canonical key
+            // `TextureRegistry` already uses for its real cache, not the
+            // raw authored `Material::texture_path` string. Two entities
+            // authoring `textures\foo\bar.dds` and `foo/bar.dds` for the
+            // same texel are the SAME texture and must count as one
+            // bucket, or the "N unique missing textures" total inflates
+            // on spelling variance alone.
+            let display_path = path
+                .map(byroredux_renderer::texture_registry::normalize_path)
+                .unwrap_or_else(|| "<no path, no material>".to_string());
+            bucket(format!("{display_path}  [slot=base_color]"), entity);
         }
 
         // #3349 — the loop above sees only `TextureHandle`, the single
@@ -79,10 +88,14 @@ impl ConsoleCommand for TexMissingCommand {
                         .paths
                         .roles()
                         .find(|(name, _)| *name == role)
-                        .and_then(|(_, p)| p.as_deref())
-                        .unwrap_or("<authored, path not retained>");
+                        .and_then(|(_, p)| p.as_deref());
+                    // #3558 (RT-12) — same canonical-key bucketing as the
+                    // base_color loop above.
+                    let display_path = path
+                        .map(byroredux_renderer::texture_registry::normalize_path)
+                        .unwrap_or_else(|| "<authored, path not retained>".to_string());
                     bucket(
-                        format!("{path}  [slot={role}, src={}]", source.label()),
+                        format!("{display_path}  [slot={role}, src={}]", source.label()),
                         entity,
                     );
                 }
@@ -140,11 +153,15 @@ impl ConsoleCommand for TexLoadedCommand {
                 fallback_count += 1;
                 continue;
             }
-            let path = mat_q
+            // #3558 (RT-12) — same canonical-key bucketing as
+            // `TexMissingCommand`; a texture authored under two spellings
+            // must not inflate "N unique loaded textures".
+            let key = mat_q
                 .get(entity)
                 .and_then(|m| m.texture_path.as_deref())
-                .unwrap_or("<no path>");
-            *loaded.entry(path.to_string()).or_insert(0) += 1;
+                .map(byroredux_renderer::texture_registry::normalize_path)
+                .unwrap_or_else(|| "<no path>".to_string());
+            *loaded.entry(key).or_insert(0) += 1;
         }
 
         let mut lines = vec![format!(
@@ -158,6 +175,52 @@ impl ConsoleCommand for TexLoadedCommand {
             lines.push(format!("  {:4}x  {}", count, path));
         }
         CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+mod tex_loaded_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+
+    /// #3558 (RT-12) — sibling of
+    /// `tex_missing_tests::spelling_variants_of_the_same_texture_collapse_to_one_bucket`:
+    /// `tex.loaded`'s own `HashMap<String, u32>` aggregator had the
+    /// identical un-normalized-key shape.
+    #[test]
+    fn spelling_variants_of_the_same_texture_collapse_to_one_bucket() {
+        let mut world = World::new();
+
+        let e1 = world.spawn();
+        world.insert(e1, TextureHandle(7));
+        world.insert(
+            e1,
+            Material {
+                texture_path: Some(r"Textures\Landscape\dirt02.DDS".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let e2 = world.spawn();
+        world.insert(e2, TextureHandle(7));
+        world.insert(
+            e2,
+            Material {
+                texture_path: Some("landscape/dirt02.dds".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let out = TexLoadedCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.starts_with("1 unique loaded textures, 0 entities using fallback"),
+            "two spellings of one texture must report as ONE unique loaded \
+             texture, not two; got:\n{out}"
+        );
+        assert!(
+            out.contains("2x  textures/landscape/dirt02.dds"),
+            "the collapsed bucket must carry both entities' count; got:\n{out}"
+        );
     }
 }
 
@@ -835,6 +898,52 @@ mod tex_missing_tests {
         assert!(
             out.contains("textures/floor.dds") && out.contains("slot=base_color"),
             "base-color fallback must still be reported; got:\n{out}"
+        );
+    }
+
+    /// #3558 (RT-12) — two entities authoring the same texture under
+    /// different spellings (backslash + `textures\` prefix vs.
+    /// forward-slash + no prefix, matching the issue's own
+    /// `wallconsole01_sm_d_n.dds` evidence) must collapse into ONE
+    /// bucket, not inflate "N unique missing textures" by spelling
+    /// variance alone.
+    #[test]
+    fn spelling_variants_of_the_same_texture_collapse_to_one_bucket() {
+        let mut world = World::new();
+
+        let e1 = world.spawn();
+        world.insert(e1, TextureHandle(0));
+        world.insert(
+            e1,
+            Material {
+                texture_path: Some(
+                    r"textures\setdressing\wallconsoles\wallconsole01_sm_d_n.dds".to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+
+        let e2 = world.spawn();
+        world.insert(e2, TextureHandle(0));
+        world.insert(
+            e2,
+            Material {
+                texture_path: Some(
+                    "setdressing/wallconsoles/wallconsole01_sm_d_n.dds".to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+
+        let out = TexMissingCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.starts_with("1 unique missing textures:"),
+            "two spellings of one texture must report as ONE unique missing \
+             texture, not two; got:\n{out}"
+        );
+        assert!(
+            out.contains("2x  textures/setdressing/wallconsoles/wallconsole01_sm_d_n.dds"),
+            "the collapsed bucket must carry both entities' count; got:\n{out}"
         );
     }
 }

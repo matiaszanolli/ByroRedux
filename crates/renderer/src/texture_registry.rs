@@ -1946,7 +1946,15 @@ impl TextureRegistry {
 /// `textures\landscape\dirt02.dds` for the same texel produced
 /// separate cache entries + separate bindless slots + double the
 /// VRAM. Silent — no log, no error. See #522.
-fn normalize_path(path: &str) -> String {
+///
+/// `pub` (#3558, RT-12) so `byroredux`'s `tex.missing` diagnostic can
+/// bucket by the same canonical key the real cache already uses,
+/// instead of grouping by the raw authored `Material::texture_path`
+/// string — which legitimately varies in casing/separator/prefix across
+/// content without implying a second cache entry (that half was already
+/// fixed by #522; only the diagnostic's own display grouping still
+/// double-counted spelling variants as distinct textures).
+pub fn normalize_path(path: &str) -> String {
     let lowered = path.to_ascii_lowercase().replace('\\', "/");
     if lowered.starts_with("textures/") {
         lowered
