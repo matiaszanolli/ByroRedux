@@ -84,8 +84,21 @@ pub(super) fn resolve_mesh_paths(
                             // Authoring-order, later-wins: matches the MSWP
                             // file format (later `(BNAM, SNAM)` pair for the
                             // same source overrides an earlier one).
+                            //
+                            // #3242 — compare against `current` (never
+                            // mutated), not the running `swapped` output.
+                            // Comparing against `swapped` broke later-wins
+                            // for a duplicate `source` (only the first
+                            // matching entry ever fired — the reverse of
+                            // "later entry overrides") and could silently
+                            // chain unrelated entries (A→B→C) whenever one
+                            // entry's `target` happened to equal a later
+                            // entry's `source`. Mirrors the sibling
+                            // reference implementation, `refr.rs`'s
+                            // `build_refr_texture_overlay` loop, which
+                            // already compared against a fixed value.
                             for entry in &refr_ov.material_swaps {
-                                if entry.source.eq_ignore_ascii_case(&swapped)
+                                if entry.source.eq_ignore_ascii_case(&current)
                                     && !entry.target.is_empty()
                                 {
                                     swapped = entry.target.clone();
@@ -1796,6 +1809,89 @@ mod tests {
             resolved[1].material_path.as_deref(),
             Some(r"materials\clutter\crate01.bgsm"),
             "out-of-prefix shape must keep its authored material unchanged"
+        );
+    }
+
+    /// #3242 — two `material_swaps` entries sharing the same `source` (a
+    /// duplicate BNAM→SNAM pair, legal in the MSWP format) must resolve
+    /// to the LAST entry, matching the format's documented later-wins
+    /// semantics (`refr.rs`'s own comment: "the spawn path applies them
+    /// per shape with later-wins semantics matching the MSWP file
+    /// format"). Pre-fix, comparing against the running `swapped`
+    /// output instead of the fixed original source meant only the FIRST
+    /// matching entry ever fired — the reverse of later-wins.
+    #[test]
+    fn mswp_duplicate_source_entries_resolve_to_the_last_one() {
+        let mut pool = StringPool::new();
+        let body_src = pool.intern(r"materials\armor\raider\body01.bgsm");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut body = empty_mesh();
+        body.material.material_path = Some(body_src);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![
+                swap_entry(
+                    r"materials\armor\raider\body01.bgsm",
+                    r"materials\armor\raider\body01_variant02.bgsm",
+                ),
+                // Same source as above — later entry must win.
+                swap_entry(
+                    r"materials\armor\raider\body01.bgsm",
+                    r"materials\armor\raider\body01_variant04.bgsm",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[body], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"materials\armor\raider\body01_variant04.bgsm"),
+            "the LAST matching entry for a duplicate source must win, not the first"
+        );
+    }
+
+    /// #3242 — companion regression: an entry's `target` incidentally
+    /// equal to a LATER entry's `source` (a string collision, not an
+    /// authored duplicate) must NOT chain (A→B→C). Only entries whose
+    /// `source` matches the shape's ORIGINAL authored material can ever
+    /// fire.
+    #[test]
+    fn mswp_incidental_target_source_collision_does_not_chain() {
+        let mut pool = StringPool::new();
+        let body_src = pool.intern(r"materials\armor\raider\body01.bgsm");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut body = empty_mesh();
+        body.material.material_path = Some(body_src);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![
+                // body01 -> variant02
+                swap_entry(
+                    r"materials\armor\raider\body01.bgsm",
+                    r"materials\armor\raider\body01_variant02.bgsm",
+                ),
+                // Incidental collision: this entry's `source` equals the
+                // PREVIOUS entry's `target`, not the shape's own authored
+                // material. Must never fire for this shape.
+                swap_entry(
+                    r"materials\armor\raider\body01_variant02.bgsm",
+                    r"materials\armor\raider\body01_variant99_should_not_apply.bgsm",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[body], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"materials\armor\raider\body01_variant02.bgsm"),
+            "an incidental target/source string collision must not chain \
+             into a swap the shape's own authored material never matched"
         );
     }
 }

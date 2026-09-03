@@ -1,46 +1,62 @@
-# 3242: Incremental: MSWP per-shape swap loop breaks later-wins for duplicate-source entries
+# #3242 — Incremental: MSWP per-shape swap loop breaks later-wins for duplicate-source entries
 
-**Severity**: MEDIUM · **Report**: `docs/audits/AUDIT_INCREMENTAL_2026-08-23.md` (F1) · **Changed in**: `byroredux/src/cell_loader/spawn/mesh_instance.rs` (commit `900aa081`, Fix #973)
+**Severity**: MEDIUM · **Report**: `docs/audits/AUDIT_INCREMENTAL_2026-08-23.md` (F1)
+**Location**: `byroredux/src/cell_loader/spawn/mesh_instance.rs`
 
-## Description
+## Fix
 
-The new per-shape MSWP swap loop introduced by `900aa081` (#973):
+Verified the premise: the per-shape MSWP swap loop (added by #973)
+compared each `entry.source` against `swapped` — the running output,
+reassigned on every match — instead of against `current`, the shape's
+fixed original material path. Applied the issue's own suggested fix
+exactly, mirroring the sibling reference implementation
+(`refr.rs::build_refr_texture_overlay`, unchanged, already correct):
+compare against `current` (never mutated), assign only to `swapped` as
+the output.
 
-```rust
-let mut swapped = current.clone();
-for entry in &refr_ov.material_swaps {
-    if entry.source.eq_ignore_ascii_case(&swapped) && !entry.target.is_empty() {
-        swapped = entry.target.clone();
-    }
-}
-```
+This fixes both failure modes the issue describes:
+1. **Duplicate source, later-wins broken** — two entries sharing the
+   same `source` used to only ever fire the first match (comparing
+   against `swapped`, already changed by the first hit, so the second
+   entry's `source == original` check failed). Now the last matching
+   entry wins, matching the documented MSWP later-wins semantics.
+2. **Incidental chaining** — an entry whose `target` happened to equal a
+   later entry's `source` used to silently chain (A→B→C), a behavior
+   nothing in the format or surrounding comments describes or intends.
+   Now only entries whose `source` matches the shape's actual authored
+   material can ever fire.
 
-compares each entry's `source` against `swapped` — a variable that is reassigned on every match — instead of against the fixed original value. This breaks the documented and intended "later entry overrides" semantics for the MSWP format (per `refr.rs`'s own comment at line 379-380: "the spawn path applies them per shape with later-wins semantics matching the MSWP file format"):
+## SIBLING (issue's own checklist item — "loop pattern matches
+`refr.rs:388-401` exactly")
 
-- For two `material_swaps` entries with the **same** `source` (a duplicate BNAM→SNAM pair, legal in the MSWP format), only the **first** matching entry ever fires — the reverse of "later entry overrides."
-- Conversely, if one entry's `target` happens to equal a *later* entry's `source` (an incidental string collision, not a duplicate), the two entries silently **chain** (A→B→C) — behavior nothing in the format or surrounding comments describes or intends.
+Searched for every MSWP-swap-application site in the codebase — exactly
+two exist: `refr.rs`'s `build_refr_texture_overlay` (the original,
+already-correct REFR-level implementation) and this per-shape loop. No
+other site needed the same fix; the two now match exactly (compare
+against the fixed original, assign to the output only).
 
-This is a real, confirmed regression relative to the sibling reference implementation already in the same file family — `refr.rs`'s `build_refr_texture_overlay` (the original, single-`material_path`, REFR-level MSWP application from #971, unchanged in this diff) implements "later-wins" correctly by comparing every entry against the **fixed** `current` value:
+## TESTS (issue's own checklist item — "a test with two `material_swaps`
+entries sharing the same `source`, asserting the *last* one wins")
 
-```rust
-// refr.rs:388-401 (unchanged, correct reference implementation)
-for entry in &table.swaps {
-    if entry.source.eq_ignore_ascii_case(&current) && !entry.target.is_empty() {
-        ov.material_path = Some(pool.intern(&entry.target));
-    }
-}
-```
+- `mswp_duplicate_source_entries_resolve_to_the_last_one` — the issue's
+  exact scenario: two entries with the same `source`, asserts the
+  shape's material resolves to the LAST entry's `target`.
+- `mswp_incidental_target_source_collision_does_not_chain` — the
+  companion failure mode: an entry's `target` equals a later entry's
+  `source`; asserts the chain never fires because the second entry's
+  `source` never matches the shape's own original authored material.
 
-## Impact
+**Reintroduce-and-revert verification**: temporarily restored the
+`swapped`-vs-itself comparison — confirmed both new tests failed with
+exactly the wrong values the issue describes (first-wins instead of
+last-wins; an unintended chained target instead of the correct
+single-hop swap). Restored the fix and reran — all 4 `mswp_*` tests in
+`cell_loader::spawn::mesh_instance::tests` pass again.
 
-Narrow but real — triggers only when a single MSWP record lists more than one swap entry for the same source BGSM/BGEM (vanilla MSWPs average ~2.18 entries per the codebase's own count, so duplicates are plausible in denser variant tables, e.g. multi-tier color swaps touching the same base material twice). When it triggers, the wrong material variant is silently applied to that shape — visually wrong content, no crash, no error.
+## Verification
 
-Note: issue #973's own suggested-fix pseudocode in its issue body carries the identical latent bug, so the shipped code matches what was specified — worth noting when fixing, since the spec itself needs correcting too.
-
-## Suggested Fix
-
-Compare `entry.source` against `current` (never mutated), not `swapped`, mirroring `refr.rs`'s existing correct loop — reassign `swapped = entry.target.clone()` only as the *output*, never as the comparison basis for the next entry.
-
-## Completeness Checks
-- [ ] **SIBLING**: Loop pattern matches `refr.rs:388-401` exactly (compare-against-fixed-value, assign-to-output)
-- [ ] **TESTS**: A test with two `material_swaps` entries sharing the same `source`, asserting the *last* one wins (the exact gap the existing `mswp_swaps_apply_per_shape_not_just_the_overlay_material_path` / `mswp_filter_is_re_evaluated_per_shape` tests don't cover — each uses one swap per distinct source only)
+- `cargo check -p byroredux --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux --bin byroredux mswp_`: 4 passing, 0
+  failing (+2 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7175 passing, 0
+  failing**.
