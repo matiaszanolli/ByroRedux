@@ -468,4 +468,31 @@ impl AccelerationManager {
             self.tlas_instances_scratch.capacity(),
         )
     }
+
+    /// CPU-side TLAS instance-address staging Vec — `(len, capacity)`.
+    /// Element size is `size_of::<u64>()`. Surfaced for the `ctx.scratch`
+    /// console command (#3693 — the sibling `tlas_instances_scratch` row
+    /// existed since R6; this one and
+    /// [`Self::tlas_missing_samples_scratch_telemetry`] were declared
+    /// later and never added).
+    pub fn tlas_addresses_scratch_telemetry(&self) -> (usize, usize) {
+        (
+            self.tlas_addresses_scratch.len(),
+            self.tlas_addresses_scratch.capacity(),
+        )
+    }
+
+    /// CPU-side "which instance addresses are missing a BLAS" sample Vec
+    /// — `(len, capacity)`, bounded by `MISSING_BLAS_SAMPLE_LIMIT`.
+    /// Element size is `size_of::<String>()` (the struct's own stack
+    /// footprint — the heap bytes each `String` owns aren't reflected,
+    /// same under-count caveat as the hash-container rows in
+    /// `fill_scratch_telemetry`). Surfaced for the `ctx.scratch` console
+    /// command (#3693).
+    pub fn tlas_missing_samples_scratch_telemetry(&self) -> (usize, usize) {
+        (
+            self.tlas_missing_samples_scratch.len(),
+            self.tlas_missing_samples_scratch.capacity(),
+        )
+    }
 }

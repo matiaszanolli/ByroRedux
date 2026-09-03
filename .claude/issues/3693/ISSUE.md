@@ -1,67 +1,63 @@
 # #3693 — PERF-D9-2026-08-30-05: four declared per-frame renderer scratches are absent from `fill_scratch_telemetry`, against that function's own stated maintenance rule
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D9-2026-08-30-05`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,renderer,test-gap,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3693
+**Severity**: LOW · **Dimension**: Telemetry & Origin Cost
+**Location**: `crates/renderer/src/vulkan/context/mod.rs::fill_scratch_telemetry`
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+Per the issue's own suggested fix, added four `rows.push(ScratchRow { … })`
+entries and the two accessor methods it named:
 
-- **Severity**: LOW
-- **Dimension**: Telemetry & Origin Cost
-- **Location**: `crates/renderer/src/vulkan/context/mod.rs:2090-2206` (the producer, 13 rows); omitted fields at `context/mod.rs:1809`, `acceleration/mod.rs:157`, `acceleration/mod.rs:166`, `water.rs:268`
-- **Status**: NEW
-- **Description**: `fill_scratch_telemetry`'s doc states the rule explicitly:
-  *"every persistent `Vec` scratch declared in this crate must show up here.
-  Adding a new scratch field on `VulkanContext` (or its sub-managers) without a
-  row added below reintroduces the pre-R6 blind spot where scratches grow with
-  zero observability."* Four declared scratches are missing.
-  `blend_seen_scratch` is the clearest violation — it is `pub`-documented as
-  *"Per-frame scratch … Cleared at the top of the walk; capacity persists across
-  frames"* and is cleared at `draw.rs:3436` every frame. It is an `FxHashSet`
-  rather than a `Vec`, but the function already emits rows for three hash
-  containers (`skin_dispatch_seen_scratch`, `previous_rigid_models`,
-  `current_rigid_models_scratch`), so the container type is not the reason.
-  `tlas_addresses_scratch` and `tlas_missing_samples_scratch` sit on
-  `AccelerationManager` next to `tlas_instances_scratch`, which **is** reported
-  via `tlas_instances_scratch_telemetry()`. `WaterPipeline::param_scratch` is a
-  per-frame packing buffer in a sub-manager the function never reaches.
-- **Evidence**: `rows.push(` appears 13 times in `context/mod.rs`; none names
-  any of the four. Declarations:
-  ```rust
-  // context/mod.rs:1809
-  blend_seen_scratch: FxHashSet<(u8, u8, bool, bool)>,
-  // acceleration/mod.rs:157
-  pub(super) tlas_addresses_scratch: Vec<u64>,
-  // acceleration/mod.rs:166
-  pub(super) tlas_missing_samples_scratch: Vec<String>,
-  // water.rs:268
-  param_scratch: Vec<GpuWaterParams>,
-  ```
-- **Impact**: Small in bytes — `blend_seen_scratch`'s key domain is four engine-
-  derived material bits; `tlas_addresses_scratch` is documented as ~64 KB at the
-  8k-instance ceiling; `tlas_missing_samples_scratch` is capped at
-  `MISSING_BLAS_SAMPLE_LIMIT = 5`. The real cost is the rule itself: an
-  observability invariant that is 4/17 violated stops being a guard, and the
-  next scratch added has no reason to be added here either. LOW.
-- **Related**: #2042 (the same producer's row count drifting out of its doc —
-  closed by making the doc defer to this function); #2486 (the shrink half of
-  the same cluster policy); #3061 / dim_2 (which touch `blend_seen_scratch` for
-  its *hasher*, not its telemetry — different defect, not a dup).
-- **Suggested Fix**: Add four `rows.push(ScratchRow { … })` entries, routing the
-  two `AccelerationManager` fields through an accessor beside the existing
-  `tlas_instances_scratch_telemetry()` and adding one on `WaterPipeline`.
+- `blend_seen_scratch` (`FxHashSet<(u8, u8, bool, bool)>` on
+  `VulkanContext`) — read directly, matching the existing pattern for the
+  other in-crate hash-container rows (`skin_dispatch_seen_scratch`,
+  `previous_rigid_models`, `current_rigid_models_scratch`).
+- `tlas_addresses_scratch` and `tlas_missing_samples_scratch`
+  (`AccelerationManager`) — new
+  `tlas_addresses_scratch_telemetry()` /
+  `tlas_missing_samples_scratch_telemetry()` accessors added right next
+  to the existing `tlas_instances_scratch_telemetry()` in
+  `acceleration/memory.rs`, and both rows routed through the same
+  `if let Some(accel) = &self.accel_manager { … } else { 0, 0 }` shape the
+  existing TLAS row already uses.
+- `param_scratch` (`WaterPipeline`) — new `param_scratch_telemetry()`
+  accessor added on `WaterPipeline` itself (`water.rs`), row routed
+  through the same `if let Some(water) = &self.water { … } else { 0, 0 }`
+  shape.
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+## SIBLING (issue's own checklist item)
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+The issue's own evidence enumerated exactly these four fields as the
+complete gap (13 existing rows in the producer, 4 missing); no other
+scratch field was found undeclared during this fix.
+
+## TESTS (issue's own checklist item)
+
+`fill_scratch_telemetry` needs a live `VulkanContext` to call — no
+fixture exists in this crate. Matching this session's established
+convention for that situation (e.g. #3690's `retention_hoisting_tests`,
+#3682's extension to `rigid_history_hasher_tests`), added a static
+source-scan test,
+`scratch_telemetry_coverage_tests::fill_scratch_telemetry_covers_all_four_previously_missing_scratches`,
+scoped to the file's production portion (before its first `#[cfg(test)]`
+module, same convention `rigid_history_hasher_tests::production_src`
+established), asserting all four new row names appear as
+`name: "<field>"` inside the function's body (bounded between its own
+signature and the next function, `fill_skin_coverage_stats`).
+
+**Reintroduce-and-revert verification**: temporarily removed the
+`blend_seen_scratch` row push — confirmed the new test failed with the
+expected message naming that row. Restored the fix and reran — all
+context-module tests (136, including the 3 `rigid_history_hasher_tests`
+and the new coverage test) pass again.
+
+## Verification
+
+- `cargo check -p byroredux-renderer --tests`: clean, zero warnings.
+- `cargo test -p byroredux-renderer --lib context::`: 136 tests passing,
+  0 failing (+1 new).
+- `cargo test -q -p byroredux-renderer`: 827 tests passing (+1), 0
+  failing.
+- `cargo check -p byroredux --tests`: clean (downstream crate).
+- `cargo test -q --no-fail-fast` (full workspace): **7112 passing, 0
+  failing**.

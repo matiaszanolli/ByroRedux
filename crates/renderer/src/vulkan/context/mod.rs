@@ -2267,12 +2267,65 @@ impl VulkanContext {
                 capacity,
                 elem_size_bytes: size_of::<vk::AccelerationStructureInstanceKHR>(),
             });
+            // #3693 — the two sibling `AccelerationManager` scratches next
+            // to `tlas_instances_scratch` that never got a row.
+            let (len, capacity) = accel.tlas_addresses_scratch_telemetry();
+            rows.push(ScratchRow {
+                name: "tlas_addresses_scratch",
+                len,
+                capacity,
+                elem_size_bytes: size_of::<u64>(),
+            });
+            let (len, capacity) = accel.tlas_missing_samples_scratch_telemetry();
+            rows.push(ScratchRow {
+                name: "tlas_missing_samples_scratch",
+                len,
+                capacity,
+                elem_size_bytes: size_of::<String>(),
+            });
         } else {
             rows.push(ScratchRow {
                 name: "tlas_instances_scratch",
                 len: 0,
                 capacity: 0,
                 elem_size_bytes: size_of::<vk::AccelerationStructureInstanceKHR>(),
+            });
+            rows.push(ScratchRow {
+                name: "tlas_addresses_scratch",
+                len: 0,
+                capacity: 0,
+                elem_size_bytes: size_of::<u64>(),
+            });
+            rows.push(ScratchRow {
+                name: "tlas_missing_samples_scratch",
+                len: 0,
+                capacity: 0,
+                elem_size_bytes: size_of::<String>(),
+            });
+        }
+        // #3061 / dim_2 converted this to `FxHashSet` for its hasher; #3693
+        // is the telemetry half that was never added alongside it. Same
+        // len/capacity-only caveat as the other hash-container rows above.
+        rows.push(ScratchRow {
+            name: "blend_seen_scratch",
+            len: self.blend_seen_scratch.len(),
+            capacity: self.blend_seen_scratch.capacity(),
+            elem_size_bytes: size_of::<(u8, u8, bool, bool)>(),
+        });
+        if let Some(water) = &self.water {
+            let (len, capacity) = water.param_scratch_telemetry();
+            rows.push(ScratchRow {
+                name: "water_param_scratch",
+                len,
+                capacity,
+                elem_size_bytes: size_of::<super::water::GpuWaterParams>(),
+            });
+        } else {
+            rows.push(ScratchRow {
+                name: "water_param_scratch",
+                len: 0,
+                capacity: 0,
+                elem_size_bytes: size_of::<super::water::GpuWaterParams>(),
             });
         }
     }
@@ -3068,6 +3121,57 @@ mod rigid_history_hasher_tests {
                 "`TextureEntry` no longer declares `{field_decl}` — the \
                  per-draw read in the `GpuInstance` build loop depends on \
                  this being a direct `Vec` index (#3682)",
+            );
+        }
+    }
+}
+
+/// #3693 — `fill_scratch_telemetry`'s own doc states the maintenance rule:
+/// every persistent `Vec` (or hash-container) scratch declared in this
+/// crate must show up as a row. `VulkanContext::new` needs a live Vulkan
+/// device to actually call the function, so (matching this file's
+/// `rigid_history_hasher_tests` pattern) this pins the four rows the issue
+/// found missing at the source level instead.
+#[cfg(test)]
+mod scratch_telemetry_coverage_tests {
+    /// Scoped to the production portion of this file (everything before
+    /// its first `#[cfg(test)]` module) — this module's own assertions
+    /// reference the same row-name strings they check for, so an unscoped
+    /// search would self-match regardless of the producer's state. Same
+    /// convention `rigid_history_hasher_tests::production_src` and
+    /// #3674/#3675/#3690 established.
+    fn production_src() -> &'static str {
+        let full_src = include_str!("mod.rs");
+        full_src
+            .split_once("\n#[cfg(test)]")
+            .expect("context/mod.rs lost its test modules")
+            .0
+    }
+
+    #[test]
+    fn fill_scratch_telemetry_covers_all_four_previously_missing_scratches() {
+        let full_src = production_src();
+        let fn_start = full_src
+            .find("pub fn fill_scratch_telemetry(")
+            .expect("fill_scratch_telemetry must still exist");
+        let fn_end = full_src[fn_start..]
+            .find("\n    pub fn fill_skin_coverage_stats(")
+            .map(|rel| fn_start + rel)
+            .expect("fill_skin_coverage_stats must still follow fill_scratch_telemetry");
+        let body = &full_src[fn_start..fn_end];
+
+        for name in [
+            "blend_seen_scratch",
+            "tlas_addresses_scratch",
+            "tlas_missing_samples_scratch",
+            "water_param_scratch",
+        ] {
+            assert!(
+                body.contains(&format!("name: \"{name}\"")),
+                "`fill_scratch_telemetry` no longer emits a row named \
+                 \"{name}\" — every persistent scratch declared in this \
+                 crate must show up here, per the function's own \
+                 maintenance rule (#3693)",
             );
         }
     }

@@ -593,6 +593,14 @@ impl WaterPipeline {
         self.params_ready[frame]
     }
 
+    /// CPU-side water-parameter packing scratch — `(len, capacity)`.
+    /// Element size is `size_of::<GpuWaterParams>()`. Surfaced for the
+    /// `ctx.scratch` console command (#3693 — same pattern as
+    /// `AccelerationManager::tlas_instances_scratch_telemetry`).
+    pub fn param_scratch_telemetry(&self) -> (usize, usize) {
+        (self.param_scratch.len(), self.param_scratch.capacity())
+    }
+
     /// Bind the water pipeline and all three descriptor sets — **once per
     /// pass**, before the first [`record_draw`](Self::record_draw).
     ///
