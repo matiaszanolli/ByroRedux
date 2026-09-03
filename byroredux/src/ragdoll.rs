@@ -510,9 +510,6 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(mut gtq) = world.query_mut::<GlobalTransform>() else {
         return;
     };
-    let Some(pw) = world.try_resource::<PhysicsWorld>() else {
-        return;
-    };
     // #1981 — LocalBound (read) grouped with the other read-only hierarchy
     // queries above; WorldBound (write) grouped with GlobalTransform (write)
     // below, matching this function's existing "reads first, writes last"
@@ -520,8 +517,18 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     // world that hasn't registered bounds at all (most of this file's own
     // unit tests) must still get the bone writeback + #1979 descendant
     // re-derivation; the mesh-bound expansion pass below is skipped instead.
+    //
+    // #3655 (CONC-D5-2026-08-30-02) — hoisted above `PhysicsWorld` (was
+    // acquired after it), so `PhysicsWorld` stays the LAST acquisition in
+    // this function with no storage taken under it, matching the
+    // crate-wide "no storage under a `PhysicsWorld` guard" rule
+    // `push_kinematic`'s ordering already follows for the `GlobalTransform`
+    // pair (#313). Neither query depends on `pw`.
     let local_bound_q = world.query::<LocalBound>();
     let mut world_bound_q = world.query_mut::<WorldBound>();
+    let Some(pw) = world.try_resource::<PhysicsWorld>() else {
+        return;
+    };
     let mut body_bones: HashSet<EntityId> = HashSet::new();
     let mut queue: VecDeque<EntityId> = VecDeque::new();
     // #1981 scratch, reused across actors: live simulated body positions
@@ -1864,5 +1871,46 @@ mod tests {
         );
         assert_eq!(template.bodies[1].local_translation, Vec3::ZERO);
         assert_eq!(template.bodies[1].local_rotation, Quat::IDENTITY);
+    }
+
+    /// #3655 (CONC-D5-2026-08-30-02) — `PhysicsWorld` must be the LAST
+    /// acquisition in `ragdoll_writeback_system`, with no storage taken
+    /// under it (the crate-wide "no storage under a `PhysicsWorld` guard"
+    /// rule, `docs/engine/ecs.md`'s "Physics shapes" section). A source
+    /// scan, not a runtime assertion, because a violation here is
+    /// circumstantial-safe today (no opposing edge exists yet) and would
+    /// only ever surface as a `BYRO_LOCK_ORDER_CHECK=1` panic once some
+    /// future bounds-side code path reaches a physics query — exactly the
+    /// silent-until-it-isn't shape the issue itself describes.
+    #[test]
+    fn ragdoll_writeback_acquires_bound_queries_before_physics_world() {
+        let src = include_str!("ragdoll.rs");
+        let start = src
+            .find("pub fn ragdoll_writeback_system(")
+            .expect("ragdoll_writeback_system must still exist");
+        let rest = &src[start..];
+        // Column-zero closing brace — this function is the last top-level
+        // item before `mod tests`, so there is no sibling `fn` to bound
+        // against; every brace inside the function body is indented.
+        let end = rest
+            .find("\n}\n")
+            .expect("no terminator found for ragdoll_writeback_system");
+        let body = &rest[..end];
+
+        let local_bound_pos = body
+            .find("world.query::<LocalBound>()")
+            .expect("LocalBound query must still be acquired in this function");
+        let world_bound_pos = body
+            .find("world.query_mut::<WorldBound>()")
+            .expect("WorldBound query must still be acquired in this function");
+        let physics_world_pos = body
+            .find("world.try_resource::<PhysicsWorld>()")
+            .expect("PhysicsWorld resource must still be acquired in this function");
+
+        assert!(
+            local_bound_pos < physics_world_pos && world_bound_pos < physics_world_pos,
+            "LocalBound/WorldBound must be acquired BEFORE PhysicsWorld, not \
+             under its guard — reverting this ordering reopens #3655"
+        );
     }
 }

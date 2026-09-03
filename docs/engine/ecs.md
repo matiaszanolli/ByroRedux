@@ -681,10 +681,12 @@ registry guard to be *dropped* before `QuestStageState`, because
 `GlobalTransform` last so it matches `push_kinematic`'s handles → body →
 global order. `PhysicsWorld` is *not* part of that span and must never be
 held with it: every site — `collect_newcomers`/`register_newcomers`,
-`push_kinematic`, `combat_input_system`, `interaction`'s line-of-sight ray —
-collects what it needs from the component queries, drops them, and only then
-takes the resource. Treat `PhysicsWorld` the way `StringPool` is treated at
-the tail of the main order, except that here the guards do not overlap at all.
+`push_kinematic`, `combat_input_system`, `interaction`'s line-of-sight ray,
+`ragdoll_writeback_system` (`byroredux/src/ragdoll.rs`, `LocalBound`/
+`WorldBound` hoisted above the resource guard by #3655) — collects what it
+needs from the component queries, drops them, and only then takes the
+resource. Treat `PhysicsWorld` the way `StringPool` is treated at the tail
+of the main order, except that here the guards do not overlap at all.
 
 Two properties make a violation cheap to miss and expensive to hit:
 
