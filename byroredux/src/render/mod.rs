@@ -1,6 +1,8 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::{resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World};
+use byroredux_core::ecs::{
+    resources::SkinSlotPool, ActiveCamera, EntityId, Material, ParticleEmitter, Transform, World,
+};
 use byroredux_core::math::Vec3;
 use byroredux_physics::PhysicsWorld;
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -19,6 +21,77 @@ static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// own constant since that one is private to the locomotion module and the
 /// two rays serve unrelated purposes (foot-placement vs. fog altitude).
 const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
+
+/// Scene-level feature bit for the soft-particle depth-history copy.
+///
+/// This intentionally inspects loaded ECS material sources rather than the
+/// frustum-filtered draw list. A material can be newly visible on this frame,
+/// while its owning entity or emitter was already loaded before collection;
+/// using the scene state lets the copy gate be decided without making the
+/// post-geometry call site rediscover features from draw commands. Particle
+/// emitters are included because their authored BGEM flags are the material
+/// source for particle `DrawCommand`s.
+fn scene_has_effect_soft_material(world: &World) -> bool {
+    let mesh_materials_have_soft_effect = world.query::<Material>().is_some_and(|materials| {
+        materials.iter().any(|(_, material)| {
+            material.effect_shader_flags
+                & byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT
+                != 0
+        })
+    });
+    if mesh_materials_have_soft_effect {
+        return true;
+    }
+
+    world.query::<ParticleEmitter>().is_some_and(|emitters| {
+        emitters.iter().any(|(_, emitter)| {
+            emitter.effect_shader_flags
+                & byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT
+                != 0
+        })
+    })
+}
+
+#[cfg(test)]
+mod scene_effect_feature_tests {
+    use super::scene_has_effect_soft_material;
+    use byroredux_core::ecs::{Material, ParticleEmitter, World};
+    use byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT;
+
+    #[test]
+    fn scene_feature_is_false_without_soft_material_sources() {
+        let world = World::new();
+        assert!(!scene_has_effect_soft_material(&world));
+    }
+
+    #[test]
+    fn scene_feature_finds_soft_mesh_material_even_when_not_drawn() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Material {
+                effect_shader_flags: EFFECT_SOFT,
+                ..Default::default()
+            },
+        );
+        assert!(scene_has_effect_soft_material(&world));
+    }
+
+    #[test]
+    fn scene_feature_finds_authored_soft_particle_material() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            ParticleEmitter {
+                effect_shader_flags: EFFECT_SOFT,
+                ..Default::default()
+            },
+        );
+        assert!(scene_has_effect_soft_material(&world));
+    }
+}
 
 /// World-space Y used as the height-fog reference altitude (REN-D16-01 /
 /// #2225). Both `proceduralDensityScale` (froxel injection) and
@@ -712,6 +785,10 @@ pub(crate) struct RenderFrameView {
     pub aperture: f32,
     /// Focal distance (world units). Surfaces at this depth are sharp.
     pub focus_dist: f32,
+    /// Scene-level soft-effect feature bit used by the renderer to gate the
+    /// depth-history copy. This comes from all loaded mesh materials and
+    /// particle emitters, not the frustum-filtered draw list.
+    pub has_effect_soft_material: bool,
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
@@ -743,6 +820,7 @@ pub(crate) fn build_render_data(
     particle_quad_handle: Option<u32>,
 ) -> RenderFrameView {
     let frame_count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let has_effect_soft_material = scene_has_effect_soft_material(world);
 
     draw_commands.clear();
     water_commands.clear();
@@ -1061,6 +1139,7 @@ pub(crate) fn build_render_data(
         camera_fov_y,
         aperture,
         focus_dist,
+        has_effect_soft_material,
     }
 }
 

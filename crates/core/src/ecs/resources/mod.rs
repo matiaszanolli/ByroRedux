@@ -679,6 +679,10 @@ pub struct SkinCoverageStats {
     /// Output-resolution presentation (exposure + ACES → swapchain). The part
     /// of the frame an FSR preset does *not* shrink.
     pub gpu_presentation_ms: f32,
+    /// Full-render-resolution opaque-depth copy into the soft-particle
+    /// history image. This is inactive when no loaded material source carries
+    /// `MAT_FLAG_EFFECT_SOFT`.
+    pub gpu_depth_history_copy_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -704,6 +708,7 @@ pub struct SkinCoverageStats {
     pub gpu_volumetrics_active: bool,
     pub gpu_upscale_active: bool,
     pub gpu_presentation_active: bool,
+    pub gpu_depth_history_copy_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

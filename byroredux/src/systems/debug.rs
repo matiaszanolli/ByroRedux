@@ -72,10 +72,14 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
     // `_active` mirrors were plumbed through to close.
     let ms = |value: f32, active: bool| format_gpu_bracket_ms(value, active, 1);
     format!(
-        "main_render={} tlas={} svgf={} composite={} cluster_cull={} \
+        "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
          taa={} skin_palette={} upscale={} presentation={}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
+        ms(
+            cov.gpu_depth_history_copy_ms,
+            cov.gpu_depth_history_copy_active
+        ),
         ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
         ms(cov.gpu_svgf_ms, cov.gpu_svgf_active),
         ms(cov.gpu_composite_ms, cov.gpu_composite_active),

@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 30 TIMESTAMP queries each:
+//! per frame-in-flight slot, 32 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -36,6 +36,8 @@
 //! | 27   | presentation (exposure + ACES → swapchain) — end   |
 //! | 28   | skin palette + bone-buffer transfers — start         |
 //! | 29   | skin palette + bone-buffer transfers — end           |
+//! | 30   | depth → history copy — start                         |
+//! | 31   | depth → history copy — end                           |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -86,8 +88,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × fifteen brackets.
-const QUERIES_PER_FRAME: u32 = 30;
+/// One TIMESTAMP query per bracket endpoint × sixteen brackets.
+const QUERIES_PER_FRAME: u32 = 32;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -119,6 +121,8 @@ const Q_PRESENTATION_START: u32 = 26;
 const Q_PRESENTATION_END: u32 = 27;
 const Q_SKIN_PALETTE_START: u32 = 28;
 const Q_SKIN_PALETTE_END: u32 = 29;
+const Q_DEPTH_HISTORY_COPY_START: u32 = 30;
+const Q_DEPTH_HISTORY_COPY_END: u32 = 31;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -196,6 +200,10 @@ pub struct GpuTimerSnapshot {
     /// Netting it out is what separates "render work recovered" from "frame
     /// time recovered" in the benchmark report.
     pub presentation_ms: f32,
+    /// Full-render-resolution copy of opaque depth into the sampleable
+    /// history image for soft-particle fade. Inactive when the scene has no
+    /// material carrying `MAT_FLAG_EFFECT_SOFT`.
+    pub depth_history_copy_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -221,6 +229,7 @@ pub struct GpuTimerSnapshot {
     pub volumetrics_active: bool,
     pub upscale_active: bool,
     pub presentation_active: bool,
+    pub depth_history_copy_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -232,7 +241,7 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u16 packs `BIT_*` flags
-    /// (one per bracket — currently 15). The bit-gated read in
+    /// (one per bracket — currently 16). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
@@ -257,6 +266,7 @@ const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
 const BIT_VOLUMETRICS: u16 = 0x0800;
 const BIT_UPSCALE: u16 = 0x1000;
 const BIT_PRESENTATION: u16 = 0x2000;
+const BIT_DEPTH_HISTORY_COPY: u16 = 0x8000;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -337,6 +347,10 @@ fn snapshot_from_bits(
     if snap.presentation_active {
         snap.presentation_ms = bracket_ms(Q_PRESENTATION_START);
     }
+    snap.depth_history_copy_active = bits & BIT_DEPTH_HISTORY_COPY != 0;
+    if snap.depth_history_copy_active {
+        snap.depth_history_copy_ms = bracket_ms(Q_DEPTH_HISTORY_COPY_START);
+    }
     snap
 }
 
@@ -399,7 +413,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all fifteen ms fields stay
+    /// nothing has been written yet — so all sixteen ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -407,9 +421,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to fifteen individual per-bracket `get_query_pool_results`
+        // of up to sixteen individual per-bracket `get_query_pool_results`
         // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 30-query pool when only a subset
+        // `WAIT`: WAIT-reading the full 32-query pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never
@@ -978,6 +992,47 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_PRESENTATION;
     }
 
+    /// Write the soft-particle depth-history-copy START timestamp. The
+    /// caller only emits this bracket when the scene-level material feature
+    /// bit says a soft effect can sample the history image.
+    pub fn cmd_depth_history_copy_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_DEPTH_HISTORY_COPY_START,
+            );
+        }
+    }
+
+    /// Write the soft-particle depth-history-copy END timestamp. The copy
+    /// and its restoring barriers are transfer work, but BOTTOM_OF_PIPE is
+    /// used so the bracket includes both image barriers as well as the copy.
+    pub fn cmd_depth_history_copy_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_DEPTH_HISTORY_COPY_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_DEPTH_HISTORY_COPY;
+    }
+
     /// Destroy every query pool. Caller must wait for queue idle
     /// before calling (matches the rest of VulkanContext's Drop
     /// ordering — query pools share the destroy-before-device
@@ -1074,5 +1129,18 @@ mod tests {
         assert!(!snap.volumetrics_active);
         assert!(!snap.upscale_active);
         assert!(!snap.presentation_active);
+        assert!(!snap.depth_history_copy_active);
+    }
+
+    #[test]
+    fn depth_history_copy_bracket_reports_measured_duration() {
+        let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_DEPTH_HISTORY_COPY_START as usize] = 8_000;
+        ticks[Q_DEPTH_HISTORY_COPY_END as usize] = 9_250;
+
+        let snap = snapshot_from_bits(BIT_DEPTH_HISTORY_COPY, &ticks, 0.2);
+        assert!(snap.depth_history_copy_active);
+        assert_eq!(snap.depth_history_copy_ms, 1_250.0 * 0.2);
+        assert!(!snap.svgf_active);
     }
 }

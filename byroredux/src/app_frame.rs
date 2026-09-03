@@ -565,6 +565,7 @@ impl App {
                 bone_world: &self.bone_world,
                 bind_inverse_pending_uploads: &pending_with_data,
                 materials: self.material_table.materials(),
+                has_effect_soft_material: frame.has_effect_soft_material,
                 camera_pos: frame.camera_pos,
                 render_origin: frame.render_origin,
                 ambient_color: frame.ambient,

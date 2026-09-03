@@ -1469,6 +1469,12 @@ pub struct FrameInputs<'a> {
     pub bind_inverse_pending_uploads: &'a [(u32, Vec<[[f32; 4]; 4]>)],
     /// Per-frame materials.
     pub materials: &'a [GpuMaterial],
+    /// Scene-level feature bit collected from loaded material sources. When
+    /// set, the post-geometry pass must refresh the depth history image for
+    /// soft-particle fade. This is deliberately not recomputed from the draw
+    /// list at the copy site: a newly appearing effect is already represented
+    /// before this frame is recorded.
+    pub has_effect_soft_material: bool,
     /// Camera world position.
     pub camera_pos: [f32; 3],
     /// Cell-grid-snapped render origin (`scene_buffer::snap_render_origin`
@@ -1594,6 +1600,7 @@ impl VulkanContext {
             bone_world,
             bind_inverse_pending_uploads,
             materials,
+            has_effect_soft_material,
             camera_pos,
             render_origin: input_render_origin,
             ambient_color,
@@ -1790,18 +1797,30 @@ impl VulkanContext {
                 vk::AccessFlags::HOST_READ,
             );
 
-            // Soft-particle depth fade: snapshot this frame's opaque depth
-            // into the sampleable history image so next frame's effect-shader
-            // FX can feather their alpha against the geometry behind them.
-            // The transparent FX wrote no depth (z_write off), so the depth
-            // buffer here holds opaque-only depth. Restores depth to
-            // READ_ONLY afterwards so SSAO / SVGF / composite read it
-            // unchanged. See `crates/renderer/shaders/triangle.frag`
-            // (MATERIAL_KIND_EFFECT_SHADER soft-fade block).
-            self.copy_depth_to_history(cmd);
-            // #3308 — immediately after the history copy, which leaves the
-            // depth image back in DEPTH_STENCIL_READ_ONLY_OPTIMAL: exactly
-            // the layout `depth_capture_record_copy` requires and restores.
+            // Soft-particle depth fade: when the scene-level material bit is
+            // set, snapshot this frame's opaque depth into the sampleable
+            // history image so effect-shader FX can feather their alpha
+            // against the geometry behind them. The transparent FX wrote no
+            // depth (z_write off), so the depth buffer here holds opaque-only
+            // depth. The helper restores depth to READ_ONLY afterwards so
+            // SSAO / SVGF / composite read it unchanged. When the bit is
+            // clear, both images remain in their normal read-only layouts and
+            // the full-resolution copy plus its barriers are omitted. See
+            // `crates/renderer/shaders/triangle.frag` (soft-fade block).
+            if has_effect_soft_material {
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_depth_history_copy_start(&self.device, cmd, frame);
+                }
+                self.copy_depth_to_history(cmd);
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_depth_history_copy_end(&self.device, cmd, frame);
+                }
+            }
+            // #3308 — the render pass leaves the depth image in
+            // DEPTH_STENCIL_READ_ONLY_OPTIMAL. A history copy, when enabled
+            // above, restores that same layout before this helper; when the
+            // copy is skipped, the layout is already the precondition
+            // `depth_capture_record_copy` requires and restores.
             // SAFETY: `cmd` is recording outside any render pass here (same
             // contract `copy_depth_to_history` on the line above relies on),
             // and the depth image is in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
