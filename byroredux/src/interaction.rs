@@ -876,7 +876,7 @@ fn target_has_line_of_sight(
     // below re-acquires the same query AFTER the raycast completes and
     // scans it directly — no intermediate `Vec` is ever materialised.
     let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0);
     let excluded_body = player.and_then(|entity| {
         world
@@ -1127,7 +1127,7 @@ pub(crate) fn emit_activate_event(
     target: EntityId,
 ) -> Result<EntityId, &'static str> {
     let activator = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0)
         .unwrap_or(0);
 
@@ -1418,7 +1418,7 @@ mod tests {
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
         world.insert_resource(ActiveCamera(camera));
-        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(camera));
 
         let far = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -150.0));
         let near = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
@@ -1571,7 +1571,7 @@ mod tests {
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
         world.insert_resource(ActiveCamera(camera));
-        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(camera));
         camera
     }
 

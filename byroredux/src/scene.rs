@@ -1412,14 +1412,17 @@ pub(crate) fn setup_scene(
         // dlc2_ttr4a) fetch this resource UNCONDITIONALLY at the
         // top of their bodies, before the event-loop early-return.
         // Distinct struct from `crate::systems::PlayerEntity` —
-        // papyrus_demo's `PlayerEntity(EntityId)` has no Option
+        // #3710 renamed it to `PapyrusPlayerEntity` specifically to
+        // stop the two sharing a short type name (the save-registry
+        // completeness guard keys on short name, so one allowlist row
+        // used to silently cover both). It still has no `Option`
         // wrapper (designed assuming caller always inserts), so an
         // absent resource panics on the first frame. Bind to the
         // same `body` entity so any future scripting-driven player
         // lookup (Game.GetPlayer().GetReference()) resolves to the
         // M28.5 capsule. See the M47.0 / R5 closeout.
-        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(body));
-        // M47.0 — same pattern as PlayerEntity above. The
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(body));
+        // M47.0 — same pattern as PapyrusPlayerEntity above. The
         // quest_advance / dlc2_ttr4a / mg07_door dispatcher systems
         // do `world.resource_mut::<QuestStageState>()` unconditionally
         // (set_stage writes), and mg07_door also `resource()`-reads it
@@ -1442,7 +1445,7 @@ pub(crate) fn setup_scene(
         // systems can early-return on `.0.is_none()` instead of
         // panicking on absent resource), it's just empty.
         world.insert_resource(crate::systems::PlayerEntity::default());
-        // M47.0 — papyrus_demo's PlayerEntity has no Option wrapper
+        // M47.0 — papyrus_demo's PapyrusPlayerEntity has no Option wrapper
         // and its consumer systems fetch the resource before the
         // event-loop early-return. Spawn an empty placeholder
         // entity so the resource fetch resolves; the scripting
@@ -1450,7 +1453,7 @@ pub(crate) fn setup_scene(
         // Player / Camera / Reference components. Cost: one
         // unused EntityId.
         let placeholder = world.spawn();
-        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(placeholder));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(placeholder));
         // M47.0 — same insert as the Character-mode branch above so
         // the quest-stage-aware systems don't panic on FlyCam scenes
         // (debug bench, --mesh standalone NIF loads, headless smoke).

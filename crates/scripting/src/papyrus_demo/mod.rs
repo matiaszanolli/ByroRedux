@@ -54,6 +54,7 @@
 //!       `docs/r5/source/`) which is left untranslated as future work.
 
 use crate::events::ActivateEvent;
+use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
@@ -68,9 +69,18 @@ use byroredux_core::ecs::world::World;
 /// every camera-shake source to share one queue and lose per-frame
 /// causal ordering against the script systems.
 #[derive(Debug, Clone, Copy)]
-pub struct PlayerEntity(pub EntityId);
+pub struct PapyrusPlayerEntity(pub EntityId);
 
-impl byroredux_core::ecs::resource::Resource for PlayerEntity {}
+// #3710 (ECS-P2-07) — the fully-qualified trait path this impl used to
+// carry (`impl byroredux_core::ecs::resource::Resource for X {}`) doesn't
+// match `registry_completeness_tests.rs`'s `extract_type_name`, which only
+// recognizes the bare `"impl Resource for "` / `"impl Component for "`
+// prefixes every other impl in this crate already uses — so this Resource
+// was completely invisible to the save-registry completeness scanner, not
+// merely ambiguous with `crate::systems::PlayerEntity`'s allowlist row (the
+// two also happened to share a short type name before this issue's rename
+// to `PapyrusPlayerEntity`). Normalized to match the convention.
+impl Resource for PapyrusPlayerEntity {}
 
 /// Translation of `defaultRumbleOnActivate.psc`.
 ///
@@ -161,7 +171,7 @@ pub enum RumbleState {
 
 /// Cross-subsystem command emitted by Papyrus `Game.shakeCamera(…)`.
 ///
-/// Marker component placed on the [`PlayerEntity`] target. The
+/// Marker component placed on the [`PapyrusPlayerEntity`] target. The
 /// camera subsystem (when it lands) will drain these via a system
 /// that runs late in the frame; until then, tests assert their
 /// presence as the observable proof the script's `Active`-state
@@ -206,7 +216,7 @@ pub mod quest_advance;
 /// Mirrors [`crate::register`]'s shape so the App-level setup
 /// initialises the demo storages alongside the rest of the
 /// scripting subsystem. Resources backing the demos
-/// ([`PlayerEntity`], [`crate::quest_stages::QuestStageState`]) are
+/// ([`PapyrusPlayerEntity`], [`crate::quest_stages::QuestStageState`]) are
 /// inserted by the caller — they're per-app instance state, not
 /// per-world-init.
 pub fn register(world: &mut World) {
@@ -277,11 +287,11 @@ pub fn rumble_on_activate_system(world: &World) {
         return;
     };
     // Papyrus's `Game.shakeCamera(None, …)` resolves to the player's
-    // camera. Caller must `insert_resource(PlayerEntity(eid))` at
+    // camera. Caller must `insert_resource(PapyrusPlayerEntity(eid))` at
     // world init — `world.resource()` panics if missing, matching the
     // engine's invariant that the player exists for every active
     // scene. Tests in `tests.rs` set this up explicitly.
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
 
     let mut to_shake: Vec<(EntityId, RumbleOnActivate)> = Vec::new();
 

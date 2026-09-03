@@ -438,6 +438,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingPlayerSaveActions", "one-shot player save/load requests drained after the scheduler's parallel batch joins (#3113)"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("SaveLoadNotifications", "one-shot player-feedback queue drained into the HUD/console before the next frame"),
+        ("PapyrusPlayerEntity", "scripting-crate sibling of PlayerEntity (#3710 renamed it off the shared short name), pointing Papyrus's Game pseudo-singleton at the same process-lifetime player body; set from the same call site as PlayerEntity, same process-local-identity posture, not gameplay state"),
         ("PersistentRefIndex", "lazily-rebuilt FormId->Entity cache scoped to the resident persistent CELL (EX-09/#2370), repopulated on demand by cell_loader::persistent_ref_index — same posture as CellRootIndex/NameIndex"),
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),
@@ -515,6 +516,23 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         .collect();
     let allowlisted: std::collections::HashSet<&str> =
         NOT_SAVED_BY_DESIGN.iter().map(|(name, _)| *name).collect();
+
+    // #3710 (ECS-P2-07) — pin that the two same-purpose PlayerEntity-shaped
+    // resources (byroredux's own `PlayerEntity`, `Option<EntityId>`, and
+    // scripting's `PapyrusPlayerEntity`, plain `EntityId`) each carry
+    // their OWN row here now, rather than one ambiguous short name
+    // silently covering both. `allowlisted` is a `HashSet`, so a
+    // reintroduced short-name collision wouldn't show up as a duplicate
+    // key error above — it would just silently classify both types with
+    // whichever reason happened to be listed. This assertion is what
+    // actually catches that.
+    assert!(
+        allowlisted.contains("PlayerEntity") && allowlisted.contains("PapyrusPlayerEntity"),
+        "PlayerEntity and PapyrusPlayerEntity must each carry their own \
+         NOT_SAVED_BY_DESIGN row (#3710) — a shared short name would let \
+         one classification decision silently stand in for two distinct \
+         types",
+    );
 
     let mut offenders = Vec::new();
     let mut seen = std::collections::HashSet::new();

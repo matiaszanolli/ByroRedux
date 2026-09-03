@@ -757,7 +757,7 @@ fn material_survives_save_load_round_trip() {
 fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     use std::sync::{Arc, Mutex};
 
-    use byroredux_scripting::papyrus_demo::PlayerEntity;
+    use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
     use byroredux_scripting::quest_stages::{QuestStageAdvancedBatch, QuestStageState};
     use byroredux_scripting::translate::effects::{Effect, FragmentProviderCall};
     use byroredux_scripting::{
@@ -777,7 +777,7 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     src.insert_resource(FormIdPool::new());
     byroredux_scripting::register(&mut src);
     let player = src.spawn();
-    src.insert_resource(PlayerEntity(player));
+    src.insert_resource(PapyrusPlayerEntity(player));
     src.insert_resource(QuestStageState::default());
 
     {

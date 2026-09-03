@@ -12,7 +12,7 @@ use byroredux_plugin::esm::records::{
     ScenRecord, SceneAction, SceneActionType, SCENE_BEGIN_ON_QUEST_START,
 };
 
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageAdvancedBatch, QuestStageState};
 use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
 use byroredux_plugin::esm::records::ScenePhase;
@@ -47,7 +47,7 @@ fn setup(scene: ScenRecord) -> (World, EntityId, EntityId) {
     let mut world = World::new();
     crate::register(&mut world);
     let player = world.spawn();
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
     world.insert_resource(QuestStageState::default());
     assert_eq!(install_scene_records(&mut world, [scene]), 1);
     let entity = world

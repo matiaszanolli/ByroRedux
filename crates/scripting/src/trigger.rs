@@ -21,7 +21,7 @@
 //! correct for the static volumes that triggers always are.
 
 use crate::events::OnTriggerEnterEvent;
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -141,7 +141,7 @@ impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
 /// No-ops gracefully when there's no player, no player transform, or no
 /// trigger volumes in the world.
 pub fn trigger_detection_system(world: &World) {
-    let Some(player) = world.try_resource::<PlayerEntity>().map(|p| p.0) else {
+    let Some(player) = world.try_resource::<PapyrusPlayerEntity>().map(|p| p.0) else {
         return;
     };
     // The player's world position — the only spatial input detection needs.
@@ -537,7 +537,7 @@ mod tests {
             player,
             GlobalTransform::new(player_pos, Quat::IDENTITY, 1.0),
         );
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         let trigger = world.spawn();
         world.insert(trigger, vol);
 
@@ -551,7 +551,7 @@ mod tests {
         let (world, trigger, fired) = run_once(Vec3::ZERO, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
         assert!(fired, "player inside an unoccupied volume must emit enter");
         let ev = world.get::<OnTriggerEnterEvent>(trigger).unwrap();
-        assert_eq!(ev.triggerers, vec![world.resource::<PlayerEntity>().0]);
+        assert_eq!(ev.triggerers, vec![world.resource::<PapyrusPlayerEntity>().0]);
     }
 
     #[test]
@@ -614,7 +614,7 @@ mod tests {
         let outside = Vec3::new(10.0, 0.0, 0.0);
         world.insert(player, Transform::from_translation(outside));
         world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         let trigger = world.spawn();
         world.insert(
             trigger,
@@ -650,7 +650,7 @@ mod tests {
         let outside = Vec3::new(10.0, 0.0, 0.0);
         let player = world.spawn();
         world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let actor = world.spawn();
         world.insert(actor, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
@@ -700,7 +700,7 @@ mod tests {
         let outside = Vec3::new(10.0, 0.0, 0.0);
         let player = world.spawn();
         world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let horse = world.spawn();
         world.insert(horse, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
@@ -760,7 +760,7 @@ mod tests {
             player,
             GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
         );
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let horse = world.spawn();
         world.insert(horse, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
@@ -836,7 +836,7 @@ mod tests {
         let outside = Vec3::new(10.0, 0.0, 0.0);
         let player = world.spawn();
         world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let actors: Vec<_> = (0..2)
             .map(|index| {
@@ -969,7 +969,7 @@ mod tests {
             player,
             GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
         );
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         let trigger = world.spawn();
         world.insert(trigger, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
 

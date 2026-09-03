@@ -31,7 +31,7 @@ use byroredux_plugin::esm::records::{
 };
 use byroredux_scripting::fragment::{populate_quest_fragments_from_script, quest_property_names};
 use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
-use byroredux_scripting::papyrus_demo::PlayerEntity;
+use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::{
@@ -647,7 +647,7 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     let mut bootstrap_world = World::new();
     byroredux_scripting::register(&mut bootstrap_world);
     let bootstrap_player = bootstrap_world.spawn();
-    bootstrap_world.insert_resource(PlayerEntity(bootstrap_player));
+    bootstrap_world.insert_resource(PapyrusPlayerEntity(bootstrap_player));
     bootstrap_world.insert_resource(QuestStageState::default());
     install_scene_records(
         &mut bootstrap_world,

@@ -76,7 +76,7 @@
 //! here covers the most common ~70% pattern, leaving the long tail
 //! for per-script lowerings.
 
-use super::PlayerEntity;
+use super::PapyrusPlayerEntity;
 use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
 use crate::events::{ActivateEvent, OnTriggerEnterEvent};
 use crate::quest_stages::{
@@ -213,7 +213,7 @@ pub enum ActivatorGate {
     /// Any activator advances the quest. Matches DA10's behaviour.
     #[default]
     Any,
-    /// Only the player (resolved via [`super::PlayerEntity`]) can
+    /// Only the player (resolved via [`super::PapyrusPlayerEntity`]) can
     /// activate. Matches MG07 / TG05 patterns.
     PlayerOnly,
     /// Only a placed actor whose canonical NPC/creature base matches.
@@ -316,7 +316,7 @@ pub fn quest_advance_system(world: &World) {
     let Some(advances) = world.query::<QuestAdvanceOnActivate>() else {
         return;
     };
-    let player_entity = world.resource::<PlayerEntity>().0;
+    let player_entity = world.resource::<PapyrusPlayerEntity>().0;
 
     // Two activation signals converge on the same advance: a use-key /
     // console `ActivateEvent` (doors, levers) and an `OnTriggerEnterEvent`
@@ -453,7 +453,7 @@ pub fn quest_advance_system(world: &World) {
     }
 
     // Phase 3: emit the marker events on a dedicated quest-events
-    // sink. We co-opt the [`PlayerEntity`] target here for the
+    // sink. We co-opt the [`PapyrusPlayerEntity`] target here for the
     // same reason `default_rumble_demo` does — the player entity
     // is the canonical "global events" recipient until a
     // dedicated `QuestEventBus` entity lands (which is itself

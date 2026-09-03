@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::events::ActivateEvent;
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -31,7 +31,7 @@ fn setup_world() -> (World, EntityId, EntityId, EntityId) {
 
     let player = world.spawn();
     world.insert(player, KeystoneInventory::default());
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
 
     let secret_door = world.spawn(); // "myDoor" in the Papyrus source
 
@@ -231,7 +231,7 @@ fn denial_branch_emits_ui_message_when_activator_not_player() {
     // conjunct, denial path fires. (Note Papyrus shows the UI
     // message to the player regardless of who activated; matches
     // here.)
-    assert!(world.has::<UiMessageCommand>(world.resource::<PlayerEntity>().0));
+    assert!(world.has::<UiMessageCommand>(world.resource::<PapyrusPlayerEntity>().0));
     assert_eq!(
         world
             .get::<MG07LabyrinthianDoor>(keystone_door)

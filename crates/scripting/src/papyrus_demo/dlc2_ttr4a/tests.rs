@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::papyrus_demo::actor_stats::ActorStats;
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::recurring_update::{recurring_update_tick_system, RecurringUpdate};
 use byroredux_core::ecs::storage::EntityId;
@@ -26,7 +26,7 @@ fn setup_world() -> (World, EntityId, EntityId) {
 
     let player = world.spawn();
     world.insert(player, ActorStats::default());
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
 
     let script_entity = world.spawn();
     world.insert(script_entity, dlc2_ttr4a_player_script(QUEST_FORM_ID));

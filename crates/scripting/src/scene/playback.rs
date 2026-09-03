@@ -22,7 +22,7 @@ use byroredux_plugin::esm::records::{
 
 use super::{refresh_scene_actor_bindings, SceneActorBindings, SceneRegistry};
 use crate::condition::{evaluate, ConditionContext};
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{
     QuestFormId, QuestStageAdvancedBatch, QuestStageState, SCENE_QUEST_EVENT_SUBSCRIBER,
 };
@@ -554,7 +554,7 @@ pub fn scene_playback_system(world: &World, dt: f32) {
     };
     let bindings = world.resource::<SceneActorBindings>().clone();
     let subject = world
-        .try_resource::<PlayerEntity>()
+        .try_resource::<PapyrusPlayerEntity>()
         .map(|player| player.0)
         .unwrap_or_default();
 

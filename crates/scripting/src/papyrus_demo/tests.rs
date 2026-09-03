@@ -28,14 +28,14 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
 /// Set up a world with the scripting + demo storages registered and a
-/// player entity wired into the [`PlayerEntity`] resource. Mirrors
+/// player entity wired into the [`PapyrusPlayerEntity`] resource. Mirrors
 /// the App-level setup an integration call site would do.
 fn setup_world() -> (World, EntityId, EntityId) {
     let mut world = World::new();
     crate::register(&mut world);
     super::register(&mut world);
     let player = world.spawn();
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
     let lever = world.spawn();
     world.insert(lever, RumbleOnActivate::default());
     (world, player, lever)
@@ -343,12 +343,12 @@ fn spawn_default_rumble_for_test(
 
 /// Build a world with the FULL M47.0 plumbing in place — scripting
 /// crate `register`, a `ScriptRegistry` carrying the demo spawner, and
-/// a player entity wired into the [`PlayerEntity`] resource.
+/// a player entity wired into the [`PapyrusPlayerEntity`] resource.
 fn setup_world_with_registry() -> (World, EntityId, crate::ScriptRegistry) {
     let mut world = World::new();
     crate::register(&mut world);
     let player = world.spawn();
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
     let mut registry = crate::ScriptRegistry::new();
     registry.register("defaultRumbleOnActivate", spawn_default_rumble_for_test);
     (world, player, registry)

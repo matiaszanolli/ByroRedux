@@ -4434,7 +4434,7 @@ fn register_extension_setting(
 /// marker.
 pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
     let missing_player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
         .is_none();
     let raw_activations: Vec<(EntityId, Option<EntityId>)> = {
         let Some(events) = world.query::<byroredux_scripting::ActivateEvent>() else {

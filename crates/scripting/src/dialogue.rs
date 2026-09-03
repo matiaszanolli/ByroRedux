@@ -18,7 +18,7 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::{DialRecord, InfoRecord, SceneActionType};
 
 use crate::condition::{evaluate, ConditionContext};
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
     SceneActionCompletionBatch, SceneAliasCandidate, SceneEvent, SceneEventBatch, ScenePlayer,
@@ -303,7 +303,7 @@ pub fn scene_dialogue_system(world: &World, dt: f32) {
         .try_resource::<DialogueRegistry>()
         .map(|registry| registry.topics.clone())
         .unwrap_or_default();
-    let player_entity = world.try_resource::<PlayerEntity>().map(|player| player.0);
+    let player_entity = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0);
 
     let mut entities: HashSet<EntityId> = playbacks.keys().copied().collect();
     entities.extend(scene_events.keys().copied());
@@ -508,7 +508,7 @@ mod tests {
         let player = world.spawn();
         let actor = world.spawn();
         let scene = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         world.insert(scene, ScenePlayer::new(SCENE));
         install_dialogue_records(&mut world, records);
         (world, scene, actor, player)
@@ -707,7 +707,7 @@ mod tests {
         crate::register(&mut world);
         let player = world.spawn();
         let actor = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         install_dialogue_records(&mut world, vec![topic(vec![info(INFO, 0, "Wake up")])]);
         crate::scene::install_scene_records(
             &mut world,

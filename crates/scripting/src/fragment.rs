@@ -448,7 +448,7 @@ fn resolve_actor(
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     match via {
         ActorRef::Player => world
-            .try_resource::<crate::papyrus_demo::PlayerEntity>()
+            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
             .map(|player| player.0),
         ActorRef::Object(via) => resolve_object(vmad, world, context, via, bindings),
     }
@@ -1056,7 +1056,7 @@ fn apply_effect(
                     &deferred.scene_actor_bindings,
                 )?,
                 None => world
-                    .try_resource::<crate::papyrus_demo::PlayerEntity>()
+                    .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
                     .map(|player| player.0)
                     .unwrap_or(target_entity),
             };
@@ -1085,7 +1085,7 @@ fn apply_effect(
         }
         Effect::SetPlayerRestrained { restrained } => {
             let Some(player) = world
-                .try_resource::<crate::papyrus_demo::PlayerEntity>()
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
                 .map(|player| player.0)
             else {
                 log::debug!("fragment SetRestrained skipped: player entity is unavailable");
@@ -1702,7 +1702,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         return;
     }
     let Some(player_entity) = world
-        .try_resource::<crate::papyrus_demo::PlayerEntity>()
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0)
     else {
         return;
@@ -1717,7 +1717,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
 const MAX_CASCADE: usize = 64;
 
 /// Register the fragment-dispatch resources. Both are empty
-/// default-constructible runtime stores (unlike `PlayerEntity` /
+/// default-constructible runtime stores (unlike `PapyrusPlayerEntity` /
 /// `QuestStageState`, which carry per-app-instance state and stay
 /// caller-inserted), so initialising them at world-init is safe and
 /// keeps [`quest_fragment_dispatch_system`] panic-free out of the box.
@@ -2384,15 +2384,15 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
         return;
     }
 
-    // #3580 — copy the entity out and DROP the `PlayerEntity` guard before
+    // #3580 — copy the entity out and DROP the `PapyrusPlayerEntity` guard before
     // `push_quest_stage_advances` acquires the `QuestStageAdvancedBatch`
     // storage. Binding the guard to a `let ... else` local kept it alive
-    // across that call, recording `PlayerEntity -> QuestStageAdvancedBatch`
+    // across that call, recording `PapyrusPlayerEntity -> QuestStageAdvancedBatch`
     // and closing a ring with the other two edges the quest systems record.
-    // Every other `PlayerEntity` site in the crate already copies the id out
+    // Every other `PapyrusPlayerEntity` site in the crate already copies the id out
     // of a statement-scoped temporary; this one did not.
     let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PlayerEntity>()
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0)
     else {
         return;
@@ -2528,7 +2528,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     if chained.is_empty() {
         return;
     }
-    let player_entity = world.resource::<crate::papyrus_demo::PlayerEntity>().0;
+    let player_entity = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
     // #3277 — was a bare `insert()`, the one non-defensive writer of the six.
     // Harmless only while this system was the last same-frame producer in the
     // schedule; `quest_alias_readiness_stage_system` and

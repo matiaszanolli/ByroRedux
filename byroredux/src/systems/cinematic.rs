@@ -192,7 +192,7 @@ pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
     }
 
     let Some(player) = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0)
     else {
         return;
@@ -881,7 +881,7 @@ mod tests {
             );
 
         let player = world.spawn();
-        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(player));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
         world.insert(
             player,
             ActorCinematicState {

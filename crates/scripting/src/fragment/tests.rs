@@ -3,7 +3,7 @@
 //! end-to-end (marker → fragment → state, including the SetStage cascade).
 
 use super::*;
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
@@ -39,7 +39,7 @@ fn fixture() -> World {
     let mut world = World::new();
     crate::register(&mut world);
     let player = world.spawn();
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
     world.insert_resource(QuestStageState::default());
     world
 }
@@ -55,7 +55,7 @@ fn emit_advance(world: &World, quest: QuestFormId, new_stage: u16) {
 /// pair given, exactly like `quest_advance_system`'s phase 3 does for
 /// multiple same-frame advances.
 fn emit_advances(world: &World, advances: &[(QuestFormId, u16)]) {
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let mut q = world.query_mut::<QuestStageAdvancedBatch>().unwrap();
     q.insert(
         player,
@@ -376,7 +376,7 @@ fn quest_fragments_flush_provider_barriers_before_the_next_event() {
 
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q2), 20);
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let query = world.query::<QuestStageAdvancedBatch>().unwrap();
     let batch = query
         .get(player)
@@ -2110,7 +2110,7 @@ fn dispatch_player_control_and_evaluate_package_effects() {
 
     const HADVAR_ALIAS: i16 = 1;
     let mut world = fixture();
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let hadvar = world.spawn();
     world
         .resource_mut::<crate::SceneActorBindings>()
@@ -2193,7 +2193,7 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
     const PLAYER_IDLE: u32 = 0x0001_1000;
     const EXIT_IDLE_D: u32 = 0x0001_1003;
     let mut world = fixture();
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let rider = world.spawn();
     let cart = world.spawn();
     world.register::<byroredux_core::ecs::components::Transform>();
@@ -2459,7 +2459,7 @@ fn actor_3d_load_gate_polls_without_blocking_then_resumes() {
 
     let mut world = fixture();
     world.register::<Transform>();
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     {
         let mut frags = world.resource_mut::<QuestStageFragments>();
         frags.insert(
@@ -2889,7 +2889,7 @@ fn scene_phase_fragment_advances_its_owning_quest() {
 
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 14);
     assert_eq!(*calls.lock().unwrap(), [Some(principal.to_string())]);
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let query = world.query::<QuestStageAdvancedBatch>().unwrap();
     let batch = query
         .get(player)
@@ -2972,7 +2972,7 @@ fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
     scene_fragment_dispatch_system(&world, 0.0);
 
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
     let query = world.query::<QuestStageAdvancedBatch>().unwrap();
     let batch = query
         .get(player)

@@ -104,7 +104,7 @@
 //! cross-reference activation — that pattern fully translates with
 //! the existing infrastructure.
 
-use super::PlayerEntity;
+use super::PapyrusPlayerEntity;
 use crate::events::ActivateEvent;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -300,7 +300,7 @@ pub fn mg07_on_load_system(world: &World) {
 /// faithful translation is the R5 contract, and a real corpus walk
 /// will encounter this exact compiler-tolerated pattern many times.
 pub fn mg07_on_activate_system(world: &World) {
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
 
     // Two-phase: collect (read), then apply (write). Same shape as
     // the other R5 systems.
@@ -461,11 +461,11 @@ pub fn mg07_on_activate_system(world: &World) {
 /// — `Self` knows which target to activate (`my_door`), but the
 /// activator argument doesn't survive across the wait barrier. We
 /// reconstruct it by re-resolving "the player" via
-/// `PlayerEntity`, which matches Papyrus's observable behaviour
+/// `PapyrusPlayerEntity`, which matches Papyrus's observable behaviour
 /// (the original `actronaut` IS the player in every reachable
 /// branch — the gate at the head of the handler enforces this).
 pub fn mg07_tick_system(world: &World, dt: f32) {
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
 
     let mut to_fire_door_activate: Vec<(EntityId, EntityId)> = Vec::new();
     {

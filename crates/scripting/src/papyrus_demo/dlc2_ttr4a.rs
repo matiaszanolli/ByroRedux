@@ -62,7 +62,7 @@
 //!   elapsed; the per-script system doesn't have to know about
 //!   timing at all.
 //! - **`Game.GetPlayer().GetActorValue("Variable05")`** lowers to a
-//!   resource read of [`super::PlayerEntity`] (the player-resolver
+//!   resource read of [`super::PapyrusPlayerEntity`] (the player-resolver
 //!   already established in `defaultRumbleOnActivate`) + a
 //!   component read of [`super::actor_stats::ActorStats`] on that
 //!   entity (a small stand-in for the eventual full ActorValue
@@ -114,7 +114,7 @@
 //! second is fall-through for everything else.
 
 use super::actor_stats::ActorStats;
-use super::PlayerEntity;
+use super::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::recurring_update::{OnUpdateEvent, RecurringUpdate};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -224,7 +224,7 @@ pub fn dlc2_ttr4a_on_init_system(world: &World) {
 /// EndIf
 /// ```
 pub fn dlc2_ttr4a_on_update_system(world: &World) {
-    let player = world.resource::<PlayerEntity>().0;
+    let player = world.resource::<PapyrusPlayerEntity>().0;
 
     // Collect the entities whose threshold predicate holds — we
     // can't write to QuestStageState or remove RecurringUpdate

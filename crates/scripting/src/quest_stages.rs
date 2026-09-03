@@ -46,7 +46,7 @@ use byroredux_plugin::esm::records::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 
 /// Typed wrapper around a quest's `FormId` (u32). Same shape as the
 /// raw `form_id: u32` field on `QustRecord`; the wrapper exists so
@@ -980,7 +980,7 @@ pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
     if emitted.is_empty() {
         return;
     }
-    let Some(player) = world.try_resource::<PlayerEntity>().map(|player| player.0) else {
+    let Some(player) = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0) else {
         return;
     };
     push_quest_stage_advances(world, player, emitted);
@@ -1119,7 +1119,7 @@ pub fn quest_startup_system(world: &World, _dt: f32) {
     definitions.sort_by_key(|(quest, _, _)| quest.0);
     drop(registry);
 
-    let Some(player) = world.try_resource::<PlayerEntity>().map(|player| player.0) else {
+    let Some(player) = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0) else {
         return;
     };
 
@@ -1199,7 +1199,7 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
         return;
     }
 
-    let player = world.try_resource::<PlayerEntity>().map(|player| player.0);
+    let player = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0);
     let mut complete = HashSet::new();
     let mut fail = HashSet::new();
     let mut next_quests = Vec::new();
@@ -1352,7 +1352,7 @@ mod tests {
         crate::register(&mut world);
         world.insert_resource(QuestStageState::default());
         let player = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let completed = QuestFormId(0x1000);
         let failed = QuestFormId(0x2000);
@@ -1445,7 +1445,7 @@ mod tests {
         crate::register(&mut world);
         world.insert_resource(QuestStageState::default());
         let player = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let quest = QuestFormId(0x3372B);
         world
@@ -1631,7 +1631,7 @@ mod tests {
         let mut world = World::new();
         crate::register(&mut world);
         let player = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
 
         let ev = |quest: u32, new_stage: u16| QuestStageAdvanced {
             quest: QuestFormId(quest),
@@ -1685,7 +1685,7 @@ mod tests {
         let mut world = World::new();
         crate::register(&mut world);
         let player = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         world.insert_resource(QuestStageState::default());
         world.insert(
             player,

@@ -20,7 +20,7 @@ use byroredux_plugin::esm::records::{
 
 use super::{register, SceneActorBindings};
 use crate::condition::{evaluate, ConditionContext};
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 
 /// Operator-facing explanation of one quest alias's current fill state.
@@ -608,7 +608,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     alias
                         .flags
                         .has(ALIAS_FLAG_CLOSEST)
-                        .then(|| world.try_resource::<PlayerEntity>().map(|player| player.0))
+                        .then(|| world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0))
                         .flatten()
                 })
                 .and_then(|entity| {

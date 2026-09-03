@@ -22,7 +22,7 @@ use byroredux_plugin::esm::records::{
 };
 
 use crate::condition::{evaluate, resolve_entity_by_global_form_id, ConditionContext};
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
     SceneActionCompletionBatch, SceneActorBindings, SceneEvent, SceneEventBatch, ScenePlayer,
@@ -697,7 +697,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
         .try_resource::<PackageTargetRegistry>()
         .map(|registry| registry.clone())
         .unwrap_or_default();
-    let player_entity = world.try_resource::<PlayerEntity>().map(|player| player.0);
+    let player_entity = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0);
 
     let mut entities: HashSet<EntityId> = playbacks.keys().copied().collect();
     entities.extend(scene_events.keys().copied());
@@ -1098,7 +1098,7 @@ mod tests {
         world.register::<Transform>();
         let player = world.spawn();
         let actor = world.spawn();
-        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(PapyrusPlayerEntity(player));
         world.insert(actor, Transform::from_translation(Vec3::ZERO));
         let (package, template) = package_and_template();
         install_package_records(&mut world, [package, template]);

@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::events::{ActivateEvent, OnTriggerEnterEvent};
-use crate::papyrus_demo::PlayerEntity;
+use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageAdvancedBatch, QuestStageState};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -17,7 +17,7 @@ use byroredux_core::ecs::world::World;
 const DA10_QUEST_FORM_ID: QuestFormId = QuestFormId(0x000DEAD0);
 
 /// Spin up a world with scripting + papyrus_demo registered + a
-/// player entity wired into [`PlayerEntity`] + an empty
+/// player entity wired into [`PapyrusPlayerEntity`] + an empty
 /// [`QuestStageState`] resource, plus a "DA10 main door" entity
 /// carrying the DA10 component preset.
 fn setup_da10_world() -> (World, EntityId, EntityId) {
@@ -27,7 +27,7 @@ fn setup_da10_world() -> (World, EntityId, EntityId) {
     world.insert_resource(QuestStageState::default());
 
     let player = world.spawn();
-    world.insert_resource(PlayerEntity(player));
+    world.insert_resource(PapyrusPlayerEntity(player));
 
     let door = world.spawn();
     world.insert(door, da10_main_door(DA10_QUEST_FORM_ID));

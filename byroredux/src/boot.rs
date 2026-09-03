@@ -904,7 +904,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
-            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads_resource::<crate::cell_loader::LoadedPluginSet>()
             .writes_resource::<InteractionState>()
@@ -1166,7 +1166,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
         crate::systems::cinematic_animation_event_system,
         Access::new()
             .reads_resource::<StringPool>()
-            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .writes_resource::<byroredux_scripting::CinematicPresentationState>()
             .writes_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .reads::<byroredux_scripting::AnimationTextKeyEvents>()
@@ -1735,7 +1735,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::Name>()
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
             .reads::<byroredux_core::ecs::components::Transform>()
-            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads_resource::<byroredux_core::string::StringPool>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
