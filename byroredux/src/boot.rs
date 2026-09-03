@@ -743,6 +743,16 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // (add_exclusive) run serially after each stage's parallel
     // batch and do not participate in the conflict analyzer.
     let mut scheduler = Scheduler::new();
+    register_early_systems(&mut scheduler);
+    register_update_systems(&mut scheduler);
+    register_post_update_systems(&mut scheduler);
+    register_physics_systems(&mut scheduler);
+    register_late_systems(&mut scheduler);
+    scheduler
+}
+
+/// `Stage::Early` registrations (#3739 split of `build_scheduler`).
+fn register_early_systems(scheduler: &mut Scheduler) {
     // M27 Phase 3 — `fly_camera_system` and `character_controller_system`
     // are runtime-mutually-exclusive (each early-returns on the
     // wrong `PlayerMode`), so the scheduler's access analyzer
@@ -815,6 +825,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_scripting::ScriptTimer>()
             .writes::<byroredux_scripting::TimerExpired>(),
     );
+}
+
+/// `Stage::Update` registrations (#3739 split of `build_scheduler`).
+fn register_update_systems(scheduler: &mut Scheduler) {
     // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
     // event-driven (early-return when no ActivateEvent /
     // OnUpdateEvent / RecurringUpdate is present), so they
@@ -1195,6 +1209,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // with animation_system / spin_system) but BEFORE
     // PostUpdate's transform propagation reads the result.
     scheduler.add_exclusive(Stage::Update, animate_lights_system);
+}
+
+/// `Stage::PostUpdate` registrations (#3739 split of `build_scheduler`).
+fn register_post_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_to_with_access(
         Stage::PostUpdate,
         make_transform_propagation_system(),
@@ -1409,6 +1427,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_core::ecs::GlobalTransform>()
             .writes::<byroredux_core::ecs::WorldBound>(),
     );
+}
+
+/// `Stage::Physics` registrations (#3739 split of `build_scheduler`).
+fn register_physics_systems(scheduler: &mut Scheduler) {
     scheduler.add_to_with_access(
         Stage::Physics,
         byroredux_physics::physics_sync_system,
@@ -1452,6 +1474,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>(),
     );
+}
+
+/// `Stage::Late` registrations (#3739 split of `build_scheduler`).
+fn register_late_systems(scheduler: &mut Scheduler) {
     // M28.5 — camera follow runs in Stage::Late, AFTER
     // `physics_sync_system` has settled the kinematic body's
     // post-step pose. Must run BEFORE `audio_system` /
@@ -1808,8 +1834,6 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
-
-    scheduler
 }
 
 /// Phase 3 of construction (#1670) — post-build runtime registries: the
