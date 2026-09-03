@@ -295,6 +295,18 @@ fn f32_sortable_u32(value: f32) -> u32 {
     }
 }
 
+/// Number of high-order sortable-depth bits retained by the opaque
+/// within-mesh tiebreaker. Camera motion can change the full clip-space-W
+/// value without changing which opaque surface should be submitted first;
+/// retaining only this coarse bucket prevents that harmless change from
+/// permuting otherwise identical instance slices every frame (#3663).
+const OPAQUE_DEPTH_BUCKET_BITS: u32 = 10;
+
+#[inline]
+fn opaque_depth_bucket(sort_depth: u32) -> u32 {
+    sort_depth >> (u32::BITS - OPAQUE_DEPTH_BUCKET_BITS)
+}
+
 /// Quantization step count shared by every continuous per-frame value fed
 /// into a `material_hash`/`hash_gpu_material_fields` dedup key: the
 /// particle color fade (`particles.rs`, #1795 / D2-NEW-02) and the
@@ -494,8 +506,11 @@ fn compute_directional_upload(
 ///                 slot exists to keep arity uniform across branches.
 ///   Opaque      — slots 4/5 = render layer/two-sided; slots 6/7 = 0
 ///                 (blend factors unused); slot 8 = depth_state; slot 9 =
-///                 mesh (cluster key); slot 10 = sort_depth
-///                 (front-to-back); slot 11 = entity_id tiebreaker (#506).
+///                 mesh (cluster key); slot 10 = the high 10 bits of
+///                 sortable `sort_depth` (coarse front-to-back); slot 11 =
+///                 entity_id tiebreaker (#506). The coarse bucket keeps
+///                 small camera-driven depth changes from permuting the
+///                 instance slice that the SSBO dirty gates hash (#3663).
 ///   Additive    — order-independent, so slots 4–10 retain state/mesh
 ///                 clustering: render layer, two-sided, blend factors,
 ///                 depth_state, mesh, then sort_depth. This keeps particles
@@ -583,7 +598,8 @@ pub(crate) fn draw_sort_key(
         const GAMEBRYO_BLEND_ONE: u8 = 0;
         if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
             // State dominates → contiguous fill/wireframe and mesh runs;
-            // sort_depth is only a deterministic within-mesh tiebreaker.
+            // full sort_depth remains the deterministic within-mesh
+            // tiebreaker for additive draws.
             (
                 rt_only,
                 composition_phase,
@@ -688,7 +704,7 @@ pub(crate) fn draw_sort_key(
             0,
             pack_depth_state(cmd) as u32,
             cmd.mesh_handle, // group identical meshes
-            cmd.sort_depth,  // front-to-back within group
+            opaque_depth_bucket(cmd.sort_depth), // coarse front-to-back within group
             cmd.entity_id,
         )
     }

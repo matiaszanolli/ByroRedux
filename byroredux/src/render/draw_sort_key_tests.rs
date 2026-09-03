@@ -173,19 +173,39 @@ fn sort_key_clusters_by_alpha_decal_twosided() {
     assert_eq!(observed, expected.to_vec());
 }
 
-/// Opaque draws sort front-to-back within the same
-/// (is_decal, two_sided, depth_state) cluster — the last key slot
-/// carries `sort_depth` ascending so early-Z benefits most draws.
+/// Opaque draws sort coarsely front-to-back within the same
+/// (render_layer, two_sided, depth_state, mesh) cluster. The last key slot
+/// carries a high-bit sortable-depth bucket so small camera motion does not
+/// continuously reorder an otherwise identical instance slice.
 #[test]
 fn opaque_within_cluster_sorts_front_to_back() {
     let mut near = cmd(false, false, false);
-    near.sort_depth = 100;
+    near.sort_depth = 0x1000_0000;
     let mut far = cmd(false, false, false);
-    far.sort_depth = 900;
+    far.sort_depth = 0x9000_0000;
     let mut cmds = [far, near];
     cmds.sort_by_key(draw_sort_key);
-    assert_eq!(cmds[0].sort_depth, 100);
-    assert_eq!(cmds[1].sort_depth, 900);
+    assert_eq!(cmds[0].sort_depth, 0x1000_0000);
+    assert_eq!(cmds[1].sort_depth, 0x9000_0000);
+}
+
+/// Opaque depth changes within one sortable bucket must not change the
+/// bucket portion of the key. The final stable entity tiebreaker then keeps
+/// the instance order deterministic while the camera moves.
+#[test]
+fn opaque_sub_bucket_depth_motion_keeps_sort_key_stable() {
+    let mut first = cmd(false, false, false);
+    first.sort_depth = 0x4000_0001;
+    first.entity_id = 1;
+    let mut second = cmd(false, false, false);
+    second.sort_depth = 0x4000_0002;
+    second.entity_id = 2;
+
+    let first_key = draw_sort_key(&first);
+    let second_key = draw_sort_key(&second);
+    assert_eq!(first_key.10, second_key.10);
+    assert_eq!(first_key.11, 1);
+    assert_eq!(second_key.11, 2);
 }
 
 /// Transparent draws sort back-to-front for correct blending —
