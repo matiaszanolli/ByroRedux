@@ -2,9 +2,11 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    Children, GlobalTransform, LocalBound, Parent, SkinnedMesh, World, WorldBound,
+    Children, GlobalTransform, HierarchyTraversalGuard, LocalBound, Parent, SkinnedMesh, World,
+    WorldBound,
 };
 use byroredux_core::math::Mat4;
+use rustc_hash::FxHashSet;
 
 fn transform_sphere(local: &LocalBound, transform: Mat4) -> WorldBound {
     let max_scale = transform
@@ -96,6 +98,8 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
     let mut dirty_roots: Vec<EntityId> = Vec::new();
     let mut post_order: Vec<EntityId> = Vec::new();
     let mut stack: Vec<(EntityId, bool)> = Vec::new();
+    let mut post_seen: FxHashSet<EntityId> = FxHashSet::default();
+    let mut climb_seen: FxHashSet<EntityId> = FxHashSet::default();
     // Structural-generation key over the BOUND-RELEVANT structure only:
     // (LocalBound gen, Parent gen, Children gen, SkinnedMesh gen). A move changes
     // GlobalTransform *values* (caught by the dirty set), not these. Keyed on
@@ -135,6 +139,12 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         let Some(g_q) = world.query::<GlobalTransform>() else {
             return;
         };
+        let child_reference_count = children_q
+            .as_ref()
+            .map(|q| q.iter().map(|(_, children)| children.0.len()).sum())
+            .unwrap_or(0);
+        let mut cycle_reported = false;
+        let traversal_entity_count = world.next_entity_id() as usize;
         let skin_q = world.query::<SkinnedMesh>();
         let local_q = world.query::<LocalBound>();
         let Some(ref lb_q) = local_q else {
@@ -283,7 +293,27 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
             dirty_roots.clear();
             for &e in &g_dirty {
                 let mut cur = e;
+                climb_seen.clear();
+                let mut traversal_guard = HierarchyTraversalGuard::new(
+                    traversal_entity_count,
+                    child_reference_count,
+                );
                 while let Some(p) = parent_q.as_ref().and_then(|pq| pq.get(cur)).map(|p| p.0) {
+                    if !traversal_guard.step() {
+                        log::error!(
+                            "world-bound propagation aborted after exhausting the hierarchy traversal budget while climbing from entity {e}"
+                        );
+                        return;
+                    }
+                    if !climb_seen.insert(cur) {
+                        if !cycle_reported {
+                            log::error!(
+                                "world-bound propagation stopped revisiting hierarchy entity {cur} while climbing from {e}; cyclic Parent edge"
+                            );
+                            cycle_reported = true;
+                        }
+                        break;
+                    }
                     cur = p;
                 }
                 if cq.get(cur).map(|c| !c.0.is_empty()).unwrap_or(false) {
@@ -302,11 +332,31 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         // into parents (children first). The merge is idempotent.
         post_order.clear();
         stack.clear();
+        post_seen.clear();
+        let mut traversal_guard = HierarchyTraversalGuard::new(
+            traversal_entity_count,
+            child_reference_count,
+        );
         for &root in fold_set {
             stack.push((root, false));
             while let Some((entity, visited)) = stack.pop() {
                 if visited {
                     post_order.push(entity);
+                    continue;
+                }
+                if !traversal_guard.step() {
+                    log::error!(
+                        "world-bound propagation aborted after exhausting the hierarchy traversal budget at entity {entity}"
+                    );
+                    return;
+                }
+                if !post_seen.insert(entity) {
+                    if !cycle_reported {
+                        log::error!(
+                            "world-bound propagation skipped repeated hierarchy entity {entity}; cyclic or duplicate Children edge"
+                        );
+                        cycle_reported = true;
+                    }
                     continue;
                 }
                 stack.push((entity, true));
@@ -741,5 +791,45 @@ mod tests {
             "flat leaf bound must track its moved GlobalTransform, got {:?}",
             wb.center
         );
+    }
+
+    #[test]
+    fn cyclic_parent_and_children_walks_terminate() {
+        let mut world = World::new();
+        let root = world.spawn();
+        world.insert(root, GlobalTransform::IDENTITY);
+        world.insert(root, WorldBound::ZERO);
+
+        let leaf = spawn_leaf(&mut world, Vec3::new(5.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        let a = world.spawn();
+        let b = world.spawn();
+        for entity in [a, b] {
+            world.insert(entity, GlobalTransform::IDENTITY);
+            world.insert(entity, WorldBound::ZERO);
+        }
+
+        // Simulate a corrupt but structurally populated hierarchy. The root
+        // reaches the a↔b Children cycle, while the Parent cycle is also
+        // reachable from the dirty-root climb on the following frame.
+        world.insert(leaf, Parent(root));
+        world.insert(a, Parent(b));
+        world.insert(b, Parent(a));
+        world.insert(root, Children(vec![leaf, a]));
+        world.insert(a, Children(vec![b]));
+        world.insert(b, Children(vec![a]));
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+
+        // Mark a node in the Parent cycle dirty without changing topology so
+        // the incremental parent climb is exercised as well as post-order.
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(a).unwrap().translation.x = 1.0;
+        }
+        sys(&world, 0.016);
+
+        let wb_q = world.query::<WorldBound>().unwrap();
+        assert!(wb_q.get(root).unwrap().center.is_finite());
     }
 }

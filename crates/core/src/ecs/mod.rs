@@ -9,6 +9,7 @@ pub mod access;
 pub mod components;
 pub mod debug_load;
 pub mod game_profiles;
+pub mod hierarchy;
 mod lock_tracker;
 pub mod metrics;
 pub mod packed;
@@ -38,6 +39,7 @@ pub use components::{
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot, PendingUpscalerSwitch};
 pub use game_profiles::{GameProfileEntry, GameProfileRegistry};
+pub use hierarchy::HierarchyTraversalGuard;
 pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

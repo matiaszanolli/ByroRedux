@@ -16,6 +16,30 @@ use std::collections::VecDeque;
 use crate::ecs::components::{Children, GlobalTransform, Parent, Transform};
 use crate::ecs::storage::EntityId;
 use crate::ecs::world::World;
+use crate::ecs::HierarchyTraversalGuard;
+use rustc_hash::FxHashSet;
+
+fn enqueue_unique_children(
+    queue: &mut VecDeque<EntityId>,
+    queued: &mut FxHashSet<EntityId>,
+    expanded: &FxHashSet<EntityId>,
+    owner: EntityId,
+    children: &Children,
+    duplicate_reported: &mut bool,
+) {
+    for &child in &children.0 {
+        if expanded.contains(&child) {
+            if !*duplicate_reported {
+                log::error!(
+                    "transform propagation stopped revisiting hierarchy entity {child} from {owner}; cyclic or duplicate Children edge"
+                );
+                *duplicate_reported = true;
+            }
+        } else if queued.insert(child) {
+            queue.push_back(child);
+        }
+    }
+}
 
 /// Transform propagation system — the ECS equivalent of Gamebryo's
 /// `NiNode::UpdateDownwardPass`.
@@ -60,9 +84,13 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
     // same Vec across frames keeps the backing allocation alive so the
     // next `mark_dirty` call does not re-grow from zero capacity.
     let mut transform_dirty: Vec<EntityId> = Vec::new();
+    let mut queued: FxHashSet<EntityId> = FxHashSet::default();
+    let mut expanded: FxHashSet<EntityId> = FxHashSet::default();
 
     move |world: &World, _dt: f32| {
         queue.clear();
+        queued.clear();
+        expanded.clear();
 
         // Acquire all ECS queries once per frame and hold them across
         // both phases and the BFS walk. The prior implementation called
@@ -83,6 +111,15 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
             return;
         };
+        let child_reference_count = children_q
+            .as_ref()
+            .map(|q| q.iter().map(|(_, children)| children.0.len()).sum())
+            .unwrap_or(0);
+        let mut traversal_guard = HierarchyTraversalGuard::new(
+            world.next_entity_id() as usize,
+            child_reference_count,
+        );
+        let mut duplicate_reported = false;
 
         // Change-detection drain: which entities' local Transform was
         // mutated since last frame. Draining every frame keeps the dirty
@@ -171,8 +208,16 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             }
             if let Some(ref cq) = children_q {
                 for &root in &roots {
+                    expanded.insert(root);
                     if let Some(children) = cq.get(root) {
-                        queue.extend(children.0.iter().copied());
+                        enqueue_unique_children(
+                            &mut queue,
+                            &mut queued,
+                            &expanded,
+                            root,
+                            children,
+                            &mut duplicate_reported,
+                        );
                     }
                 }
             }
@@ -203,9 +248,26 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                 if let Some(g) = gq.get_mut(e) {
                     *g = e_global;
                 }
+                // Leave dirty descendants unexpanded until the BFS reaches
+                // them. If both an ancestor and descendant are dirty, this
+                // lets the descendant be recomposed once more after the
+                // ancestor's new global has been written, regardless of the
+                // EntityId ordering of the dirty list. Dirty roots can still
+                // be marked now so a malformed child edge back to the root is
+                // diagnosed immediately.
+                if parent_q.as_ref().and_then(|pq| pq.get(e)).is_none() {
+                    expanded.insert(e);
+                }
                 if let Some(ref cq) = children_q {
                     if let Some(children) = cq.get(e) {
-                        queue.extend(children.0.iter().copied());
+                        enqueue_unique_children(
+                            &mut queue,
+                            &mut queued,
+                            &expanded,
+                            e,
+                            children,
+                            &mut duplicate_reported,
+                        );
                     }
                 }
             }
@@ -219,6 +281,22 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         };
 
         while let Some(entity) = queue.pop_front() {
+            queued.remove(&entity);
+            if !traversal_guard.step() {
+                log::error!(
+                    "transform propagation aborted after exhausting the hierarchy traversal budget at entity {entity}"
+                );
+                return;
+            }
+            if !expanded.insert(entity) {
+                if !duplicate_reported {
+                    log::error!(
+                        "transform propagation skipped repeated hierarchy entity {entity}; cyclic or duplicate Children edge"
+                    );
+                    duplicate_reported = true;
+                }
+                continue;
+            }
             let Some(parent) = pq.get(entity) else {
                 continue;
             };
@@ -247,7 +325,14 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             }
 
             if let Some(children) = cq.get(entity) {
-                queue.extend(children.0.iter().copied());
+                enqueue_unique_children(
+                    &mut queue,
+                    &mut queued,
+                    &expanded,
+                    entity,
+                    children,
+                    &mut duplicate_reported,
+                );
             }
         }
     }
@@ -729,5 +814,55 @@ mod tests {
                 < 1e-4,
             "a Parent overwrite must defeat the skip and re-propagate the child"
         );
+    }
+
+    #[test]
+    fn cyclic_children_terminate_with_a_bounded_walk() {
+        let mut world = World::new();
+        let root = spawn_with_transform(&mut world, Vec3::ZERO, Quat::IDENTITY, 1.0);
+        let a = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+        let b = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+
+        // The Parent side is a valid root-to-leaf chain, but the hand-edited
+        // Children side closes b back to a. The propagation system must log
+        // the repeated edge and return instead of spinning forever.
+        world.insert(a, Parent(root));
+        world.insert(b, Parent(a));
+        world.insert(root, Children(vec![a]));
+        world.insert(a, Children(vec![b]));
+        world.insert(b, Children(vec![a]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert!(gq.get(a).unwrap().translation.is_finite());
+        assert!(gq.get(b).unwrap().translation.is_finite());
+    }
+
+    #[test]
+    fn dirty_descendant_is_recomposed_after_a_later_dirty_ancestor() {
+        let mut world = World::new();
+        // Spawn the child first so its EntityId sorts before its parent in the
+        // dirty list. This forces the incremental seed pass to encounter the
+        // descendant before the moved ancestor.
+        let child = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+        let parent = spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(child, Parent(parent));
+        world.insert(parent, Children(vec![child]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(child).unwrap().translation.x = 2.0;
+            tq.get_mut(parent).unwrap().translation.x = 20.0;
+        }
+        sys(&world, 0.016);
+
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert_eq!(gq.get(parent).unwrap().translation.x, 20.0);
+        assert_eq!(gq.get(child).unwrap().translation.x, 22.0);
     }
 }
