@@ -52,8 +52,8 @@ mod walker;
 pub use shader_data::ShaderTypeFields;
 pub(crate) use shader_data::{apply_shader_type_data, capture_effect_shader_data};
 pub use slot_role::{
-    canonical_shader_type, slot_to_role, unrouted_texture_slot_bindings, TextureRole,
-    TextureSlotContext, TextureSlotLayout,
+    canonical_shader_type, slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
+    TextureRole, TextureSlotContext, TextureSlotLayout,
 };
 // Re-exported only for the per-mod test sibling
 // `shader_type_data_tests.rs` — production callers go through

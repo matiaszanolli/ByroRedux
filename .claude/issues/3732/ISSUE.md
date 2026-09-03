@@ -1,49 +1,63 @@
-# #3732: NIFAL-2026-08-30-D8-01: #3458's slot-2 colocation never reached the REFR-overlay sibling — its pick closure structurally cannot express a colocated role
+# #3732 — NIFAL-2026-08-30-D8-01: #3458's slot-2 colocation never reached the REFR-overlay sibling
 
-**Labels**: bug, medium, game:skyrim, game:starfield, nifal, esm-plugin
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: MEDIUM · **Location**: `byroredux/src/cell_loader/spawn/mesh_instance.rs` (the `pick` closure)
+**Source**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` (NIFAL-2026-08-30-D8-01)
 
----
+#3458 established that Skyrim/Starfield tint-family slot 2 is genuinely two
+roles at once (`Tint` and `LightingMask`, both riding the one `*_sk.dds`
+texture) and introduced `slot_to_colocated_role` to return the second role;
+the NIF import loop consults both functions, first-wins. `resolve_mesh_paths`
+routes every REFR TXST override through one `pick` closure that consulted
+only `slot_to_role`, so `pick(2, o.glow, TextureRole::LightingMask)` could
+never match on the exact population #3458 was about — a REFR override on a
+Skyrim/Starfield tint-family mesh with `soft_lighting`/`rim_lighting` set
+updates `tint` but leaves `lighting_mask` bound to the base mesh's original
+texture while the `SLSF2_Soft_Lighting` gate crosses regardless.
 
-**Report**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` · **Severity**: MEDIUM · **Dimension**: 8 (Shader-flags / Effects) · **Tier violated**: single-boundary
-**Game affected**: Skyrim, Starfield (the `TextureSlotLayout` arms `slot_to_colocated_role` covers)
+The durable defect is structural: `pick`'s signature couldn't express a
+colocated role at all, so any future `slot_to_colocated_role` entry would
+silently fail to reach the overlay path with no compile error and no test.
 
-Severity note from the report: the *live* mis-render on vanilla content is near-nil; the **structural inability to propagate** is what earns the MEDIUM rating.
+## Fix implemented
 
-## Location
-- `byroredux/src/cell_loader/spawn/mesh_instance.rs` — the `pick` closure and the `lighting_mask` line it gates
-- Contrast: `crates/nif/src/import/material/dedicated_shader.rs` (the import-side half that *does* consult both functions)
-
-## Description
-#3458 (fixed 2026-08-28, `d5a8c36c`) established that Skyrim's slot 2 is genuinely **two roles at once** on the tint family — the `*_sk.dds` is both the `Tint` map and the `LightingMask` the `SLSF2_Soft_Lighting` gate asserts exists — and introduced `slot_to_colocated_role` to return the second role. The NIF import loop consults both functions (first-wins).
-
-The REFR texture-overlay path did not get the same treatment. `resolve_mesh_paths` routes every override through one closure:
+Exactly the issue's own one-line suggested fix:
 
 ```rust
 let pick = |slot: u32, raw: Option<FixedString>, role: TextureRole| {
-    raw.filter(|_| slot_to_role(slot_context, slot) == Some(role))
+    raw.filter(|_| {
+        slot_to_role(slot_context, slot) == Some(role)
+            || slot_to_colocated_role(slot_context, slot) == Some(role)
+    })
 };
 ```
 
-`pick` consults **only** `slot_to_role`. On the tint family `slot_to_role(ctx, 2)` returns `Tint`, so the `lighting_mask` line — `pick(2, o.glow, TextureRole::LightingMask)` — can never match, and the override is silently dropped for exactly the population #3458 was about. For non-tint meshes `slot_to_role` does return `LightingMask`, so that arm works; the hole is tint-family-only.
+`slot_to_colocated_role` wasn't previously re-exported outside
+`crates/nif`'s internal `slot_role` module (only `slot_to_role` was) — added
+it to both re-export chains (`material/mod.rs`'s `pub use slot_role::{...}`
+and `import/mod.rs`'s `pub use material::{...}`) so `mesh_instance.rs` can
+import it the same way it already imports `slot_to_role`.
 
-## Evidence
-`slot_to_colocated_role` (`crates/nif/src/import/material/slot_role.rs`) is referenced at exactly one non-test site, `dedicated_shader.rs`. Re-verified 2026-08-30: `grep -rn "slot_to_colocated_role" byroredux/src` returns **nothing**.
+**SIBLING** (issue's own checklist item): checked `apply_slot_swap` (#3187,
+which turned out to already be CLOSED, not open as the issue's own Related
+section stated — that text was stale). Its own doc comment already
+establishes it's a "dumb slot→field carrier" with no role-decision logic at
+all — it only populates the raw `RefrTextureOverlay.glow` field for slot 2,
+which then flows through the exact same `pick(2, o.glow, ...)` call sites
+this fix already covers. No separate change needed there; the `pick` fix
+covers both the direct-REFR-override path and the XTXR-slot-swap path since
+they converge on the same overlay field.
 
-## Impact
-A REFR whose TXST overrides slot 2 on a Skyrim/Starfield tint-family mesh with `soft_lighting`/`rim_lighting` set updates `tint` but leaves `lighting_mask` bound to the **base mesh's** original slot-2 texture, while `MAT_FLAG_SOFT_LIGHTING` crosses regardless — a half-overridden pair.
+**CANONICAL-BOUNDARY** (issue's own checklist item): the slot→role
+vocabulary stays entirely in `slot_role.rs` — the overlay path only
+consults it via the two exported functions, never re-derives colocation
+logic itself.
 
-**Vanilla reachability is very low and the report is explicit about that**: FaceGen heads reach the engine through `npc_spawn`, not through REFR placement, so the reachable set is REFR-placed statics that use shader type 4/5/6 *and* carry a TXST override *and* set a soft/rim gate. No evidence that population is non-empty in vanilla.
+**TESTS** (issue's own checklist item):
+`xtxr_skyrim_tint_family_slot_two_reaches_both_colocated_roles` builds a
+Skyrim `SkinTint` mesh with `soft_lighting: true` and a slot-2 (`glow`)
+override, and asserts BOTH `tint` and `lighting_mask` pick up the override
+— pre-fix `lighting_mask` would have stayed bound to the base mesh's
+original texture.
 
-The durable defect is **structural, not statistical**: `pick`'s signature cannot express a colocated role at all, so **any** future entry added to `slot_to_colocated_role` will silently fail to reach the overlay path the same way, with no compile error and no test.
-
-## Related
-#3458 (the import-side half, fixed), #3187 (`apply_slot_swap`, the *third* slot table on this same overlay path — still open).
-
-## Suggested Fix
-Change `pick` to `slot_to_role(slot_context, slot) == Some(role) || slot_to_colocated_role(slot_context, slot) == Some(role)`. One line, and it makes the overlay path track the slot table's colocation model automatically.
-
-## Completeness Checks
-- [ ] **SIBLING**: #3187's `apply_slot_swap` is the third slot table on this same overlay path — check it in the same pass
-- [ ] **CANONICAL-BOUNDARY**: the slot→role vocabulary stays in `slot_role.rs`; the overlay path consults it, never re-derives it. See `/audit-nifal`.
-- [ ] **TESTS**: a regression test that a colocated role reaches the overlay path — the current gap has no failing test
+Full workspace: `cargo test --no-fail-fast` 7059 passing, 0 failing (+1 new
+test).

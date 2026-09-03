@@ -10,7 +10,7 @@
 use super::*;
 use byroredux_core::ecs::SpeedTreeWind;
 use byroredux_core::string::FixedString;
-use byroredux_nif::import::{slot_to_role, TextureRole, TextureSlotContext};
+use byroredux_nif::import::{slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext};
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
 /// lock (#882). Promoted to module scope from `spawn_placed_instances`
@@ -218,8 +218,23 @@ pub(super) fn resolve_mesh_paths(
                 rim_lighting: mesh.material.rim_lighting,
                 back_lighting: mesh.material.back_lighting,
             };
+            // #3732 (NIFAL-2026-08-30-D8-01) — `slot_to_role` alone cannot
+            // express slot colocation: #3458 established that Skyrim/
+            // Starfield tint-family slot 2 is genuinely two roles at once
+            // (`Tint` AND `LightingMask`, both riding the one `*_sk.dds`
+            // texture) and introduced `slot_to_colocated_role` to return
+            // the second role. The NIF import loop
+            // (`dedicated_shader.rs`) already consults both, first-wins;
+            // this overlay path only consulted `slot_to_role`, so the
+            // `lighting_mask` pick below could never match on the exact
+            // population #3458 was about — a REFR TXST override on a
+            // tint-family mesh with soft/rim lighting silently dropped its
+            // lighting-mask override while the shader gate crossed anyway.
             let pick = |slot: u32, raw: Option<FixedString>, role: TextureRole| {
-                raw.filter(|_| slot_to_role(slot_context, slot) == Some(role))
+                raw.filter(|_| {
+                    slot_to_role(slot_context, slot) == Some(role)
+                        || slot_to_colocated_role(slot_context, slot) == Some(role)
+                })
             };
 
             (textures.emissive, sources.emissive) = resolve_effective(
@@ -1540,6 +1555,48 @@ mod tests {
         assert!(
             resolved[0].textures.inner_layer.is_none(),
             "FO76 slot 6 is measured specular, not Skyrim inner-layer (#3085)"
+        );
+    }
+
+    /// #3732 (NIFAL-2026-08-30-D8-01) — a REFR TXST override on a Skyrim
+    /// tint-family (FaceTint/SkinTint/HairTint) shape with soft/rim
+    /// lighting set must reach BOTH roles slot 2 colocates: `Tint` (via
+    /// `slot_to_role`) AND `LightingMask` (via `slot_to_colocated_role`,
+    /// #3458). Pre-fix `pick` consulted only `slot_to_role`, so the
+    /// `lighting_mask` arm could never match on this exact population —
+    /// the override updated `tint` but left `lighting_mask` bound to the
+    /// base mesh's original texture while the `SLSF2_Soft_Lighting` gate
+    /// crossed regardless.
+    #[test]
+    fn xtxr_skyrim_tint_family_slot_two_reaches_both_colocated_roles() {
+        let mut pool = StringPool::new();
+        let base_tint = pool.intern(r"textures\actors\character\base_sk.dds");
+        let override_tex = pool.intern(r"textures\actors\character\override_sk.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Skyrim;
+        mesh.material.shader_type = 5; // SkinTint
+        mesh.material.soft_lighting = true; // SLSF2_Soft_Lighting gate set
+        mesh.material.textures.tint = Some(base_tint);
+        mesh.material.textures.lighting_mask = Some(base_tint);
+        let overlay = RefrTextureOverlay {
+            glow: Some(override_tex),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].textures.tint.as_deref(),
+            Some(r"textures\actors\character\override_sk.dds"),
+            "the Tint role must still pick up the override"
+        );
+        assert_eq!(
+            resolved[0].textures.lighting_mask.as_deref(),
+            Some(r"textures\actors\character\override_sk.dds"),
+            "the colocated LightingMask role must ALSO pick up the same override — \
+             pre-fix this stayed bound to the base mesh's texture"
         );
     }
 
