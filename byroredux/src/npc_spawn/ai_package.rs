@@ -7,7 +7,7 @@
 //! PACK FormID actually changes.
 
 use super::{EsmIndex, NpcRecord};
-use crate::components::{AmbientPackageRuntime, GameTimeRes, SeatReservations};
+use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
     Dead, EscortBehavior, EscortState, Escorted, FollowBehavior, FollowState, GuardBehavior,
@@ -481,6 +481,15 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardState>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
+    // #3255 — six of the seven M42 procedures (wander/travel/follow/
+    // escort/guard/patrol) write NavPath as their shared per-actor pathing
+    // cache. This list must cover every per-actor pathing/runtime
+    // component, not just the Behavior/State pairs above it — a stale
+    // NavPath survives a package-switch handover and can be reused by a
+    // live-goal caller (FOLLOW_REPATH_THRESHOLD / ESCORT_COLLECT_REPATH_
+    // THRESHOLD = 64.0) whose new target happens to land within that
+    // threshold of the previous procedure's cached waypoints.
+    remove_component::<NavPath>(world, actor);
 }
 
 fn select_active_package<'a>(
@@ -733,6 +742,7 @@ mod tests {
         world.register::<GuardState>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
+        world.register::<NavPath>();
         world.insert_resource(QuestStageState::default());
         world.insert_resource(GameTimeRes::frozen_at(hour));
         world.insert_resource(SeatReservations::default());
@@ -1107,6 +1117,35 @@ mod tests {
         assert!(after.playing);
         assert_eq!(after.speed, 0.97);
         assert!(after.reverse_direction);
+    }
+
+    /// #3255 — `NavPath` is the shared per-actor pathing cache six of the
+    /// seven M42 procedures write; a stale one surviving a package-switch
+    /// handover can be reused by a live-goal caller whose new target lands
+    /// within its repath threshold of the previous procedure's cached
+    /// waypoints. `clear_ambient_behavior`'s teardown list must cover it
+    /// alongside every Behavior/State pair.
+    #[test]
+    fn clear_ambient_behavior_removes_nav_path() {
+        let mut world = World::new();
+        world.register::<NavPath>();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            NavPath {
+                goal: Vec3::new(10.0, 0.0, 0.0),
+                residency_generation: 1,
+                waypoints: std::collections::VecDeque::from(vec![Vec3::new(10.0, 0.0, 0.0)]),
+            },
+        );
+        assert!(world.has::<NavPath>(actor));
+
+        clear_ambient_behavior(&world, actor);
+
+        assert!(
+            !world.has::<NavPath>(actor),
+            "a stale NavPath must not survive a package-switch handover"
+        );
     }
 
     #[test]
