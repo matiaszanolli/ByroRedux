@@ -1,39 +1,63 @@
-# #3719: NIF-2026-08-30-D2-02: three NifVersion constants have no call site, including a V20_2_0_7_SSE alias whose only reference is a test asserting it equals V20_2_0_7
+# #3719 — NIF-2026-08-30-D2-02: three NifVersion constants have no call site, including a `V20_2_0_7_SSE` alias whose only reference is a test asserting it equals `V20_2_0_7`
 
-**Labels**: bug, nif-parser, low, tech-debt, nif
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: LOW · **Location**: `crates/nif/src/version.rs`
+**Source**: `docs/audits/AUDIT_NIF_2026-08-30.md` (NIF-2026-08-30-D2-02)
 
----
+`V10_1_0_112` (:119), `V20_2_0_7_SSE` (:160), and `V30_1_0_1` (:170) have zero
+call sites outside `version.rs` itself. `V20_2_0_7_SSE`'s only reference anywhere
+is a tautological test asserting it equals `V20_2_0_7` (same bit pattern —
+Skyrim/FO4 report the identical NIF version as Fallout 3+, there is no distinct
+"SSE version").
 
-**Report**: `docs/audits/AUDIT_NIF_2026-08-30.md` · **Severity**: LOW · **Dimension**: Version Gating
-**Game affected**: none (dead code)
+## Verification
 
-## Location
-- `crates/nif/src/version.rs` — `V10_1_0_112` (`:109`), `V20_2_0_7_SSE` (`:150`), `V30_1_0_1` (`:160`); the self-referential assertion at `:848`
+Independently re-derived the audit's claim: `grep -rn "V10_1_0_112\|V20_2_0_7_SSE\|V30_1_0_1" --include='*.rs' .` (excluding `target/`) confirmed all three
+have zero references beyond their own definitions and (for `V20_2_0_7_SSE`) the
+one tautological assert — exact match, no deviation.
 
-## Description
-`V20_2_0_7_SSE` is defined as `Self(0x14020007)` — bit-identical to `V20_2_0_7`. Its only reference anywhere in the workspace is `assert_eq!(NifVersion::V20_2_0_7, NifVersion::V20_2_0_7_SSE)`, a test that can only fail if someone edits the constant it exists to alias.
+Went further per-constant, since "zero grep hits" doesn't mean the same thing
+for all three:
 
-Two names for one value invite a future gate written against the "SSE" spelling in the belief that it discriminates Skyrim SE from LE — **it does not**: the corpus census confirms SE and LE share version 20.2.0.7 and differ only by `bsver` 100 vs 83. `V10_1_0_112` and `V30_1_0_1` are likewise call-site-less.
+- **`V30_1_0_1`**: read `NiPersistentSrcTextureRendererData::parse`
+  (`crates/nif/src/blocks/texture.rs`) — the `Platform`/`Renderer` field is
+  decoded unconditionally, no version branch anywhere. Genuinely zero
+  functional gate, confirmed by the code, not just by grep. The constant's own
+  doc comment already concedes this ("no Redux-supported title reaches major
+  version 30").
+- **`V10_1_0_112`**: read `NiBlendInterpolator::parse`
+  (`crates/nif/src/blocks/interpolator.rs`) — the modern-layout boundary it
+  documents IS real, correct, and load-bearing (the #1508 fix), but the
+  dispatch reaches it via the *adjacent* `V10_1_0_111`'s `<=` upper bound plus
+  an `else` fallthrough — never a direct reference to `V10_1_0_112` itself.
+  Materially different from the other two: the boundary is genuine, only the
+  named constant was unused.
 
-## Evidence
-Exhaustive workspace scan re-run 2026-08-30:
-```
-V20_2_0_7_SSE  -> version.rs:150 (definition), version.rs:848 (the tautological assert)
-V10_1_0_112    -> version.rs:109 (definition only)
-V30_1_0_1      -> version.rs:160 (definition only)
-```
-Zero references outside `version.rs` for all three; non-zero for every other `pub const V*`.
+## Fix implemented
 
-## Impact
-No runtime effect. Same dead-constant class that #1511, #1840 and #1897 each had to remove once already; the aliasing case is actively misleading rather than merely unused.
+- Deleted `V20_2_0_7_SSE` and its tautological `version_ordering` assert — pure
+  duplicate alias, zero functional or documentary value beyond what
+  `V20_2_0_7`'s own (now slightly expanded) doc comment already states.
+- Deleted `V30_1_0_1` — confirmed zero consumer, no near-term one planned (its
+  own doc already said as much); matches the issue's own suggested-fix
+  criterion ("keep only if a documented near-term consumer exists").
+- **Kept `V10_1_0_112`**, but gave it a real, compiled reference instead of
+  either deleting a genuinely-correct documented boundary or leaving it
+  unreferenced: `NiBlendInterpolator::parse`'s `else` branch now carries
+  `debug_assert!(version >= NifVersion::V10_1_0_112)` immediately before
+  calling `parse_modern`. This makes the constant a first-class consumer of
+  the exact boundary its doc comment describes, self-checks the `else`
+  fallthrough's implicit assumption, and avoids duplicating the three-band
+  dispatch logic just to name one more constant explicitly.
 
-## Related
-#1511, #1840, #1897; cross-domain with `/audit-tech-debt`.
+**SIBLING** (issue's own checklist item): re-scanned every `pub const V*` in
+`version.rs` (45 total) for call-site presence — after this fix, zero orphans
+remain in the file.
 
-## Suggested Fix
-Delete `V20_2_0_7_SSE` and its tautological assertion; keep `V10_1_0_112` / `V30_1_0_1` only if a documented near-term consumer exists.
+**TESTS** (issue's own checklist item): removing the tautological assert
+doesn't reduce coverage — `version_ordering`'s two remaining assertions were
+untouched, and no other test anywhere referenced either deleted constant
+(confirmed by the same workspace-wide grep, post-fix, returning no hits).
 
-## Completeness Checks
-- [ ] **SIBLING**: re-scan every `pub const V*` for call sites in the same pass so a fourth dead constant is not left behind
-- [ ] **TESTS**: removing the tautological assert must not reduce real coverage — confirm no other test depended on it
+Full workspace: `cargo test --no-fail-fast` 7049 passing, 0 failing (unchanged
+count — no new tests added, none removed; the deleted tautological assert
+lived inside an existing multi-assert test function, not its own `#[test]`).

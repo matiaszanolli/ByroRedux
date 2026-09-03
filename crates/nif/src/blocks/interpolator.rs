@@ -889,6 +889,7 @@ impl NiBlendInterpolator {
         } else if version <= crate::version::NifVersion::V10_1_0_111 {
             Self::parse_legacy(stream, /* int_priority */ false)
         } else {
+            debug_assert!(version >= crate::version::NifVersion::V10_1_0_112);
             Self::parse_modern(stream)
         }
     }
