@@ -1467,6 +1467,125 @@ fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
     )
 }
 
+/// Slice the body of a top-level function declared by `fn_decl` (e.g.
+/// `"fn hash_gpu_material_fields"`) out of `src` — the text between the
+/// function's own opening `{` and its MATCHING closing `}`, found by
+/// brace-depth counting. Unlike [`extract_struct_body`]'s "first `}`"
+/// shortcut (safe only because every struct body here is flat), a
+/// function body isn't guaranteed brace-free — `hash_gpu_material_fields`
+/// happens to be flat today, but this doesn't assume it stays that way.
+fn extract_fn_body<'a>(src: &'a str, fn_decl: &str) -> Option<&'a str> {
+    let start = src.find(fn_decl)?;
+    let open = src[start..].find('{')? + start;
+    let mut depth = 0i32;
+    for (i, b) in src[open..].bytes().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every `mat.<ident>` field access in `body`, in occurrence order
+/// (duplicates included — the caller collects into a set). Deliberately
+/// loose (a substring + identifier scan, not a real Rust parse), matching
+/// the same "good enough for a source-scanning guard" posture as
+/// [`parse_rust_struct_fields`] — `hash_gpu_material_fields`'s parameter
+/// is always named `mat`, both here and in `DrawCommand::material_hash`.
+fn extract_mat_field_accesses(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("mat.") {
+        let start = i + rel + "mat.".len();
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        if end > start {
+            out.push(body[start..end].to_string());
+        }
+        i = end.max(start + 1);
+    }
+    out
+}
+
+/// Regression for #3568 (REN-2026-08-30-D7-01). `MaterialTable::intern_by_hash`
+/// dedups solely on `hash_gpu_material_fields`'s u64: a `GpuMaterial` field
+/// populated by `to_gpu_material` but omitted from the hash walk makes two
+/// visually-different materials silently collapse onto one table slot — the
+/// first-seen record wins and every later draw renders with the wrong value.
+/// Release builds have no guard against this at all (the one live check,
+/// `intern_by_hash`'s byte-equality `debug_assert!`, is debug-only and only
+/// fires if such content is actually loaded that session).
+///
+/// The three pre-existing pins are all mutually blind to this exact defect:
+/// `gpu_material_size_is_432_bytes` pins `size_of`, which a correctly-added-
+/// but-unhashed field still satisfies; `gpu_material_glsl_field_order_matches_
+/// rust_struct` compares the Rust struct against the GLSL mirror, and both
+/// sides get updated in a normal field addition; `material_hash_matches_
+/// gpu_material_field_hash` compares the two hash walks (this one and
+/// `DrawCommand::material_hash`) against EACH OTHER, so it passes when a
+/// field is missing from both.
+///
+/// Parses the struct's declared field names and the `mat.<ident>`
+/// identifiers `hash_gpu_material_fields`'s body actually hashes, out of the
+/// SAME `include_str!`'d source, and asserts the two sets are identical in
+/// both directions: a field in the struct but not the hash is the silent-
+/// dedup-collapse hazard this issue is about; a stale identifier in the
+/// hash but not the struct means the walk drifted from a since-renamed or
+/// removed field.
+#[test]
+fn hash_gpu_material_fields_covers_every_gpu_material_field() {
+    let rust_src = include_str!("../material.rs");
+
+    let struct_fields: std::collections::BTreeSet<String> =
+        parse_rust_struct_fields(rust_src, "pub struct GpuMaterial")
+            .into_iter()
+            .collect();
+    assert!(
+        struct_fields.len() > 60,
+        "parsed only {} fields from `struct GpuMaterial` — parser likely broke",
+        struct_fields.len()
+    );
+
+    let hash_body = extract_fn_body(rust_src, "fn hash_gpu_material_fields")
+        .expect("material.rs must declare `hash_gpu_material_fields`");
+    let hashed_fields: std::collections::BTreeSet<String> =
+        extract_mat_field_accesses(hash_body).into_iter().collect();
+    assert!(
+        hashed_fields.len() > 60,
+        "parsed only {} `mat.<field>` accesses out of hash_gpu_material_fields \
+         — parser likely broke",
+        hashed_fields.len()
+    );
+
+    let missing_from_hash: Vec<&String> = struct_fields.difference(&hashed_fields).collect();
+    assert!(
+        missing_from_hash.is_empty(),
+        "GpuMaterial field(s) {missing_from_hash:?} are declared on the struct but never \
+         hashed by hash_gpu_material_fields — MaterialTable::intern_by_hash would silently \
+         collapse two materials that differ only in this field onto one table slot in \
+         release builds (#3568 / REN-2026-08-30-D7-01). Add `h.write_u32(mat.<field>...)` \
+         to hash_gpu_material_fields (and the matching DrawCommand::material_hash walk)."
+    );
+
+    let stale_in_hash: Vec<&String> = hashed_fields.difference(&struct_fields).collect();
+    assert!(
+        stale_in_hash.is_empty(),
+        "hash_gpu_material_fields hashes field(s) {stale_in_hash:?}, which {} not declared \
+         on GpuMaterial — the hash walk has drifted from a renamed or removed field.",
+        if stale_in_hash.len() == 1 { "is" } else { "are" }
+    );
+}
+
 /// #2770 / REN-D1-03 — `MATERIAL_KIND_*` values exist in two independent
 /// Rust tables: `scene_buffer::constants` (the authoritative values other
 /// Rust code imports and compares against) and `shader_constants_data` (a

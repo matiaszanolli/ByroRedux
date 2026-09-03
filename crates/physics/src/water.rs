@@ -1951,16 +1951,6 @@ mod tests {
         );
     }
 
-    /// #3114 — `add_force` accumulates into `forces.user_force`, which persists
-    /// across `pipeline.step()` and is cleared only by `reset_forces`. The
-    /// placed-`XWCU` current branch ran *after* the surface branch and did not
-    /// reset, which is correct only when the surface branch reset first. With a
-    /// current marker that overlaps no water plane the surface branch never
-    /// runs, so the per-frame term compounded: for a body held near rest the
-    /// term is a constant `m·c·s`, giving `user_force ~ n·m·c·s` — unbounded
-    /// linear growth until the body is launched ("havok explosion"), and a body
-    /// under a growing force never sleeps, pinning the static-scene fast path.
-    #[test]
     /// #3268 — sibling of the wind-up test below, with its manual
     /// per-iteration `wake_up` removed. That workaround was the bug: the
     /// current branch is gated on `!is_sleeping()` and only the SURFACE
@@ -2095,6 +2085,15 @@ mod tests {
         );
     }
 
+    /// #3114 — `add_force` accumulates into `forces.user_force`, which persists
+    /// across `pipeline.step()` and is cleared only by `reset_forces`. The
+    /// placed-`XWCU` current branch ran *after* the surface branch and did not
+    /// reset, which is correct only when the surface branch reset first. With a
+    /// current marker that overlaps no water plane the surface branch never
+    /// runs, so the per-frame term compounded: for a body held near rest the
+    /// term is a constant `m·c·s`, giving `user_force ~ n·m·c·s` — unbounded
+    /// linear growth until the body is launched ("havok explosion"), and a body
+    /// under a growing force never sleeps, pinning the static-scene fast path.
     #[test]
     fn current_volume_without_a_water_plane_does_not_wind_up_user_force() {
         use crate::{physics_sync_system, RapierHandles};

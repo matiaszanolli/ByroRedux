@@ -20,10 +20,10 @@
 //!     "<Starfield>/Data/Starfield - Misc.ba2"
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
-use byroredux_papyrus::ast::ScriptItem;
+use byroredux_papyrus::ast::{Expr, ScriptItem, Stmt};
 use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_scripting::fragment::quest_property_names;
 use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
@@ -53,6 +53,72 @@ impl Archive {
             Archive::Ba2(a) => a.extract(path),
         }
     }
+}
+
+/// A short description of a top-level statement's shape, for tallying
+/// decline reasons. A method-call `ExprStmt` describes as `method/arity`
+/// (e.g. `moveto/5`) — exactly the granularity #3498's suggested fix asks
+/// for; every other statement kind describes by its own kind, since
+/// `lower_statements` declines several of those unconditionally
+/// (assignment to a field/index, an `elseif` clause, …) independent of
+/// any particular method.
+fn stmt_shape(stmt: &Stmt) -> String {
+    match stmt {
+        Stmt::ExprStmt(e) => expr_call_shape(&e.node).unwrap_or_else(|| "ExprStmt(other)".into()),
+        Stmt::Assign { target, value, .. } => match &target.node {
+            Expr::Ident(_) => match expr_call_shape(&value.node) {
+                Some(shape) => format!("Assign(= {shape})"),
+                None => "Assign(local)".into(),
+            },
+            _ => "Assign(field/index)".into(),
+        },
+        Stmt::VarDecl(_) => "VarDecl".into(),
+        Stmt::Return(Some(_)) => "Return(value)".into(),
+        Stmt::Return(None) => "Return(none)".into(),
+        Stmt::If {
+            elseif_clauses, ..
+        } if !elseif_clauses.is_empty() => "If(elseif)".into(),
+        Stmt::If { .. } => "If".into(),
+        Stmt::While { .. } => "While".into(),
+    }
+}
+
+/// `method/arity` for a direct or member-access call expression; `None`
+/// for anything else (a bare literal statement, an unsupported operator
+/// chain, …).
+fn expr_call_shape(expr: &Expr) -> Option<String> {
+    let Expr::Call { callee, args } = expr else {
+        return None;
+    };
+    let name = match &callee.node {
+        Expr::Ident(id) => id.0.to_ascii_lowercase(),
+        Expr::MemberAccess { member, .. } => member.node.0.to_ascii_lowercase(),
+        _ => return None,
+    };
+    Some(format!("{name}/{}", args.len()))
+}
+
+/// `lower_statements` (the function under `lower_fragment_with_quest_
+/// properties`) declines a fragment on the FIRST statement it can't
+/// classify and processes every earlier statement's binding effects
+/// first — the same short-circuit-on-`?` shape as a `for` loop with an
+/// early return. Re-lowering successive prefixes of `body` from the
+/// start therefore reproduces exactly the point of failure: the
+/// smallest prefix that still declines names the failing statement.
+/// Zero production-code changes — this probes the existing decision
+/// boundary from the outside rather than threading a new "why" return
+/// value through the translator.
+fn decline_shape(body: &[byroredux_papyrus::span::Spanned<Stmt>], quest_properties: &HashSet<String>) -> String {
+    for i in 0..body.len() {
+        if lower_fragment_with_quest_properties(&body[..=i], quest_properties).is_none() {
+            return stmt_shape(&body[i].node);
+        }
+    }
+    // Every prefix lowered but the whole body still declined — not
+    // reachable given `lower_statements`' sequential short-circuit, but
+    // keep the histogram honest instead of panicking on a future
+    // control-flow shape (e.g. a decline keyed on total effect count).
+    "(no single failing statement found)".into()
 }
 
 fn effect_kind(e: &Effect) -> &'static str {
@@ -109,6 +175,8 @@ fn main() {
     let mut empty = 0usize; // empty fragments (trivially lowered)
     let mut effect_hist: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut claimed_effects = 0usize;
+    // #3498 — the tally the module doc always claimed to produce.
+    let mut decline_hist: BTreeMap<String, usize> = BTreeMap::new();
 
     for path in &args {
         let Ok(arch) = Archive::open(path) else {
@@ -155,13 +223,18 @@ fn main() {
                     continue;
                 }
                 behavioral += 1;
-                if let Some(effects) =
-                    lower_fragment_with_quest_properties(&func.body, &quest_properties)
-                {
-                    claimed += 1;
-                    claimed_effects += effects.len();
-                    for e in &effects {
-                        *effect_hist.entry(effect_kind(e)).or_default() += 1;
+                match lower_fragment_with_quest_properties(&func.body, &quest_properties) {
+                    Some(effects) => {
+                        claimed += 1;
+                        claimed_effects += effects.len();
+                        for e in &effects {
+                            *effect_hist.entry(effect_kind(e)).or_default() += 1;
+                        }
+                    }
+                    None => {
+                        *decline_hist
+                            .entry(decline_shape(&func.body, &quest_properties))
+                            .or_default() += 1;
                     }
                 }
             }
@@ -190,5 +263,149 @@ fn main() {
     println!("\ncanonical effects emitted: {claimed_effects}");
     for (k, n) in &effect_hist {
         println!("  {k:<24} {n}");
+    }
+
+    // #3498 — the decline-reason tally the module doc always promised.
+    // Sorted by count descending so the next primitive to add is the
+    // first line, not buried in a BTreeMap's alphabetical order.
+    let mut declines: Vec<(&String, &usize)> = decline_hist.iter().collect();
+    declines.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    println!(
+        "\ndeclined by first unmodeled statement (top {}):",
+        declines.len().min(30)
+    );
+    for (shape, n) in declines.into_iter().take(30) {
+        println!("  {shape:<32} {n}");
+    }
+}
+
+// Run with `cargo test -p byroredux-scripting --example fragment_coverage`
+// (matching `mq101_conformance`'s own embedded-test convention) — not swept
+// by a bare `cargo test -p byroredux-scripting`, since a `[[example]]`
+// target's tests aren't part of the crate's default test set.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_papyrus::ast::{AssignOp, CallArg, Identifier, Variable};
+    use byroredux_papyrus::span::{Span, Spanned};
+
+    fn spanned<T>(node: T) -> Spanned<T> {
+        Spanned::new(node, Span::empty(0))
+    }
+
+    fn ident(name: &str) -> Identifier {
+        Identifier(name.to_string())
+    }
+
+    fn call(callee: Expr, args: Vec<Expr>) -> Expr {
+        Expr::Call {
+            callee: Box::new(spanned(callee)),
+            args: args
+                .into_iter()
+                .map(|value| CallArg {
+                    name: None,
+                    value: spanned(value),
+                })
+                .collect(),
+        }
+    }
+
+    fn member_call(receiver: &str, method: &str, args: Vec<Expr>) -> Expr {
+        call(
+            Expr::MemberAccess {
+                object: Box::new(spanned(Expr::Ident(ident(receiver)))),
+                member: spanned(ident(method)),
+            },
+            args,
+        )
+    }
+
+    #[test]
+    fn expr_call_shape_reports_method_and_arity() {
+        let e = member_call("Player", "MoveTo", vec![Expr::IntLit(0); 5]);
+        assert_eq!(expr_call_shape(&e).as_deref(), Some("moveto/5"));
+
+        let e = call(Expr::Ident(ident("Enable")), vec![]);
+        assert_eq!(expr_call_shape(&e).as_deref(), Some("enable/0"));
+
+        assert_eq!(expr_call_shape(&Expr::IntLit(0)), None);
+    }
+
+    #[test]
+    fn stmt_shape_describes_every_kind() {
+        assert_eq!(
+            stmt_shape(&Stmt::ExprStmt(spanned(member_call(
+                "obj",
+                "DoThing",
+                vec![Expr::IntLit(1)]
+            )))),
+            "dothing/1"
+        );
+        assert_eq!(
+            stmt_shape(&Stmt::ExprStmt(spanned(Expr::IntLit(0)))),
+            "ExprStmt(other)"
+        );
+        assert_eq!(
+            stmt_shape(&Stmt::Assign {
+                target: spanned(Expr::MemberAccess {
+                    object: Box::new(spanned(Expr::Ident(ident("self")))),
+                    member: spanned(ident("Field")),
+                }),
+                op: AssignOp::Eq,
+                value: spanned(Expr::IntLit(1)),
+            }),
+            "Assign(field/index)"
+        );
+        assert_eq!(
+            stmt_shape(&Stmt::VarDecl(Variable {
+                ty: spanned(byroredux_papyrus::ast::Type::Int),
+                name: spanned(ident("x")),
+                initial_value: None,
+                is_conditional: false,
+                is_const: false,
+            })),
+            "VarDecl"
+        );
+        assert_eq!(stmt_shape(&Stmt::Return(None)), "Return(none)");
+        assert_eq!(
+            stmt_shape(&Stmt::Return(Some(spanned(Expr::IntLit(1))))),
+            "Return(value)"
+        );
+        assert_eq!(
+            stmt_shape(&Stmt::While {
+                condition: spanned(Expr::BoolLit(true)),
+                body: vec![],
+            }),
+            "While"
+        );
+    }
+
+    /// #3498 — the prefix-search must land on the exact statement that
+    /// breaks lowering, not merely on "the fragment declined". A leading
+    /// `Return(None)` (always lowers fine — Champollion's terminator) is
+    /// followed by an assignment to a field, which `lower_statements`
+    /// explicitly declines (`effects.rs`: "assignment to a field/index —
+    /// unmodeled"). The failing index is 1, not 0.
+    #[test]
+    fn decline_shape_finds_the_first_failing_statement_not_just_any_failure() {
+        let body = vec![
+            spanned(Stmt::Return(None)),
+            spanned(Stmt::Assign {
+                target: spanned(Expr::MemberAccess {
+                    object: Box::new(spanned(Expr::Ident(ident("self")))),
+                    member: spanned(ident("Field")),
+                }),
+                op: AssignOp::Eq,
+                value: spanned(Expr::IntLit(1)),
+            }),
+        ];
+        assert!(
+            lower_fragment_with_quest_properties(&body, &HashSet::new()).is_none(),
+            "sanity: the full body must actually decline"
+        );
+        assert_eq!(
+            decline_shape(&body, &HashSet::new()),
+            "Assign(field/index)"
+        );
     }
 }

@@ -141,9 +141,12 @@ pub(crate) fn legacy_script_principal(path: &str) -> PrincipalId {
 /// keyed by `(quest, stage)` for `quest_fragment_dispatch_system`.
 ///
 /// No-op when no `--scripts-bsa` archive is present (nothing to
-/// decompile) or on pre-Papyrus games (empty `fragments`). Runs once per
-/// cell load; re-registering a `(quest, stage)` on a later load simply
-/// overwrites with the identical lowering.
+/// decompile) or on pre-Papyrus games (empty `fragments`). #3161 — the
+/// `is_populated()` self-guard below makes this run once per **session**
+/// (process lifetime), not once per cell load: the walk is idempotent but
+/// not cheap (845 quests on Skyrim, a per-quest `HashMap` build and an
+/// archive `extract_pex` per script name), so a later cell load's call is
+/// a guarded no-op rather than a re-walk.
 pub(crate) fn populate_quest_fragments(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
