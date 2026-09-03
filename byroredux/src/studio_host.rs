@@ -6,7 +6,6 @@ use byroredux_core::ecs::{
     ActiveCamera, EntityId, GlobalTransform, Material, Resource, Transform, World, WorldBound,
 };
 use byroredux_core::math::{EulerRot, Quat, Vec3};
-use byroredux_core::string::StringPool;
 use byroredux_sdk::identity::ObjectId;
 use byroredux_sdk::studio::{
     pick_spheres, AssetSource, BoundSphere, MaterialValue, ObjectSnapshot, StudioCommand,
@@ -70,18 +69,31 @@ pub(crate) fn install_session(world: &mut World, source: AssetSource, entities: 
 
 pub(crate) fn snapshot(world: &World) -> Option<StudioSnapshot> {
     let session = world.try_resource::<StudioSession>()?.clone();
-    let pool = world.try_resource::<StringPool>();
     let objects = session
         .objects
         .iter()
         .filter_map(|binding| {
+            // #3445 (CONC-D3-2026-08-27b-03) — resolve the name FIRST via
+            // the shared canonical-order helper (`Name` then the string-
+            // interning resource, #313), whose own guards are fully
+            // dropped before it returns, then acquire Transform/Material.
+            // No storage lock is ever held across a different storage's
+            // acquisition here, unlike the pre-fix shape where the
+            // string-interning resource (acquired once, outside this
+            // closure) stayed alive across every entity's Transform AND
+            // Name read, inverting the tail every other caller in this
+            // codebase respects.
+            //
+            // NOTE for future editors: this comment deliberately never
+            // spells out the string-interning resource's own type name —
+            // the sibling regression test in this file's own `mod tests`
+            // scans this function's source for exactly that name, and
+            // writing it here would make the test match its own
+            // describing comment instead of real code.
+            let name = crate::commands::shared::resolve_entity_name(world, binding.entity)
+                .unwrap_or_default();
             let transform = world.get::<Transform>(binding.entity)?;
             let (x, y, z) = transform.rotation.to_euler(EulerRot::XYZ);
-            let name = world
-                .get::<byroredux_core::ecs::Name>(binding.entity)
-                .and_then(|name| pool.as_ref().and_then(|pool| pool.resolve(name.0)))
-                .unwrap_or("")
-                .to_owned();
             let material = world
                 .get::<Material>(binding.entity)
                 .map(|material| MaterialValue {
@@ -317,5 +329,74 @@ mod tests {
         assert_ne!(entity as u64, snapshot.objects[0].id.get());
         assert_eq!(snapshot.objects[0].id, ObjectId::new(1).unwrap());
         assert_eq!(snapshot.selected, Some(snapshot.objects[0].id));
+    }
+
+    /// #3445 (CONC-D3-2026-08-27b-03) — behavioral half of the fix: routing
+    /// name resolution through the shared `resolve_entity_name` helper
+    /// instead of a locally-held `StringPool` guard must not change the
+    /// resolved name.
+    #[test]
+    fn snapshot_still_resolves_entity_names_through_the_shared_helper() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_core::string::StringPool::new());
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        let symbol = {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            pool.intern("HeadHuman01")
+        };
+        world.insert(entity, byroredux_core::ecs::Name(symbol));
+        install_session(
+            &mut world,
+            AssetSource {
+                label: "fixture.nif".to_owned(),
+            },
+            vec![entity],
+        );
+
+        let snapshot = snapshot(&world).unwrap();
+        // `StringPool::intern` lowercases (Bethesda's own filesystem
+        // case-insensitivity convention) — resolved name comes back
+        // lowercase regardless of how it was authored.
+        assert_eq!(snapshot.objects[0].name, "headhuman01");
+    }
+
+    /// #3445 (CONC-D3-2026-08-27b-03) — structural pin: `snapshot`'s own
+    /// function body must never directly acquire `StringPool` or `Name`
+    /// again. Pre-fix, `pool` was acquired once outside the per-entity
+    /// closure and held across every entity's `Transform` AND `Name`
+    /// reads, inverting the canonical `… → Name → StringPool` tail
+    /// (#313) that `resolve_entity_name` and the debug evaluator both
+    /// respect. The fix delegates to that shared helper instead, whose
+    /// own guards are fully dropped before `snapshot` ever touches
+    /// `Transform`/`Material` — so a correct `snapshot` body should
+    /// contain neither `StringPool` nor a direct `Name` read at all.
+    #[test]
+    fn snapshot_body_does_not_directly_acquire_string_pool_or_name() {
+        let src = include_str!("studio_host.rs");
+        let start = src
+            .find("pub(crate) fn snapshot(world: &World) -> Option<StudioSnapshot> {")
+            .expect("snapshot must still exist with this signature");
+        let rest = &src[start..];
+        let end = rest
+            .find("\npub(crate) fn ")
+            .expect("no terminator found for snapshot");
+        let body = &rest[..end];
+
+        assert!(
+            body.contains("resolve_entity_name"),
+            "snapshot must resolve names through the shared canonical-order \
+             helper, not re-derive the acquisition itself"
+        );
+        assert!(
+            !body.contains("StringPool"),
+            "snapshot must never directly acquire StringPool again — that's \
+             the exact regression #3445 fixed"
+        );
+        assert!(
+            !body.contains("::<byroredux_core::ecs::Name>") && !body.contains("::<Name>"),
+            "snapshot must never directly acquire Name again — resolve_entity_name \
+             already does, in the canonical order"
+        );
     }
 }

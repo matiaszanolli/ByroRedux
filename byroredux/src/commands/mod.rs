@@ -40,7 +40,10 @@ mod gameplay;
 mod physics;
 mod quest;
 mod scene;
-mod shared;
+// #3445 — widened to `pub(crate)` so `studio_host::snapshot` (outside
+// `commands`) can reuse `resolve_entity_name`'s canonical `Name ->
+// StringPool` acquisition order instead of re-deriving it.
+pub(crate) mod shared;
 mod time;
 mod view;
 mod water;

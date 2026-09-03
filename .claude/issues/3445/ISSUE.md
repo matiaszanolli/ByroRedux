@@ -1,90 +1,97 @@
-# Issue #3445: CONC-D3-2026-08-27b-03: `studio_host::snapshot` inverts the canonical order's `Name → StringPool` tail, closing a 2-cycle against `resolve_entity_name` and the debug evaluator
+# #3445 — CONC-D3-2026-08-27b-03: studio_host::snapshot inverts the canonical order's Name → StringPool tail, closing a 2-cycle against resolve_entity_name and the debug evaluator
 
-**Finding ID**: CONC-D3-2026-08-27b-03
-**Labels**: bug, ecs, medium, concurrency
-**Filed from**: `docs/audits/AUDIT_CONCURRENCY_2026-08-27b.md`
-**Audited at**: HEAD = 969d81c8
+**Severity**: MEDIUM · **Dimension**: 3 (ECS Lock Ordering & Deadlock)
+**Location**: `byroredux/src/studio_host.rs::snapshot`
 
----
+## Fix
 
-**Source**: `docs/audits/AUDIT_CONCURRENCY_2026-08-27b.md` — finding `CONC-D3-2026-08-27b-03` (MEDIUM, Dimension 3: ECS Lock Ordering & Deadlock). Audited at `HEAD = 969d81c8`; re-verified against current code at publish time.
+Verified the premise: `pool = world.try_resource::<StringPool>()` was
+acquired once outside the per-entity `filter_map` closure and stayed
+alive across every entity's `Transform` and `Name` reads, inverting the
+canonical `… → Name → StringPool` tail `docs/engine/ecs.md` fixes for
+this cluster — the exact reverse of `resolve_entity_name`
+(`commands/shared.rs`) and the debug evaluator's own established order.
 
-**Location**: `byroredux/src/studio_host.rs` (`snapshot`). Reverse edges at `byroredux/src/commands/shared.rs` (`resolve_entity_name`), `byroredux/src/commands/assets.rs` (`skin.list`), `crates/debug-server/src/evaluator.rs`.
+Applied the issue's "better" suggested option: reuse `resolve_entity_name`
+directly instead of re-deriving the acquisition. Its own guards (`Name`
+then the string pool) are fully dropped before it returns, so calling it
+once per entity — before `Transform`/`Material` are touched for that same
+entity — means no storage lock is ever held across a different storage's
+acquisition at all, stronger than just reordering the two reads.
 
-## Description
+`resolve_entity_name` lives in `commands::shared`, a module private to
+`commands` and not reachable from `studio_host` (a sibling module).
+Widened `mod shared;` to `pub(crate) mod shared;` — the minimal visibility
+change needed, matching this session's own established precedent for
+"a helper needs to be reached from outside its original module" (#2530).
 
-`docs/engine/ecs.md` fixes one process-wide order for the hierarchy/skinning/naming cluster, ending `… → Name → StringPool`. `studio_host::snapshot` acquires `StringPool` **first** and then walks storages beneath it:
+## SIBLING (issue's own checklist item)
 
-```rust
-// byroredux/src/studio_host.rs
-pub(crate) fn snapshot(world: &World) -> Option<StudioSnapshot> {
-    let session = world.try_resource::<StudioSession>()?.clone();
-    let pool = world.try_resource::<StringPool>();          // ← guard held for the whole walk
-    let objects = session.objects.iter().filter_map(|&entity| {
-        let transform = world.get::<Transform>(entity)?;    // ← StringPool → Transform
-        …
-        let name = world
-            .get::<byroredux_core::ecs::Name>(entity)       // ← StringPool → Name
-            .and_then(|name| pool.as_ref().and_then(|pool| pool.resolve(name.0)))
-```
+- `CONC-D3-2026-08-27b-04` (`cinematic_animation_event_system`, the named
+  LOW sibling) — already **CLOSED** as #3446.
+- The rest of `studio_host.rs` — no other `StringPool` acquisition exists
+  in the file after this fix (grep confirms).
+- Broader scan for "any other `StringPool`-first walk" — two more sites
+  found (`asset_provider/animation.rs`, `scene/nif_loader.rs`), both
+  already correctly scoped: `nif_loader.rs`'s own comment documents
+  "the pool read lock is short-lived" and its block-expression scope
+  confirms no other storage is touched while it's held; `animation.rs`'s
+  site is test-only and never acquires a second storage type inside its
+  loop. Neither needed a fix. The two sites the issue's own evidence
+  already names as correct (`commands/assets.rs`'s `skin.list`, the
+  debug evaluator with its dedicated #2388 regression test) were
+  re-confirmed unchanged.
 
-`World::get` takes a tracked storage read lock, so these are real edges. The established reverse edges are explicit and commented:
+## LOCK_ORDER (issue's own checklist item)
 
-```rust
-// byroredux/src/commands/shared.rs — resolve_entity_name
-let name_q = world.query::<Name>()?;
-let name = name_q.get(entity)?;
-let pool = world.try_resource::<StringPool>()?;             // ← Name → StringPool
-```
+`BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux --bin byroredux
+studio_host::` is clean. No `TypeId`-sorted paired-query API was
+involved (the fix is sequential single-storage acquisitions, not a
+`query_2_mut` pair), so nothing there to preserve.
 
-```rust
-// byroredux/src/commands/assets.rs
-// Name before StringPool — matches `resolve_entity_name`'s order
-// for this pair (#313).
-let name_q = world.query::<Name>();
-let pool = world.try_resource::<StringPool>();
-```
+## TESTS (issue's own checklist item — "extend the
+`debug_evaluator_acquires_locks_in_canonical_order` pattern to
+`studio_host.rs`")
 
-`crates/debug-server/src/evaluator.rs` additionally establishes `Transform → … → StringPool`, and that crate carries a dedicated source-assert regression test (`debug_evaluator_acquires_locks_in_canonical_order`) added under #2388 for precisely this violation.
+The existing evaluator pattern scans a function body for direct
+`world.query::<T>()`/`world.resource::<T>()` acquisitions and ranks them
+against the canonical order — but the whole point of this fix is that
+`snapshot` no longer directly acquires `Name`/`StringPool` at all, so
+that literal pattern wouldn't detect anything meaningful here. Adapted it
+into the shape that actually pins this fix:
 
-The sibling function in the same snapshot bridge gets it right and says why:
+- `snapshot_body_does_not_directly_acquire_string_pool_or_name` — a
+  source scan asserting `snapshot`'s function body calls
+  `resolve_entity_name` and contains neither `StringPool` nor a direct
+  `Name` acquisition.
+- `snapshot_still_resolves_entity_names_through_the_shared_helper` — the
+  behavioral half: an entity with a real `Name` component still resolves
+  to its (lowercased, `StringPool::intern`'s own case-fold convention)
+  string through the refactored path.
 
-```rust
-// byroredux/src/inventory.rs
-// Clone each component before acquiring the next storage lock. The
-// menu is off the hot path, and this preserves the ECS invariant that
-// callers never hold independently-acquired component locks in an
-// arbitrary order.
-let inventory = (*world.get::<Inventory>(player)?).clone();
-```
+Hit the self-matching trap while writing the structural test: the
+function's own new explanatory comment initially spelled out
+"StringPool" literally, which the source scan then matched against its
+own describing prose. Reworded the comment to describe the resource in
+general terms instead (documented inline why, matching this session's
+established convention for the same hazard).
 
-`studio_host.rs` is the newer file and did not inherit that discipline.
+**Reintroduce-and-revert verification**: temporarily restored the exact
+pre-fix shape (`pool` acquired via `try_resource` before the entity loop,
+`Transform` read first, then `Name`+`pool.resolve` inline) — confirmed
+the structural test failed
+(`"snapshot must resolve names through the shared canonical-order helper"`).
+Restored the fix and reran — all 4 tests in `studio_host::tests` pass
+again.
 
-## Evidence
+## Verification
 
-The four snippets above, all present at publish time.
-
-## Trigger conditions
-
-A `--studio <mesh>.nif` session with the debug-UI panel snapshot running — `build_panel_snapshot` calls `studio_host::snapshot` unconditionally and the function only short-circuits if `StudioSession` is absent — plus any console command that resolves an entity name (`prid`, `entities`, `skin.list`, the debug server's `EntityList`).
-
-## Verification path
-
-Source-only for the ordering; observable as a `BYRO_LOCK_ORDER_CHECK=1` abort in a debug `--studio` run that also issues one name-resolving console command.
-
-## Impact
-
-No live deadlock — the panel snapshot runs on the main thread in the frame loop and console commands run under the `Stage::Late` exclusive `DebugDrainSystem`, so the two orders are never concurrent. The damage is the detector abort plus the loss of `StringPool`'s lock-order **sink** property (see the LOW sibling `CONC-D3-2026-08-27b-04`). Reachability is gated on `--studio`, which is why this is MEDIUM rather than HIGH.
-
-## Suggested fix
-
-Move the `StringPool` acquisition inside the per-entity closure, *after* the `Name` read, mirroring `resolve_entity_name` — or better, resolve names into an owned `Vec<(EntityId, String)>` up front under `Name → StringPool` and drop both guards before the `Transform`/`Material` walk, mirroring `inventory::snapshot`. Consider extending `debug-server`'s `debug_evaluator_acquires_locks_in_canonical_order` pattern to a shared source-assert covering `studio_host.rs`, since this is now the second recurrence.
-
-## Related
-
-#313 and #2388 (the canonical order and the last time this exact pair was inverted), #3261 (canonical-order doc completeness), and the LOW sibling `CONC-D3-2026-08-27b-04` (`cinematic_animation_event_system`, the same shape).
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files — `cinematic_animation_event_system` (the LOW sibling), the rest of `studio_host.rs`, and any other `StringPool`-first walk
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved; the `Name → StringPool` tail of `docs/engine/ecs.md`'s canonical order is respected
-- [ ] **TESTS**: A regression test pins this specific fix (extend the `debug_evaluator_acquires_locks_in_canonical_order` source-assert pattern to `studio_host.rs`)
+- `cargo check -p byroredux --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux --bin byroredux studio_host::`: 4 passing,
+  0 failing (+2 new).
+- `cargo test -q -p byroredux --bin byroredux`: 1897 passing, 0 failing
+  (full binary crate, unaffected elsewhere).
+- `BYRO_LOCK_ORDER_CHECK=1 cargo test -q -p byroredux --bin byroredux
+  studio_host::`: 4 passing, 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7187 passing, 0
+  failing**.
