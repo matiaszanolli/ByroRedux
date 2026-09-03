@@ -160,9 +160,31 @@ pub(crate) fn dispatch_region_ambient_music(
     sounds: &HashMap<u32, SounRecord>,
     music_form: Option<u32>,
 ) {
-    let archive_path = music_form
-        .and_then(|form_id| resolve_sound_path(sounds, form_id))
-        .map(sound_archive_path);
+    let resolved = music_form.and_then(|form_id| resolve_sound_path(sounds, form_id));
+    // #3787 — `music_form` was authored (a real REGN chose an ambient
+    // directive) but didn't resolve as a `SOUN`. On FNV this is the
+    // expected, confirmed case: `RDSB`/`RDSI` are `MSET` (Media Set)
+    // FormIDs there, not `SOUN` (census: 44/44 `RDSB` + 10/11 `RDSI` are
+    // MSET, 0 SOUN — see `RegionDataPayload::Sound`'s doc). No MSET
+    // runtime exists yet, so this path is structurally unsupported rather
+    // than a content gap; log it once so "no archive supplied" (silent,
+    // the common case per the doc above) is distinguishable from "an
+    // ambient directive was authored but this engine build can't resolve
+    // its target type at all" — repeated per-region-transition logging
+    // would otherwise flood the log with the same diagnosis every cell
+    // load.
+    if music_form.is_some() && resolved.is_none() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            log::info!(
+                "REGN ambient: music_form did not resolve as a SOUN record — on FNV, \
+                 RDSB/RDSI are confirmed MSET (Media Set) FormIDs, which this engine \
+                 does not yet decode; region ambient music is unsupported pending an \
+                 MSET runtime (#3787), not a missing-archive content gap"
+            );
+        });
+    }
+    let archive_path = resolved.map(sound_archive_path);
     let Some(archive_path) = archive_path else {
         stop_region_ambient_music(world);
         return;
@@ -337,12 +359,21 @@ mod tests {
 
     /// A `music_form` that doesn't resolve to any known SOUN must stop
     /// playback (not leave a stale track running) rather than panic.
+    ///
+    /// #3787 — this is the exact shape of FNV's `RDSB`/`RDSI` fields
+    /// (census-confirmed: 44/44 + 10/11 targets are `MSET`, not `SOUN`,
+    /// so the FormID is real but absent from the `sounds` map every
+    /// time). Pins that a real-but-non-SOUN FormID does not get spuriously
+    /// resolved through the SOUN map — it fails closed exactly like a
+    /// genuinely unknown FormID does, never fabricating a lookup hit.
     #[test]
     fn dispatch_with_unresolvable_form_id_stops_playback() {
         let mut world = World::new();
         world.insert_resource(byroredux_audio::AudioWorld::default());
         world.insert_resource(SoundArchiveProvider::new());
         let sounds = HashMap::new();
+        // 0xDEAD_BEEF stands in for a real MSET FormID here: authored
+        // (Some), present in no SOUN map, same as every FNV RDSB target.
         dispatch_region_ambient_music(&mut world, &sounds, Some(0xDEAD_BEEF));
         assert!(!world
             .resource::<byroredux_audio::AudioWorld>()

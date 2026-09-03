@@ -756,10 +756,29 @@ pub enum RegionDataPayload {
     /// region), too little to establish a row layout.
     Grass(Vec<u8>),
     Sound {
-        /// `RDMD` music type (Oblivion) / `RDMO` music form (Skyrim) /
-        /// `RDSB` blanket sound (FNV).
+        /// `RDMD` (Oblivion) / `RDMO` (Skyrim) / `RDSB` (FNV) — the raw
+        /// 4-byte value, decoded generically as a FormID.
+        ///
+        /// #3787 — on FNV this is **confirmed NOT a `SOUN` FormID**: a
+        /// census across all 276 `FalloutNV.esm` REGN records found 44 of
+        /// 44 `RDSB` targets resolve as `MSET` (Media Set), 0 as `SOUN`.
+        /// `dispatch_region_ambient_music` (`byroredux/src/asset_provider/
+        /// audio.rs`) resolves `music_form` against the parsed `SounRecord`
+        /// map regardless, so it misses on every FNV region — the consumer
+        /// treats this field as if it always names a `SOUN`, which was
+        /// never true for FNV and is empirically **also** not true for
+        /// Oblivion or Skyrim (their `RDMD`/`RDMO` don't resolve as `SOUN`
+        /// either — Oblivion's values were measured near-universally `0`
+        /// across every vanilla region, consistent with a small enum
+        /// rather than a FormID at all; Skyrim's are real non-trivial
+        /// FormIDs that still don't match any parsed `SOUN` record). The
+        /// per-era target type this field actually names for Oblivion/
+        /// Skyrim was NOT further verified here — flagged as a follow-up,
+        /// not fixed. Do not assume `SOUN` for any era without checking.
         music: Option<u32>,
-        /// `RDSI` incidental sound form (FNV).
+        /// `RDSI` incidental sound form (FNV). Same caveat as `music`
+        /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not
+        /// `SOUN` (#3787).
         incidental: Option<u32>,
         sounds: Vec<RegionSound>,
     },
