@@ -198,6 +198,20 @@ impl RecordType {
     pub const LGTM: Self = Self(*b"LGTM");
     pub const LAYR: Self = Self(*b"LAYR");
     pub const LSCR: Self = Self(*b"LSCR");
+    /// Subspace — an Oblivion-only collision-volume concept. #3619
+    /// (OBL-D3-06): 33 records in `Oblivion.esm`, no parser exists and
+    /// none is planned — no current physics/collision consumer models
+    /// this concept, and the type isn't on the REFR placement path (the
+    /// full 63-distinct-type walk over `Oblivion.esm` found 0 walker
+    /// errors even with this type unhandled). Constant added so the gap
+    /// is measured in code (`RecordType::SBSP`) rather than absent from
+    /// the type entirely; not a scope commitment to parse it.
+    pub const SBSP: Self = Self(*b"SBSP");
+    /// Worldspace road path. #3619 (OBL-D3-06): only 2 records in the
+    /// whole of `Oblivion.esm`, no parser exists — matters only if
+    /// worldspace road rendering is ever wanted. Same "measured, not
+    /// modeled" rationale as [`Self::SBSP`].
+    pub const ROAD: Self = Self(*b"ROAD");
 
     // ── Magic ───────────────────────────────────────────────────────────
     pub const SPEL: Self = Self(*b"SPEL");
@@ -478,6 +492,31 @@ mod tests {
     fn record_type_equality() {
         assert_eq!(RecordType(*b"WEAP"), RecordType::WEAP);
         assert_ne!(RecordType::WEAP, RecordType::ARMO);
+    }
+
+    /// #3619 (OBL-D3-06) — `SBSP`/`ROAD` are deliberately measured-not-
+    /// modeled: the constant exists so the gap is visible in code, but
+    /// neither has a parser or a dedicated `render_layer` arm. Pins both
+    /// halves of that decision: the FourCC round-trips correctly, and
+    /// `render_layer()` falls through to the documented safe default
+    /// rather than silently landing in some other layer's bucket.
+    #[test]
+    fn record_type_sbsp_and_road_are_known_but_unmodeled() {
+        assert_eq!(RecordType::SBSP.as_str(), "SBSP");
+        assert_eq!(RecordType::from_4cc("SBSP"), RecordType::SBSP);
+        assert_eq!(RecordType::ROAD.as_str(), "ROAD");
+        assert_eq!(RecordType::from_4cc("ROAD"), RecordType::ROAD);
+
+        assert_eq!(
+            RecordType::SBSP.render_layer(),
+            byroredux_core::ecs::components::RenderLayer::Architecture,
+            "unmodeled types must fall through to the safe default, not a \
+             specific layer's bucket"
+        );
+        assert_eq!(
+            RecordType::ROAD.render_layer(),
+            byroredux_core::ecs::components::RenderLayer::Architecture
+        );
     }
 
     #[test]
