@@ -900,18 +900,25 @@ impl super::buffers::SceneBuffers {
         self.indirect_buffers[frame_index].buffer
     }
 
-    /// Upload terrain tile data into the single DEVICE_LOCAL SSBO via
-    /// a staging buffer + one-time `vkCmdCopyBuffer`. Called from the
-    /// cell loader path after `spawn_terrain_mesh` packs per-tile layer
-    /// texture indices. The data is static until the next cell
-    /// transition, so exactly one upload per dirty transition is
-    /// enough — no per-frame double-buffering. See #470 / #497.
+    /// Record a terrain tile update into the current frame command buffer.
+    /// Called from the cell-loader path after `spawn_terrain_mesh` packs
+    /// per-tile layer texture indices. The CPU writes only the high-water
+    /// prefix supplied by `fill_terrain_tiles`; the shared DEVICE_LOCAL SSBO
+    /// remains unchanged beyond that prefix, where no live instance can
+    /// legally index it. See #470 / #497 / #3664.
+    ///
+    /// Each frame-in-flight owns a reusable HOST_VISIBLE staging buffer. The
+    /// frame fence has already retired that slot before `draw_frame` records
+    /// into it, and the copy is ordered before the geometry pass by the
+    /// transfer-to-fragment barrier below. This avoids both transient Vulkan
+    /// allocations and the blocking one-time-submit fence that used to sit in
+    /// the render hot path.
     pub fn upload_terrain_tiles(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        cmd: vk::CommandBuffer,
+        frame_index: usize,
         tiles: &[GpuTerrainTile],
     ) -> Result<()> {
         let count = tiles.len().min(MAX_TERRAIN_TILES);
@@ -928,24 +935,22 @@ impl super::buffers::SceneBuffers {
 
         let byte_size = (std::mem::size_of::<GpuTerrainTile>() * count) as vk::DeviceSize;
 
-        // Create a transient staging buffer. Terrain tile uploads run
-        // at cell-transition frequency (a few times a minute at most),
-        // so skip the StagingPool reuse overhead — a one-shot 32 KB
-        // CpuToGpu allocation is cheap and the buffer vanishes cleanly
-        // via the guard below on any exit path.
-        //
-        // REN-LOW L-5 / #2164 — "via the guard" is now true. This used
-        // to open-code create → allocate → bind → map with a `?` on each
-        // fallible step and no guard until the very end, so an allocator
-        // OOM or a bind failure leaked the `VkBuffer` (and, past the
-        // bind, the allocation too). `create_staging_buffer` unwinds the
-        // pre-guard window itself; the guard covers everything after.
-        let (staging_buffer, staging_alloc) = super::super::buffer::create_staging_buffer(
-            device,
-            allocator,
-            byte_size,
-            "terrain_tile_staging",
-        )?;
+        // The previous guard for this frame slot is safe to return now:
+        // `draw_frame` waited that slot's fence before opening this command
+        // buffer. Keep the newly acquired guard in the slot until the same
+        // fence retires, so the staging source cannot be overwritten while
+        // the GPU is still consuming it.
+        if let Some(previous) = self.terrain_tile_staging_buffers[frame_index].take() {
+            let capacity = previous
+                .allocation
+                .as_ref()
+                .map(|allocation| allocation.size())
+                .unwrap_or(byte_size);
+            previous.release_to(&mut self.terrain_tile_staging_pool, capacity);
+        }
+        let (staging_buffer, staging_alloc) = self
+            .terrain_tile_staging_pool
+            .acquire(byte_size)?;
         let mut staging = super::super::buffer::StagingGuard::new(
             staging_buffer,
             staging_alloc,
@@ -954,19 +959,22 @@ impl super::buffers::SceneBuffers {
         );
 
         // SAFETY: GpuTerrainTile is #[repr(C)] with u32-only fields
-        // matching std430. Staging was sized to `byte_size` above.
+        // matching std430. The pool acquisition is sized to the high-water
+        // prefix, so the mapped range below always fits even when only a
+        // small number of terrain slots is live.
         let mapped = staging.mapped_slice_mut()?;
         unsafe {
             // SAFETY: `mapped` is the host-visible staging slice fetched just
-            // above, valid for `byte_size` bytes (the buffer was sized to
-            // `byte_size`); `tiles` is a distinct `#[repr(C)]` source of the
-            // same length, so the regions do not overlap.
+            // above, valid for `byte_size` bytes; `tiles` is a distinct
+            // `#[repr(C)]` source of the same length, so the regions do not
+            // overlap.
             std::ptr::copy_nonoverlapping(
                 tiles.as_ptr() as *const u8,
                 mapped.as_mut_ptr(),
                 byte_size as usize,
             );
         }
+        staging.flush_range(device, 0, byte_size)?;
 
         let copy = vk::BufferCopy {
             src_offset: 0,
@@ -974,28 +982,35 @@ impl super::buffers::SceneBuffers {
             size: byte_size,
         };
         let dst = self.terrain_tile_buffer.buffer;
-        let result =
-            super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
-                unsafe {
-                    // SAFETY: `cmd` is the recording-state one-time command buffer
-                    // from with_one_time_commands; `staging_buffer` and `dst`
-                    // (terrain_tile_buffer) are device-owned, live, and both sized
-                    // ≥ `byte_size`, so the single copy region stays within bounds.
-                    device.cmd_copy_buffer(cmd, staging_buffer, dst, &[copy]);
-                }
-                Ok(())
-            });
+        unsafe {
+            // SAFETY: `cmd` is the recording frame command buffer. The
+            // per-frame staging buffer and shared terrain destination are
+            // live TRANSFER_SRC/DST buffers, and `copy` stays within both
+            // allocations. The transfer is sequenced before fragment reads
+            // by the barrier immediately below.
+            device.cmd_copy_buffer(cmd, staging.buffer, dst, &[copy]);
+            let barrier = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(dst)
+                .offset(0)
+                .size(byte_size);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[barrier],
+                &[],
+            );
+        }
 
-        // Tear down staging regardless of copy outcome.
-        // `with_one_time_commands` waited on its fence before returning,
-        // so no in-flight command buffer still references the buffer.
-        staging.destroy();
+        self.terrain_tile_staging_buffers[frame_index] = Some(staging);
 
-        // Suppress "field never read" on the cached size — kept for
-        // future layout changes / debugging introspection.
-        let _ = self.terrain_tile_buf_size;
-
-        result
+        Ok(())
     }
 
     /// Get the light buffers (for compute pipeline descriptor writes).

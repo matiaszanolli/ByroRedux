@@ -515,6 +515,45 @@ impl StagingGuard {
         Ok(())
     }
 
+    /// Publish a bounded host-write range before a staged transfer. The
+    /// range is expanded to Vulkan's non-coherent atom boundaries, matching
+    /// [`GpuBuffer::flush_range`], while the caller keeps this guard alive
+    /// until the transfer's frame fence retires.
+    pub fn flush_range(
+        &self,
+        device: &ash::Device,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+    ) -> Result<()> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .context("StagingGuard allocation already released")?;
+        if alloc
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+            || size == 0
+        {
+            return Ok(());
+        }
+
+        let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset() + offset, size);
+        debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
+        unsafe {
+            // SAFETY: `alloc` is live and persistently mapped; the outward-
+            // aligned range follows the same GpuAllocatorManaged contract as
+            // `GpuBuffer::flush_range`, and the guard stays alive until the
+            // frame fence retires.
+            device
+                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
+                    .memory(alloc.memory())
+                    .offset(aligned_offset)
+                    .size(aligned_size)])
+                .context("Failed to flush staging memory range")?;
+        }
+        Ok(())
+    }
+
     /// Consume the guard and return the staging buffer + allocation to
     /// a pool for reuse instead of destroying them. Pre-#239 the pool's
     /// release arm was unreachable — every upload path called
@@ -1761,15 +1800,15 @@ mod staging_guard_coverage_tests {
         ]
     }
 
-    /// No consumer may open-code the staging prologue. Creating a
-    /// `TRANSFER_SRC` buffer outside `create_staging_buffer` is the exact
-    /// shape that leaks: the `VkBuffer` exists, but nothing owns it until
-    /// the allocation lands several fallible steps later.
+    /// No consumer may open-code the staging prologue. A direct
+    /// `device.create_buffer` in one of these upload consumers is the exact
+    /// shape that leaks: the `VkBuffer` exists, but nothing owns it until the
+    /// allocation lands several fallible steps later.
     #[test]
     fn no_consumer_open_codes_the_staging_prologue() {
         for (name, src) in consumer_sites() {
             assert!(
-                !src.contains("TRANSFER_SRC"),
+                !src.contains("device.create_buffer("),
                 "{name}: a staging buffer is created outside `create_staging_buffer` — \
                  the create→allocate→bind window leaks the VkBuffer on any failure \
                  (REN-LOW L-5 / #2164). Route it through `create_staging_buffer`."
@@ -1777,10 +1816,11 @@ mod staging_guard_coverage_tests {
         }
     }
 
-    /// `upload_terrain_tiles` — the site the audit named — must tear down
-    /// through the guard, not a hand-rolled destroy/free pair.
+    /// `upload_terrain_tiles` — the site the audit named — must record its
+    /// copy into the caller's frame command buffer. It must not reintroduce
+    /// a transient staging allocation or a blocking one-time submit (#3664).
     #[test]
-    fn upload_terrain_tiles_tears_down_through_the_guard() {
+    fn upload_terrain_tiles_records_nonblocking_frame_copy() {
         let fn_start = UPLOAD_SRC
             .find("pub fn upload_terrain_tiles")
             .expect("upload_terrain_tiles not found");
@@ -1791,20 +1831,23 @@ mod staging_guard_coverage_tests {
         let body = &body[..fn_end];
 
         assert!(
-            body.contains("StagingGuard::new"),
-            "upload_terrain_tiles must wrap staging in a StagingGuard immediately \
-             after acquiring it — the three fallible steps that follow used to leak \
-             it (REN-LOW L-5 / #2164)"
+            body.contains("cmd_copy_buffer"),
+            "upload_terrain_tiles must record a staging-to-device copy"
         );
         assert!(
-            body.contains("staging.destroy()"),
-            "upload_terrain_tiles must release staging via `StagingGuard::destroy`"
+            body.contains("cmd_pipeline_barrier"),
+            "upload_terrain_tiles must make the transfer visible to fragment reads"
         );
         assert!(
-            !body.contains("destroy_buffer"),
-            "upload_terrain_tiles must not hand-roll `destroy_buffer` — that spelling \
-             is only reached on the success path and is what left the failure paths \
-             leaking (REN-LOW L-5 / #2164)"
+            !body.contains("with_one_time_commands")
+                && !body.contains("create_staging_buffer"),
+            "terrain tile uploads must not allocate transient staging resources or \
+             submit a blocking one-time command buffer (#3664)"
+        );
+        assert!(
+            body.contains("terrain_tile_staging_pool") && body.contains("release_to"),
+            "terrain tile uploads must retain pool-backed staging until the frame \
+             slot's fence retires (#3664)"
         );
     }
 }

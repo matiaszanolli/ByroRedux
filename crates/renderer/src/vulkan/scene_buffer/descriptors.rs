@@ -367,6 +367,13 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.selected_ray_probe_buffers.clear();
+        for staging in &mut self.terrain_tile_staging_buffers {
+            if let Some(staging) = staging.take() {
+                staging.destroy();
+            }
+        }
+        self.terrain_tile_staging_buffers.clear();
+        self.terrain_tile_staging_pool.destroy();
         self.terrain_tile_buffer.destroy(device, allocator);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);

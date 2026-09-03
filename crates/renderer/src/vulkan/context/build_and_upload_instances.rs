@@ -658,12 +658,13 @@ impl VulkanContext {
 
         // Reupload the terrain tile SSBO when cell load mutated it.
         // The slab is static until the next cell transition — #497
-        // moved it to a single DEVICE_LOCAL buffer uploaded via a
-        // transient staging copy, so one upload per dirty transition
-        // is enough. The scratch Vec lives on self so its 32 KB
-        // capacity amortizes across cell loads — `mem::take` moves it
-        // out so the fill can run while `&self.scene_buffers` consumes
-        // the slice. #496.
+        // moved it to a single DEVICE_LOCAL buffer. #3664 keeps only the
+        // live high-water prefix, writes it into the current frame's
+        // reusable staging buffer, and records the copy here so the
+        // transfer is ordered before geometry without a queue-fence stall.
+        // The scratch Vec lives on self so its capacity amortizes across
+        // cell loads — `mem::take` moves it out so the fill can run while
+        // `&mut self.scene_buffers` consumes the slice. #496.
         let mut tile_scratch: Vec<GpuTerrainTile> = std::mem::take(&mut self.terrain_tile_scratch);
         if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
             let allocator = self.allocator.as_ref().expect("allocator missing");
@@ -671,8 +672,8 @@ impl VulkanContext {
                 .upload_terrain_tiles(
                     &self.device,
                     allocator,
-                    &self.graphics_queue,
-                    self.transfer_pool,
+                    cmd,
+                    frame,
                     &tile_scratch,
                 )
                 .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));

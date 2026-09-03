@@ -7,7 +7,7 @@
 use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 
 use super::super::allocator::SharedAllocator;
-use super::super::buffer::GpuBuffer;
+use super::super::buffer::{GpuBuffer, StagingGuard, StagingPool};
 use super::super::descriptors::{
     write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder,
 };
@@ -170,6 +170,12 @@ pub struct SceneBuffers {
     /// `terrainTiles[tile_idx]` when `INSTANCE_FLAG_TERRAIN_SPLAT` is
     /// set on the instance. See #470 / #497.
     pub(super) terrain_tile_buffer: GpuBuffer,
+    /// Pool-backed staging guards retained per frame-in-flight until that
+    /// slot's fence retires. This avoids both transient allocations and
+    /// reusing a staging allocation while an older frame still reads it.
+    /// The guards return their buffers to the pool on the next use.
+    pub(super) terrain_tile_staging_buffers: Vec<Option<StagingGuard>>,
+    pub(super) terrain_tile_staging_pool: StagingPool,
     /// Single HOST_VISIBLE buffer holding `MAX_FRAMES_IN_FLIGHT` ray-budget
     /// counter slots, one per frame-in-flight, each [`RAY_BUDGET_STRIDE`]
     /// bytes apart so they satisfy `minStorageBufferOffsetAlignment` on
@@ -193,9 +199,6 @@ pub struct SceneBuffers {
     /// drained only after the slot fence signals.
     pub(super) selected_ray_probe_buffers: Vec<GpuBuffer>,
     pub(super) ray_budget_controller: AdaptiveRayBudget,
-    /// Size of the terrain tile buffer in bytes — stashed so upload
-    /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
-    pub(super) terrain_tile_buf_size: vk::DeviceSize,
     /// Descriptor pool for scene descriptor sets.
     pub(super) descriptor_pool: vk::DescriptorPool,
     /// Layout for set 1: binding 0 = SSBO (lights), binding 1 = UBO (camera),
@@ -978,7 +981,10 @@ impl SceneBuffers {
             material_buffers: bufs.material_buffers,
             indirect_buffers: bufs.indirect_buffers,
             terrain_tile_buffer: bufs.terrain_tile_buffer,
-            terrain_tile_buf_size: bufs.terrain_tile_buf_size,
+            terrain_tile_staging_buffers: (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|_| None)
+                .collect(),
+            terrain_tile_staging_pool: StagingPool::new(device.clone(), allocator.clone()),
             ray_budget_buffer: bufs.ray_budget_buffer,
             selected_ray_probe_buffers: bufs.selected_ray_probe_buffers,
             ray_budget_controller: AdaptiveRayBudget::default(),

@@ -9,9 +9,10 @@ use crate::vulkan::scene_buffer::GpuTerrainTile;
 /// Free-function core of `fill_terrain_tile_scratch_if_dirty` — lifted
 /// out of the `VulkanContext` method so unit tests can exercise it
 /// without standing up a full Vulkan device. When `*dirty` is set,
-/// clears `dest` (preserving capacity), refills it from `tiles`, and
-/// clears the flag. Returns `true` when the caller should perform the
-/// GPU upload. See #496 / #497.
+/// clears `dest` (preserving capacity), refills it through the highest live
+/// slot, and clears the flag. Empty slots inside that prefix remain explicit
+/// zero tiles; the unused tail is omitted from the upload. Returns `true` when
+/// the caller should perform the GPU upload. See #496 / #497 / #3664.
 pub(super) fn fill_terrain_tiles(
     tiles: &[Option<GpuTerrainTile>],
     dirty: &mut bool,
@@ -22,7 +23,10 @@ pub(super) fn fill_terrain_tiles(
     }
     *dirty = false;
     dest.clear();
-    dest.extend(tiles.iter().map(|t| t.unwrap_or_default()));
+    let Some(last_live) = tiles.iter().rposition(Option::is_some) else {
+        return true;
+    };
+    dest.extend(tiles[..=last_live].iter().map(|t| t.unwrap_or_default()));
     true
 }
 
@@ -177,17 +181,18 @@ impl VulkanContext {
         self.terrain_tiles.iter().filter(|t| t.is_some()).count()
     }
 
-    /// Populate `dest` with the current terrain tile slab, filling
-    /// empty slots with the zero-tile default so the fragment shader's
-    /// `if (layerIdx == 0u) continue;` guard skips them. Returns `true`
-    /// when an upload is due + decrements the dirty-frame counter.
+    /// Populate `dest` with the current terrain tile prefix, filling holes
+    /// with the zero-tile default so the fragment shader's
+    /// `if (layerIdx == 0u) continue;` guard skips them. The prefix ends at
+    /// the highest occupied slot, so vacant tail slots never reach the GPU.
+    /// Returns `true` when an upload is due.
     ///
     /// Accepts `dest` by `&mut` rather than returning a slice from
     /// `self` so `draw_frame` can hold `&self.device` + `&mut
     /// self.scene_buffers` while consuming the staged data. The
-    /// caller owns a persistent `terrain_tile_scratch` Vec whose
-    /// capacity amortizes across frames — same pattern as
-    /// `gpu_instances_scratch`. See #496 / #470.
+    /// caller owns a persistent `terrain_tile_scratch` Vec whose capacity
+    /// amortizes across frames — same pattern as `gpu_instances_scratch`.
+    /// See #496 / #470 / #3664.
     pub(super) fn fill_terrain_tile_scratch_if_dirty(
         &mut self,
         dest: &mut Vec<GpuTerrainTile>,
@@ -587,13 +592,12 @@ mod tests {
         );
     }
 
-    /// Regression for #496 / #497: the fill helper must reuse the
-    /// caller's scratch buffer capacity across repeated dirty refills.
-    /// Pre-#496 `drain_terrain_tile_uploads` allocated a fresh 32 KB Vec
-    /// per call. Since #497 the dirty signal is a single bool (the
-    /// DEVICE_LOCAL SSBO needs exactly one upload per cell transition),
-    /// so the capacity reuse is verified by toggling the flag back on
-    /// manually after each consumption.
+    /// Regression for #496 / #497 / #3664: the fill helper must reuse the
+    /// caller's scratch buffer capacity across repeated dirty refills while
+    /// retaining only the live high-water prefix. Since #497 the dirty signal
+    /// is a single bool (the DEVICE_LOCAL SSBO needs exactly one upload per
+    /// cell transition), so the capacity reuse is verified by toggling the
+    /// flag back on manually after each consumption.
     #[test]
     fn fill_reuses_scratch_capacity_across_dirty_refills() {
         let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
@@ -608,8 +612,8 @@ mod tests {
         // First call — allocates the Vec.
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
         let cap_after_first = dest.capacity();
-        assert!(cap_after_first >= MAX_TERRAIN_TILES);
-        assert_eq!(dest.len(), MAX_TERRAIN_TILES);
+        assert!(cap_after_first >= 1);
+        assert_eq!(dest.len(), 1);
         assert_eq!(dest[0].layer_diffuse_index, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(dest[0].layer_normal_index, [11, 12, 13, 14, 15, 16, 17, 18]);
         assert_eq!(
@@ -646,21 +650,42 @@ mod tests {
         assert_eq!(dest.capacity(), cap_before);
     }
 
-    /// Empty slots render as the zero tile so the fragment-shader guard
-    /// `if (layerIdx == 0u) continue;` skips them.
+    /// An entirely vacant slab has no high-water prefix, so the upload is
+    /// consumed without manufacturing a zero tile for every slot.
     #[test]
-    fn empty_slots_fill_with_zero_default() {
+    fn empty_slots_produce_empty_upload_prefix() {
         let tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
         let mut dest: Vec<GpuTerrainTile> = Vec::new();
         let mut dirty = true;
 
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
-        assert_eq!(dest.len(), 4);
-        for tile in &dest {
-            assert_eq!(tile.layer_diffuse_index, [0; 8]);
-            assert_eq!(tile.layer_normal_index, [0; 8]);
-            assert_eq!(tile.layer_specular_index, [0; 8]);
-        }
+        assert!(dest.is_empty());
+        assert!(!dirty);
+    }
+
+    /// Vacancies inside the live range remain zero tiles, while vacant tail
+    /// slots are omitted from the staging copy entirely (#3664).
+    #[test]
+    fn fill_keeps_holes_but_trims_vacant_tail() {
+        let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; 6];
+        tiles[1] = Some(GpuTerrainTile {
+            layer_diffuse_index: [7; 8],
+            ..GpuTerrainTile::default()
+        });
+        tiles[4] = Some(GpuTerrainTile {
+            layer_normal_index: [9; 8],
+            ..GpuTerrainTile::default()
+        });
+        let mut dest = Vec::new();
+        let mut dirty = true;
+
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        assert_eq!(dest.len(), 5);
+        assert_eq!(dest[0], GpuTerrainTile::default());
+        assert_eq!(dest[1].layer_diffuse_index, [7; 8]);
+        assert_eq!(dest[2], GpuTerrainTile::default());
+        assert_eq!(dest[3], GpuTerrainTile::default());
+        assert_eq!(dest[4].layer_normal_index, [9; 8]);
     }
 
     /// Regression for #627 — releasing a populated slot must surface

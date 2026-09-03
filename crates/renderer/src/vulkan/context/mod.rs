@@ -1900,17 +1900,17 @@ pub struct VulkanContext {
     terrain_tile_free_list: Vec<u32>,
     /// Set when `allocate_terrain_tile` / `free_terrain_tile` mutated
     /// the slab. Checked on the next `draw_frame`, which uploads the
-    /// fresh slab through the staging pool into the single DEVICE_LOCAL
-    /// SSBO and clears the flag. Pre-#497 this was a per-frame-in-flight
-    /// countdown against a HOST_VISIBLE double-buffered SSBO; the buffer
-    /// is static until the next cell transition so a single DEVICE_LOCAL
-    /// allocation is the correct shape.
+    /// fresh high-water prefix into the single DEVICE_LOCAL SSBO and clears
+    /// the flag. Pre-#497 this was a per-frame-in-flight countdown against a
+    /// HOST_VISIBLE double-buffered SSBO; the buffer is static until the next
+    /// cell transition so a single DEVICE_LOCAL allocation is the correct
+    /// shape.
     terrain_tiles_dirty: bool,
-    /// Persistent scratch buffer reused across frames to stage the 1024
-    /// `GpuTerrainTile` slab before upload. Same amortization pattern as
-    /// `gpu_instances_scratch` — fresh `Vec::collect()` every dirty
-    /// frame was 32 KB × MAX_FRAMES_IN_FLIGHT of heap churn per cell
-    /// transition. See #496.
+    /// Persistent scratch buffer reused across frames to stage the live
+    /// high-water `GpuTerrainTile` prefix before upload. Same amortization
+    /// pattern as `gpu_instances_scratch`; fresh `Vec::collect()` every
+    /// dirty frame was 32 KB × MAX_FRAMES_IN_FLIGHT of heap churn per cell
+    /// transition. See #496 / #3664.
     terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
