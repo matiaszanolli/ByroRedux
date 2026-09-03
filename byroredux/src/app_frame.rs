@@ -563,6 +563,7 @@ impl App {
                 lights: &self.gpu_lights,
                 fog_volumes: &self.gpu_fog_volumes,
                 bone_world: &self.bone_world,
+                skin_offsets: &self.skin_offsets,
                 bind_inverse_pending_uploads: &pending_with_data,
                 materials: self.material_table.materials(),
                 has_effect_soft_material: frame.has_effect_soft_material,

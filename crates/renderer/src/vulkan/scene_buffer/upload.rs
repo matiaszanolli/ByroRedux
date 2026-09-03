@@ -13,9 +13,71 @@ use super::descriptors::{
     hash_indirect_slice, hash_instance_slice, hash_light_slice, hash_material_slice,
     hash_previous_model_slice,
 };
+use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::*;
 use anyhow::Result;
 use ash::vk;
+
+const BONE_WORLD_SLOT_PENDING: u8 = 0x80;
+const BONE_WORLD_FRAME_MASK: u8 = (1u8 << MAX_FRAMES_IN_FLIGHT) - 1;
+
+#[inline]
+fn mark_bone_world_slot_dirty(state: &mut u8) {
+    // A new pose invalidates every per-frame device copy, not just the
+    // current one. The low bits are repopulated as each FIF slot is refreshed.
+    *state = BONE_WORLD_SLOT_PENDING;
+}
+
+#[cfg(test)]
+mod bone_world_slot_state_tests {
+    use super::{
+        bone_world_slot_needs_copy, mark_bone_world_slot_dirty,
+        mark_bone_world_slot_written,
+    };
+
+    #[test]
+    fn dirty_slot_is_refreshed_once_into_each_frame_buffer() {
+        let mut state = 0;
+        mark_bone_world_slot_dirty(&mut state);
+        assert!(bone_world_slot_needs_copy(state, 0));
+        assert!(bone_world_slot_needs_copy(state, 1));
+
+        mark_bone_world_slot_written(&mut state, 0);
+        assert!(!bone_world_slot_needs_copy(state, 0));
+        assert!(bone_world_slot_needs_copy(state, 1));
+
+        mark_bone_world_slot_written(&mut state, 1);
+        assert!(!bone_world_slot_needs_copy(state, 0));
+        assert!(!bone_world_slot_needs_copy(state, 1));
+    }
+
+    #[test]
+    fn a_new_pose_rearms_both_frame_buffers() {
+        let mut state = 0;
+        mark_bone_world_slot_dirty(&mut state);
+        mark_bone_world_slot_written(&mut state, 0);
+        mark_bone_world_slot_written(&mut state, 1);
+        mark_bone_world_slot_dirty(&mut state);
+
+        assert!(bone_world_slot_needs_copy(state, 0));
+        assert!(bone_world_slot_needs_copy(state, 1));
+    }
+}
+
+#[inline]
+fn bone_world_slot_needs_copy(state: u8, frame_index: usize) -> bool {
+    debug_assert!(frame_index < MAX_FRAMES_IN_FLIGHT);
+    state & BONE_WORLD_SLOT_PENDING != 0 && state & (1u8 << frame_index) == 0
+}
+
+#[inline]
+fn mark_bone_world_slot_written(state: &mut u8, frame_index: usize) {
+    debug_assert!(frame_index < MAX_FRAMES_IN_FLIGHT);
+    *state |= 1u8 << frame_index;
+    if *state & BONE_WORLD_FRAME_MASK == BONE_WORLD_FRAME_MASK {
+        *state = 0;
+    }
+}
 
 impl super::buffers::SceneBuffers {
     /// Upload light data for the current frame-in-flight.
@@ -214,85 +276,145 @@ impl super::buffers::SceneBuffers {
     /// stale data — the skin_palette dispatch writes their palettes,
     /// but no entity references them, so the staleness is invisible.
     ///
-    /// #1794 / PERF-D4-NEW-01 — this byte count (and the single
-    /// `cmd_copy_buffer` in [`record_bone_world_copy`] it drives) still
-    /// covers the FULL `MAX_BONES_PER_MESH`-wide stride for every
-    /// allocated slot, most of which is padding tail beyond that
-    /// entity's own bone count. The CPU-side fill cost of that padding
-    /// was fixed (`build_skinned_palettes` no longer re-identity-fills
-    /// it every frame), but narrowing this staging memcpy + GPU copy to
-    /// only each slot's real `skin.bones.len()` prefix needs per-slot
-    /// bone-count data plumbed across the byroredux/renderer crate
-    /// boundary (into `FrameInputs`) that doesn't exist yet — left as
-    /// the remaining two-thirds of the issue's "three-fold" cost.
+    /// #3665 — copy only dirty slot strides, plus any slot that has not yet
+    /// been copied into the current frame-in-flight buffer. The high-water
+    /// `bone_world` length is retained separately for the dense palette
+    /// dispatch; it no longer determines the transfer width. The per-mesh
+    /// padding tail remains a full-slot copy here and is the separate #1794
+    /// remainder.
     ///
-    /// Records the byte-count into `bone_input_upload_bytes[frame]`
-    /// for [`record_bone_world_copy`] to consume.
-    pub fn upload_bone_worlds(
+    /// `dirty_slot_offsets` contains sparse `bone_world` offsets for entities
+    /// whose CPU pose changed. The per-slot state stamps make a changed slot
+    /// persist until every frame-in-flight device buffer has received it.
+    ///
+    /// Records sparse regions into `bone_world_copy_regions[frame]` for
+    /// [`record_bone_world_copy`] to consume.
+    pub fn upload_bone_worlds<I>(
         &mut self,
         device: &ash::Device,
         frame_index: usize,
         bone_world: &[[[f32; 4]; 4]],
-    ) -> Result<()> {
+        dirty_slot_offsets: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = u32>,
+    {
         let count = bone_world.len().min(MAX_TOTAL_BONES);
+        let mat4_size = std::mem::size_of::<[[f32; 4]; 4]>();
+        self.bone_world_dispatch_bytes[frame_index] =
+            (mat4_size * count) as vk::DeviceSize;
+        self.bone_input_upload_bytes[frame_index] = 0;
+        self.bone_world_copy_regions[frame_index].clear();
+
+        let slot_stride = MAX_BONES_PER_MESH as u32;
+        for offset in dirty_slot_offsets {
+            debug_assert_eq!(
+                offset % slot_stride,
+                0,
+                "bone-world dirty offset must identify a slot boundary"
+            );
+            let slot = (offset / slot_stride) as usize;
+            if let Some(state) = self.bone_world_slot_states.get_mut(slot) {
+                mark_bone_world_slot_dirty(state);
+            }
+        }
+
         if count == 0 {
-            self.bone_input_upload_bytes[frame_index] = 0;
             return Ok(());
         }
 
-        let byte_size = (std::mem::size_of::<[[f32; 4]; 4]>() * count) as vk::DeviceSize;
+        let copy_regions = &mut self.bone_world_copy_regions[frame_index];
+        for (slot, &state) in self.bone_world_slot_states.iter().enumerate() {
+            if !bone_world_slot_needs_copy(state, frame_index) {
+                continue;
+            }
+            let start = slot * MAX_BONES_PER_MESH;
+            if start >= count {
+                continue;
+            }
+            let slot_count = (count - start).min(MAX_BONES_PER_MESH);
+            let byte_offset = (start * mat4_size) as vk::DeviceSize;
+            let byte_size = (slot_count * mat4_size) as vk::DeviceSize;
+            copy_regions.push(vk::BufferCopy {
+                src_offset: byte_offset,
+                dst_offset: byte_offset,
+                size: byte_size,
+            });
+        }
+        if copy_regions.is_empty() {
+            return Ok(());
+        }
+
         let world_buf = &mut self.bone_world_staging_buffers[frame_index];
         let world_mapped = world_buf.mapped_slice_mut()?;
         // SAFETY: [[f32;4];4] is repr(C)-compatible with std430 mat4.
         // bone_world_staging_buffers are sized for MAX_TOTAL_BONES; count
-        // is clamped above.
+        // is clamped above. Each copied region has the same source/destination
+        // offset within the MAX_TOTAL_BONES-sized staging allocation.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                bone_world.as_ptr() as *const u8,
-                world_mapped.as_mut_ptr(),
-                byte_size as usize,
-            );
+            for region in copy_regions.iter() {
+                debug_assert!(
+                    region.dst_offset as usize + region.size as usize <= world_mapped.len(),
+                    "bone-world staging region exceeds the mapped allocation"
+                );
+                std::ptr::copy_nonoverlapping(
+                    bone_world
+                        .as_ptr()
+                        .add(region.src_offset as usize / mat4_size)
+                        as *const u8,
+                    world_mapped
+                        .as_mut_ptr()
+                        .add(region.dst_offset as usize),
+                    region.size as usize,
+                );
+            }
         }
-        // F8 (#1587) — flush only the written byte range, not the full allocation.
-        world_buf.flush_range(device, 0, byte_size)?;
-        self.bone_input_upload_bytes[frame_index] = byte_size;
+        // Flush one envelope around the sparse writes. This avoids one Vulkan
+        // flush call per dirty slot while excluding the untouched tail above
+        // the highest region.
+        let first = copy_regions
+            .first()
+            .expect("non-empty copy region list")
+            .dst_offset;
+        let last_region = copy_regions
+            .last()
+            .expect("non-empty copy region list");
+        let last = last_region.dst_offset + last_region.size;
+        world_buf.flush_range(device, first, last - first)?;
+        self.bone_input_upload_bytes[frame_index] = last;
         Ok(())
     }
 
     /// M29.6 — record the bone-world staging→device copy and the
     /// visibility barrier that makes it readable by `skin_palette.comp`.
     ///
-    /// Single `cmd_copy_buffer` + one buffer barrier
-    /// (TRANSFER_WRITE → COMPUTE_SHADER_READ). M29.5's sibling
-    /// bind_inverses copy is gone (persistent SSBO is uploaded
+    /// One sparse `cmd_copy_buffer` call with all dirty-slot regions plus one
+    /// buffer barrier (TRANSFER_WRITE → COMPUTE_SHADER_READ). M29.5's
+    /// sibling bind_inverses copy is gone (persistent SSBO is uploaded
     /// separately at first-sight via [`record_pending_bind_inverse_copies`]).
     pub fn record_bone_world_copy(
-        &self,
+        &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame_index: usize,
     ) {
-        let byte_size = self.bone_input_upload_bytes[frame_index];
-        if byte_size == 0 {
+        let barrier_size = self.bone_input_upload_bytes[frame_index];
+        let region_count = self.bone_world_copy_regions[frame_index].len();
+        if barrier_size == 0 || region_count == 0 {
             return;
         }
-        let copy = vk::BufferCopy {
-            src_offset: 0,
-            dst_offset: 0,
-            size: byte_size,
-        };
         unsafe {
             // SAFETY: `cmd` is in the recording state (the caller's frame command
             // buffer). Both `bone_world_staging_buffers[frame_index]` and
             // `bone_world_device_buffers[frame_index]` are device-owned and live for
-            // the renderer's lifetime; each is sized ≥ `byte_size` (staging held
-            // exactly that many written bytes), so the copy region and the following
-            // buffer barrier's [0, byte_size) range stay within bounds.
+            // the renderer's lifetime; every sparse region is within the
+            // MAX_TOTAL_BONES-sized allocations, and the following barrier's
+            // [0, barrier_size) envelope covers every region.
             device.cmd_copy_buffer(
                 cmd,
                 self.bone_world_staging_buffers[frame_index].buffer,
                 self.bone_world_device_buffers[frame_index].buffer,
-                &[copy],
+                &self.bone_world_copy_regions[frame_index],
             );
             let barrier = vk::BufferMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -301,7 +423,7 @@ impl super::buffers::SceneBuffers {
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .buffer(self.bone_world_device_buffers[frame_index].buffer)
                 .offset(0)
-                .size(byte_size);
+                .size(barrier_size);
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -311,6 +433,15 @@ impl super::buffers::SceneBuffers {
                 &[barrier],
                 &[],
             );
+        }
+        for index in 0..region_count {
+            let offset = self.bone_world_copy_regions[frame_index][index].dst_offset;
+            let slot = (offset as usize
+                / (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_BONES_PER_MESH))
+                as usize;
+            if let Some(state) = self.bone_world_slot_states.get_mut(slot) {
+                mark_bone_world_slot_written(state, frame_index);
+            }
         }
     }
 
@@ -453,13 +584,20 @@ impl super::buffers::SceneBuffers {
         }
     }
 
-    /// M29.5/M29.6 — bytes most recently written by [`upload_bone_worlds`]
-    /// for `frame_index`. Used by `draw.rs` to size the skin_palette
-    /// dispatch (`bone_count = byte_size / mat4_size`). Returns 0
-    /// when the frame had no skinned content; the caller skips the
-    /// dispatch entirely.
+    /// M29.5/M29.6 — highest byte offset covered by the sparse regions most
+    /// recently prepared by [`upload_bone_worlds`] for `frame_index`.
+    /// Returns 0 when this frame has no bone-world regions to transfer; the
+    /// caller uses that to skip the copy and, when no bind-inverse upload is
+    /// pending, the palette dispatch too.
     pub fn bone_input_upload_bytes(&self, frame_index: usize) -> vk::DeviceSize {
         self.bone_input_upload_bytes[frame_index]
+    }
+
+    /// Full dense bone-world span required by `skin_palette.comp` for this
+    /// frame. This remains high-water-sized even when the transfer itself is
+    /// sparse, because the current compute shader dispatch is dense.
+    pub fn bone_world_dispatch_bytes(&self, frame_index: usize) -> vk::DeviceSize {
+        self.bone_world_dispatch_bytes[frame_index]
     }
 
     /// M29.6 hotfix (#1191 / SAFE-D7-NEW-01) — write identity matrices

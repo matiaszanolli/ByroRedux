@@ -27,6 +27,7 @@ impl VulkanContext {
         frame: usize,
         draw_commands: &[DrawCommand],
         bone_world: &[[[f32; 4]; 4]],
+        skin_offsets: &rustc_hash::FxHashMap<EntityId, u32>,
         bind_inverse_pending_uploads: &[(u32, Vec<[[f32; 4]; 4]>)],
         pose_dirty: &rustc_hash::FxHashSet<EntityId>,
         instance_map: &[Option<u32>],
@@ -59,11 +60,12 @@ impl VulkanContext {
         // today's (unchanged) bone_world content, so the staging
         // memcpy + device copy would just rewrite identical bytes.
         if !skip_skin_gpu_refresh {
-            if !bone_world.is_empty() {
-                self.scene_buffers
-                    .upload_bone_worlds(&self.device, frame, bone_world)
-                    .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
-            }
+            let dirty_slot_offsets = pose_dirty
+                .iter()
+                .filter_map(|entity| skin_offsets.get(entity).copied());
+            self.scene_buffers
+                .upload_bone_worlds(&self.device, frame, bone_world, dirty_slot_offsets)
+                .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
         }
 
         // #3676 — the timestamp begins before the first transfer command in
@@ -129,7 +131,7 @@ impl VulkanContext {
         // barrier on the palette buffer after the dispatch so both
         // downstream consumers see well-defined data.
         if let Some(ref mut skin_palette) = self.skin_palette {
-            let bone_byte_size = self.scene_buffers.bone_input_upload_bytes(frame);
+            let bone_dispatch_bytes = self.scene_buffers.bone_world_dispatch_bytes(frame);
             // Each palette slot is one mat4 = 64 B. Skip the dispatch
             // entirely when there are no skinned bones this frame —
             // the palette buffer retains its prior contents (slot 0
@@ -137,13 +139,17 @@ impl VulkanContext {
             // frame 0), so any raster sampling at `bone_offset = 0`
             // either reads identity (post-warm) or garbage that
             // never gets shaded (no entity points there).
-            let bone_count =
-                (bone_byte_size as usize / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
+            let bone_count = (bone_dispatch_bytes as usize
+                / std::mem::size_of::<[[f32; 4]; 4]>())
+                as u32;
             // D6-04 / #1811 — also skip once `skip_skin_gpu_refresh` is
             // true: the palette buffer already holds the correct output
             // for today's (unchanged) bone_world + bind_inverses, so a
             // full-range recompute would just rewrite identical data.
-            if bone_count > 0 && !skip_skin_gpu_refresh {
+            if bone_count > 0
+                && !skip_skin_gpu_refresh
+                && (bone_world_copy_recorded || pending_capped > 0)
+            {
                 if !skin_palette_timer_started {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_skin_palette_start(&self.device, cmd, frame);
@@ -163,7 +169,7 @@ impl VulkanContext {
                         frame,
                         super::super::skin_compute::PaletteDispatchBuffers {
                             bone_world_buffer: bone_world_buf,
-                            bone_world_buffer_size: bone_byte_size,
+                            bone_world_buffer_size: bone_dispatch_bytes,
                             bind_inverse_buffer: bind_inverse_buf,
                             bind_inverse_buffer_size: bind_inverse_size,
                             palette_buffer: palette_buf,

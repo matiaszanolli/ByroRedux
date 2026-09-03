@@ -1461,6 +1461,10 @@ pub struct FrameInputs<'a> {
     /// matching `bind_inverses` for each slot live in the persistent SSBO
     /// and are uploaded first-sight via `bind_inverse_pending_uploads`.
     pub bone_world: &'a [[[f32; 4]; 4]],
+    /// Sparse `bone_world` offsets keyed by skinned entity. Used to narrow
+    /// the staging/device transfer to dirty slots while retaining the dense
+    /// shader input layout.
+    pub skin_offsets: &'a rustc_hash::FxHashMap<EntityId, u32>,
     /// M29.6 — first-sight `bind_inverses` uploads to schedule this frame.
     /// Each entry is `(slot_id, per-mesh bind_inverses)`; the renderer writes
     /// them into the persistent SSBO at the slot's offset before dispatching
@@ -1598,6 +1602,7 @@ impl VulkanContext {
             lights,
             fog_volumes,
             bone_world,
+            skin_offsets,
             bind_inverse_pending_uploads,
             materials,
             has_effect_soft_material,
@@ -1726,6 +1731,7 @@ impl VulkanContext {
             frame,
             draw_commands,
             bone_world,
+            skin_offsets,
             bind_inverse_pending_uploads,
             pose_dirty,
             &instance_map,

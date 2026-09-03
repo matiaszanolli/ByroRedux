@@ -94,12 +94,25 @@ pub struct SceneBuffers {
     /// targeting a different slot offset in
     /// [`bind_inverses_persistent`]).
     pub(super) bind_inverse_upload_staging: GpuBuffer,
-    /// M29.5 — bytes most recently written into the bone-world
-    /// staging buffer by [`upload_bone_worlds`]. [`record_bone_world_copy`]
-    /// uses this to size the staging→device copy; M29.6 cleanup
-    /// dropped the bind_inverse leg, so this now covers only
-    /// bone_world. Role unchanged.
+    /// M29.5 — highest byte offset covered by the sparse regions most
+    /// recently written into the bone-world staging buffer by
+    /// [`upload_bone_worlds`]. [`record_bone_world_copy`] uses this to size
+    /// its visibility barrier; the actual copy regions are stored alongside
+    /// it. M29.6 cleanup dropped the bind_inverse leg, so this covers only
+    /// bone_world.
     pub(super) bone_input_upload_bytes: Vec<vk::DeviceSize>,
+    /// Per-frame sparse copy regions for the bone-world staging→device
+    /// transfer. Regions are full slot strides and are populated only for
+    /// slots whose CPU pose is newer than this frame-in-flight buffer.
+    pub(super) bone_world_copy_regions: Vec<Vec<vk::BufferCopy>>,
+    /// Full bone-world span needed by `skin_palette.comp`'s dense dispatch.
+    /// This is intentionally separate from `bone_input_upload_bytes`, which
+    /// describes the sparse transfer range and may be zero on a clean frame.
+    pub(super) bone_world_dispatch_bytes: Vec<vk::DeviceSize>,
+    /// Per-slot write state for the sparse bone-world transfer. The high bit
+    /// marks a slot pending; the low `MAX_FRAMES_IN_FLIGHT` bits record which
+    /// per-frame device buffers have received the current pose.
+    pub(super) bone_world_slot_states: Vec<u8>,
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     pub(super) instance_buffers: Vec<GpuBuffer>,
@@ -936,6 +949,16 @@ impl SceneBuffers {
         // path; the M29.5 inputs are only meaningful when there's
         // skinned content present, which by definition writes them).
         let bone_input_upload_bytes = vec![0; MAX_FRAMES_IN_FLIGHT];
+        let bone_world_copy_regions = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| Vec::new())
+            .collect();
+        let bone_world_dispatch_bytes = vec![0; MAX_FRAMES_IN_FLIGHT];
+        let mut bone_world_slot_states =
+            vec![0; MAX_TOTAL_BONES / MAX_BONES_PER_MESH];
+        // Slot 0 is the global identity fallback and is never present in
+        // `pose_dirty` (the pool reserves it), so explicitly seed it as
+        // pending to initialize every per-frame bone-world buffer.
+        bone_world_slot_states[0] = 0x80;
 
         Ok(Self {
             light_buffers: bufs.light_buffers,
@@ -946,6 +969,9 @@ impl SceneBuffers {
             bind_inverses_persistent: bufs.bind_inverses_persistent,
             bind_inverse_upload_staging: bufs.bind_inverse_upload_staging,
             bone_input_upload_bytes,
+            bone_world_copy_regions,
+            bone_world_dispatch_bytes,
+            bone_world_slot_states,
             instance_buffers: bufs.instance_buffers,
             previous_model_buffers: bufs.previous_model_buffers,
             dalc_buffers: bufs.dalc_buffers,
