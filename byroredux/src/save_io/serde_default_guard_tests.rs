@@ -403,8 +403,23 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `AnimationStack` column's nested layer type. See `FORMAT_MAJOR`'s
     // own doc for why this exact case (a saved-type's own doc example)
     // needs the bump.
+    // #3251 (ECS-2026-08-24-03) — the fingerprint moved WITHOUT a
+    // FORMAT_MAJOR bump. `AnimatedTextureFlip::handle_for_slot`'s body
+    // changed (`.map(...).unwrap_or(0)` → `.and_then(...)`, fixing an
+    // out-of-range `current_index` silently aliasing to bindless handle
+    // 0). `AnimatedTextureFlip` is a **tuple** struct
+    // (`crates/core/src/ecs/components/animated.rs`) with no `{` of its
+    // own, so `normalized_serialized_shapes`'s brace-matching walks
+    // forward to the next `{` in the file — the following `impl` block's
+    // — and sweeps `handle_for_slot`'s method body into the captured
+    // "shape" span, a known quirk this guard's own #3332 note already
+    // names ("this guard is file-scoped, not type-scoped"). No saved data
+    // shape changed: `AnimatedTextureFlip` is on
+    // `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN` allowlist
+    // ("per-frame output re-derived every tick... re-resolved by
+    // attach_animation_sinks on load").
     const BASELINE_MAJOR: u16 = 20;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc23c_952c_cb28_6729;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xdb24_cca4_a32b_5bde;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

@@ -202,13 +202,78 @@ pub struct TextureFlipEntry {
 pub struct AnimatedTextureFlip(pub Vec<TextureFlipEntry>);
 
 impl AnimatedTextureFlip {
-    /// The currently-active bindless handle for `slot`, or `None` if
-    /// this entity has no flipbook on that slot.
+    /// The currently-active bindless handle for `slot`, or `None` if this
+    /// entity has no flipbook on that slot, or if the entry's
+    /// `current_index` is out of range for its `handles`.
+    ///
+    /// #3251 — the out-of-range case used to `unwrap_or(0)`, silently
+    /// aliasing to bindless slot 0 (some *other* entity's texture) instead
+    /// of falling back to the caller's static `TextureHandle` the way an
+    /// absent slot already does. Not reachable today (the attach path
+    /// keeps `handles.len()` and the valid `current_index` range in
+    /// lockstep for the channel a `TextureFlipEntry` was built from), but
+    /// a future clip-swap path rebinding a differently-sized channel onto
+    /// an already-attached entry (matched only by `texture_slot`) would
+    /// have hit this silently.
     pub fn handle_for_slot(&self, slot: u32) -> Option<u32> {
         self.0
             .iter()
             .find(|e| e.texture_slot == slot)
-            .map(|e| e.handles.get(e.current_index).copied().unwrap_or(0))
+            .and_then(|e| e.handles.get(e.current_index).copied())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_range_index_returns_the_active_handle() {
+        let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 0,
+            handles: vec![10, 11, 12],
+            current_index: 1,
+        }]);
+        assert_eq!(flip.handle_for_slot(0), Some(11));
+    }
+
+    #[test]
+    fn absent_slot_returns_none() {
+        let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 0,
+            handles: vec![10],
+            current_index: 0,
+        }]);
+        assert_eq!(flip.handle_for_slot(7), None);
+    }
+
+    /// #3251 — an out-of-range `current_index` must read as "no handle",
+    /// not silently alias to bindless slot 0 (some other entity's
+    /// texture).
+    #[test]
+    fn out_of_range_current_index_returns_none_not_slot_zero() {
+        let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 0,
+            handles: vec![10, 11],
+            current_index: 5,
+        }]);
+        assert_eq!(
+            flip.handle_for_slot(0),
+            None,
+            "an out-of-range current_index must not alias to Some(0)"
+        );
+    }
+
+    /// The empty-handles edge case (`current_index` also 0) — a degenerate
+    /// but structurally reachable shape the same fix must cover.
+    #[test]
+    fn empty_handles_returns_none() {
+        let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 0,
+            handles: Vec::new(),
+            current_index: 0,
+        }]);
+        assert_eq!(flip.handle_for_slot(0), None);
     }
 }
 
