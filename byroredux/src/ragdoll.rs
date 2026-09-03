@@ -280,6 +280,25 @@ fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
             min_angle: *min_angle,
             max_angle: *max_angle,
         },
+        ImportedJointKind::Prismatic {
+            axis_a,
+            perp_a,
+            pivot_a,
+            axis_b,
+            perp_b,
+            pivot_b,
+            min_distance,
+            max_distance,
+        } => RagdollJointSpec::Prismatic {
+            axis_a: *axis_a,
+            perp_a: *perp_a,
+            pivot_a: *pivot_a,
+            axis_b: *axis_b,
+            perp_b: *perp_b,
+            pivot_b: *pivot_b,
+            min_distance: *min_distance,
+            max_distance: *max_distance,
+        },
     }
 }
 

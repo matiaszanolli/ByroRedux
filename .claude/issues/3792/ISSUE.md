@@ -1,72 +1,93 @@
-# #3792: PHYS-D4-2026-08-30-01: #3330 was closed on its bhkHinge third only — bhkPrismatic and breakable-wrapped edges still drop at the canonical boundary, fragmenting the Protectron ragdoll into 4 free-falling components
+# #3792 — PHYS-D4-2026-08-30-01: #3330 was closed on its bhkHinge third only — bhkPrismatic and breakable-wrapped edges still drop at the canonical boundary, fragmenting the Protectron ragdoll into 4 free-falling components
 
-**Labels**: bug, nif-parser, medium, game:fnv, game:fo3, nifal, physics
-**Filed**: 2026-08-30 · HEAD `64f64480`
+**Severity**: MEDIUM
+**Location**: `crates/nif/src/import/collision/ragdoll.rs`, `crates/nif/src/blocks/collision/constraints.rs`
+**Source**: `docs/audits/AUDIT_PHYSICS_2026-08-30.md` (PHYS-D4-2026-08-30-01), independently
+re-derived as REG-2026-08-30-04 and LC D4-01.
 
----
+#3330 closed on its `bhkHinge` third only. `creatures\protectron\skeleton.nif` still
+fragmented: 12 authored constraint edges → 9 surfaced → 4 connected components (`Bip01 Head`,
+`Bip01 Head Dome`, `Bip01 Spine Brain` each free-falling independently), caused by two
+undecoded classes: bare `bhkPrismaticConstraint` (no canonical joint kind existed), and
+`bhkBreakableConstraint`'s wrapped CInfo geometry being `stream.skip`ped at parse time (#1850's
+deferred note).
 
-**Source**: `docs/audits/AUDIT_PHYSICS_2026-08-30.md` — PHYS-D4-2026-08-30-01 (MEDIUM), independently re-derived as `AUDIT_REGRESSION_2026-08-30.md` REG-2026-08-30-04 and `AUDIT_LEGACY_COMPAT_2026-08-30.md` D4-01
-**Dimension**: 4 — PHYSAL ragdoll articulation
-**Location**:
-- `crates/nif/src/import/collision/ragdoll.rs:142-155` — the `BhkBreakableConstraint` arm
-- `crates/nif/src/import/collision/ragdoll.rs:193-220` — the `BhkConstraintData::Other` arm
-- `crates/nif/src/blocks/collision/constraints.rs` — `BhkConstraint::parse`
+## Suggested Fix (two pieces)
 
-## Description
+(a) A canonical prismatic joint kind: `ImportedJointKind::Prismatic` → `RagdollJointSpec::Prismatic`
+→ a Rapier `GenericJoint` leaving the authored linear axis free.
+(b) Retain `BhkBreakableConstraint`'s wrapped CInfo at parse time so the inner joint can be
+rebuilt and the `ragdoll.rs:142` downcast has something to find.
 
-**#3330 was closed on its `bhkHinge` third only.** Its title and evidence name three drop classes across three FNV creature skeletons; the fix commit (`1ccf1abe`) decoded one of them.
+## Fix implemented
 
-Premise re-verified at HEAD (`64f64480`) by symbol, **not inherited from the closed issue**:
+**Parser** (`crates/nif/src/blocks/collision/constraints.rs`):
+- `PrismaticCInfo` struct + `parse_fo3`/`parse_oblivion`, field layout verified against
+  `nif.xml`'s `bhkPrismaticConstraintCInfo` (`until="20.0.0.5"` vs `since="20.2.0.7"` — two
+  genuinely different field orders, matching the existing Ragdoll/LimitedHinge precedent).
+  `BhkConstraintData::Prismatic(PrismaticCInfo)` variant. Wired into `BhkConstraint::parse`'s
+  bare-type dispatch (both eras) and the malleable-wrapped inner dispatch (both eras).
+- `BhkBreakableConstraint` grew a `data: BhkConstraintData` field. `parse()` now decodes the
+  wrapped payload for the four types a canonical joint exists for (Hinge/LimitedHinge/
+  Prismatic/Ragdoll = 1/2/6/7) using the exact same per-era field-order parsers a bare
+  `BhkConstraint` uses, instead of a byte-count skip — byte consumption is unchanged (verified
+  against the existing `wrapped_payload_size`/`fnv_motor_prefix_size` tables), so
+  `threshold`/`remove_when_broken` stay reachable exactly as before. BallAndSocket(0)/
+  StiffSpring(8) still skip into `Other` (no canonical joint kind yet — explicitly deferred,
+  see Completeness Checks below); Malleable(13) is unchanged (nested dispatch, `block_size`
+  recovery).
 
-- `BhkConstraint::parse` (`constraints.rs:391-398`) decodes only `Ragdoll` and `LimitedHinge` — plus the malleable wrapper's inner types 7/2, and, since #3330, `LimitedHingeCInfo::parse_hinge_fo3` for type 1. Every other type falls into the `other => { … }` arm.
-- `bhkPrismaticConstraint`, `bhkBallAndSocketConstraint` and `bhkStiffSpringConstraint` therefore still arrive as `BhkConstraintData::Other` and are dropped with a `warn!` (`ragdoll.rs:211-215`, whose message literally reads *"bhkPrismatic / bhkStiffSpring not yet mapped to a canonical joint"*).
-- `BhkBreakableConstraint` still fails the `downcast_ref::<BhkConstraint>()` (`ragdoll.rs:142`) and is dropped with its own `warn!`, because its wrapped CInfo geometry is `stream.skip`ped at parse time.
+**NIFAL** (`crates/nif/src/import/types.rs`, `crates/nif/src/import/collision/ragdoll.rs`):
+- `ImportedJointKind::Prismatic { axis_a, perp_a, pivot_a, axis_b, perp_b, pivot_b,
+  min_distance, max_distance }`, mirroring `LimitedHinge`'s shape (`Sliding` → axis,
+  `Rotation` → perp reference, matching the `Perp Axis In A1`/`B1` role).
+- `prismatic_joint()` conversion fn, sibling of `ragdoll_joint`/`limited_hinge_joint` (same
+  non-finite drop, #1534).
+- `extract_ragdoll`'s `BhkConstraint` dispatch gained a `Prismatic` arm.
+- `extract_ragdoll`'s `BhkBreakableConstraint` arm (previously an unconditional drop-and-warn)
+  now tries `try_breakable_joint` first — the same resolve/validate/build steps a bare
+  constraint uses — and only falls back to the #1850 drop diagnostic when the wrapped type has
+  no canonical joint kind, an endpoint doesn't resolve, it's a self-loop, or the decode is
+  non-finite.
 
-The #3330 fix commit **rewrote the source comment to say so itself** (`ragdoll.rs:204-212`):
+**PHYSAL** (`crates/physics/src/ragdoll.rs`, `byroredux/src/ragdoll.rs`):
+- `RagdollJointSpec::Prismatic`, `scaled_pivots` treats `min_distance`/`max_distance` as linear
+  (scaled like a pivot) not angular.
+- `build_joint`'s new arm: nif.xml's own description — "all three rotation axes and the
+  remaining two translation axes are fixed" — becomes `prismatic_locked()`
+  (`LIN_Y|LIN_Z|ANG_X|ANG_Y|ANG_Z`), leaving `JointAxis::LinX` free-but-limited to
+  `[min_distance, max_distance]`, mirroring exactly how `LimitedHinge` leaves `AngX` free.
+  Same flip-negates-and-swaps-the-limit treatment as `LimitedHinge`'s `min_angle`/`max_angle`.
+- `joint_from_imported` (byroredux) threads the new variant through with no re-derivation.
 
-> *"What remains reaching here on vanilla FNV is `creatures\protectron\skeleton.nif`'s two `bhkPrismaticConstraint` edges, which need a canonical prismatic joint kind that does not exist yet."*
+## Verification against real game data
 
-## Evidence
+Ran the new `#[ignore]`d `fnv_protectron_skeleton_is_one_connected_component` test
+(`crates/nif/tests/ragdoll_import.rs`) against the mounted `Fallout - Meshes.bsa`:
 
-#3330's own corpus evidence named three fragmenting FNV creature skeletons and attributed them precisely:
+```
+FalloutNV ragdoll: 13 bodies, 12 joints (5 Ragdoll + 5 LimitedHinge + 2 Prismatic)
+Protectron: 13 bodies, 12 joints, 1 connected component(s)
+```
 
-| Skeleton | Cause | State |
-|---|---|---|
-| `sentryturret` | `bhkHingeConstraint` | **FIXED** — now 1 component, 3/3 constraints |
-| `minisentryturret` | `bhkHingeConstraint` | **FIXED** — now 1 component, 3/3 constraints |
-| `creatures\protectron\skeleton.nif` | 2× `bhkPrismatic` + 1× breakable | **NOT FIXED** — 12 authored edges → 9 surfaced, **4 connected components** |
-
-The three severed bodies are `Bip01 Head`, `Bip01 Head Dome` and `Bip01 Spine Brain`, each becoming an independent free-falling multibody.
-
-Corpus context from the same run: **58 of 61 FNV skeletons surface 100% of authored constraints as one connected component** (incl. `_male\skeleton.nif` 17/17 and deathclaw 31/31). Only `protectron` drops. `build_ragdoll`'s forest `warn!` (`crates/physics/src/ragdoll.rs:290-302`) fires, so it is diagnosable from the log — the visual break is unchanged.
-
-## Impact
-
-A destroyed Protectron's head, head dome and spine-brain each become an independent free-falling multibody — exactly the visible break #3330 documented. Blast radius is 1 creature skeleton (down from 3), on FNV and FO3.
-
-Per `_audit-severity.md`, a translatable block dropped at the canonical boundary is **MEDIUM minimum**.
-
-**Trigger**: any FNV/FO3 cell containing a Protectron whose ragdoll activates (death, or the `ragdoll` console command). Content: `creatures\protectron\skeleton.nif` from `Fallout - Meshes.bsa`.
-
-## Tracking gap — this is why a successor is being filed
-
-**#3330, #1539 and #1850 are all CLOSED**, and #3330 was closed on a partial fix with **no successor**. The residual is currently tracked only by a source comment. Three independent audit dimensions this cycle (physics D4, regression, legacy-compat D4) re-derived it separately, which is the cost of that gap.
-
-The audit recommends a successor rather than a reopen, because the two remaining halves need genuinely different work.
-
-## Suggested Fix
-
-Two distinct pieces of work:
-
-**(a) A canonical prismatic joint kind.** `ImportedJointKind::Prismatic` → `RagdollJointSpec::Prismatic` → a Rapier `GenericJoint` leaving the authored linear axis free. This closes the 2 prismatic edges.
-
-**(b) Retain `BhkBreakableConstraint`'s wrapped CInfo at parse time** (`crates/nif/src/blocks/collision/constraints.rs` — the geometry is currently `stream.skip`ped), so the inner Ragdoll/LimitedHinge joint can be rebuilt and the downcast in `ragdoll.rs:142` has something to find. This is #1850's own deferred note.
-
-## Related
-
-- #3330 (CLOSED — partial), #1539 (CLOSED), #1850 (CLOSED — its deferred note is half (b))
+**12/12 constraints surfaced, 1 connected component** — exactly the issue's own acceptance
+criterion. The three pre-existing humanoid-skeleton real-data tests (Oblivion/FNV/Skyrim SE
+`_male` skeletons, 18 bodies / 17 joints each) still pass unchanged, confirming zero regression.
 
 ## Completeness Checks
-- [ ] **SIBLING**: `bhkBallAndSocketConstraint` and `bhkStiffSpringConstraint` reach the same `Other` arm — check whether either has vanilla occupancy before deciding they stay unmapped
-- [ ] **CANONICAL-BOUNDARY**: The new joint kind lands at the NIFAL parser→canonical boundary; per-game logic stays in the CInfo decode, which PHYSAL doctrine names as the **only** permitted per-game seam. See `/audit-nifal` and `docs/engine/physal.md`.
-- [ ] **TESTS**: A regression test pins `creatures\protectron\skeleton.nif` at 12/12 constraints and **1** connected component — mirroring the `bhk_constraint_tests.rs:214-283` FO3/Oblivion hinge fixtures that guard the fixed third
+
+- [x] **SIBLING**: `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint` still reach `Other`
+      (no canonical joint kind exists for either) — **deliberately not resolved here**, matching
+      the issue's own checklist framing ("check whether either has vanilla occupancy before
+      deciding they stay unmapped"). No occupancy census was run for these two; left open for a
+      future issue if warranted.
+- [x] **CANONICAL-BOUNDARY**: `Prismatic` lands at the NIFAL parser→canonical boundary
+      (`MaterialInfo`-equivalent: `ImportedJointKind`); the per-game seam stays confined to
+      `constraints.rs`'s `parse_fo3`/`parse_oblivion`, never re-derived downstream.
+- [x] **TESTS**: byte-exact parser tests (FO3+/Oblivion Prismatic field order, `BhkBreakableConstraint`
+      decode for all 4 canonical types + BallAndSocket-stays-Other), synthetic `extract_ragdoll`
+      unit tests (bare Prismatic, breakable-wrapped Ragdoll now surfaces, breakable-wrapped
+      BallAndSocket still drops), a connected-components helper + its own CI-runnable pin, and
+      the real-data Protectron regression test verified live above.
+
+Full workspace: `cargo test --no-fail-fast` 7031 passing, 0 failing.

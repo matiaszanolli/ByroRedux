@@ -51,8 +51,17 @@ fn assert_structural(game: Game, ragdoll: &ImportedRagdoll) {
         .iter()
         .filter(|c| matches!(c.kind, ImportedJointKind::LimitedHinge { .. }))
         .count();
+    // #3792 — Prismatic joins the surfaced-kind tally (creature skeletons
+    // like Protectron carry these; the vanilla humanoid skeletons this
+    // function also guards have none, so this adds 0 for them).
+    let prismatic_joints = ragdoll
+        .constraints
+        .iter()
+        .filter(|c| matches!(c.kind, ImportedJointKind::Prismatic { .. }))
+        .count();
     eprintln!(
-        "{game:?} ragdoll: {} bodies, {} joints ({ragdoll_joints} Ragdoll + {hinge_joints} LimitedHinge)",
+        "{game:?} ragdoll: {} bodies, {} joints ({ragdoll_joints} Ragdoll + {hinge_joints} \
+         LimitedHinge + {prismatic_joints} Prismatic)",
         ragdoll.bodies.len(),
         ragdoll.constraints.len(),
     );
@@ -83,9 +92,9 @@ fn assert_structural(game: Game, ragdoll: &ImportedRagdoll) {
     // read. This is the cross-game assertion: it holds whether the bytes
     // arrived in Oblivion or FO3+ order.
     assert_eq!(
-        ragdoll_joints + hinge_joints,
+        ragdoll_joints + hinge_joints + prismatic_joints,
         ragdoll.constraints.len(),
-        "{game:?}: every surfaced joint must decode to Ragdoll or LimitedHinge",
+        "{game:?}: every surfaced joint must decode to Ragdoll, LimitedHinge, or Prismatic",
     );
 }
 
@@ -258,4 +267,88 @@ fn reference_floor_passes_at_and_above_measured_count() {
 fn reference_floor_trips_on_a_dropped_joint() {
     // 18 bodies but only 16 joints (one silently dropped) → below the floor.
     assert_reference_counts(Game::FalloutNV, &synthetic_ragdoll(18, 16), 18, 17);
+}
+
+// ── #3792 — creatures\protectron\skeleton.nif fragmentation ─────────
+
+/// Count connected components in the ragdoll's body/joint graph — a
+/// fragmenting parser bug (dropped constraint edges) shows up here as
+/// > 1 component, each of which becomes an independent free-falling
+/// multibody at runtime (the shared failure mode #3330/#1539/#1850/#3792
+/// all address different causes of). Pure graph reachability via
+/// union-find; no physics-crate dependency.
+fn connected_components(ragdoll: &ImportedRagdoll) -> usize {
+    let n = ragdoll.bodies.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            let root = find(parent, parent[x]);
+            parent[x] = root;
+        }
+        parent[x]
+    }
+    for c in &ragdoll.constraints {
+        let ra = find(&mut parent, c.body_a);
+        let rb = find(&mut parent, c.body_b);
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+    let mut roots = std::collections::HashSet::new();
+    for i in 0..n {
+        roots.insert(find(&mut parent, i));
+    }
+    roots.len()
+}
+
+/// #3792 (PHYS-D4-2026-08-30-01) — `creatures\protectron\skeleton.nif` was
+/// the residual fragment after #3330 fixed the `bhkHinge` third of three
+/// FNV skeletons severed by unmapped constraint classes: 12 authored
+/// edges, only 9 surfaced pre-#3792 (2 `bhkPrismaticConstraint` + 1
+/// breakable-wrapped edge dropped), fragmenting into 4 connected
+/// components (`Bip01 Head` / `Bip01 Head Dome` / `Bip01 Spine Brain`
+/// each detaching and free-falling independently). Pins the full fix:
+/// all 12 edges surface and the graph is one connected component.
+#[test]
+#[ignore]
+fn fnv_protectron_skeleton_is_one_connected_component() {
+    let Some(ragdoll) =
+        thread_skeleton_ragdoll(Game::FalloutNV, r"meshes\creatures\protectron\skeleton.nif")
+    else {
+        return;
+    };
+    assert_structural(Game::FalloutNV, &ragdoll);
+    let components = connected_components(&ragdoll);
+    eprintln!(
+        "Protectron: {} bodies, {} joints, {components} connected component(s)",
+        ragdoll.bodies.len(),
+        ragdoll.constraints.len(),
+    );
+    assert_eq!(
+        ragdoll.constraints.len(),
+        12,
+        "Protectron should surface all 12 authored constraint edges post-#3792 \
+         (was 9 pre-fix: 2 bhkPrismaticConstraint + 1 breakable-wrapped edge dropped)",
+    );
+    assert_eq!(
+        components, 1,
+        "Protectron's Bip01 Head / Head Dome / Spine Brain must not fragment into \
+         free-falling components (#3792, the residual of #3330/#1539/#1850)",
+    );
+}
+
+/// CI-runnable pin for [`connected_components`] itself, needing no game
+/// data — proves the helper actually detects fragmentation before trusting
+/// the real-data test above to catch a regression.
+#[test]
+fn connected_components_detects_a_fragmenting_edge_drop() {
+    // One connected chain: 0-1-2-3.
+    let connected = synthetic_ragdoll(4, 3);
+    assert_eq!(connected_components(&connected), 1);
+
+    // Same 4 bodies, but the middle edge (1-2) is missing: two
+    // components {0,1} and {2,3} — the exact Protectron failure shape.
+    let mut fragmented = synthetic_ragdoll(4, 3);
+    fragmented.constraints.remove(1);
+    assert_eq!(connected_components(&fragmented), 2);
 }

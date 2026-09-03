@@ -91,6 +91,23 @@ pub enum RagdollJointSpec {
         min_angle: f32,
         max_angle: f32,
     },
+    /// 1-DOF sliding rail (`bhkPrismaticConstraint`, #3792). All three
+    /// rotation axes and the two non-sliding translation axes are
+    /// locked; the body translates along `axis_a`/`axis_b` between
+    /// `min_distance`/`max_distance`.
+    Prismatic {
+        axis_a: Vec3,
+        /// Authored zero-angle reference direction for side A — same
+        /// role as `LimitedHinge::perp_a`, threaded through from
+        /// `ImportedJointKind::Prismatic` with no re-derivation here.
+        perp_a: Vec3,
+        pivot_a: Vec3,
+        axis_b: Vec3,
+        perp_b: Vec3,
+        pivot_b: Vec3,
+        min_distance: f32,
+        max_distance: f32,
+    },
 }
 
 impl RagdollJointSpec {
@@ -162,6 +179,27 @@ impl RagdollJointSpec {
                 pivot_b: *pivot_b * scale_b,
                 min_angle: *min_angle,
                 max_angle: *max_angle,
+            },
+            Self::Prismatic {
+                axis_a,
+                perp_a,
+                pivot_a,
+                axis_b,
+                perp_b,
+                pivot_b,
+                min_distance,
+                max_distance,
+            } => Self::Prismatic {
+                axis_a: *axis_a,
+                perp_a: *perp_a,
+                pivot_a: *pivot_a * scale_a,
+                axis_b: *axis_b,
+                perp_b: *perp_b,
+                pivot_b: *pivot_b * scale_b,
+                // Linear travel limits, not directions — scale like a
+                // pivot (in side A's frame, matching axis_a/pivot_a).
+                min_distance: *min_distance * scale_a,
+                max_distance: *max_distance * scale_a,
             },
         }
     }
@@ -440,6 +478,22 @@ fn lin_locked() -> JointAxesMask {
     JointAxesMask::LIN_X | JointAxesMask::LIN_Y | JointAxesMask::LIN_Z
 }
 
+/// All three rotational DOF plus the two non-sliding linear DOF — locked
+/// for a prismatic joint (#3792). nif.xml's own description: "All three
+/// rotation axes and the remaining two translation axes are fixed." The
+/// local frame's rotation (`frame_rot`) maps the authored sliding axis
+/// onto local X, so `LinX` is the one axis left out here — free but
+/// bounded via `.limits(JointAxis::LinX, [min, max])`, the same
+/// "lock the frame, limit the remaining DOF" shape `LimitedHinge` uses
+/// for `AngX`.
+fn prismatic_locked() -> JointAxesMask {
+    JointAxesMask::LIN_Y
+        | JointAxesMask::LIN_Z
+        | JointAxesMask::ANG_X
+        | JointAxesMask::ANG_Y
+        | JointAxesMask::ANG_Z
+}
+
 fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
     match j {
         RagdollJointSpec::Ragdoll {
@@ -516,6 +570,51 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
                 .local_frame1(iso_from_trs(pv1, frame_rot(a1, p1)))
                 .local_frame2(iso_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::AngX, [amin, amax])
+                .build()
+        }
+        RagdollJointSpec::Prismatic {
+            axis_a,
+            perp_a,
+            pivot_a,
+            axis_b,
+            perp_b,
+            pivot_b,
+            min_distance,
+            max_distance,
+        } => {
+            // #3792 — same flip treatment as LimitedHinge: swapping which
+            // side is frame1 reverses the sign convention of the
+            // along-axis coordinate, so the distance limits negate+swap.
+            let (a1, p1, pv1, a2, p2, pv2, dmin, dmax) = if !flip {
+                (
+                    *axis_a,
+                    *perp_a,
+                    *pivot_a,
+                    *axis_b,
+                    *perp_b,
+                    *pivot_b,
+                    *min_distance,
+                    *max_distance,
+                )
+            } else {
+                (
+                    *axis_b,
+                    *perp_b,
+                    *pivot_b,
+                    *axis_a,
+                    *perp_a,
+                    *pivot_a,
+                    -*max_distance,
+                    -*min_distance,
+                )
+            };
+            // `frame_rot` maps the authored sliding axis onto local X, so
+            // `JointAxis::LinX` is the one DOF `prismatic_locked` leaves
+            // out — free but bounded by the authored travel range.
+            GenericJointBuilder::new(prismatic_locked())
+                .local_frame1(iso_from_trs(pv1, frame_rot(a1, p1)))
+                .local_frame2(iso_from_trs(pv2, frame_rot(a2, p2)))
+                .limits(JointAxis::LinX, [dmin, dmax])
                 .build()
         }
     }

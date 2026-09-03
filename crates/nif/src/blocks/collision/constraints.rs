@@ -51,6 +51,8 @@ pub enum BhkConstraintData {
     Ragdoll(RagdollCInfo),
     /// `bhkLimitedHingeConstraintCInfo` — a 1-DOF angle-limited hinge.
     LimitedHinge(LimitedHingeCInfo),
+    /// `bhkPrismaticConstraintCInfo` — a 1-DOF sliding rail (#3792).
+    Prismatic(PrismaticCInfo),
     /// Any constraint type we don't decode the body of yet.
     Other,
 }
@@ -306,6 +308,87 @@ impl LimitedHingeCInfo {
     }
 }
 
+/// `bhkPrismaticConstraintCInfo` (#3792) — nif.xml: "Creates a rail
+/// between two bodies that allows translation along a single axis with
+/// linear limits and a motor. All three rotation axes and the remaining
+/// two translation axes are fixed." Raw Havok Z-up (see [`RagdollCInfo`]).
+#[derive(Debug, Clone)]
+pub struct PrismaticCInfo {
+    pub sliding_a: [f32; 4],
+    pub rotation_a: [f32; 4],
+    pub plane_a: [f32; 4],
+    pub pivot_a: [f32; 4],
+    pub sliding_b: [f32; 4],
+    pub rotation_b: [f32; 4],
+    pub plane_b: [f32; 4],
+    pub pivot_b: [f32; 4],
+    pub min_distance: f32,
+    pub max_distance: f32,
+    pub friction: f32,
+}
+
+impl PrismaticCInfo {
+    /// FO3/FNV (`!#NI_BS_LTE_16#`) layout, nif.xml `since="20.2.0.7"`:
+    /// 8 × Vec4 + 3 × f32 = 140 bytes (matches the FNV Prismatic prefix
+    /// in [`BhkBreakableConstraint::fnv_motor_prefix_size`]). Field
+    /// order: Sliding A, Rotation A, Plane A, Pivot A, Sliding B,
+    /// Rotation B, Plane B, Pivot B — note this is NOT the same order as
+    /// the Oblivion layout below (nif.xml's own comment: "In reality
+    /// Havok loads these as Transform A and Transform B using
+    /// hkTransform").
+    fn parse_fo3(stream: &mut NifStream) -> io::Result<Self> {
+        let sliding_a = super::read_vec4(stream)?;
+        let rotation_a = super::read_vec4(stream)?;
+        let plane_a = super::read_vec4(stream)?;
+        let pivot_a = super::read_vec4(stream)?;
+        let sliding_b = super::read_vec4(stream)?;
+        let rotation_b = super::read_vec4(stream)?;
+        let plane_b = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        Ok(Self {
+            sliding_a,
+            rotation_a,
+            plane_a,
+            pivot_a,
+            sliding_b,
+            rotation_b,
+            plane_b,
+            pivot_b,
+            min_distance: stream.read_f32_le()?,
+            max_distance: stream.read_f32_le()?,
+            friction: stream.read_f32_le()?,
+        })
+    }
+
+    /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout, nif.xml
+    /// `until="20.0.0.5"`: 8 × Vec4 + 3 × f32 = 140 bytes, no Motor
+    /// field. Field order: Pivot A, Rotation A, Plane A, Sliding A,
+    /// Sliding B, Pivot B, Rotation B, Plane B.
+    fn parse_oblivion(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let rotation_a = super::read_vec4(stream)?;
+        let plane_a = super::read_vec4(stream)?;
+        let sliding_a = super::read_vec4(stream)?;
+        let sliding_b = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        let rotation_b = super::read_vec4(stream)?;
+        let plane_b = super::read_vec4(stream)?;
+        Ok(Self {
+            sliding_a,
+            rotation_a,
+            plane_a,
+            pivot_a,
+            sliding_b,
+            rotation_b,
+            plane_b,
+            pivot_b,
+            min_distance: stream.read_f32_le()?,
+            max_distance: stream.read_f32_le()?,
+            friction: stream.read_f32_le()?,
+        })
+    }
+}
+
 impl BhkConstraint {
     /// Read the shared `bhkConstraintCInfo` prefix — 16 bytes:
     /// `num_entities u32 + entity_a i32 + entity_b i32 + priority u32`.
@@ -391,6 +474,8 @@ impl BhkConstraint {
             2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
             // 1 Hinge — #3330, decoded into the same canonical joint.
             1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?),
+            // 6 Prismatic — #3792.
+            6 => BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?),
             other => {
                 // #1609 — mirror the Oblivion size-skip on FO3+: consume the
                 // undecoded inner CInfo's FIXED body so stream consumption is
@@ -472,6 +557,18 @@ impl BhkConstraint {
                         ),
                     });
                 }
+                // #3792 — sibling of the three arms above.
+                "bhkPrismaticConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(
+                            stream,
+                        )?),
+                    });
+                }
                 _ => {}
             }
 
@@ -480,10 +577,10 @@ impl BhkConstraint {
             let payload_size: Option<u64> = match type_name {
                 // 2 × Vec4
                 "bhkBallAndSocketConstraint" => Some(32),
-                // `bhkHingeConstraint` (5 × Vec4 = 80) is decoded above
-                // since #3330 and no longer skipped here.
-                // 8 × Vec4 + 3 × f32
-                "bhkPrismaticConstraint" => Some(140),
+                // `bhkHingeConstraint` (5 × Vec4 = 80) and
+                // `bhkPrismaticConstraint` (8 × Vec4 + 3 × f32 = 140) are
+                // decoded above (since #3330 / #3792) and no longer skipped
+                // here.
                 // 2 × Vec4 + f32
                 "bhkStiffSpringConstraint" => Some(36),
                 // Malleable wrapper has a runtime-dispatched inner
@@ -520,11 +617,12 @@ impl BhkConstraint {
                     1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_oblivion(
                         stream,
                     )?),
+                    // 6 Prismatic — #3792.
+                    6 => BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(stream)?),
                     other => {
                         let inner_size: u64 = match other {
-                            0 => 32,  // Ball and Socket
-                            6 => 140, // Prismatic
-                            8 => 36,  // Stiff Spring
+                            0 => 32, // Ball and Socket
+                            8 => 36, // Stiff Spring
                             unknown => {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidData,
@@ -572,6 +670,12 @@ impl BhkConstraint {
             "bhkHingeConstraint" => {
                 BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?)
             }
+            // #3792 — 1-DOF sliding rail. Same "fixed prefix only, motor
+            // left for block_size recovery" posture as Ragdoll/LimitedHinge
+            // above.
+            "bhkPrismaticConstraint" => {
+                BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?)
+            }
             "bhkMalleableConstraint" => Self::parse_fo3_malleable_inner(stream)?,
             _ => BhkConstraintData::Other,
         };
@@ -612,6 +716,22 @@ pub struct BhkBreakableConstraint {
     /// is hit; when `false`, it stops applying force but stays
     /// present so the game can re-enable it.
     pub remove_when_broken: bool,
+    /// The wrapped joint's decoded CInfo, when `wrapped_type` is one of
+    /// the four kinds a canonical joint exists for (Hinge/LimitedHinge/
+    /// Prismatic/Ragdoll — 1/2/6/7). `Other` for BallAndSocket(0) /
+    /// StiffSpring(8) / a nested Malleable(13), which either have no
+    /// canonical joint kind yet or dispatch to their own inner type.
+    ///
+    /// #3792 — before this, the wrapped payload was `stream.skip`ped
+    /// (only `wrapped_type` + the trailer fields survived), so a
+    /// breakable-wrapped Ragdoll/LimitedHinge/Prismatic joint reached
+    /// `extract_ragdoll` with no geometry to rebuild it from and was
+    /// dropped outright (#1850). Decoding it here — reusing the exact
+    /// same per-variant `parse_fo3`/`parse_oblivion` field order as a
+    /// bare [`BhkConstraint`] — closes that: `extract_ragdoll`'s
+    /// `BhkBreakableConstraint` arm now has the same `BhkConstraintData`
+    /// a bare constraint would carry.
+    pub data: BhkConstraintData,
 }
 
 impl BhkBreakableConstraint {
@@ -730,33 +850,78 @@ impl BhkBreakableConstraint {
         // not a NIF-version one; matches rigid_body.rs. (#1608)
         let is_oblivion = stream.bsver() <= crate::version::bsver::NI_BS_LTE_16;
 
-        // #633: lift the Oblivion-only gate. When the wrapped CInfo size
-        // is derivable for the parser's version (Hinge / BallAndSocket /
-        // StiffSpring on either; LimitedHinge / Prismatic / Ragdoll on
-        // Oblivion), read the trailer fields directly. Pre-#633 every
-        // FNV/FO3 instance returned `threshold = 0.0,
-        // remove_when_broken = false` even when the bytes were on disk.
-        let trailer = if let Some(size) = Self::wrapped_payload_size(wrapped_type, is_oblivion) {
-            stream.skip(size)?;
-            Some(())
-        } else if !is_oblivion {
-            // FNV motor-bearing types (LimitedHinge / Prismatic /
-            // Ragdoll): consume the fixed prefix + motor inline so the
-            // trailer is reachable. Pre-#633 these all hit the short
-            // stub and the motor + trailer bytes were skipped via
-            // `block_size` recovery.
-            if let Some(prefix) = Self::fnv_motor_prefix_size(wrapped_type) {
-                stream.skip(prefix)?;
-                Self::consume_motor(stream)?;
-                Some(())
-            } else {
-                None
+        // #3792 — decode the wrapped payload for the four types a
+        // canonical joint exists for (Hinge/LimitedHinge/Prismatic/
+        // Ragdoll = 1/2/6/7), reusing bare `BhkConstraint`'s own per-era
+        // field-order parsers instead of a byte-count skip. Byte
+        // consumption is identical to the pre-#3792 skip sizes (each
+        // `parse_fo3`/`parse_oblivion` reads exactly what
+        // `wrapped_payload_size`/`fnv_motor_prefix_size` tabulate below),
+        // so the trailer stays reachable exactly as before — what
+        // changes is that the geometry now survives instead of being
+        // discarded. This closes #1850: a breakable-wrapped joint now
+        // reaches `extract_ragdoll` with real `BhkConstraintData`, not
+        // `Other`.
+        //
+        // BallAndSocket(0) / StiffSpring(8) have no canonical joint kind
+        // yet (same posture as a bare `BhkConstraint` of either type) and
+        // stay a byte-count skip into `Other`. Malleable(13) has no
+        // fixed size on either version (nested dispatch) and falls
+        // through to `block_size` recovery below, unchanged.
+        let (data, decoded) = match (wrapped_type, is_oblivion) {
+            (1, true) => (
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_oblivion(stream)?),
+                true,
+            ),
+            (1, false) => (
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?),
+                true,
+            ),
+            (2, true) => (
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(stream)?),
+                true,
+            ),
+            (2, false) => (
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
+                true,
+            ),
+            (6, true) => (
+                BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(stream)?),
+                true,
+            ),
+            (6, false) => (
+                BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?),
+                true,
+            ),
+            (7, true) => (
+                BhkConstraintData::Ragdoll(RagdollCInfo::parse_oblivion(stream)?),
+                true,
+            ),
+            (7, false) => (
+                BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
+                true,
+            ),
+            (0, _) => {
+                // BallAndSocket — 2 × Vec4, no version difference.
+                stream.skip(32)?;
+                (BhkConstraintData::Other, true)
             }
-        } else {
-            None
+            (8, _) => {
+                // StiffSpring — 2 × Vec4 + f32, no version difference.
+                stream.skip(36)?;
+                (BhkConstraintData::Other, true)
+            }
+            _ => (BhkConstraintData::Other, false), // Malleable(13) or unknown
         };
 
-        if trailer.is_some() {
+        if decoded {
+            // The FNV motor-bearing types (LimitedHinge/Prismatic/Ragdoll)
+            // only had their fixed prefix consumed above — the trailing
+            // `bhkConstraintMotorCInfo` is variable-sized and must be
+            // consumed separately so the trailer fields are reachable.
+            if !is_oblivion && matches!(wrapped_type, 2 | 6 | 7) {
+                Self::consume_motor(stream)?;
+            }
             let threshold = stream.read_f32_le()?;
             let remove_when_broken = stream.read_u8()? != 0;
             return Ok(Self {
@@ -766,6 +931,7 @@ impl BhkBreakableConstraint {
                 wrapped_type,
                 threshold,
                 remove_when_broken,
+                data,
             });
         }
 
@@ -780,6 +946,7 @@ impl BhkBreakableConstraint {
             wrapped_type,
             threshold: 0.0,
             remove_when_broken: false,
+            data: BhkConstraintData::Other,
         })
     }
 }

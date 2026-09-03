@@ -154,6 +154,85 @@ fn fnv_limited_hinge_decodes_typed_cinfo() {
     assert_eq!(stream.position() as usize, 16 + 140);
 }
 
+/// #3792 — FNV/FO3+ `bhkPrismaticConstraint`, nif.xml `since="20.2.0.7"`
+/// order: SlidingA, RotationA, PlaneA, PivotA, SlidingB, RotationB,
+/// PlaneB, PivotB, then MinDistance/MaxDistance/Friction. `creatures\
+/// protectron\skeleton.nif` carries two bare instances of this type.
+#[test]
+fn fnv_prismatic_decodes_typed_cinfo() {
+    let mut bytes = base();
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // sliding_a
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // rotation_a
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // plane_a
+    bytes.extend(vec4(11.0, 22.0, 33.0, 1.0)); // pivot_a
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // sliding_b
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // rotation_b
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // plane_b
+    bytes.extend(vec4(44.0, 55.0, 66.0, 1.0)); // pivot_b
+    for v in [-5.0f32, 5.0, 0.2] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(bytes.len(), 16 + 140, "base + 8×Vec4 + 3×f32");
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkPrismaticConstraint").unwrap();
+
+    let BhkConstraintData::Prismatic(p) = c.data else {
+        panic!("expected Prismatic data, got {:?}", c.data);
+    };
+    assert_eq!(p.sliding_a, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.rotation_a, [0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(p.plane_a, [0.0, 0.0, 1.0, 0.0]);
+    assert_eq!(p.pivot_a, [11.0, 22.0, 33.0, 1.0]);
+    assert_eq!(p.sliding_b, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.pivot_b, [44.0, 55.0, 66.0, 1.0]);
+    assert_eq!(p.min_distance, -5.0);
+    assert_eq!(p.max_distance, 5.0);
+    assert_eq!(p.friction, 0.2);
+    // Fixed prefix consumed exactly; the trailing motor is left for
+    // block_size recovery, matching Ragdoll/LimitedHinge.
+    assert_eq!(stream.position() as usize, 16 + 140);
+}
+
+/// #3792 — Oblivion (`#NI_BS_LTE_16#`) `bhkPrismaticConstraint`, nif.xml
+/// `until="20.0.0.5"` order: PivotA, RotationA, PlaneA, SlidingA,
+/// SlidingB, PivotB, RotationB, PlaneB — a DIFFERENT field order from the
+/// FO3+ layout above (nif.xml's own note: "In reality Havok loads these
+/// as Transform A and Transform B using hkTransform" on the FO3+ side).
+#[test]
+fn oblivion_prismatic_decodes_typed_cinfo() {
+    let mut bytes = base();
+    bytes.extend(vec4(11.0, 22.0, 33.0, 1.0)); // pivot_a
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // rotation_a
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // plane_a
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // sliding_a
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // sliding_b
+    bytes.extend(vec4(44.0, 55.0, 66.0, 1.0)); // pivot_b
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // rotation_b
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // plane_b
+    for v in [-5.0f32, 5.0, 0.2] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(bytes.len(), 16 + 140, "base + 8×Vec4 + 3×f32");
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkPrismaticConstraint").unwrap();
+
+    let BhkConstraintData::Prismatic(p) = c.data else {
+        panic!("Oblivion Prismatic must decode, got {:?}", c.data);
+    };
+    assert_eq!(p.pivot_a, [11.0, 22.0, 33.0, 1.0]);
+    assert_eq!(p.sliding_a, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.pivot_b, [44.0, 55.0, 66.0, 1.0]);
+    assert_eq!(p.sliding_b, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.min_distance, -5.0);
+    assert_eq!(p.max_distance, 5.0);
+    assert_eq!(p.friction, 0.2);
+    assert_eq!(stream.position() as usize, 16 + 140);
+}
+
 /// FNV `bhkMalleableConstraint` wrapping a Ragdoll (Type 7) — the
 /// dominant joint form in the vanilla humanoid skeleton (14 of 17
 /// joints). The inner CInfo's entities are −1/−1; the real bodies are

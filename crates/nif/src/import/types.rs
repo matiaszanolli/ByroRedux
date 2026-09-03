@@ -1484,6 +1484,23 @@ pub enum ImportedJointKind {
         min_angle: f32,
         max_angle: f32,
     },
+    /// 1-DOF sliding rail (`bhkPrismaticConstraint`, #3792). All three
+    /// rotation axes and the two non-sliding translation axes are fixed;
+    /// the body can only translate along `axis_a`/`axis_b` between
+    /// `min_distance`/`max_distance`.
+    Prismatic {
+        axis_a: Vec3,
+        /// Authored zero-angle reference direction for side A
+        /// (`Rotation A`) — orthogonalised against `axis_a` at the solver
+        /// boundary, same role as `LimitedHinge::perp_a`.
+        perp_a: Vec3,
+        pivot_a: Vec3,
+        axis_b: Vec3,
+        perp_b: Vec3,
+        pivot_b: Vec3,
+        min_distance: f32,
+        max_distance: f32,
+    },
 }
 
 /// One particle emitter discovered while walking the NIF scene graph.

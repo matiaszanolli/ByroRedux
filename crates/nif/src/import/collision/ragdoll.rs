@@ -130,25 +130,34 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     let mut constraints = Vec::new();
     for (constraint_idx, block) in scene.blocks.iter().enumerate() {
         let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
-            // #1850 — a `bhkBreakableConstraint` decodes into its OWN struct
-            // (`BhkBreakableConstraint`), never a `BhkConstraint`, so it falls
-            // through here. Its `wrapped_type` can be a real articulation joint
-            // (7 Ragdoll / 2 LimitedHinge), but the parser discards the wrapped
-            // CInfo geometry (`stream.skip` — `constraints.rs`), so the inner
-            // joint can't be rebuilt from what we retain. At minimum make the
-            // dropped edge LOUD (mirroring the #1539 `Other` arm below) instead
-            // of vanishing silently: a breakable-wrapped limb link that detaches
-            // and free-falls is then diagnosable from the log.
+            // #1850/#3792 — a `bhkBreakableConstraint` decodes into its OWN
+            // struct (`BhkBreakableConstraint`), never a `BhkConstraint`, so it
+            // falls through here. Since #3792 the wrapped geometry is decoded
+            // for the four types a canonical joint exists for (Ragdoll/
+            // LimitedHinge/Prismatic/Hinge — #1850's original gap), so try to
+            // build the joint the same way a bare constraint would first.
+            // Only a still-unmapped wrapped type (BallAndSocket/StiffSpring/
+            // Malleable), an unresolved/self-looped endpoint, or a non-finite
+            // decode falls through to the drop diagnostic below.
             if let Some(bc) = block.as_any().downcast_ref::<BhkBreakableConstraint>() {
+                if let Some((body_a, body_b, kind)) = try_breakable_joint(bc, &block_to_body, scale)
+                {
+                    constraints.push(ImportedRagdollConstraint {
+                        body_a,
+                        body_b,
+                        kind,
+                    });
+                    continue;
+                }
                 if let Some((bone_a, bone_b)) = breakable_dropped_edge(bc, &block_to_body, &bodies)
                 {
                     log::warn!(
                         "extract_ragdoll: dropping bhkBreakableConstraint \
                          (wrapped_type={wt}) linking bones '{bone_a}' <-> '{bone_b}' — \
-                         breakable-wrapped constraints are not yet mapped to a canonical \
-                         joint (the wrapped CInfo geometry is discarded at parse time). \
-                         The ragdoll edge is lost; if it was the sole link to a limb, that \
-                         limb will detach and free-fall (#1850).",
+                         either its wrapped type has no canonical joint mapping yet \
+                         (BallAndSocket / StiffSpring / nested Malleable) or its decoded \
+                         geometry was non-finite. The ragdoll edge is lost; if it was the \
+                         sole link to a limb, that limb will detach and free-fall (#1850).",
                         wt = bc.wrapped_type,
                     );
                 }
@@ -190,29 +199,24 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         let kind = match &c.data {
             BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
             BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
-            // #1539 — `bhkBallAndSocketConstraint` / `bhkPrismaticConstraint` /
-            // `bhkStiffSpringConstraint` still decode to `Other`. Dropping one
-            // that links two ragdoll bones silently disconnects the
-            // articulation: `orient_tree` (`crates/physics/src/ragdoll.rs`)
-            // then yields a forest and `build_ragdoll` builds the detached
-            // limb as an independent free-floating multibody that free-falls.
-            // Every other block-drop in this file logs (the FO4-NP / phantom
-            // arms `log::debug!`); this one warns — louder, because unlike
-            // those benign out-of-scope drops it can visibly break the
-            // ragdoll.
-            //
-            // #3330 removed `bhkHingeConstraint` from this list: the
-            // long-term note this comment used to carry ("map a limitless
-            // hinge to `LimitedHinge { min: -PI, max: PI }`") is now done in
-            // `LimitedHingeCInfo::parse_hinge_fo3`. What remains reaching here
-            // on vanilla FNV is `creatures\protectron\skeleton.nif`'s two
-            // `bhkPrismaticConstraint` edges, which need a canonical prismatic
-            // joint kind that does not exist yet.
+            // #3792 — the `creatures\protectron\skeleton.nif` edges this
+            // arm used to fall through to `Other` for.
+            BhkConstraintData::Prismatic(p) => prismatic_joint(p, scale),
+            // #1539 — `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint`
+            // still decode to `Other` (#3792 closed the third named class,
+            // `bhkPrismaticConstraint`, above). Dropping one that links two
+            // ragdoll bones silently disconnects the articulation:
+            // `orient_tree` (`crates/physics/src/ragdoll.rs`) then yields a
+            // forest and `build_ragdoll` builds the detached limb as an
+            // independent free-floating multibody that free-falls. Every
+            // other block-drop in this file logs (the FO4-NP / phantom arms
+            // `log::debug!`); this one warns — louder, because unlike those
+            // benign out-of-scope drops it can visibly break the ragdoll.
             BhkConstraintData::Other => {
                 log::warn!(
                     "extract_ragdoll: dropping unsupported constraint linking bones \
                      '{a}' <-> '{b}' — decoded as Other (bhkBallAndSocket / \
-                     bhkPrismatic / bhkStiffSpring not yet mapped to a canonical joint). \
+                     bhkStiffSpring not yet mapped to a canonical joint). \
                      The ragdoll edge is lost; if it was the sole link to a limb, that \
                      limb will detach and free-fall (#1539).",
                     a = bodies[body_a].bone_name,
@@ -274,6 +278,40 @@ fn breakable_dropped_edge<'a>(
         bodies[body_a].bone_name.as_ref(),
         bodies[body_b].bone_name.as_ref(),
     ))
+}
+
+/// #3792 — try to build a joint for a breakable-wrapped constraint whose
+/// geometry decoded (Ragdoll/LimitedHinge/Prismatic — #1850's long-
+/// standing gap; a bare Hinge would also surface here via
+/// `BhkConstraintData::LimitedHinge`, mirroring #3330). Mirrors the
+/// bare-`BhkConstraint` resolve/validate/build steps in `extract_ragdoll`
+/// but collapses every failure reason (unresolved endpoint, self-loop,
+/// `Other` data, non-finite decode) to one opaque `None` — the caller
+/// falls back to the same `breakable_dropped_edge` #1850 diagnostic
+/// either way, so a finer-grained split isn't needed here.
+fn try_breakable_joint(
+    bc: &BhkBreakableConstraint,
+    block_to_body: &HashMap<usize, usize>,
+    scale: f32,
+) -> Option<(usize, usize, ImportedJointKind)> {
+    let body_a = bc
+        .entity_a
+        .index()
+        .and_then(|i| block_to_body.get(&i).copied())?;
+    let body_b = bc
+        .entity_b
+        .index()
+        .and_then(|i| block_to_body.get(&i).copied())?;
+    if body_a == body_b {
+        return None;
+    }
+    let kind = match &bc.data {
+        BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale)?,
+        BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale)?,
+        BhkConstraintData::Prismatic(p) => prismatic_joint(p, scale)?,
+        BhkConstraintData::Other => return None,
+    };
+    Some((body_a, body_b, kind))
 }
 
 /// Map each `BhkRigidBody` block index → the name of the bone NiNode that
@@ -352,6 +390,27 @@ fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> Option<ImportedJoin
     })
 }
 
+/// `Prismatic` sibling of [`limited_hinge_joint`] — same non-finite drop
+/// (#1534). `Sliding A`/`Sliding B` become `axis_a`/`axis_b` (the free
+/// translation axis); `Rotation A`/`Rotation B` become `perp_a`/`perp_b`
+/// (the zero-reference the solver boundary orthogonalises against the
+/// axis, same role `Perp Axis In A1`/`B1` play for `LimitedHinge`). #3792.
+fn prismatic_joint(p: &PrismaticCInfo, scale: f32) -> Option<ImportedJointKind> {
+    Some(ImportedJointKind::Prismatic {
+        axis_a: finite_vec(havok_dir_to_engine(p.sliding_a))?,
+        perp_a: finite_vec(havok_dir_to_engine(p.rotation_a))?,
+        pivot_a: finite_vec(havok_to_engine(p.pivot_a[0], p.pivot_a[1], p.pivot_a[2]) * scale)?,
+        axis_b: finite_vec(havok_dir_to_engine(p.sliding_b))?,
+        perp_b: finite_vec(havok_dir_to_engine(p.rotation_b))?,
+        pivot_b: finite_vec(havok_to_engine(p.pivot_b[0], p.pivot_b[1], p.pivot_b[2]) * scale)?,
+        // Distances are body-local displacements along the sliding axis —
+        // same authored-unit-then-scaled treatment as a pivot, not a
+        // direction.
+        min_distance: finite(p.min_distance * scale)?,
+        max_distance: finite(p.max_distance * scale)?,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)] // Synthetic scenes are assembled block-by-block.
 mod ragdoll_extract_tests {
@@ -368,7 +427,7 @@ mod ragdoll_extract_tests {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::collision::{
         BhkBreakableConstraint, BhkCollisionObject, BhkConstraint, BhkConstraintData, BhkRigidBody,
-        BhkSphereShape, LimitedHingeCInfo, RagdollCInfo,
+        BhkSphereShape, LimitedHingeCInfo, PrismaticCInfo, RagdollCInfo,
     };
     use crate::blocks::node::NiNode;
     use crate::blocks::NiObject;
@@ -580,6 +639,65 @@ mod ragdoll_extract_tests {
         }
     }
 
+    fn prismatic_constraint(entity_a: usize, entity_b: usize) -> Box<dyn NiObject> {
+        Box::new(BhkConstraint {
+            type_name: "bhkPrismaticConstraint",
+            entity_a: BlockRef(entity_a as u32),
+            entity_b: BlockRef(entity_b as u32),
+            priority: 1,
+            data: BhkConstraintData::Prismatic(PrismaticCInfo {
+                sliding_a: [1.0, 0.0, 0.0, 0.0],
+                rotation_a: [0.0, 1.0, 0.0, 0.0],
+                plane_a: [0.0, 0.0, 1.0, 0.0],
+                pivot_a: [10.0, 0.0, 0.0, 1.0],
+                sliding_b: [1.0, 0.0, 0.0, 0.0],
+                rotation_b: [0.0, 1.0, 0.0, 0.0],
+                plane_b: [0.0, 0.0, 1.0, 0.0],
+                pivot_b: [-10.0, 0.0, 0.0, 1.0],
+                min_distance: -2.0,
+                max_distance: 2.0,
+                friction: 0.1,
+            }),
+        })
+    }
+
+    /// #3792 — bare `bhkPrismaticConstraint` extraction, mirroring
+    /// [`limited_hinge_perp_axis_survives_extraction`]: the two
+    /// `creatures\protectron\skeleton.nif` edges this closes.
+    #[test]
+    fn prismatic_constraint_extracts_as_a_joint() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Head", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Head Dome", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(prismatic_constraint(2, 6)); // [8]
+
+        let r = extract_ragdoll(&scene).expect("two bodies + one joint must yield a ragdoll");
+        assert_eq!(r.constraints.len(), 1);
+        match &r.constraints[0].kind {
+            ImportedJointKind::Prismatic {
+                axis_a,
+                pivot_a,
+                min_distance,
+                max_distance,
+                ..
+            } => {
+                // Havok +X (1,0,0) → engine (x,z,-y) = (1,0,0).
+                assert_eq!(*axis_a, Vec3::new(1.0, 0.0, 0.0));
+                assert_eq!(*pivot_a, Vec3::new(10.0, 0.0, 0.0));
+                assert_eq!(*min_distance, -2.0);
+                assert_eq!(*max_distance, 2.0);
+            }
+            other => panic!("expected Prismatic joint, got {other:?}"),
+        }
+    }
+
     /// A single body (no second body, no joint) is not a ragdoll.
     #[test]
     fn single_body_is_not_a_ragdoll() {
@@ -748,6 +866,18 @@ mod ragdoll_extract_tests {
         entity_b: usize,
         wrapped_type: u32,
     ) -> BhkBreakableConstraint {
+        breakable_constraint_with_data(entity_a, entity_b, wrapped_type, BhkConstraintData::Other)
+    }
+
+    /// #3792 — sibling of [`breakable_constraint`] that lets a test supply
+    /// the (now-decoded) wrapped geometry, so a breakable-wrapped
+    /// Ragdoll/LimitedHinge/Prismatic can exercise the surfaced-joint path.
+    fn breakable_constraint_with_data(
+        entity_a: usize,
+        entity_b: usize,
+        wrapped_type: u32,
+        data: BhkConstraintData,
+    ) -> BhkBreakableConstraint {
         BhkBreakableConstraint {
             entity_a: BlockRef(entity_a as u32),
             entity_b: BlockRef(entity_b as u32),
@@ -755,6 +885,7 @@ mod ragdoll_extract_tests {
             wrapped_type,
             threshold: 100.0,
             remove_when_broken: true,
+            data,
         }
     }
 
@@ -811,16 +942,16 @@ mod ragdoll_extract_tests {
         );
     }
 
-    /// End-to-end: a 2-body scene whose only articulation link is a
-    /// `bhkBreakableConstraint` (not a `BhkConstraint`) yields NO surfaced
-    /// joint — the wrapped CInfo geometry is discarded at parse, so the edge
-    /// can't be rebuilt and the ragdoll collapses (`constraints.is_empty()` →
-    /// `None`). Pre-#1850 this dropped silently; now the loop routes the block
-    /// through `breakable_dropped_edge` + a `log::warn!` so the loss is
-    /// diagnosable. Guards against a future change silently fabricating a
-    /// bogus joint from the geometry-less breakable block.
+    /// #3792 — end-to-end: a 2-body scene whose only articulation link is a
+    /// `bhkBreakableConstraint` wrapping a Ragdoll (the dominant vanilla FNV
+    /// form) now surfaces a real joint, since the wrapped geometry is
+    /// decoded rather than skipped. Pre-#3792 this dropped unconditionally
+    /// (#1850) regardless of whether the wrapped geometry existed; this is
+    /// the regression #3792 exists to fix — a Protectron-class skeleton
+    /// whose only link to a limb is a breakable-wrapped joint must not
+    /// fragment.
     #[test]
-    fn breakable_wrapped_ragdoll_is_dropped_not_surfaced() {
+    fn breakable_wrapped_ragdoll_now_surfaces_as_a_joint() {
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
         scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
@@ -831,12 +962,57 @@ mod ragdoll_extract_tests {
         scene.blocks.push(coll_obj(6)); // [5]
         scene.blocks.push(rigid_body(7)); // [6]
         scene.blocks.push(sphere(1.0)); // [7]
-        scene.blocks.push(Box::new(breakable_constraint(2, 6, 7))); // [8] wrapped Ragdoll
+        scene.blocks.push(Box::new(breakable_constraint_with_data(
+            2,
+            6,
+            7, // Ragdoll
+            BhkConstraintData::Ragdoll(RagdollCInfo {
+                twist_a: [0.0, 0.0, 1.0, 0.0],
+                plane_a: [1.0, 0.0, 0.0, 0.0],
+                motor_a: [0.0; 4],
+                pivot_a: [10.0, 0.0, 0.0, 1.0],
+                twist_b: [0.0, 0.0, 1.0, 0.0],
+                plane_b: [1.0, 0.0, 0.0, 0.0],
+                motor_b: [0.0; 4],
+                pivot_b: [-10.0, 0.0, 0.0, 1.0],
+                cone_max_angle: 0.5,
+                plane_min_angle: -0.5,
+                plane_max_angle: 0.5,
+                twist_min_angle: -0.3,
+                twist_max_angle: 0.3,
+                max_friction: 0.0,
+            }),
+        ))); // [8]
+
+        let r = extract_ragdoll(&scene)
+            .expect("a breakable-wrapped Ragdoll with decoded geometry must surface a joint");
+        assert_eq!(r.constraints.len(), 1);
+        assert!(matches!(
+            r.constraints[0].kind,
+            ImportedJointKind::Ragdoll { .. }
+        ));
+    }
+
+    /// Sibling of the above: a breakable-wrapped type with no canonical
+    /// joint kind yet (BallAndSocket = 0) still drops — #3792 only closes
+    /// the gap for the four decoded types, not every wrapped type.
+    #[test]
+    fn breakable_wrapped_ball_and_socket_still_drops() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(Box::new(breakable_constraint(2, 6, 0))); // [8] BallAndSocket, data: Other
 
         assert!(
             extract_ragdoll(&scene).is_none(),
-            "a breakable-wrapped joint carries no rebuildable geometry — the edge \
-             is dropped (loudly, #1850), not surfaced as a fabricated joint",
+            "a breakable-wrapped type with no canonical joint kind must still drop (#1850)",
         );
     }
 

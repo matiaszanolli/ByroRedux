@@ -257,3 +257,117 @@ fn oblivion_hinge_still_uses_80_byte_size() {
     assert!(block.remove_when_broken);
     assert_eq!(stream.position() as usize, bytes.len());
 }
+
+// ── #3792 — wrapped geometry is now decoded, not skipped ───────────
+
+/// A wrapped Ragdoll (Type 7) on FNV must decode into real
+/// `BhkConstraintData::Ragdoll`, not just consume the right byte count —
+/// this is what lets `extract_ragdoll` rebuild the joint (#1850's
+/// original gap) instead of dropping the edge.
+#[test]
+fn fnv_wrapped_ragdoll_decodes_real_geometry() {
+    let mut bytes = shared_prefix(7); // wrapped_type = 7 (Ragdoll)
+                                       // 8 × Vec4 FO3+ order + 6 × f32 = 152 B fixed prefix.
+    for i in 0..8u8 {
+        bytes.extend_from_slice(&(i as f32).to_le_bytes());
+        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+    }
+    for v in [0.5f32, -0.25, 0.75, -1.5, 1.5, 100.0] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.push(0u8); // motor type NONE
+    bytes.extend(trailer(42.0, true));
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
+    assert_eq!(block.threshold, 42.0);
+    assert!(block.remove_when_broken);
+    let BhkConstraintData::Ragdoll(r) = block.data else {
+        panic!("wrapped Ragdoll must decode as Ragdoll, got {:?}", block.data);
+    };
+    assert_eq!(r.twist_a, [0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(r.pivot_a, [3.0, 0.0, 0.0, 0.0]);
+    assert_eq!(r.max_friction, 100.0);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// A wrapped Prismatic (Type 6) on FNV must decode into real
+/// `BhkConstraintData::Prismatic` — the exact class that fragments
+/// `creatures\protectron\skeleton.nif` per #3792.
+#[test]
+fn fnv_wrapped_prismatic_decodes_real_geometry() {
+    let mut bytes = shared_prefix(6); // wrapped_type = 6 (Prismatic)
+                                       // 8 × Vec4 FO3+ order + 3 × f32 = 140 B fixed prefix.
+    for i in 0..8u8 {
+        bytes.extend_from_slice(&(i as f32).to_le_bytes());
+        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+    }
+    for v in [-5.0f32, 5.0, 0.2] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.push(0u8); // motor type NONE
+    bytes.extend(trailer(17.5, false));
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
+    assert_eq!(block.threshold, 17.5);
+    assert!(!block.remove_when_broken);
+    let BhkConstraintData::Prismatic(p) = block.data else {
+        panic!("wrapped Prismatic must decode as Prismatic, got {:?}", block.data);
+    };
+    assert_eq!(p.sliding_a, [0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.pivot_a, [3.0, 0.0, 0.0, 0.0]);
+    assert_eq!(p.min_distance, -5.0);
+    assert_eq!(p.max_distance, 5.0);
+    assert_eq!(p.friction, 0.2);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// A wrapped LimitedHinge (Type 2) on Oblivion must decode into real
+/// `BhkConstraintData::LimitedHinge` using the Oblivion field order.
+#[test]
+fn oblivion_wrapped_limited_hinge_decodes_real_geometry() {
+    let mut bytes = shared_prefix(2); // wrapped_type = 2 (LimitedHinge)
+                                       // 7 × Vec4 Oblivion order + 3 × f32 = 124 B.
+    for i in 0..7u8 {
+        bytes.extend_from_slice(&(i as f32).to_le_bytes());
+        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+    }
+    for v in [-0.5f32, 0.5, 5.0] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.extend(trailer(9.0, true));
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
+    assert_eq!(block.threshold, 9.0);
+    let BhkConstraintData::LimitedHinge(h) = block.data else {
+        panic!("wrapped LimitedHinge must decode as LimitedHinge, got {:?}", block.data);
+    };
+    // Oblivion order: index 0 = pivot_a, index 1 = axis_a.
+    assert_eq!(h.pivot_a, [0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(h.axis_a, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(h.min_angle, -0.5);
+    assert_eq!(h.max_angle, 0.5);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// A wrapped BallAndSocket (Type 0) stays `Other` — no canonical joint
+/// kind exists for it yet (#3792's explicit deferral, matching the issue's
+/// own SIBLING checklist item).
+#[test]
+fn fnv_wrapped_ball_and_socket_stays_other() {
+    let mut bytes = shared_prefix(0); // wrapped_type = 0 (BallAndSocket)
+    bytes.extend(vec![0xEE; 32]); // 2 × Vec4, no version diff
+    bytes.extend(trailer(5.0, false));
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
+    assert_eq!(block.threshold, 5.0);
+    assert!(matches!(block.data, BhkConstraintData::Other));
+    assert_eq!(stream.position() as usize, bytes.len());
+}
