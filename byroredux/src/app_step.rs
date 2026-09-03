@@ -226,6 +226,12 @@ impl App {
                     grid.1,
                     elapsed.as_secs_f64() * 1000.0,
                 );
+                // The completed apply is the point at which the streamed
+                // cell's GPU allocations are resident. Sample here instead
+                // of once at boot, while the per-context latch in
+                // `VulkanContext` prevents a sustained breach from logging
+                // once per transition (#3662).
+                ctx.log_memory_usage();
             }
         }
 
@@ -295,7 +301,16 @@ impl App {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
-        crate::debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
+        let loaded = crate::debug_load::execute_pending_debug_loads(
+            &mut self.world,
+            ctx,
+            &mut self.streaming,
+        );
+        if loaded != 0 {
+            // Debug cell/NIF loads can allocate GPU resources without going
+            // through the exterior streaming transaction above.
+            ctx.log_memory_usage();
+        }
     }
 
     /// Cancel an unfinished interior apply and reclaim every object already
@@ -809,6 +824,13 @@ impl App {
                                 cam_pos.z,
                             );
                             ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                            // Interior applies can allocate a large amount of
+                            // mesh/texture GPU state outside exterior
+                            // streaming. Sample after the transaction becomes
+                            // resident; the renderer-owned Once latch keeps
+                            // repeated transitions quiet after the first
+                            // warning (#3662).
+                            ctx.log_memory_usage();
                         }
                     }
                     return;

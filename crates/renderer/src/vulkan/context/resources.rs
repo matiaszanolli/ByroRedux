@@ -471,7 +471,12 @@ impl VulkanContext {
     /// DEVICE_LOCAL heap — see #505.
     pub fn log_memory_usage(&self) {
         if let Some(ref alloc) = self.allocator {
-            super::super::allocator::log_memory_usage(alloc, &self.instance, self.physical_device);
+            super::super::allocator::log_memory_usage(
+                alloc,
+                &self.instance,
+                self.physical_device,
+                &self.memory_warning_once,
+            );
         }
     }
 

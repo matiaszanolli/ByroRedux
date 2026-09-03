@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::Resource;
 use gpu_allocator::vulkan;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 /// Shared GPU memory allocator.
 ///
@@ -296,15 +296,30 @@ fn warn_threshold_bytes(instance: &ash::Instance, physical_device: vk::PhysicalD
     }
 }
 
+#[inline]
+fn warn_once_if_over_threshold(
+    allocated_bytes: u64,
+    threshold_bytes: u64,
+    warning_once: &Once,
+    warning: impl FnOnce(),
+) {
+    if allocated_bytes > threshold_bytes {
+        warning_once.call_once(warning);
+    }
+}
+
 /// Log current GPU memory allocation statistics.
 ///
 /// Queries the gpu_allocator report for total allocated/reserved bytes.
 /// Logs at INFO if usage is normal, WARN if allocated exceeds 80% of
-/// the smallest DEVICE_LOCAL heap on the physical device.
+/// the smallest DEVICE_LOCAL heap on the physical device. `warning_once` is
+/// owned by the renderer context so a sustained breach logs once per context,
+/// even though this function is sampled at multiple cell boundaries.
 pub fn log_memory_usage(
     allocator: &SharedAllocator,
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
+    warning_once: &Once,
 ) {
     let alloc = allocator.lock().expect("allocator lock poisoned");
     let report = alloc.generate_report();
@@ -324,13 +339,16 @@ pub fn log_memory_usage(
     );
 
     let threshold = warn_threshold_bytes(instance, physical_device);
-    if report.total_allocated_bytes > threshold {
-        log::warn!(
+    warn_once_if_over_threshold(
+        report.total_allocated_bytes,
+        threshold,
+        warning_once,
+        || log::warn!(
             "GPU memory usage high: {:.1} MB allocated (threshold: {} MB ≈ 80% of smallest DEVICE_LOCAL heap)",
             allocated_mb,
             threshold / (1024 * 1024)
-        );
-    }
+        ),
+    );
 }
 
 #[cfg(test)]
@@ -388,6 +406,27 @@ mod tests {
         // Sanity: 80% is strictly greater than the pre-#505 2 GB
         // constant for any heap ≥ 2.5 GB.
         assert!(threshold_for(six_gb) > 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn memory_warning_latch_emits_once_after_threshold_crossing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warning_once = Once::new();
+        let warning_count = AtomicUsize::new(0);
+        let emit = || {
+            warning_count.fetch_add(1, Ordering::Relaxed);
+        };
+
+        warn_once_if_over_threshold(81, 80, &warning_once, emit);
+        warn_once_if_over_threshold(90, 80, &warning_once, || {
+            warning_count.fetch_add(1, Ordering::Relaxed);
+        });
+        warn_once_if_over_threshold(70, 80, &warning_once, || {
+            warning_count.fetch_add(1, Ordering::Relaxed);
+        });
+
+        assert_eq!(warning_count.load(Ordering::Relaxed), 1);
     }
 
     /// Regression: #503 D2-L1 — fragmentation ratio should compute

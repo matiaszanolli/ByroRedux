@@ -1462,6 +1462,7 @@ impl VulkanContext {
             present_queue,
             swapchain_state,
             allocator: Some(gpu_allocator),
+            memory_warning_once: Once::new(),
             egui_pass: None,
             egui_pending_output: None,
             render_pass,

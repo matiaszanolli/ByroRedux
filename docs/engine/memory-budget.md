@@ -683,9 +683,12 @@ authoritative rather than re-derived.
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
-known scene sizes. A warning fires when total allocated bytes exceed
-80% of the smallest DEVICE_LOCAL heap (`(heap / 5) * 4`, with a 2 GB
-fallback when no DEVICE_LOCAL heap is reported).
+known scene sizes. The renderer samples the allocator at startup and after
+completed streaming, debug-load, and interior-cell transactions. A warning
+fires when total allocated bytes exceed 80% of the smallest DEVICE_LOCAL
+heap (`(heap / 5) * 4`, with a 2 GB fallback when no DEVICE_LOCAL heap is
+reported); the warning is latched once per renderer context, while each
+sample still records the INFO allocation report.
 
 ---
 

@@ -37,7 +37,7 @@ use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 /// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
@@ -1916,6 +1916,11 @@ pub struct VulkanContext {
     swapchain_state: SwapchainState,
 
     pub allocator: Option<SharedAllocator>,
+    /// One-shot latch for the allocator's high-memory warning. Sampling is
+    /// allowed at renderer and cell boundaries without spamming a sustained
+    /// breach once per transition. Scoped to this context so a new device
+    /// gets a fresh warning opportunity.
+    pub(crate) memory_warning_once: Once,
 
     /// Debug-UI overlay pass (Phase 4 of the debug-UI plan). `None`
     /// until [`Self::init_egui`] is called — the binary opts in at
