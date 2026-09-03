@@ -608,6 +608,14 @@ pub struct SkinCoverageStats {
     /// suppressed until LRU eviction frees a slot. Gauge — cleared on
     /// any eviction.
     pub slots_failed: u32,
+    /// Active per-entity morph slots. Their immutable delta buffers may be
+    /// shared by mesh; the count here is still one entry per entity weight
+    /// buffer.
+    pub morph_slots: u32,
+    /// Resident bytes for unique mesh morph deltas plus per-entity weight
+    /// buffers. This is a logical buffer-size total, excluding allocator
+    /// page/granularity overhead.
+    pub morph_bytes: u64,
     /// First-sight entities entering the sync prime + BUILD path this
     /// frame (slot newly created OR BLAS missing/rebuild-requested).
     pub first_sight_attempted: u32,

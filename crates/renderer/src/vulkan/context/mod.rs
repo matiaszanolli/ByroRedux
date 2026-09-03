@@ -37,7 +37,7 @@ use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, Once, Weak};
 
 /// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
@@ -1570,8 +1570,8 @@ pub struct VulkanContext {
     /// `EntityId`, never attacker-chosen, so SipHash-1-3 buys nothing here.
     pub skin_slots:
         FxHashMap<byroredux_core::ecs::storage::EntityId, super::skin_compute::SkinSlot>,
-    /// #3231 — per-skinned-entity `MorphSlot` (delta + weight buffers
-    /// for GPU morph-target blending). Deliberately separate from
+    /// #3231 — per-skinned-entity `MorphSlot` (shared delta + private
+    /// weight buffer for GPU morph-target blending). Deliberately separate from
     /// `skin_slots` — see `morph_compute`'s module doc for why.
     /// Populated once at spawn time (not lazily like `skin_slots` —
     /// the morph-target delta data only exists in `ImportedMesh` at
@@ -1582,6 +1582,12 @@ pub struct VulkanContext {
     /// `draw.rs` probes it per draw command per frame.
     pub morph_slots:
         FxHashMap<byroredux_core::ecs::storage::EntityId, super::morph_compute::MorphSlot>,
+    /// Mesh-handle keyed weak references to the immutable morph delta
+    /// allocations held by `morph_slots`. Weak entries make the cache a
+    /// lookup index, not an additional VRAM owner: after the last entity
+    /// slot is evicted, its `Arc<MorphDelta>` destroys the delta buffer and
+    /// the dead key is pruned by the eviction pass.
+    pub(crate) morph_delta_cache: FxHashMap<u32, Weak<super::morph_compute::MorphDelta>>,
     /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
     /// (or otherwise errored) on a prior frame — gate the retry path
     /// in `draw_frame` against this set so a single failure logs one
@@ -2440,6 +2446,9 @@ impl VulkanContext {
             0
         };
         stats.slots_failed = self.failed_skin_slots.len() as u32;
+        let (morph_slots, morph_bytes) = self.morph_memory_usage();
+        stats.morph_slots = morph_slots;
+        stats.morph_bytes = morph_bytes;
         stats.failed_entity_ids.clear();
         for &eid in self.failed_skin_slots.iter().take(16) {
             stats.failed_entity_ids.push(eid);

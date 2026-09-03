@@ -1,4 +1,4 @@
-//! Per-entity morph-target GPU resources (#3231).
+//! Morph-target GPU resources (#3231).
 //!
 //! Deliberately additive/isolated from [`super::skin_compute::SkinSlot`]
 //! rather than a new field on it: `SkinSlot` is lazily created during
@@ -13,19 +13,69 @@
 //! not at draw-dispatch time — so it is created once at spawn (see
 //! `byroredux::cell_loader::spawn::mesh_instance`) rather than lazily
 //! on first dispatch. Keeping it a fully separate resource means a bug
-//! here cannot corrupt `SkinSlot`'s own state.
+//! here cannot corrupt `SkinSlot`'s own state. The large, immutable delta
+//! buffer is shared by mesh through `Arc<MorphDelta>`; only the small,
+//! animated weight buffer remains per entity.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
+use std::sync::Arc;
+
+/// Mesh-static morph deltas. Active [`MorphSlot`]s hold an `Arc` to this
+/// object, while `VulkanContext` keeps only `Weak` cache entries so a mesh's
+/// device-local allocation is released after its final entity is evicted.
+pub(crate) struct MorphDelta {
+    delta_buffer: GpuBuffer,
+    delta_address: vk::DeviceAddress,
+    byte_size: vk::DeviceSize,
+}
+
+impl MorphDelta {
+    pub(crate) fn create(ctx: GpuUploadCtx, deltas: &[[f32; 4]]) -> Result<Self> {
+        let byte_size = std::mem::size_of_val(deltas) as vk::DeviceSize;
+        let delta_buffer = GpuBuffer::create_device_local_buffer(
+            ctx,
+            byte_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            deltas,
+            None,
+        )
+        .context("create morph delta buffer")?;
+
+        // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
+        let delta_address = unsafe {
+            ctx.device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(delta_buffer.buffer),
+            )
+        };
+
+        Ok(Self {
+            delta_buffer,
+            delta_address,
+            byte_size,
+        })
+    }
+
+    pub(crate) fn byte_size(&self) -> vk::DeviceSize {
+        self.byte_size
+    }
+
+    pub(crate) fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        self.delta_buffer.destroy(device, allocator);
+        self.delta_address = 0;
+    }
+}
 
 /// Per-entity morph-target GPU state. One per skinned entity whose mesh
-/// carries `ImportedMesh.morph_targets`. Both buffers are dereferenced
-/// in-shader via `buffer_reference` (`MorphDeltaRef` / `MorphWeightRef`
-/// in `skin_vertices.comp` / `triangle.vert` / `include/bindings.glsl`)
-/// — there are no descriptor sets to manage, unlike `SkinSlot`.
+/// carries `ImportedMesh.morph_targets`. The immutable delta allocation is
+/// shared by all instances of the mesh; the weight buffer is private to this
+/// entity. Both addresses are dereferenced in-shader via `buffer_reference`
+/// (`MorphDeltaRef` / `MorphWeightRef` in `skin_vertices.comp` /
+/// `triangle.vert` / `include/bindings.glsl`) — there are no descriptor sets
+/// to manage, unlike `SkinSlot`.
 pub struct MorphSlot {
     /// Static per-target-per-vertex position deltas, uploaded ONCE at
     /// creation from the owning mesh's `ImportedMesh.morph_targets`.
@@ -37,8 +87,7 @@ pub struct MorphSlot {
     /// struct's doc for the post-mortem). Never re-uploaded — morph
     /// targets are a static property of the mesh; only the weights
     /// animate.
-    delta_buffer: GpuBuffer,
-    delta_address: vk::DeviceAddress,
+    delta: Arc<MorphDelta>,
     /// Current morph weights, one `f32` per target. Small (≤
     /// `MAX_MORPH_TARGETS_PER_MESH` × 4 B = 256 B) and host-visible.
     /// Writes occur only from [`Self::flush_pending_weights`], after
@@ -80,19 +129,23 @@ impl MorphSlot {
     }
 
     pub fn delta_address(&self) -> vk::DeviceAddress {
-        self.delta_address
+        self.delta.delta_address
+    }
+
+    /// Bytes in this entity's private weight buffer. The shared delta is
+    /// reported once per mesh by `VulkanContext::morph_memory_usage`.
+    pub(crate) fn weight_bytes(&self) -> vk::DeviceSize {
+        self.weight_buffer.size
     }
 
     pub fn weight_address(&self) -> vk::DeviceAddress {
         self.weight_address
     }
 
-    /// Create a new slot: uploads `deltas` once (target-major flat
-    /// array, `target_count * vertex_count` entries — caller's
-    /// responsibility to have already converted `ImportedMorphTarget`
-    /// data into this shape), allocates a zero-initialized weight
-    /// buffer sized for `target_count` floats, and queries both
-    /// buffers' device addresses (cached — never re-queried).
+    /// Create a new slot with a private delta allocation. This compatibility
+    /// constructor is useful for isolated callers; the production spawn
+    /// path uses `VulkanContext::create_morph_slot_for_mesh` so instances of
+    /// the same mesh share their delta allocation.
     ///
     /// `deltas.len()` MUST equal `target_count as usize * vertex_count
     /// as usize` — a debug assertion catches a caller mismatch rather
@@ -110,21 +163,33 @@ impl MorphSlot {
         );
         let device = ctx.device;
         let allocator = ctx.allocator;
+        let delta = Arc::new(MorphDelta::create(ctx, deltas)?);
+        match Self::create_with_shared_delta(
+            device,
+            allocator,
+            delta.clone(),
+            target_count,
+            vertex_count,
+        ) {
+            Ok(slot) => Ok(slot),
+            Err(error) => {
+                if let Ok(mut delta) = Arc::try_unwrap(delta) {
+                    delta.destroy(device, allocator);
+                }
+                Err(error)
+            }
+        }
+    }
 
-        let delta_buffer = GpuBuffer::create_device_local_buffer(
-            GpuUploadCtx {
-                device,
-                allocator,
-                queue: ctx.queue,
-                command_pool: ctx.command_pool,
-            },
-            std::mem::size_of_val(deltas) as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            deltas,
-            None,
-        )
-        .context("create morph delta buffer")?;
-
+    /// Create the per-entity portion of a slot around a mesh-shared delta.
+    /// The caller retains the `Arc` in the slot; no delta upload occurs here.
+    pub(crate) fn create_with_shared_delta(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        delta: Arc<MorphDelta>,
+        target_count: u32,
+        vertex_count: u32,
+    ) -> Result<Self> {
         let weight_bytes = (target_count as vk::DeviceSize) * 4;
         let mut weight_buffer = GpuBuffer::create_host_visible(
             device,
@@ -145,12 +210,6 @@ impl MorphSlot {
             .context("flush morph weight buffer zero-init")?;
 
         // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
-        let delta_address = unsafe {
-            device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(delta_buffer.buffer),
-            )
-        };
-        // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
         let weight_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(weight_buffer.buffer),
@@ -158,8 +217,7 @@ impl MorphSlot {
         };
 
         Ok(Self {
-            delta_buffer,
-            delta_address,
+            delta,
             weight_buffer,
             weight_address,
             pending_weights: vec![0.0; target_count as usize],
@@ -208,13 +266,16 @@ impl MorphSlot {
         Ok(())
     }
 
-    /// Destroy both buffers. Caller must have waited for the device to
-    /// go idle, or otherwise guaranteed no in-flight command buffer
-    /// still references either buffer's device address — same
+    /// Destroy this entity's weight buffer and, when this is the final
+    /// reference, the mesh-shared delta buffer. Caller must have waited for
+    /// the device to go idle, or otherwise guaranteed no in-flight command
+    /// buffer still references either buffer's device address — same
     /// precondition `SkinSlot`'s teardown carries.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.delta_buffer.destroy(device, allocator);
         self.weight_buffer.destroy(device, allocator);
+        if let Some(delta) = Arc::get_mut(&mut self.delta) {
+            delta.destroy(device, allocator);
+        }
     }
 }
 
@@ -247,6 +308,23 @@ fn stage_weights_into(pending: &mut [f32], mut weight_at: impl FnMut(usize) -> f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn morph_slot_shares_deltas_but_keeps_entity_weights() {
+        let source = include_str!("morph_compute.rs");
+        assert!(
+            source.contains("delta: Arc<MorphDelta>"),
+            "MorphSlot must retain the mesh-static delta through Arc"
+        );
+        assert!(
+            source.contains("if let Some(delta) = Arc::get_mut(&mut self.delta)"),
+            "only the final MorphSlot reference may destroy the shared delta"
+        );
+        assert!(
+            source.contains("weight_buffer: GpuBuffer"),
+            "each MorphSlot must retain its own animated weight buffer"
+        );
+    }
+
     /// #3244 — mapped morph weights may only be written after the dual-fence
     /// wait that proves both frame-in-flight readers have completed.
     #[test]

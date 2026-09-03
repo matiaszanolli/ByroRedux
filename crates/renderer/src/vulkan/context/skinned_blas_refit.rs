@@ -841,6 +841,11 @@ impl VulkanContext {
                     }
                 }
             }
+            // The cache holds weak lookup entries only, but prune dead keys
+            // here so a session that streams many unique morph meshes does
+            // not grow the CPU-side index without bound.
+            self.morph_delta_cache
+                .retain(|_, delta| delta.strong_count() != 0);
         }
         // #2803 — the host-side cost of the whole skinned chain
         // (dispatch loop + first-sight builds + refits + eviction),

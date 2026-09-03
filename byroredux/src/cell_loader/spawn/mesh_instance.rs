@@ -904,14 +904,7 @@ pub(super) fn spawn_mesh_instance(
         if let Some(morph_targets) = mesh.morph_targets.as_ref().filter(|t| !t.is_empty()) {
             let vertex_count = mesh.positions.len() as u32;
             let (deltas, target_count) = flatten_morph_targets(morph_targets, mesh.positions.len());
-            let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
-            let upload_ctx = GpuUploadCtx {
-                device: &ctx.device,
-                allocator,
-                queue: &ctx.graphics_queue,
-                command_pool: ctx.transfer_pool,
-            };
-            match MorphSlot::create(upload_ctx, &deltas, target_count, vertex_count) {
+            match ctx.create_morph_slot_for_mesh(mesh_handle, &deltas, target_count, vertex_count) {
                 Ok(slot) => {
                     ctx.morph_slots.insert(entity, slot);
                 }
@@ -1351,6 +1344,22 @@ mod tests {
             "filtered source index must remain inert"
         );
         assert_eq!(deltas[2], [4.0, 5.0, 6.0, 0.0]);
+    }
+
+    #[test]
+    fn morph_spawn_uses_mesh_handle_shared_delta_cache() {
+        let source = include_str!("mesh_instance.rs");
+        let production = &source[..source
+            .find("\n#[cfg(test)]")
+            .expect("mesh_instance.rs must retain its test module")];
+        assert!(
+            production.contains("ctx.create_morph_slot_for_mesh("),
+            "spawn must route morph creation through the mesh-keyed cache"
+        );
+        assert!(
+            !production.contains("MorphSlot::create("),
+            "spawn must not upload a delta buffer once per entity"
+        );
     }
 
     /// #3596 — the Oblivion `APPLY_HILIGHT2` parallax route only becomes

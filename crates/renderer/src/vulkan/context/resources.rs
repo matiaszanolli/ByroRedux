@@ -1,10 +1,18 @@
 //! VulkanContext resource management methods (BLAS, UI quad, extent, memory).
 
 use super::VulkanContext;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::sync::{Arc, Weak};
 
 use crate::vulkan::acceleration::draw_command_eligible_for_tlas;
 use crate::vulkan::scene_buffer::GpuTerrainTile;
+
+fn morph_memory_bytes(
+    delta_bytes: impl IntoIterator<Item = u64>,
+    weight_bytes: impl IntoIterator<Item = u64>,
+) -> u64 {
+    delta_bytes.into_iter().chain(weight_bytes).sum()
+}
 
 /// Free-function core of `fill_terrain_tile_scratch_if_dirty` — lifted
 /// out of the `VulkanContext` method so unit tests can exercise it
@@ -55,6 +63,100 @@ pub(super) fn release_terrain_tile_slot(
 }
 
 impl VulkanContext {
+    /// Create a morph slot for one mesh instance. The large immutable delta
+    /// buffer is cached by the stable `MeshRegistry` handle; each entity
+    /// still receives its own host-visible animated weight buffer.
+    pub fn create_morph_slot_for_mesh(
+        &mut self,
+        mesh_handle: u32,
+        deltas: &[[f32; 4]],
+        target_count: u32,
+        vertex_count: u32,
+    ) -> Result<super::super::morph_compute::MorphSlot> {
+        debug_assert_eq!(
+            deltas.len(),
+            target_count as usize * vertex_count as usize,
+            "morph delta length must be target_count * vertex_count"
+        );
+
+        let cached = self
+            .morph_delta_cache
+            .get(&mesh_handle)
+            .and_then(Weak::upgrade);
+        let (delta, cache_new) = if let Some(delta) = cached {
+            (delta, false)
+        } else {
+            // Remove a dead weak entry before replacing it so a long session
+            // that revisits meshes does not retain stale cache keys.
+            self.morph_delta_cache.remove(&mesh_handle);
+            let allocator = self
+                .allocator
+                .as_ref()
+                .context("renderer allocator missing")?;
+            let upload_ctx = crate::vulkan::GpuUploadCtx {
+                device: &self.device,
+                allocator,
+                queue: &self.graphics_queue,
+                command_pool: self.transfer_pool,
+            };
+            (
+                Arc::new(super::super::morph_compute::MorphDelta::create(
+                    upload_ctx, deltas,
+                )?),
+                true,
+            )
+        };
+
+        let allocator = self
+            .allocator
+            .as_ref()
+            .context("renderer allocator missing")?;
+        match super::super::morph_compute::MorphSlot::create_with_shared_delta(
+            &self.device,
+            allocator,
+            delta.clone(),
+            target_count,
+            vertex_count,
+        ) {
+            Ok(slot) => {
+                if cache_new {
+                    self.morph_delta_cache
+                        .insert(mesh_handle, Arc::downgrade(&delta));
+                }
+                Ok(slot)
+            }
+            Err(error) => {
+                // `create_with_shared_delta` has no owner to clean the new
+                // delta when its per-entity weight allocation fails. Free it
+                // here when this was the final strong reference; existing
+                // slots keep a cached delta alive and therefore remain safe.
+                if let Ok(mut delta) = Arc::try_unwrap(delta) {
+                    delta.destroy(&self.device, allocator);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Return `(active entity slots, resident delta + weight bytes)`. Delta
+    /// bytes are counted once per live mesh cache entry; weight bytes are
+    /// counted once per entity slot.
+    pub fn morph_memory_usage(&self) -> (u32, u64) {
+        let delta_bytes = self
+            .morph_delta_cache
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|delta| delta.byte_size() as u64);
+        let weight_bytes = self
+            .morph_slots
+            .values()
+            .map(|slot| slot.weight_bytes() as u64);
+        (
+            self.morph_slots.len() as u32,
+            morph_memory_bytes(delta_bytes, weight_bytes),
+        )
+    }
+
     /// Allocate a terrain tile slot and store its 8 bindless texture
     /// indices. Returns the slot index (0..`MAX_TERRAIN_TILES`) that
     /// the caller packs into the top 16 bits of `GpuInstance.flags`
@@ -504,6 +606,37 @@ impl VulkanContext {
 mod tests {
     use super::*;
     use crate::vulkan::scene_buffer::MAX_TERRAIN_TILES;
+
+    #[test]
+    fn morph_memory_budget_row_names_live_telemetry() {
+        const BUDGET_MD: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+        let section = BUDGET_MD
+            .split_once("## Morph-target GPU resources — #3661")
+            .expect("memory budget must document morph-target resources")
+            .1;
+        let section = section
+            .split_once("\n---")
+            .map(|(head, _)| head)
+            .unwrap_or(section);
+        for needle in [
+            "`morph_slots`",
+            "`morph_bytes`",
+            "vertex_count × target_count × 16",
+            "target_count × 4",
+        ] {
+            assert!(
+                section.contains(needle),
+                "morph budget section must retain `{needle}`"
+            );
+        }
+    }
+
+    #[test]
+    fn morph_memory_ledger_counts_shared_deltas_once() {
+        // Two live meshes share their deltas across multiple entities; the
+        // weight side remains one allocation per entity.
+        assert_eq!(morph_memory_bytes([12_288, 4_096], [64, 64, 32]), 16_544);
+    }
 
     /// An evicted rigid mesh must be recoverable from either retained source
     /// layout before the next TLAS publication. The current draw set must also

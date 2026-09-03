@@ -607,6 +607,23 @@ Resources are not freed until `current_frame - frame_id >= countdown`.
 The fence wait in step 1 of `draw_frame` guarantees all GPU work for
 the fence slot is complete before the tick runs (#418).
 
+## Morph-target GPU resources — #3661
+
+The immutable morph delta buffer is cached by `MeshHandle` and shared by all
+live entity slots for that mesh. Each entity keeps its own host-visible weight
+buffer because animation changes those weights independently.
+
+| Row | Count | Bytes |
+|---|---:|---:|
+| `morph_slots` | active skinned entities with morph targets | unique live mesh deltas + one weight buffer per entity |
+
+The exact live values are exposed by `SkinCoverageStats` and the
+`skin.coverage` command as `morph_slots` and `morph_bytes`. The byte total is
+the logical Vulkan buffer sizes: the sum of
+`vertex_count × target_count × 16` once per live mesh delta, plus
+`target_count × 4` once per entity weight buffer. Allocator
+page/granularity overhead is not included.
+
 ---
 
 ## Scaleform UI (Ruffle / wgpu) — #3431
@@ -641,13 +658,8 @@ than updating it in place, so an animating HUD cycles a fresh full-viewport
 ### Not yet ledgered
 
 A grep of this page for the owning subsystem name is the cheapest way to
-find a gap in it. Two are known and unquantified:
+find a gap in it. One is known and unquantified:
 
-- **Per-entity morph slots** (`crates/renderer/src/vulkan/morph_compute.rs`)
-  — each `MorphSlot` holds a device-local `delta_buffer` plus a mapped
-  `weight_buffer`, allocated per morph-target entity. No row here, and the
-  count scales with the number of FaceGen/morph actors resident, so it is
-  not a fixed figure that can be written down without measuring a real cell.
 - **`StagingPool` retained capacity** beyond the geometry rebuild's 64 MiB
   above. The pool's budget is a *retention* bound (128 MiB default), not an
   in-flight bound, and texture uploads share it.

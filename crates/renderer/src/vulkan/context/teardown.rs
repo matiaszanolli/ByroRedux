@@ -67,12 +67,14 @@ impl VulkanContext {
                 skin.destroy_slot(&self.device, alloc, slot);
             }
         }
-        // #3231 — MorphSlot owns plain buffers with no descriptor sets
-        // or pipeline dependency (unlike SkinSlot above), so it can be
-        // torn down unconditionally.
+        // #3231 — MorphSlot owns its private weight buffer and an Arc to a
+        // mesh-shared delta. Destroying every slot releases the final delta
+        // reference as well; the weak cache is only an index and is cleared
+        // after its owners are gone.
         for (_eid, mut slot) in std::mem::take(&mut self.morph_slots) {
             slot.destroy(&self.device, alloc);
         }
+        self.morph_delta_cache.clear();
         if let Some(ref mut accel) = self.accel_manager {
             // Pre-drain per-skinned-entity BLAS via the
             // `pending_destroy_blas` queue so the

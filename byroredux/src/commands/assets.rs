@@ -619,6 +619,14 @@ impl ConsoleCommand for SkinCoverageCommand {
             cov.slots_failed,
         ));
         lines.push(format!(
+            "  morph_slots            = {}  (per-entity weight buffers)",
+            cov.morph_slots,
+        ));
+        lines.push(format!(
+            "  morph_bytes            = {}  (shared deltas + entity weights)",
+            cov.morph_bytes,
+        ));
+        lines.push(format!(
             "  first_sight_attempted  = {}",
             cov.first_sight_attempted,
         ));

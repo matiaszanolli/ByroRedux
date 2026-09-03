@@ -1491,6 +1491,7 @@ impl VulkanContext {
             skin_palette,
             skin_slots: FxHashMap::default(),
             morph_slots: FxHashMap::default(),
+            morph_delta_cache: FxHashMap::default(),
             failed_skin_slots: FxHashSet::default(),
             failed_skin_blas: FxHashSet::default(),
             pending_skin_unload_victims: Vec::new(),
