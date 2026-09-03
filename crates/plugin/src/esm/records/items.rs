@@ -853,13 +853,41 @@ pub fn parse_book(
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    // #3716 (ESM-2026-08-30-D2-01) — Skyrim's BOOK DATA is
+                    // 16 bytes, not the FNV-modeled 10-byte layout the other
+                    // arm decodes: flags(u8), skill_type(u8), unknown(u16),
+                    // teaches(u32 AVIF FormID), value(u32), weight(f32).
+                    // Census over Skyrim.esm's 821 BOOK DATA sub-records
+                    // (independently re-verified against the mounted
+                    // Skyrim.esm, matching the audit's own count): every
+                    // record is exactly 16 bytes, `value`@8 and `weight`@12
+                    // are plausible (0..2500 gold, 0..20.0 weight), and the
+                    // FormID-shaped bytes at 4..8 resolve as the skill-book
+                    // "Teaches" reference — the field `SKIL` feeds below for
+                    // FNV, which Skyrim does not emit. The old shared arm
+                    // read `value`@2/`weight`@6 (2 bytes early), producing
+                    // ~4-billion-scale values and near-zero denormal
+                    // weights on every Skyrim book. Skyrim gets its own
+                    // match arm rather than a runtime length check on the
+                    // shared one — a 16-byte Skyrim record can never reach
+                    // the 10-byte decode at all now, by construction, not
+                    // by a fallible check.
+                    GameKind::Skyrim => {
+                        flags = r.u8_or_default();
+                        let _skill_type = r.u8_or_default();
+                        r.skip_or_eof(2); // unknown/padding
+                        teaches_skill = r.u32_or_default();
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
                     // FNV BOOK DATA (10 bytes): flags(u8), skill(byte=AVIF
                     // index), value(i32), weight(f32). Preserve the existing
                     // decode for the other families until their BOOK schemas
-                    // receive dedicated coverage.
+                    // receive dedicated coverage. #3716 — FO76/Starfield
+                    // explicitly need their own census before being moved
+                    // off this arm; not assumed 16-byte-Skyrim-shaped.
                     GameKind::Oblivion
                     | GameKind::Fallout3NV
-                    | GameKind::Skyrim
                     | GameKind::Fallout76
                     | GameKind::Starfield => {
                         flags = r.u8_or_default();
@@ -1318,6 +1346,62 @@ mod tests {
                 flags: 0
             }
         ));
+    }
+
+    /// #3716 (ESM-2026-08-30-D2-01) — a real Skyrim BOOK DATA payload
+    /// (skill book `0x0010FD60` from the mounted `Skyrim.esm`, independently
+    /// re-verified against the raw record bytes): flags=4, skill_type=0,
+    /// teaches=`0x0010DDEC`, value=730, weight=1.0. The pre-fix 10-byte
+    /// decode read `value`@2/`weight`@6 instead, producing 3,723,231,232
+    /// and a ~3.2e-34 denormal — this pins the 16-byte layout instead.
+    #[test]
+    fn skyrim_book_data_is_16_bytes_teaches_value_weight() {
+        let data: [u8; 16] = [
+            0x04, 0x00, 0x00, 0x00, 0xEC, 0xDD, 0x10, 0x00, 0xDA, 0x02, 0x00, 0x00, 0x00, 0x00,
+            0x80, 0x3F,
+        ];
+        let item = parse_book(0x0000_1234, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
+        assert_eq!(item.common.value, 730, "value must read from offset 8, not 2");
+        assert!(
+            (item.common.weight - 1.0).abs() < 1e-6,
+            "weight must read from offset 12, not 6 (got {})",
+            item.common.weight
+        );
+        match item.kind {
+            ItemKind::Book {
+                teaches_skill,
+                flags,
+                skill_bonus,
+            } => {
+                assert_eq!(teaches_skill, 0x0010_DDEC, "teaches must read from offset 4");
+                assert_eq!(flags, 4);
+                assert_eq!(skill_bonus, 0, "Skyrim's 16-byte layout has no skill_bonus byte");
+            }
+            other => panic!("expected Book kind, got {other:?}"),
+        }
+    }
+
+    /// Sibling of the above: a book that teaches no skill authors the
+    /// FormID field as the Bethesda "none" sentinel `0xFFFFFFFF`, not `0`
+    /// (real sample from the same census, form `0x0010F786`).
+    #[test]
+    fn skyrim_book_data_none_teaches_sentinel_is_preserved() {
+        let data: [u8; 16] = [0; 16]
+            .into_iter()
+            .enumerate()
+            .map(|(i, _)| if (4..8).contains(&i) { 0xFF } else { 0 })
+            .collect::<Vec<u8>>()
+            .try_into()
+            .unwrap();
+        let item = parse_book(0x0000_1234, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
+        match item.kind {
+            ItemKind::Book { teaches_skill, .. } => {
+                assert_eq!(teaches_skill, 0xFFFF_FFFF);
+            }
+            other => panic!("expected Book kind, got {other:?}"),
+        }
+        assert_eq!(item.common.value, 0);
+        assert_eq!(item.common.weight, 0.0);
     }
 
     // ── Skyrim regression guards (issue #347 / S6-02) ──────────────────
