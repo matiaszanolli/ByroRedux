@@ -106,12 +106,18 @@ impl UiManager {
 
     /// Load a menu and its relative `ImportAssets` dependencies from one
     /// Gamebryo archive resource provider.
+    /// #3771 — `profile` is `Option`; see `SwfPlayer::from_resource_provider`'s
+    /// doc for when a caller would legitimately pass `Some(..)` (an
+    /// independent cross-check source) versus `None` (trust the single
+    /// detect `prepare_movie` already performs). The resolved profile is
+    /// always readable afterward via [`Self::menu_profile`], whichever way
+    /// it was reached.
     pub fn load_swf_from_resource_provider(
         &mut self,
         provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         name: &str,
-        profile: ScaleformProfile,
+        profile: Option<ScaleformProfile>,
     ) -> anyhow::Result<()> {
         let player = SwfPlayer::from_resource_provider(
             provider,
@@ -122,6 +128,12 @@ impl UiManager {
         )?;
         self.install_player(player, name);
         Ok(())
+    }
+
+    /// The currently-loaded menu's resolved Scaleform profile, or `None`
+    /// when no menu is loaded. #3771.
+    pub fn menu_profile(&self) -> Option<ScaleformProfile> {
+        self.player.as_ref().map(SwfPlayer::profile)
     }
 
     fn install_player(&mut self, player: SwfPlayer, name: &str) {

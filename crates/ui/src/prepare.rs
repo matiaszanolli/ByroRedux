@@ -15,6 +15,18 @@
 //! `SwfMovie::from_data` still decompresses — Ruffle exposes no constructor
 //! taking an already-decoded `SwfBuf` — so a menu open costs two inflates
 //! rather than four, and one tag walk rather than two.
+//!
+//! #3771 — this is an end-to-end number for `SwfPlayer::from_resource_provider`
+//! (the archive route, and the workspace's only production caller), not a
+//! crate-internal one: `profile` there is `Option<ScaleformProfile>` and
+//! [`prepare_movie`] is trusted for its own single detect rather than a
+//! caller pre-extracting the archive entry and re-inflating it just to hand
+//! in a value for the mismatch-guard cross-check. A caller that DOES have
+//! an independent profile source may still pass `Some(..)` — the guard
+//! stays available — but nothing in the workspace needs to today, and doing
+//! so purely to answer this module's own detection with itself would spend
+//! a second archive decompression and whole-stream inflate to buy a
+//! tautology.
 
 use url::Url;
 

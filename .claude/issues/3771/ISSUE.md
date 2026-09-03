@@ -1,69 +1,49 @@
 # #3771 — UI-D1-2026-08-30-01: the live --menu route still inflates the movie three times and extracts the archive entry twice; prepare.rs's own doc claims two
 
-**Repo**: matiaszanolli/ByroRedux · **Filed**: 2026-08-30 · **HEAD**: `64f64480`
-**Labels**: low, ui, performance, bug
+**Severity**: LOW · **Location**: `byroredux/src/scene.rs`, `crates/ui/src/{player,lib,prepare}.rs`
+**Source**: `docs/audits/AUDIT_UI_2026-08-30.md` (UI-D1-2026-08-30-01)
 
----
+`prepare.rs` claimed a menu open costs "two inflates rather than four, and one tag walk rather
+than two" — true of the crate, not of the only production caller. `scene.rs`'s `--menu` route
+did its own `archive.extract(menu_path)` + `ScaleformProfile::detect(&root_bytes)` purely to
+hand `load_swf_from_resource_provider` a `profile` argument that `prepare_movie` then used as a
+mismatch-guard cross-check against its OWN detect on the *same bytes* — a second archive
+decompression and whole-stream inflate to produce a value that could only ever tautologically
+match. End-to-end cost: 2 archive extractions + 3 SWF inflates + 1 tag walk per menu open,
+synchronously on the winit main-loop thread.
 
-**Audit**: `/audit-ui` — `docs/audits/AUDIT_UI_2026-08-30.md` (Dimension 1 — Profile & VM Selection), HEAD `64f64480`
-**Finding ID**: `UI-D1-2026-08-30-01`
+## Fix implemented
 
-- **Severity**: LOW
-- **Status**: NEW
-- **Profile**: both (archive route)
+- `SwfPlayer::from_resource_provider`'s `profile` parameter widened to
+  `Option<ScaleformProfile>`; passed straight through to `prepare_movie` (already `Option`).
+  `Self::from_movie` now uses `prepared.profile` (the actually-detected value) instead of the
+  caller-supplied one, correct whether `profile` was `Some` (guaranteed equal past the guard) or
+  `None` (no caller value to fall back to at all).
+- `UiManager::load_swf_from_resource_provider` widened to match, plus a new
+  `UiManager::menu_profile() -> Option<ScaleformProfile>` accessor (mirroring the existing
+  `host_bridge`/`host_object_state` pass-through pattern) so a caller passing `None` can still
+  read the resolved profile afterward.
+- `byroredux/src/scene.rs`'s `--menu` route: deleted the `archive.extract` + `ScaleformProfile::detect`
+  pre-step entirely; calls `load_swf_from_resource_provider(..., None)` and reads
+  `ui.menu_profile()` for the `ui.menu: loaded ... profile={:?}` line (kept, per
+  `m48-menu-load.sh`'s grep contract) instead of pre-computing it. Net: one archive extraction
+  (inside `from_resource_provider`), the crate's own "two inflates, one tag walk" — the archive
+  route now matches what the crate always promised, instead of adding work outside the crate
+  boundary.
+- `prepare.rs`'s module doc extended (not renumbered — the crate-level cost claim was already
+  accurate) to state explicitly that the number is end-to-end for the sole production caller,
+  not merely crate-internal, so a future caller doesn't reintroduce the same redundant pre-step.
 
-## Location
+Regression test (issue's own TESTS checklist item, scoped to what's reachable without a Vulkan
+harness — `scene.rs`'s route needs a real `VulkanContext`, out of unit-test reach):
+`from_resource_provider_with_no_profile_still_resolves_it` proves the `None` path correctly
+resolves the same profile `prepare_movie`'s own detect would give, using the same FO4 hudmenu
+fixture the existing explicit-profile test uses — the correctness property the whole fix depends
+on (the `None` path must not silently lose the profile scene.rs's log line needs).
 
-- `crates/ui/src/prepare.rs:16-17` — the cost claim
-- `byroredux/src/scene.rs:1530-1539` — the only production caller
-- `crates/ui/src/player.rs:210-214` — the second `provider.load(movie_path)`
-- `byroredux/src/asset_provider/archive.rs:75-83` — `Archive::load` → `contains` + `extract`
+**SIBLING** (issue's own checklist item): checked the loose-file `--swf` route
+(`UiManager::load_swf` → `SwfPlayer::new`) — already auto-detects via `prepared.profile` with no
+caller pre-extraction; no gap. `load_swf_with_profile` (genuinely explicit-profile callers) isn't
+used from `scene.rs` at all. No other caller of `from_resource_provider` exists outside tests.
 
-## Description
-
-`prepare.rs:16-17` states the post-#2968 cost as "**two inflates** rather than four, and one tag walk rather than two". That is true *of the crate*. It is not true of the only production caller.
-
-`byroredux/src/scene.rs:1530-1539`:
-
-```rust
-Ok(archive) => match archive.extract(menu_path) {                  // archive extract #1
-    Ok(root_bytes) => match ScaleformProfile::detect(&root_bytes) {  // whole-stream inflate #1
-        Ok(profile) => {
-            let (w, h) = ctx.swapchain_extent();
-            let mut ui = UiManager::new(w, h);
-            match ui.load_swf_from_resource_provider(Arc::new(archive), menu_path, menu_path, profile) {
-```
-
-`root_bytes` is used for **nothing but** `detect`. `SwfPlayer::from_resource_provider` then calls `provider.load(movie_path)`, which is `Archive::load` → `contains` + `extract` — a **second full decompression of the same archive entry** — hands the result to `prepare_movie`, which inflates it again (#2), before `SwfMovie::from_data` inflates a third time.
-
-So the archive route costs **2 archive extractions + 3 SWF inflates + 1 tag walk** per menu open, synchronously on the winit main-loop thread, on FO4's multi-megabyte `hudmenu.swf` / `pipboymenu.swf`.
-
-#2968 removed two of the five inflates the 08-27 audit counted; the two outside the crate boundary survived because the fix was scoped to `SwfPlayer`'s constructors — the commit body says so explicitly ("removing that would change the public loader signature and is left alone").
-
-The `profile` argument `scene.rs` computes is not a cross-check either: it is the same function on the same bytes, so `prepare_movie`'s mismatch guard is tautologically satisfied on this route and can never fire.
-
-## Evidence
-
-Re-verified at HEAD: `prepare.rs` module doc still claims "two inflates … one tag walk"; `byroredux/src/scene.rs:1531` still calls `ScaleformProfile::detect(&root_bytes)` after its own `archive.extract`.
-
-## Impact
-
-Load-time only, so LOW. Filed because the module that exists to hold this property documents a number the shipping route does not meet — the exact drift class #2968 was opened for — and because the mismatch guard on this route is dead by construction.
-
-## Related
-
-- #2968 (CLOSED — the fix this is the residual of, outside the crate boundary)
-- `docs/smoke-tests/m48-menu-load.sh` (greps the `ui.menu: loaded … profile={:?}` line, which must keep its value)
-
-## Suggested Fix
-
-`prepare_movie` already detects the profile unconditionally. Either:
-
-- widen `UiManager::load_swf_from_resource_provider` to take `Option<ScaleformProfile>` and pass `None` from `scene.rs`, or
-- return the detected profile from it so `scene.rs`'s `ui.menu: loaded … profile={:?}` line retains its value without the pre-extract.
-
-Deleting `scene.rs`'s `extract` + `detect` pair removes one archive decompression and one whole-stream inflate. Then re-state the cost in `prepare.rs:16-17` as an end-to-end number, not a crate-local one.
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files — the loose-file `--menu` route and any other caller that pre-extracts to detect
-- [ ] **TESTS**: A regression test pins this specific fix — `SwfDecodeCounts` (added by #2968) should be assertable end-to-end from the scene-level entry, not only inside the crate
+Full workspace: `cargo test --no-fail-fast` 7042 passing, 0 failing.

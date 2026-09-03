@@ -209,12 +209,21 @@ impl SwfPlayer {
     }
 
     /// Load a menu and all of its relative imports through one archive source.
+    ///
+    /// #3771 — `profile` is `Option`: pass `Some(..)` only when the caller
+    /// has an INDEPENDENT source of truth to cross-check `prepare_movie`'s
+    /// own detection against (none does today — see the module-level note
+    /// below). `None` skips the mismatch guard and just trusts the single
+    /// detect `prepare_movie` already performs, instead of requiring the
+    /// caller to pre-extract the archive entry and inflate it a second
+    /// time purely to produce a value that would just tautologically equal
+    /// what this function detects from the SAME bytes anyway.
     pub fn from_resource_provider(
         provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         width: u32,
         height: u32,
-        profile: ScaleformProfile,
+        profile: Option<ScaleformProfile>,
     ) -> Result<Self> {
         let swf_data = provider
             .load(movie_path)
@@ -225,7 +234,7 @@ impl SwfPlayer {
         // scan, then Ruffle's own parse). One prepare drives the first three.
         let movie_url = crate::navigator::archive_movie_url(movie_path)
             .map_err(|error| anyhow!("Failed to configure Scaleform archive loading: {error}"))?;
-        let prepared = prepare_movie(&swf_data, Some(profile), Some(&movie_url))
+        let prepared = prepare_movie(&swf_data, profile, Some(&movie_url))
             .map_err(|error| anyhow!("{error}"))?;
         let (navigator, runtime, movie_url) =
             ScaleformNavigatorRuntime::create(movie_url, prepared.import_asset_paths, provider)
@@ -234,11 +243,14 @@ impl SwfPlayer {
                 })?;
         let movie = SwfMovie::from_data(&prepared.data, movie_url, None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        // #3771 — `prepared.profile` is the actually-detected value, correct
+        // whether `profile` above was `Some` (guaranteed equal, past the
+        // mismatch guard) or `None` (no caller value to fall back to at all).
         let mut player = Self::from_movie(
             movie,
             width,
             height,
-            profile,
+            prepared.profile,
             prepared.host_object_state,
             Some((navigator, runtime)),
         )?;

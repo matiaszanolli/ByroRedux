@@ -7,7 +7,7 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
-use byroredux_ui::{ScaleformProfile, UiManager};
+use byroredux_ui::UiManager;
 use std::sync::Arc;
 
 use crate::anim_convert::convert_nif_clip;
@@ -1518,85 +1518,76 @@ pub(crate) fn setup_scene(
     let archive_menu = archive_menu_args(&args);
     if let Ok(Some((menu_path, archive_path))) = archive_menu.as_ref() {
         match Archive::open(archive_path) {
-            Ok(archive) => match archive.extract(menu_path) {
-                Ok(root_bytes) => match ScaleformProfile::detect(&root_bytes) {
-                    Ok(profile) => {
-                        let (w, h) = ctx.swapchain_extent();
-                        let mut ui = UiManager::new(w, h);
-                        match ui.load_swf_from_resource_provider(
-                            Arc::new(archive),
-                            menu_path,
-                            menu_path,
-                            profile,
-                        ) {
-                            Ok(()) => {
-                                let pixels = vec![0u8; (w * h * 4) as usize];
-                                let allocator = ctx.allocator.as_ref().unwrap();
-                                let upload_ctx = GpuUploadCtx {
-                                    device: &ctx.device,
-                                    allocator,
-                                    queue: &ctx.graphics_queue,
-                                    command_pool: ctx.transfer_pool,
-                                };
-                                match ctx
-                                    .texture_registry
-                                    .register_rgba(upload_ctx, w, h, &pixels)
-                                {
-                                    Ok(handle) => {
-                                        // #3273 — the only success-side
-                                        // observable on this route. Every
-                                        // other arm below logs its failure,
-                                        // so without this the route is
-                                        // silent exactly when it works and
-                                        // a smoke gate has nothing to
-                                        // assert on. Keep the
-                                        // `ui.menu: loaded` prefix and the
-                                        // `profile=` / `texture=` keys
-                                        // stable — `m48-menu-load.sh`
-                                        // greps for them (a fixed-string
-                                        // match on the prefix, so appending
-                                        // `state=` below is safe).
-                                        //
-                                        // #3427 — `state=` is the missing
-                                        // observable this line lacked: an
-                                        // AVM2 menu whose host object landed
-                                        // in `NotPresent` used to print this
-                                        // exact line with no way to tell it
-                                        // apart from a clean injection.
-                                        log::info!(
-                                            "ui.menu: loaded path={} archive={} profile={:?} texture={:?} state={:?}",
-                                            menu_path,
-                                            archive_path,
-                                            profile,
-                                            handle,
-                                            ui.host_object_state()
-                                        );
-                                        *ui_texture_handle = Some(handle);
-                                        *ui_manager = Some(ui);
-                                    }
-                                    Err(error) => {
-                                        log::error!("Failed to register UI texture: {error:#}")
-                                    }
-                                }
+            // #3771 — this used to `archive.extract(menu_path)` +
+            // `ScaleformProfile::detect(&root_bytes)` here purely to hand
+            // `load_swf_from_resource_provider` a profile it then passed to
+            // `prepare_movie` as a cross-check against `prepare_movie`'s OWN
+            // detect on the SAME bytes — a second archive decompression and
+            // whole-stream inflate to produce a value that could only ever
+            // tautologically match. `None` skips the (dead-by-construction,
+            // on this route) cross-check and trusts prepare_movie's single
+            // detect; the resolved profile is still available afterward via
+            // `ui.menu_profile()` for the `ui.menu: loaded` line below.
+            Ok(archive) => {
+                let (w, h) = ctx.swapchain_extent();
+                let mut ui = UiManager::new(w, h);
+                match ui.load_swf_from_resource_provider(
+                    Arc::new(archive),
+                    menu_path,
+                    menu_path,
+                    None,
+                ) {
+                    Ok(()) => {
+                        let profile = ui.menu_profile();
+                        let pixels = vec![0u8; (w * h * 4) as usize];
+                        let allocator = ctx.allocator.as_ref().unwrap();
+                        let upload_ctx = GpuUploadCtx {
+                            device: &ctx.device,
+                            allocator,
+                            queue: &ctx.graphics_queue,
+                            command_pool: ctx.transfer_pool,
+                        };
+                        match ctx.texture_registry.register_rgba(upload_ctx, w, h, &pixels) {
+                            Ok(handle) => {
+                                // #3273 — the only success-side observable
+                                // on this route. Every other arm below logs
+                                // its failure, so without this the route is
+                                // silent exactly when it works and a smoke
+                                // gate has nothing to assert on. Keep the
+                                // `ui.menu: loaded` prefix and the
+                                // `profile=` / `texture=` keys stable —
+                                // `m48-menu-load.sh` greps for them (a
+                                // fixed-string match on the prefix, so
+                                // appending `state=` below is safe).
+                                //
+                                // #3427 — `state=` is the missing observable
+                                // this line lacked: an AVM2 menu whose host
+                                // object landed in `NotPresent` used to
+                                // print this exact line with no way to tell
+                                // it apart from a clean injection.
+                                log::info!(
+                                    "ui.menu: loaded path={} archive={} profile={:?} texture={:?} state={:?}",
+                                    menu_path,
+                                    archive_path,
+                                    profile,
+                                    handle,
+                                    ui.host_object_state()
+                                );
+                                *ui_texture_handle = Some(handle);
+                                *ui_manager = Some(ui);
                             }
-                            Err(error) => log::error!(
-                                "Failed to load archive menu '{}' from '{}': {error:#}",
-                                menu_path,
-                                archive_path
-                            ),
+                            Err(error) => {
+                                log::error!("Failed to register UI texture: {error:#}")
+                            }
                         }
                     }
                     Err(error) => log::error!(
-                        "Failed to detect Scaleform profile for '{}': {error:#}",
-                        menu_path
+                        "Failed to load archive menu '{}' from '{}': {error:#}",
+                        menu_path,
+                        archive_path
                     ),
-                },
-                Err(error) => log::error!(
-                    "Failed to extract archive menu '{}' from '{}': {error}",
-                    menu_path,
-                    archive_path
-                ),
-            },
+                }
+            }
             Err(error) => log::error!("Failed to open UI archive '{}': {error}", archive_path),
         }
     } else if let Err(error) = archive_menu {

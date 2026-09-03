@@ -659,7 +659,7 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
             path,
             64,
             64,
-            ScaleformProfile::Fallout4Avm2,
+            Some(ScaleformProfile::Fallout4Avm2),
         )
         .unwrap_or_else(|error| panic!("load {label} and its archive imports: {error}"));
         assert_eq!(

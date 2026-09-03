@@ -830,7 +830,7 @@ mod tests {
             "interface\\hudmenu.swf",
             64,
             64,
-            ScaleformProfile::Fallout4Avm2,
+            Some(ScaleformProfile::Fallout4Avm2),
         )
         .unwrap();
         assert_eq!(
@@ -841,6 +841,33 @@ mod tests {
         player.tick(1.0 / 30.0);
         assert_eq!(player.current_frame(), Some(1));
         assert_eq!(player.resource_error(), None);
+    }
+
+    /// #3771 — `profile: None` (the archive route's only production caller,
+    /// `byroredux/src/scene.rs`, no longer pre-detects and passes
+    /// `Some(..)`) must still resolve the correct profile from
+    /// `prepare_movie`'s own single detect, not silently lose it. Same
+    /// fixture as `player_preloads_relative_imports_before_advancing_frame_one`
+    /// above, minus the caller-supplied profile.
+    #[test]
+    fn from_resource_provider_with_no_profile_still_resolves_it() {
+        let root = movie(vec![Tag::FileAttributes(
+            FileAttributes::IS_ACTION_SCRIPT_3,
+        )]);
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
+            "interface\\hudmenu.swf".to_string(),
+            root,
+        )])));
+
+        let player = SwfPlayer::from_resource_provider(
+            provider,
+            "interface\\hudmenu.swf",
+            64,
+            64,
+            None,
+        )
+        .unwrap();
+        assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
     }
 
     /// Regression for #2720 / CONC-D7-UI-04: a dependency that isn't in the
@@ -874,7 +901,7 @@ mod tests {
             "interface\\hudmenu.swf",
             64,
             64,
-            ScaleformProfile::Fallout4Avm2,
+            Some(ScaleformProfile::Fallout4Avm2),
         )
         .expect("a missing dependency must not fail the load of a root movie that parsed");
 
@@ -933,7 +960,7 @@ mod tests {
             "interface\\hudmenu.swf",
             64,
             64,
-            ScaleformProfile::Fallout4Avm2,
+            Some(ScaleformProfile::Fallout4Avm2),
         )
         .unwrap();
 
