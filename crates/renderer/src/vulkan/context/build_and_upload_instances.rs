@@ -101,7 +101,21 @@ impl VulkanContext {
         current_rigid_models.reserve(draw_commands.len());
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
         batches.clear();
-        batches.reserve(draw_commands.len());
+        // #3675 (PERF-D9-2026-08-30-02) — deliberately NOT
+        // `reserve(draw_commands.len())`, unlike the three scratch
+        // buffers above. `batches` holds one entry per MERGED draw
+        // batch, not one per command — the repo's own baselines put
+        // that count 13-19x lower than `draw_commands.len()` (e.g. FO4
+        // InstituteBioScience: 296 batches vs 3949 commands). Reserving
+        // to the wrong (much larger) quantity forced capacity above the
+        // end-of-frame shrink target (`2 * max(working_batches, 512)`,
+        // `shrink_scratch_if_oversized` below) on every dense cell,
+        // so the shrink fired every frame and the next frame's reserve
+        // immediately grew it back — two reallocations plus a memcpy of
+        // the live batches, every frame, on the render hot path.
+        // `push`'s own amortized O(1) growth (from whatever capacity
+        // the shrink policy left it at) is a better fit than a reserve
+        // keyed to a quantity 13-19x too large.
         // #2468 — scene-dirty accumulators for the caustic accumulator's
         // parked-camera EMA, gathered inside the loop below where the
         // matrices are already hot rather than in a second pass. Two
@@ -938,5 +952,55 @@ impl VulkanContext {
             ui_instance_idx,
             caustic_history_valid,
         }
+    }
+}
+
+#[cfg(test)]
+mod batches_scratch_reserve_tests {
+    /// #3675 (PERF-D9-2026-08-30-02) — `batches` (the merged-draw-batch
+    /// scratch) must NOT be reserved to `draw_commands.len()`, the
+    /// quantity `gpu_instances`/`previous_models`/`current_rigid_models`
+    /// correctly use for their own reserves just above it. `batches`'
+    /// working set is one entry per MERGED batch — the repo's own
+    /// baselines put that 13-19x lower than the command count (e.g. FO4
+    /// InstituteBioScience: 296 batches vs 3949 commands). Reserving to
+    /// the command count forced capacity above the end-of-frame shrink
+    /// target (`2 * max(working_batches, 512)`) on every dense cell, so
+    /// the shrink fired every frame and the next frame's reserve grew it
+    /// right back — two reallocations plus a memcpy of the live batches,
+    /// every frame, on the render hot path. `push`'s own amortized O(1)
+    /// growth from whatever capacity the shrink policy left is a better
+    /// fit; this pins that the reserve call stays gone. A live test is
+    /// impractical here — `build_and_upload_instances` needs a real
+    /// `VulkanContext`, matching this crate's own established convention
+    /// (`pose_dirty_crosses_the_crate_boundary_without_siphash` in
+    /// `context/mod.rs`) for source-scanning that class of function.
+    #[test]
+    fn batches_scratch_is_not_reserved_to_draw_command_count() {
+        // Scoped to the PRODUCTION portion of the file, ending at this
+        // test module's own opening line. An unscoped `include_str!`
+        // search would match this test's own `.contains("...")` argument
+        // string — the needle below is byte-identical to that argument,
+        // so an unscoped search would ALWAYS find a match, even with the
+        // production reserve call deleted outright (verified: an earlier
+        // draft of this test did exactly that and passed regardless).
+        let full_src = include_str!("build_and_upload_instances.rs");
+        let module_start = full_src
+            .find("mod batches_scratch_reserve_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+
+        assert!(
+            src.contains("let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);"),
+            "batches must still be taken from batches_scratch via mem::take (#243) — \
+             the needle this test scopes its check around has moved or been renamed"
+        );
+        assert!(
+            !src.contains("batches.reserve(draw_commands.len())"),
+            "batches (the merged-draw-batch scratch) must not be reserved to \
+             draw_commands.len() — that quantity is 13-19x too large for its \
+             actual working set (one entry per merged batch), which fights the \
+             end-of-frame shrink policy every frame on dense cells (#3675)"
+        );
     }
 }
