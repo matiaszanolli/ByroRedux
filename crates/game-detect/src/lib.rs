@@ -160,6 +160,50 @@ mod tests {
         }
     }
 
+    /// #3790 — `Update.bsa` (FNV's own base-game patch archive) must be
+    /// listed BEFORE `Fallout - Meshes.bsa` in the shipped `fnv` profile's
+    /// `default_bsas`: archive resolution is first-listed-wins
+    /// (`TextureProvider::extract_mesh` / `extract`/`extract_via_facegen_
+    /// tool_path_fallback` in `byroredux/src/asset_provider/texture.rs`
+    /// all walk their archive list in push order and return the first
+    /// hit), so listing the patch archive second would make it lose
+    /// priority to the base archive it's meant to override — the opposite
+    /// of retail's own archive priority. Reads the real shipped file, and
+    /// is skipped when run from outside the repo, same as
+    /// `catalog_matches_shipped_profiles` above.
+    #[test]
+    fn fnv_profile_lists_update_bsa_before_the_base_meshes_archive() {
+        let path = std::path::Path::new("../../assets/debug_profiles.toml");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let document: toml::Table = toml::from_str(&text).unwrap();
+        let fnv = document["profiles"]["fnv"]
+            .as_table()
+            .expect("shipped profiles have no `fnv` block");
+        let default_bsas = fnv["default_bsas"]
+            .as_array()
+            .expect("fnv.default_bsas must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("default_bsas entries must be strings"))
+            .collect::<Vec<_>>();
+
+        let update_pos = default_bsas
+            .iter()
+            .position(|&b| b == "Update.bsa")
+            .expect("fnv.default_bsas must list Update.bsa (#3790)");
+        let base_pos = default_bsas
+            .iter()
+            .position(|&b| b == "Fallout - Meshes.bsa")
+            .expect("fnv.default_bsas must list Fallout - Meshes.bsa");
+        assert!(
+            update_pos < base_pos,
+            "Update.bsa must precede Fallout - Meshes.bsa in fnv.default_bsas \
+             {default_bsas:?} — archive resolution is first-listed-wins, so this \
+             order is what makes the patch archive actually win",
+        );
+    }
+
     #[test]
     fn configured_roots_are_read_back_as_candidates() {
         let dir = tempfile::tempdir().unwrap();

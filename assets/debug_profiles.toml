@@ -44,7 +44,16 @@ name = "Fallout New Vegas"
 subdir = "Fallout New Vegas/Data"
 root = ""
 esm = "FalloutNV.esm"
-default_bsas = ["Fallout - Meshes.bsa"]
+# #3790 — `Update.bsa` is the base game's own patch archive and loads at
+# higher priority than `Fallout - Meshes.bsa` in the retail engine; it is
+# not a `<stem>N.bsa` sibling of anything, so the auto-load rule in
+# `asset_provider/archive.rs` never picks it up on its own. `--bsa`
+# resolution here is first-listed-wins (`TextureProvider::extract_mesh`
+# walks `mesh_archives` in push order and returns the first hit), so
+# `Update.bsa` must be listed FIRST for its 21 base-game MODL paths
+# (including the NCR guard towers) — and any future asset it patches — to
+# resolve/override the same way retail's archive priority does.
+default_bsas = ["Update.bsa", "Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
 default_materials_bsas = []
 # F6 (2026-05-26) — all entries verified via
