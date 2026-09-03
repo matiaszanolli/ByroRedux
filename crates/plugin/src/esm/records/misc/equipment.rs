@@ -213,7 +213,7 @@ pub struct CobjRecord {
     pub workbench_form: u32,
 }
 
-pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
+pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CobjRecord {
     let mut out = CobjRecord {
         form_id,
         ..Default::default()
@@ -226,11 +226,14 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
+            // #3715 — CNAM/BNAM are embedded FormIDs (the recipe's output
+            // item and workbench-category filter); both need the same
+            // load-order remap as every other cross-reference.
             b"CNAM" if sub.data.len() >= 4 => {
-                out.created_form = SubReader::new(&sub.data).u32_or_default();
+                out.created_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"BNAM" if sub.data.len() >= 4 => {
-                out.workbench_form = SubReader::new(&sub.data).u32_or_default();
+                out.workbench_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
@@ -418,7 +421,7 @@ mod tests {
             sub(b"CNAM", &0x0014_4F10_u32.to_le_bytes()),
             sub(b"BNAM", &0x000A_6001_u32.to_le_bytes()),
         ];
-        let c = parse_cobj(0x0014_F800, &subs);
+        let c = parse_cobj(0x0014_F800, &subs, &None);
         assert_eq!(c.editor_id, "RecipeStimpak");
         assert_eq!(c.created_form, 0x0014_4F10);
         assert_eq!(c.workbench_form, 0x000A_6001);
@@ -636,5 +639,19 @@ mod remap_tests {
             &None,
         );
         assert_eq!(arma.race_form_id, 0x0000_0001);
+    }
+
+    /// #3715 — `parse_cobj` never took a remap at all. `CNAM`/`BNAM` are
+    /// looked up against `EsmIndex.items`, which is global-keyed.
+    #[test]
+    fn cobj_cnam_and_bnam_are_remapped_into_global_space() {
+        let remap = dlc_remap();
+        let c = parse_cobj(
+            0x0200_0001,
+            &[mk(b"CNAM", 0x0100_1234), mk(b"BNAM", 0x0000_5678)],
+            &remap,
+        );
+        assert_eq!(c.created_form, 0x0200_1234, "self-reference remaps");
+        assert_eq!(c.workbench_form, 0x0000_5678, "master reference is unchanged");
     }
 }

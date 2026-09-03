@@ -2201,6 +2201,28 @@ fn sech_and_aopf_groups_dispatch_into_typed_audio_maps() {
 /// Coarse by design, like `cell_loader::load`'s water-ordering guard: it
 /// reads the sources rather than the behaviour, because the alternative
 /// for a latent field with no consumer is no check at all.
+/// Locate `pub fn {parser}(`'s signature in `source` and report whether it
+/// declares a `remap: &Option<FormIdRemap>` parameter.
+///
+/// Pure and panic-free (`Err` instead of `panic!`) specifically so its own
+/// correctness is unit-testable in isolation
+/// (`parser_signature_takes_remap_detects_a_missing_remap_param`,
+/// #3715) — the actual guard test below turns an `Err` or a `false` into
+/// a loud failure, but the detection logic itself needs a passing case
+/// AND a failing case exercised directly to prove it isn't a tautology.
+fn parser_signature_takes_remap(source: &str, parser: &str) -> Result<bool, String> {
+    let at = source
+        .find(&format!("pub fn {parser}("))
+        .ok_or_else(|| format!("no longer defines {parser}"))?;
+    // The signature ends at the first `)` that closes the parameter list;
+    // `&Option<FormIdRemap>` must appear inside it.
+    let close = source[at..]
+        .find(") ->")
+        .ok_or_else(|| format!("{parser} signature is unparseable"))?;
+    let signature = &source[at..at + close];
+    Ok(signature.contains("remap: &Option<FormIdRemap>"))
+}
+
 #[test]
 fn record_parsers_with_embedded_form_ids_take_a_remap() {
     // (file, parser) pairs where the parser reads at least one FormID out
@@ -2228,23 +2250,76 @@ fn record_parsers_with_embedded_form_ids_take_a_remap() {
             "parse_arma",
         ),
         ("actor/mod.rs", include_str!("actor/mod.rs"), "parse_race"),
+        // #3715 — the 11-site sweep the #3400/#3401 guard's hardcoded
+        // allowlist couldn't see because it simply never named these
+        // parsers. `parse_weap` / `parse_ammo` (items.rs — skill_form /
+        // projectile_form / casing_form) and `parse_perk` (misc/magic.rs —
+        // quest_form_id / spell_form_id) already took `remap` and are
+        // added here for completeness; `parse_cobj` / `parse_mgef` /
+        // `parse_eczn` did not and needed the parameter added.
+        ("items.rs", include_str!("items.rs"), "parse_weap"),
+        ("items.rs", include_str!("items.rs"), "parse_ammo"),
+        (
+            "misc/equipment.rs",
+            include_str!("misc/equipment.rs"),
+            "parse_cobj",
+        ),
+        (
+            "misc/magic.rs",
+            include_str!("misc/magic.rs"),
+            "parse_perk",
+        ),
+        (
+            "misc/magic.rs",
+            include_str!("misc/magic.rs"),
+            "parse_mgef",
+        ),
+        (
+            "misc/world.rs",
+            include_str!("misc/world.rs"),
+            "parse_eczn",
+        ),
     ];
     for (file, source, parser) in sources {
-        let at = source
-            .find(&format!("pub fn {parser}("))
-            .unwrap_or_else(|| panic!("{file} no longer defines {parser}"));
-        // The signature ends at the first `)` that closes the parameter
-        // list; `&Option<FormIdRemap>` must appear inside it.
-        let close = source[at..]
-            .find(") ->")
-            .unwrap_or_else(|| panic!("{parser} signature is unparseable"));
-        let signature = &source[at..at + close];
-        assert!(
-            signature.contains("remap: &Option<FormIdRemap>"),
-            "{file}::{parser} reads embedded FormIDs and must take the \
-             load-order remap (#3400 / #3401):\n{signature}",
-        );
+        match parser_signature_takes_remap(source, parser) {
+            Ok(true) => {}
+            Ok(false) => panic!(
+                "{file}::{parser} reads embedded FormIDs and must take the \
+                 load-order remap (#3400 / #3401 / #3715)",
+            ),
+            Err(reason) => panic!("{file} {reason}"),
+        }
     }
+}
+
+/// #3715 — the guard above is only as trustworthy as
+/// [`parser_signature_takes_remap`]'s own detection logic. Exercise it
+/// directly against a synthetic "before the fix" signature (proving it
+/// would have caught the exact regression #3715 fixed) and a synthetic
+/// "after the fix" signature (proving it doesn't false-positive on a
+/// correct one), rather than only ever seeing it pass against real,
+/// already-fixed sources.
+#[test]
+fn parser_signature_takes_remap_detects_a_missing_remap_param() {
+    let before_fix = "pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {";
+    assert_eq!(
+        parser_signature_takes_remap(before_fix, "parse_cobj"),
+        Ok(false),
+        "a signature with no remap parameter must be detected as missing one"
+    );
+
+    let after_fix = "pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CobjRecord {";
+    assert_eq!(
+        parser_signature_takes_remap(after_fix, "parse_cobj"),
+        Ok(true),
+        "a signature with the remap parameter must be detected as present"
+    );
+
+    assert!(
+        parser_signature_takes_remap(before_fix, "parse_nonexistent").is_err(),
+        "a parser name absent from the source must report an error, not a \
+         false negative that would silently pass the real guard"
+    );
 }
 
 /// The five hand-rolled copies of `remap_fid` that had grown up across

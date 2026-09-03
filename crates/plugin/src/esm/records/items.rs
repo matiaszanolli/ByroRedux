@@ -429,8 +429,9 @@ pub fn parse_weap(
                 ammo_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"DESC" => {} // description string (we don't store it yet)
+            // #3715 — embedded equip-type FormID (an EQUP record).
             b"ETYP" => {
-                skill_form = SubReader::new(&sub.data).u32_or_default();
+                skill_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             // #3724 — gated on the full 8-byte leading shape rather than
             // relying on the three lenient/strict reads' own truncation
@@ -721,7 +722,8 @@ pub fn parse_ammo(
                     GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
                         if sub.data.len() >= 16 =>
                     {
-                        projectile_form = r.u32_or_default();
+                        // #3715 — embedded projectile FormID.
+                        projectile_form = remap_fid(r.u32_or_default(), remap);
                         let _flags = r.u32_or_default();
                         damage = r.f32_or_default();
                         common.value = r.u32_or_default();
@@ -739,16 +741,19 @@ pub fn parse_ammo(
             b"DAT2" if matches!(game, GameKind::Fallout3NV) => {
                 let mut r = SubReader::new(&sub.data);
                 let _proj_count = r.u32_or_default();
-                projectile_form = r.u32_or_default();
+                // #3715 — both are embedded FormIDs (projectile / casing
+                // ammo consumed on fire).
+                projectile_form = remap_fid(r.u32_or_default(), remap);
                 common.weight = r.f32_or_default();
-                casing_form = r.u32_or_default();
+                casing_form = remap_fid(r.u32_or_default(), remap);
             }
             // FO4 AMMO DNAM: projectile(FormID), flags(u8), pad[3],
             // damage(f32), health(u32). Damage intentionally remains zero:
             // FO4 authors per-shot damage on WEAP rather than AMMO.
             b"DNAM" if matches!(game, GameKind::Fallout4) => {
                 let mut r = SubReader::new(&sub.data);
-                projectile_form = r.u32_or_default();
+                // #3715 — embedded projectile FormID.
+                projectile_form = remap_fid(r.u32_or_default(), remap);
                 let _flags = r.u8_or_default();
                 r.skip_or_eof(3);
                 let _unused_damage = r.f32_or_default();
@@ -1880,5 +1885,88 @@ mod tests {
             "the trailing f32 at offset 16 must reach common.weight, got {}",
             item.common.weight
         );
+    }
+
+    /// #3715 — Skyrim AMMO DATA's `projectile_form` was read raw despite
+    /// `parse_ammo` already taking `remap`.
+    #[test]
+    fn skyrim_ammo_projectile_form_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0100_00C0u32.to_le_bytes()); // self-reference
+        data.extend_from_slice(&0x1u32.to_le_bytes()); // flags
+        data.extend_from_slice(&8.0f32.to_le_bytes()); // damage
+        data.extend_from_slice(&1u32.to_le_bytes()); // value
+        let subs = vec![sub(b"DATA", &data)];
+        let item = parse_ammo(0x139BE, &subs, GameKind::Skyrim, &remap);
+        match item.kind {
+            ItemKind::Ammo {
+                projectile_form, ..
+            } => {
+                assert_eq!(projectile_form, 0x0200_00C0);
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// #3715 — FO3/FNV AMMO DAT2's `projectile_form` / `casing_form` were
+    /// read raw.
+    #[test]
+    fn fo3_ammo_dat2_projectile_and_casing_form_are_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // proj_count
+        data.extend_from_slice(&0x0100_1111u32.to_le_bytes()); // self-reference
+        data.extend_from_slice(&0.5f32.to_le_bytes()); // weight
+        data.extend_from_slice(&0x0000_2222u32.to_le_bytes()); // master reference
+        let subs = vec![sub(b"DAT2", &data)];
+        let item = parse_ammo(0x1000, &subs, GameKind::Fallout3NV, &remap);
+        match item.kind {
+            ItemKind::Ammo {
+                projectile_form,
+                casing_form,
+                ..
+            } => {
+                assert_eq!(projectile_form, 0x0200_1111, "self-reference remaps");
+                assert_eq!(casing_form, 0x0000_2222, "master reference is unchanged");
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// #3715 — FO4 AMMO DNAM's `projectile_form` was read raw.
+    #[test]
+    fn fo4_ammo_dnam_projectile_form_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0100_3333u32.to_le_bytes()); // self-reference
+        data.push(0); // flags
+        data.extend_from_slice(&[0u8; 3]); // pad
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // unused damage
+        data.extend_from_slice(&5u32.to_le_bytes()); // health
+        let subs = vec![sub(b"DNAM", &data)];
+        let item = parse_ammo(0x2000, &subs, GameKind::Fallout4, &remap);
+        match item.kind {
+            ItemKind::Ammo {
+                projectile_form, ..
+            } => {
+                assert_eq!(projectile_form, 0x0200_3333);
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// #3715 — WEAP `ETYP`'s `skill_form` was read raw.
+    #[test]
+    fn weap_etyp_skill_form_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let subs = vec![sub(b"ETYP", &0x0100_4444u32.to_le_bytes())];
+        let item = parse_weap(0x3000, &subs, GameKind::Skyrim, &remap);
+        match item.kind {
+            ItemKind::Weapon { skill_form, .. } => {
+                assert_eq!(skill_form, 0x0200_4444);
+            }
+            _ => panic!("expected Weapon kind"),
+        }
     }
 }

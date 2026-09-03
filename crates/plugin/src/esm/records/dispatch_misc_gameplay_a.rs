@@ -72,9 +72,15 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                 index.regions.insert(fid, parse_regn(fid, subs, &remap));
             })?
         }
-        b"ECZN" => extract_records(reader, end, b"ECZN", &mut |fid, subs| {
-            index.encounter_zones.insert(fid, parse_eczn(fid, subs));
-        })?,
+        // #3715 — DATA carries an embedded owner (faction/actor) FormID.
+        b"ECZN" => {
+            let eczn_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"ECZN", &mut |fid, subs| {
+                index
+                    .encounter_zones
+                    .insert(fid, parse_eczn(fid, subs, &eczn_remap));
+            })?
+        }
         // LGTM lighting templates — consumer lands alongside #379
         // (per-field inheritance fallback on cells without XCLL).
         b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {

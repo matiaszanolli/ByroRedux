@@ -28,8 +28,9 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         b"ENCH" => extract_records(reader, end, b"ENCH", &mut |fid, subs| {
             index.enchantments.insert(fid, parse_ench(fid, subs));
         })?,
+        // #3715 — DATA carries an embedded light-effect FormID.
         b"MGEF" => extract_records(reader, end, b"MGEF", &mut |fid, subs| {
-            let rec = parse_mgef(fid, subs);
+            let rec = parse_mgef(fid, subs, &remap);
             // #969 / OBL-D3-NEW-05 — Oblivion's SPEL/ENCH/ALCH/INGR
             // EFID values are the 4-char effect code (raw bytes),
             // NOT a u32 FormID like every other Bethesda game. Build
@@ -164,8 +165,10 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         b"IPDS" => extract_records(reader, end, b"IPDS", &mut |fid, subs| {
             index.impact_data_sets.insert(fid, parse_ipds(fid, subs));
         })?,
+        // #3715 — CNAM (created form) / BNAM (workbench filter) are
+        // embedded FormIDs.
         b"COBJ" => extract_records(reader, end, b"COBJ", &mut |fid, subs| {
-            index.recipes.insert(fid, parse_cobj(fid, subs));
+            index.recipes.insert(fid, parse_cobj(fid, subs, &remap));
         })?,
         _ => unreachable!("dispatch_misc_gameplay_b_group: unexpected label {label:?}"),
     }

@@ -1,8 +1,8 @@
 //! Magic / perks records.
 
-use super::super::common::{read_lstring_or_zstring, CommonNamedFields};
+use super::super::common::{read_lstring_or_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
 
@@ -276,7 +276,7 @@ enum PerkBlock {
 pub fn parse_perk(
     form_id: u32,
     subs: &[SubRecord],
-    remap: &Option<crate::esm::reader::FormIdRemap>,
+    remap: &Option<FormIdRemap>,
 ) -> PerkRecord {
     let mut out = PerkRecord {
         form_id,
@@ -344,8 +344,12 @@ pub fn parse_perk(
                 {
                     let mut r = SubReader::new(&sub.data);
                     *body = match *entry_type {
+                        // #3715 — quest_form_id / spell_form_id are
+                        // embedded FormIDs; both need the same load-order
+                        // remap `push_ctda` already applies to this
+                        // record's condition list.
                         0 if sub.data.len() >= 5 => {
-                            let quest_form_id = r.u32_or_default();
+                            let quest_form_id = remap_fid(r.u32_or_default(), remap);
                             let stage = r.u8_or_default() as u16;
                             Some(PerkEntryBody::Quest {
                                 quest_form_id,
@@ -353,7 +357,7 @@ pub fn parse_perk(
                             })
                         }
                         1 if sub.data.len() >= 4 => {
-                            let spell_form_id = r.u32_or_default();
+                            let spell_form_id = remap_fid(r.u32_or_default(), remap);
                             Some(PerkEntryBody::Ability { spell_form_id })
                         }
                         2 if sub.data.len() >= 2 => {
@@ -648,7 +652,7 @@ impl Default for MgefRecord {
     }
 }
 
-pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
+pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> MgefRecord {
     let mut out = MgefRecord {
         form_id,
         ..Default::default()
@@ -670,7 +674,8 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
                     out.associated_item = header.associated_item;
                     out.magic_school = header.magic_school;
                     out.resistance_av = header.resistance_av;
-                    out.light_form_id = header.light_form_id;
+                    // #3715 — embedded light-effect FormID.
+                    out.light_form_id = remap_fid(header.light_form_id, remap);
                     out.projectile_speed = header.projectile_speed;
                     out.effect_shader_id = header.effect_shader_id;
                 }
@@ -835,6 +840,43 @@ mod tests {
         }
     }
 
+    /// #3715 — `parse_perk` already took `remap` (applied it to `push_ctda`
+    /// condition lists) but never applied it to `quest_form_id` /
+    /// `spell_form_id`.
+    #[test]
+    fn parse_perk_quest_and_ability_entries_are_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+
+        let mut quest_data = Vec::new();
+        quest_data.extend_from_slice(&0x0100_7777u32.to_le_bytes()); // self-ref
+        quest_data.extend_from_slice(&[20u8, 0, 0, 0]);
+        let quest_subs = vec![
+            sub(b"PRKE", &[0u8, 1, 10]),
+            sub(b"DATA", &quest_data),
+            sub(b"PRKF", &[]),
+        ];
+        let quest = parse_perk(0xAAAA, &quest_subs, &remap);
+        match &quest.entries[0].body {
+            PerkEntryBody::Quest { quest_form_id, .. } => {
+                assert_eq!(*quest_form_id, 0x0200_7777);
+            }
+            other => panic!("expected Quest, got {other:?}"),
+        }
+
+        let ability_subs = vec![
+            sub(b"PRKE", &[1u8, 0, 5]),
+            sub(b"DATA", &0x0100_8888u32.to_le_bytes()), // self-ref
+            sub(b"PRKF", &[]),
+        ];
+        let ability = parse_perk(0xBBBB, &ability_subs, &remap);
+        match &ability.entries[0].body {
+            PerkEntryBody::Ability { spell_form_id } => {
+                assert_eq!(*spell_form_id, 0x0200_8888);
+            }
+            other => panic!("expected Ability, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parse_perk_decodes_entry_point_with_epft_epfd() {
         // EntryPoint entry: type=2. PRKE-internal DATA carries the
@@ -988,7 +1030,7 @@ mod tests {
             sub(b"DESC", b"Contaminated by radiation.\0"),
             sub(b"DATA", &0x0000_0009u32.to_le_bytes()),
         ];
-        let e = parse_mgef(0xA7A7, &subs);
+        let e = parse_mgef(0xA7A7, &subs, &None);
         assert_eq!(e.effect_flags, 0, "short DATA rejected, defaults apply");
         assert_eq!(e.base_cost, 0.0);
         assert_eq!(e.magic_school, -1);
@@ -1125,7 +1167,7 @@ mod tests {
             sub(b"DESC", b"Test effect\0"),
             sub(b"DATA", &data),
         ];
-        let m = parse_mgef(0x5555, &subs);
+        let m = parse_mgef(0x5555, &subs, &None);
         assert_eq!(m.effect_flags, 0x0000_0001);
         assert_eq!(m.base_cost, 10.0);
         assert_eq!(m.associated_item, 0x0001_ABCD);
@@ -1134,6 +1176,28 @@ mod tests {
         assert_eq!(m.light_form_id, 0x1111);
         assert_eq!(m.projectile_speed, 3000.0);
         assert_eq!(m.effect_shader_id, 0x2222);
+    }
+
+    /// #3715 — `parse_mgef` never took a remap at all; `light_form_id` is
+    /// an embedded reference into a LIGH record.
+    #[test]
+    fn parse_mgef_light_form_id_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // effect_flags
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // base_cost
+        data.extend_from_slice(&0u32.to_le_bytes()); // associated_item
+        data.extend_from_slice(&0i32.to_le_bytes()); // magic_school
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // resistance_av
+        data.extend_from_slice(&0u16.to_le_bytes()); // counter_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // pad
+        data.extend_from_slice(&0x0100_6666u32.to_le_bytes()); // light_form_id, self-ref
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // projectile_speed
+        data.extend_from_slice(&0u32.to_le_bytes()); // effect_shader_id
+        assert_eq!(data.len(), 36);
+        let subs = vec![sub(b"DATA", &data)];
+        let m = parse_mgef(0x6000, &subs, &remap);
+        assert_eq!(m.light_form_id, 0x0200_6666);
     }
 
     #[test]

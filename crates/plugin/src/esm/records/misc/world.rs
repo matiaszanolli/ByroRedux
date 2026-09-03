@@ -1191,7 +1191,7 @@ pub struct EcznRecord {
     pub flags: u8,
 }
 
-pub fn parse_eczn(form_id: u32, subs: &[SubRecord]) -> EcznRecord {
+pub fn parse_eczn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> EcznRecord {
     let mut out = EcznRecord {
         form_id,
         ..Default::default()
@@ -1206,7 +1206,8 @@ pub fn parse_eczn(form_id: u32, subs: &[SubRecord]) -> EcznRecord {
         match &sub.sub_type {
             b"DATA" if sub.data.len() >= 7 => {
                 let mut r = SubReader::new(&sub.data);
-                out.owner_form = r.u32_or_default();
+                // #3715 — embedded owner (faction/actor) FormID.
+                out.owner_form = remap_fid(r.u32_or_default(), remap);
                 out.rank = r.u8_or_default();
                 out.min_level = r.u8_or_default();
                 out.flags = r.u8_or_default();
@@ -1583,12 +1584,27 @@ mod tests {
         data.push(15); // min level
         data.push(0x02); // flags
         let subs = vec![sub(b"EDID", b"NcrZone\0"), sub(b"DATA", &data)];
-        let z = parse_eczn(0x9876, &subs);
+        let z = parse_eczn(0x9876, &subs, &None);
         assert_eq!(z.editor_id, "NcrZone");
         assert_eq!(z.owner_form, 0x0001_CAFE);
         assert_eq!(z.rank, 3);
         assert_eq!(z.min_level, 15);
         assert_eq!(z.flags, 0x02);
+    }
+
+    /// #3715 — `parse_eczn` never took a remap at all; `owner_form` is
+    /// looked up against faction/actor records, which are global-keyed.
+    #[test]
+    fn parse_eczn_owner_form_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0100_5555u32.to_le_bytes()); // self-reference
+        data.push(1); // rank
+        data.push(5); // min level
+        data.push(0); // flags
+        let subs = vec![sub(b"DATA", &data)];
+        let z = parse_eczn(0xABCD, &subs, &remap);
+        assert_eq!(z.owner_form, 0x0200_5555);
     }
 
     #[test]
