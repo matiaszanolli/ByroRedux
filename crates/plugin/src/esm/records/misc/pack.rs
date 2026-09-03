@@ -1825,7 +1825,7 @@ mod tests {
         assert!(active_package_is_patrol([&patrol_only], 10.0, |_| true));
     }
 
-    /// #2031 / PERF-D7-01 — `npc_spawn::spawn_npc_entity` collapsed the
+    /// #2031 / PERF-D7-01 — the NPC spawn path (`byroredux::npc_spawn`) collapsed the
     /// per-procedure `active_package_is_*`/`active_*_location`/
     /// `active_*_target` calls into a single `active_package(...)` resolve,
     /// then reads `procedure_type`/`location`/`target` directly off the one

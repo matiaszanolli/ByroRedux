@@ -150,6 +150,19 @@ enum UnitOutcome {
 }
 
 impl NpcSpawnJob {
+    /// Begin a kf-era spawn (Oblivion / FO3 / FNV) — M41.0 Phase 1b.
+    /// `advance` walks skeleton + body + head-part + armor NIFs one at a
+    /// time under a caller-supplied [`crate::cell_loader::FrameTimeBudget`],
+    /// yielding [`NpcSpawnProgress::Pending`] when the budget runs out and
+    /// [`NpcSpawnProgress::Complete`] with the placement-root `EntityId`
+    /// once the whole actor is assembled. An unlimited budget drives it to
+    /// completion in one call — the shape a synchronous caller wants;
+    /// exterior streaming instead retains the job across frames and resumes
+    /// it with a fresh per-frame budget.
+    ///
+    /// `CellRoot` ownership stays outside this API: synchronous callers
+    /// stamp the final entity range themselves, while EXAL stamps every
+    /// yielded range before returning to the render loop.
     pub(crate) fn runtime(
         npc: &NpcRecord,
         race: Option<&RaceRecord>,
@@ -170,6 +183,25 @@ impl NpcSpawnJob {
         }
     }
 
+    /// Begin a pre-baked-FaceGen spawn (Skyrim / FO4 / FO76 / Starfield) —
+    /// M41.0 Phase 4. Same [`Self::advance`] budget/yield contract as
+    /// [`Self::runtime`].
+    ///
+    /// Pre-baked path: `meshes\actors\character\facegendata\facegeom\
+    /// <plugin>\<formid:08x>.nif` carries the per-NPC **head only**
+    /// (matching Bethesda's FaceGen SDK head-only bake convention — a real
+    /// vanilla FaceGeom NIF has no torso/limb geometry; see #2093 /
+    /// SKY-D3-NEW-01) — no FaceGen morph evaluator (the SDK pre-applies the
+    /// slider table before shipping). Body coverage comes from
+    /// `RACE.WNAM`'s default skin ARMO (equipped as the lowest-priority
+    /// layer in [`super::build_npc_equip_state`]) plus whatever OTFT/CNTO
+    /// armor resolves on top of it. Skeleton load + skinning resolution
+    /// stays identical to the kf-era path; the head NIF replaces the
+    /// race-default head only.
+    ///
+    /// Skyrim+ vanilla ships zero `.kf` files. Pre-baked-track NPCs expose
+    /// their skeleton root as a Havok animation target; supported IDLE
+    /// events are resolved from `.hkx` by the archive-backed runtime.
     pub(crate) fn prebaked(
         npc: &NpcRecord,
         game: GameKind,

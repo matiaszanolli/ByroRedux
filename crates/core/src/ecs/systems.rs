@@ -430,7 +430,7 @@ mod tests {
 
     /// M41.0 Phase 1b.x — replicate the NPC spawn topology that's
     /// rendering with broken body skinning interactively. Spawn order
-    /// mirrors `byroredux::npc_spawn::spawn_npc_entity`:
+    /// mirrors `byroredux::npc_spawn::resumable::NpcSpawnJob`'s runtime recipe:
     ///   1. placement_root with T + GT BOTH explicitly set to the
     ///      cell-world ref position.
     ///   2. skel_root spawned (no Parent), then `Parent(placement_root)`

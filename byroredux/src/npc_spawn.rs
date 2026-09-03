@@ -438,7 +438,7 @@ fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
 ///
 /// The handle is intended to be **shared across every NPC in a cell
 /// load** — Phase 2 calls this once per `load_references` invocation
-/// and threads the result through each [`spawn_npc_entity`] call so
+/// and threads the result through each [`NpcSpawnJob::runtime`] call so
 /// the clip lands in the registry at most once per cell.
 pub fn load_idle_clip(
     world: &mut World,
@@ -1092,54 +1092,6 @@ fn build_npc_equip_state<'a>(
     }
 }
 
-/// Spawn an NPC actor entity for the kf-era path (Oblivion / FO3 /
-/// FNV) — M41.0 Phase 1b. Returns the placement-root `EntityId` for
-/// the assembled actor (skeleton + body, parented under the root and
-/// `CellRoot`-stamped). Returns `None` when the game is on the
-/// pre-baked-FaceGen track (Skyrim / FO4 / FO76 / Starfield) — that
-/// dispatch lands in Phase 4.
-///
-/// This compatibility entry point drives the same [`NpcSpawnJob`] used by
-/// exterior streaming with an unlimited budget. Runtime streaming retains that
-/// continuation between skeleton, body, head-part, and armor NIFs instead.
-///
-/// `CellRoot` ownership remains outside this API: synchronous callers stamp the
-/// final entity range, while EXAL stamps every yielded range before returning
-/// to the render loop.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub fn spawn_npc_entity(
-    world: &mut World,
-    ctx: &mut VulkanContext,
-    npc: &NpcRecord,
-    race: Option<&RaceRecord>,
-    game: GameKind,
-    tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
-    idle_pool: &[u32],
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
-    index: &EsmIndex,
-) -> Option<EntityId> {
-    let mut job = NpcSpawnJob::runtime(npc, race, game, ref_pos, ref_rot, ref_scale);
-    let mut budget = crate::cell_loader::FrameTimeBudget::unlimited();
-    match job.advance(
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        idle_pool,
-        index,
-        &mut budget,
-    ) {
-        NpcSpawnProgress::Complete(result) => result.root,
-        NpcSpawnProgress::Pending => {
-            unreachable!("an unlimited NPC spawn budget cannot yield")
-        }
-    }
-}
-
 /// Path inside the meshes archive for an NPC's pre-baked FaceGen
 /// NIF on Skyrim / FO4 / FO76 / Starfield. Returns `None` for
 /// kf-era games (those use the runtime-FaceGen recipe path).
@@ -1181,63 +1133,6 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
     ))
 }
 
-/// Spawn an NPC actor entity for the pre-baked-FaceGen path
-/// (Skyrim / FO4 / FO76 / Starfield) — M41.0 Phase 4. Returns the
-/// placement-root `EntityId`. Returns `None` when the game is on
-/// the kf-era runtime-FaceGen track (those route through
-/// [`spawn_npc_entity`] instead).
-///
-/// Pre-baked path: `meshes\actors\character\facegendata\facegeom\
-/// <plugin>\<formid:08x>.nif` carries the per-NPC **head only**
-/// (matching Bethesda's FaceGen SDK head-only bake convention — a
-/// real vanilla FaceGeom NIF has no torso/limb geometry; see #2093 /
-/// SKY-D3-NEW-01) — no FaceGen morph evaluator (the SDK pre-applies
-/// the slider table before shipping). Body coverage comes from
-/// `RACE.WNAM`'s default skin ARMO (equipped as the lowest-priority
-/// layer in [`build_npc_equip_state`]) plus whatever OTFT/CNTO armor
-/// resolves on top of it. Skeleton load + skinning resolution stays
-/// identical to the kf-era path; the head NIF replaces the race-
-/// default head only.
-///
-/// Skyrim+ vanilla ships zero `.kf` files. Pre-baked-track NPCs expose their
-/// skeleton root as a Havok animation target; supported IDLE events are
-/// resolved from `.hkx` by the archive-backed runtime.
-///
-/// Like [`spawn_npc_entity`], this synchronous compatibility entry point drives
-/// the shared resumable job with an unlimited budget.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub fn spawn_prebaked_npc_entity(
-    world: &mut World,
-    ctx: &mut VulkanContext,
-    npc: &NpcRecord,
-    game: GameKind,
-    tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
-    plugin_name: &str,
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
-    index: &EsmIndex,
-) -> Option<EntityId> {
-    let mut job = NpcSpawnJob::prebaked(npc, game, plugin_name, ref_pos, ref_rot, ref_scale);
-    let mut budget = crate::cell_loader::FrameTimeBudget::unlimited();
-    match job.advance(
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &[],
-        index,
-        &mut budget,
-    ) {
-        NpcSpawnProgress::Complete(result) => result.root,
-        NpcSpawnProgress::Pending => {
-            unreachable!("an unlimited NPC spawn budget cannot yield")
-        }
-    }
-}
-
 /// Walk the subtree rooted at `root` and tag every descendant entity
 /// carrying a [`MeshHandle`] with [`RenderLayer::Actor`]. Loose-NIF
 /// spawns at `scene::load_nif_bytes` default each mesh entity to
@@ -1245,8 +1140,10 @@ pub fn spawn_prebaked_npc_entity(
 /// every NPC body / head / armor / FaceGen mesh comes out of that path
 /// with the wrong layer for depth-bias purposes — without this
 /// override every standing NPC z-fights the floor at the foot-plant
-/// patch. Called from each [`spawn_npc_entity`] / [`spawn_prebaked_npc_entity`]
-/// success path before returning. BFS over `Children`, mirrors
+/// patch. Called from each success path of [`NpcSpawnJob::advance`]
+/// (`npc_spawn/resumable.rs`) before yielding a completed placement
+/// root, for both the kf-era runtime recipe and the pre-baked-FaceGen
+/// recipe. BFS over `Children`, mirrors
 /// [`crate::anim_convert::build_subtree_name_map`]'s walk shape.
 pub(crate) fn tag_descendants_as_actor(world: &mut World, root: EntityId) {
     use byroredux_core::ecs::components::RenderLayer;

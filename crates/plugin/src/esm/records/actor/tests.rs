@@ -614,7 +614,7 @@ fn npc_fnv_ignores_fo4_av_property_arms() {
 /// records, 7993 entries; censused with the `probe_npc_perks` example), but
 /// the `PRKR` arm used to sit behind `uses_actor_value_properties`, which
 /// excludes Skyrim. Every Skyrim NPC therefore parsed with an empty `perks`
-/// list, `spawn_npc_entity` skipped the `Perks` component, and `HasPerk`
+/// list, the NPC spawn path skipped the `Perks` component, and `HasPerk`
 /// evaluated a structural `0.0` on the reference title.
 ///
 /// Skyrim's `PRKR` is 8 bytes, not FO4's 5 — the extra three are unused

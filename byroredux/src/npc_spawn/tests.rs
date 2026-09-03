@@ -1385,11 +1385,12 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
 
 // ── #2052 / TD1-003 — `apply_ai_package_behavior` shared helper ───
 //
-// Extracted out of `spawn_npc_entity` and now also called by
-// `spawn_prebaked_npc_entity` (which previously had no AI-package
-// gating at all — the SIBLING gap the issue flagged). Needs only a
-// `World` + `NpcRecord` + `EsmIndex`, no Vulkan device, so it's
-// testable in isolation unlike the two spawn functions themselves.
+// Extracted out of the old synchronous `spawn_npc_entity` wrapper
+// (removed under #3747 — the logic now lives in `NpcSpawnJob`'s runtime
+// recipe) and now also called by the prebaked recipe (which previously
+// had no AI-package gating at all — the SIBLING gap the issue flagged).
+// Needs only a `World` + `NpcRecord` + `EsmIndex`, no Vulkan device, so
+// it's testable in isolation unlike the spawn job itself.
 
 fn pack_with_procedure(
     form_id: u32,

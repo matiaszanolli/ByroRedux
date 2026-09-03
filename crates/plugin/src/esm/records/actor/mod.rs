@@ -1399,7 +1399,7 @@ fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Optio
 /// FO4 actor-value property model by one release, so they need the wider
 /// [`GameKind::uses_npc_perk_entries`] gate. Under the old
 /// `uses_actor_value_properties` gate all 1620 perk-carrying Skyrim NPCs
-/// parsed with an empty `perks` list, `spawn_npc_entity` then skipped the
+/// parsed with an empty `perks` list, the NPC spawn path then skipped the
 /// `Perks` component entirely, and every `HasPerk` CTDA on Skyrim
 /// evaluated a structural `0.0`.
 ///

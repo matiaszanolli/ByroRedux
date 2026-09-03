@@ -1071,7 +1071,7 @@ fn cinematic_trio_survives_save_load_round_trip() {
     assert_eq!(restored_presentation.sitting_rotation_degrees, 42.0);
 }
 
-/// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
+/// #1835 — every gameplay-state component `NpcSpawnJob` stamps on an
 /// NPC placement root must be a deliberate save decision: registered in
 /// [`build_save_registry`] (persisted + restored) XOR listed as
 /// re-derived-from-static-ESM-at-respawn (write-once, no runtime mutator,
@@ -1088,7 +1088,7 @@ fn cinematic_trio_survives_save_load_round_trip() {
 #[test]
 fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // Persistent gameplay-state components stamped on the placement root by
-    // `spawn_npc_entity` + its `stamp_*` helpers (`npc_spawn.rs`). Pure
+    // `NpcSpawnJob::advance` + its `stamp_*` helpers (`npc_spawn/resumable.rs`). Pure
     // placement scaffolding (Parent/Children), GPU handles, and transient
     // markers are out of scope — this guards actor state, the #1834 class.
     const NPC_SPAWN_STAMPED: &[&str] = &[

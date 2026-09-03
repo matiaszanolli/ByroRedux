@@ -1379,7 +1379,7 @@ pub(crate) fn setup_scene(
         //
         // SIBLING (#3158's completeness box): `ActorValues`,
         // `CharacterLevel` and `Background` have the identical
-        // single-writer shape (`spawn_npc_entity` only) and are likewise
+        // single-writer shape (`NpcSpawnJob` only) and are likewise
         // absent on the player. They are deliberately NOT stubbed here.
         // An empty `ActorValues` would flip `melee_damage_charal_bonus`
         // (`combat.rs`) off its `else { return 0.0 }` arm and onto a
