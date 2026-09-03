@@ -477,6 +477,32 @@ pub struct EffectFalloff {
     pub soft_falloff_depth: f32,
 }
 
+impl EffectFalloff {
+    /// Reset every non-finite (NaN / ±inf) field to its
+    /// [`EffectFalloff::default()`] value. Returns `true` if any field was
+    /// non-finite. Called from [`Material::sanitize_finite`] — see that
+    /// method's docs for why this carrier needed its own descent (#3731 /
+    /// NIFAL-2026-08-30-D1-01).
+    pub fn sanitize_finite(&mut self) -> bool {
+        let mut changed = false;
+        let default = Self::default();
+        macro_rules! fix {
+            ($field:ident) => {
+                if !self.$field.is_finite() {
+                    self.$field = default.$field;
+                    changed = true;
+                }
+            };
+        }
+        fix!(start_angle);
+        fix!(stop_angle);
+        fix!(start_opacity);
+        fix!(stop_opacity);
+        fix!(soft_falloff_depth);
+        changed
+    }
+}
+
 /// Canonical per-variant payload for lighting-shader types that carry
 /// parameters beyond the standard PBR set.
 ///
@@ -506,6 +532,52 @@ impl ShaderTypeFields {
     /// `true` when no shader variant authored an additional payload.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Reset every field carrying a non-finite (NaN / ±inf) value — in
+    /// whole, not component-wise — back to `None`, matching this struct's
+    /// own "unset means this variant doesn't use it" convention
+    /// (`Option::default() == None`) and the existing `fix_scalar!`
+    /// semantics of resetting to the type's `Default`. Returns `true` if
+    /// any field was non-finite. Called from
+    /// [`Material::sanitize_finite`] — see that method's docs for why
+    /// this carrier needed its own descent (#3731 /
+    /// NIFAL-2026-08-30-D1-01).
+    pub fn sanitize_finite(&mut self) -> bool {
+        let mut changed = false;
+        macro_rules! fix_opt_scalar {
+            ($field:ident) => {
+                if self.$field.is_some_and(|v| !v.is_finite()) {
+                    self.$field = None;
+                    changed = true;
+                }
+            };
+        }
+        macro_rules! fix_opt_vec {
+            ($field:ident) => {
+                if self
+                    .$field
+                    .is_some_and(|v| v.iter().any(|c| !c.is_finite()))
+                {
+                    self.$field = None;
+                    changed = true;
+                }
+            };
+        }
+        fix_opt_vec!(skin_tint_color);
+        fix_opt_scalar!(skin_tint_alpha);
+        fix_opt_vec!(hair_tint_color);
+        fix_opt_scalar!(eye_cubemap_scale);
+        fix_opt_vec!(eye_left_reflection_center);
+        fix_opt_vec!(eye_right_reflection_center);
+        fix_opt_scalar!(parallax_max_passes);
+        fix_opt_scalar!(parallax_height_scale);
+        fix_opt_scalar!(multi_layer_inner_thickness);
+        fix_opt_scalar!(multi_layer_refraction_scale);
+        fix_opt_vec!(multi_layer_inner_layer_scale);
+        fix_opt_scalar!(multi_layer_envmap_strength);
+        fix_opt_vec!(sparkle_parameters);
+        changed
     }
 }
 
@@ -1300,6 +1372,18 @@ impl Material {
         // #3073 — added alongside the resolve-once canonical fields.
         fix_scalar!(parallax_height_scale);
         fix_scalar!(parallax_max_passes);
+
+        // #3731 (NIFAL-2026-08-30-D1-01) — the two indirect float carriers
+        // `fix_scalar!`/`fix_vec!` cannot reach (they only see directly
+        // declared `f32`/`[f32; N]` fields of `Material` itself). Both
+        // reach `GpuMaterial` on the same render path as every field
+        // above, so they need the same repair, not a structural exemption.
+        if let Some(falloff) = self.effect_falloff.as_mut() {
+            changed |= falloff.sanitize_finite();
+        }
+        if let Some(fields) = self.shader_type_fields.as_mut() {
+            changed |= fields.sanitize_finite();
+        }
 
         changed
     }
@@ -2105,6 +2189,59 @@ mod tests {
         assert_eq!(m.glass_blur_scale_factor, d.glass_blur_scale_factor);
     }
 
+    /// #3731 (NIFAL-2026-08-30-D1-01) — `EffectFalloff::sanitize_finite` in
+    /// isolation: independent per-field repair, matching the whole-struct
+    /// convention (`sanitize_finite_is_a_noop_on_an_already_clean_material`
+    /// and the BGEM test above) that one poisoned field doesn't take down
+    /// its siblings.
+    #[test]
+    fn effect_falloff_sanitize_finite_repairs_independently() {
+        let mut f = EffectFalloff {
+            start_angle: f32::NAN,
+            stop_angle: 0.5,
+            start_opacity: f32::INFINITY,
+            stop_opacity: f32::NEG_INFINITY,
+            soft_falloff_depth: f32::NAN,
+        };
+        assert!(f.sanitize_finite(), "a poisoned falloff must report repair");
+        let d = EffectFalloff::default();
+        assert_eq!(f.start_angle, d.start_angle);
+        assert_eq!(f.stop_angle, 0.5, "a finite field must survive untouched");
+        assert_eq!(f.start_opacity, d.start_opacity);
+        assert_eq!(f.stop_opacity, d.stop_opacity);
+        assert_eq!(f.soft_falloff_depth, d.soft_falloff_depth);
+
+        assert!(
+            !EffectFalloff::default().sanitize_finite(),
+            "an already-clean falloff must report no repair"
+        );
+    }
+
+    /// #3731 (NIFAL-2026-08-30-D1-01) — `ShaderTypeFields::sanitize_finite`
+    /// in isolation: a poisoned `Some` field resets wholesale to `None`
+    /// (this struct's own "unset" convention), a finite `Some` field
+    /// survives untouched, and an unset (`None`) field stays `None`.
+    #[test]
+    fn shader_type_fields_sanitize_finite_resets_poisoned_fields_to_none() {
+        let mut s = ShaderTypeFields {
+            skin_tint_color: Some([f32::NAN, 0.5, 0.5]),
+            skin_tint_alpha: Some(1.0), // finite — must survive
+            eye_cubemap_scale: Some(f32::INFINITY),
+            parallax_height_scale: None, // unset — must stay None
+            ..Default::default()
+        };
+        assert!(s.sanitize_finite(), "a poisoned struct must report repair");
+        assert_eq!(s.skin_tint_color, None, "a poisoned component resets the whole field");
+        assert_eq!(s.skin_tint_alpha, Some(1.0), "a finite field must survive untouched");
+        assert_eq!(s.eye_cubemap_scale, None);
+        assert_eq!(s.parallax_height_scale, None, "an unset field stays unset");
+
+        assert!(
+            !ShaderTypeFields::default().sanitize_finite(),
+            "an already-clean (all-None) struct must report no repair"
+        );
+    }
+
     /// The whole-struct pin: poison **every** float field at once and require
     /// the material to come back finite.
     ///
@@ -2115,6 +2252,13 @@ mod tests {
     /// derives the field list from the source instead of transcribing it, so
     /// a `Material` float added without a `fix_scalar!`/`fix_vec!` line fails
     /// even if nobody extends the literal below (#3438).
+    ///
+    /// #3731 (NIFAL-2026-08-30-D1-01) — also poisons `effect_falloff` and
+    /// `shader_type_fields`, the two indirect carriers `fix_scalar!`/
+    /// `fix_vec!` cannot reach at all (they only see fields declared
+    /// directly on `Material`). No structural scan can catch that class —
+    /// see `every_material_float_field_is_covered_by_sanitize_finite`'s own
+    /// doc for why — so this behavioural proof is the only guard for it.
     #[test]
     fn sanitize_finite_leaves_no_non_finite_float_anywhere() {
         let n = f32::NAN;
@@ -2152,10 +2296,57 @@ mod tests {
             glass_refraction_scale: n,
             glass_blur_scale: n,
             glass_blur_scale_factor: n,
+            effect_falloff: Some(EffectFalloff {
+                start_angle: n,
+                stop_angle: 0.5,
+                start_opacity: n,
+                stop_opacity: n,
+                soft_falloff_depth: n,
+            }),
+            shader_type_fields: Some(Box::new(ShaderTypeFields {
+                skin_tint_color: Some([n, 0.5, n]),
+                skin_tint_alpha: Some(n),
+                hair_tint_color: Some([n; 3]),
+                eye_cubemap_scale: Some(n),
+                eye_left_reflection_center: Some([n; 3]),
+                eye_right_reflection_center: Some([n; 3]),
+                parallax_max_passes: Some(n),
+                parallax_height_scale: Some(n),
+                multi_layer_inner_thickness: Some(n),
+                multi_layer_refraction_scale: Some(n),
+                multi_layer_inner_layer_scale: Some([n; 2]),
+                multi_layer_envmap_strength: Some(n),
+                sparkle_parameters: Some([n; 4]),
+            })),
             ..Material::default()
         };
 
         assert!(m.sanitize_finite());
+
+        let falloff = m.effect_falloff.expect("must survive as Some");
+        assert!(falloff.start_angle.is_finite());
+        assert_eq!(falloff.stop_angle, 0.5, "a finite field must survive untouched");
+        assert!(falloff.start_opacity.is_finite());
+        assert!(falloff.stop_opacity.is_finite());
+        assert!(falloff.soft_falloff_depth.is_finite());
+
+        let fields = m.shader_type_fields.expect("must survive as Some");
+        assert_eq!(
+            fields.skin_tint_color, None,
+            "a poisoned Option field resets to None, not a fabricated Some(0.0)"
+        );
+        assert_eq!(fields.skin_tint_alpha, None);
+        assert_eq!(fields.hair_tint_color, None);
+        assert_eq!(fields.eye_cubemap_scale, None);
+        assert_eq!(fields.eye_left_reflection_center, None);
+        assert_eq!(fields.eye_right_reflection_center, None);
+        assert_eq!(fields.parallax_max_passes, None);
+        assert_eq!(fields.parallax_height_scale, None);
+        assert_eq!(fields.multi_layer_inner_thickness, None);
+        assert_eq!(fields.multi_layer_refraction_scale, None);
+        assert_eq!(fields.multi_layer_inner_layer_scale, None);
+        assert_eq!(fields.multi_layer_envmap_strength, None);
+        assert_eq!(fields.sparkle_parameters, None);
 
         let floats: Vec<(&str, f32)> = vec![
             ("metalness", m.metalness),
@@ -2234,10 +2425,16 @@ mod tests {
     /// overclaim it exists to correct: the scan covers **directly declared**
     /// `f32` / `[f32; N]` fields of `struct Material`. Floats reached through
     /// another type — `shader_type_fields: Option<Box<ShaderTypeFields>>` and
-    /// `effect_falloff: Option<EffectFalloff>` — are outside it, because
-    /// `sanitize_finite` does not descend into them either; adding a float to
-    /// one of *those* structs is a different (still open) hole that this test
-    /// makes no claim about.
+    /// `effect_falloff: Option<EffectFalloff>` — are outside this
+    /// *structural* scan by design (it only understands `Material`'s own
+    /// field list), but that hole is now closed *behaviourally*:
+    /// `Material::sanitize_finite` descends into both via their own
+    /// `EffectFalloff::sanitize_finite` / `ShaderTypeFields::sanitize_finite`
+    /// methods, proven by `sanitize_finite_leaves_no_non_finite_float_anywhere`
+    /// and the two dedicated per-type tests (#3731 /
+    /// NIFAL-2026-08-30-D1-01). A float added to either of *those* structs
+    /// without its own descent + test coverage is still not caught here —
+    /// this test's claim stays limited to `Material`'s own field list.
     #[test]
     fn every_material_float_field_is_covered_by_sanitize_finite() {
         let src = include_str!("material.rs");
@@ -2273,8 +2470,25 @@ mod tests {
             }
         }
 
-        // `pub fn sanitize_finite(&mut self) -> bool {` .. its column-4 `}`.
-        let fn_block = block(src, "pub fn sanitize_finite(", "\n    }\n");
+        // Scoped to start searching only after the real `impl Material`
+        // block opens (#3731) — `EffectFalloff`/`ShaderTypeFields` gained
+        // their own same-shaped repair method defined *earlier* in the
+        // file, so an unscoped search for the method signature would find
+        // one of those instead.
+        //
+        // NOTE for future editors: this test's own source is embedded in
+        // `src` (via `include_str!`) below the real `impl Material` block,
+        // so writing the literal repair-method signature text anywhere in
+        // this test's comments or messages (including this one) would let
+        // it match its own text instead of the real method — describe it
+        // only in general terms here.
+        let after_marker = "\nimpl Material {\n";
+        let impl_material_start = src
+            .find(after_marker)
+            .unwrap_or_else(|| panic!("{after_marker:?} block not found in material.rs"));
+        let after_impl_material = &src[impl_material_start..];
+        let repair_method_signature = "pub fn san\u{69}tize_finite(";
+        let fn_block = block(after_impl_material, repair_method_signature, "\n    }\n");
         let mut covered: Vec<&str> = Vec::new();
         for line in fn_block.lines() {
             let line = line.trim();

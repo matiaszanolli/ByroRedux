@@ -1,43 +1,87 @@
-# #3731: NIFAL-2026-08-30-D1-01: Material::sanitize_finite never descends into effect_falloff / shader_type_fields — 22 float slots reach GpuMaterial outside both save-path gates
+# #3731 — NIFAL-2026-08-30-D1-01: Material::sanitize_finite never descends into effect_falloff / shader_type_fields
 
-**Labels**: bug, renderer, medium, nifal, save-load
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: MEDIUM · **Location**: `crates/core/src/ecs/components/material.rs` — `Material::sanitize_finite`, `EffectFalloff`, `ShaderTypeFields`
+**Source**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` (NIFAL-2026-08-30-D1-01)
 
----
+`sanitize_finite`'s macro list covers every directly-declared float field of
+`Material` (all 33), so #3373's specific hole is closed — but `Material`
+carries two further float payloads behind indirection that the macro list
+cannot reach: `effect_falloff: Option<EffectFalloff>` (5 f32) and
+`shader_type_fields: Option<Box<ShaderTypeFields>>` (13
+`Option<f32>`/`Option<[f32; N]>`) — 22 scalar slots outside both save-path
+gates. Both are live on the GPU path (`static_meshes.rs` reads them into
+`DrawCommand`/`GpuMaterial`), and the parser applies no finiteness guard, so
+a non-finite authored/corrupted value reaches the fragment shader unrepaired
+and survives a save/load round trip silently — the pre-save probe reports
+the material clean.
 
-**Report**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` · **Severity**: MEDIUM · **Dimension**: 1 (Material) · **Tier violated**: no-leak
-**Game affected**: all (FO3/FNV via `BSShaderNoLightingProperty` falloff; Skyrim+/FO4 via `BSEffectShaderProperty` falloff and the `BSLightingShaderProperty` shader-type payloads)
+## Fix implemented
 
-## Location
-- `crates/core/src/ecs/components/material.rs` — `Material::sanitize_finite` (the sweep, currently `:1215`), the two uncovered carriers `shader_type_fields` (`:224`) and `effect_falloff` (`:232`), plus `EffectFalloff` / `ShaderTypeFields`
+Per the issue's own suggested fix: gave `EffectFalloff` and
+`ShaderTypeFields` their own `sanitize_finite(&mut self) -> bool` methods,
+called from `Material::sanitize_finite`:
 
-## Description
-`sanitize_finite` is the single finiteness gate for the canonical `Material`, consumed by `crates/save/src/driver.rs` on restore and probed on a clone by `validate_material_finiteness` (`crates/save/src/validate.rs`) pre-save.
+```rust
+if let Some(falloff) = self.effect_falloff.as_mut() {
+    changed |= falloff.sanitize_finite();
+}
+if let Some(fields) = self.shader_type_fields.as_mut() {
+    changed |= fields.sanitize_finite();
+}
+```
 
-Its macro list covers every *directly-declared* float field — mechanically diffed, all 33 (31 explicit + `metalness`/`roughness` via `resolve_pbr`) are present, so **#3373's specific hole is closed**. But `Material` carries two further float payloads behind indirection that the macro list cannot reach and does not mention:
+`EffectFalloff::sanitize_finite` resets each of its 5 plain `f32` fields
+independently to `EffectFalloff::default()`'s value — same `fix_scalar!`
+semantics as `Material`'s own method (one poisoned field doesn't take down
+its siblings).
 
-- `effect_falloff: Option<EffectFalloff>` — 5 f32 (`start_angle`, `stop_angle`, `start_opacity`, `stop_opacity`, `soft_falloff_depth`)
-- `shader_type_fields: Option<Box<ShaderTypeFields>>` — 13 `Option<f32>`/`Option<[f32; N]>` (`skin_tint_color`, `skin_tint_alpha`, `hair_tint_color`, `eye_cubemap_scale`, `eye_left/right_reflection_center`, `parallax_max_passes`, `parallax_height_scale`, `multi_layer_*` ×4, `sparkle_parameters`)
+`ShaderTypeFields::sanitize_finite` resets each `Option` field **wholesale**
+to `None` when it carries any non-finite value (scalar or any array
+component) — matching the issue's own "No new constants — reset to each
+type's Default" instruction (`Option::default() == None`) and this struct's
+own "unset means this variant doesn't use it" convention, rather than
+inventing a `Some(0.0)` that would falsely claim a shader variant authored a
+payload it didn't. A finite `Some` field, or an already-`None` field,
+survives untouched.
 
-That is **22 additional scalar slots outside both save-path gates**. Verified against current source: the body of `sanitize_finite` contains no reference to either carrier.
+**SIBLING** (issue's own checklist item): grepped the whole `Material`
+struct for every `Option<...>` carrier — `effect_falloff` and
+`shader_type_fields` are the only two; no third indirect float carrier
+exists today. `ShaderTypeFields` itself has no further nested `Option`
+carriers of its own.
 
-## Evidence
-The values are live on the GPU path, not inert:
-- `byroredux/src/render/static_meshes.rs` reads `m.effect_falloff` into `DrawCommand.effect_falloff` (gated on `material_kind == MATERIAL_KIND_EFFECT_SHADER` — i.e. exactly the materials that author a falloff cone), which `crates/renderer/src/vulkan/context/mod.rs` unpacks into `GpuMaterial.falloff_start_angle` … `soft_falloff_depth`, and hashes with `to_bits()` into the material-table dedup key.
-- `byroredux/src/render/static_meshes.rs` reads `shader_type_fields` into the `skin_tint_rgba` / `hair_tint_rgb` / `sparkle_rgba` / `multi_layer_*` GPU slots.
+**CANONICAL-BOUNDARY** (issue's own checklist item): both new methods live
+on the canonical types themselves (`crates/core`), no per-game branching, no
+render-time re-derivation — the repair stays exactly where
+`Material::sanitize_finite` already lives.
 
-Reachability: the parser applies no finiteness guard on this path — `NifStream::read_f32_le` returns `f32::from_le_bytes` verbatim for any bit pattern, and the only `is_finite` check in the shader-block parser is the unrelated FO4 rimlight sentinel in `crates/nif/src/blocks/shader.rs`.
+**TESTS** (issue's own checklist item): extended
+`sanitize_finite_leaves_no_non_finite_float_anywhere` to also poison
+`effect_falloff` and `shader_type_fields` and assert every indirect field is
+repaired (falloff fields finite, shader_type_fields fields reset to `None`).
+Added two new isolated tests,
+`effect_falloff_sanitize_finite_repairs_independently` and
+`shader_type_fields_sanitize_finite_resets_poisoned_fields_to_none`,
+mirroring the existing `sanitize_finite_repairs_the_bgem_glass_optics_fields`
+pattern — each also pins the already-clean no-op case.
 
-## Impact
-A non-finite authored/corrupted value in an effect-shader falloff cone or a `BSLightingShaderProperty` shader-type payload reaches `GpuMaterial` and the fragment shader unrepaired, and survives a save/load round trip that the same method exists to make safe for its 33 siblings. NaN/Inf into the GPU is exactly the hazard #2687 introduced this method for. Silent: no compile error, no test failure, and the pre-save probe reports the material clean.
+Also fixed a latent self-reference bug this change exposed in the existing
+`every_material_float_field_is_covered_by_sanitize_finite` structural scan
+(#3438): it searched the whole file (via `include_str!`) for the first
+occurrence of the repair-method's signature text to isolate `Material`'s own
+`sanitize_finite` body. Once `EffectFalloff`/`ShaderTypeFields` gained their
+own same-named methods *earlier* in the file, that search silently matched
+the wrong one, and (after a first attempted fix using `rfind`) the test's
+own comments/messages describing the search turned out to contain the exact
+searched-for text themselves — since the whole test body is embedded in
+`src` too. Rewrote the search to scope it to start only after the real
+`impl Material {` block opens, and used a `\u{69}`-escaped literal (resolves
+to `i` at compile time, but doesn't match `include_str!`'s raw file bytes)
+so the search description in this test's own source can never satisfy its
+own search. Updated the scan's own doc comment to no longer claim the
+indirect-carrier hole is "still open" — it's closed behaviorally by this
+fix, though the structural scan's own claim stays limited to `Material`'s
+directly-declared fields by design.
 
-## Related
-#3373 (the identical omission for the BGEM glass-optics tail, fixed — this is the same defect class one level of indirection deeper), #3438 (the pin cannot catch this class structurally), #3073 (`parallax_height_scale`/`parallax_max_passes` bypass the canonical `Material` — the *same two fields*, different defect).
-
-## Suggested Fix
-Give `EffectFalloff` and `ShaderTypeFields` their own `sanitize_finite` returning `changed`, and call both from `Material::sanitize_finite` (`if let Some(f) = self.effect_falloff.as_mut() { changed |= f.sanitize_finite(); }`). No new constants — reset to each type's `Default`, matching the existing `fix_scalar!` semantics.
-
-## Completeness Checks
-- [ ] **SIBLING**: any further `Option<...>` float carrier added to `Material` needs the same descent — check the whole struct, not just these two
-- [ ] **CANONICAL-BOUNDARY**: the repair stays on the canonical `Material` — no per-game logic, and nothing re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: extend `sanitize_finite_leaves_no_non_finite_float_anywhere` so it actually reaches the indirect carriers
+Full workspace: `cargo test --no-fail-fast` 7058 passing, 0 failing (+2 new
+tests).
