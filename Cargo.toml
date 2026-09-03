@@ -71,6 +71,7 @@ byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 byroredux-debug-ui = { path = "crates/debug-ui" }
 byroredux-sdk = { path = "crates/sdk" }
+byro-texture-upscale = { path = "tools/texture-upscale" }
 
 # Vulkan / GPU
 ash = "0.38"

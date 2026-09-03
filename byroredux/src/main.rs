@@ -70,6 +70,13 @@ use winit::window::{CursorGrabMode, Window};
 use crate::components::InputState;
 
 fn main() -> Result<()> {
+    let mut args = std::env::args_os();
+    let executable = args.next().unwrap_or_else(|| "byroredux".into());
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("texture-upscale")) {
+        let mut command_name = executable;
+        command_name.push(" texture-upscale");
+        return byro_texture_upscale::run_cli_from(std::iter::once(command_name).chain(args));
+    }
     boot::run()
 }
 

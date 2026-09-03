@@ -63,7 +63,7 @@ internal graph are not repeated).
 | tracing-subscriber | 0.3      | byroredux                                     | `fmt` + `env-filter` span output                              |
 | tracing-tracy      | 0.11     | byroredux (`tracing-tracy` feature, opt-in)   | Pipe spans into a Tracy capture session                       |
 | dhat               | 0.3      | nif (`dhat-heap` feature, opt-in)             | Heap-allocation regression gate for NIF-PERF / #408 pins (#1247) |
-| sysinfo            | 0.30     | byroredux                                     | Host CPU/RAM sampling for the debug UI `MetricsSnapshot`      |
+| sysinfo            | 0.30     | byroredux, texture-upscale                    | Host CPU/RAM sampling plus offline texture-workbench disk-space preflight |
 | **Debug UI**       |          |                                               |                                                               |
 | egui               | 0.33     | renderer, debug-ui                            | CPU-side immediate-mode UI for the embedded overlay (Phase 4) |
 | egui-winit         | 0.33     | debug-ui                                      | winit event → egui input bridge                               |
@@ -151,7 +151,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-renderer       | byroredux-core, byroredux-fsr3-sys (`byroredux-core` also build-time)   |
 | byroredux-debug-server   | byroredux-core (`inspect`), byroredux-papyrus, byroredux-debug-protocol |
 | byroredux-debug-ui       | byroredux-core                                                          |
-| byroredux (binary)       | all engine crates above (debug-server is optional, on by default)       |
+| byroredux (binary)       | all engine crates above + byro-texture-upscale (debug-server is optional, on by default) |
 | byro-dbg (tool)          | byroredux-debug-protocol                                                |
 | byro-texture-upscale (tool) | byroredux-bsa                                                     |
 

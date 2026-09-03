@@ -50,6 +50,7 @@ byroredux-physics = { workspace = true }
 byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }
 byroredux-ui = { workspace = true }
+byro-texture-upscale = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }

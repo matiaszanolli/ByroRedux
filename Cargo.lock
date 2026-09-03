@@ -661,6 +661,7 @@ dependencies = [
  "image 0.24.9",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "toml",
  "walkdir",
@@ -672,6 +673,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ash",
+ "byro-texture-upscale",
  "byroredux-audio",
  "byroredux-bgsm",
  "byroredux-boot-request",

@@ -1,10 +1,14 @@
 # Reference-guided texture upscaling
 
-`byro-texture-upscale` is an offline workbench for Bethesda texture sets. It
-reads loose directories, BSA archives, and BA2 archives in load order. It sends
+`byroredux texture-upscale` is an offline workbench for Bethesda texture sets.
+It reads loose directories, BSA archives, and BA2 archives in load order. It sends
 only each set's color reference through a learned upscaler such as
 Real-ESRGAN, then uses that high-resolution result as a joint-bilateral guide
 for the companion maps.
+
+This is an explicit subcommand, not an engine setting: running ByroRedux
+normally never invokes the model. The dedicated `byro-texture-upscale` binary
+remains available as an equivalent entry point for scripts.
 
 This distinction is load-bearing:
 
@@ -25,7 +29,7 @@ destroy data.
 Discover conservative filename-based sets:
 
 ```sh
-cargo run --release -p byro-texture-upscale -- discover \
+cargo run --release -- texture-upscale discover \
   --source "/games/Fallout New Vegas/Data/Fallout - Textures.bsa" \
   --source "/games/Fallout New Vegas/Data/Fallout - Textures2.bsa" \
   --manifest texture-sets.toml \
@@ -53,7 +57,7 @@ individual process arguments without invoking a shell.
 Inspect the plan:
 
 ```sh
-cargo run --release -p byro-texture-upscale -- run \
+cargo run --release -- texture-upscale run \
   --source "/games/Fallout New Vegas/Data/Fallout - Textures.bsa" \
   --source "/games/Fallout New Vegas/Data/Fallout - Textures2.bsa" \
   --manifest texture-sets.toml \
@@ -61,9 +65,17 @@ cargo run --release -p byro-texture-upscale -- run \
   --dry-run
 ```
 
-Then run it without `--dry-run`. Existing output is protected unless
-`--overwrite` is supplied. `texture-upscale-report.json` records every source,
-role, original size, and generated size.
+Then run it without `--dry-run`. Before creating a temporary directory or an
+output directory, the command decodes every selected source read-only and
+estimates the worst-case PNG output and peak scratch usage, with additional
+headroom. It checks the output and temporary filesystems independently (or
+their combined requirement when they are the same filesystem) and aborts
+without changing files if space is insufficient. `--dry-run` performs the same
+validation and space check but is write-free and never invokes the model.
+
+Existing output is protected unless `--overwrite` is supplied.
+`texture-upscale-report.json` records every source, role, original size, and
+generated size.
 
 ## Current format boundary
 

@@ -4,15 +4,18 @@
 //! the deterministic parts of the pipeline: texture-set discovery, source
 //! extraction, command construction, semantic map upsampling, and reporting.
 
+mod cli;
 mod guided;
 mod pipeline;
 mod source;
+mod space;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+pub use cli::run_cli_from;
 pub use pipeline::{run_manifest, RunOptions, RunReport};
 pub use source::SourceStack;
 
@@ -178,11 +181,12 @@ pub fn load_manifest(path: &Path) -> Result<Manifest> {
 
 pub fn save_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
     manifest.validate()?;
+    let text = toml::to_string_pretty(manifest).context("serialize texture manifest")?;
+    space::ensure_single_path_space(path, text.len() as u64, "texture manifest")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest directory {}", parent.display()))?;
     }
-    let text = toml::to_string_pretty(manifest).context("serialize texture manifest")?;
     std::fs::write(path, text).with_context(|| format!("write manifest {}", path.display()))
 }
 
