@@ -532,6 +532,7 @@ mod runtime_baseline_schema_tests {
         "bench_fps_p50",
         "bench_fps_avg",
         "bench_draws_cmds",
+        "bench_draws_raster_cmds",
         "bench_draws_batches",
         "bench_draws_gpu_calls",
     ];

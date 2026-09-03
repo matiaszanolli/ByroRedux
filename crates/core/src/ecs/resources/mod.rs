@@ -321,6 +321,10 @@ pub struct DebugStats {
     /// denominator. Paired with `batch_count` + `indirect_call_count`
     /// below for full pipeline visibility.
     pub draw_command_count: u32,
+    /// Number of commands in the sorted raster-visible prefix last frame.
+    /// This is the population used by the parallel sort gate; the full
+    /// `draw_command_count` also includes RT-only occluders.
+    pub raster_draw_command_count: u32,
     /// Post-merge `DrawBatch` count from the main raster pass last
     /// frame (== `VulkanContext::last_draw_call_stats.batch_count`).
     /// Upper bound on the actual GPU draw call count;
@@ -392,6 +396,7 @@ impl Default for DebugStats {
             meshes_in_use: 0,
             textures_in_use: 0,
             draw_command_count: 0,
+            raster_draw_command_count: 0,
             batch_count: 0,
             indirect_call_count: 0,
             skin_pool_live: 0,

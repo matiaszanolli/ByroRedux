@@ -756,6 +756,10 @@ pub(crate) fn sort_draw_commands(draw_commands: &mut [DrawCommand]) -> usize {
 /// scratch buffers passed by the caller; everything that's a fresh
 /// per-frame value lives here.
 pub(crate) struct RenderFrameView {
+    /// Number of commands in the sorted raster-visible prefix. This is the
+    /// population that the parallel-sort gate actually measures; the full
+    /// draw-command list also contains RT-only occluders.
+    pub raster_draw_count: u32,
     pub view_proj: [f32; 16],
     pub camera_pos: [f32; 3],
     /// Cell-grid-snapped render origin — computed once in
@@ -1000,13 +1004,13 @@ pub(crate) fn build_render_data(
     //
     // PERF-D2-03 / #2691 — the old prose here claimed "typical Bethesda cell
     // counts sit in 400–1500 … so serial remains the common path either way".
-    // The repo's own checked-in runtime baselines contradict that: no cell in
-    // `.claude/audit-baselines/runtime/*.tsv`'s `bench_draws_cmds` column
-    // sits in the 400–1500 band, and the FO4 baseline is *above* this gate
-    // and takes the parallel path. Read the TSVs directly rather than
-    // transcribing counts here, per the audit's cite-don't-copy rule — a
-    // number copied here is a number that rots (this note's own counts did,
-    // one day after it landed: #3681).
+    // The gate is applied to the raster-visible prefix, not the complete
+    // `bench_draws_cmds` stream: RT-only occluders remain in the latter but
+    // never reach the raster sorter. The bench summary now records the exact
+    // gated population as `bench_draws_raster_cmds`; use that column when
+    // deciding which branch a runtime baseline takes. Read the TSVs directly
+    // rather than transcribing counts here, per the audit's cite-don't-copy
+    // rule — a number copied here is a number that rots.
     //
     // The constant is unaffected: the crossover table above is what places it,
     // and it still holds. This note exists so the next person tuning it does
@@ -1134,6 +1138,7 @@ pub(crate) fn build_render_data(
     water::reemit_water_planes(world, draw_commands, water_commands);
 
     RenderFrameView {
+        raster_draw_count: raster_draws as u32,
         view_proj,
         camera_pos,
         render_origin: render_origin.to_array(),

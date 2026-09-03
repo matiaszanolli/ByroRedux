@@ -1068,7 +1068,8 @@ impl ApplicationHandler for App {
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
-                         draws={}/{}b/{}c lights={} tlas={} state_hash={:016x}",
+                         draws={}/{}b/{}c bench_draws_raster_cmds={} \
+                         lights={} tlas={} state_hash={:016x}",
                         bench_mode,
                         bench_mode.gate_label(),
                         bench_mode.dt_label(),
@@ -1132,6 +1133,7 @@ impl ApplicationHandler for App {
                         scene_state.draws,
                         stats.batch_count,
                         stats.indirect_call_count,
+                        stats.raster_draw_command_count,
                         scene_state.lights,
                         scene_state.tlas_eligible,
                         scene_state.state_hash,

@@ -189,6 +189,7 @@ cannot diff its own baseline:
 | `bench_frame_p95_ms` | `bench:` `frame_p95_ms` | **advisory** — report Δ, never gating (see note) |
 | `bench_frame_max_ms` | `bench:` `frame_max_ms` | **advisory** — report Δ, never gating (see note) |
 | `bench_draws_cmds` | `bench:` `draws=N/Mb/Kc` (`N`) | ≤ baseline ×1.1 |
+| `bench_draws_raster_cmds` | `bench:` `bench_draws_raster_cmds=R` (sorted raster prefix) | report branch at `R >= 3000` |
 | `bench_draws_batches` | `bench:` `draws=N/Mb/Kc` (`M`) | ≤ baseline ×1.1 |
 | `bench_draws_gpu_calls` | `bench:` `draws=N/Mb/Kc` (`K`) | ≤ baseline ×1.1 |
 
@@ -206,8 +207,11 @@ Quirks of these scalars (don't fabricate around them):
   streaming mode. Use those three for tail-latency Δs; don't fall back to
   guessing a distribution from `wall_fps` alone.
 - `draws=N/Mb/Kc` is the #1258 three-way split: `N` input DrawCommands / `M`
-  post-merge batches / `K` actual GPU calls. The pre-#1258 single draw count is
-  gone.
+  post-merge batches / `K` actual GPU calls. The `N` count includes RT-only
+  occluders, which remain in the instance/TLAS stream but are excluded from
+  raster sorting and batching. Use `bench_draws_raster_cmds` to evaluate the
+  `DRAW_SORT_PARALLEL_THRESHOLD` branch; `bench_draws_cmds` alone cannot prove
+  which sort path ran. The pre-#1258 single draw count is gone.
 - `light.dump` (`byroredux/src/commands/scene.rs` `LightDumpCommand`) dumps
   `CellLightingRes` / `SkyParamsRes` / `GameTimeRes` **and**, since `5f970bae`
   (2026-08-15), a `LightSource emitters: N` tally followed by a per-emitter dump

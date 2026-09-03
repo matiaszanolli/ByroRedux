@@ -247,6 +247,7 @@ impl App {
 
             world_resource_set::<DebugStats>(&self.world, |s| {
                 s.draw_command_count = self.draw_commands.len() as u32;
+                s.raster_draw_command_count = frame.raster_draw_count;
             });
 
             // Tick and render the UI overlay (Ruffle SWF player).
