@@ -1,41 +1,52 @@
-# #3734: NIFAL-2026-08-30-D8-02: values() — the walk NIFAL designates the exhaustive lifecycle contract — is the one role walk whose test cannot catch an omission
+# #3734 — NIFAL-2026-08-30-D8-02: values() is the one role walk whose test cannot catch an omission
 
-**Labels**: bug, nif-parser, low, nifal, test-gap
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: LOW · **Location**: `crates/nif/src/import/types.rs` — `MaterialTextureSet::values()`
+**Source**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` (NIFAL-2026-08-30-D8-02)
 
----
+`MaterialTextureSet` carries three hand-written role walks: `map_ref`
+(compiler-protected — a forgotten role is a compile error), `roles()`
+(protected by `roles_covers_every_field_in_the_set`, added #3349), and
+`values()` — designated by `docs/engine/nifal.md` as the **exhaustive
+lifecycle contract** (cell unload uses it directly for texture release) but
+the one walk with no omission guard. Its existing test builds a literal
+with sequential integers and asserts `values() == (0..26)`, which catches a
+*reordering* but not an *omission*: add a 23rd role, give it `26` in the
+test literal (which the compiler forces), forget it in `values()` — the
+assert still passes with the 26 elements `0..=25`, and the new role
+silently drops out of every exhaustive visit including texture release on
+cell unload (a compounding GPU resource leak with no compile error and no
+failing test). Latent today — the 22 named roles + 4 decals are currently
+correct — but with no guard.
 
-**Report**: `docs/audits/AUDIT_NIFAL_2026-08-30.md` · **Severity**: LOW · **Dimension**: 8 (Shader-flags / Texture roles) · **Tier violated**: no-leak (latent)
-**Game affected**: all
+## Fix implemented
 
-## Location
-- `crates/nif/src/import/types.rs` — `values()` (currently `:425`) and its test `canonical_iteration_covers_every_role_once` (`:468`); contrast `roles_covers_every_field_in_the_set` (`:1722`)
+Exactly the issue's own suggested fix: added the six-line sibling of
+`roles_covers_every_field_in_the_set`, `values_covers_every_field_in_the_set`
+— counts `map_ref`'s visits and asserts `values().count()` equals it, same
+pattern, same crate.
 
-## Description
-`MaterialTextureSet` now carries **three** hand-written role walks plus the generic one:
+Verified directly (issue's own TESTS checklist item — "the new assertion
+must fail if a role is added to the struct and omitted from `values()`"):
+temporarily dropped one field from `values()`'s literal, confirmed the new
+test fails with exactly the expected "26 slots but map_ref touches 26"
+message shape (25 vs 26), restored the field, confirmed both tests pass
+again.
 
-| Walk | Protected? | By what |
-|---|---|---|
-| `map_ref` | **yes** — compiler | builds a full struct literal; a forgotten role is a compile error |
-| `roles()` (added #3349 this window) | **yes** | `roles_covers_every_field_in_the_set` cross-checks `roles().count()` against `map_ref`'s visit count |
-| `values()` | **no** | see below |
+**SIBLING** (issue's own checklist item): checked `supplemental_texture_indices`
+(#2697), the fourth role walk the issue's own Related section names as
+"still open" — that was stale. **#2697 is already closed**:
+`static_meshes.rs` now builds it via indexed writes against named
+`supplemental_texture_slot::*` constants, not a positional array literal —
+the original reordering-fragility is already structurally closed. The
+remaining gap is real but a **different shape**: `supplemental_texture_slot`
+has only 16 constants against `values()`'s 26 roles (most roles route to
+their own dedicated `GpuMaterial` field and never touch this generic
+side-array), so #3734's `values()`-vs-`map_ref` lockstep pattern doesn't
+directly transfer — a naive count comparison would compare an exhaustive
+walk against a deliberate subset and fail permanently. Filed as a
+separately, correctly-scoped follow-up: #3814 (needs its own test shape —
+"every declared slot constant is written exactly once" — not a drop-in
+port of this fix's pattern).
 
-`values()`'s test builds a literal with sequential integers and asserts `values() == (0..26)`. That catches a *reordering*, but **not an omission**: add a 23rd role to the struct, give it `26` in the test literal (which the compiler forces you to do), and forget it in `values()` — `values()` still yields the 26 elements `0..=25`, the assert still passes, and the new role is silently absent from every lifecycle consumer.
-
-The fix pattern already exists in the same file, ten lines of it, written three days ago for `roles()`.
-
-## Evidence
-The current lists are correct — 22 named roles in the struct, the same 22 in `values()` in the same order, `+ 4` decals = 26; `secondary_values()`'s `skip(1)` correctly assumes `base_color` is element 0. **This is a latent test gap, not a live drop.** Re-verified 2026-08-30: `values()` at `:425`, its sequential-integer test at `:468`, the drift-proof sibling for `roles()` at `:1722`.
-
-## Impact
-If it ever fires: `docs/engine/nifal.md` designates `values()`/`secondary_values()` the **exhaustive lifecycle contract** and cell unload uses it directly for texture release, so a role missing from `values()` leaks its texture handle on every cell unload — a compounding GPU resource leak with no compile error and no failing test. It would also silently skip validation and every other exhaustive visit.
-
-## Related
-#2697 (`supplemental_texture_indices`, a fourth role walk with no lockstep test — still open), #3465 (the prose-vs-struct parity test, which pins the docs but not `values()`).
-
-## Suggested Fix
-Add the six-line sibling of `roles_covers_every_field_in_the_set` — count `map_ref`'s visits and assert `values().count()` equals it. That makes all three walks drift-proof and subsumes the sequential-integer test's omission blind spot.
-
-## Completeness Checks
-- [ ] **SIBLING**: #2697's `supplemental_texture_indices` is a fourth walk with no lockstep test — cover it in the same pass
-- [ ] **TESTS**: the new assertion must fail if a role is added to the struct and omitted from `values()`
+Full workspace: `cargo test --no-fail-fast` 7060 passing, 0 failing (+1 new
+test).

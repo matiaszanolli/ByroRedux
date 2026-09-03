@@ -501,6 +501,33 @@ mod material_texture_set_tests {
             (1..26).collect::<Vec<_>>()
         );
     }
+
+    /// #3734 (NIFAL-2026-08-30-D8-02) — `values()` must enumerate every
+    /// field of the set, the same requirement `roles_covers_every_field_in_the_set`
+    /// already pins for `roles()`. The sequential-integer test above catches a
+    /// *reordering* but not an *omission*: add a 23rd role, give it `26` in
+    /// that test's literal (which the compiler forces), and forget it in
+    /// `values()` — the assert above still passes with 26 elements `0..=25`,
+    /// silently dropping the new role from `docs/engine/nifal.md`'s
+    /// designated exhaustive lifecycle contract (texture release on cell
+    /// unload chief among its consumers). Cross-check against `map_ref`,
+    /// which touches every field by construction, the same pattern
+    /// `roles_covers_every_field_in_the_set` uses.
+    #[test]
+    fn values_covers_every_field_in_the_set() {
+        let set = MaterialTextureSet::<u32>::default();
+        let mut mapped = 0usize;
+        let _ = set.map_ref(|_| {
+            mapped += 1;
+        });
+        assert_eq!(
+            set.values().count(),
+            mapped,
+            "values() enumerates {} slots but map_ref touches {mapped} — a role \
+             was added to the struct without being added to values()",
+            set.values().count(),
+        );
+    }
 }
 
 /// Source-normalized material payload attached to an [`ImportedMesh`].
