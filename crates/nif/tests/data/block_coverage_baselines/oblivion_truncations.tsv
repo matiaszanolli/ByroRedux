@@ -1,2 +1,10 @@
-# Oblivion sizeless-truncation baseline	truncating=0	parsed=8032
-parsed	8032
+# Oblivion sizeless-truncation baseline	truncating=0	parsed=9612
+archive_parsed	DLCBattlehornCastle.bsa	24
+archive_parsed	DLCFrostcrag.bsa	17
+archive_parsed	DLCHorseArmor.bsa	4
+archive_parsed	DLCOrrery.bsa	9
+archive_parsed	DLCShiveringIsles - Meshes.bsa	1438
+archive_parsed	DLCThievesDen.bsa	5
+archive_parsed	DLCVileLair.bsa	8
+archive_parsed	Knights.bsa	75
+archive_parsed	Oblivion - Meshes.bsa	8032

@@ -212,15 +212,44 @@ impl Game {
     /// Skyrim SE's entries are the 715 NIFs #3369 measured as unguarded:
     /// `_ResourcePack.bsa` (149, incl. 16 `BSTreeNode` SpeedTree roots
     /// that exist nowhere in the gated set at that density) plus four
-    /// Creation Club archives (231 / 266 / 65 / 4).
+    /// Creation Club archives (231 / 266 / 65 / 4). `Skyrim - Animations.bsa`
+    /// (44 NIFs) joins them under #3712's SIBLING check — flagged by
+    /// #3712 itself as being in neither list, and, like the others, not
+    /// mesh-count-reproducible enough to promote to [`mesh_archives`]
+    /// (see that fn's own all-or-nothing rule).
+    ///
+    /// Oblivion's entries are its eight vanilla DLC archives (#3712 /
+    /// NIF-2026-08-30-D3-01): 1,580 NIFs (16.4% of the full corpus)
+    /// previously covered by no test in the repository — the one game
+    /// where an undispatched sizeless block truncates the rest of the
+    /// scene instead of degrading to an `NiUnknown` placeholder, so this
+    /// tier matters more here than anywhere else it's used. Unlike Skyrim
+    /// SE's Creation Club entries, these are static vanilla content
+    /// (GOTY/Deluxe own the set or don't — it never rotates per account),
+    /// which is why `oblivion_block_count_parity`
+    /// (`block_coverage_baselines.rs`) can safely widen to cover this
+    /// tier too, with its own per-archive baseline keying — see that
+    /// test's doc for why that doesn't violate this fn's "never for the
+    /// count-keyed baseline harnesses" rule below.
     pub fn optional_mesh_archives(self) -> &'static [&'static str] {
         match self {
+            Game::Oblivion => &[
+                "Knights.bsa",
+                "DLCBattlehornCastle.bsa",
+                "DLCFrostcrag.bsa",
+                "DLCHorseArmor.bsa",
+                "DLCOrrery.bsa",
+                "DLCShiveringIsles - Meshes.bsa",
+                "DLCThievesDen.bsa",
+                "DLCVileLair.bsa",
+            ],
             Game::SkyrimSE => &[
                 "_ResourcePack.bsa",
                 "ccBGSSSE001-Fish.bsa",
                 "ccBGSSSE025-AdvDSGS.bsa",
                 "ccBGSSSE037-Curios.bsa",
                 "ccQDRSSE001-SurvivalMode.bsa",
+                "Skyrim - Animations.bsa",
             ],
             _ => &[],
         }

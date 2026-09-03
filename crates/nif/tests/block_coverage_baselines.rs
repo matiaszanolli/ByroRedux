@@ -53,7 +53,7 @@
 
 mod common;
 
-use common::{open_all_mesh_archives, open_mesh_archive, Game};
+use common::{open_all_mesh_archives, open_optional_mesh_archives, Game};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -80,41 +80,78 @@ fn baselines_dir() -> PathBuf {
 /// sizeless block — `handscythe01.nif` / `oar01.nif` /
 /// `ungrdltraphingedoor.nif` parse whole now) re-truncates files that
 /// aren't in the baseline → red.
+///
+/// #3712 (NIF-2026-08-30-D3-01) widened this from the base
+/// `Oblivion - Meshes.bsa` alone to also walk
+/// [`common::open_optional_mesh_archives`]'s present-only DLC tier — the
+/// eight vanilla DLC archives (1,580 NIFs, 16.4% of the full corpus) were
+/// previously covered by no test in the repository, on the one game where
+/// an undispatched block truncates the rest of the scene instead of
+/// being absorbed into an `NiUnknown` placeholder.
+///
+/// `open_optional_mesh_archives`'s own doc warns that tier is "only safe
+/// for rate-based gates — never for the count-keyed baseline harnesses",
+/// which is true of a *single monolithic* count comparison (an absent
+/// optional archive would make `parsed` drop against a baseline captured
+/// with it present, exactly the "trading a partial gate for no gate"
+/// failure `mesh_archives`'s own doc warns about). This gate stays safe
+/// under that constraint by keying `parsed` and the truncating-file set
+/// **per archive** rather than as one global sum: an archive absent from
+/// the current run (e.g. a base-game-only CI host) is simply never
+/// compared, neither contributing to nor requiring anything from the
+/// baseline, while a present archive is checked against its own
+/// independently-tracked baseline slice — unlike Skyrim SE's Creation
+/// Club tier (#3369), Oblivion's DLC content is static and vanilla
+/// (GOTY/Deluxe own it or don't; it never rotates), so per-archive counts
+/// captured once stay reproducible for as long as that install exists.
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn oblivion_block_count_parity() {
-    let Some(archive) = open_mesh_archive(Game::Oblivion) else {
+    let Some(mut archives) = open_all_mesh_archives(Game::Oblivion) else {
         return;
     };
-    let files: Vec<String> = archive
-        .list_files()
-        .into_iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
-        .collect();
+    archives.extend(open_optional_mesh_archives(Game::Oblivion));
 
-    let mut parsed = 0usize;
-    // path -> dropped block count, sorted for a stable baseline file.
+    // Per-archive parsed count, plus a truncating-file set keyed
+    // `<archive>::<path>` so two archives can't collide on a shared
+    // relative NIF path.
+    let mut archive_parsed: BTreeMap<String, usize> = BTreeMap::new();
     let mut truncating: BTreeMap<String, usize> = BTreeMap::new();
-    for path in &files {
-        let Ok(bytes) = archive.extract(path) else {
-            continue;
-        };
-        // A hard parse error is a different failure mode (covered by
-        // `parse_real_nifs.rs`); this pin is specifically about *silent*
-        // block loss on an otherwise-Ok parse.
-        let Ok(scene) = byroredux_nif::parse_nif(&bytes) else {
-            continue;
-        };
-        parsed += 1;
-        if scene.truncated || scene.dropped_block_count > 0 {
-            truncating.insert(path.clone(), scene.dropped_block_count);
+    let mut total_parsed = 0usize;
+
+    for (name, archive) in &archives {
+        let files: Vec<String> = archive
+            .list_files()
+            .into_iter()
+            .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+            .collect();
+
+        let mut parsed = 0usize;
+        for path in &files {
+            let Ok(bytes) = archive.extract(path) else {
+                continue;
+            };
+            // A hard parse error is a different failure mode (covered by
+            // `parse_real_nifs.rs`); this pin is specifically about
+            // *silent* block loss on an otherwise-Ok parse.
+            let Ok(scene) = byroredux_nif::parse_nif(&bytes) else {
+                continue;
+            };
+            parsed += 1;
+            if scene.truncated || scene.dropped_block_count > 0 {
+                truncating.insert(format!("{name}::{path}"), scene.dropped_block_count);
+            }
         }
+        eprintln!("[Oblivion] {name}: {parsed}/{} NIFs parsed", files.len());
+        total_parsed += parsed;
+        archive_parsed.insert((*name).to_string(), parsed);
     }
 
     eprintln!(
-        "[Oblivion] block-count parity: {}/{} NIFs whole, {} truncating",
-        parsed - truncating.len(),
-        parsed,
+        "[Oblivion] block-count parity across {} archive(s): {}/{} NIFs whole, {} truncating",
+        archives.len(),
+        total_parsed - truncating.len(),
+        total_parsed,
         truncating.len()
     );
 
@@ -125,15 +162,20 @@ fn oblivion_block_count_parity() {
         // `unknown_blocks\t{}` in the sized-game baselines below) so it
         // survives the `#`-comment filter on read-back below, instead of
         // living only in the human-readable header comment where the
-        // parser could never see it.
+        // parser could never see it. #3712 — now one `archive_parsed`
+        // line per archive rather than a single aggregate `parsed` line,
+        // so a future run missing an optional archive can skip that
+        // archive's comparison instead of failing on a lower total.
         let mut body = format!(
-            "# Oblivion sizeless-truncation baseline\ttruncating={}\tparsed={}\n\
-             parsed\t{parsed}\n",
+            "# Oblivion sizeless-truncation baseline\ttruncating={}\tparsed={}\n",
             truncating.len(),
-            parsed,
+            total_parsed,
         );
-        for (p, dropped) in &truncating {
-            body.push_str(&format!("{p}\t{dropped}\n"));
+        for (name, count) in &archive_parsed {
+            body.push_str(&format!("archive_parsed\t{name}\t{count}\n"));
+        }
+        for (key, dropped) in &truncating {
+            body.push_str(&format!("{key}\t{dropped}\n"));
         }
         std::fs::write(&path, &body).expect("write baseline");
         eprintln!("[Oblivion] regen mode: wrote {}", path.display());
@@ -150,27 +192,25 @@ fn oblivion_block_count_parity() {
             e
         ),
     };
-    // #3082 — `parsed=` used to be written into the baseline's `#`-comment
-    // header and never read back at all: the gate only ever compared the
-    // *set* of truncating files, so a regression that made MORE Oblivion
-    // NIFs hard-fail to parse (`byroredux_nif::parse_nif` returning `Err`,
-    // line ~105 above) — while leaving the truncating-file set unchanged
-    // or even shrinking it — passed silently. `parsed` is now asserted
-    // against its own baseline line, not merely written.
-    let baseline_parsed: usize = text
+    // #3712 — per-archive baseline counts, keyed by archive name. An
+    // archive present in `archives` today with no matching baseline line
+    // means the checked-in baseline is stale (regenerated on a host
+    // missing an archive this run has) — panic rather than silently
+    // treating it as a 0-count pass, since that would hide every future
+    // regression on that archive.
+    let baseline_archive_parsed: std::collections::HashMap<String, usize> = text
         .lines()
-        .find_map(|l| l.strip_prefix("parsed\t"))
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or_else(|| {
-            panic!(
-                "[Oblivion] baseline at {} has no `parsed` line; regenerate with \
-                 `BYROREDUX_REGEN_BASELINES=1`",
-                path.display()
-            )
-        });
+        .filter_map(|l| l.strip_prefix("archive_parsed\t"))
+        .filter_map(|rest| {
+            let (name, count) = rest.split_once('\t')?;
+            count.trim().parse().ok().map(|c| (name.to_string(), c))
+        })
+        .collect();
     let baseline: BTreeSet<String> = text
         .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("parsed\t"))
+        .filter(|l| {
+            !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("archive_parsed\t")
+        })
         .filter_map(|l| l.split('\t').next().map(str::to_string))
         .collect();
 
@@ -193,26 +233,37 @@ fn oblivion_block_count_parity() {
     }
     // #3082 — the other direction: a hard-parse-failure regression that
     // doesn't touch the truncating set at all. `parsed` counts every NIF
-    // `parse_nif` didn't hard-error on (line ~105), truncated or not, so
-    // a decrease here means files that used to parse (even truncated) now
-    // fail outright — a distinct, previously-invisible failure mode from
+    // `parse_nif` didn't hard-error on, truncated or not, so a decrease
+    // here means files that used to parse (even truncated) now fail
+    // outright — a distinct, previously-invisible failure mode from
     // "newly truncating". An increase (previously-failing files now
     // parsing) is a silent improvement, same policy as every other gate
-    // in this file.
-    assert!(
-        parsed >= baseline_parsed,
-        "[Oblivion] parsed NIF count dropped {} -> {} — {} file(s) that used to parse \
-         (truncated or not) now hard-fail. If intentional, regenerate with \
-         `BYROREDUX_REGEN_BASELINES=1`.",
-        baseline_parsed,
-        parsed,
-        baseline_parsed.saturating_sub(parsed),
-    );
+    // in this file. #3712 — checked per archive present this run; an
+    // optional archive absent today is simply skipped, not treated as a
+    // drop to zero.
+    for (name, &parsed) in &archive_parsed {
+        let Some(&baseline_parsed) = baseline_archive_parsed.get(name) else {
+            panic!(
+                "[Oblivion] '{name}' has no `archive_parsed` baseline line — the \
+                 checked-in baseline is stale for this archive; regenerate with \
+                 `BYROREDUX_REGEN_BASELINES=1`.",
+            );
+        };
+        assert!(
+            parsed >= baseline_parsed,
+            "[Oblivion] '{name}' parsed NIF count dropped {} -> {} — {} file(s) that used \
+             to parse (truncated or not) now hard-fail. If intentional, regenerate with \
+             `BYROREDUX_REGEN_BASELINES=1`.",
+            baseline_parsed,
+            parsed,
+            baseline_parsed.saturating_sub(parsed),
+        );
+    }
     eprintln!(
-        "[Oblivion] no new truncation ({} known, all in baseline); parsed {} >= baseline {}",
+        "[Oblivion] no new truncation ({} known, all in baseline); {} archive(s) checked, \
+         all parsed >= baseline",
         truncating.len(),
-        parsed,
-        baseline_parsed,
+        archive_parsed.len(),
     );
 }
 

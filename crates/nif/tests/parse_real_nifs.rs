@@ -928,17 +928,23 @@ fn vanilla_archives_have_zero_nisequencestreamhelper() {
 
 /// #3369 regression — the two archive tiers must stay disjoint and the
 /// optional one must actually name Skyrim's Creation Club / Anniversary
-/// corpus.
+/// corpus. #3712 widened this to also pin Oblivion's eight vanilla DLC
+/// archives and the `Skyrim - Animations.bsa` entry that fix's own
+/// SIBLING check found missing from both games' lists.
 ///
 /// Needs no game data on purpose: the defect #3369 filed was a *list*
 /// omission, so the guard belongs on the list, where it also runs on the
-/// CI machine that has no `Data/` at all. The two halves it pins:
+/// CI machine that has no `Data/` at all. The halves it pins:
 ///
 /// * Disjointness — an entry in both tiers would be walked twice by this
 ///   gate, double-counting its NIFs into the rate.
 /// * Non-empty for Skyrim SE — the whole point of #3369. If someone
-///   "simplifies" the arm back to `_ => &[]`, the 715 NIFs silently fall
-///   out of the gate again with nothing turning red.
+///   "simplifies" the arm back to `_ => &[]`, the 715+44 NIFs silently
+///   fall out of the gate again with nothing turning red.
+/// * Non-empty for Oblivion (#3712) — the 1,580 DLC NIFs (16.4% of the
+///   full corpus) that were covered by no test in the repository before
+///   this fix, on the one game where an undispatched sizeless block
+///   truncates the rest of the scene rather than degrading gracefully.
 #[test]
 fn archive_tiers_are_disjoint_and_skyrim_optional_is_populated() {
     for game in Game::ALL {
@@ -960,11 +966,31 @@ fn archive_tiers_are_disjoint_and_skyrim_optional_is_populated() {
         "ccBGSSSE025-AdvDSGS.bsa",
         "ccBGSSSE037-Curios.bsa",
         "ccQDRSSE001-SurvivalMode.bsa",
+        "Skyrim - Animations.bsa",
     ] {
         assert!(
             skyrim.contains(&expected),
-            "#3369: {expected:?} dropped out of Skyrim SE's optional mesh archives — \
-             the 715 NIFs it guards are unreachable from the parse-rate gate again",
+            "#3369/#3712: {expected:?} dropped out of Skyrim SE's optional mesh archives — \
+             the NIFs it guards are unreachable from the parse-rate gate again",
+        );
+    }
+
+    let oblivion = Game::Oblivion.optional_mesh_archives();
+    for expected in [
+        "Knights.bsa",
+        "DLCBattlehornCastle.bsa",
+        "DLCFrostcrag.bsa",
+        "DLCHorseArmor.bsa",
+        "DLCOrrery.bsa",
+        "DLCShiveringIsles - Meshes.bsa",
+        "DLCThievesDen.bsa",
+        "DLCVileLair.bsa",
+    ] {
+        assert!(
+            oblivion.contains(&expected),
+            "#3712: {expected:?} dropped out of Oblivion's optional mesh archives — \
+             1,580 DLC NIFs (16.4% of the corpus) are unreachable from the parse-rate \
+             gate, and from oblivion_block_count_parity's truncation-cascade check, again",
         );
     }
 }

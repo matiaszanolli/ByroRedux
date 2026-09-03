@@ -1,49 +1,80 @@
-# #3712: NIF-2026-08-30-D3-01: Oblivion's eight DLC archives (1,580 NIFs, 16.4%) are guarded by no parse gate — on the one game where a dispatch regression truncates instead of recovering
+# #3712 — NIF-2026-08-30-D3-01: Oblivion's eight DLC archives (1,580 NIFs, 16.4%) are guarded by no parse gate
 
-**Labels**: bug, nif-parser, medium, nif, game:oblivion, test-gap
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: MEDIUM · **Dimension**: Block Dispatch Coverage
+**Location**: `crates/nif/tests/common/mod.rs`, `parse_real_nifs.rs`, `block_coverage_baselines.rs`
 
----
+## Premise, re-verified against real data
 
-**Report**: `docs/audits/AUDIT_NIF_2026-08-30.md` · **Severity**: MEDIUM · **Dimension**: Block Dispatch Coverage
-**Game affected**: Oblivion (`bsver <= 11`, NIF v20.0.0.4/5 and the v10.x NetImmerse family — the `no_block_sizes` band)
+Re-ran the issue's own full-corpus sweep against this machine's real
+Oblivion GOTY install: **9,612 NIFs across 9 archives, 8,032 gated (base
+only) / 1,580 ungated (8 DLC archives), 16.4%** — exact match to the
+issue's evidence table.
 
-## Location
-- `crates/nif/tests/common/mod.rs` — `mesh_archives` (Oblivion arm), `optional_mesh_archives` (returns `&[]` for Oblivion)
-- `crates/nif/tests/parse_real_nifs.rs` — `parse_rate_oblivion`
-- `crates/nif/tests/block_coverage_baselines.rs` — `oblivion_block_count_parity` (opens the primary archive only)
+## Fix
 
-## Description
-The #3041 → #3466 → #3369 sequence widened every game's parse gate from "the primary mesh archive" to "every mesh-bearing archive", and added an `optional_mesh_archives` tier so account-varying content could be gated by rate even when it cannot be baselined by count. **Oblivion was left out of both.** 1,580 NIFs across eight vanilla DLC archives are covered by no test in the repository — not `parse_rate_oblivion`, not `per_block_baselines`, not `oblivion_block_count_parity`.
+- **`Game::optional_mesh_archives`** — populated Oblivion's arm with all
+  eight vanilla DLC archives (`Knights.bsa`, the six small plugin
+  archives, `DLCShiveringIsles - Meshes.bsa`). Kept out of `mesh_archives`
+  (not promoted to the required, all-or-nothing tier) per that fn's own
+  rule — a base-game install must not lose the whole gate.
+- **`parse_rate_oblivion`** — needed **zero code changes**: `run_game`
+  already generically extends its required-tier archives with
+  `open_optional_mesh_archives(game)` (the #3369 plumbing), so populating
+  the list alone widened this gate from 8,032 to the full 9,612 NIFs.
+  Confirmed by running it: `9612/9612 NIFs: clean 100.00%`.
+- **`oblivion_block_count_parity`** — this one genuinely needed code
+  changes, because `open_optional_mesh_archives`'s own doc explicitly
+  warns it's "only safe for rate-based gates — never for the count-keyed
+  baseline harnesses" (a single monolithic count comparison would make a
+  base-game-only CI host's absent DLC read as a "parsed count dropped"
+  regression). Widened to open both tiers, but re-keyed `parsed` and the
+  truncating-file set **per archive** rather than as one global sum: an
+  absent optional archive contributes nothing and is never compared,
+  while a present one is checked against its own independently-tracked
+  baseline slice. This is safe specifically because — unlike Skyrim SE's
+  Creation Club tier — Oblivion's DLC content is static vanilla content
+  (GOTY/Deluxe own the set or don't; it never rotates per account), so a
+  once-captured per-archive count stays reproducible for the life of that
+  install.
+- **Baseline regenerated**: `oblivion_truncations.tsv` now carries one
+  `archive_parsed\t<name>\t<count>` line per archive instead of one
+  aggregate `parsed\t<n>` line. Regenerated against the real corpus: **all
+  9,612 NIFs parse whole, 0 truncating** across every archive including
+  the DLC — the same clean result the issue's own evidence table showed.
 
-Verified current: `Game::optional_mesh_archives` has a `Game::SkyrimSE` arm listing 5 archives and `_ => &[]` for everything else.
+## SIBLING (issue's own checklist item — "`Skyrim - Animations.bsa` (44 NIFs) is in neither list")
 
-## Evidence
-Full-corpus sweep of every `.bsa` in Oblivion's `Data/`:
+Added it to `Game::SkyrimSE`'s `optional_mesh_archives` alongside the
+existing five Creation Club entries — checked in the same pass as
+requested.
 
-```
-Oblivion - Meshes.bsa            8032 nifs   8032 clean   0 trunc   0 fail  <- gated
-DLCShiveringIsles - Meshes.bsa   1438        1438         0         0       <- ungated
-Knights.bsa                        75          75         0         0       <- ungated
-DLCBattlehornCastle.bsa            24          24         0         0       <- ungated
-DLCFrostcrag.bsa                   17          17         0         0       <- ungated
-DLCOrrery.bsa                       9           9         0         0       <- ungated
-DLCVileLair.bsa                     8           8         0         0       <- ungated
-DLCThievesDen.bsa                   5           5         0         0       <- ungated
-DLCHorseArmor.bsa                   4           4         0         0       <- ungated
-```
+## TESTS (issue's own checklist item — "the widened gate must actually open the DLC archives when present")
 
-1,580 of 9,612 Oblivion NIFs (16.4%) ungated. `Game::mesh_archives`' doc-comment explains the omission — requiring GOTY-only DLC would make the all-or-nothing rule skip Oblivion entirely on a base-game install — but that is exactly the problem `optional_mesh_archives` was introduced to solve for Skyrim SE's Creation Club archives under #3369, and it was not applied here. (`Skyrim - Animations.bsa`, 44 NIFs, is likewise in neither list.)
+- Extended the existing `archive_tiers_are_disjoint_and_skyrim_optional_is_populated`
+  test (needs no game data — pure logic on the const lists, runs on every
+  CI host) to also pin Oblivion's 8 DLC entries and the new
+  `Skyrim - Animations.bsa` entry, mirroring the exact "if someone
+  simplifies this back to an empty list, X NIFs silently fall out of the
+  gate" pattern #3369 established for Skyrim SE.
+- Verified the per-archive-scoped design's core safety property directly:
+  pointed `BYROREDUX_OBLIVION_DATA` at a scratch directory containing
+  only a symlinked base archive (simulating a non-GOTY install) and
+  confirmed `oblivion_block_count_parity` still passes cleanly, checking
+  only the 1 present archive — the exact scenario the per-archive keying
+  exists to protect against.
+- Verified the guard actually catches a regression (this session's
+  established quality bar): hand-edited the checked-in baseline to
+  inflate `Knights.bsa`'s count from 75 to 100, reran — it failed with
+  the exact expected message (`parsed NIF count dropped 100 -> 75`),
+  then restored the correct baseline and confirmed a clean pass again.
 
-## Impact
-Oblivion is the **only** supported game with no `block_sizes` table, so it is the only game where an undispatched or under-reading block truncates the remainder of the scene instead of being absorbed into an `NiUnknown` placeholder. `oblivion_block_count_parity` exists specifically to catch that cascade and is blind to 16.4% of the content. Shivering Isles alone is 1,438 files of distinctly authored Daedric/Mania architecture and creatures — later-authored content of exactly the kind #3041 widened the FNV gate to cover. All 1,580 parse clean today, so this is an unguarded-corpus gap, not a live defect.
+## Verification
 
-## Related
-#3041, #3466, #3369 (the same blind spot closed for every other game), #1332 (`oblivion_block_count_parity`). Sibling: the D1-01 sizeless drift-detector finding filed alongside this one.
-
-## Suggested Fix
-Populate `Game::optional_mesh_archives` for Oblivion with the eight DLC archives (and `Skyrim - Animations.bsa` for Skyrim SE) — the present-only tier is safe for `parse_rate_oblivion` because that gate asserts a *rate*. Then widen `oblivion_block_count_parity` to `open_all_mesh_archives` + `open_optional_mesh_archives` and regenerate its truncating-file baseline, which is count-based and needs its own regen pass.
-
-## Completeness Checks
-- [ ] **SIBLING**: `Skyrim - Animations.bsa` (44 NIFs) is in neither list either — check both games in the same pass
-- [ ] **TESTS**: A regression test pins this specific fix — the widened gate must actually open the DLC archives when present
+- `cargo check -p byroredux-nif --tests`: clean.
+- `cargo test -q -p byroredux-nif`: 1,221 lib tests + all integration
+  suites passing, 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7086 passing, 0
+  failing** (unchanged — this fix extended an existing test's body rather
+  than adding a new `#[test]` function, and the corpus-dependent tests
+  stay `#[ignore]`d as before, though all were run manually against real
+  data above).
