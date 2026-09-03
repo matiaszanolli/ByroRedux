@@ -1082,12 +1082,18 @@ fn pitch_or_linear_size_for(
     //   91 = B8G8R8A8_UNORM_SRGB  (4 bpp)
     //   56 = R16_UNORM            (2 bpp) — height / mask textures
     //   61 = R8_UNORM             (1 bpp) — mono masks
+    //   10 = R16G16B16A16_FLOAT   (8 bpp) — cubemaps + the LTC area-light
+    //                                       LUT (#2628 / SF-D1-02)
+    //   11 = R16G16B16A16_UNORM   (8 bpp) — gas-giant gradient textures
+    //   31 = R8G8B8A8_SNORM       (4 bpp) — chargen face normal maps
     // For uncompressed, the pitch is the byte length of one row of
     // pixels (`width * bpp`) — NOT the total buffer size.
     let bpp: Option<u32> = match dxgi_format {
         28 | 29 | 87 | 88 | 91 => Some(4),
         56 => Some(2),
         61 => Some(1),
+        10 | 11 => Some(8),
+        31 => Some(4),
         _ => None,
     };
     if let Some(b) = bpp {
@@ -1195,6 +1201,36 @@ mod tests {
         // 64×64 R8_UNORM (61): row pitch = 64 * 1 = 64.
         let (pitch, flag) = pitch_or_linear_size_for(61, 64, 64, 0);
         assert_eq!(pitch, 64);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    /// #2628 (SF-D1-02) — DXGI 10/11/31 fell through to the legacy
+    /// `(total_bytes, DDSD_LINEARSIZE)` fallback pre-fix, matching #594's
+    /// original defect class on formats that fix never enumerated: 78
+    /// vanilla Starfield textures (62 chargen face normal maps, 12
+    /// cubemaps + the LTC area-light LUT, 2 gas-giant gradients) got an
+    /// invalid `dwPitchOrLinearSize`.
+    #[test]
+    fn pitch_r16g16b16a16_float_matches_row_size_with_pitch_flag() {
+        // 64×64 R16G16B16A16_FLOAT (10): 8 bpp → row pitch = 64 * 8 = 512.
+        let (pitch, flag) = pitch_or_linear_size_for(10, 64, 64, 0);
+        assert_eq!(pitch, 512);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_r16g16b16a16_unorm_matches_row_size_with_pitch_flag() {
+        // 64×64 R16G16B16A16_UNORM (11): 8 bpp → row pitch = 64 * 8 = 512.
+        let (pitch, flag) = pitch_or_linear_size_for(11, 64, 64, 0);
+        assert_eq!(pitch, 512);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_r8g8b8a8_snorm_matches_row_size_with_pitch_flag() {
+        // 256×256 R8G8B8A8_SNORM (31): 4 bpp → row pitch = 256 * 4 = 1024.
+        let (pitch, flag) = pitch_or_linear_size_for(31, 256, 256, 0);
+        assert_eq!(pitch, 1024);
         assert_eq!(flag, DDSD_PITCH);
     }
 
