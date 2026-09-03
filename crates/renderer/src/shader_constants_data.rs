@@ -60,6 +60,28 @@ const _: () = {
 // value to change instead of three to find.
 pub const MAX_ALPHA_SKIP_LAYERS: u32 = 8;
 
+// RT reach budgets shared between `water.frag` and `triangle.frag`.
+//
+// #3745 / TD7-2026-08-30-01 — before this, both budgets were hand-typed
+// literals at six call sites across the two shaders (`water.frag`'s own
+// declarations, plus `triangle.frag:1092,1723,2712` for the reflection
+// distance and `triangle.frag:2037`'s `REFRACT_MAX_REACH` plus its
+// `:1723`/`:2025` re-issue sites for the refraction distance) with no
+// shared definition — `water.frag`'s own comment claimed `DIST_FALLOFF`
+// "matches triangle.frag", which was false: `0.0015` appeared nowhere in
+// `triangle.frag`, and `triangle.frag` has no `DIST_FALLOFF` at all.
+// Consolidated here so the claim is enforced, not aspirational.
+pub const RT_REFLECTION_MAX_DIST: f32 = 5000.0;
+pub const RT_REFRACTION_MAX_DIST: f32 = 2000.0;
+/// Distance-based reflection/refraction intensity falloff rate. Despite
+/// `water.frag`'s pre-fix comment, `triangle.frag` has no matching
+/// consumer today (its nearest analogue is the glass optical-thickness
+/// `0.004`, a different quantity) — `water.frag` is the sole consumer.
+/// Centralized here anyway per the single-source-of-truth doctrine this
+/// file exists for, and so a future `triangle.frag` consumer of the same
+/// quantity has one definition to reach for instead of retyping it.
+pub const RT_DIST_FALLOFF: f32 = 0.0015;
+
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 26;
 // Skinned-vertex OUTPUT stride (`SkinSlot::output_buffer`) — position

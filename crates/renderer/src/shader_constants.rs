@@ -421,6 +421,10 @@ mod tests {
             ("MAT_FLAG_BACK_LIGHTING", format!("#define MAT_FLAG_BACK_LIGHTING {MAT_FLAG_BACK_LIGHTING}u")),
             ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
+            // #3745 / TD7-2026-08-30-01 — shared water.frag/triangle.frag RT reach budgets.
+            ("RT_REFLECTION_MAX_DIST", format!("#define RT_REFLECTION_MAX_DIST {RT_REFLECTION_MAX_DIST:?}")),
+            ("RT_REFRACTION_MAX_DIST", format!("#define RT_REFRACTION_MAX_DIST {RT_REFRACTION_MAX_DIST:?}")),
+            ("RT_DIST_FALLOFF", format!("#define RT_DIST_FALLOFF {RT_DIST_FALLOFF:?}")),
         ] {
             assert!(
                 header.contains(&expected),
@@ -777,6 +781,32 @@ mod tests {
                  the #define from shader_constants.glsl is the source of truth (#1256)",
             );
         }
+    }
+
+    /// #3745 / TD7-2026-08-30-01 — `water.frag` used to hand-declare
+    /// `REFLECTION_MAX_DIST` / `REFRACTION_MAX_DIST` / `DIST_FALLOFF`
+    /// locally, with a comment claiming `DIST_FALLOFF` "matches
+    /// triangle.frag" that was never true (`0.0015` appeared nowhere in
+    /// `triangle.frag`). Both files now `#include` the shared
+    /// `RT_*`-prefixed `#define`s from `shader_constants.glsl` instead —
+    /// mirrors `water_frag_motion_enum_matches`'s redeclaration-guard
+    /// shape.
+    #[test]
+    fn water_frag_rt_reach_budgets_not_redeclared() {
+        let src = include_str!("../shaders/water.frag");
+        for name in ["REFLECTION_MAX_DIST", "REFRACTION_MAX_DIST", "DIST_FALLOFF"] {
+            let needle = format!("const float {name}");
+            assert!(
+                !src.contains(&needle),
+                "water.frag must not redeclare {name} — \
+                 the shared RT_{name} #define from shader_constants.glsl is the source of truth (#3745)",
+            );
+        }
+        assert!(
+            !src.contains("matches triangle.frag"),
+            "water.frag's false 'matches triangle.frag' comment should have been \
+             removed alongside the redeclaration it sat next to (#3745)",
+        );
     }
 
     #[test]

@@ -1,67 +1,76 @@
-# #3745 — TD7-2026-08-30-01: `water.frag`'s three RT reach budgets bypass `shader_constants_data.rs`, and its `// matches triangle.frag` claim is false
+# #3745 — TD7-2026-08-30-01: water.frag's three RT reach budgets bypass shader_constants_data.rs
 
-**Labels**: bug, renderer, medium, tech-debt, shaders
+**Severity**: MEDIUM · **Location**: `crates/renderer/shaders/water.frag:194-196`, `crates/renderer/src/shader_constants_data.rs`
+**Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (TD7-2026-08-30-01)
 
----
+`water.frag` declared `REFLECTION_MAX_DIST`/`REFRACTION_MAX_DIST`/
+`DIST_FALLOFF` as local `const float`s, none present in
+`shader_constants_data.rs` (the documented single source both
+`shader_constants.rs` and `build.rs` `#include!`). The two `MAX_DIST`
+values mirrored `triangle.frag` by hand and by literal across six sites in
+two shaders with no shared definition. `DIST_FALLOFF`'s trailing `// matches
+triangle.frag` comment was false: `0.0015` appeared nowhere in
+`triangle.frag`, which has no `DIST_FALLOFF` at all — its nearest analogue
+(`0.004`, glass optical thickness) is a different quantity.
 
-- **Severity**: MEDIUM
-- **Dimension**: 7 — Magic Numbers / Shader-Constant Provenance
-- **Location**: `crates/renderer/shaders/water.frag:194-196`; the gate at `crates/renderer/src/shader_constants.rs`; the single source `crates/renderer/src/shader_constants_data.rs`
-- **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (`TD7-2026-08-30-01`), HEAD `64f64480`
+## Fix implemented (steps 1-2 of the issue's own three-step suggested fix)
 
-## Description
+- Added `RT_REFLECTION_MAX_DIST` (5000.0), `RT_REFRACTION_MAX_DIST` (2000.0),
+  `RT_DIST_FALLOFF` (0.0015) to `shader_constants_data.rs`, with a doc
+  comment correcting the false "matches triangle.frag" claim for
+  `RT_DIST_FALLOFF` specifically (it has no current `triangle.frag`
+  consumer — centralized anyway per the file's single-source-of-truth
+  doctrine).
+- `build.rs`: emits the three as `#define`s into the generated
+  `shader_constants.glsl`.
+- `water.frag`: removed the three local `const float` declarations and the
+  false comment; its three use sites now reference the shared `#define`s
+  (both files already `#include "include/shader_constants.glsl"`).
+- `triangle.frag`: all four reach-budget sites (`traceReflection`'s window-
+  distortion ray, the window "outside" ray query, `REFRACT_MAX_REACH`'s own
+  declaration — kept as a local semantic alias initialized from the shared
+  constant rather than removed outright, since it's used at multiple
+  call sites within its own scope — and the general reflection ray) now
+  reference `RT_REFLECTION_MAX_DIST`/`RT_REFRACTION_MAX_DIST` instead of
+  hardcoded `5000.0`/`2000.0`.
 
-```glsl
-const float REFLECTION_MAX_DIST = 5000.0;
-const float REFRACTION_MAX_DIST = 2000.0;
-const float DIST_FALLOFF        = 0.0015; // matches triangle.frag
-```
+**Verified zero behavior change**: recompiled both `water.frag.spv` and
+`triangle.frag.spv` (`glslangValidator -V -I.`) and diffed against the
+pre-fix committed bytecode — **byte-for-byte identical** in both cases.
+Since the numeric values are unchanged, only their declaration site moved,
+this is the strongest available confirmation that the GPU executes exactly
+the same instructions as before.
 
-**None of the three exists in `crates/renderer/src/shader_constants_data.rs`** (verified
-at HEAD: 0 hits) — the documented single source that `shader_constants.rs` and `build.rs`
-both `include!` to emit `shaders/include/shader_constants.glsl`. They are open-coded
-literals in a shader that *does* `#include` that header for its other constants.
+One additional site was found during investigation but is **out of the
+issue's own stated scope** ("six sites for two ray-reach budgets") and left
+untouched: `water.frag`'s caustic floor-finding ray
+(`rayQueryInitializeEXT(..., 5000.0)`, a "find the floor" query, not the
+reflection/refraction visual budget the issue is about) — noted here for a
+future pass rather than silently expanded into.
 
-**The `// matches triangle.frag` comment is not true.** `0.0015` appears exactly once in
-the entire shader tree — on this line. `triangle.frag` has no `DIST_FALLOFF` and no
-`0.0015`; its nearest analogue is the glass optical-thickness `0.004`, a different
-quantity. So the comment asserts a lockstep relationship that (a) is unenforced and
-(b) does not currently hold.
+**SIBLING** (issue's own checklist item): a full sweep for every top-level
+shader `const` name absent from `shader_constants_data.rs` is exactly step
+3 of the issue's own suggested fix — see below.
 
-The two `MAX_DIST` values *do* mirror `triangle.frag`, but by hand and by literal:
-`5000.0` at `triangle.frag:2641`, and `2000.0` at `triangle.frag:1041`, `:1652` and
-`:1966` (`const float REFRACT_MAX_REACH = 2000.0;`). `triangle.frag:1954` is candid about
-it — *"re-issued the query with a fresh **hard-coded** 2000.0 tMax"*. That is six sites
-for two ray-reach budgets across two shaders with no shared definition.
+## Part 3 (deliberately NOT implemented here, filed separately as #3815)
 
-## Why the existing gate does not catch this
+Strengthening the gate from a per-name allowlist to a structural check —
+the issue's own words: "**Without (3) this dimension will keep re-finding
+new instances.**" — is real new test infrastructure (scanning every shader
+file for undeclared top-level consts, cross-referencing against
+`shader_constants_data.rs`, and designing a correct exemption list for
+genuinely shader-local values) with real design tradeoffs, not a mechanical
+extension of the existing per-name assertions. Filed as #3815 rather than
+rushed here.
 
-`crates/renderer/src/shader_constants.rs` enforces provenance with a **per-shader named
-allowlist**, not a structural rule: it asserts `!src.contains("const uint WATER_CALM")`,
-`!src.contains("const float BLOOM_INTENSITY")`, `!src.contains("const float VOLUME_FAR")`,
-`!src.contains("const uint THREADS_PER_CLUSTER")` and so on — each name someone remembered
-to list. `water_frag_motion_enum_matches` guards five `WATER_*` names **in this very file**
-and walks straight past the three constants three lines above them. **The gate can only
-catch redeclarations of enumerated names, so any newly introduced literal is invisible to
-it by construction.**
+**TESTS** (issue's own checklist item — "fix (3) *is* the test", which is
+exactly why it's deferred to #3815): added
+`water_frag_rt_reach_budgets_not_redeclared` (mirrors the existing
+`water_frag_motion_enum_matches` redeclaration-guard shape: asserts
+`water.frag` doesn't redeclare any of the three names, and no longer
+contains the false "matches triangle.frag" claim) and extended
+`generated_header_contains_all_defines` with the three new `#define`
+value-pins.
 
-## Suggested Fix (in order)
-
-1. Move all three into `shader_constants_data.rs` so both shaders `#include` one
-   definition — this makes the `// matches triangle.frag` intent real instead of
-   aspirational. *(small)*
-2. Delete the now-redundant comment. *(trivial)*
-3. **Strengthen the gate from a name allowlist toward a structural check** — e.g. assert
-   that no `crates/renderer/shaders/*.{frag,vert,comp}` declares a top-level
-   `const float|uint|int <SCREAMING_NAME>` unless that name is present in
-   `shader_constants_data.rs`, with a small explicit exemption list for genuinely
-   shader-local values. **Without (3) this dimension will keep re-finding new instances.**
-   *(medium)*
-
-Severity MEDIUM per the lockstep-drift floor (`feedback_shader_struct_sync.md`); the
-`_audit-severity.md` HIGH floor applies to `#[repr(C)]`/struct drift, and these are scalar
-budgets.
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files — sweep every shader for top-level `const` names absent from `shader_constants_data.rs`, not just `water.frag`
-- [ ] **TESTS**: A regression test pins this specific fix (fix (3) *is* the test)
+Full workspace: `cargo test --no-fail-fast` 7063 passing, 0 failing (+1 new
+test).

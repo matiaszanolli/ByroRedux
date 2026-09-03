@@ -1089,7 +1089,7 @@ void main() {
         vec4 distortedScene = traceReflection(
             offsetRayOriginForDirection(fragWorldPos, macroN, throughDir),
             throughDir,
-            2000.0,
+            RT_REFRACTION_MAX_DIST, // #3745 / TD7-2026-08-30-01
             0.0,
             fragInstanceIndex);
 
@@ -1720,7 +1720,7 @@ void main() {
                 windowOrigin,
                 0.0,
                 throughDir,
-                2000.0 // if nothing hit within 2000 units, it's "outside"
+                RT_REFRACTION_MAX_DIST // if nothing hit by here, it's "outside" (#3745 / TD7-2026-08-30-01)
             );
             rayQueryProceedEXT(windowRQ);
             hitsInterior = (rayQueryGetIntersectionTypeEXT(windowRQ, true)
@@ -2034,7 +2034,11 @@ void main() {
             // `traceWaterRay`). A segment that exhausts the budget yields a
             // zero-length query, which reports no hit and takes the
             // existing `hit = false` escape path — no extra guard needed.
-            const float REFRACT_MAX_REACH = 2000.0;
+            // #3745 / TD7-2026-08-30-01 — the 2000.0 budget is now
+            // RT_REFRACTION_MAX_DIST (shader_constants_data.rs), shared
+            // with water.frag; this local alias keeps the call sites
+            // below self-documenting about which reach they use.
+            const float REFRACT_MAX_REACH = RT_REFRACTION_MAX_DIST;
             vec3 rayOrigin = offsetRayOriginForDirection(
                 fragWorldPos, N_geom_view, refractDir);
             float rayTMin = 0.0;
@@ -2709,7 +2713,7 @@ void main() {
             vec4 reflResult =
                 traceReflection(
                                 offsetRayOriginForDirection(fragWorldPos, N_bias, R),
-                                R, 5000.0,
+                                R, RT_REFLECTION_MAX_DIST, // #3745 / TD7-2026-08-30-01
                                 roughness * 8.0, fragInstanceIndex);
             // Fade the RT-ray contribution to the ambient approximation across
             // the last octave of the reach so ray and fallback are continuous.

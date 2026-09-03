@@ -191,9 +191,14 @@ layout(location = 7) out float outFsrTransparency;
 // material SSBO above.
 layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 
-const float REFLECTION_MAX_DIST = 5000.0;
-const float REFRACTION_MAX_DIST = 2000.0;
-const float DIST_FALLOFF        = 0.0015; // matches triangle.frag
+// #3745 / TD7-2026-08-30-01 — RT_REFLECTION_MAX_DIST / RT_REFRACTION_MAX_DIST
+// / RT_DIST_FALLOFF now come from shader_constants_data.rs via the
+// #include above, not a local declaration — this used to be `const float
+// DIST_FALLOFF = 0.0015;` with a trailing comment claiming it lined up with
+// triangle.frag's own value, which was false (triangle.frag has no
+// matching consumer; see shader_constants_data.rs's own doc for the
+// correction).
+//
 // No SHORELINE_RAY_MAX here (#2804): the shoreline probe's tMax is the
 // authored `push.tune.z` (`shoreline_width`), not a shader constant. The
 // dead 256.0 that used to sit here read as the cap and contradicted the
@@ -913,7 +918,7 @@ void main() {
     vec3 reflColor = traceWaterRay(
         offsetRayOriginForDirection(vWorldPos, N, R),
         R,
-        REFLECTION_MAX_DIST,
+        RT_REFLECTION_MAX_DIST,
         reflectionMiss,
         reflDist,
         reflHit
@@ -933,7 +938,7 @@ void main() {
         reflColor = mix(reflColor, reflectionMiss, surfaceRoughness * surfaceRoughness);
     }
     if (reflHit) {
-        reflColor *= exp(-reflDist * DIST_FALLOFF);
+        reflColor *= exp(-reflDist * RT_DIST_FALLOFF);
     }
     // No miss re-select here (#2804): every `hit = false` path in
     // `traceWaterRay` already returns `missFallback`, which is exactly
@@ -977,7 +982,7 @@ void main() {
             vec3 hitColor = traceWaterRay(
                 offsetRayOriginForDirection(vWorldPos, N, Tdir),
                 Tdir,
-                REFRACTION_MAX_DIST,
+                RT_REFRACTION_MAX_DIST,
                 push.deep.rgb,
                 refrDist,
                 refrHit

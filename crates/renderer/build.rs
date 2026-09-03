@@ -91,6 +91,24 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(
+        out,
+        "// RT reach budgets shared between water.frag and triangle.frag (#3745 / TD7-2026-08-30-01)"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define RT_REFLECTION_MAX_DIST {RT_REFLECTION_MAX_DIST:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define RT_REFRACTION_MAX_DIST {RT_REFRACTION_MAX_DIST:?}"
+    )
+    .unwrap();
+    writeln!(out, "#define RT_DIST_FALLOFF {RT_DIST_FALLOFF:?}").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Vertex layout (global SSBO)").unwrap();
     writeln!(out, "#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u").unwrap();
     writeln!(

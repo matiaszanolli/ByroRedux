@@ -25,6 +25,11 @@
 // Ray-query alpha-skip walk budget (#2265 / TD7-001)
 #define MAX_ALPHA_SKIP_LAYERS 8u
 
+// RT reach budgets shared between water.frag and triangle.frag (#3745 / TD7-2026-08-30-01)
+#define RT_REFLECTION_MAX_DIST 5000.0
+#define RT_REFRACTION_MAX_DIST 2000.0
+#define RT_DIST_FALLOFF 0.0015
+
 // Vertex layout (global SSBO)
 #define VERTEX_STRIDE_FLOATS 26u
 // Skinned-vertex output stride — position only (#2170).
