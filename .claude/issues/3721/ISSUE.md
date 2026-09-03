@@ -1,25 +1,38 @@
 # #3721 — ESM-2026-08-30-D1-01: a nested group's sub_end is never clamped to the parent group's end
 
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
-
-**Severity**: LOW · **Dimension**: Header & GRUP Walk
-**Location**: `crates/plugin/src/esm/reader.rs` (`bounded_group_content_end`, ~:859-877), and every call site
+**Severity**: LOW · **Location**: `crates/plugin/src/esm/reader.rs::bounded_group_content_end`, and all 13 call sites
 **Source**: `docs/audits/AUDIT_ESM_2026-08-30.md` (ESM-2026-08-30-D1-01)
 
-## Description
+`bounded_group_content_end` returned `self.group_content_end(header)` — i.e.
+`pos + (total_size - header_size)` — with no `.min(parent_end)`. The
+nesting-*depth* guard (#3237/#3503) was intact; the *extent* guard (how far a
+single level can read) was missing. A corrupt/hostile child GRUP declaring a
+`total_size` larger than its parent's remaining content could make the child
+walker consume records belonging to the parent or the next top-level group,
+silently mis-attributing them rather than failing diagnosably.
 
-`bounded_group_content_end` returns `self.group_content_end(header)` — i.e. `pos + (total_size - header_size)` — with no `.min(parent_end)` and no `.min(data.len())`. The depth guard it adds (#3237/#3503) is intact; the *extent* guard is missing.
+## Fix implemented
 
-A corrupt or hostile child GRUP declaring a `total_size` larger than its parent's remaining content makes the child walker consume records belonging to the parent (or to the next top-level group); the parent loop then exits early because `position() > end`.
+Added a `parent_end: usize` parameter to `bounded_group_content_end`,
+clamping the returned end via `.min(parent_end)` per the issue's own suggested
+fix. Every walker already loops against its own `end` bound (`while
+reader.position() < end && ...`), so `end` was in scope and threaded through
+at all 13 call sites unchanged otherwise.
 
-## Impact
+**SIBLING** (issue's own checklist item): confirmed via
+`grep -rn "bounded_group_content_end("` that all 13 recursive GRUP walkers
+(`grup_walker.rs` ×4, `cell/wrld.rs` ×1, `cell/walkers.rs` ×2, `cell/support.rs`
+×6) pass their real, already-in-scope `end` parameter — none constructs a
+placeholder or a widened bound.
 
-Not a memory-safety issue — every loop also tests `reader.remaining() > 0` and `read_record_header` returns `Err` on truncation — but the result is silent mis-attribution rather than a diagnosable failure. **No vanilla master triggers it.**
+**TESTS** (issue's own checklist item):
+`bounded_group_content_end_clamps_to_parent_end` builds a synthetic
+`GroupHeader` declaring 10,000 content bytes against a parent bound of 200
+(natural end would be 10,076) and asserts the returned end is clamped to
+exactly 200. A second assertion in the same test confirms a well-formed group
+that fits entirely inside its parent is unaffected by the clamp — its own
+natural end is still returned unchanged, so the fix doesn't shrink legitimate
+nested groups.
 
-## Suggested Fix
-
-`Some(self.group_content_end(header).min(parent_end))`, threading the parent end (already in scope as `end` at every call site).
-
-## Completeness Checks
-- [ ] **SIBLING**: All 13 recursive GRUP walkers pass a real parent end, not a placeholder
-- [ ] **TESTS**: A synthetic-fixture test builds a child GRUP overrunning its parent and asserts the overrun is clamped
+Full workspace: `cargo test --no-fail-fast` 7052 passing, 0 failing (+1 new
+test).

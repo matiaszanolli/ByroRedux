@@ -942,10 +942,19 @@ impl<'a> EsmReader<'a> {
     /// would occupy the next level. Centralising the guard keeps every GRUP
     /// walker on the same boundary and makes future recursive walkers harder
     /// to add without noticing the safety contract.
+    ///
+    /// `parent_end` is the caller's own content-end bound (the `end` every
+    /// walker already loops against) — the returned end is clamped to it, so
+    /// a corrupt or hostile child GRUP declaring a `total_size` larger than
+    /// its parent's remaining content can never make the recursive call walk
+    /// past the parent's own boundary into a sibling group or the next
+    /// top-level record. The nesting-depth guard above bounds *how deep* a
+    /// walker recurses; this bounds *how far* each level can read. (#3721)
     pub(crate) fn bounded_group_content_end(
         &mut self,
         header: &GroupHeader,
         depth: u32,
+        parent_end: usize,
         walker: &str,
     ) -> Option<usize> {
         if depth >= MAX_GRUP_NESTING_DEPTH {
@@ -958,7 +967,7 @@ impl<'a> EsmReader<'a> {
             self.skip_group(header);
             None
         } else {
-            Some(self.group_content_end(header))
+            Some(self.group_content_end(header).min(parent_end))
         }
     }
 
@@ -1648,6 +1657,49 @@ mod tests {
         let ro = EsmReader::with_variant(&[], EsmVariant::Oblivion);
         assert_eq!(r5.group_content_len(&fake_header), 76); // 100 - 24
         assert_eq!(ro.group_content_len(&fake_header), 80); // 100 - 20
+    }
+
+    /// #3721 — a nested group declaring a `total_size` larger than its
+    /// parent's remaining content must be clamped to the parent's own end,
+    /// not allowed to walk past it into a sibling group or the next
+    /// top-level record.
+    #[test]
+    fn bounded_group_content_end_clamps_to_parent_end() {
+        let mut reader = EsmReader::with_variant(&[], EsmVariant::Tes5Plus);
+        reader.skip(100); // simulate having just read a nested group header at offset 100
+
+        // Declares far more content than the parent has left: natural end
+        // would be 100 + (10000 - 24) = 10076, but the parent only extends
+        // to 200.
+        let overrunning = GroupHeader {
+            label: *b"CELL",
+            group_type: 0,
+            total_size: 10000,
+        };
+        let parent_end = 200;
+        assert_eq!(
+            reader.bounded_group_content_end(&overrunning, 0, parent_end, "test"),
+            Some(parent_end),
+            "an overrunning child GRUP must be clamped to the parent's own end"
+        );
+
+        // A well-formed child that fits comfortably inside its parent must
+        // be unaffected by the clamp — its own natural end is returned.
+        let well_formed = GroupHeader {
+            label: *b"CELL",
+            group_type: 0,
+            total_size: 50,
+        };
+        let natural_end = reader.group_content_end(&well_formed);
+        assert!(
+            natural_end < parent_end,
+            "test fixture sanity: well-formed group must not already overrun"
+        );
+        assert_eq!(
+            reader.bounded_group_content_end(&well_formed, 0, parent_end, "test"),
+            Some(natural_end),
+            "a group that fits inside its parent must not be shrunk by the clamp"
+        );
     }
 
     #[test]

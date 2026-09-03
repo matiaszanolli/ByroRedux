@@ -257,7 +257,7 @@ fn parse_wrld_children_inner(
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let Some(sub_end) =
-                reader.bounded_group_content_end(&sub_group, depth, "parse_wrld_children")
+                reader.bounded_group_content_end(&sub_group, depth, end, "parse_wrld_children")
             else {
                 continue;
             };

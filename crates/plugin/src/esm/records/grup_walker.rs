@@ -37,7 +37,7 @@ fn extract_records_with_modl_inner(
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let Some(sub_end) =
-                reader.bounded_group_content_end(&sub_group, depth, "extract_records_with_modl")
+                reader.bounded_group_content_end(&sub_group, depth, end, "extract_records_with_modl")
             else {
                 continue;
             };
@@ -93,7 +93,7 @@ fn extract_records_inner(
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let Some(sub_end) =
-                reader.bounded_group_content_end(&sub_group, depth, "extract_records")
+                reader.bounded_group_content_end(&sub_group, depth, end, "extract_records")
             else {
                 continue;
             };
@@ -161,7 +161,7 @@ fn extract_dial_with_info_inner(
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let Some(sub_end) =
-                reader.bounded_group_content_end(&sub_group, depth, "extract_dial_with_info")
+                reader.bounded_group_content_end(&sub_group, depth, end, "extract_dial_with_info")
             else {
                 continue;
             };
@@ -315,6 +315,7 @@ fn extract_quest_dialogue_scene_tree_inner(
             let Some(sub_end) = reader.bounded_group_content_end(
                 &sub_group,
                 depth,
+                end,
                 "extract_quest_dialogue_scene_tree_inner",
             ) else {
                 continue;

@@ -143,7 +143,7 @@ fn parse_cell_group_inner(
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
             let Some(sub_end) =
-                reader.bounded_group_content_end(&sub_group, depth, "parse_cell_group")
+                reader.bounded_group_content_end(&sub_group, depth, end, "parse_cell_group")
             else {
                 continue;
             };
@@ -697,7 +697,7 @@ fn parse_refr_group_inner(
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, "parse_refr_group")
+            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_refr_group")
             else {
                 continue;
             };
