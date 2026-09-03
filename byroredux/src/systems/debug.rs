@@ -99,13 +99,26 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
 /// blocked in `wait_for_fences` until the driver resets); `atw_post` large
 /// with small `fence_wait`/`rof_*` ⇒ the stall is CPU cell-load
 /// (`step_streaming` + uploads, which `atw_post` brackets); `acquire` /
-/// `submit_present` large ⇒ compositor / present stall. (WATAL §0 hunt.)
+/// `submit_present` large ⇒ compositor / present stall. `between_frames`
+/// large with everything else small ⇒ the frame isn't the engine's fault at
+/// all (compositor throttling, Wayland frame-callback wait, event-loop
+/// sleep) — since #3674, that field is captured at the frame's true start
+/// and no longer double-counts this frame's own `rof_*` work. (WATAL §0
+/// hunt.)
+///
+/// The buckets nest, not sum: `atw_post` ⊇ `atw_pre`/`atw_scheduler`'s
+/// sibling work, `rof_post_draw` ⊇ the remainder of `render_one_frame`
+/// after `rof_pre_draw`/`rof_draw_call` close — see each field's own doc
+/// in `CpuFrameTimings` for its exact bracket. Adding every field on this
+/// line does not reconstruct total frame time; `between_frames` (#3692)
+/// is the one bucket that is NOT nested inside another printed one, since
+/// it covers the gap outside `render_one_frame` entirely.
 fn cpu_breakdown(t: &CpuFrameTimings) -> String {
     format!(
         "fence_wait={:.0} acquire={:.0} submit_present={:.0} ssbo_build={:.0} \
          geom_rebuild={:.0} tlas_build={:.0} cmd_record={:.0} rof_pre_draw={:.0} \
          rof_draw_call={:.0} rof_post_draw={:.0} atw_pre={:.0} atw_scheduler={:.0} \
-         atw_post={:.0}",
+         atw_post={:.0} between_frames={:.0}",
         t.fence_wait_ms,
         t.acquire_ms,
         t.submit_present_ms,
@@ -119,6 +132,7 @@ fn cpu_breakdown(t: &CpuFrameTimings) -> String {
         t.atw_pre_ms,
         t.atw_scheduler_ms,
         t.atw_post_ms,
+        t.between_frames_ms,
     )
 }
 
@@ -289,5 +303,28 @@ mod tests {
     #[test]
     fn is_slow_frame_true_first_frame_past_grace_window() {
         assert!(is_slow_frame(SLOW_FRAME_WARN_MS + 1.0, 4));
+    }
+
+    // ── #3692 (PERF-D9-2026-08-30-04) ────────────────────────────────
+
+    /// The console `cpu_ms:` line must surface `between_frames` — the one
+    /// bucket that isn't nested inside another printed field, i.e. the
+    /// only one that can tell a `byro-dbg` / `--bench-hold` / headless-log
+    /// operator "this frame's cost is outside the engine entirely"
+    /// (compositor / OS / event-loop, per `CpuFrameTimings::
+    /// between_frames_ms`'s own doc). Pre-fix it was the one field of
+    /// thirteen the egui Metrics overlay printed that this line omitted.
+    #[test]
+    fn cpu_breakdown_prints_between_frames() {
+        let mut t = CpuFrameTimings::default();
+        t.between_frames_ms = 42.0;
+        let line = cpu_breakdown(&t);
+        assert!(
+            line.contains("between_frames=42"),
+            "cpu_breakdown must print between_frames_ms — the only field \
+             this line has that isn't nested inside another one it also \
+             prints, and the one that answers 'is this frame the \
+             compositor's fault or mine?' (#3692), got: {line}"
+        );
     }
 }
