@@ -521,6 +521,18 @@ impl Default for GpuMaterial {
 }
 
 /// Indexes into `DrawCommand::supplemental_texture_indices`.
+///
+/// These are the 16 `MaterialTextureSet` roles carried by the generic
+/// supplemental texture array: `tint`, `inner_layer`, `specular`, `lighting`,
+/// `flow`, `wrinkle`, `reflectance`, `emittance_gradient`, the four `decals`,
+/// `glass_roughness_scratch`, `glass_dirt_overlay`, `lighting_mask`, and
+/// `back_lighting`. The other roles have dedicated `GpuMaterial` fields:
+/// `base_color`, `normal`, `emissive`, `detail`, `smooth_spec`, `dark`,
+/// `height`, `environment`, `environment_mask`, and `greyscale_lut`.
+///
+/// Keep this classification explicit: the CPU population block in
+/// `byroredux/src/render/static_meshes.rs` and `DrawCommand::to_gpu_material`
+/// both depend on these lanes remaining a complete one-to-one mapping.
 pub mod supplemental_texture_slot {
     pub const TINT: usize = 0;
     pub const INNER_LAYER: usize = 1;

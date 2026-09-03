@@ -973,6 +973,81 @@ mod tests {
     use super::super::COLOR_FADE_STEPS;
     use super::*;
 
+    /// #3814 — every generic supplemental lane must be populated exactly
+    /// once. The 26-role `MaterialTextureSet` is intentionally a superset:
+    /// ten roles have dedicated `GpuMaterial` fields, while these 16 lanes
+    /// are the shared side-array subset documented at
+    /// `renderer::vulkan::material::supplemental_texture_slot`.
+    ///
+    /// This is a source-level contract test because the slot module and this
+    /// crate are separate packages; Rust can type-check an omitted write and
+    /// leave the corresponding GPU index at zero without noticing.
+    #[test]
+    fn every_supplemental_texture_slot_is_written_exactly_once() {
+        let slot_source = include_str!("../../../crates/renderer/src/vulkan/material.rs");
+        let slot_start = slot_source
+            .find("pub mod supplemental_texture_slot {")
+            .expect("supplemental texture slot module must exist");
+        let slot_block = &slot_source[slot_start..];
+        let slot_end = slot_block
+            .find("\n}\n")
+            .expect("supplemental texture slot module must be closed")
+            + 2;
+        let declared = slot_block[..slot_end]
+            .lines()
+            .filter_map(|line| {
+                let declaration = line.trim().strip_prefix("pub const ")?;
+                let (name, _) = declaration.split_once(": usize =")?;
+                (name != "COUNT").then_some(name.to_owned())
+            })
+            .collect::<Vec<_>>();
+
+        let expected_count =
+            byroredux_renderer::vulkan::material::supplemental_texture_slot::COUNT;
+        assert_eq!(
+            declared.len(),
+            expected_count,
+            "the slot module's named lanes and COUNT must stay in lockstep",
+        );
+
+        let draw_source = include_str!("static_meshes.rs");
+        let write_start = draw_source
+            .find("let mut supplemental_texture_indices =")
+            .expect("static mesh collection must build supplemental texture indices");
+        let write_block = &draw_source[write_start..];
+        let write_end = write_block
+            .find("\n                let mut cmd = DrawCommand")
+            .expect("supplemental texture writes must precede DrawCommand construction");
+        let write_block = &write_block[..write_end];
+        let marker = "supplemental_texture_indices[slot::";
+        let assigned = write_block
+            .lines()
+            .filter_map(|line| {
+                let suffix = line.trim().strip_prefix(marker)?;
+                Some(suffix.split_once(']')?.0.to_owned())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            assigned.len(),
+            declared.len(),
+            "every declared supplemental lane must have exactly one CPU write",
+        );
+        for name in &declared {
+            assert_eq!(
+                assigned.iter().filter(|assigned_name| *assigned_name == name).count(),
+                1,
+                "supplemental slot {name} must be written exactly once",
+            );
+        }
+        for name in &assigned {
+            assert!(
+                declared.iter().any(|declared_name| declared_name == name),
+                "CPU writes an undeclared supplemental slot {name}",
+            );
+        }
+    }
+
     #[test]
     fn lod_shadow_reach_includes_intersecting_sphere() {
         let reach = byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE;
