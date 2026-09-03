@@ -1,46 +1,51 @@
-# #3742 — TD2-2026-08-30-02: the 64-entry `BLUE_NOISE_RANKS` table is byte-identical in two shaders that already share the include it belongs in
+# #3742 — TD2-2026-08-30-02: the 64-entry BLUE_NOISE_RANKS table is byte-identical in two shaders that already share the include it belongs in
 
-**Labels**: bug, renderer, low, tech-debt, shaders
+**Severity**: LOW · **Location**: `crates/renderer/shaders/composite.frag`, `crates/renderer/shaders/volumetrics_inject.comp`
+**Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (TD2-2026-08-30-02)
 
----
+Both shaders declared a byte-identical 64-entry `BLUE_NOISE_RANKS` table (verified diff-clean
+before touching anything), each with its own consuming function (`preResolveDither` /
+`blueNoiseRank`). Both already `#include "include/shader_constants.glsl"`.
 
-- **Severity**: LOW
-- **Dimension**: 2 — Duplication
-- **Location**: `crates/renderer/shaders/composite.frag:258-267` and `crates/renderer/shaders/volumetrics_inject.comp:1246-1255`
-- **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-30.md` (`TD2-2026-08-30-02`), HEAD `64f64480`
+## Fix implemented
 
-## Description
+- New `crates/renderer/shaders/include/blue_noise.glsl` holds the one copy of the table.
+- Both `composite.frag` and `volumetrics_inject.comp` now `#include "include/blue_noise.glsl"`
+  and no longer declare their own copy. `volumetrics_inject.comp`'s explanatory comment (why a
+  compact constant beats a texture fetch here) moved to sit above its own consumer,
+  `blueNoiseRank`, since the table declaration itself moved out.
+- `shader_constants_data.rs` (the documented single source for `#define`-style scalar shader
+  constants) was **not** used — that generation pipeline only emits scalars, and extending it to
+  emit array literals would be a bigger, riskier change than a dedicated GLSL include for one
+  64-entry array. The issue's own suggested fix offered this as an equally valid alternative.
+- Recompiled both `.spv` files (`glslangValidator -V -I.`). The resulting bytecode is
+  **byte-identical** to what was already committed (`git status`/`git diff` show no change to
+  either `.spv`) — strong confirmation this is a pure source-level dedup with zero behavior
+  change at the GPU level.
 
-Both files each declare:
+Regression test (issue's own TESTS checklist item):
+`blue_noise_ranks_is_declared_exactly_once` (`crates/renderer/src/vulkan/scene_buffer/shader_contract_tests.rs`)
+asserts the table is declared in `include/blue_noise.glsl` and that neither `composite.frag` nor
+`volumetrics_inject.comp` re-declares it or omits the `#include`.
 
-```glsl
-const uint BLUE_NOISE_RANKS[64] = uint[64](
-     0u, 41u, 11u, 59u,  2u, 40u, 10u, 32u,
-    ...
-    63u, 16u, 57u, 27u, 37u, 19u, 56u, 30u
-);
-```
+**SIBLING** (issue's own checklist item): grepped every GLSL array-constant declaration
+(`= uint[`/`= float[`/`= vecN[`/`= int[`) across `crates/renderer/shaders/*.{frag,vert,comp}` —
+found in `svgf_atrous.comp`, `svgf_temporal.comp`, `triangle.frag`, and two sites within
+`volumetrics_inject.comp` itself. None share a name or content across files (a 3-tap Gaussian
+kernel, a bilinear weight array, per-material decal indices, offset arrays) — no other
+cross-shader duplicate table found.
 
-Diffed line-by-line: the two tables are **byte-identical**. Only the consuming function
-differs (`preResolveDither()` vs `blueNoiseRank(ivec2, int)`), and each consumer's tiling
-offsets are its own business — the *table* is the shared constant.
+Full workspace: `cargo test --no-fail-fast` 7046 passing, 0 failing.
 
-## The consolidation site already exists and both files already use it
+## Note: cross-session collision during verification
 
-Both `#include "include/shader_constants.glsl"` (`composite.frag:8`,
-`volumetrics_inject.comp:33`). Move the array into a header — either
-`shader_constants.glsl` via `crates/renderer/src/shader_constants_data.rs` (the documented
-single source for every shader constant, `include!`d by both `shader_constants.rs` and
-`build.rs`) or a new `include/blue_noise.glsl` — and delete both copies. The name is
-currently absent from `shader_constants_data.rs` (verified: 0 hits).
-
-## Impact
-
-An 8×8 void-and-cluster rank table is exactly the kind of value that must never diverge:
-if one copy is regenerated and the other is not, the composite dither and the froxel
-jitter fall out of phase and produce **correlated banding that looks like a denoiser bug,
-not a constants bug**. Effort: trivial.
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files (other shaders declaring their own copies of shared tables)
-- [ ] **TESTS**: A regression test pins this specific fix — extend `shader_constants.rs`'s provenance assertions to reject a re-declaration of `BLUE_NOISE_RANKS`
+While attempting a stash-based pre-fix verification, a `git stash push` with an invalid pathspec
+(an untracked file, without `-u`) failed silently and left the working tree unchanged; the
+follow-up `git stash pop` then popped an **unrelated, pre-existing stash from a concurrent
+session** (`stash@{0}: WIP on main: e309cc5 ...`), producing a merge conflict in
+`.claude/settings.json`. Resolved by keeping the committed HEAD content for that file
+(`git checkout --ours` + `git add`) — verified it now matches HEAD exactly, so nothing from this
+session lands in it. The peer session's stash itself was **not** dropped by the conflicted pop
+(git's own safety behavior) and remains in the stash list, recoverable by that session
+whenever needed. No source files were affected; this fix's own four files were untouched
+throughout.

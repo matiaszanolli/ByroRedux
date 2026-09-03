@@ -3392,3 +3392,37 @@ fn both_attenuation_arms_clamp_the_authored_range_to_the_source_radius() {
         );
     }
 }
+
+/// #3742 (TD2-2026-08-30-02) — `BLUE_NOISE_RANKS` (the shared 8×8
+/// void-and-cluster rank table `composite.frag`'s `preResolveDither` and
+/// `volumetrics_inject.comp`'s `blueNoiseRank` both sample) must be
+/// declared in exactly one place — `include/blue_noise.glsl` — and both
+/// consumers must `#include` it rather than re-declaring their own copy.
+/// A re-declaration is exactly the failure mode this consolidation
+/// closes: two copies that silently diverge produce correlated banding
+/// that looks like a denoiser bug, not a constants bug.
+#[test]
+fn blue_noise_ranks_is_declared_exactly_once() {
+    let header = include_str!("../../../shaders/include/blue_noise.glsl");
+    let composite = include_str!("../../../shaders/composite.frag");
+    let volumetrics = include_str!("../../../shaders/volumetrics_inject.comp");
+
+    assert!(
+        header.contains("const uint BLUE_NOISE_RANKS[64]"),
+        "include/blue_noise.glsl must declare BLUE_NOISE_RANKS"
+    );
+    for (name, src) in [
+        ("composite.frag", composite),
+        ("volumetrics_inject.comp", volumetrics),
+    ] {
+        assert!(
+            !src.contains("const uint BLUE_NOISE_RANKS[64]"),
+            "{name} re-declares BLUE_NOISE_RANKS instead of #include-ing \
+             include/blue_noise.glsl — the two copies can silently diverge (#3742)"
+        );
+        assert!(
+            src.contains("#include \"include/blue_noise.glsl\""),
+            "{name} must #include \"include/blue_noise.glsl\" to reach BLUE_NOISE_RANKS"
+        );
+    }
+}
