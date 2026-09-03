@@ -2,8 +2,11 @@
 //!
 //! Companion file to a race base head NIF; stores per-pixel RGB
 //! deltas for the 50 `FGTS` (texture morph) sliders on `NpcRecord`.
-//! The face-tint compositor (M41.0 Phase 3c) blends them into the
-//! base diffuse texture at NPC load time.
+//!
+//! #3544 (SK-D3-02) — **no consumer exists**. A future face-tint
+//! compositor would blend these deltas into the base diffuse texture
+//! at NPC load time, but nothing in the workspace calls into this
+//! module today; `EgtFile`/`EgtMorph` are parsed and unit-tested only.
 //!
 //! ## Format (FREGT003)
 //!
@@ -44,7 +47,8 @@ const MAX_MORPHS: u32 = 1024;
 
 /// One FGTS texture-morph delta plane.
 ///
-/// The compositor (Phase 3c) applies it as
+/// A future compositor (#3544, no implementation exists yet) would
+/// apply it as
 /// `pixel' = pixel + scale * (raw_rgb - 128) * weight / 128`, where
 /// `raw_rgb` is read as signed bytes (the 0..255 wire range maps to
 /// −1..+1 normalised after subtracting the 128 midpoint).

@@ -169,8 +169,9 @@ pub struct NpcFaceGenRecipe {
     /// features that FGGS can't express). Same indexing scheme.
     pub fgga: [f32; 30],
     /// FGTS — 50 texture-morph weights driving complexion / age-line
-    /// / makeup deltas via the race's `.egt` file. Applied in the
-    /// face-tint compositor (Phase 3c).
+    /// / makeup deltas via the race's `.egt` file. Parsed and carried
+    /// here, but #3544 (SK-D3-02): no face-tint compositor exists yet
+    /// to apply them — `crates/facegen::egt` has no consumer.
     pub fgts: [f32; 50],
     /// HCLR — RGB hair color (3 bytes, `r/g/b`). Some FNV records
     /// carry a 4th byte (alpha or padding); per UESP only the first

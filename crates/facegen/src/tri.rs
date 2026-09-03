@@ -9,6 +9,11 @@
 //! role (lip-sync / facial expression). Filed as a follow-up
 //! milestone (M47-tier work, dialogue + AI animation).
 //!
+//! #3544 (SK-D3-02) — even the header parsed here has **no
+//! consumer**: nothing in the workspace reads `TriHeader` outside
+//! this crate's own tests. SIBLING note to `egt`'s doc — same shape,
+//! filed together.
+//!
 //! ## Format (FRTRI003 — header only)
 //!
 //! ```text

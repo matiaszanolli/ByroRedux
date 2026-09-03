@@ -5,8 +5,21 @@
 //! (e.g. `meshes\characters\head\headhuman.{egm,egt,tri}`) and feed
 //! the FaceGen runtime evaluator that the legacy engine uses to
 //! generate per-NPC head meshes from FGGS / FGGA / FGTS slider arrays
-//! on `NpcRecord`. ByroRedux M41.0 Phase 3b consumes the EGM output;
-//! Phase 3c consumes the EGT compositor output.
+//! on `NpcRecord`. ByroRedux M41.0 Phase 3b/3c consumes the EGM output
+//! (symmetric FGGS + asymmetric FGGA geometry morphs — see
+//! [`eval::apply_morphs`]).
+//!
+//! #3544 (SK-D3-02) — `egt`/`tri` are parsed but **have no consumer**:
+//! this crate exports `EgtFile`/`EgtMorph`/`TriHeader`, but nothing in
+//! the workspace reads them. There is no EGT texture-morph compositor
+//! today — the runtime-recipe games (Oblivion, FO3/FNV) parse `FGTS`
+//! slider weights onto `NpcRecord` (see
+//! `crates/plugin/src/esm/records/actor/mod.rs::fgts`) but nothing
+//! blends them into the base diffuse texture yet, and `.tri`'s body
+//! parse (talk shapes / blinks / expression morphs) is deferred to a
+//! future milestone (see `tri`'s own module doc). Both are real,
+//! measured feature gaps for per-NPC complexion — not yet wired, not
+//! silently working.
 //!
 //! ## Format references
 //!
@@ -148,5 +161,44 @@ mod tests {
         // Smallest subnormal: 0x0001 = 2^-24 ≈ 5.96e-8
         let subnormal = half_to_f32(0x0001);
         assert!(subnormal > 0.0 && subnormal < 1e-7);
+    }
+
+    /// #3544 (SK-D3-02) — `EgtFile`/`EgtMorph`/`TriHeader` have no
+    /// consumer anywhere in the workspace; the crate doc used to claim
+    /// the EGT compositor phase was already consumed, as though that
+    /// compositor shipped. Pins both halves of the correction: the
+    /// stale claim is gone, and the honest deferral marker (naming this
+    /// issue, so a future reader who greps for it lands here) is
+    /// present in all three docs it needs to be in.
+    ///
+    /// NOTE for future editors: this test's own doc comment and
+    /// assertion message deliberately never spell out the stale claim's
+    /// full text — `include_str!("lib.rs")` embeds this whole file
+    /// including the test module, so the scan is restricted to the
+    /// portion before `#[cfg(test)]` specifically to avoid matching its
+    /// own describing prose instead of the real (now-fixed) doc.
+    #[test]
+    fn facegen_docs_do_not_overclaim_an_egt_compositor() {
+        let lib_rs_module_doc = include_str!("lib.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields at least one piece");
+        let egt_rs = include_str!("egt.rs");
+        let tri_rs = include_str!("tri.rs");
+
+        assert!(
+            !lib_rs_module_doc.contains("Phase 3c consumes the EGT compositor output"),
+            "the stale claim that a compositor exists must not come back"
+        );
+        for (name, src) in [
+            ("lib.rs", lib_rs_module_doc),
+            ("egt.rs", egt_rs),
+            ("tri.rs", tri_rs),
+        ] {
+            assert!(
+                src.contains("#3544"),
+                "{name} must carry the #3544 deferral marker"
+            );
+        }
     }
 }

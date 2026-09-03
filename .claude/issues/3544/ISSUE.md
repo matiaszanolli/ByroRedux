@@ -1,60 +1,85 @@
-# #3544: SK-D3-02: crates/facegen's .egt and .tri parsers have zero consumers anywhere in the workspace
+# #3544 — SK-D3-02: crates/facegen's .egt and .tri parsers have zero consumers anywhere in the workspace
 
-**Source**: `docs/audits/AUDIT_SKYRIM_2026-08-30.md` — Dimension 3 (NPC Equip + FaceGen)
-**Severity**: MEDIUM
+**Severity**: MEDIUM · **Dimension**: NPC Equip + FaceGen
 **Location**: `crates/facegen/src/egt.rs`, `crates/facegen/src/tri.rs`, crate doc in `crates/facegen/src/lib.rs`
 
-## Description
+## Fix
 
-`crates/facegen` (1,394 LOC incl. tests) exports four public surfaces. Two of them —
-`EgtFile` / `EgtMorph` and `TriHeader` — have **no consumer anywhere in the workspace**.
+Verified the premise: `EgtFile`/`EgtMorph`/`TriHeader` genuinely have no
+consumer anywhere in the workspace outside the crate's own tests and a
+throwaway audit probe. Wiring a real EGT compositor is out of scope for
+this LOW-effort fix (the crate's own `tri.rs` doc already calls its body
+parse "M47-tier work" — a real feature build, not a single-site fix), so
+applied the issue's own second suggested option: corrected the doc claims
+and marked both modules explicitly deferred, so the next reader doesn't
+assume Phase 3c (the EGT half) shipped.
 
-## Evidence
+Found the root of the misleading claim while investigating: this
+codebase's own "Phase 3c" milestone label is used for two *different*
+things that happen to share a number — `eval.rs`'s "Phase 3c" (FGGA
+asymmetric geometry morphs) is genuinely wired (confirmed:
+`byroredux/src/npc_spawn/resumable.rs:1057` calls `apply_morphs` with
+`egm.fgga_morphs`), while `lib.rs`/`egt.rs`'s "Phase 3c" (the EGT texture
+compositor) is not. Left `eval.rs`'s doc untouched — it's accurate — and
+corrected only the EGT-texture-compositor claims:
 
-Consumer trace across the whole tree, outside the crate itself (re-verified 2026-08-30):
+- `crates/facegen/src/lib.rs` — crate doc's "Phase 3c consumes the EGT
+  compositor output" replaced with an explicit #3544 deferral paragraph
+  naming both gaps (EGT compositor, `.tri` body parse) as measured, not
+  silently working.
+- `crates/facegen/src/egt.rs` — module doc's "The face-tint compositor
+  (M41.0 Phase 3c) blends them into the base diffuse texture at NPC load
+  time" (present tense, implying it exists) corrected to state no
+  consumer exists; `EgtMorph`'s own doc softened from "The compositor
+  (Phase 3c) applies it as…" to "A future compositor (#3544, no
+  implementation exists yet) would apply it as…".
+- `crates/plugin/src/esm/records/actor/mod.rs::NpcFaceGenRecipe::fgts` —
+  "Applied in the face-tint compositor (Phase 3c)" corrected to state
+  FGTS is parsed and carried but nothing applies it yet.
+- `crates/facegen/src/tri.rs` — added the same "no consumer" note
+  alongside its existing (already-honest) "deferred to M47-tier work"
+  framing, per the SIBLING check below.
 
-| Export | External consumers |
-|---|---|
-| `EgmFile` / `EgmMorph` | `byroredux/src/npc_spawn/resumable.rs` (Oblivion / FO3NV runtime-recipe track only) |
-| `apply_morphs` | same |
-| `half_to_f32` | `crates/nif/.../decode_half_float_tests.rs` (bit-for-bit parity test, #2599) |
-| **`EgtFile` / `EgtMorph`** | **none** |
-| **`TriHeader`** | **none** |
+## SIBLING (issue's own checklist item — "if EGT is wired, check the
+`.tri` header stub for the same shape")
 
-`grep -rn 'EgtFile\|EgtMorph\|TriHeader' --include='*.rs' .` outside `crates/facegen`
-returns only `crates/facegen/examples/_tmp_fo3_facegen_probe.rs`, itself a throwaway audit
-probe inside the crate.
+EGT was not wired (documentation-only fix), so the conditional doesn't
+literally apply — but `tri.rs` has the identical "parsed but never read"
+shape the issue's own evidence table already names (`TriHeader`: no
+consumers), so added the same deferral marker there for consistency
+rather than leaving it asymmetric.
 
-`egt.rs` (234 LOC) parses the full FaceGen texture-morph table (`FREGT003`, 50 morphs ×
-256×256×3) and nothing reads it. The crate's own module doc says "Phase 3c consumes the EGT
-compositor output", but `resumable.rs`'s Phase 3b/3c log line covers FGGS+FGGA **geometry**
-morphs only — there is no compositor. `tri.rs` (154 LOC) is a self-declared header-only stub
-whose body parse is deferred to "M47-tier work", and even its header is unread. Both are
-exercised solely by `crates/facegen/tests/parse_real_facegen.rs` — tested, but not used.
+## TESTS (issue's own checklist item — "a regression test pins whichever
+outcome is chosen… a doc/deferral marker the tests read")
 
-## Impact
+`facegen_docs_do_not_overclaim_an_egt_compositor`
+(`crates/facegen/src/lib.rs`) — asserts the stale claim string is gone
+from the crate doc and that all three touched files (`lib.rs`, `egt.rs`,
+`tri.rs`) carry the `#3544` marker.
 
-Two parsers plus their tests are carried as production weight with no runtime effect, and
-the crate doc asserts a Phase 3c compositor that does not exist. Beyond dead weight:
-`crates/facegen` has **no other owner in this audit suite**, so an unconsumed parser here is
-invisible to every other gate. The runtime-recipe games (Oblivion, FO3/FNV) need EGT for
-per-NPC complexion, so this is also a real feature hole hiding behind a shipped-looking
-parser.
+Hit the by-now-familiar self-matching trap while writing it:
+`include_str!("lib.rs")` embeds the whole file, including the test
+module itself — my first draft's own doc comment and assertion string
+both contained the literal stale-claim text, so the assertion matched its
+own describing prose instead of the real (already-fixed) module doc,
+producing a false failure. Fixed by scanning only the file slice before
+`#[cfg(test)]` (matching the established convention this session has hit
+twice before, in `crates/core/src/ecs/components/material.rs` and
+`crates/audio/src`).
 
-Not a Skyrim-blocking gap — Skyrim is on the pre-baked FaceGen track and needs neither file
-— but it is the crate's coverage answer.
+**Reintroduce-and-revert verification**: temporarily restored the exact
+stale crate-doc text — confirmed
+`facegen_docs_do_not_overclaim_an_egt_compositor` failed with the
+expected message. Restored the fix and reran — all 30 tests in
+`byroredux-facegen` pass again.
 
-## Suggested Fix
+## Verification
 
-Either wire the EGT compositor into the runtime-recipe FaceGen path, or mark both modules
-explicitly deferred in the crate doc (and correct the "Phase 3c consumes the EGT compositor
-output" claim) so the next reader does not assume Phase 3c shipped.
-
-## Related
-
-#2599 (`half_to_f32` parity test). Filed with `tech-debt` because there is no `facegen`
-domain label — see the missing-label note in the publish summary.
-
-## Completeness Checks
-- [ ] **SIBLING**: if EGT is wired, check the `.tri` header stub for the same "parsed but never read" shape
-- [ ] **TESTS**: a regression test pins whichever outcome is chosen (a consumer assertion, or a doc/deferral marker the tests read)
+- `cargo check -p byroredux-facegen -p byroredux-plugin --tests`: clean
+  (the pre-existing unrelated `grup_walker.rs:469` `unused_mut` warning
+  is present and out of scope).
+- `cargo test -q -p byroredux-facegen`: 30 passing, 0 failing (+1 new).
+- `cargo test -q -p byroredux-plugin`: 913 passing, 0 failing (doc-only
+  change to `actor/mod.rs`, no behavioral surface).
+- `cargo test -q --no-fail-fast` (full workspace): **7167 passing, 0
+  failing**.
