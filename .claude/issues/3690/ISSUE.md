@@ -1,65 +1,97 @@
 # #3690 — PERF-D7-2026-08-30-05: `unload_cells` recomputes the whole-world cinematic-retention set once per victim cell, then hash-probes every victim against it even when it is empty
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D7-2026-08-30-05`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3690
+**Severity**: LOW · **Dimension**: Streaming & Cells
+**Location**: `byroredux/src/cell_loader/unload.rs`
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+`cinematic_retained_entities` is a whole-world property (queries
+`HorseTetherState`, `ActorCinematicState`, walks `Children` hierarchies) —
+its inputs can't change across the roots of one unload batch, but
+`unload_cell_inner` recomputed it and re-ran its `CellRoot`-removal loop
+once per victim cell, inside `unload_cells`'s per-root loop.
 
-- **Severity**: LOW
-- **Dimension**: Streaming & Cells
-- **Location**: `byroredux/src/cell_loader/unload.rs:18-48` (`cinematic_retained_entities`), `:176-177` (per-cell call + `retain`), driven per victim from `:112-122` (`unload_cells`)
-- **Status**: NEW
-- **Description**: `unload_cell_inner` opens with
-  ```rust
-  let retained = cinematic_retained_entities(world);
-  victims.retain(|entity| !retained.contains(entity));
-  ```
-  `cinematic_retained_entities` is a **whole-world** property: it queries
-  `HorseTetherState`, `ActorCinematicState` and `Children`, and walks the
-  render hierarchy of whatever it finds. `unload_cells` calls
-  `unload_cell_inner` once per root (`:118`), so the boundary's three-cell
-  eviction ring builds that set three times. Its inputs cannot change between
-  those calls — retained entities are explicitly removed from `victims`
-  (`:177`) so they are never among the entities `despawn_batch` drops.
+Per the issue's own suggested fix, hoisted both halves out to run once per
+batch:
 
-  Second, `victims.retain(...)` is an unconditional `std::collections::HashSet`
-  (SipHash) probe per victim entity. `retained` is empty in every session that
-  is not mid-cinematic, which is the universal case — the vanilla content that
-  populates `HorseTetherState` / `ActorCinematicState` is a handful of scripted
-  vehicle sequences.
-- **Evidence**: `unload.rs:18-48` builds a fresh `HashSet<EntityId>` and takes
-  three query read-guards on every call; `unload.rs:118`
-  (`timings.absorb(unload_cell_inner(world, ctx, cell_root))`) is inside the
-  per-root loop. The `retain` at `:177` has no `retained.is_empty()` guard, and
-  the sibling early-out on the very next line (`if !retained.is_empty()`, `:178`)
-  shows the author already had the predicate in hand for the other half.
-  Charged to `UnloadPhaseTimings::ownership_index` (`:174`), so the fix is
-  directly verifiable against `StreamingTelemetry::unload_ownership_index`.
-- **Impact**: Small but on the unbudgeted boundary frame, and it scales with
-  victim count × victim cells. `drain_streaming_state`'s whole-resident-set
-  teardown makes it worse: 49 roots at `--radius 3`, 121 at
-  `DEFAULT_TRANSITION_RADIUS = 5` (`app_step.rs:931`) — that is 121 whole-world
-  cinematic scans for one door transition, where one would do.
-- **Related**: #3380 (the victim-dedup discipline in the same function); #3386
-  (the batching this finding extends — `unload_cells` hoisted
-  `finish_unload_batch` out of the per-root loop but left this in it).
-- **Suggested Fix**: Compute `cinematic_retained_entities` once in
-  `unload_cells` and pass `&HashSet<EntityId>` down to `unload_cell_inner`
-  (with `unload_cell` computing it for its single root), and skip the `retain`
-  + the `CellRoot` removal entirely when the set is empty.
+- Extracted the `CellRoot`-removal half into its own function,
+  `release_cinematic_retention(world, retained: &HashSet<EntityId>)`,
+  early-returning (no `CellRoot` query at all) when `retained` is empty —
+  the universal case outside an active cinematic.
+- `unload_cell_inner` now takes `retained: &HashSet<EntityId>` as a
+  parameter instead of computing it itself, and only runs
+  `victims.retain(...)` when the set is non-empty (skipping the per-victim
+  SipHash probe entirely in the common case).
+- `unload_cells` computes `cinematic_retained_entities` and calls
+  `release_cinematic_retention` once, before its per-root loop, and passes
+  the shared `&retained` into every `unload_cell_inner` call. Added an
+  early return for `cell_roots.is_empty()` so an empty batch does neither
+  the scan nor the (already-unconditional) `finish_unload_batch` call.
+- `unload_cell` (the single-root convenience wrapper) does the same
+  once — it was already only ever going to do this once, so its behavior
+  is unchanged, just restructured to share the new helper.
+- The one-time scan + release is still charged to
+  `UnloadPhaseTimings::ownership_index`, per the issue's own note that
+  this is how the fix is directly verifiable against
+  `StreamingTelemetry::unload_ownership_index` — it now happens once per
+  batch rather than N times.
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+## SIBLING (issue's own checklist item)
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+`unload_cell_inner` is only called from `unload_cell` and `unload_cells`,
+both in this file — no other callers exist to update.
+`cinematic_retained_entities` had one other reference, an existing unit
+test (`cinematic_retention_tests::active_tether_retains_horse_cart_rider_
+and_hierarchy`), unaffected by this refactor since it calls the function
+directly.
+
+## TESTS (issue's own checklist item)
+
+Two behavioral tests on the newly-extracted `release_cinematic_retention`
+(no `VulkanContext` needed — pure `World` + `HashSet` logic):
+- `release_removes_cell_root_only_from_retained_entities`
+- `release_is_a_no_op_for_an_empty_retained_set`
+
+`unload_cell`/`unload_cells`/`unload_cell_inner` need a live
+`VulkanContext` (no fixture exists in this crate) — matching this
+session's established convention for that situation (e.g. #3675's
+`batches_scratch_reserve_tests`), added a static source-scan test module,
+`retention_hoisting_tests`, pinning:
+- `unload_cell_inner_does_not_recompute_the_retention_set` — the function
+  body contains no `cinematic_retained_entities(` call and does take
+  `retained: &HashSet<EntityId>` as a parameter.
+- `unload_cells_computes_the_retention_set_once_before_the_per_root_loop`
+  — exactly one `cinematic_retained_entities(` call in the function body,
+  and it appears before the `for &cell_root in cell_roots` loop.
+
+Scoped the search to everything before the file's first `#[cfg(test)]`
+module (`production_source()`), per the self-matching trap #3674/#3675
+surfaced earlier this session — this file's own tests reference both
+`cinematic_retained_entities(` and `unload_cell_inner(` by name, so an
+unscoped `include_str!` search would self-match regardless of the
+production code's state.
+
+**Reintroduce-and-revert verification**, two separate probes:
+1. Added a redundant `cinematic_retained_entities(world)` call inside
+   `unload_cell_inner`'s body — confirmed
+   `unload_cell_inner_does_not_recompute_the_retention_set` failed with
+   the expected message, while the other new test still passed.
+2. Restored, then added a redundant `cinematic_retained_entities(world)`
+   call inside `unload_cells`'s per-root loop (simulating the old
+   once-per-cell recompute) — confirmed
+   `unload_cells_computes_the_retention_set_once_before_the_per_root_loop`
+   failed (`left: 2, right: 1`), while the other new test still passed.
+
+Restored the clean fix after each probe and reran — all 7 tests in
+`cell_loader::unload::` pass again.
+
+## Verification
+
+- `cargo check -p byroredux --tests`: clean.
+- `cargo test -p byroredux cell_loader::unload::`: 7 tests passing, 0
+  failing (+4 new).
+- `cargo test -q -p byroredux`: 1878 passing (renderer-independent crate
+  suite; +6 counting the two behavioral + two source-scan + two prior
+  siblings in this module's own scope), 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7106 passing, 0
+  failing**.

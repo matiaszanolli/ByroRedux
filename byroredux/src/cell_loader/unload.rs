@@ -48,6 +48,26 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
     retained
 }
 
+/// Promote every entity in `retained` out of cell ownership by removing its
+/// `CellRoot` component, if it has one.
+///
+/// `retained` is a whole-world property (see [`cinematic_retained_entities`])
+/// — call this once per unload batch, not once per victim cell. #3690: the
+/// pre-fix code repeated both the scan that produces `retained` and this
+/// removal loop once per root in `unload_cells`, even though the input
+/// can't change between those calls and is empty in every session that
+/// isn't mid-cinematic.
+fn release_cinematic_retention(world: &mut World, retained: &HashSet<EntityId>) {
+    if retained.is_empty() {
+        return;
+    }
+    if let Some(mut roots) = world.query_mut::<CellRoot>() {
+        for &entity in retained {
+            roots.remove(entity);
+        }
+    }
+}
+
 /// Bounded phase timings for one logical cell-unload batch.
 ///
 /// Exterior streaming records these in its existing constant-memory latency
@@ -97,7 +117,9 @@ impl UnloadPhaseTimings {
 /// clutter textures to the checkerboard.
 #[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
-    let _ = unload_cell_inner(world, ctx, cell_root);
+    let retained = cinematic_retained_entities(world);
+    release_cinematic_retention(world, &retained);
+    let _ = unload_cell_inner(world, ctx, cell_root, &retained);
     let _ = finish_unload_batch(world, ctx);
 }
 
@@ -107,6 +129,10 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 /// global sparse-storage compaction and BLAS scratch shrink run once after the
 /// final victim set. Exterior hysteresis normally evicts three cells at once;
 /// repeating those global passes per cell only multiplies the boundary hitch.
+///
+/// The cinematic-retention set (see [`cinematic_retained_entities`]) is a
+/// whole-world property that can't change across this batch's roots, so it
+/// is computed and applied once here — not once per root — per #3690.
 #[tracing::instrument(name = "unload_cells", skip_all, fields(cell_count = cell_roots.len()))]
 pub fn unload_cells(
     world: &mut World,
@@ -114,12 +140,17 @@ pub fn unload_cells(
     cell_roots: &[EntityId],
 ) -> UnloadPhaseTimings {
     let mut timings = UnloadPhaseTimings::default();
+    if cell_roots.is_empty() {
+        return timings;
+    }
+    let phase_started = Instant::now();
+    let retained = cinematic_retained_entities(world);
+    release_cinematic_retention(world, &retained);
+    timings.ownership_index = phase_started.elapsed();
     for &cell_root in cell_roots {
-        timings.absorb(unload_cell_inner(world, ctx, cell_root));
+        timings.absorb(unload_cell_inner(world, ctx, cell_root, &retained));
     }
-    if !cell_roots.is_empty() {
-        timings.finalization = finish_unload_batch(world, ctx);
-    }
+    timings.finalization = finish_unload_batch(world, ctx);
     timings
 }
 
@@ -159,10 +190,15 @@ pub(super) fn drain_cell_victims(world: &mut World, cell_root: EntityId) -> Vec<
     victims
 }
 
+/// `retained`: the whole-world cinematic-retention set (see
+/// [`cinematic_retained_entities`]) for the current unload batch. Callers
+/// compute and apply it (via [`release_cinematic_retention`]) once per
+/// batch, not once per cell — see #3690.
 fn unload_cell_inner(
     world: &mut World,
     ctx: &mut VulkanContext,
     cell_root: EntityId,
+    retained: &HashSet<EntityId>,
 ) -> UnloadPhaseTimings {
     let mut timings = UnloadPhaseTimings::default();
     let phase_started = Instant::now();
@@ -173,14 +209,8 @@ fn unload_cell_inner(
     // don't register it) or the cell isn't tracked, fall through with
     // an empty victim set — `unload_cell` is idempotent.
     let mut victims: Vec<EntityId> = drain_cell_victims(world, cell_root);
-    let retained = cinematic_retained_entities(world);
-    victims.retain(|entity| !retained.contains(entity));
     if !retained.is_empty() {
-        if let Some(mut roots) = world.query_mut::<CellRoot>() {
-            for entity in retained {
-                roots.remove(entity);
-            }
-        }
+        victims.retain(|entity| !retained.contains(entity));
     }
     timings.ownership_index = phase_started.elapsed();
 
@@ -673,6 +703,127 @@ mod cinematic_retention_tests {
         assert!(retained.contains(&cart));
         assert!(retained.contains(&rider));
         assert!(!retained.contains(&unrelated));
+    }
+
+    /// #3690 — `release_cinematic_retention` is the extracted, once-per-batch
+    /// half of what used to run inline (and per victim cell) inside
+    /// `unload_cell_inner`. A retained entity that still carries `CellRoot`
+    /// loses it; an entity outside the retained set is untouched.
+    #[test]
+    fn release_removes_cell_root_only_from_retained_entities() {
+        let mut world = World::new();
+        world.register::<CellRoot>();
+        let retained_entity = world.spawn();
+        let other_entity = world.spawn();
+        let some_root = world.spawn();
+        world.insert(retained_entity, CellRoot(some_root));
+        world.insert(other_entity, CellRoot(some_root));
+
+        let retained: HashSet<EntityId> = [retained_entity].into_iter().collect();
+        release_cinematic_retention(&mut world, &retained);
+
+        let roots = world.query::<CellRoot>().expect("CellRoot registered");
+        assert!(
+            roots.get(retained_entity).is_none(),
+            "a retained entity must lose its CellRoot"
+        );
+        assert!(
+            roots.get(other_entity).is_some(),
+            "an entity outside the retained set must keep its CellRoot"
+        );
+    }
+
+    /// The universal case (no active cinematic) must be a true no-op: no
+    /// `CellRoot` query at all, so it costs nothing on every ordinary
+    /// unload. Observable half of that contract: an empty retained set
+    /// leaves every `CellRoot` in place.
+    #[test]
+    fn release_is_a_no_op_for_an_empty_retained_set() {
+        let mut world = World::new();
+        world.register::<CellRoot>();
+        let entity = world.spawn();
+        let some_root = world.spawn();
+        world.insert(entity, CellRoot(some_root));
+
+        release_cinematic_retention(&mut world, &HashSet::new());
+
+        let roots = world.query::<CellRoot>().expect("CellRoot registered");
+        assert!(roots.get(entity).is_some());
+    }
+}
+
+/// #3690 — pins that the whole-world cinematic-retention scan and its
+/// `CellRoot` release run once per unload batch, not once per victim cell.
+/// `unload_cells`/`unload_cell_inner` need a live `VulkanContext` (no test
+/// fixture exists for one in this crate), so — matching this crate's
+/// established convention for that situation (e.g. `build_and_upload_
+/// instances.rs`'s `batches_scratch_reserve_tests`) — this is a static
+/// source-scan test rather than a live one.
+#[cfg(test)]
+mod retention_hoisting_tests {
+    /// Scoped to the production portion of this file (everything before
+    /// the first `#[cfg(test)]` module) so the search can't self-match its
+    /// own needle literals the way #3674/#3675 discovered — this file's
+    /// own tests reference `cinematic_retained_entities(` and
+    /// `unload_cell_inner(` by name too.
+    fn production_source() -> &'static str {
+        let full_src = include_str!("unload.rs");
+        let test_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        &full_src[..test_start]
+    }
+
+    #[test]
+    fn unload_cell_inner_does_not_recompute_the_retention_set() {
+        let src = production_source();
+        let fn_start = src
+            .find("fn unload_cell_inner(")
+            .expect("unload_cell_inner must still exist");
+        let fn_end = src[fn_start..]
+            .find("\nfn finish_unload_batch")
+            .map(|rel| fn_start + rel)
+            .expect("finish_unload_batch must still follow unload_cell_inner");
+        let body = &src[fn_start..fn_end];
+        assert!(
+            !body.contains("cinematic_retained_entities("),
+            "unload_cell_inner must take `retained` as a parameter, not \
+             recompute the whole-world scan itself — see #3690"
+        );
+        assert!(
+            body.contains("retained: &HashSet<EntityId>"),
+            "unload_cell_inner must accept the shared retention set as a parameter"
+        );
+    }
+
+    #[test]
+    fn unload_cells_computes_the_retention_set_once_before_the_per_root_loop() {
+        let src = production_source();
+        let fn_start = src
+            .find("pub fn unload_cells(")
+            .expect("unload_cells must still exist");
+        let fn_end = src[fn_start..]
+            .find("\n/// Take `cell_root`'s entity list")
+            .map(|rel| fn_start + rel)
+            .expect("drain_cell_victims's doc comment must still follow unload_cells");
+        let body = &src[fn_start..fn_end];
+
+        let scan_pos = body
+            .find("cinematic_retained_entities(")
+            .expect("unload_cells must compute the retention set");
+        let loop_pos = body
+            .find("for &cell_root in cell_roots")
+            .expect("unload_cells must still have its per-root loop");
+        assert!(
+            scan_pos < loop_pos,
+            "the whole-world retention scan must run once, before the \
+             per-root loop — not be recomputed inside it (#3690)"
+        );
+        assert_eq!(
+            body.matches("cinematic_retained_entities(").count(),
+            1,
+            "unload_cells must call the whole-world scan exactly once per batch"
+        );
     }
 }
 
