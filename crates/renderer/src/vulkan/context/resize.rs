@@ -17,6 +17,25 @@ use super::VulkanContext;
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Screen-space image view handles collected early in `recreate_screen_passes`
+/// (#3738 split of the former 700-LOC function) and consumed by later phases
+/// — G-buffer outputs plus the composite pass's HDR views. Threading these
+/// through a struct keeps each phase a `&mut self`-only method (mirroring the
+/// #1671 `recreate_swapchain` split) while avoiding re-deriving the same
+/// handles from `self.gbuffer` / `self.composite` in every phase that needs
+/// them.
+struct ScreenPassViews {
+    raw_indirect_views: Vec<vk::ImageView>,
+    motion_views: Vec<vk::ImageView>,
+    mesh_id_views: Vec<vk::ImageView>,
+    normal_views: Vec<vk::ImageView>,
+    albedo_views: Vec<vk::ImageView>,
+    reactive_views: Vec<vk::ImageView>,
+    transparency_views: Vec<vk::ImageView>,
+    /// Populated by `recreate_taa_and_presentation`; empty before it runs.
+    hdr_views: Vec<vk::ImageView>,
+}
+
 impl VulkanContext {
     /// Recreate the swapchain after a resize or suboptimal present.
     /// Phase 1 of resize (#1671) — swapchain handoff + depth + format-gated
@@ -483,10 +502,34 @@ impl VulkanContext {
     /// Phase 3 of resize (#1671) — screen-sized pass recreation: G-buffer,
     /// SVGF, ReSTIR reservoirs, caustics, bloom, composite, egui framebuffers,
     /// TAA, main framebuffers, then per-image sync recreate + temporal-recovery
-    /// reset. Holds the tangled fresh-`vk::ImageView`-vector data flow that the
-    /// earlier phases don't touch (all such locals are created and consumed
-    /// within this phase). Extracted verbatim from `recreate_swapchain`.
+    /// reset. Extracted verbatim from `recreate_swapchain`; further split into
+    /// five phases under #3738 (see below) once it regrew past 700 LOC.
+    ///
+    /// Recreate every screen-sized (extent-dependent) render pass and its
+    /// descriptor sets after a resize. Thin orchestrator over the five phases
+    /// split out under #3738 (was a single 700-LOC function, the same regrowth
+    /// pattern #1671 split `recreate_swapchain` for): each phase runs in
+    /// sequence and later phases either read `self` state the earlier ones
+    /// wrote, or read the `ScreenPassViews` handles threaded through
+    /// explicitly — mirroring the #1671 split's "no locals cross a phase
+    /// boundary" invariant.
+    ///
+    /// Caution: this is render-pass adjacent (recreates attachments, rewrites
+    /// descriptor sets). The split preserves the original statements' exact
+    /// relative order; it does not change any layout-transition or barrier
+    /// placement.
     fn recreate_screen_passes(&mut self) -> Result<()> {
+        let mut views = self.recreate_gbuffer_dependent_passes()?;
+        self.recreate_bloom_and_volumetrics()?;
+        self.recreate_composite_and_egui(&views)?;
+        self.recreate_taa_and_presentation(&mut views)?;
+        self.finalize_screen_pass_state(&views)
+    }
+
+    /// Phase 1 of #3738 — G-buffer images, SVGF history, ReSTIR reservoir
+    /// buffers, and the caustic (+ water-caustic) accumulators. Returns the
+    /// fresh G-buffer view handles later phases need.
+    fn recreate_gbuffer_dependent_passes(&mut self) -> Result<ScreenPassViews> {
         // Recreate G-buffer images FIRST (they're referenced by composite
         // descriptor sets, which we'll rewrite during composite recreation).
         if let Some(ref mut gbuffer) = self.gbuffer {
@@ -601,17 +644,6 @@ impl VulkanContext {
                 );
             }
         }
-
-        // Choose the indirect source for composite: SVGF accumulated (in
-        // GENERAL layout) if available, else raw G-buffer indirect.
-        let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
-            if let Some(ref s) = self.svgf {
-                let n = MAX_FRAMES_IN_FLIGHT;
-                ((0..n).map(|i| s.indirect_view(i)).collect(), true)
-            } else {
-                (raw_indirect_views.clone(), false)
-            };
-
         // Recreate caustic accumulator images + rewrite its descriptor sets
         // before composite (composite samples caustic's views).
         let normal_views_in: Vec<vk::ImageView> = {
@@ -718,17 +750,21 @@ impl VulkanContext {
                 ),
             }
         }
-        let caustic_views: Vec<vk::ImageView> = match self.caustic {
-            Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
-                .map(|i| c.sampled_view(i))
-                .collect(),
-            None => {
-                return Err(anyhow::anyhow!(
-                    "RGB caustic pipeline absent during resize — composite binding 5 requires a 2D array view"
-                ));
-            }
-        };
+        Ok(ScreenPassViews {
+            raw_indirect_views,
+            motion_views: motion_views_in,
+            mesh_id_views: mesh_id_views_in,
+            normal_views: normal_views_in,
+            albedo_views,
+            reactive_views,
+            transparency_views,
+            hdr_views: Vec::new(),
+        })
+    }
 
+    /// Phase 2 of #3738 — bloom's down/up mip pyramid and the render-resolution
+    /// froxel volumetrics pass, both sized from the new render extent.
+    fn recreate_bloom_and_volumetrics(&mut self) -> Result<()> {
         // Recreate bloom pipeline (#905). Bloom's down/up mip pyramid
         // is sized from screen_extent; the old mips are stuck at the
         // pre-resize extent and would alias when sampled by composite.
@@ -827,11 +863,34 @@ impl VulkanContext {
             return Err(error).context("initialize recreated froxel layouts");
         }
         self.volumetrics = Some(new_volumetrics);
+        Ok(())
+    }
 
-        // Snapshot bloom + volumetric output views — composite binding 6
-        // (volumetric) and binding 7 (bloom) need to be (re-)written.
-        // Volumetrics was recreated immediately above because its XY follows
-        // render resolution. See #905.
+    /// Phase 3 of #3738 — the composite pipeline's raw + composed HDR images
+    /// and per-frame framebuffers (rewriting descriptor sets against every
+    /// upstream pass's fresh views), plus the egui overlay.
+    fn recreate_composite_and_egui(&mut self, views: &ScreenPassViews) -> Result<()> {
+        // Choose the indirect source for composite: SVGF accumulated (in
+        // GENERAL layout) if available, else raw G-buffer indirect.
+        let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
+            if let Some(ref s) = self.svgf {
+                let n = MAX_FRAMES_IN_FLIGHT;
+                ((0..n).map(|i| s.indirect_view(i)).collect(), true)
+            } else {
+                (views.raw_indirect_views.clone(), false)
+            };
+
+        let caustic_views: Vec<vk::ImageView> = match self.caustic {
+            Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|i| c.sampled_view(i))
+                .collect(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "RGB caustic pipeline absent during resize — composite binding 5 requires a 2D array view"
+                ));
+            }
+        };
+
         let bloom_views: Vec<vk::ImageView> = match self.bloom.as_ref() {
             Some(b) => b.output_views(),
             None => {
@@ -878,14 +937,14 @@ impl VulkanContext {
                     .expect("allocator missing during resize"),
                 &composite_indirect_views,
                 indirect_is_general,
-                &albedo_views,
+                &views.albedo_views,
                 self.depth_image_view,
                 &caustic_views,
                 &water_caustic_views,
                 &volumetric_views,
                 &bloom_views,
-                &reactive_views,
-                &transparency_views,
+                &views.reactive_views,
+                &views.transparency_views,
                 self.frame_extents,
             )?;
         }
@@ -962,10 +1021,16 @@ impl VulkanContext {
                 }
             }
         }
+        Ok(())
+    }
 
+    /// Phase 4 of #3738 — TAA history (needs composite's fresh HDR views),
+    /// composite's HDR binding rewired to TAA output, and the presentation
+    /// pipeline rebuilt against the (possibly resized) upscaler output.
+    fn recreate_taa_and_presentation(&mut self, views: &mut ScreenPassViews) -> Result<()> {
         // Snapshot composite's HDR views (owned Vec) so subsequent &mut
         // borrows for TAA + composite don't conflict.
-        let hdr_views_owned: Vec<vk::ImageView> = self
+        views.hdr_views = self
             .composite
             .as_ref()
             .expect("composite must exist during resize")
@@ -987,10 +1052,10 @@ impl VulkanContext {
                     command_pool: self.transfer_pool,
                 },
                 crate::vulkan::taa::TaaInputViews {
-                    hdr_views: &hdr_views_owned,
-                    motion_views: &motion_views_in,
-                    mesh_id_views: &mesh_id_views_in,
-                    normal_views: &normal_views_in,
+                    hdr_views: &views.hdr_views,
+                    motion_views: &views.motion_views,
+                    mesh_id_views: &views.mesh_id_views,
+                    normal_views: &views.normal_views,
                 },
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
@@ -1053,7 +1118,13 @@ impl VulkanContext {
             )
             .context("recreate presentation pipeline")?,
         );
+        Ok(())
+    }
 
+    /// Phase 5 of #3738 — reset permanent-failure latches, recreate per-image
+    /// sync + the main framebuffers, and reset the frame/epoch counters that
+    /// must realign with the freshly-recreated history images.
+    fn finalize_screen_pass_state(&mut self, views: &ScreenPassViews) -> Result<()> {
         // Reset permanent-failure latches — every downstream pass has
         // just been recreated so any previous lost-device state is no
         // longer authoritative. See #479.
@@ -1092,32 +1163,21 @@ impl VulkanContext {
         }
 
         // Main framebuffers bind the new HDR + G-buffer views + depth.
-        let gbuffer_ref = self
-            .gbuffer
-            .as_ref()
-            .expect("gbuffer must exist during resize");
-        let hdr_views = &hdr_views_owned;
-        let n = hdr_views.len();
-        let normal_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
-        let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
-        let mesh_id_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
-        let reactive_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.reactive_view(i)).collect();
-        let transparency_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.transparency_view(i)).collect();
+        // #3738 — these are the same handles `recreate_gbuffer_dependent_passes`
+        // and `recreate_taa_and_presentation` already collected; reused via
+        // `views` instead of re-deriving them from `self.gbuffer` a second time.
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
             GBufferViews {
-                hdr_views,
-                normal_views: &normal_views,
-                motion_views: &motion_views,
-                mesh_id_views: &mesh_id_views,
-                raw_indirect_views: &raw_indirect_views,
-                albedo_views: &albedo_views,
-                reactive_views: &reactive_views,
-                transparency_views: &transparency_views,
+                hdr_views: &views.hdr_views,
+                normal_views: &views.normal_views,
+                motion_views: &views.motion_views,
+                mesh_id_views: &views.mesh_id_views,
+                raw_indirect_views: &views.raw_indirect_views,
+                albedo_views: &views.albedo_views,
+                reactive_views: &views.reactive_views,
+                transparency_views: &views.transparency_views,
             },
             self.depth_image_view,
             self.frame_extents.render,
