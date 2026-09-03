@@ -1,67 +1,96 @@
 # #3689 — PERF-D7-2026-08-30-04: `PackedStorage::remove_entities_erased` reallocates and moves every *surviving* row per unload batch, so eviction cost is O(all resident rows), not O(victims)
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D7-2026-08-30-04`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,ecs,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3689
+**Severity**: LOW · **Dimension**: Streaming & Cells
+**Location**: `crates/core/src/ecs/packed.rs::PackedStorage::remove_entities_erased`
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+The #2397 merge-compaction drained both backing `Vec`s (`entities`, `data`)
+via `std::mem::take` into two fresh `Vec::with_capacity(old_len)` buffers,
+pushing every *surviving* row into the new buffers. Correct output, but it
+paid `2 × sizeof(row) × live_rows` of allocate-plus-move on every call —
+for each `PackedStorage` component type, on every unload batch,
+regardless of how few entities the victims actually owned. `despawn_batch`
+calls this once per registered storage, so a three-cell boundary eviction
+that touches a handful of entities still copied the retained 90-plus
+percent of `Transform`/`GlobalTransform`/`SceneFlags`/`WorldBound` out and
+back, four times.
 
-- **Severity**: LOW
-- **Dimension**: Streaming & Cells
-- **Location**: `crates/core/src/ecs/packed.rs:256-286`, driven from `byroredux/src/cell_loader/unload.rs:334` (`world.despawn_batch(victims)`) via `crates/core/src/ecs/world.rs:181-186`
-- **Status**: NEW
-- **Description**: The merge-compaction that #2397 introduced (correctly —
-  the prior `Vec::remove` loop was quadratic) rebuilds both backing vectors
-  from scratch on every call:
-  ```rust
-  let old_entities = std::mem::take(&mut self.entities);
-  let old_data = std::mem::take(&mut self.data);
-  let mut retained_entities = Vec::with_capacity(old_entities.len());
-  let mut retained_data = Vec::with_capacity(old_data.len());
-  ```
-  `despawn_batch` calls it once per registered storage
-  (`world.rs:181-186`), so a boundary eviction of three cells pays
-  `2 × sizeof(row) × live_rows` of allocate-plus-move for **each**
-  `PackedStorage` component type — `Transform`, `GlobalTransform`,
-  `SceneFlags`, `WorldBound` in production — regardless of how few entities
-  the three victim cells actually own. The retained 90-plus percent of the
-  exterior population is copied out and back on every crossing, and eight
-  allocations of the full live size are handed to the allocator and freed.
-- **Evidence**: `packed.rs:265-268` above; the four production `PackedStorage`
-  declarations are `crates/core/src/ecs/components/transform.rs:69`,
-  `global_transform.rs:152`, `scene_flags.rs:118`, `world_bound.rs:109`. The
-  cost is already isolated by telemetry: it is precisely
-  `UnloadPhaseTimings::despawn` (`unload.rs:332-352`), aggregated into
-  `StreamingTelemetry::unload_despawn`.
-- **Impact**: Boundary-frame CPU that scales with the *resident* world rather
-  than with what is being torn down, and allocator churn proportional to the
-  same. This sits on the boundary frame **outside** any budget (the unload at
-  `app_step.rs:141` runs before `streaming_deadline` is even computed at
-  `:196`), so it cannot be yielded away.
-- **Related**: #2397 (introduced the merge pass — this is a refinement of that
-  fix, not a regression of it); #2396 (its sort-order / dirty-marking test);
-  #2148 (`shrink_storages`, the sibling pass in `finish_unload_batch`).
-  Storage internals are `/audit-ecs` territory; filed here because exterior
-  eviction is the sole hot caller and it is the streaming boundary's cost.
-- **Suggested Fix**: Do the compaction **in place** with a read/write cursor
-  over `self.entities` / `self.data` (the `Vec::retain` shape, but driven by
-  the sorted victim cursor so the `mark_dirty` call is preserved). Same single
-  pass, same output order, zero allocations, and half the memory traffic. Both
-  existing tests (`remove_entities_erased_preserves_ascending_order`,
-  `remove_entities_erased_marks_exactly_the_removed_ids_dirty`) pin the
-  observable contract and should pass unchanged.
+Replaced the drain-into-two-fresh-Vecs shape with an in-place read/write
+cursor over the existing buffers — the `Vec::retain` shape, driven by the
+sorted victim cursor so `mark_dirty` still fires exactly once per removed
+entity:
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+```rust
+let mut victim_idx = 0usize;
+let mut write = 0usize;
+for read in 0..self.entities.len() {
+    let entity = self.entities[read];
+    while victim_idx < victims.len() && victims[victim_idx] < entity {
+        victim_idx += 1;
+    }
+    if victim_idx < victims.len() && victims[victim_idx] == entity {
+        self.mark_dirty(entity);
+        victim_idx += 1;
+        continue;
+    }
+    if write != read {
+        self.entities.swap(write, read);
+        self.data.swap(write, read);
+    }
+    write += 1;
+}
+self.entities.truncate(write);
+self.data.truncate(write);
+```
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+`Vec::swap` moves a kept row backward into the next free slot without
+requiring `T: Clone`/`Default` (works for any `T`, matching this storage's
+existing generic bound). Positions before `write` are already finalized
+and never revisited; the leftover single-copy tail past `write` (victims
+plus whichever retained rows their slots were last swapped from) is
+dropped in place by `truncate`. Zero allocations, same output order, same
+single merge pass over sorted `victims`.
+
+## SIBLING (issue's own checklist item)
+
+`SparseSetStorage`'s own bulk-remove path (the #2148 sibling this issue
+names) already operates on a `HashMap`-backed storage with no equivalent
+"rebuild two parallel Vecs" shape — nothing to change there. `insert_bulk`
+(same file) still allocates fresh `new_entities`/`new_data` Vecs for its
+own reorder pass; left untouched per its own doc comment, which already
+states why (non-Copy `T` reorder without an auxiliary bitset, and it only
+runs at cell-load boundaries, not the streaming-eviction hot path this
+issue is about).
+
+## TESTS (issue's own checklist item)
+
+The issue's own suggested-fix note ("Both existing tests ... pin the
+observable contract and should pass unchanged") held: both
+`remove_entities_erased_preserves_ascending_order` and
+`remove_entities_erased_marks_exactly_the_removed_ids_dirty` pass
+unmodified against the new implementation (updated only their doc
+comments, which described the old rebuild-from-scratch shape).
+
+Added `remove_entities_erased_does_not_reallocate` — the concrete,
+testable signature of "in place, not two fresh allocations": captures
+`entities`/`data`'s buffer pointers and capacities before a removal,
+asserts both are bit-for-bit unchanged after.
+
+**Reintroduce-and-revert verification**: temporarily restored the old
+drain-into-two-fresh-Vecs implementation — confirmed
+`remove_entities_erased_does_not_reallocate` failed (different pointer,
+as expected — a fresh `Vec::with_capacity` never returns the same
+allocation as the original growth-doubled buffer), while the other two
+existing tests still passed unchanged (same observable contract, per the
+issue's own note). Restored the fix and reran — all 21 tests in
+`packed::tests` pass again.
+
+## Verification
+
+- `cargo check -p byroredux-core --tests`: clean.
+- `cargo test -p byroredux-core --lib packed::`: 21 tests passing, 0
+  failing (+1 new).
+- `cargo test -q -p byroredux-core`: 728 tests passing (+1), 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7107 passing, 0
+  failing**.

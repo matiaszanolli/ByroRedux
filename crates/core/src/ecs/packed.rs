@@ -259,16 +259,23 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
             return;
         }
 
-        // Both inputs are sorted, so compact the storage in one merge pass.
-        // Repeating `remove` would shift the Vec tail once per victim and is
-        // quadratic for exterior-cell teardown (tens of thousands of rows).
-        let old_entities = std::mem::take(&mut self.entities);
-        let old_data = std::mem::take(&mut self.data);
-        let mut retained_entities = Vec::with_capacity(old_entities.len());
-        let mut retained_data = Vec::with_capacity(old_data.len());
+        // Both inputs are sorted, so compact the storage in one merge pass —
+        // #2397. Driven by a read/write cursor over the existing backing
+        // Vecs (the `Vec::retain` shape) rather than draining into two
+        // fresh `Vec::with_capacity(old_len)` buffers: the prior shape
+        // allocated and moved every *surviving* row on every call, so an
+        // eviction of a few victim cells paid `2 × live_rows` of
+        // allocate-plus-move for each `PackedStorage` component type,
+        // regardless of how few entities the victims actually own (#3689).
+        // `Vec::swap` moves a kept row backward into the next free slot
+        // without requiring `T: Clone`/`Default`; positions before `write`
+        // are already finalized and never revisited, and the leftover
+        // single-copy tail (victims plus the rows their slots were
+        // swapped from) is dropped in place by `truncate`.
         let mut victim_idx = 0usize;
-
-        for (entity, component) in old_entities.into_iter().zip(old_data) {
+        let mut write = 0usize;
+        for read in 0..self.entities.len() {
+            let entity = self.entities[read];
             while victim_idx < victims.len() && victims[victim_idx] < entity {
                 victim_idx += 1;
             }
@@ -277,12 +284,15 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
                 victim_idx += 1;
                 continue;
             }
-            retained_entities.push(entity);
-            retained_data.push(component);
+            if write != read {
+                self.entities.swap(write, read);
+                self.data.swap(write, read);
+            }
+            write += 1;
         }
 
-        self.entities = retained_entities;
-        self.data = retained_data;
+        self.entities.truncate(write);
+        self.data.truncate(write);
     }
 
     fn clear_erased(&mut self) {
@@ -782,8 +792,9 @@ mod tests {
 
     #[test]
     fn remove_entities_erased_preserves_ascending_order() {
-        // The merge-compaction path rebuilds `entities`/`data` from scratch
-        // rather than inheriting sort order from `Vec::remove`, so pin it
+        // The merge-compaction path (an in-place read/write cursor over the
+        // existing buffers, not a rebuild from scratch — see #3689) doesn't
+        // inherit sort order from `Vec::remove` for free, so pin it
         // directly: iteration must still yield entities in ascending order
         // after removing a scattered victim set from a >3-element storage.
         let mut s = PackedStorage::<Transform>::default();
@@ -803,6 +814,46 @@ mod tests {
 
         let entities: Vec<_> = s.iter().map(|(e, _)| e).collect();
         assert_eq!(entities, vec![1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn remove_entities_erased_does_not_reallocate() {
+        // #3689 — the merge-compaction now runs in place on the existing
+        // `entities`/`data` buffers via a read/write cursor (`Vec::swap` +
+        // `truncate`), not into two fresh `Vec::with_capacity(old_len)`
+        // buffers. Pin that directly: both backing allocations — same
+        // pointer, same capacity — must survive a removal untouched.
+        let mut s = PackedStorage::<Transform>::default();
+        for i in [1u32, 2, 3, 4, 5, 6, 7] {
+            s.insert(
+                i,
+                Transform {
+                    x: i as f32,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            );
+        }
+        let entities_ptr = s.entities.as_ptr();
+        let data_ptr = s.data.as_ptr();
+        let entities_cap = s.entities.capacity();
+        let data_cap = s.data.capacity();
+
+        let victims = [2u32, 4, 6];
+        s.remove_entities_erased(&victims);
+
+        assert_eq!(
+            s.entities.as_ptr(),
+            entities_ptr,
+            "entities buffer must not be reallocated by a removal"
+        );
+        assert_eq!(
+            s.data.as_ptr(),
+            data_ptr,
+            "data buffer must not be reallocated by a removal"
+        );
+        assert_eq!(s.entities.capacity(), entities_cap);
+        assert_eq!(s.data.capacity(), data_cap);
     }
 
     #[test]
