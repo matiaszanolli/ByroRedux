@@ -35,6 +35,13 @@ pub struct BgsmFile {
     pub lighting_texture: String,
     pub flow_texture: String,
     // v >= 17:
+    /// #2642 (SF-D9-2026-08-07-03) — parsed here, but deliberately not
+    /// forwarded past this struct: `MaterialTextureSet`
+    /// (`byroredux/src/asset_provider/material.rs`) has no dedicated
+    /// role for it, unlike every other v>2 texture slot. Real deferred-
+    /// consumer gap, not a wiring bug — signage/decal cutouts authored
+    /// with distance-field alpha currently fall back to plain alpha
+    /// test.
     pub distance_field_alpha_texture: String,
 
     // v <= 2 legacy alternate texture list. Preserved for completeness.

@@ -1920,3 +1920,27 @@ fn bgem_merge_forwards_tile_flags_to_texture_clamp_mode() {
          WRAP_S_CLAMP_T (2)"
     );
 }
+
+/// #2642 (SF-D9-2026-08-07-03) — `distance_field_alpha_texture` (BGSM
+/// v>=17, FO76/Starfield-era) is deliberately unforwarded: no
+/// `MaterialTextureSet` role exists for it. Pins the deferral marker at
+/// both the field declaration (`bgsm.rs`) and the merge site
+/// (`material.rs`, this crate) so a future editor who adds a role
+/// without wiring it — or removes the note while "cleaning up" — doesn't
+/// leave the gap undocumented again.
+#[test]
+fn distance_field_alpha_texture_deferral_is_documented_at_both_sites() {
+    let bgsm_rs = include_str!("../../../../crates/bgsm/src/bgsm.rs");
+    let material_rs = include_str!("../material.rs");
+
+    assert!(
+        bgsm_rs.contains("#2642") && bgsm_rs.contains("distance_field_alpha_texture"),
+        "bgsm.rs's field declaration must carry the #2642 deferral marker"
+    );
+    assert!(
+        material_rs.contains("#2642")
+            && material_rs.contains("distance_field_alpha_texture"),
+        "material.rs's merge site must carry the #2642 deferral marker too, \
+         not just the field declaration"
+    );
+}

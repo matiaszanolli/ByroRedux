@@ -1493,6 +1493,13 @@ pub(crate) fn merge_external_material(
                 &mut touched,
                 pool,
             );
+            // #2642 (SF-D9-2026-08-07-03) — `bgsm.distance_field_alpha_texture`
+            // (v>=17, FO76/Starfield-era) is deliberately NOT forwarded here.
+            // `MaterialTextureSet` has no dedicated role for it — a genuine
+            // deferred-consumer gap, not a wiring bug, unlike every other
+            // texture slot in this block. Signage/decal cutouts authored
+            // with distance-field alpha fall back to plain alpha test until
+            // a role + shader consumer exist.
             // #1077 / FO4-D6-003 (Phase 1: data propagation) — BGSM-only
             // shader flags, extracted to `forward_bgsm_phase1_flags`
             // (#2702 / FO4-D2-03) so its regression tests exercise this
