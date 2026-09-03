@@ -270,7 +270,21 @@ pub fn parse_weap(
                     // Blade1H/Blade2H/Blunt1H/Blunt2H/Staff/Bow) doesn't
                     // share semantics with FO3/FNV's anim_type — leave
                     // anim_type at its 0 default rather than mix enums.
-                    GameKind::Oblivion => {
+                    // #3724 (ESM-2026-08-30-D2-03) — every branch below is
+                    // now gated on its own measured on-disk width before
+                    // reading a single field. Without this, a truncated
+                    // record can make a wide field's `_or_default` fail
+                    // (which leaves the cursor exactly where it was — see
+                    // `SubReader`'s lenient-read docs) immediately before a
+                    // *narrower* field, letting that narrower field
+                    // successfully consume bytes that belonged to the wide
+                    // field's range instead of also zero-defaulting. Gating
+                    // on the full measured width means a short record
+                    // leaves every field at its declared default instead of
+                    // silently misattributing a stray byte. Hardening only
+                    // — no vanilla master ships a record shorter than its
+                    // measured width (Dim-2 census).
+                    GameKind::Oblivion if sub.data.len() >= 30 => {
                         let _type = r.u32_or_default();
                         speed = r.f32_or_default();
                         reach = r.f32_or_default();
@@ -280,26 +294,31 @@ pub fn parse_weap(
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as u32;
                     }
+                    GameKind::Oblivion => {}
                     // FO3/FNV WEAP DATA (15 bytes — measured): value(u32),
                     // health(u32), weight(f32), damage(u16), clip(u8).
-                    GameKind::Fallout3NV => {
+                    GameKind::Fallout3NV if sub.data.len() >= 15 => {
                         common.value = r.u32_or_default();
                         let _health = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as u32;
                         clip_size = r.u8_or_default() as u16;
                     }
+                    GameKind::Fallout3NV => {}
                     // FO4 WEAP has no DATA; all canonical fields are decoded
                     // from its packed 132-byte DNAM below.
                     GameKind::Fallout4 => {}
                     // Skyrim WEAP DATA (10 bytes): value(u32), weight(f32),
                     // damage(u16). No health, no clip. Skyrim dropped the
                     // condition/durability system and clip lives in DNAM.
-                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
+                        if sub.data.len() >= 10 =>
+                    {
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as u32;
                     }
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {}
                 }
             }
             // DNAM is a large, version-dependent stats blob present on
@@ -413,7 +432,11 @@ pub fn parse_weap(
             b"ETYP" => {
                 skill_form = SubReader::new(&sub.data).u32_or_default();
             }
-            b"CRDT" => {
+            // #3724 — gated on the full 8-byte leading shape rather than
+            // relying on the three lenient/strict reads' own truncation
+            // handling; keeps this arm consistent with every other guarded
+            // decoder in the file.
+            b"CRDT" if sub.data.len() >= 8 => {
                 // Critical data: chance(u16), unused(u16), mult(f32). Shared
                 // shape across FO3/FNV; Skyrim extends with extra tail
                 // fields but the leading 8 bytes still produce a sane mult.
@@ -494,6 +517,8 @@ pub fn parse_armo(
             }
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
+                // #3724 — every branch below is gated on its own measured
+                // on-disk width (same rationale as `parse_weap`'s DATA arm).
                 match game {
                     // Oblivion ARMO DATA (14 bytes — measured 100% across
                     // 996 records, see #686):
@@ -502,34 +527,40 @@ pub fn parse_armo(
                     // DNAM (so we route it through `armor_rating_x100` for
                     // a uniform consumer surface). DT/DR didn't exist
                     // pre-Fallout 3.
-                    GameKind::Oblivion => {
+                    GameKind::Oblivion if sub.data.len() >= 14 => {
                         armor_rating_x100 = r.u16_or_default() as u32;
                         common.value = r.u32_or_default();
                         health = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Oblivion => {}
                     // FO3/FNV ARMO DATA (12 bytes):
                     //   value(u32), health(u32), weight(f32).
-                    GameKind::Fallout3NV => {
+                    GameKind::Fallout3NV if sub.data.len() >= 12 => {
                         common.value = r.u32_or_default();
                         health = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Fallout3NV => {}
                     // FO4 keeps the same size but swaps the last two fields:
                     // value(u32), weight(f32), health(u32).
-                    GameKind::Fallout4 => {
+                    GameKind::Fallout4 if sub.data.len() >= 12 => {
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         health = r.u32_or_default();
                     }
+                    GameKind::Fallout4 => {}
                     // Skyrim+ ARMO DATA (8 bytes):
                     //   value(u32), weight(f32). No health — condition/repair
                     //   was removed from Skyrim's ARMO data block; equipment
                     //   durability lives in the enchantment/tempering system.
-                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
+                        if sub.data.len() >= 8 =>
+                    {
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {}
                 }
             }
             // Skyrim+ overloads MODL to carry the Armature RArray —
@@ -566,16 +597,22 @@ pub fn parse_armo(
             // (armor_rating × 100, 4 bytes). FO4 uses FNAM instead;
             // Oblivion has no DNAM —
             // armor rating lives in DATA (handled above).
+            // #3724 — gated per branch on its own measured width, same
+            // rationale as the `DATA` arm above.
             b"DNAM" => {
                 let mut r = SubReader::new(&sub.data);
                 match game {
-                    GameKind::Fallout3NV => {
+                    GameKind::Fallout3NV if sub.data.len() >= 8 => {
                         dt = r.f32_or_default();
                         dr = r.u32_or_default();
                     }
-                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                    GameKind::Fallout3NV => {}
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
+                        if sub.data.len() >= 4 =>
+                    {
                         armor_rating_x100 = r.u32_or_default();
                     }
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {}
                     GameKind::Oblivion | GameKind::Fallout4 => {}
                 }
             }
@@ -631,6 +668,8 @@ pub fn parse_ammo(
         match &sub.sub_type {
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
+                // #3724 — every branch below is gated on its own measured
+                // on-disk width, same rationale as `parse_weap`'s DATA arm.
                 match game {
                     // Oblivion AMMO DATA (18 bytes — measured 100% across
                     // 128 records, see #691):
@@ -638,26 +677,29 @@ pub fn parse_ammo(
                     // Oblivion arrows carry inline damage (the WEAP "bow"
                     // record's damage is the bow's, not the arrow's). No
                     // clipRounds — magazines arrived with FO3.
-                    GameKind::Oblivion => {
+                    GameKind::Oblivion if sub.data.len() >= 18 => {
                         let _speed = r.f32_or_default();
                         let _flags = r.u32_or_default();
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as f32;
                     }
+                    GameKind::Oblivion => {}
                     // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
                     // pad(u8)×3, value(u32), clipRounds(u8).
-                    GameKind::Fallout3NV => {
+                    GameKind::Fallout3NV if sub.data.len() >= 13 => {
                         let _speed = r.f32_or_default();
                         let _flags_pad = r.u32_or_default();
                         common.value = r.u32_or_default();
                         clip_rounds = r.u8_or_default();
                     }
+                    GameKind::Fallout3NV => {}
                     // FO4 AMMO DATA (8 bytes): value(u32), weight(f32).
-                    GameKind::Fallout4 => {
+                    GameKind::Fallout4 if sub.data.len() >= 8 => {
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Fallout4 => {}
                     // #3723 (ESM-2026-08-30-D2-02) — Skyrim AMMO DATA is 20
                     // bytes on disk, not the 16 this comment used to claim:
                     // projectile_form(u32), flags(u32), damage(f32),
@@ -667,13 +709,18 @@ pub fn parse_ammo(
                     // DATA sub-records are 20 bytes, and the trailing f32
                     // is `0.1` in every one — a real, uniform per-arrow
                     // weight `common.weight` previously left at 0.
-                    // `remaining() >= 4` before reading it rather than
-                    // relying solely on `f32_or_default`'s built-in
-                    // truncation leniency, so a genuine 16-byte record
-                    // (FO76/Starfield share this arm and have not had
-                    // their own census run — not assumed 20-byte-Skyrim-
-                    // shaped) still decodes cleanly with weight left at 0.
-                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
+                    // #3724 — the leading 16 bytes (projectile/flags/damage/
+                    // value) are now gated the same way as every other arm;
+                    // the trailing weight keeps its own narrower
+                    // `remaining() >= 4` check (rather than folding it into
+                    // the outer guard) so a genuine 16-byte record (FO76/
+                    // Starfield share this arm and have not had their own
+                    // census run — not assumed 20-byte-Skyrim-shaped) still
+                    // decodes its first four fields cleanly with weight
+                    // left at 0.
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
+                        if sub.data.len() >= 16 =>
+                    {
                         projectile_form = r.u32_or_default();
                         let _flags = r.u32_or_default();
                         damage = r.f32_or_default();
@@ -682,6 +729,7 @@ pub fn parse_ammo(
                             common.weight = r.f32_or_default();
                         }
                     }
+                    GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {}
                 }
             }
             // DAT2 (FO3/FNV only): projPerShot(u32), proj(formID),
@@ -780,7 +828,10 @@ pub fn parse_omod_loose_item(subs: &[SubRecord], remap: &Option<FormIdRemap>) ->
 pub fn parse_keym(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     for sub in subs {
-        if &sub.sub_type == b"DATA" {
+        // KEYM DATA (8 bytes, shared across every game): value(u32),
+        // weight(f32). #3724 — gated on the full width like every other
+        // multi-field arm in this file.
+        if &sub.sub_type == b"DATA" && sub.data.len() >= 8 {
             let mut r = SubReader::new(&sub.data);
             common.value = r.u32_or_default();
             common.weight = r.f32_or_default();
@@ -861,13 +912,16 @@ pub fn parse_book(
         match &sub.sub_type {
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
+                // #3724 — every branch below is gated on its own measured
+                // on-disk width, same rationale as `parse_weap`'s DATA arm.
                 match game {
                     // FO4 BOOK DATA (8 bytes): value(u32), weight(f32).
                     // Skill/perk teaching moved to its separate DNAM schema.
-                    GameKind::Fallout4 => {
+                    GameKind::Fallout4 if sub.data.len() >= 8 => {
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Fallout4 => {}
                     // #3716 (ESM-2026-08-30-D2-01) — Skyrim's BOOK DATA is
                     // 16 bytes, not the FNV-modeled 10-byte layout the other
                     // arm decodes: flags(u8), skill_type(u8), unknown(u16),
@@ -887,7 +941,7 @@ pub fn parse_book(
                     // shared one — a 16-byte Skyrim record can never reach
                     // the 10-byte decode at all now, by construction, not
                     // by a fallible check.
-                    GameKind::Skyrim => {
+                    GameKind::Skyrim if sub.data.len() >= 16 => {
                         flags = r.u8_or_default();
                         let _skill_type = r.u8_or_default();
                         r.skip_or_eof(2); // unknown/padding
@@ -895,6 +949,7 @@ pub fn parse_book(
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Skyrim => {}
                     // FNV BOOK DATA (10 bytes): flags(u8), skill(byte=AVIF
                     // index), value(i32), weight(f32). Preserve the existing
                     // decode for the other families until their BOOK schemas
@@ -904,12 +959,18 @@ pub fn parse_book(
                     GameKind::Oblivion
                     | GameKind::Fallout3NV
                     | GameKind::Fallout76
-                    | GameKind::Starfield => {
+                    | GameKind::Starfield
+                        if sub.data.len() >= 10 =>
+                    {
                         flags = r.u8_or_default();
                         skill_bonus = r.u8_or_default();
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
+                    GameKind::Oblivion
+                    | GameKind::Fallout3NV
+                    | GameKind::Fallout76
+                    | GameKind::Starfield => {}
                 }
             }
             b"SKIL" => {
@@ -1013,6 +1074,41 @@ mod tests {
                 assert_eq!(ammo_form, 0xDEADBEEF);
                 assert_eq!(damage, 12);
                 assert_eq!(clip_size, 8);
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// #3724 (ESM-2026-08-30-D2-03) — the issue's own worked case: a
+    /// 13-byte FO3/FNV `WEAP DATA` (real layout is 15 bytes) truncates
+    /// inside the trailing `damage(u16)` field, leaving exactly 1 byte for
+    /// it. Pre-fix, `damage`'s `u16_or_default` failed and left the cursor
+    /// unmoved, so the immediately following `clip_size = u8_or_default()`
+    /// silently consumed that stray byte instead of also defaulting —
+    /// neither field's value came from where its name says it should.
+    /// Post-fix the whole arm is gated on the full 15-byte width, so a
+    /// 13-byte record decodes to every field at its zero default instead.
+    #[test]
+    fn truncated_fo3nv_weap_data_does_not_field_shift() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&250u32.to_le_bytes()); // value
+        data.extend_from_slice(&0u32.to_le_bytes()); // health
+        data.extend_from_slice(&1.5f32.to_le_bytes()); // weight
+        data.push(0x2A); // one stray byte of what would be `damage`
+        assert_eq!(data.len(), 13, "test fixture must match the issue's worked case exactly");
+
+        let item = parse_weap(0x100, &[sub(b"DATA", &data)], GameKind::Fallout3NV, &None);
+        assert_eq!(item.common.value, 0, "a short record must not partially decode");
+        assert_eq!(item.common.weight, 0.0);
+        match item.kind {
+            ItemKind::Weapon {
+                damage, clip_size, ..
+            } => {
+                assert_eq!(damage, 0, "damage must default, not read a truncated field");
+                assert_eq!(
+                    clip_size, 0,
+                    "clip_size must default, not consume damage's stray byte (0x2A)"
+                );
             }
             _ => panic!("expected Weapon kind"),
         }
