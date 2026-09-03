@@ -26,6 +26,18 @@ pub(crate) const fn harness_active(summary_printed: bool) -> bool {
     !summary_printed
 }
 
+/// Whether a named finite benchmark owns gameplay input.
+///
+/// Benchmark windows are created and destroyed repeatedly by matrix runners,
+/// and desktop compositors may focus each new window.  Treating a coincident
+/// key press as gameplay can activate a door and replace the measured interior
+/// with an exterior streaming session.  Named modes therefore ignore gameplay
+/// input while their finite measurement is active; `--bench-hold` releases the
+/// input boundary after printing the summary.
+pub(crate) const fn harness_owns_input(mode: Option<BenchMode>, summary_printed: bool) -> bool {
+    mode.is_some() && harness_active(summary_printed)
+}
+
 /// Complete timing/camera contract for a finite `--bench-frames` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BenchMode {
@@ -425,6 +437,20 @@ mod tests {
     fn held_session_releases_harness_after_summary() {
         assert!(harness_active(false));
         assert!(!harness_active(true));
+    }
+
+    #[test]
+    fn named_bench_owns_input_only_until_summary() {
+        for mode in [
+            BenchMode::RendererStatic,
+            BenchMode::RendererStepped,
+            BenchMode::SystemLive,
+        ] {
+            assert!(harness_owns_input(Some(mode), false));
+            assert!(!harness_owns_input(Some(mode), true));
+        }
+        assert!(!harness_owns_input(None, false));
+        assert!(!harness_owns_input(None, true));
     }
 
     #[test]

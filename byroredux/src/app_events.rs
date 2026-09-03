@@ -219,6 +219,23 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // A finite named benchmark owns the measured world state. Matrix runs
+        // repeatedly create focus-stealing windows; accepting a coincident E
+        // press here can activate a door and turn an interior benchmark into
+        // an exterior-streaming benchmark mid-run. Keep lifecycle/rendering
+        // events live, but quarantine gameplay input until the summary. A
+        // `--bench-hold` session releases this guard immediately afterward.
+        if crate::bench::harness_owns_input(self.bench_mode, self.bench_summary_printed)
+            && matches!(
+                &event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+        {
+            return;
+        }
+
         // Debug-UI event forwarding — egui sees every WindowEvent
         // before the camera input layer. When the overlay is
         // visible AND egui claims to have consumed the event (e.g.
@@ -453,6 +470,9 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        if crate::bench::harness_owns_input(self.bench_mode, self.bench_summary_printed) {
+            return;
+        }
         if let DeviceEvent::MouseMotion { delta } = event {
             let ui_focused = self
                 .ui_manager
