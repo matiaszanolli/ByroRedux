@@ -686,24 +686,36 @@ pub(super) fn collect_static_mesh_draws(
                         [1.0, 1.0, 1.0, 1.0, 0.0]
                     };
 
-                let supplemental_texture_indices = [
-                    texture_indices.tint,
-                    texture_indices.inner_layer,
-                    texture_indices.specular,
-                    texture_indices.lighting,
-                    texture_indices.flow,
-                    texture_indices.wrinkle,
-                    texture_indices.reflectance,
-                    texture_indices.emittance_gradient,
-                    texture_indices.decals[0],
-                    texture_indices.decals[1],
-                    texture_indices.decals[2],
-                    texture_indices.decals[3],
-                    texture_indices.glass_roughness_scratch,
-                    texture_indices.glass_dirt_overlay,
-                    texture_indices.lighting_mask,
-                    texture_indices.back_lighting,
-                ];
+                // #2697 — indexed by `supplemental_texture_slot::*` rather
+                // than built positionally. A bare `[a, b, c, ...]` literal
+                // has no compiler-enforced link to the constants
+                // `DrawCommand::to_gpu_material` reads it back out
+                // through (`crates/renderer/src/vulkan/context/mod.rs`):
+                // inserting a role mid-list there would silently shift
+                // every following slot by one with no compile error and
+                // no failing test. Index assignment makes the two orders
+                // the same source of truth.
+                use byroredux_renderer::vulkan::material::supplemental_texture_slot as slot;
+                let mut supplemental_texture_indices = [0u32; slot::COUNT];
+                supplemental_texture_indices[slot::TINT] = texture_indices.tint;
+                supplemental_texture_indices[slot::INNER_LAYER] = texture_indices.inner_layer;
+                supplemental_texture_indices[slot::SPECULAR] = texture_indices.specular;
+                supplemental_texture_indices[slot::LIGHTING] = texture_indices.lighting;
+                supplemental_texture_indices[slot::FLOW] = texture_indices.flow;
+                supplemental_texture_indices[slot::WRINKLE] = texture_indices.wrinkle;
+                supplemental_texture_indices[slot::REFLECTANCE] = texture_indices.reflectance;
+                supplemental_texture_indices[slot::EMITTANCE_GRADIENT] =
+                    texture_indices.emittance_gradient;
+                supplemental_texture_indices[slot::DECAL_0] = texture_indices.decals[0];
+                supplemental_texture_indices[slot::DECAL_1] = texture_indices.decals[1];
+                supplemental_texture_indices[slot::DECAL_2] = texture_indices.decals[2];
+                supplemental_texture_indices[slot::DECAL_3] = texture_indices.decals[3];
+                supplemental_texture_indices[slot::GLASS_ROUGHNESS_SCRATCH] =
+                    texture_indices.glass_roughness_scratch;
+                supplemental_texture_indices[slot::GLASS_DIRT_OVERLAY] =
+                    texture_indices.glass_dirt_overlay;
+                supplemental_texture_indices[slot::LIGHTING_MASK] = texture_indices.lighting_mask;
+                supplemental_texture_indices[slot::BACK_LIGHTING] = texture_indices.back_lighting;
                 let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,

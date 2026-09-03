@@ -74,10 +74,15 @@ impl System for DebugDrainSystem {
                     bridge.cancel();
                 }
                 self.pending_screenshot = None;
-                return;
-            }
-
-            if let Some(bridge) = world.try_resource::<ScreenshotBridge>() {
+                // #3090 — this arm used to `return` here, which exited
+                // `System::run` entirely and skipped the command drain
+                // below on every frame a screenshot was abandoned. It's
+                // now an `else if` against the bridge-result check right
+                // below (like the three sibling arms there), so control
+                // falls out of this outer `if let` and reaches the drain
+                // — without also re-entering the bridge-result check
+                // against the pending screenshot we just cleared.
+            } else if let Some(bridge) = world.try_resource::<ScreenshotBridge>() {
                 // #1006 — owner-gated take ensures we don't steal
                 // bytes intended for the CLI screenshot path.
                 if let Some(png_bytes) = bridge.take_result_for(SCREENSHOT_OWNER_DEBUG_SERVER) {
@@ -193,5 +198,52 @@ impl System for DebugDrainSystem {
 
     fn name(&self) -> &'static str {
         "debug_drain_system"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::listener::try_enqueue_command;
+    use byroredux_debug_protocol::DebugRequest;
+    use std::sync::mpsc;
+
+    /// #3090 — a screenshot abandoned this frame (`cancel` already set)
+    /// used to `return` out of `System::run` before the command drain,
+    /// deferring every other already-queued command a full frame. This
+    /// pins the fix: a normal command queued alongside a cancelled
+    /// screenshot must still be drained (and answered) on the same
+    /// `run()` call.
+    #[test]
+    fn cancelled_screenshot_does_not_skip_same_frame_command_drain() {
+        let queue: crate::listener::CommandQueue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut system = DebugDrainSystem::new(Arc::clone(&queue));
+
+        // A screenshot already abandoned by its client's recv_timeout.
+        let (screenshot_tx, _screenshot_rx) = mpsc::channel();
+        system.pending_screenshot = Some(PendingScreenshot {
+            response_tx: screenshot_tx,
+            save_path: None,
+            frames_waited: 1,
+            cancel: Arc::new(AtomicBool::new(true)),
+        });
+
+        // A plain command queued behind it, same as a developer issuing
+        // several `byro-dbg` commands against a paused/stalled engine.
+        let (rx, _cancel) = try_enqueue_command(&queue, DebugRequest::Stats)
+            .expect("queue has capacity for one command");
+
+        let world = World::new();
+        system.run(&world, 0.0);
+
+        assert!(
+            system.pending_screenshot.is_none(),
+            "cancellation must still clear pending_screenshot"
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "the queued Stats command must be drained (and answered) on the \
+             same frame the screenshot was cancelled, not deferred a frame"
+        );
     }
 }
