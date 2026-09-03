@@ -1822,6 +1822,18 @@ pub struct VulkanContext {
     /// again) and on resize (fresh slot images, stale latch state would
     /// otherwise skip the needed post-resize clear).
     pub caustic_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// Per-frame-in-flight latch for the volumetrics gate-off arm (#3685) —
+    /// same shape as [`Self::caustic_cleared_on_skip`], reusing the same
+    /// pure `skip_clear_decision` state machine. `record_volumetrics_pass`
+    /// skips its dispatch whenever `requires_dispatch` is false (no medium,
+    /// no fog volumes, no lingering combustion) or the TLAS/cluster/geometry
+    /// inputs aren't ready yet; composite reads the integrated froxel
+    /// volume unconditionally every frame, so the first skip of a streak
+    /// still needs a neutral-frame clear — this latch is what stops every
+    /// *subsequent* skip in that streak from re-clearing an already-zero
+    /// volume. Reset to `false` the moment a real dispatch runs (or fails —
+    /// see the comment at the call site) and on resize.
+    pub volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
     pipeline_cache: vk::PipelineCache,
     /// Opaque pipeline (depth write on, no blend). Two-sided rendering
     /// uses dynamic `cmd_set_cull_mode` per draw, not a separate

@@ -426,9 +426,9 @@ impl VulkanContext {
             // TLAS yet)? Clear once per frame-slot so composite's
             // unconditional `causticTex` sample degrades to black instead
             // of re-compositing a frozen, camera-motion-blind accumulator
-            // pattern every subsequent frame. See `caustic_skip_clear_decision`.
+            // pattern every subsequent frame. See `skip_clear_decision`.
             let (should_clear, next_latch) =
-                caustic_skip_clear_decision(ran, self.caustic_cleared_on_skip[frame]);
+                skip_clear_decision(ran, self.caustic_cleared_on_skip[frame]);
             self.caustic_cleared_on_skip[frame] = next_latch;
             if should_clear {
                 caustic.clear_for_skip(&self.device, cmd, frame);
@@ -515,12 +515,21 @@ impl VulkanContext {
                 if let Some(ref mut vol) = self.volumetrics {
                     let scatter_coef = fog_extinction_per_meter.max(0.0)
                         / super::super::volumetrics::WORLD_UNITS_PER_METER;
-                    if !vol.requires_dispatch(
+                    // #3685 — `ran` feeds the shared skip-clear latch
+                    // (`skip_clear_decision`, same shape as the caustic
+                    // pass below): true only when a real dispatch executed
+                    // this frame. Composite reads the integrated froxel
+                    // volume unconditionally every frame, so the first skip
+                    // of a streak still needs a neutral-frame clear, but
+                    // every *subsequent* skip in the same streak would
+                    // otherwise re-clear an already-zero volume for as long
+                    // as the gate stays off.
+                    let ran = if !vol.requires_dispatch(
                         volumetric_time_seconds,
                         scatter_coef > 0.0,
                         fog_volumes,
                     ) {
-                        vol.record_neutral_frame(&self.device, cmd, frame);
+                        false
                     } else {
                         let vol_tlas = self
                             .accel_manager
@@ -728,14 +737,36 @@ impl VulkanContext {
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_end(&self.device, cmd, frame);
                             }
-                            if let Err(e) = vol_result {
-                                log::warn!("Volumetrics dispatch failed: {e}");
+                            match vol_result {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    log::warn!("Volumetrics dispatch failed: {e}");
+                                    // Pre-fix behavior never cleared on a
+                                    // failed dispatch either (composite
+                                    // falls back to stale prior-frame
+                                    // content on this exact frame) —
+                                    // unchanged here. Reporting this as
+                                    // "ran" resets the latch so the *next*
+                                    // genuine skip streak still clears its
+                                    // first frame, rather than trusting a
+                                    // latch left over from before this
+                                    // attempt.
+                                    true
+                                }
                             }
                         } else {
                             // Never let a prior cell's integrated fog hang over a
                             // frame whose TLAS/cluster inputs are not ready yet.
-                            vol.record_neutral_frame(&self.device, cmd, frame);
+                            false
                         }
+                    };
+                    // #2507-shaped latch, shared with the caustic pass —
+                    // see `skip_clear_decision`.
+                    let (should_clear, next_latch) =
+                        skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame]);
+                    self.volumetrics_cleared_on_skip[frame] = next_latch;
+                    if should_clear {
+                        vol.record_neutral_frame(&self.device, cmd, frame);
                     }
                 }
             }
@@ -1151,19 +1182,23 @@ impl VulkanContext {
     }
 }
 
-/// Pure decision for [`VulkanContext::record_caustic_splat_pass`]'s
-/// post-dispatch latch update — whether this frame's caustic accumulator
-/// slot needs a skip-clear, and the latch's value going into the next
-/// frame. Split out so the state machine is unit-testable without a live
-/// Vulkan device (#2507), matching the `acceleration::predicates`
-/// convention.
+/// Pure decision for a "dispatch every frame, but the fallback output is
+/// unconditionally sampled downstream" pass's post-dispatch latch update —
+/// whether this frame's accumulator slot needs a skip-clear, and the
+/// latch's value going into the next frame. Split out so the state machine
+/// is unit-testable without a live Vulkan device (#2507), matching the
+/// `acceleration::predicates` convention. Shared by
+/// [`VulkanContext::record_caustic_splat_pass`] (`caustic_cleared_on_skip`)
+/// and [`VulkanContext::record_volumetrics_pass`]
+/// (`volumetrics_cleared_on_skip`, #3685) — same shape, same latch
+/// semantics, only the accumulator being cleared differs.
 ///
-/// - `ran`: did a real caustic dispatch execute (and succeed) this frame?
+/// - `ran`: did a real dispatch execute (and succeed) this frame?
 /// - `already_cleared`: was this frame-slot's latch already set from a
 ///   prior skip earlier in the same streak?
 ///
 /// Returns `(should_clear, next_latch)`.
-fn caustic_skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
+fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
     if ran {
         // Fresh content just landed — the next skip (if any) must clear
         // again rather than trust a latch left over from before this
@@ -1181,15 +1216,15 @@ fn caustic_skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool)
 
 #[cfg(test)]
 mod tests {
-    use super::caustic_skip_clear_decision;
+    use super::skip_clear_decision;
 
     /// A real dispatch running must never trigger a clear, and must reset
     /// the latch so a later skip streak clears fresh.
     #[test]
     fn dispatch_ran_never_clears_and_resets_latch() {
-        assert_eq!(caustic_skip_clear_decision(true, false), (false, false));
+        assert_eq!(skip_clear_decision(true, false), (false, false));
         assert_eq!(
-            caustic_skip_clear_decision(true, true),
+            skip_clear_decision(true, true),
             (false, false),
             "a real dispatch must reset a stale latch from a prior streak"
         );
@@ -1198,7 +1233,7 @@ mod tests {
     /// The first skip of a new streak (latch not yet set) must clear.
     #[test]
     fn first_skip_of_a_streak_clears() {
-        assert_eq!(caustic_skip_clear_decision(false, false), (true, true));
+        assert_eq!(skip_clear_decision(false, false), (true, true));
     }
 
     /// A subsequent skip in the same streak (latch already set) must NOT
@@ -1206,6 +1241,51 @@ mod tests {
     /// frame while genuinely skipped.
     #[test]
     fn subsequent_skip_in_same_streak_does_not_reclear() {
-        assert_eq!(caustic_skip_clear_decision(false, true), (false, true));
+        assert_eq!(skip_clear_decision(false, true), (false, true));
+    }
+
+    /// #3685 — `record_volumetrics_pass` needs a live `VulkanContext`, so
+    /// (matching this crate's established convention for that situation,
+    /// e.g. `build_and_upload_instances.rs`'s `batches_scratch_reserve_
+    /// tests`) pin the wiring with a static source-scan instead of a live
+    /// test: the function must route both former unconditional
+    /// `record_neutral_frame` call sites through the shared
+    /// `skip_clear_decision` latch rather than clearing every frame the
+    /// gate stays off.
+    ///
+    /// Scoped to the source before this file's own `#[cfg(test)]` module
+    /// (this module doesn't reference `record_volumetrics_pass` by name,
+    /// so a whole-file search would be safe here too, but scoping matches
+    /// the convention #3674/#3675 established after finding an unscoped
+    /// search can self-match its own needle literal).
+    #[test]
+    fn record_volumetrics_pass_routes_skip_clears_through_the_shared_latch() {
+        let full_src = include_str!("post_passes.rs");
+        let test_mod_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        let src = &full_src[..test_mod_start];
+
+        let fn_start = src
+            .find("fn record_volumetrics_pass(")
+            .expect("record_volumetrics_pass must still exist");
+        let fn_end = src[fn_start..]
+            .find("\n    fn record_taa_pass(")
+            .map(|rel| fn_start + rel)
+            .expect("record_taa_pass must still follow record_volumetrics_pass");
+        let body = &src[fn_start..fn_end];
+
+        assert!(
+            body.contains("skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame])"),
+            "record_volumetrics_pass must route its skip decision through \
+             the shared latch — see #3685"
+        );
+        assert_eq!(
+            body.matches("vol.record_neutral_frame(").count(),
+            1,
+            "record_neutral_frame must be called from exactly one place — \
+             the latch-gated `if should_clear` — not unconditionally at \
+             each skip site"
+        );
     }
 }

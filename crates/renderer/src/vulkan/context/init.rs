@@ -1519,6 +1519,7 @@ impl VulkanContext {
             svgf_recovery_frames: 0,
             caustic_failed: false,
             caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,

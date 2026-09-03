@@ -1,59 +1,96 @@
 # #3685 — PERF-D5-2026-08-30-05: the volumetrics gate-off arm re-clears the whole integrated froxel volume every frame, with no already-cleared latch
 
-- **Source**: `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md`
-- **Finding ID**: `PERF-D5-2026-08-30-05`
-- **Filed**: 2026-08-30 (HEAD `64f64480`)
-- **Labels**: low,performance,renderer,pipeline,bug
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3685
+**Severity**: LOW · **Dimension**: GPU Pipeline
+**Location**: `crates/renderer/src/vulkan/context/post_passes.rs::record_volumetrics_pass`
 
-> Immutable snapshot of the issue as filed (TD10-001 / #1156). GitHub is authoritative for current state.
+## Fix
 
----
+`record_volumetrics_pass` had two call sites that unconditionally issued a
+full `record_neutral_frame` clear over the integrated froxel volume every
+frame: the `!vol.requires_dispatch(...)` gate-off arm (no medium, no fog
+volumes, no lingering combustion — the common case in fog-free cells) and
+the TLAS/cluster/geometry-not-ready fallback arm. The image is already
+neutral after the first such frame in a streak; nothing writes it again
+until a real dispatch runs.
 
-- **Severity**: LOW
-- **Dimension**: GPU Pipeline
-- **Location**: `crates/renderer/src/vulkan/volumetrics.rs:2561-2600`
-  (`record_neutral_frame`); call sites
-  `crates/renderer/src/vulkan/context/post_passes.rs:515` and `:727`
-- **Status**: NEW
-- **Description**: When `requires_dispatch` returns false (no global medium, no fog
-  volumes, no lingering combustion), `record_volumetrics_pass` calls
-  `record_neutral_frame`, which issues two image barriers and a full
-  `cmd_clear_color_image` over the integrated froxel volume — **every frame, for as
-  long as the gate stays off**. The image is already neutral after the first such
-  frame; nothing writes it in between.
-- **Evidence**: the gate-off arm is unconditional —
-  ```rust
-  if !vol.requires_dispatch(volumetric_time_seconds, scatter_coef > 0.0, fog_volumes) {
-      vol.record_neutral_frame(&self.device, cmd, frame);
-  }
-  ```
-  Contrast the caustic pass ~200 lines above in the same file, which solves exactly
-  this with a per-FIF latch: `caustic_skip_clear_decision(ran, self.caustic_cleared_on_skip[frame])`
-  returns `(should_clear, next_latch)` so the clear happens once per skip streak,
-  and the predicate is a pure, unit-tested function
-  (`post_passes.rs:1145-1190`).
-- **Impact**: Derived from the shipped `FROXEL_FORMAT` (`R16G16B16A16_SFLOAT`,
-  8 B/froxel) and the default grid: 7.4 MB of clear traffic per frame at a
-  1280×720 render extent, 22.1 MB at 1080p, **66.4 MB at native 4K** — repeated at
-  frame rate, in fog-free cells, to write zeros over zeros. It is inside the
-  `volumetrics_ms` bracket, so it is measurable today. Frequency depends on how
-  many cells author no fog medium at all, which I have not sampled — hence LOW
-  rather than MEDIUM.
-- **Related**: `caustic_skip_clear_decision` / `caustic_cleared_on_skip` (`#2507`)
-  is the in-repo precedent and the template for the fix.
-- **Suggested Fix**: Add a *volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT]*
-  latch and reuse the `caustic_skip_clear_decision` shape (or lift it into a shared
-  pure helper — it is already generic over "ran / already_cleared"). Reset the latch
-  wherever the caustic one resets, and on `recreate_on_resize`.
+Per the issue's own suggested fix, reused the exact in-repo precedent:
+`record_caustic_splat_pass`'s per-FIF skip-clear latch (`#2507`). Its pure
+decision function had no caustic-specific logic in it at all, so lifted it
+to a shared name, `skip_clear_decision` (was `caustic_skip_clear_decision`),
+generalizing its doc comment rather than duplicating the state machine —
+matching the issue's own "lift into a shared pure helper" option.
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
-- [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
-- [ ] **TESTS**: A regression test pins this specific fix
+Restructured `record_volumetrics_pass`'s inner `if let Some(ref mut vol) =
+self.volumetrics` block so both former unconditional clear sites now
+report a `ran: bool` (true only when a real dispatch executed and
+succeeded) instead of calling `record_neutral_frame` directly, then apply
+the shared latch decision once at the end of the block:
 
----
-*Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-30.md` (HEAD `64f64480`). Report status: NEW; re-verified CONFIRMED against HEAD at publish time.*
+```rust
+let (should_clear, next_latch) =
+    skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame]);
+self.volumetrics_cleared_on_skip[frame] = next_latch;
+if should_clear {
+    vol.record_neutral_frame(&self.device, cmd, frame);
+}
+```
+
+A failed dispatch (`Err` from `vol.dispatch`) reports `ran = true` rather
+than `false` — this is a deliberate choice, not an oversight: the pre-fix
+code never cleared on a dispatch failure either (composite just falls back
+to stale prior-frame content on that exact frame, an existing, unrelated
+behavior this fix doesn't touch), and reporting it as "ran" resets the
+latch so the *next* genuine skip streak still clears its first frame
+rather than trusting a latch left over from before the failed attempt.
+
+Added the sibling `volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT]`
+field next to `caustic_cleared_on_skip` on `VulkanContext`, initialized in
+`init.rs` and reset on resize in `resize.rs` (same place the caustic latch
+resets), per the issue's own suggested fix.
+
+## SIBLING (issue's own checklist item)
+
+The issue's own "Related" section named `caustic_skip_clear_decision` /
+`caustic_cleared_on_skip` (#2507) as the in-repo precedent and template —
+addressed above by sharing the function outright rather than duplicating
+it. No other pass in this file has the same "dispatch conditionally
+skipped, but downstream sampling is unconditional every frame" shape (SVGF
+and TAA's own failure latches degrade to "keep sampling stale content"
+instead of clearing, per the existing doc comment on `svgf_failed`)."
+
+## TESTS (issue's own checklist item)
+
+The three existing `skip_clear_decision` unit tests (renamed from
+`caustic_skip_clear_decision`, unmodified otherwise) already exercise the
+shared state machine both callers now depend on.
+
+`record_volumetrics_pass` needs a live `VulkanContext` (no fixture exists
+in this crate) — matching this session's established convention for that
+situation (e.g. #3690's `retention_hoisting_tests`), added a static
+source-scan test,
+`record_volumetrics_pass_routes_skip_clears_through_the_shared_latch`,
+scoped to the file's production portion (before its own `#[cfg(test)]`
+module), pinning:
+- the function body calls
+  `skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame])`;
+- `vol.record_neutral_frame(` appears exactly once in the body (the single
+  latch-gated call site, not the two former unconditional ones).
+
+**Reintroduce-and-revert verification**: temporarily reintroduced an
+unconditional `vol.record_neutral_frame(...)` call alongside the
+`requires_dispatch` check (simulating the old always-clear behavior) —
+confirmed the new test failed (`left: 2, right: 1`, the exact count
+mismatch). Restored the fix and reran — all 4 tests in
+`context::post_passes::tests` pass again.
+
+## Verification
+
+- `cargo check -p byroredux-renderer --tests`: clean.
+- `cargo test -p byroredux-renderer --lib context::post_passes::`: 4 tests
+  passing, 0 failing (+1 new).
+- `cargo test -q -p byroredux-renderer`: 823 tests passing (+1), 0
+  failing.
+- `cargo check -p byroredux --tests`: clean (downstream crate, confirms
+  the new `VulkanContext` field doesn't break construction elsewhere).
+- `cargo test -q --no-fail-fast` (full workspace): **7108 passing, 0
+  failing**.

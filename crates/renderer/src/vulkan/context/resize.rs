@@ -1063,6 +1063,11 @@ impl VulkanContext {
         // #2507 — fresh slot images post-resize; a stale latch would skip
         // the needed clear on the first post-resize frame that skips.
         self.caustic_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
+        // #3685 — same reasoning as the caustic latch above: the froxel
+        // volume isn't resize-dependent (fixed grid, not screen-sized), but
+        // resetting here is cheap and keeps both latches' invariants
+        // identical rather than leaving one asymmetric special case.
+        self.volumetrics_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
 
         // Command buffers are per frame-in-flight (fixed count), so they
         // don't need reallocation on swapchain resize. They'll be reset
