@@ -233,12 +233,32 @@ pub(crate) fn geometry_rebuild_needs_idle(
 }
 
 /// Cache key for the refcounted scene-mesh dedup layer (#879). The
-/// `path` is the lowercased model path (matches
-/// `cell_loader::nif_import_registry`'s key); `sub_mesh_index` indexes
+/// `path` is the normalized model path (lowercase, forward slashes, and a
+/// guaranteed `meshes/` prefix); `sub_mesh_index` indexes
 /// into a multi-mesh NIF so two `chair.nif` placements share the same
 /// handle while a `corpse.nif`'s body + helmet sub-meshes get distinct
-/// entries.
+/// entries. The renderer owns this normalization at the cache boundary so
+/// callers cannot accidentally create duplicate GPU uploads by spelling the
+/// same authored path differently.
 pub type MeshCacheKey = (String, u32);
+
+/// Normalize a scene-mesh path before using it as a GPU-cache key.
+///
+/// Gamebryo paths arrive from authored records and archive listings with
+/// mixed casing, separators, and sometimes without the conventional
+/// `meshes/` prefix. Keep this equivalent to the cell-loader's model-path
+/// identity while making the renderer cache self-normalizing. The work is
+/// intentionally limited to the cache boundary: it does not rewrite the
+/// path used for archive lookup or diagnostics.
+fn mesh_cache_key(model_path: &str, sub_mesh_index: u32) -> MeshCacheKey {
+    let lowered = model_path.to_ascii_lowercase().replace('\\', "/");
+    let path = if lowered.starts_with("meshes/") {
+        lowered
+    } else {
+        format!("meshes/{lowered}")
+    };
+    (path, sub_mesh_index)
+}
 
 /// One scene mesh participating in a shared upload submission.
 ///
@@ -812,7 +832,7 @@ impl MeshRegistry {
     /// [`crate::texture_registry::TextureRegistry::acquire_by_path`]
     /// (#524). See #879 / CELL-PERF-01.
     pub fn acquire_cached(&mut self, model_path: &str, sub_mesh_index: u32) -> Option<u32> {
-        let key = (model_path.to_string(), sub_mesh_index);
+        let key = mesh_cache_key(model_path, sub_mesh_index);
         let &handle = self.mesh_cache.get(&key)?;
         let rc = self.mesh_ref_counts.get_mut(handle as usize)?;
         if *rc == 0 {
@@ -844,7 +864,7 @@ impl MeshRegistry {
         let (model_path, sub_mesh_index) = cache_key;
         let handle = self.upload_scene_mesh(ctx, vertices, indices, rt_enabled, staging_pool)?;
         self.mesh_cache
-            .insert((model_path.to_string(), sub_mesh_index), handle);
+            .insert(mesh_cache_key(model_path, sub_mesh_index), handle);
         Ok(handle)
     }
 
@@ -955,7 +975,7 @@ impl MeshRegistry {
             self.mesh_ref_counts.push(1);
             if let Some((model_path, sub_mesh_index)) = upload.cache_key {
                 self.mesh_cache
-                    .insert((model_path.to_string(), sub_mesh_index), id);
+                    .insert(mesh_cache_key(model_path, sub_mesh_index), id);
             }
             handles.push(id);
         }
@@ -2460,8 +2480,24 @@ mod refcount_tests {
         let handle = reg.mesh_ref_counts.len() as u32;
         reg.mesh_ref_counts.push(initial_ref_count);
         reg.mesh_cache
-            .insert((model_path.to_string(), sub_mesh_index), handle);
+            .insert(mesh_cache_key(model_path, sub_mesh_index), handle);
         handle
+    }
+
+    /// The cache must own path identity: a raw authored spelling and the
+    /// canonical cell-loader spelling refer to one GPU mesh, not two uploads.
+    #[test]
+    fn cache_key_normalizes_case_separators_and_meshes_prefix() {
+        let mut reg = MeshRegistry::new();
+        let handle = install_synthetic_slot(&mut reg, "Meshes\\Clutter\\Chair.NIF", 0, 1);
+
+        assert_eq!(
+            reg.acquire_cached("clutter/chair.nif", 0),
+            Some(handle),
+            "equivalent path spellings must share the cached GPU handle",
+        );
+        assert_eq!(reg.refcount(handle), Some(2));
+        assert_eq!(reg.mesh_cache.len(), 1);
     }
 
     /// Empty registry: every probe returns the no-op.
