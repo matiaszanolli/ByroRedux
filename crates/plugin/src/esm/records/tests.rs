@@ -1166,6 +1166,12 @@ fn merge_from_adopts_the_first_real_profile() {
     let mut good = EsmIndex::default();
     good.character_rules = CharacterRulesProfile::SKYRIM;
     good.game = GameKind::Skyrim;
+    // #3403 — must be observably non-empty (`total() > 0`), or
+    // `merge_from`'s empty-index guard (added for `game`, matching the
+    // same hazard #3384 closed for `character_rules` above) now treats
+    // this exactly like a failed-parse `EsmIndex::default()` and skips
+    // the `game` merge — this fixture's whole point is a *real* profile.
+    good.scenes.insert(0x0000_0003, ScenRecord::default());
     merged.merge_from(good);
 
     assert_eq!(merged.character_rules, CharacterRulesProfile::SKYRIM);

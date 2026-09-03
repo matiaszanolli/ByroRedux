@@ -863,9 +863,29 @@ impl EsmIndex {
         // guard below. Callers construct an index and set `game` without ever
         // setting `character_rules` (the FO4 inventory-classification path
         // does exactly that), so gating the two together would silently drop
-        // the game. The same empty-index hazard applies to `game` in
-        // principle; it is out of scope here and belongs to /audit-esm.
-        self.game = other.game;
+        // the game.
+        //
+        // #3403 (ESM-2026-08-27-D7-01) — the same empty-index hazard this
+        // note used to call out for `game` (deferred to /audit-esm) is now
+        // closed here directly, with its own guard rather than reusing
+        // `character_rules`'s: `parse_record_indexes_in_load_order`
+        // (`byroredux/src/cell_loader/load_order.rs`) merges
+        // `EsmIndex::default()` when a plugin's parse fails, and
+        // `EsmIndex::default().game` is `GameKind::default()` =
+        // `Fallout3NV`. Pre-fix, a failure in the *last* plugin of a
+        // Skyrim/FO4/Starfield load order silently re-labelled the whole
+        // merged index as Fallout3NV — behind a `log::warn!` about an
+        // unrelated subject — and `game` is a broad dispatch key
+        // (skeleton/animation paths, terrain-LOD layout, player base form,
+        // Havok gating), not a cosmetic label. `other.total() == 0` is the
+        // same "a failed parse contributes nothing" signal the `warn!`
+        // already implies: skip the merge, matching the suggested fix's
+        // own accepted tradeoff — a genuinely empty-but-successfully-
+        // parsed plugin's own correct `game` detection is also skipped,
+        // which is strictly safer than the alternative it replaces.
+        if other.total() > 0 {
+            self.game = other.game;
+        }
 
         // #3384 — `character_rules` decides, for every actor in the load
         // order, which skill roster is used, which Health curve seeds
@@ -954,6 +974,59 @@ mod tests {
         merged.merge_from(plugin);
 
         assert_eq!(merged.scenes[&0x000B_ECD4].phases[0].name, "Cart ride");
+    }
+
+    /// #3403 (ESM-2026-08-27-D7-01) — a failed plugin parse merges
+    /// `EsmIndex::default()` (`game: GameKind::default() = Fallout3NV`,
+    /// `total() == 0`). Pre-fix, this unconditionally overwrote an
+    /// already-correctly-detected `game` from an earlier plugin in the
+    /// same load order — a Skyrim load order whose last plugin failed to
+    /// parse silently re-labelled the whole merged index as Fallout3NV.
+    #[test]
+    fn merge_from_skips_game_when_other_is_observably_empty() {
+        let failed_parse = EsmIndex::default();
+        assert_eq!(
+            failed_parse.total(),
+            0,
+            "fixture precondition: a bare default index must be observably empty"
+        );
+        assert_eq!(
+            failed_parse.game,
+            GameKind::Fallout3NV,
+            "fixture precondition: GameKind::default() must still be Fallout3NV"
+        );
+
+        let mut merged = EsmIndex::default();
+        merged.game = GameKind::Skyrim;
+
+        merged.merge_from(failed_parse);
+        assert_eq!(
+            merged.game,
+            GameKind::Skyrim,
+            "an empty (failed-parse) index must not overwrite an \
+             already-detected game"
+        );
+    }
+
+    /// Companion: the guard must only exclude the observably-empty case,
+    /// not every non-first plugin — a real DLC/patch plugin's own `game`
+    /// still merges normally.
+    #[test]
+    fn merge_from_still_applies_game_when_other_has_content() {
+        let mut merged = EsmIndex::default();
+        merged.game = GameKind::Fallout3NV;
+
+        let mut dlc = EsmIndex::default();
+        dlc.game = GameKind::Skyrim;
+        dlc.scenes.insert(0x0000_0002, ScenRecord::default());
+        assert!(dlc.total() > 0, "fixture precondition: dlc must be non-empty");
+
+        merged.merge_from(dlc);
+        assert_eq!(
+            merged.game,
+            GameKind::Skyrim,
+            "a real plugin's game must still merge normally"
+        );
     }
 
     #[test]
