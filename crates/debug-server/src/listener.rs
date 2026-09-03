@@ -43,6 +43,21 @@ pub(crate) type CommandQueue = Arc<Mutex<Vec<PendingCommand>>>;
 /// memory under a CLI-bug-driven tight-loop flood. See #1010.
 pub(crate) const MAX_QUEUED_COMMANDS: usize = 64;
 
+/// Maximum concurrently-connected debug clients before `listener_loop`
+/// refuses (closes without spawning a thread) any further accepted
+/// connection. Pre-#3449 there was no cap at all: every accepted
+/// connection got its own named OS thread
+/// (`thread::Builder::new().spawn(...)`) unconditionally, and
+/// `debug-server` is a `default` cargo feature (`byroredux/Cargo.toml`),
+/// so an ordinary release build listens. Debug server is loopback-only
+/// (#857), so the real attack surface is operator-controlled — same
+/// framing as [`MAX_QUEUED_COMMANDS`] — but a local process opening
+/// connections in a tight loop could still exhaust the thread budget and
+/// wedge the engine. 8 concurrent clients comfortably covers a real
+/// debugging session (one interactive `byro-dbg` shell plus a couple of
+/// scripted probes); see #3449.
+pub(crate) const MAX_CONCURRENT_CLIENTS: usize = 8;
+
 /// Per-connection `TcpStream` registry shared between the listener and
 /// `DebugServerHandle`. The listener pushes a `Weak` reference for
 /// every accepted stream; per-client threads own the strong `Arc`. On
@@ -212,7 +227,7 @@ fn listener_loop(
                 // shutdown signal would still result in a per-client
                 // thread being spawned. Doing it under the lock here
                 // makes the check + push + spawn decision atomic.
-                {
+                let refused = {
                     let mut active = active_streams.lock().unwrap();
                     if shutdown.load(Ordering::Acquire) {
                         // Drop the strong Arc → closes the socket; the
@@ -221,7 +236,31 @@ fn listener_loop(
                         return;
                     }
                     active.retain(|w| w.upgrade().is_some());
-                    active.push(Arc::downgrade(&stream_arc));
+                    // #3449 — check+push stays under the one lock this
+                    // critical section already holds (no second lock, no
+                    // separate atomic counter to keep in sync): `active`
+                    // is already the live-connection count after the
+                    // prune above, so the cap reuses that instead of
+                    // duplicating it.
+                    if active.len() >= MAX_CONCURRENT_CLIENTS {
+                        true
+                    } else {
+                        active.push(Arc::downgrade(&stream_arc));
+                        false
+                    }
+                };
+                if refused {
+                    log::warn!(
+                        "Debug client {} refused — {} concurrent connections already active \
+                         (#3449)",
+                        addr,
+                        MAX_CONCURRENT_CLIENTS
+                    );
+                    // Drop the strong Arc → closes the socket. No Weak was
+                    // pushed for this connection, so there's nothing to
+                    // prune later either.
+                    drop(stream_arc);
+                    continue;
                 }
                 let q = queue.clone();
                 let s = Arc::clone(&shutdown);
@@ -348,6 +387,7 @@ fn handle_client(stream: Arc<TcpStream>, queue: CommandQueue, shutdown: Arc<Atom
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::time::Instant;
 
     /// Regression for #855 / C6-NEW-02. Dropping a [`DebugServerHandle`]
@@ -467,5 +507,49 @@ mod tests {
             q[0].cancel.load(Ordering::Acquire),
             "PendingCommand.cancel must observe the per-client thread's signal"
         );
+    }
+
+    /// #3449 — connections beyond `MAX_CONCURRENT_CLIENTS` are refused
+    /// (socket closed immediately, no per-client thread spawned) rather
+    /// than accepted unconditionally forever.
+    #[test]
+    fn connections_past_the_cap_are_refused() {
+        let (_drain, handle) = spawn(0).unwrap();
+        let addr = handle.local_addr();
+
+        // Open MAX_CONCURRENT_CLIENTS real connections and keep every
+        // socket alive — dropping one would let the listener's
+        // opportunistic prune (`active.retain(...)`) free the slot
+        // before the cap is actually exercised.
+        let mut kept: Vec<TcpStream> = Vec::new();
+        for _ in 0..MAX_CONCURRENT_CLIENTS {
+            kept.push(TcpStream::connect(addr).expect("connection under the cap must succeed"));
+        }
+        // Let the listener thread's accept loop (polls every 5 ms, see
+        // its own WouldBlock arm above) catch up and register each
+        // connection in `active_streams` before probing the cap.
+        thread::sleep(Duration::from_millis(200));
+
+        // One more, past the cap: TCP `connect()` itself still succeeds
+        // (the kernel completes the handshake before `accept()` even
+        // runs), but the listener must close it immediately without
+        // ever spawning `handle_client` — so a read observes a clean
+        // EOF instead of blocking or receiving a response.
+        let mut refused = TcpStream::connect(addr)
+            .expect("connect() succeeds regardless — refusal happens after accept()");
+        refused
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let n = refused
+            .read(&mut buf)
+            .expect("a refused connection must be closed cleanly (EOF), not hang or error");
+        assert_eq!(
+            n, 0,
+            "connection past MAX_CONCURRENT_CLIENTS must be closed by the listener, not accepted"
+        );
+
+        drop(kept);
+        drop(handle);
     }
 }

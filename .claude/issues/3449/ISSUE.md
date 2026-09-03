@@ -1,56 +1,93 @@
 # #3449 — SAFE-2026-08-27b-05: debug-server is a default cargo feature and its accept loop spawns an uncapped OS thread per connection
 
-- **Source**: `docs/audits/AUDIT_SAFETY_2026-08-27b.md`
-- **Severity**: LOW
-- **Labels**: `low,safety,tech-debt,bug`
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3449
+**Severity**: LOW (hardening) · **Location**: `crates/debug-server/src/listener.rs::listener_loop`
 
----
+## Fix
 
-From `docs/audits/AUDIT_SAFETY_2026-08-27b.md` (un-owned subsystem — `crates/debug-server`, per `_audit-common`'s coverage table: *"a TCP listener that evaluates queries against the live `World`; nothing audits its command surface"*).
+Verified the premise: `listener_loop`'s accept-`Ok` arm spawned a named
+OS thread (`thread::Builder::new().spawn(...)`) for every accepted
+connection unconditionally — no cap, no rate limit, no authentication.
+`debug-server` is in `byroredux/Cargo.toml`'s `default` feature set, so
+an ordinary `cargo build --release` produces a binary that listens on
+loopback and can be exhausted by a local process opening connections in
+a tight loop.
 
-- **Severity**: LOW (hardening; loopback binding is the mitigation that keeps it here)
-- **Location**: `byroredux/Cargo.toml:8` (`default = ["debug-server"]`); `crates/debug-server/src/listener.rs:158`, `:185-232`
-- **Status**: NEW — no issue and no prior audit finding covers it; `crates/debug-server` appears in the 2026-08-16 / 2026-08-20 tech-debt reports only as a named scope gap.
+Added `pub(crate) const MAX_CONCURRENT_CLIENTS: usize = 8`, documented
+next to the existing `MAX_QUEUED_COMMANDS` constant with the same
+"loopback-only, operator-controlled attack surface" framing (#857).
+Folded the cap check into the *existing* critical section that already
+prunes `active_streams`' dead `Weak<TcpStream>` entries before pushing a
+new one: after the prune, `active.len()` is already the live-connection
+count, so the cap reuses it directly rather than the issue's own
+suggested separate `AtomicUsize`. A connection past the cap has its
+`Arc<TcpStream>` dropped (closing the socket) and the outer loop
+`continue`s — no thread is ever spawned for it.
 
-## Description
+This is a deliberate deviation from the issue's own "Suggested Fix"
+(a separate incremented/decremented counter): reusing `active_streams`'
+own post-prune length avoids a second lock or a second counter that
+could desync from the real connection count, which better satisfies the
+issue's own LOCK_ORDER checklist item than the suggestion does. Matches
+this session's "prioritize improving existing code over duplicating
+logic" convention, and mirrors this same file's existing
+`MAX_QUEUED_COMMANDS` / `try_enqueue_command` precedent.
 
-`spawn` binds `TcpListener::bind(("127.0.0.1", port))` — the loopback binding is correct and is the reason this is not higher. What is unbounded is what happens after `accept()`: every connection gets its own named OS thread (`thread::Builder::new().name(format!("byro-debug-client-{addr}")).spawn(...)`) with no concurrent-connection cap, no accept rate limit, and no authentication. `active_streams` is pruned opportunistically, but it only tracks `Weak` handles for shutdown teardown — it never refuses a connection.
+## SIBLING (issue's own checklist item — "any other accept/spawn loop —
+`tools/byro-dbg`'s client side, the screenshot channel")
 
-The reason this is worth a line rather than nothing is `byroredux/Cargo.toml:8`: `debug-server` is in `default`, so an ordinary `cargo build --release` produces a binary that listens. The command surface behind it mutates the live `World` (`setav`/`modav`, `script.activate`, `door.teleport`, debug cell loads) and writes screenshots to disk, so a local process — not a remote one — can drive the engine and can also exhaust its thread budget.
+- `tools/byro-dbg/src/main.rs`: a single outbound `TcpStream::connect` —
+  the CLI's own one connection, not a server-side accept loop. No cap
+  applicable.
+- `tools/byro-dbg/src/tui.rs::spawn_net_thread`: spawns exactly one
+  long-lived worker thread per TUI session, owning the single connection
+  the CLI itself opened — not a per-incoming-connection accept loop.
+  No cap applicable.
+- The screenshot channel (`crates/debug-server/src/system.rs`) has no
+  `TcpListener`/`thread::Builder`/`.spawn()` of its own — it consumes
+  the same command queue `listener_loop` already feeds, no separate
+  accept path exists.
 
-## Evidence
+No other unbounded accept/spawn loop found in the workspace.
 
-```rust
-// crates/debug-server/src/listener.rs:158
-let listener = TcpListener::bind(("127.0.0.1", port))?;
-// :228-232 — no cap between accept and spawn
-thread::Builder::new()
-    .name(format!("byro-debug-client-{}", addr))
-    .spawn(move || handle_client(stream_arc, q, s))
-    .ok();
-```
-```toml
-# byroredux/Cargo.toml:7-9
-[features]
-default = ["debug-server"]
-debug-server = ["dep:byroredux-debug-server"]
-```
+The issue's separate suggestion — "decide deliberately whether
+`debug-server` should remain in `default` … and record that decision
+next to the feature" — is a product decision, not a code defect; leaving
+it as `default` is the existing, working decision (loopback-only bind is
+the stated mitigation for exactly this), so no change made. Recording it
+here rather than in `Cargo.toml` since there is nothing to a comment
+that isn't already said by this fix and #857.
 
-## Impact
+## LOCK_ORDER (issue's own checklist item — "the counter must not widen
+the existing `active_streams` mutex critical section or introduce a
+second lock inside it")
 
-A local process opening connections in a loop exhausts the thread budget and can wedge the engine. Not remotely reachable — the loopback bind is what bounds this. Filed as hardening, and as the first finding of any kind against this crate's command surface.
+Satisfied by construction: the cap check is a single `if` added inside
+the *same* `active_streams.lock()` critical section that already does
+the prune-then-push, adding zero new locks and not widening the
+section's own logical scope (still one prune + one conditional push,
+just with the push now conditional).
 
-## Related
+## TESTS (issue's own checklist item — "a regression test pins this
+specific fix")
 
-#3007 (the last debug-listener bind defect), #1009 / #1172 (the `active_streams` shutdown side channel this sits next to).
+`connections_past_the_cap_are_refused` — spins up a real listener via
+`spawn(0)`, opens `MAX_CONCURRENT_CLIENTS` real `TcpStream::connect`
+connections (kept alive so the opportunistic prune can't free a slot
+mid-test), then opens one more and asserts it observes a clean EOF
+(`read()` returns `Ok(0)`) within a bounded timeout — proving the
+listener closes the extra connection immediately rather than accepting
+it and spawning a thread.
 
-## Suggested Fix
+**Reintroduce-and-revert verification**: temporarily restored the
+pre-fix unconditional push (`active.retain(...); active.push(...); false`)
+— confirmed the new test failed (`WouldBlock` on the refused
+connection's read, since with no cap the connection is accepted and
+never closed, so no EOF ever arrives within the 2 s read timeout).
+Restored the fix and reran — all 15 tests in `debug-server` pass again.
 
-Cap concurrent clients (an `AtomicUsize` incremented before spawn, decremented in `handle_client`'s exit; refuse and close past ~8), which is a few lines inside the critical section that already exists. Separately, decide deliberately whether `debug-server` should remain in `default` once there is a shipping profile — and record that decision next to the feature.
+## Verification
 
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (any other accept/spawn loop — `tools/byro-dbg`'s client side, the screenshot channel)
-- [ ] **LOCK_ORDER**: the counter must not widen the existing `active_streams` mutex critical section or introduce a second lock inside it
-- [ ] **TESTS**: A regression test pins this specific fix
+- `cargo check -p byroredux-debug-server --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux-debug-server`: 15 passing, 0 failing (+1
+  new).
+- `cargo test -q --no-fail-fast` (full workspace): see commit for count.
