@@ -1,37 +1,67 @@
-# #3698 — ECS-2026-08-30-P2-02: collect_candidates holds the scratch write guard across five component reads, every frame
-
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
+# #3698 — ECS-P2-02: collect_candidates holds the scratch write guard across five component reads, every frame
 
 **Severity**: MEDIUM · **Dimension**: P2 Gameplay Slice / Lock Ordering
-**Location**: `byroredux/src/interaction.rs` (`collect_candidates` ~:863-873; helper `populate_candidates` ~:875-924)
-**Source**: `docs/audits/AUDIT_ECS_2026-08-30.md` (ECS-P2-02, `[P2-gameplay]`)
+**Location**: `byroredux/src/interaction.rs` (`collect_candidates`; helper `populate_candidates`)
 
-> **Coverage note**: `byroredux/src/interaction.rs` has no owner audit skill. This finding comes from the `/audit-ecs` run's explicit P2-gameplay slice sweep and is the only audit coverage that file received.
+## Fix
 
-## Description
+Flagged as the one exception found during #3697's SIBLING sweep of
+`interaction.rs`. Implemented the issue's own suggested fix: take the map
+OUT of `InteractionCandidateScratch` (via the same `mem::take` the code
+already used, just moved earlier) before `populate_candidates` runs its
+five component queries, instead of populating it in place while the
+write guard is held. Unified the `Some`/`None` branches into one `match`
+that either takes the resource's map or builds a fresh default, then runs
+`.clear()` + `populate_candidates` identically either way — no behavior
+branch left between "scratch present" and "scratch absent" beyond where
+the map's storage comes from.
 
-`collect_candidates` opens a `ResourceWrite<InteractionCandidateScratch>` and calls `populate_candidates` *through* it; that helper then acquires five component read guards (`DoorTeleport`, `RumbleOnActivate`, `QuestAdvanceOnActivate`, `TwoStateActivator`, `MG07LabyrinthianDoor`) with the write guard still held. Same class as the `combat.rs` cooldown site, but on the per-frame path rather than an attack edge.
+The capacity-reuse contract (#3059's whole reason this resource exists)
+is unchanged: `select_interaction_target` still hands the used map back
+into `scratch.candidates = candidates;` after consuming it (line ~865,
+untouched), so next frame's `collect_candidates` still takes out whatever
+capacity was left there — confirmed by the existing
+`candidate_scratch_capacity_survives_across_calls` test passing unchanged.
 
-## Evidence
+## SIBLING (issue's own checklist item — "the `else` branch and the rest of `interaction.rs` checked for the same shape")
 
-```rust
-// byroredux/src/interaction.rs:863-868
-fn collect_candidates(world: &World) -> FxHashMap<EntityId, InteractionKind> {
-    if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
-        scratch.candidates.clear();
-        populate_candidates(world, &mut scratch.candidates);   // 5 component locks, guard live
-        std::mem::take(&mut scratch.candidates)
-```
+The `else` branch is now folded into the same `match` arm structure as
+the `Some` branch, so there's no separate behavior to diverge. The rest
+of `interaction.rs`'s resource-write sites were already swept during
+#3697 (filed moments before this one, in the same session) — only this
+site had the nested-read-inside-write-guard shape; `InteractionState`,
+`InteractionTrace`, and the other `InteractionCandidateScratch` site
+(line ~865, `scratch.candidates = candidates;`) all only assign
+already-resolved locals.
 
-## Impact
+## LOCK_ORDER (issue's own checklist item)
 
-Five scratch->component edges per frame in the debug lock-order graph. No reverse edge exists and `interaction_system` is a `Stage::Update` exclusive, so no demonstrable deadlock — MEDIUM.
+The write guard's scope narrowed (it now covers only the `mem::take`
+call, not the five-query populate pass) but nothing changed about
+TypeId-sorted acquisition — this was always a single-resource guard, not
+a multi-component paired acquisition.
 
-## Suggested Fix
+## TESTS (issue's own checklist item)
 
-Take the map out of the resource first, populate an owned local with no guard held, and hand it back. The `std::mem::take` already present proves the map can leave the resource; capacity reuse is preserved.
+Added `collect_candidates_does_not_close_scratch_component_lock_cycle`,
+mirroring #3697's live-detector pattern exactly: guarded on
+`BYRO_LOCK_ORDER_CHECK=1`, establishes the canonical reverse edge
+(`DoorTeleport` read, then `InteractionCandidateScratch` write) on a real
+door fixture, then drives `select_interaction_target`.
 
-## Completeness Checks
-- [ ] **SIBLING**: The `else` branch and the rest of `interaction.rs` checked for the same shape
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **TESTS**: A regression test pins this specific fix
+Verified the guard actually catches the regression (this session's
+established quality bar): reverted to the pre-fix nested-in-place
+version, reran under `BYRO_LOCK_ORDER_CHECK=1` — the test failed with the
+exact expected `DoorTeleport ↔ InteractionCandidateScratch` cycle
+message, then restored the fix and confirmed a clean pass again.
+
+## Verification
+
+- `cargo check -p byroredux --tests`: clean.
+- `cargo test -q -p byroredux --bin byroredux`: 1,871 tests passing, 0
+  failing (+1 new); `candidate_scratch_capacity_survives_across_calls`
+  still passes unchanged.
+- `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux --bin byroredux
+  collect_candidates_does_not_close`: passes with the detector live.
+- `cargo test -q --no-fail-fast` (full workspace): **7092 passing, 0
+  failing**.

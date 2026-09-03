@@ -950,16 +950,28 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
 /// (SipHash → FxHash over an `EntityId` keyspace, per the project's
 /// hot-path hashing rule, #2923/#1368/#2174) and there is no trailing
 /// `Vec` conversion — callers iterate the map directly.
+///
+/// #3698 (ECS-P2-02) — the scratch map is taken OUT of
+/// `InteractionCandidateScratch` (via `mem::take`, dropping the write
+/// guard immediately) before `populate_candidates` runs, not populated
+/// in place while the guard is held. `populate_candidates` acquires five
+/// component read guards (`DoorTeleport`, `RumbleOnActivate`,
+/// `QuestAdvanceOnActivate`, `TwoStateActivator`,
+/// `MG07LabyrinthianDoor`) — doing that while
+/// `InteractionCandidateScratch`'s write guard was still open recorded
+/// five scratch→component edges per frame in the global lock-order
+/// graph. Same capacity-reuse contract as before: whatever the caller
+/// (`select_interaction_target`) hands back into the resource after
+/// using this frame's map (`scratch.candidates = candidates;`, further
+/// down this file) is what's taken out here next frame.
 fn collect_candidates(world: &World) -> FxHashMap<EntityId, InteractionKind> {
-    if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
-        scratch.candidates.clear();
-        populate_candidates(world, &mut scratch.candidates);
-        std::mem::take(&mut scratch.candidates)
-    } else {
-        let mut candidates = FxHashMap::default();
-        populate_candidates(world, &mut candidates);
-        candidates
-    }
+    let mut candidates = match world.try_resource_mut::<InteractionCandidateScratch>() {
+        Some(mut scratch) => std::mem::take(&mut scratch.candidates),
+        None => FxHashMap::default(),
+    };
+    candidates.clear();
+    populate_candidates(world, &mut candidates);
+    candidates
 }
 
 fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, InteractionKind>) {
@@ -1514,6 +1526,37 @@ mod tests {
              {capacity_after_first} -> {capacity_after_second}"
         );
         let _ = door_a;
+    }
+
+    /// #3698 (ECS-P2-02) — `collect_candidates` must take the scratch map
+    /// OUT of `InteractionCandidateScratch` before `populate_candidates`
+    /// acquires any component read guards, not populate it in place while
+    /// the write guard is still open. Establishes the canonical reverse
+    /// edge (`DoorTeleport` read, then `InteractionCandidateScratch`
+    /// write) before driving `select_interaction_target` — pre-fix, the
+    /// nested read inside the write guard would close this cycle and
+    /// panic under the live detector.
+    #[test]
+    fn collect_candidates_does_not_close_scratch_component_lock_cycle() {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let mut world = physics_fixture();
+        world.insert_resource(InteractionCandidateScratch::default());
+        spawn_camera(&mut world);
+        spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -100.0));
+        byroredux_physics::physics_sync_system(&world, 0.0);
+
+        // DoorTeleport(read) -> InteractionCandidateScratch(write): the
+        // canonical order.
+        {
+            let _door = world.query::<DoorTeleport>().unwrap();
+            let _scratch = world.resource_mut::<InteractionCandidateScratch>();
+        }
+
+        select_interaction_target(&world);
     }
 
     fn physics_fixture() -> World {
