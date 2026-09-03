@@ -26,6 +26,101 @@ Commits hold that record.
 
 ---
 
+## Session 79 — "Groundhog Day": the /goal fix-issue loop run to convergence — a ~130-issue correctness sweep and a fully-green lock-order CI gate  (2026-09-02 → 2026-09-03, `34951bf6..4d78dce6`, 101 commits)
+
+This session ran the standing `/goal` directive ("fix all github issues
+directly committing to main, one at a time") to its natural conclusion
+across several context compactions — a long, methodical sweep through the
+open-issue backlog rather than a single feature push. 158 issues closed in
+this range; the traceability audit's zero-citation set (50 of 158) checked
+out clean — every one already carries a "Fixed in `<hash>`" close comment
+naming its actual landing commit, just outside this session's own commit
+range.
+
+- **NIF/ESM parser correctness** (the largest bucket) — Oblivion DLC
+  archive-gate widening (#3712) and drift-detector allowlist repair
+  (#3711); corrupt-but-recoverable zlib LAND trailers (#3720, ported to
+  `inflate_bounded` at #3812); nested-GRUP content-end clamping and
+  unrouted-GRUP skip telemetry (#3721/#3722); Skyrim AMMO/BOOK `DATA`
+  layout fixes and seven length-guarded item sub-records
+  (#3723/#3716/#3724); REFR persistent/temporary group membership
+  (#3728); `NiDynamicEffect` pre-4.0.0.2 field group, `bhk*Constraint`
+  drift-telemetry, `bhkPrismaticConstraint` decode +
+  `BhkBreakableConstraint` geometry retention (#3717/#3713/#3792);
+  `NiAlphaProperty` No Sorter bit, SOUN Loop flag, Oblivion RDMD/Skyrim
+  RDMO target-type confirmation (#3797/#3775/#3811); `TexDesc`
+  version-gate correction (#2565); and a run of "parsed but never
+  wired, undocumented" deferral-doc corrections (SBSP/ROAD #3619, BGSM
+  `apply_mode` #3625, the nonexistent EGT compositor claim #3544,
+  `DecalData` #3638, BGSM `distance_field_alpha_texture` #2642) —
+  several caught the deferral note itself pointing at a wrong or
+  nonexistent milestone.
+- **NIFAL canonical-boundary + material correctness** —
+  `specular_authored` threaded from NIF import through
+  `ImportedMaterial`/`Material` so `resolve_pbr`'s classifier backstop
+  stops hardcoding `false` — a save-format major-version bump to v21
+  (#2573); MSWP per-shape swap's later-wins semantics fixed to compare
+  against the fixed source instead of the running output (#3242); a
+  duplicated 3ds-Max exporter-artifact light de-dup (#3557);
+  `tex.missing`/`tex.loaded`'s own diagnostic bucketing normalized
+  after verifying the real texture cache was already correct (#3558).
+- **ECS/concurrency — the lock-order CI gate** — a run of
+  lock-acquisition-order hygiene fixes (#3695–3698, #3680, #3249,
+  #3251) capped by hoisting `LocalBound`/`WorldBound` above the
+  `PhysicsWorld` guard in ragdoll writeback (#3655). Verifying that fix
+  under `BYRO_LOCK_ORDER_CHECK=1` surfaced that CI's dedicated
+  lock-order-check job was fully red — 26 tests failing across four
+  distinct cross-thread ABBA cycle families, none caused by this
+  session. Traced and closed all four (a `Transform`/`GlobalTransform`
+  ordering outlier in `capture_spatial_snapshot`, two
+  resolver-vs-storage order reversals in the actor-value/faction-
+  reputation write-apply paths, and a same-thread test-hygiene bug —
+  un-dropped resource guards spanning three `World` instances in one
+  test), plus a self-inflicted perf-test assertion that failed the
+  gate on its own account regardless of any real cycle.
+  `BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace` went from 26
+  failures to **97/97 binaries green** (#3819).
+- **Physics / animation / audio** — the current-volume containment
+  test now reads the collider AABB centre, matching the surface-branch
+  fix #2887 already made 26 lines away (#3490); animation single-layer
+  short-circuit (#3706); audio queue drained in place instead of
+  stranding heap capacity every tick (#3521); `OffsetMap` bisection
+  replaces a linear scan (#2668); root-motion zero-motion overwrite
+  fix, embedded-clip registration dedup, B-spline dequantised-sample
+  finite-guard (#3707/#3764/#3765).
+- **Renderer / GPU** — scratch-telemetry coverage (#3693/#3694),
+  texture registry's per-handle `HashMap`s moved to dense
+  `TextureEntry` fields (#3682), volumetrics skip-clear latch
+  unification (#3685), `PackedStorage` in-place compaction (#3689),
+  cinematic-retention hoisting + per-cell scoping (#3690/#3254),
+  morph-weight in-place staging (#3687), camera-UBO GLSL lockstep +
+  `between_frames` CPU-timing accounting (#3684/#3674/#3692),
+  shader-constant consolidation for blue-noise ranks and water
+  RT-reach budgets (#3742/#3745), `GpuLight` Rust↔GLSL lockstep pin
+  (#3763), and the weather/volumetric-fog build-out's continuation
+  (rain/snow surface state).
+- **Scripting / save / tech-debt** — `PlayerEntity` renamed to
+  `PapyrusPlayerEntity` to disambiguate from the ECS-native type
+  (#3710), `MeleeState` split off `CombatState` (#3709),
+  `decompile_script`'s auto-state match made case-insensitive (#3786),
+  `Effect::Conditional` recursion-depth cap (#3279); a housekeeping
+  pass deleted 98 throwaway `_tmp_*` example scripts and made the
+  convention self-enforcing (#3746 + companions), removed two dead
+  NPC-spawn compatibility shims (#3747), and gave every `#[ignore]`'d
+  test a machine-readable reason (#3749).
+
+Net: tests 7001 → 7185 (+184); Rust src LOC ~527,686 → 527,043 (-643,
+net of a 98-file `_tmp_*` scratch-example cleanup outweighing
+additions); source files 999 → 902 outside `tests/` dirs; open issue
+dirs 3690 → 3697 (+7); workspace members unchanged at 33.
+Bench-of-record `34074b93` is now 1059 commits stale (over 35× the
+30-commit gate) — still no GPU in this environment to refresh it; this
+session's range is not hot-path-quiet (touched
+`triangle.frag`/`water.frag`/`volumetrics_inject.comp` among others) —
+see the R6a-stale-20 fold in ROADMAP.
+
+---
+
 ## Session 78 — "The Perfect Storm": weather/fog build-out, SDK dispatch continued, and a 40-issue correctness tail  (2026-09-01 → 2026-09-02, `14ab665d..cd316a56`, 36 commits)
 
 Three Claude Code threads ran against the same shared working directory at
