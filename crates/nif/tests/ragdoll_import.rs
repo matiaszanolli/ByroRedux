@@ -135,7 +135,7 @@ fn assert_reference_counts(
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_humanoid_skeleton_threads_ragdoll() {
     let Some(ragdoll) =
         thread_skeleton_ragdoll(Game::FalloutNV, r"meshes\characters\_male\skeleton.nif")
@@ -168,7 +168,7 @@ fn fnv_humanoid_skeleton_threads_ragdoll() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn oblivion_humanoid_skeleton_threads_ragdoll() {
     // Oblivion introduced Havok ragdolls; the human skeleton lives at the
     // same `_male` path as FNV but ships the `#NI_BS_LTE_16#` (pivots-first,
@@ -187,7 +187,7 @@ fn oblivion_humanoid_skeleton_threads_ragdoll() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_humanoid_skeleton_threads_ragdoll() {
     // Skyrim SE: FO3+ constraint layout (gated by NIF version, not bsver)
     // + havok_scale ×69.99. Skeleton path moved under actors/character.
@@ -310,7 +310,7 @@ fn connected_components(ragdoll: &ImportedRagdoll) -> usize {
 /// each detaching and free-falling independently). Pins the full fix:
 /// all 12 edges surface and the graph is one connected component.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_protectron_skeleton_is_one_connected_component() {
     let Some(ragdoll) =
         thread_skeleton_ragdoll(Game::FalloutNV, r"meshes\creatures\protectron\skeleton.nif")

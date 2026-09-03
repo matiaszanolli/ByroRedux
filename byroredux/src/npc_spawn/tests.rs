@@ -1832,7 +1832,7 @@ fn skyrim_data_dir() -> Option<std::path::PathBuf> {
 /// `NakedFeet` ARMA sorts ahead of `NakedTorso` and the resolver stopped at
 /// the first race match.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
     let Some(data) = skyrim_data_dir() else {
         eprintln!("[#3361] skipping: Skyrim SE data unavailable");
@@ -1893,7 +1893,7 @@ const CREATURE_RACE_NPCS: &[(&str, u32)] = &[
 /// resolve at least one mesh. Pre-fix the #2094 occupancy retain dropped
 /// every one of them (measured: 351 skin meshes dropped, 0 kept).
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
     let Some(data) = skyrim_data_dir() else {
         eprintln!("[#3408] skipping: Skyrim SE data unavailable");
@@ -1967,7 +1967,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
 /// Pre-fix every one of these was 0: the FaceGen phase passed `None` for its
 /// pre-spawn hook, so no head partition was ever hidden.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
     let Some(data) = skyrim_data_dir() else {
         eprintln!("[#3409] skipping: Skyrim SE data unavailable");
@@ -2037,7 +2037,7 @@ fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
 /// yielded exactly one, so 765 of Skyrim.esm's 1,246 outfit items (61%)
 /// never reached an NPC.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data() {
     let Some(data) = skyrim_data_dir() else {
         eprintln!("[#3356] skipping: Skyrim SE data unavailable");

@@ -238,13 +238,13 @@ fn run_variant(expect: Variant) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fo4_bgsm_corpus() {
     run_variant(Variant::Bgsm);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fo4_bgem_corpus() {
     run_variant(Variant::Bgem);
 }

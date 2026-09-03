@@ -72,7 +72,7 @@ mod real_ruleset_falsifiability {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs FO3 game data on disk"]
     fn fallout3_ruleset_resolves_against_the_real_master() {
         let Some(index) = load(
             "fallout3_ruleset_resolves_against_the_real_master",
@@ -95,7 +95,7 @@ mod real_ruleset_falsifiability {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs FNV game data on disk"]
     fn falloutnv_ruleset_resolves_against_the_real_master() {
         let Some(index) = load(
             "falloutnv_ruleset_resolves_against_the_real_master",
@@ -112,7 +112,7 @@ mod real_ruleset_falsifiability {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs FO4 game data on disk"]
     fn fallout4_ruleset_resolves_against_the_real_master() {
         let Some(index) = load(
             "fallout4_ruleset_resolves_against_the_real_master",
@@ -133,7 +133,7 @@ mod real_ruleset_falsifiability {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "needs Skyrim SE game data on disk"]
     fn skyrim_ruleset_resolves_against_the_real_master() {
         let Some(index) = load(
             "skyrim_ruleset_resolves_against_the_real_master",
@@ -164,7 +164,7 @@ mod real_ruleset_falsifiability {
     /// mapping these EditorIDs to its legacy engine actor-value indices at
     /// the parser boundary" — which does not exist in the parser yet.
     #[test]
-    #[ignore]
+    #[ignore = "needs Oblivion game data on disk"]
     fn oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver() {
         let Some(index) = load(
             "oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver",
@@ -429,7 +429,7 @@ fn dial_topic_children_walked_into_dialogue_infos() {
 /// whole `dialogues` map's `infos` was empty across every DIAL.
 /// Stays `#[ignore]` like the rest of the real-data tests.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_real_fnv_dial_infos_populated() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
@@ -547,7 +547,7 @@ fn qust_group_walks_nested_dial_info_scen() {
 /// `index.dialogues` and `index.scenes` were both empty on FO4 (the
 /// audit's own measured evidence: 117,230 records dropped).
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_real_fo4_dialogues_and_scenes_populated() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
@@ -581,7 +581,7 @@ fn parse_real_fo4_dialogues_and_scenes_populated() {
 /// oracle above. Starfield ships top-level DIAL/SCEN GRUP labels but
 /// empty; the real content is under QUST here too.
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn parse_real_starfield_dialogues_and_scenes_populated() {
     let path = crate::esm::test_paths::starfield_esm();
     if !path.exists() {
@@ -617,7 +617,7 @@ fn parse_real_starfield_dialogues_and_scenes_populated() {
 /// globals/game settings. We just check we're in the right order of
 /// magnitude — exact numbers drift with patches.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_real_fnv_esm_record_counts() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
@@ -1279,7 +1279,7 @@ fn lvlc_group_dispatches_to_leveled_creatures_map() {
 /// least one NPC's SCRI FormID resolves into the scripts map.
 /// Ignored — opt in with `--ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
@@ -1323,7 +1323,7 @@ fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_real_fo3_esm_crea_and_lvlc_counts() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {

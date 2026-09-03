@@ -8,7 +8,7 @@ use super::super::helpers::read_zstring;
 use super::super::*;
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_real_fnv_esm() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
@@ -68,7 +68,7 @@ fn parse_real_fnv_esm() {
 /// this ignored because it needs the proprietary master, but make the authored
 /// population reproducible when the engine's direction convention is audited.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_xcll_direction_population_oracle() {
     use std::collections::BTreeMap;
 
@@ -135,7 +135,7 @@ fn fnv_xcll_direction_population_oracle() {
 /// record, and the sampled color values must land in the expected
 /// 0..1 normalized float range.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn oblivion_cells_populate_xcll_lighting() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
@@ -221,7 +221,7 @@ fn oblivion_cells_populate_xcll_lighting() {
 /// hard error, which is the minimum bar for future per-record
 /// Oblivion work.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_real_oblivion_esm_walker_survives() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
@@ -276,7 +276,7 @@ fn parse_real_oblivion_esm_walker_survives() {
 /// BLAS batching / streaming RIS and needs a fresh GPU bench —
 /// tracked in #456.
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_real_fo3_megaton_cell_baseline() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
@@ -305,7 +305,7 @@ fn parse_real_fo3_megaton_cell_baseline() {
 /// Validates that `parse_esm_cells` handles Skyrim SE's 92-byte XCLL
 /// sub-records and can find The Winking Skeever interior cell.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn parse_real_skyrim_esm() {
     let path = crate::esm::test_paths::skyrim_se_esm();
     if !path.exists() {
@@ -382,7 +382,7 @@ fn parse_real_skyrim_esm() {
 /// omits LAND when it only changes another part of a Skyrim tile; merging
 /// the override must retain the base terrain rather than opening a hole.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn merge_real_dawnguard_partial_cells_preserves_skyrim_landscape() {
     let data_dir = crate::esm::test_paths::skyrim_se_data_dir();
     let skyrim_path = data_dir.join("Skyrim.esm");
@@ -444,7 +444,7 @@ fn read_zstring_handles_null_terminator() {
 /// 2617 SCOL records. The exact counts drift with DLC patches;
 /// this test just asserts we're in the right order of magnitude.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_real_fo4_esm_surfaces_scol_placements() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
@@ -495,7 +495,7 @@ fn parse_real_fo4_esm_surfaces_scol_placements() {
 /// Ignored by default — opt in with `cargo test -p byroredux-plugin
 /// -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_real_fo4_esm_surfaces_pkin_contents() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
@@ -537,7 +537,7 @@ fn parse_real_fo4_esm_surfaces_pkin_contents() {
 /// usable bounds. Pre-#965 this map didn't exist at all. Ignored by
 /// default — opt in with `cargo test -p byroredux-plugin -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
@@ -589,7 +589,7 @@ fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
 /// FO3 master ships a single root worldspace; later DLCs add
 /// derived ones (Anchorage, Zeta). Ignored by default.
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
@@ -628,7 +628,7 @@ fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
 /// whole master is the honest version of "parses a known locked FNV
 /// door" — it fails loud if the parser regresses to seeing none.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_xloc_locks_are_parsed_from_real_data() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {

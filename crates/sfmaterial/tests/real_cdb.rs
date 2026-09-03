@@ -26,7 +26,7 @@ fn data_dir() -> Option<PathBuf> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn parse_vanilla_materialsbeta_cdb() {
     let Some(data) = data_dir() else {
         return;

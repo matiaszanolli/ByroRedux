@@ -1454,7 +1454,7 @@ mod tests {
     /// `cell_loader::load_order`'s `real_skyrim_load_order_...` test's
     /// skip-if-unavailable convention. Run with `cargo test -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "needs Skyrim SE game data on disk"]
     fn real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs() {
         let data = std::env::var("BYROREDUX_SKYRIM_DATA")
             .map(std::path::PathBuf::from)

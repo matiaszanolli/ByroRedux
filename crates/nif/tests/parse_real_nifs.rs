@@ -146,25 +146,25 @@ fn run_game(game: Game, limit: Option<usize>) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_rate_fallout_nv() {
     run_game(Game::FalloutNV, None);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_rate_fallout_3() {
     run_game(Game::Fallout3, None);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn parse_rate_skyrim_se() {
     run_game(Game::SkyrimSE, None);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_rate_oblivion() {
     // Oblivion BSA v103 uses zlib compression (handled in
     // `crates/bsa/src/archive.rs:470-475`). Previous "decompression not
@@ -173,19 +173,19 @@ fn parse_rate_oblivion() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fallout_4() {
     run_game(Game::Fallout4, None);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO76 game data on disk"]
 fn parse_rate_fallout_76() {
     run_game(Game::Fallout76, None);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn parse_rate_starfield() {
     // Starfield meshes use BA2 v2 GNRL with the 32-byte header extension.
     // Texture archives (BA2 v3 DX10) use a different chunk layout that's
@@ -293,7 +293,7 @@ fn run_all_meshes_gate(game: Game, archives: &[ArchiveSpec]) {
 /// #2201, which only tripped because Meshes02's floor happened to sit at
 /// 99.5%). Now on the same "measured minus ~0.5%" rule as its four siblings.
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn parse_rate_starfield_all_meshes() {
     // #3466 — widened from 5 archives to the full official corpus. The five
     // originals gated ~74% of shipped NIFs; the omissions were led by
@@ -386,7 +386,7 @@ fn parse_rate_starfield_all_meshes() {
 /// of the corpus losing clean parse) trips the gate while a single new
 /// FaceGen drift does not.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fo4_all_meshes() {
     // #3466 — widened from the two base archives (70.8% of shipped NIFs) with
     // the six DLC `Main.ba2`s, mirroring the FO3/FNV lists in
@@ -461,7 +461,7 @@ fn parse_rate_fo4_all_meshes() {
 /// accepted ceiling. This gate is rate-based, so it can widen independently —
 /// which is the whole reason the two tiers are separate.
 #[test]
-#[ignore]
+#[ignore = "needs FO76 game data on disk"]
 fn parse_rate_fo76_all_meshes() {
     run_all_meshes_gate(
         Game::Fallout76,
@@ -567,7 +567,7 @@ fn parse_rate_fo76_all_meshes() {
 /// test so `cargo test -- --ignored` gives a fast signal without waiting
 /// for the full per-game sweep. Useful during parser refactors.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_rate_smoke_all_games() {
     for game in [
         Game::FalloutNV,
@@ -614,7 +614,7 @@ fn parse_rate_smoke_all_games() {
 /// turn it into a verified fact. Every present archive is now swept and
 /// asserted independently.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn real_archive_torch_meshes_surface_particle_emitters() {
     use byroredux_nif::import::import_nif_particle_emitters;
 
@@ -866,7 +866,7 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
 /// uses the legacy chain and the importer needs the Path-3 arm sketched
 /// in `.claude/issues/689/INVESTIGATION.md`.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion/FNV/Skyrim SE game data on disk"]
 fn vanilla_archives_have_zero_nisequencestreamhelper() {
     let games = [Game::Oblivion, Game::FalloutNV, Game::SkyrimSE];
     let mut total_scanned = 0usize;

@@ -153,7 +153,7 @@ fn genhash_file_matches_stored_fnv_meshes_bsa_entry() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn open_fnv_meshes_bsa() {
     if skip_if_missing() {
         return;
@@ -163,7 +163,7 @@ fn open_fnv_meshes_bsa() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn list_files_contains_nif() {
     if skip_if_missing() {
         return;
@@ -179,7 +179,7 @@ fn list_files_contains_nif() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn contains_beer_bottle() {
     if skip_if_missing() {
         return;
@@ -195,7 +195,7 @@ fn contains_beer_bottle() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn extract_beer_bottle() {
     if skip_if_missing() {
         return;
@@ -214,7 +214,7 @@ fn extract_beer_bottle() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn extract_nonexistent_fails() {
     if skip_if_missing() {
         return;
@@ -225,7 +225,7 @@ fn extract_nonexistent_fails() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn texture_bsa_extract_dds() {
     let tex_bsa = fnv_textures_bsa();
     if !tex_bsa.exists() {
@@ -557,7 +557,7 @@ fn malicious_bsa_folder_count_u32_max_rejected() {
 /// / `2026-04-24`). A drift in either count is the signal that a
 /// regression has landed in the v105 directory parse.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_meshes0_opens_and_counts_match_baseline() {
     if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
         return;
@@ -584,7 +584,7 @@ fn skyrim_meshes0_opens_and_counts_match_baseline() {
 /// regressions — Sweetroll is small enough to be a single LZ4
 /// frame yet large enough to exercise the full decode path.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_meshes0_extracts_sweetroll_with_exact_size() {
     if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
         return;
@@ -614,7 +614,7 @@ fn skyrim_meshes0_extracts_sweetroll_with_exact_size() {
 /// equivalent at `contains_beer_bottle` so the SSE path doesn't
 /// silently regress on case-folding.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_meshes0_path_normalization_matches_sweetroll() {
     if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
         return;
@@ -632,7 +632,7 @@ fn skyrim_meshes0_path_normalization_matches_sweetroll() {
 /// at 14,242 files — drift indicates the v105 multi-file-table
 /// indexing has changed.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_meshes1_dlc_overflow_opens_and_counts_match_baseline() {
     if skip_if_skyrim_missing(&skyrim_meshes1_bsa()) {
         return;
@@ -650,7 +650,7 @@ fn skyrim_meshes1_dlc_overflow_opens_and_counts_match_baseline() {
 /// archives (different file-extension distribution + no embedded
 /// names on this layout per the audit's Dim 2 sample).
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_textures0_opens_and_first_dds_decodes() {
     if skip_if_skyrim_missing(&skyrim_textures0_bsa()) {
         return;

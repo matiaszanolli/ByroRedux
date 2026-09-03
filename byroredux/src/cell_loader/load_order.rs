@@ -984,7 +984,7 @@ mod tests {
     /// #2907 + #2912 — validate both load-order folding and archive-backed
     /// localization against the shipped Skyrim master.
     #[test]
-    #[ignore]
+    #[ignore = "needs Skyrim SE game data on disk"]
     fn real_skyrim_load_order_preserves_categories_and_resolves_archive_strings() {
         let data = std::env::var("BYROREDUX_SKYRIMSE_DATA")
             .map(std::path::PathBuf::from)

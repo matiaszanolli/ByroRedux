@@ -154,7 +154,7 @@ fn open_fnv_meshes() -> Option<BsaArchive> {
 /// fails and vertices land at the wrong offset (skin-bone offset
 /// equals the disagreement matrix).
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn skeleton_and_body_agree_on_bone_bind_pose() {
     let Some(bsa) = open_fnv_meshes() else { return };
     let skel_bytes = bsa.extract(FNV_SKELETON_NIF).expect("skeleton.nif extract");
@@ -284,7 +284,7 @@ fn skeleton_and_body_agree_on_bone_bind_pose() {
 /// fewer nodes vs body's deeper representation" observation in
 /// `skeleton_and_body_agree_on_bone_bind_pose`'s ancestor-chain dump.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn bind_pose_disagreement_localised_to_spine_introduction() {
     let Some(bsa) = open_fnv_meshes() else { return };
     let skel_bytes = bsa.extract(FNV_SKELETON_NIF).unwrap();

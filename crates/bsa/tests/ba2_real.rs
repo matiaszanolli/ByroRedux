@@ -173,7 +173,7 @@ fn uncompressed_gnrl_packed_size_zero_round_trips() {
 /// resolved through `list_files` so a future BA2 patch revision that
 /// reshuffles Power Armor meshes doesn't silently break the test.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fo4_meshes_ba2_v8_gnrl_extracts_nif_with_gamebryo_magic() {
     let Some(data) = fo4_data_dir() else {
         eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
@@ -216,7 +216,7 @@ fn fo4_meshes_ba2_v8_gnrl_extracts_nif_with_gamebryo_magic() {
 /// cubemap, assert the synthesized DDS carries the magic + the DX10
 /// `D3D10_RESOURCE_MISC_TEXTURECUBE` flag in its extended header.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fo4_textures1_ba2_v7_dx10_synthesizes_cubemap_dds() {
     let Some(data) = fo4_data_dir() else {
         eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
@@ -284,7 +284,7 @@ fn fo4_textures1_ba2_v7_dx10_synthesizes_cubemap_dds() {
 /// `#[ignore]`-gated because the full extract takes several seconds
 /// and hits ~10 GB of disk I/O; opt-in via `--ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fo4_meshes_ba2_v8_brute_force_extract_zero_errors() {
     let Some(data) = fo4_data_dir() else {
         eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
@@ -356,7 +356,7 @@ fn starfield_data_dir() -> Option<PathBuf> {
 /// This guards the v2 GNRL extraction path that was only verified by a
 /// one-shot external sweep in session 7 (#756).
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn starfield_meshes01_ba2_v2_gnrl_extracts_nif_with_starfield_magic() {
     let Some(data) = starfield_data_dir() else {
         eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
@@ -400,7 +400,7 @@ fn starfield_meshes01_ba2_v2_gnrl_extracts_nif_with_starfield_magic() {
 /// (`compression_method = 3` in the 12-byte v3 header extension) that
 /// was only exercised externally (#756).
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
     let Some(data) = starfield_data_dir() else {
         eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
@@ -460,7 +460,7 @@ fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
 /// - LZ4 block decompression on the v3 sub-corpus
 /// - GNRL extraction on the v2 / v3 mesh sub-corpus
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn starfield_full_corpus_ba2_sweep() {
     let Some(data) = starfield_data_dir() else {
         eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
@@ -590,7 +590,7 @@ fn starfield_full_corpus_ba2_sweep() {
 /// Starfield DLC archives that use v2 (zlib) rather than v3 (LZ4),
 /// ensuring we don't gate extraction on archive type_tag alone (#756).
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
     let Some(data) = starfield_data_dir() else {
         eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");

@@ -99,7 +99,7 @@ fn sample_translation(keys: &[TranslationKey], time: f32) -> Option<[f32; 3]> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn mtidle_kf_produces_visible_rotation_variation() {
     let Some(archive) = open_mesh_archive(Game::FalloutNV) else {
         return;

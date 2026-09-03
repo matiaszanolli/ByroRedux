@@ -32,7 +32,7 @@ fn fo4_data_dir() -> Option<PathBuf> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fallout4_geometry_csg_header_and_object_decode() {
     let Some(data) = fo4_data_dir() else {
         eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");

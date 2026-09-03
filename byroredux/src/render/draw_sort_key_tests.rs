@@ -558,7 +558,7 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
 /// a one-shot measurement gate, not a regression test. Run with
 /// `cargo test -p byroredux --release manual_bench_draw_sort_serial_vs_parallel -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "manual timing bench, environment-dependent"]
 fn manual_bench_draw_sort_serial_vs_parallel() {
     use rayon::prelude::*;
     use std::time::Instant;
@@ -657,7 +657,7 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
 ///
 /// `cargo test -p byroredux --release manual_bench_draw_sort_decorate_sort_undecorate -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "manual timing bench, environment-dependent"]
 fn manual_bench_draw_sort_decorate_sort_undecorate() {
     use rayon::prelude::*;
     use std::time::Instant;

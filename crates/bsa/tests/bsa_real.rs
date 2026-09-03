@@ -72,7 +72,7 @@ fn skyrimse_data_dir() -> Option<PathBuf> {
 /// `oblivion_extract` example, but neither runs under
 /// `cargo test -p byroredux-bsa`.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
     let Some(data) = oblivion_data_dir() else {
         eprintln!("Skipping: BYROREDUX_OBLIVION_DATA not set and default path missing");
@@ -118,7 +118,7 @@ fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
 /// offsets). Open the meshes archive, extract a NIF, assert it carries
 /// the Gamebryo magic header.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_meshes_bsa_v104_extracts_nif_with_gamebryo_magic() {
     let Some(data) = fnv_data_dir() else {
         eprintln!("Skipping: BYROREDUX_FNV_DATA not set and default path missing");
@@ -169,7 +169,7 @@ fn fnv_meshes_bsa_v104_extracts_nif_with_gamebryo_magic() {
 /// than v104 — exercising both in CI guards against a regression
 /// flipping bytes in either direction.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrimse_meshes_bsa_v105_extracts_nif_with_gamebryo_magic() {
     let Some(data) = skyrimse_data_dir() else {
         eprintln!("Skipping: BYROREDUX_SKYRIMSE_DATA not set and default path missing");
@@ -222,7 +222,7 @@ fn skyrimse_meshes_bsa_v105_extracts_nif_with_gamebryo_magic() {
 /// errors guards against codec regressions sneaking in via dependency
 /// updates.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrimse_meshes_bsa_v105_brute_force_extract_zero_errors() {
     let Some(data) = skyrimse_data_dir() else {
         eprintln!("Skipping: BYROREDUX_SKYRIMSE_DATA not set and default path missing");

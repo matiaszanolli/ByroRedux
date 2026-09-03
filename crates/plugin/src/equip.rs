@@ -1818,7 +1818,7 @@ mod arma_alternative_gate_tests {
     /// test pins that leaf so a future change to the tie-break shows up
     /// here rather than as a mysterious smoke-gate failure.
     #[test]
-    #[ignore]
+    #[ignore = "needs Skyrim SE game data on disk"]
     fn real_skyrim_bleak_falls_draugr_expands_to_one_weapon_leaf() {
         let path = crate::esm::test_paths::skyrim_se_esm();
         if !path.exists() {

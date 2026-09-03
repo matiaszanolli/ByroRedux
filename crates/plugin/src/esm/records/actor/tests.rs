@@ -1660,7 +1660,7 @@ fn head_part_index_table_differs_per_game() {
 /// vanilla races author a distinct female head, which pre-#3418 no
 /// female NPC ever received).
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
@@ -1712,7 +1712,7 @@ fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
 /// authors the nine-slot head table, so the eyes sit at 7 / 8 and the
 /// tongue — not an eye — sits at 6.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_real_oblivion_race_head_part_indices() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
@@ -1837,7 +1837,7 @@ fn crea_data_arm_is_gated_to_the_fallout3_fnv_era() {
 /// creatures spawned with no `ActorValues`, hence no `ActorVitals`, hence
 /// untargetable by the P2 melee slice. Spot-checks are vanilla values.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_real_fnv_creatures_derive_actor_values() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {

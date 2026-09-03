@@ -537,7 +537,7 @@ fn play_music_no_op_when_inactive() {
 ///
 /// `#[ignore]` — needs working audio device + vanilla FNV data.
 #[test]
-#[ignore]
+#[ignore = "needs a working audio device and FNV game data"]
 fn play_music_drives_streaming_playback_on_real_ogg() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;
@@ -598,7 +598,7 @@ fn play_music_drives_streaming_playback_on_real_ogg() {
 ///
 /// `#[ignore]` — needs working audio device + vanilla FNV data.
 #[test]
-#[ignore]
+#[ignore = "needs a working audio device and FNV game data"]
 fn looping_emitter_survives_natural_duration_and_stops_on_emitter_remove() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;
@@ -709,7 +709,7 @@ fn looping_emitter_survives_natural_duration_and_stops_on_emitter_remove() {
 ///
 /// `#[ignore]` — needs working audio device + vanilla FNV data.
 #[test]
-#[ignore]
+#[ignore = "needs a working audio device and FNV game data"]
 fn non_looping_emitter_stops_on_emitter_remove_regression_858() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;
@@ -926,7 +926,7 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
 ///
 /// `#[ignore]` — needs working audio device + vanilla FNV data.
 #[test]
-#[ignore]
+#[ignore = "needs a working audio device and FNV game data"]
 fn play_oneshot_queue_drives_real_playback() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;
@@ -1022,7 +1022,7 @@ fn play_oneshot_queue_drives_real_playback() {
 ///   audio_system_full_lifecycle -- --ignored --nocapture
 /// ```
 #[test]
-#[ignore]
+#[ignore = "needs a working audio device and FNV game data"]
 fn audio_system_full_lifecycle_on_real_fnv_sound() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;
@@ -1130,7 +1130,7 @@ fn audio_system_full_lifecycle_on_real_fnv_sound() {
 ///   real_fnv_sounds_decode -- --ignored --nocapture
 /// ```
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn real_fnv_sounds_decode_through_kira() {
     use byroredux_bsa::BsaArchive;
     use std::path::PathBuf;

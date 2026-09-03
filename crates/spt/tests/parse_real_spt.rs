@@ -116,7 +116,7 @@ fn sweep_archive(bsa_path: &Path, label: &str) -> Stats {
 /// Acceptance gate for Phase 1.3: ≥ 95 % of FNV `.spt` files clear
 /// the parameter section without an unknown-tag bail-out.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_rate_fnv_spt() {
     let Some(data) = data_dir(
         "BYROREDUX_FNV_DATA",
@@ -144,7 +144,7 @@ fn parse_rate_fnv_spt() {
 /// FO3: same gate as FNV — should be at parity since both share the
 /// `__IdvSpt_02_` magic + observed tag dictionary.
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_rate_fo3_spt() {
     let Some(data) = data_dir(
         "BYROREDUX_FO3_DATA",
@@ -170,7 +170,7 @@ fn parse_rate_fo3_spt() {
 /// floor matters because Cyrodiil exteriors lean entirely on TREE
 /// REFRs for forest content.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_rate_oblivion_spt() {
     let Some(data) = data_dir(
         "BYROREDUX_OBL_DATA",

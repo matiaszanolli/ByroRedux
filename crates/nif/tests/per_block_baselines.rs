@@ -227,43 +227,43 @@ fn run_baseline(game: Game) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn per_block_baseline_fallout_nv() {
     run_baseline(Game::FalloutNV);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn per_block_baseline_fallout_3() {
     run_baseline(Game::Fallout3);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn per_block_baseline_oblivion() {
     run_baseline(Game::Oblivion);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn per_block_baseline_skyrim_se() {
     run_baseline(Game::SkyrimSE);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn per_block_baseline_fallout_4() {
     run_baseline(Game::Fallout4);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO76 game data on disk"]
 fn per_block_baseline_fallout_76() {
     run_baseline(Game::Fallout76);
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn per_block_baseline_starfield() {
     run_baseline(Game::Starfield);
 }

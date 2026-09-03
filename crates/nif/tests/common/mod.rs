@@ -27,7 +27,7 @@
 //! use common::{Game, game_data_dir};
 //!
 //! #[test]
-//! #[ignore]
+//! #[ignore = "needs FNV game data on disk"]
 //! fn walk_fnv_meshes() {
 //!     let Some(data) = game_data_dir(Game::FalloutNV) else { return; };
 //!     // ...

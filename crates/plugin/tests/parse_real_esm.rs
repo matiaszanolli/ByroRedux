@@ -82,7 +82,7 @@ const FO4_TOTAL_FLOOR: usize = 122_000;
 /// #2904 — Far Harbor ships HEDR 0.95 (overlapping the old FO3/FNV band)
 /// but uses FO4's TES5+ record-header version 131.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn dlccoast_header_classifies_as_fallout4() {
     let Some(data) = data_dir(
         test_paths::FO4_ENV,
@@ -102,7 +102,7 @@ fn dlccoast_header_classifies_as_fallout4() {
 
 /// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -122,7 +122,7 @@ fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
     let Some(data) = data_dir(
         test_paths::OBLIVION_ENV,
@@ -142,7 +142,7 @@ fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -195,7 +195,7 @@ fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_health_resolves_to_authored_avif_form_id() {
     let Some(data) = data_dir(
         test_paths::SKYRIM_SE_ENV,
@@ -410,7 +410,7 @@ fn assert_rosters_resolve(case: &RosterCase) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs installed game data (checks every available master)"]
 fn charal_rosters_and_derived_keys_resolve_on_every_shipped_master() {
     for case in ROSTER_CASES {
         assert_rosters_resolve(case);
@@ -418,7 +418,7 @@ fn charal_rosters_and_derived_keys_resolve_on_every_shipped_master() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_default_water_promotes_underwater_tail() {
     let Some(data) = data_dir(
         test_paths::SKYRIM_SE_ENV,
@@ -469,7 +469,7 @@ fn skyrim_default_water_promotes_underwater_tail() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs installed game data (checks every available master)"]
 fn installed_masters_water_fields_are_finite_and_ordered() {
     // Keep this as a cross-generation invariant rather than asserting one
     // byte layout: WATR DATA/DNAM tails differ between Oblivion, FO3/FNV,
@@ -669,7 +669,7 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
 /// male mesh on every female wearer. Independent GRUP walk of the shipped
 /// master: 389 ARMO, 245 author a `MOD3`, 213 of those differ from `MODL`.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_armo_female_meshes_are_parsed_and_selected() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -757,7 +757,7 @@ fn fnv_armo_female_meshes_are_parsed_and_selected() {
 /// declare duplicate non-zero masks must now resolve strictly fewer meshes
 /// than it has race-matching addons.
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fo4_duplicate_region_armas_collapse_on_real_data() {
     let Some(data) = data_dir(
         test_paths::FO4_ENV,
@@ -845,7 +845,7 @@ fn fo4_duplicate_region_armas_collapse_on_real_data() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn fo4_ruleset_uses_only_authored_avif_outputs() {
     let Some(data) = data_dir(
         test_paths::FO4_ENV,
@@ -867,7 +867,7 @@ fn fo4_ruleset_uses_only_authored_avif_outputs() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_rate_fnv_esm() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -1459,7 +1459,7 @@ fn parse_rate_fnv_esm() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn parse_rate_fo3_esm() {
     let Some(data) = data_dir(
         test_paths::FO3_ENV,
@@ -1692,7 +1692,7 @@ fn parse_rate_fo3_esm() {
 /// dispatch work) just verifies every NAM0 is read. Observed vanilla
 /// 2026-04: 19 CLMTs, 37 WTHRs.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn parse_rate_oblivion_esm() {
     let Some(data) = data_dir(
         test_paths::OBLIVION_ENV,
@@ -1938,7 +1938,7 @@ fn parse_rate_oblivion_esm() {
 /// categories that #817 added to `EsmIndex::categories()`
 /// (texture_sets / scols / packins / movables / material_swaps).
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fo4_esm() {
     let Some(data) = data_dir(
         test_paths::FO4_ENV,
@@ -2254,7 +2254,7 @@ fn parse_rate_fo4_esm() {
 ///
 /// `#[ignore]`-gated by Oblivion install (mirrors `parse_rate_oblivion_esm`).
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn race_oblivion_data_and_subs_against_vanilla() {
     let Some(data) = data_dir(
         test_paths::OBLIVION_ENV,
@@ -2368,7 +2368,7 @@ fn race_oblivion_data_and_subs_against_vanilla() {
 ///
 /// `#[ignore]`-gated by Oblivion install.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn clas_oblivion_knight_against_vanilla() {
     let Some(data) = data_dir(
         test_paths::OBLIVION_ENV,
@@ -2627,7 +2627,7 @@ fn parse_fo4_architecture_fixture_populates_typed_maps() {
 ///       --release --test parse_real_esm -- --ignored
 ///       dump_prospector_saloon_refrs --nocapture`
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn dump_prospector_saloon_refrs() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -2742,7 +2742,7 @@ fn dump_prospector_saloon_refrs() {
 /// FalloutNV.esm (all matched; e.g. `…LinkedMarker1024` → radius 1024,
 /// `…CurrentLocation256` → radius 256).
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn parse_rate_fnv_pack_pldt_location() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -2849,7 +2849,7 @@ fn parse_rate_fnv_pack_pldt_location() {
 ///
 /// `#[ignore]`-gated like its siblings: needs installed game data.
 #[test]
-#[ignore]
+#[ignore = "needs installed game data (checks every available master)"]
 fn installed_masters_per_water_scalars_are_not_decoded_constants() {
     // Same master list as `installed_masters_water_fields_are_finite_and_ordered`.
     let masters = [
@@ -2987,7 +2987,7 @@ fn installed_masters_per_water_scalars_are_not_decoded_constants() {
 ///
 /// `#[ignore]`-gated like its siblings: needs installed game data.
 #[test]
-#[ignore]
+#[ignore = "needs FNV/FO3 game data on disk"]
 fn installed_fallout_masters_decode_the_dnam_visual_tail() {
     let masters = [
         (
@@ -3079,7 +3079,7 @@ fn installed_fallout_masters_decode_the_dnam_visual_tail() {
 /// `0.4 / 0.6` — what the old arm reported for amp/freq — appears on no
 /// record at all once the head is read.
 #[test]
-#[ignore]
+#[ignore = "needs FNV/FO3 game data on disk"]
 fn installed_fallout_masters_read_the_watr_head_not_the_simulator_tail() {
     // The authored `(wave_amplitude, wave_frequency, wind_speed)` tuples in
     // vanilla FO3/FNV. Every record is one of these; none is the displacement
@@ -3222,7 +3222,7 @@ fn installed_fallout_masters_read_the_watr_head_not_the_simulator_tail() {
 /// visible and makes any future change to this shared function announce its
 /// effect on FNV instead of landing unobserved.
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
     let Some(data) = data_dir(
         test_paths::FNV_ENV,
@@ -3318,7 +3318,7 @@ fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
 /// a future change to the shared `expand_leveled_inner` announces its effect on
 /// Skyrim instead of landing unobserved.
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
     let Some(data) = data_dir(
         test_paths::SKYRIM_SE_ENV,

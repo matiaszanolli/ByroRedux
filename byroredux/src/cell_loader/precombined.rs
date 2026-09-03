@@ -944,7 +944,7 @@ mod tests {
     /// yield non-empty, index-valid meshes. Gated on `BYROREDUX_FO4_DATA`:
     /// `cargo test -p byroredux -- --ignored build_precombine_meshes`.
     #[test]
-    #[ignore]
+    #[ignore = "needs FO4 game data on disk"]
     fn build_precombine_meshes_decodes_real_oc_nif() {
         let Some(data) = fo4_data_dir() else {
             eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
@@ -1017,7 +1017,7 @@ mod tests {
     /// Gated on the installed FO4 data:
     /// `cargo test -p byroredux -- --ignored dlc_rebake`.
     #[test]
-    #[ignore]
+    #[ignore = "needs FO4 + Far Harbor (DLCCoast) game data on disk"]
     fn dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg() {
         let Some(data) = fo4_data_dir() else {
             eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
@@ -1083,7 +1083,7 @@ mod tests {
     /// renderer or a subjective screenshot. Kept ignored because it needs
     /// the installed FO4 archives.
     #[test]
-    #[ignore]
+    #[ignore = "needs FO4 game data on disk"]
     fn switchboard_precombine_transforms_match_authored_bounds() {
         let Some(data) = fo4_data_dir() else {
             eprintln!("Skipping: no FO4 data dir");
@@ -1252,7 +1252,7 @@ mod tests {
     /// and the geometry must decode against `DLCCoast - Geometry.csg` — the
     /// owning plugin's CSG, not the active plugin's. Gated on real data.
     #[test]
-    #[ignore]
+    #[ignore = "needs FO4 + Far Harbor (DLCCoast) game data on disk"]
     fn dlc_precombine_path_and_csg_resolve_end_to_end() {
         let Some(data) = fo4_data_dir() else {
             eprintln!("Skipping: no FO4 data dir");

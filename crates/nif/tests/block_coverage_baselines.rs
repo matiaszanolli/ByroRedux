@@ -81,7 +81,7 @@ fn baselines_dir() -> PathBuf {
 /// `ungrdltraphingedoor.nif` parse whole now) re-truncates files that
 /// aren't in the baseline → red.
 #[test]
-#[ignore]
+#[ignore = "needs Oblivion game data on disk"]
 fn oblivion_block_count_parity() {
     let Some(archive) = open_mesh_archive(Game::Oblivion) else {
         return;
@@ -330,37 +330,37 @@ fn run_unknown_ceiling(game: Game, stem: &str) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO3 game data on disk"]
 fn unknown_ceiling_fallout_3() {
     run_unknown_ceiling(Game::Fallout3, "fallout_3");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV game data on disk"]
 fn unknown_ceiling_fallout_nv() {
     run_unknown_ceiling(Game::FalloutNV, "fallout_nv");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn unknown_ceiling_skyrim_se() {
     run_unknown_ceiling(Game::SkyrimSE, "skyrim_se");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO4 game data on disk"]
 fn unknown_ceiling_fallout_4() {
     run_unknown_ceiling(Game::Fallout4, "fallout_4");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FO76 game data on disk"]
 fn unknown_ceiling_fallout_76() {
     run_unknown_ceiling(Game::Fallout76, "fallout_76");
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs Starfield game data on disk"]
 fn unknown_ceiling_starfield() {
     run_unknown_ceiling(Game::Starfield, "starfield");
 }

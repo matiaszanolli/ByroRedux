@@ -152,7 +152,7 @@ fn for_each_game(what: &str, body: impl Fn(Game, &Expected, Vec<u8>)) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV/FO3 game data on disk"]
 fn parse_vanilla_headhuman_egm() {
     for_each_game(
         r"meshes\characters\head\headhuman.egm",
@@ -201,7 +201,7 @@ fn parse_vanilla_headhuman_egm() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV/FO3 game data on disk"]
 fn parse_vanilla_headhuman_egt() {
     for_each_game(
         r"meshes\characters\head\headhuman.egt",
@@ -235,7 +235,7 @@ fn parse_vanilla_headhuman_egt() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs FNV/FO3 game data on disk"]
 fn parse_vanilla_headhuman_tri_header() {
     for_each_game(
         r"meshes\characters\head\headhuman.tri",

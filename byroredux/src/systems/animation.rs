@@ -1909,7 +1909,7 @@ mod animation_system_e2e_tests {
     /// rotation_through_animation_system_on_real_mtidle -- --ignored
     /// --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "needs FNV game data on disk"]
     fn rotation_through_animation_system_on_real_mtidle() {
         use byroredux_bsa::BsaArchive;
         use std::path::PathBuf;

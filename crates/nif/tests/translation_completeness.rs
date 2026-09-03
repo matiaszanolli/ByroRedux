@@ -337,7 +337,7 @@ fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> 
 /// table that's the regression-detection signal for the canonical
 /// translation layer.
 #[test]
-#[ignore]
+#[ignore = "needs game data on disk for one or more of Oblivion/FO3/FNV/SkyrimSE/FO4/FO76/Starfield"]
 fn cross_game_translation_completeness() {
     eprintln!("\n=== #1277 Task 8: cross-game translation completeness ===");
     eprintln!(
