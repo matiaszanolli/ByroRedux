@@ -13,6 +13,33 @@ use crate::vulkan::context::DrawCommand;
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Canonicalize TLAS instance order by BLAS device address.
+///
+/// TLAS instance order is not part of the shader-visible identity: the
+/// instance custom index still points at the matching compacted SSBO entry.
+/// Sorting the emitted instances here keeps the BLAS-reference layout stable
+/// when the raster draw list is re-permuted by frustum partitioning or
+/// depth-primary alpha sorting. That lets a same-address-set frame use
+/// Vulkan UPDATE/refit instead of rebuilding solely because the draw order
+/// changed (#3666).
+pub(super) fn sort_tlas_instances_by_blas_address(
+    instances: &mut [vk::AccelerationStructureInstanceKHR],
+) {
+    instances.sort_unstable_by(|a, b| {
+        let a_address = unsafe {
+            // SAFETY: callers only pass instances populated from device-built
+            // BLAS entries, so `device_handle` is the active union variant.
+            a.acceleration_structure_reference.device_handle
+        };
+        let b_address = unsafe {
+            // SAFETY: callers only pass instances populated from device-built
+            // BLAS entries, so `device_handle` is the active union variant.
+            b.acceleration_structure_reference.device_handle
+        };
+        a_address.cmp(&b_address)
+    });
+}
+
 /// Convert a column-major `[f32; 16]` model matrix (glam / shader
 /// convention) into the row-major 3×4 layout `VkTransformMatrixKHR`
 /// expects. The bottom row of an affine model matrix is always

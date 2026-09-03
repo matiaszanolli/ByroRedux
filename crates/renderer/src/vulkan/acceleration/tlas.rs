@@ -10,7 +10,7 @@ use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
     align_scratch_address, decide_use_update, draw_command_eligible_for_tlas,
     scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_instance,
-    shrink_scratch_if_oversized, tlas_instance_transform,
+    shrink_scratch_if_oversized, sort_tlas_instances_by_blas_address, tlas_instance_transform,
 };
 use super::types::TlasState;
 use super::AccelerationManager;
@@ -661,6 +661,15 @@ impl AccelerationManager {
                 },
             });
         }
+
+        // #3666 — TLAS instance order is independent of raster compositing
+        // order. Canonicalize by BLAS address before the instance upload and
+        // the BUILD-vs-UPDATE cache snapshot so frustum churn and
+        // depth-primary alpha sorting cannot turn the same BLAS multiset into
+        // a false layout mismatch. `instance_custom_index` remains attached
+        // to each instance, so ray hits still resolve to the correct SSBO
+        // entry after the reorder.
+        sort_tlas_instances_by_blas_address(&mut instances);
 
         let instance_count = instances.len() as u32;
         let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;

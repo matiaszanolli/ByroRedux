@@ -390,6 +390,50 @@ fn decide_forces_build_when_layout_diverges() {
     assert!(did_zip, "comparison must run — that's how we noticed");
 }
 
+/// Regression for #3666: raster sorting may permute the same BLAS references,
+/// but TLAS UPDATE eligibility must not treat that permutation as a changed
+/// instance layout after the producer canonicalizes by device address.
+#[test]
+fn tlas_instance_sort_key_is_independent_of_draw_order() {
+    let mut instances = vec![
+        vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR { matrix: [0.0; 12] },
+            instance_custom_index_and_mask: vk::Packed24_8::new(0, 0),
+            instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: 30,
+            },
+        },
+        vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR { matrix: [0.0; 12] },
+            instance_custom_index_and_mask: vk::Packed24_8::new(0, 0),
+            instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: 10,
+            },
+        },
+        vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR { matrix: [0.0; 12] },
+            instance_custom_index_and_mask: vk::Packed24_8::new(0, 0),
+            instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: 20,
+            },
+        },
+    ];
+
+    sort_tlas_instances_by_blas_address(&mut instances);
+
+    let addresses: Vec<_> = instances
+        .iter()
+        .map(|instance| unsafe {
+            // SAFETY: each test instance is initialized with device_handle.
+            instance.acceleration_structure_reference.device_handle
+        })
+        .collect();
+    assert_eq!(addresses, [10, 20, 30]);
+}
+
 /// Length mismatch (entity spawned/despawned without the BLAS map
 /// noticing — e.g. an entity with an existing-mesh handle joined
 /// the in_tlas set). The zip-compare's length check catches this.
