@@ -797,22 +797,47 @@ fn apply_buoyancy_with_scratch(
                 *body.translation()
             };
 
-            let current_flow = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
+            // #3490 (PHYS-D6-2026-08-27b-01) — the collider AABB is fetched
+            // ONCE here, shared by both the current-volume Y test below and
+            // the surface Y test further down, so the two agree on which Y
+            // value represents "the body". Pre-fix, the current-volume
+            // branch tested `pos.y` (the rigid-body ORIGIN) while the
+            // surface branch tested the AABB centre (#2887) — the exact
+            // split #2887 already closed for the surface branch alone, 26
+            // lines apart in this same loop. They coincide only for a shape
+            // centred on its body, which is exactly what the bhk import
+            // path is not: `collision_shape_to_parts` attaches every
+            // compound part at its own local isometry, and ragdoll bones
+            // are offset by construction — the norm, not an edge case.
+            // Missing collider still `continue`s the whole iteration,
+            // matching the surface branch's pre-existing behaviour (their
+            // `current_flow`/`surface` locals were about to be discarded by
+            // the same `continue` either way, since it unwinds past both).
+            let aabb_y = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
                 None
             } else {
+                let Some(collider) = pw.colliders.get(t.handles.collider) else {
+                    continue;
+                };
+                let aabb = collider.compute_aabb();
+                Some((aabb.mins.y, aabb.maxs.y))
+            };
+
+            let current_flow = aabb_y.and_then(|(min_y, max_y)| {
+                let center_y = 0.5 * (min_y + max_y);
                 current_volumes
                     .iter()
                     .find(|current| {
                         let v = &current.volume;
                         pos.x >= v.min[0]
                             && pos.x <= v.max[0]
-                            && pos.y >= v.min[1]
-                            && pos.y <= v.max[1]
+                            && center_y >= v.min[1]
+                            && center_y <= v.max[1]
                             && pos.z >= v.min[2]
                             && pos.z <= v.max[2]
                     })
                     .map(|current| current.flow)
-            };
+            });
 
             // Find the containing surface: body centre inside the volume's XZ
             // extent, and the body within the column (band-extended above the
@@ -820,22 +845,12 @@ fn apply_buoyancy_with_scratch(
             // outside the union footprint resolve to `None` without ever
             // touching the collider set. `(s, min_y, max_y)` borrows only the
             // local `surfaces` Vec — not `pw` — so the `get_mut` below is free.
-            let surface = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
-                None
-            } else {
-                let Some(collider) = pw.colliders.get(t.handles.collider) else {
-                    continue;
-                };
-                let aabb = collider.compute_aabb();
-                let (min_y, max_y) = (aabb.mins.y, aabb.maxs.y);
+            let surface = aabb_y.and_then(|(min_y, max_y)| {
                 // #2887 — the collider AABB centre, NOT `pos.y` (the rigid
-                // body's ORIGIN). They coincide only for a shape centred on
-                // its body, which is exactly what this module's test balls
-                // are and exactly what the bhk import path is not:
-                // `collision_shape_to_parts` attaches every compound part at
-                // its own local isometry, and ragdoll bones are offset by
-                // construction. `submerged_fraction` already reads the AABB
-                // span, so sorting and `depth` were the odd ones out.
+                // body's ORIGIN). See the `aabb_y` doc above for why they
+                // disagree on the bhk import path. `submerged_fraction`
+                // already reads the AABB span, so sorting and `depth` were
+                // the odd ones out.
                 let center_y = 0.5 * (min_y + max_y);
                 surfaces
                     .iter()
@@ -868,7 +883,7 @@ fn apply_buoyancy_with_scratch(
                             .total_cmp(&nearest_surface_distance(b.1, center_y))
                     })
                     .map(|(s, surface_y)| (s, min_y, max_y, surface_y))
-            };
+            });
 
             // #3114 — ONE owner of the force clear per body per frame, before
             // any branch applies. Rapier's `add_force` accumulates into
@@ -1711,6 +1726,94 @@ mod tests {
              value the doc does not promise",
             contact.depth,
             from_body_origin
+        );
+    }
+
+    /// Regression for #3490 (PHYS-D6-2026-08-27b-01) — the exact split
+    /// #2887 (above) closed for the SURFACE branch, still present on the
+    /// CURRENT-VOLUME branch 26 lines apart in the same loop. Reuses the
+    /// identical offset-compound fixture: a 40 BU-below-origin leaf makes
+    /// the AABB centre (-70) and the body origin (-30) disagree by a known
+    /// amount, then authors a current-volume band that contains ONLY the
+    /// AABB centre — a pre-fix read (`pos.y`, the origin) must miss the
+    /// band entirely, while the fixed read (the AABB centre) must hit it.
+    ///
+    /// `WaterContact::flow` is NOT the right observable here — when the
+    /// body is also inside a surface's water column (as this fixture's
+    /// body is), `flow` is written from the SURFACE's own `WaterFlow`
+    /// (`s.flow`, this loop's `writes.push` a few lines below), completely
+    /// independent of `current_flow`. The current-volume branch's own
+    /// effect is a bounded drag *force* applied directly to the Rapier
+    /// body (`current_force`, further below), never surfaced on
+    /// `WaterContact` at all — so this drives the current in a direction
+    /// (+Z) the base water plane's own flow (+X) does not touch, and reads
+    /// the resulting displacement instead.
+    #[test]
+    fn current_volume_flow_is_measured_from_the_collider_aabb_centre_not_the_body_origin() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+        use byroredux_core::ecs::components::water::WaterCurrentVolume;
+        use byroredux_core::ecs::components::Transform;
+
+        const OFFSET: f32 = -40.0;
+        const RADIUS: f32 = 10.0;
+        let body_origin_y = -30.0_f32;
+        let (mut world, _water, body) = submerged_ball_world(body_origin_y);
+        world.insert(
+            body,
+            CollisionShape::Compound {
+                children: vec![(
+                    Vec3::new(0.0, OFFSET, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: RADIUS }),
+                )],
+            },
+        );
+
+        // AABB centre = origin + OFFSET = -70.0; body origin = -30.0. Band
+        // contains the centre but not the origin — the two reads disagree
+        // about whether this body is even inside the current at all.
+        let aabb_centre_y = body_origin_y + OFFSET;
+        assert!(
+            (-80.0..=-60.0).contains(&aabb_centre_y),
+            "fixture precondition: centre must fall inside the authored band"
+        );
+        assert!(
+            !(-80.0..=-60.0).contains(&body_origin_y),
+            "fixture precondition: origin must fall OUTSIDE the authored band, \
+             or this test can't distinguish the two reads"
+        );
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-500.0, -80.0, -500.0],
+                    max: [500.0, -60.0, 500.0],
+                },
+                // +Z — orthogonal to the base water plane's own +X flow
+                // (`submerged_ball_world`), so any Z displacement can only
+                // come from THIS current volume firing.
+                flow: WaterFlow::new([0.0, 0.0, 1.0], 8.0),
+            },
+        );
+
+        for _ in 0..600 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+
+        let position = world
+            .get::<Transform>(body)
+            .expect("transform present")
+            .translation;
+        assert!(
+            position.z > 1.0,
+            "the current volume must be detected via the collider AABB centre \
+             (-70), which falls inside the authored band, and push the body \
+             downstream along +Z; a body-origin read (-30) falls outside the \
+             band and would miss the current entirely, leaving z≈0 — got \
+             z={}",
+            position.z
         );
     }
 
