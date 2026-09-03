@@ -12,7 +12,7 @@ use byroredux_core::ecs::components::{
     ActorValues, ActorVitals, CreatureAttack, Dead, EquippedWeapon,
 };
 use byroredux_core::ecs::storage::{Component, EntityId};
-use byroredux_core::ecs::{Resource, World};
+use byroredux_core::ecs::{Resource, SparseSetStorage, World};
 
 use crate::components::HavokAnimationTarget;
 use crate::interaction::{camera_ray, ActionState, InputAction};
@@ -44,11 +44,19 @@ pub(crate) struct CombatTraceEntry {
     pub(crate) outcome: String,
 }
 
-/// Runtime combat timing and smoke-test evidence.
+/// Session-wide melee telemetry: counters and the last resolved
+/// attack/hit/death, for `combat.status` and smoke-test evidence.
+///
+/// #3709 (ECS-P2-06) — `cooldown_remaining`/`blocking` used to live here
+/// too, but those are per-combatant facts, not session-global ones; a
+/// single `Resource` field can only ever represent one combatant's
+/// cooldown/block state at a time. There is exactly one melee producer
+/// today (`combat_input_system` resolves its aggressor from
+/// `PlayerEntity`), so this was latent rather than a live bug — but the
+/// first NPC attacker would have made the two combatants share one
+/// cooldown clock. Split out to [`MeleeState`], a per-entity component.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CombatState {
-    pub(crate) cooldown_remaining: f32,
-    pub(crate) blocking: bool,
     pub(crate) attacks_started: u64,
     pub(crate) hits_landed: u64,
     pub(crate) kills: u64,
@@ -58,8 +66,6 @@ pub(crate) struct CombatState {
 impl Default for CombatState {
     fn default() -> Self {
         Self {
-            cooldown_remaining: 0.0,
-            blocking: false,
             attacks_started: 0,
             hits_landed: 0,
             kills: 0,
@@ -69,6 +75,22 @@ impl Default for CombatState {
 }
 
 impl Resource for CombatState {}
+
+/// Per-combatant melee timing: this entity's own attack-cooldown clock and
+/// block-held flag. #3709 (ECS-P2-06) — split out of [`CombatState`],
+/// which could only ever represent one combatant since it was a
+/// `Resource`. `SparseSetStorage` matches the sibling per-actor behavior
+/// components in `crate::components` (e.g. `HavokAnimationTarget`) — most
+/// entities never fight, so a dense/packed storage would waste space.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct MeleeState {
+    pub(crate) cooldown_remaining: f32,
+    pub(crate) blocking: bool,
+}
+
+impl Component for MeleeState {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// Death transitions produced inside parallel systems are queued here and
 /// reconciled by one Late-stage exclusive sink. The persisted [`Dead`] marker
@@ -133,22 +155,42 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             attack_cooldown_seconds(world, aggressor)
         });
 
-    let attack_ready = if let Some(mut state) = world.try_resource_mut::<CombatState>() {
-        // Continuous state, not an edge: the cooldown clock and the block
-        // flag keep tracking in every mode, so entering and leaving fly-cam
-        // neither freezes a running cooldown nor strands `blocking` true.
-        state.blocking = block_held;
-        state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
-        if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
-            state.cooldown_remaining = armed_cooldown;
-            state.attacks_started = state.attacks_started.saturating_add(1);
-            true
-        } else {
-            false
-        }
-    } else {
-        false
+    // #3709 (ECS-P2-06) — cooldown/blocking are per-combatant facts, tracked
+    // on `MeleeState` (the aggressor entity's own component), not on the
+    // session-global `CombatState` resource; without an aggressor entity
+    // there is nowhere to attach that state, and no attack could resolve
+    // past the `let Some(aggressor) = aggressor else { record_miss(...) }`
+    // bail below regardless.
+    let attack_ready = match aggressor {
+        Some(aggressor) => world
+            .query_mut::<MeleeState>()
+            .is_some_and(|mut melee| {
+                if melee.get_mut(aggressor).is_none() {
+                    melee.insert(aggressor, MeleeState::default());
+                }
+                let state = melee
+                    .get_mut(aggressor)
+                    .expect("just inserted if it was missing");
+                // Continuous state, not an edge: the cooldown clock and the
+                // block flag keep tracking in every mode, so entering and
+                // leaving fly-cam neither freezes a running cooldown nor
+                // strands `blocking` true.
+                state.blocking = block_held;
+                state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
+                if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
+                    state.cooldown_remaining = armed_cooldown;
+                    true
+                } else {
+                    false
+                }
+            }),
+        None => false,
     };
+    if attack_ready {
+        if let Some(mut state) = world.try_resource_mut::<CombatState>() {
+            state.attacks_started = state.attacks_started.saturating_add(1);
+        }
+    }
     if !attack_ready {
         // Deliberately NOT `record_miss`: every miss reason below describes a
         // swing that happened and failed to connect. A press outside
@@ -1044,7 +1086,13 @@ mod tests {
 
     /// Drive the real input pipeline so the attack edge is produced the
     /// way the engine produces it, then run one `combat_input_system` tick.
-    fn attack_edge_fixture(mode: PlayerMode) -> World {
+    /// #3709 — spawns a real aggressor entity and installs it as
+    /// `PlayerEntity`, rather than the pre-split fixture's `PlayerEntity
+    /// (None)`. `MeleeState` (cooldown/blocking) now lives on that entity,
+    /// so a fixture with no aggressor could no longer exercise arming at
+    /// all — there is nowhere to attach the per-combatant state. Returns
+    /// the aggressor's `EntityId` so callers can read its `MeleeState`.
+    fn attack_edge_fixture(mode: PlayerMode) -> (World, EntityId) {
         use crate::components::InputState;
         use crate::interaction::{ActionBindings, InjectedKeyHold, InjectedKeyPulse};
 
@@ -1052,6 +1100,7 @@ mod tests {
         byroredux_scripting::register(&mut world);
         world.register::<EquippedWeapon>();
         world.register::<Dead>();
+        world.register::<MeleeState>();
         world.insert_resource(CombatState::default());
         world.insert_resource(InputState::default());
         world.insert_resource(ActionBindings::default());
@@ -1059,8 +1108,16 @@ mod tests {
         world.insert_resource(InjectedKeyPulse::default());
         world.insert_resource(InjectedKeyHold::default());
         world.insert_resource(mode);
-        world.insert_resource(PlayerEntity(None));
+        let aggressor = world.spawn();
+        world.insert_resource(PlayerEntity(Some(aggressor)));
+        (world, aggressor)
+    }
+
+    fn melee_state_of(world: &World, entity: EntityId) -> MeleeState {
         world
+            .query::<MeleeState>()
+            .and_then(|q| q.get(entity).copied())
+            .unwrap_or_default()
     }
 
     fn press_attack(world: &World) {
@@ -1083,7 +1140,7 @@ mod tests {
         // `PlayerMode::Character` gate, so a fly-cam press inflated
         // `attacks_started` and armed a cooldown the player never incurred,
         // corrupting the telemetry `combat.status` reports.
-        let world = attack_edge_fixture(PlayerMode::FlyCam);
+        let (world, aggressor) = attack_edge_fixture(PlayerMode::FlyCam);
         press_attack(&world);
 
         combat_input_system(&world, 1.0 / 60.0);
@@ -1094,7 +1151,8 @@ mod tests {
             "a fly-cam press is not a swing and must not move the counter"
         );
         assert_eq!(
-            state.cooldown_remaining, 0.0,
+            melee_state_of(&world, aggressor).cooldown_remaining,
+            0.0,
             "a fly-cam press must not arm the melee cooldown"
         );
         assert!(
@@ -1107,14 +1165,17 @@ mod tests {
     fn character_mode_attack_press_consumes_the_edge_and_arms_the_cooldown() {
         // Companion to the above: the gate must not have broken the real
         // path. In character mode the same press still counts and arms.
-        let world = attack_edge_fixture(PlayerMode::Character);
+        let (world, aggressor) = attack_edge_fixture(PlayerMode::Character);
         press_attack(&world);
 
         combat_input_system(&world, 1.0 / 60.0);
 
         let state = world.resource::<CombatState>();
         assert_eq!(state.attacks_started, 1);
-        assert_eq!(state.cooldown_remaining, MELEE_COOLDOWN_SECONDS);
+        assert_eq!(
+            melee_state_of(&world, aggressor).cooldown_remaining,
+            MELEE_COOLDOWN_SECONDS
+        );
     }
 
     #[test]
@@ -1122,20 +1183,60 @@ mod tests {
         // The decay and the block flag are continuous state, not an edge:
         // entering fly-cam mid-cooldown must not freeze the clock, or the
         // player returns to character mode still locked out.
-        let world = attack_edge_fixture(PlayerMode::Character);
+        let (world, aggressor) = attack_edge_fixture(PlayerMode::Character);
         press_attack(&world);
         combat_input_system(&world, 0.0);
         assert_eq!(
-            world.resource::<CombatState>().cooldown_remaining,
+            melee_state_of(&world, aggressor).cooldown_remaining,
             MELEE_COOLDOWN_SECONDS
         );
 
         *world.resource_mut::<PlayerMode>() = PlayerMode::FlyCam;
         combat_input_system(&world, 0.2);
-        let remaining = world.resource::<CombatState>().cooldown_remaining;
+        let remaining = melee_state_of(&world, aggressor).cooldown_remaining;
         assert!(
             (remaining - (MELEE_COOLDOWN_SECONDS - 0.2)).abs() < 1e-5,
             "cooldown must keep decaying in fly-cam, got {remaining}"
+        );
+    }
+
+    /// #3709 (ECS-P2-06) — the actual regression: `MeleeState` is a
+    /// per-entity `SparseSet` component, not a shared `Resource` field, so
+    /// two combatants' cooldown/block state cannot collide. There is no
+    /// NPC melee producer yet (`combat_input_system` only ever arms its
+    /// `PlayerEntity` aggressor), so this drives the real system for the
+    /// player and confirms a second, independently-seeded combatant's
+    /// `MeleeState` is completely untouched by it — the structural
+    /// guarantee the pre-split resource could never make, since a single
+    /// `cooldown_remaining` field can only ever represent one combatant.
+    #[test]
+    fn two_combatants_have_independent_cooldowns() {
+        let (mut world, player) = attack_edge_fixture(PlayerMode::Character);
+        let other = world.spawn();
+        world.insert(
+            other,
+            MeleeState {
+                cooldown_remaining: 0.2,
+                blocking: true,
+            },
+        );
+        press_attack(&world);
+
+        combat_input_system(&world, 1.0 / 60.0);
+
+        assert_eq!(
+            melee_state_of(&world, player).cooldown_remaining,
+            MELEE_COOLDOWN_SECONDS,
+            "the player's cooldown must arm"
+        );
+        let other_state = melee_state_of(&world, other);
+        assert_eq!(
+            other_state.cooldown_remaining, 0.2,
+            "a second combatant's cooldown must be untouched by the player's swing"
+        );
+        assert!(
+            other_state.blocking,
+            "a second combatant's block flag must be untouched by the player's swing"
         );
     }
 
@@ -1159,8 +1260,7 @@ mod tests {
             return;
         }
 
-        let mut world = attack_edge_fixture(PlayerMode::Character);
-        let aggressor = world.spawn();
+        let (mut world, aggressor) = attack_edge_fixture(PlayerMode::Character);
         world.insert(
             aggressor,
             EquippedWeapon {
@@ -1171,7 +1271,6 @@ mod tests {
                 speed: 1.5,
             },
         );
-        *world.resource_mut::<PlayerEntity>() = PlayerEntity(Some(aggressor));
         press_attack(&world);
 
         // EquippedWeapon(read) -> CombatState(write): the canonical order.

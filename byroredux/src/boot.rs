@@ -489,6 +489,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // any world that skips this registration (bare test worlds).
     world.insert_resource(InteractionCandidateScratch::default());
     world.insert_resource(crate::combat::CombatState::default());
+    // #3709 — per-combatant melee cooldown/blocking, split out of
+    // CombatState (a Resource can only ever represent one combatant).
+    world.register::<crate::combat::MeleeState>();
     world.insert_resource(crate::combat::PendingDeathReconciliations::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing

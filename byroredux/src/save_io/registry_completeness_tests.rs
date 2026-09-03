@@ -425,6 +425,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("LoadedCellIndex", "read-only parsed-ESM cell index, Arc-shared scene metadata rebuilt every cell load"),
         ("LoadedPluginSet", "boot-time CLI --esm/--master capture, reused only to re-invoke load_cell_with_masters — not gameplay state"),
         ("MaterialTextureHandles", "bindless GPU texture handle set, rebuilt by the texture-upload path every load — handles aren't stable across process restarts"),
+        ("MeleeState", "per-combatant attack cooldown/blocking, split out of CombatState (#3709) — same session-local-timing posture as its former home; canonical Health/Dead/EquippedWeapon state is saved separately"),
         ("MetricsState", "process-diagnostics sampler holding a live sysinfo::System handle, not gameplay state"),
         ("NameIndex", "lazily-rebuilt Name->EntityId cache, invalidated by its own generation counter (#249)"),
         ("NavPath", "cached single-tile NAVM waypoint path (EX-16 item 3 Phase 3 / #2372), rederived on demand from resident NavmeshTile data by navmesh_path::path_from_resident_tiles — same posture as NavmeshTile itself, never lossy gameplay state"),

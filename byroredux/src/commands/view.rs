@@ -97,11 +97,19 @@ impl ConsoleCommand for CombatStatusCommand {
             .try_resource::<crate::combat::CombatState>()
             .map(|state| state.clone())
             .unwrap_or_default();
+        // #3709 — cooldown/blocking moved off `CombatState` onto
+        // `MeleeState`, a per-combatant component. The console surface has
+        // only the player to show, so it's looked up via `PlayerEntity`.
+        let melee = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0)
+            .and_then(|player| world.query::<crate::combat::MeleeState>()?.get(player).copied());
+        let melee = melee.unwrap_or_default();
         let mut lines = vec!["Combat status:".to_string()];
         lines.push(format!(
             "  cooldown={:.3} blocking={} attacks={} hits={} kills={}",
-            state.cooldown_remaining,
-            state.blocking,
+            melee.cooldown_remaining,
+            melee.blocking,
             state.attacks_started,
             state.hits_landed,
             state.kills,
