@@ -166,9 +166,9 @@ jobs:
   # total. Gated on the opt-in `dhat-heap` feature (installs a
   # `#[global_allocator]`), so the default `cargo test --workspace` job above
   # never runs them. Runs as its own job — dhat's global-allocator override
-  # must not share a process with the rest of the suite. The two files are
+  # must not share a process with the rest of the suite. The three files are
   # separate test binaries (dhat's profiler is a process-global singleton),
-  # so each `--test` runs as its own process — list both explicitly rather
+  # so each `--test` runs as its own process — list all three explicitly rather
   # than a bare `cargo test -p byroredux-nif --features dhat-heap`, which
   # would also re-run every non-dhat integration test in the crate.
   # ──────────────────────────────────────────────────────────────────────────
@@ -183,6 +183,7 @@ jobs:
         run: |
           cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds
           cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds_geometry
+          cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds_import
 
   # ──────────────────────────────────────────────────────────────────────────
   # Vulkan validation layer headless bench (VKC-006 / #1429)
