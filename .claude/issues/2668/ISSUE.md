@@ -1,44 +1,54 @@
-# #2668: SCR-D4-NEW11-02: OffsetMap::to_original is an unindexed linear scan over an already-sorted vec, giving O(N*E) error remapping
+# #2668 — SCR-D4-NEW11-02: OffsetMap::to_original is an unindexed linear scan over an already-sorted vec, giving O(N*E) error remapping
 
-**Severity**: LOW
-**Dimension**: Papyrus Lexer & Pratt Parser (Dimension 4)
-**Untrusted-Input**: Yes
-**Location**: `crates/papyrus/src/lexer.rs:66-81` (`OffsetMap::to_original`)
-**Status**: NEW
+**Severity**: LOW · **Dimension**: Papyrus Lexer & Pratt Parser
+**Location**: `crates/papyrus/src/lexer.rs::OffsetMap::to_original`
 
-## Description
+## Fix
 
-`to_original` walks the whole entry vec linearly on every call, once per reported parse error, over a vec that is already sorted by construction (`OffsetMap::push` appends in increasing preprocessed-offset order).
+Verified the premise: `OffsetMap::push` always appends with a strictly
+increasing preprocessed offset (`original_offset` only grows across the
+`preprocess` scan, `prior_removed` is monotonically non-decreasing, so
+`preprocessed_offset = original_offset - prior_removed` never decreases),
+confirming `entries` is sorted ascending by `pp_off` by construction.
+`to_original` walked the whole vec linearly on every call to find the last
+entry with `pp_off <= preprocessed`.
 
-The result is O(N*E) in line-continuations x errors.
+Applied the issue's own suggested fix: replaced the linear scan with
+`Vec::partition_point` (binary search over the sorted vec). Also folded in
+the linked cleanup (SCR-D4-NEW11-02's own text, "the dead `removed`
+accumulator in `preprocess` is a free cleanup to fold in here"): removed
+the `removed` local in `preprocess` — it was incremented in three branches
+and then discarded via `let _ = removed;`, never actually read.
 
-## Evidence
+## TESTS (issue's own checklist item — "a regression test pins this
+specific fix")
 
-Measured clean quadratic scaling -- 4x time per 2x input:
+`to_original_bisects_correctly_across_multiple_continuations` — a
+three-continuation fixture (`entries` has 3 entries, not 1 like the only
+prior test), asserting `to_original` at every interesting offset: before
+any continuation, exactly at each continuation's own preprocessed offset
+(the boundary the `<=` predicate must include), strictly between two
+continuations, and past the last one. Every expected value was hand-derived
+against the actual original-source offsets (not just against the formula),
+as a sanity cross-check.
 
-```
- 4k continuations + errors ->   5 ms
-32k continuations + errors -> 305 ms
-```
+**Reintroduce-and-revert verification**: temporarily changed the
+bisection predicate from `pp_off <= preprocessed` to `pp_off < preprocessed`
+(an off-by-one that mis-maps every boundary offset) — confirmed the new
+test failed at the very first boundary assertion (`'c', first boundary`,
+expected 4 got 2). Restored the fix and reran — all 91 tests in
+`byroredux-papyrus`'s `lexer::tests` pass again.
 
-The two axes in isolation are each linear; only the product is quadratic. `crates/papyrus/src/lexer.rs:66` is a plain `for` over `self.entries` with no bisection.
+## SIBLING (issue's own dimension convention)
 
-## Impact
+Searched the file for other manual scans over `entries` or similarly
+sorted structures — `push` (append-only) and the new bisection are the
+only two consumers; no other linear scan needed the same treatment.
 
-Only reachable with a `.psc` carrying both many line continuations and many parse errors, and `.psc` has no production consumer today (the engine's live path consumes `.pex`; every `parse_script` call site is a test or an example).
+## Verification
 
-Real but bounded: a hardening / quality item rather than a live performance problem.
-
-## Related
-
-SCR-D4-NEW11-01 (same file, same pass); the dead `removed` accumulator in `preprocess` is a free cleanup to fold in here
-
-## Suggested Fix
-
-Replace the linear scan with `partition_point` (the vec is already sorted, so bisection is a drop-in). Optionally drop the unused `removed` accumulator in `preprocess` in the same change.
-
-## Completeness Checks
-- [ ] **TESTS**: A regression test pins this specific fix
-
----
-*Filed from `docs/audits/AUDIT_SCRIPTING_2026-08-12.md` (eleventh scripting-domain pass, 7 dimension agents).*
+- `cargo check -p byroredux-papyrus --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux-papyrus`: 91 + 4 tests passing, 0 failing
+  (+1 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7160 passing, 0
+  failing**.

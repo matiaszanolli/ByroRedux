@@ -8,27 +8,23 @@ pub fn preprocess(source: &str) -> (String, OffsetMap) {
     let mut output = String::with_capacity(source.len());
     let mut map = OffsetMap::new();
     let mut chars = source.char_indices().peekable();
-    let mut removed = 0usize;
 
     while let Some((i, ch)) = chars.next() {
         if ch == '\\' {
             // Check if this is a line continuation (backslash + newline)
             if let Some(&(_, '\n')) = chars.peek() {
                 map.push(i, 2);
-                removed += 2;
                 chars.next(); // skip \n
                 continue;
             } else if let Some(&(_, '\r')) = chars.peek() {
                 chars.next(); // skip \r
                 if let Some(&(_, '\n')) = chars.peek() {
                     map.push(i, 3);
-                    removed += 3;
                     chars.next(); // skip \n
                     continue;
                 } else {
                     // Lone \r after backslash — treat as continuation
                     map.push(i, 2);
-                    removed += 2;
                     continue;
                 }
             }
@@ -36,8 +32,6 @@ pub fn preprocess(source: &str) -> (String, OffsetMap) {
         output.push(ch);
     }
 
-    // Record total removed for end-of-file offset mapping
-    let _ = removed;
     (output, map)
 }
 
@@ -63,15 +57,19 @@ impl OffsetMap {
     }
 
     /// Convert a preprocessed byte offset to the original source offset.
+    ///
+    /// #2668 (SCR-D4-NEW11-02) — `entries` is sorted ascending by
+    /// `pp_off` by construction (`push` appends in increasing
+    /// preprocessed-offset order), so the entry this needs — the last one
+    /// with `pp_off <= preprocessed` — is found by bisection instead of a
+    /// linear scan. `partition_point` returns the count of entries
+    /// satisfying the predicate, i.e. one past that entry's index; `0`
+    /// means no entry qualifies (nothing removed yet at this offset).
     pub fn to_original(&self, preprocessed: usize) -> usize {
-        let mut added_back = 0usize;
-        for &(pp_off, removed) in &self.entries {
-            if preprocessed >= pp_off {
-                added_back = removed;
-            } else {
-                break;
-            }
-        }
+        let idx = self
+            .entries
+            .partition_point(|&(pp_off, _)| pp_off <= preprocessed);
+        let added_back = idx.checked_sub(1).map_or(0, |i| self.entries[i].1);
         preprocessed + added_back
     }
 
@@ -151,6 +149,37 @@ mod tests {
         assert_eq!(result, "hello world");
         // 'w' in preprocessed is at index 6; in original it's at index 8
         assert_eq!(map.to_original(6), 8);
+    }
+
+    /// #2668 (SCR-D4-NEW11-02) — pins `to_original`'s bisection against a
+    /// multi-entry map at every interesting offset: before the first
+    /// continuation, exactly at each continuation's own preprocessed
+    /// offset (the boundary `partition_point`'s `<=` predicate must
+    /// include), strictly between two continuations, and past the last
+    /// one. A regression to a naive `<` predicate, or an off-by-one in the
+    /// `idx - 1` lookup, mis-maps exactly these boundary offsets.
+    #[test]
+    fn to_original_bisects_correctly_across_multiple_continuations() {
+        // Three continuations: "ab\\\ncd\\\nef\\\ngh" — each "\\\n" (2 bytes)
+        // removed, preprocessed text is "abcdefgh".
+        let (result, map) = preprocess("ab\\\ncd\\\nef\\\ngh");
+        assert_eq!(result, "abcdefgh");
+
+        // Before any continuation: nothing removed yet.
+        assert_eq!(map.to_original(0), 0, "'a'");
+        assert_eq!(map.to_original(1), 1, "'b'");
+        // At/after the first continuation (preprocessed offset 2 = 'c'):
+        // 2 bytes already removed by then.
+        assert_eq!(map.to_original(2), 4, "'c', first boundary");
+        assert_eq!(map.to_original(3), 5, "'d'");
+        // At/after the second continuation (preprocessed offset 4 = 'e'):
+        // 4 bytes removed by then.
+        assert_eq!(map.to_original(4), 8, "'e', second boundary");
+        assert_eq!(map.to_original(5), 9, "'f'");
+        // At/after the third continuation (preprocessed offset 6 = 'g'):
+        // 6 bytes removed by then.
+        assert_eq!(map.to_original(6), 12, "'g', third boundary");
+        assert_eq!(map.to_original(7), 13, "'h'");
     }
 
     #[test]
