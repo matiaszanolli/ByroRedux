@@ -351,14 +351,36 @@ pub fn lower_fragment_with_quest_properties_and_providers(
         known_quest_properties: quest_property_names.clone(),
         ..Scope::default()
     };
-    lower_statements(body, &mut scope, providers)
+    lower_statements(body, &mut scope, providers, 0)
 }
+
+/// Maximum `Stmt::If` nesting depth [`lower_statements`] recurses through
+/// before declining rather than recursing further.
+///
+/// #3279 (SCR-D5-2026-08-24-02) — unlike every sibling recursive pass in
+/// this domain (`crates/pex/src/decompile/control_flow.rs`'s
+/// `MAX_REBUILD_DEPTH = 1024`, `crates/papyrus/src/parser/{expr,stmt}.rs`'s
+/// `MAX_EXPR_DEPTH`/`MAX_STMT_DEPTH = 256`), this recursion carried no
+/// depth cap of its own. Not independently unbounded in practice — every
+/// reachable input path is itself already bounded by one of those two
+/// upstream caps (a `.psc`-sourced AST by `MAX_STMT_DEPTH`, a
+/// `.pex`-sourced one, this feature's actual target, by
+/// `MAX_REBUILD_DEPTH` reconstructing the nested-`If` shape) — but a
+/// defense-in-depth gap: if either upstream cap is ever loosened without
+/// re-deriving whether this function's own stack budget still holds, this
+/// would be the first place that finds out, silently, via a crash.
+/// Capped at `MAX_STMT_DEPTH`, the smaller of the two upstream bounds.
+const MAX_CONDITIONAL_DEPTH: u32 = 256;
 
 fn lower_statements(
     body: &[Spanned<Stmt>],
     scope: &mut Scope,
     providers: Option<&PapyrusProviderCatalog>,
+    depth: u32,
 ) -> Option<Vec<Effect>> {
+    if depth >= MAX_CONDITIONAL_DEPTH {
+        return None;
+    }
     let mut effects = Vec::new();
     for stmt in body {
         match &stmt.node {
@@ -417,10 +439,10 @@ fn lower_statements(
                     })
                     .collect::<Option<Vec<_>>>()?;
                 let mut then_scope = scope.clone();
-                let then_effects = lower_statements(body, &mut then_scope, providers)?;
+                let then_effects = lower_statements(body, &mut then_scope, providers, depth + 1)?;
                 let mut else_scope = scope.clone();
                 let else_effects = match else_body.as_deref() {
-                    Some(body) => lower_statements(body, &mut else_scope, providers)?,
+                    Some(body) => lower_statements(body, &mut else_scope, providers, depth + 1)?,
                     None => Vec::new(),
                 };
                 let has_latent = |branch: &[Effect]| {
@@ -1361,6 +1383,78 @@ mod tests {
     /// express (e.g. a `::X_var` backing-variable identifier).
     fn sp<T>(node: T) -> Spanned<T> {
         Spanned::new(node, byroredux_papyrus::span::Span::new(0, 0))
+    }
+
+    /// A bare `Self.GetStageDone(stage)` condition atom — the minimal
+    /// shape `classify_guard_atom`'s `prim_stage_done` accepts (a bare
+    /// call used as a boolean, `== 1` implied), so every level of a
+    /// synthetic nested-`If` chain classifies as a real `StageDoneGuard`
+    /// rather than declining before `lower_statements` ever recurses.
+    fn get_stage_done_condition(stage: i64) -> Spanned<Expr> {
+        sp(Expr::Call {
+            callee: Box::new(sp(Expr::MemberAccess {
+                object: Box::new(sp(Expr::Ident(Identifier::new("Self")))),
+                member: sp(Identifier::new("GetStageDone")),
+            })),
+            args: vec![CallArg {
+                name: None,
+                value: sp(Expr::IntLit(stage)),
+            }],
+        })
+    }
+
+    /// Build `depth` levels of nested `If Self.GetStageDone(0) ... EndIf`,
+    /// each level guarded by a real `StageDoneGuard`-classifiable
+    /// condition, with an empty (no-op) innermost body.
+    ///
+    /// Built directly from AST nodes rather than `.psc` source text on
+    /// purpose (#3279): the papyrus parser's own `MAX_STMT_DEPTH` would
+    /// reject a `depth` this deep before `lower_statements` ever saw it,
+    /// which would prove nothing about `lower_statements`'s *own* cap —
+    /// the whole point of a defense-in-depth guard is that it holds even
+    /// if the upstream bound it currently rides on is ever loosened or
+    /// bypassed.
+    fn nested_if_chain(depth: usize) -> Vec<Spanned<Stmt>> {
+        let mut body: Vec<Spanned<Stmt>> = Vec::new();
+        for _ in 0..depth {
+            body = vec![sp(Stmt::If {
+                condition: get_stage_done_condition(0),
+                body,
+                elseif_clauses: vec![],
+                else_body: None,
+            })];
+        }
+        body
+    }
+
+    /// #3279 (SCR-D5-2026-08-24-02) — analogous to
+    /// `stmt_depth_cap_rejects_pathological_nested_if`
+    /// (`crates/papyrus/src/parser/stmt.rs`). `MAX_CONDITIONAL_DEPTH` is
+    /// this recursion's own cap, independent of the two upstream ones
+    /// (`MAX_STMT_DEPTH` on the `.psc` parser, `MAX_REBUILD_DEPTH` on the
+    /// `.pex` decompiler's control-flow rebuild) that transitively bound
+    /// it today.
+    #[test]
+    fn conditional_depth_cap_declines_pathological_nested_if() {
+        let body = nested_if_chain((MAX_CONDITIONAL_DEPTH as usize) * 2);
+        assert_eq!(
+            lower_fragment(&body),
+            None,
+            "a pathologically nested If chain must decline once \
+             MAX_CONDITIONAL_DEPTH is exceeded, not recurse unboundedly"
+        );
+    }
+
+    /// A legitimate (if unusual) fragment comfortably under the cap must
+    /// still lower successfully — the cap must not be so tight it
+    /// rejects real content.
+    #[test]
+    fn conditional_depth_cap_accepts_legitimate_nesting() {
+        let body = nested_if_chain(50);
+        assert!(
+            lower_fragment(&body).is_some(),
+            "legitimate nesting well under MAX_CONDITIONAL_DEPTH must still lower"
+        );
     }
 
     /// Parse a script and return the body of its first function/event
