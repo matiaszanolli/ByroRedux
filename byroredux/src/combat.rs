@@ -119,6 +119,20 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         .try_resource::<PlayerMode>()
         .is_some_and(|mode| *mode == PlayerMode::Character);
 
+    // #3697 (ECS-P2-01) — resolved before `CombatState`'s write guard opens,
+    // not from inside it. `attack_cooldown_seconds` reads `EquippedWeapon`,
+    // and calling it while `try_resource_mut::<CombatState>()` is still held
+    // records a `CombatState(write) -> EquippedWeapon(read)` edge in the
+    // global lock-order graph — exactly the "snapshot into an owned local
+    // and drop your guards before calling a helper that locks" pattern
+    // `crates/core/src/ecs/world.rs`'s house rule forbids. Cheap either way
+    // (one component lookup), so precomputing it unconditionally rather
+    // than only on the frames that arm a cooldown is the simpler flattening.
+    let armed_cooldown = aggressor
+        .map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
+            attack_cooldown_seconds(world, aggressor)
+        });
+
     let attack_ready = if let Some(mut state) = world.try_resource_mut::<CombatState>() {
         // Continuous state, not an edge: the cooldown clock and the block
         // flag keep tracking in every mode, so entering and leaving fly-cam
@@ -126,9 +140,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         state.blocking = block_held;
         state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
         if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
-            state.cooldown_remaining = aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
-                attack_cooldown_seconds(world, aggressor)
-            });
+            state.cooldown_remaining = armed_cooldown;
             state.attacks_started = state.attacks_started.saturating_add(1);
             true
         } else {
@@ -1078,5 +1090,49 @@ mod tests {
             (remaining - (MELEE_COOLDOWN_SECONDS - 0.2)).abs() < 1e-5,
             "cooldown must keep decaying in fly-cam, got {remaining}"
         );
+    }
+
+    /// #3697 (ECS-P2-01) — `combat_input_system`'s cooldown-arming branch
+    /// must resolve `attack_cooldown_seconds` (which reads `EquippedWeapon`)
+    /// *before* opening `CombatState`'s write guard, not from a nested call
+    /// while the guard is still live — otherwise it records a
+    /// `CombatState(write) -> EquippedWeapon(read)` edge in the global
+    /// lock-order graph.
+    ///
+    /// Establishes the canonical reverse edge (`EquippedWeapon` read, then
+    /// `CombatState` write — the order every OTHER `CombatState` writer in
+    /// this file already uses, since none of them read a component while
+    /// holding the guard) before driving the real system. Pre-fix, this
+    /// would have closed the cycle and panicked here; post-fix the weapon
+    /// read and the `CombatState` write never nest.
+    #[test]
+    fn combat_input_system_does_not_close_combat_state_equipped_weapon_lock_cycle() {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let mut world = attack_edge_fixture(PlayerMode::Character);
+        let aggressor = world.spawn();
+        world.insert(
+            aggressor,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(0),
+                base_form_id: 0x1CB64,
+                damage: 10.0,
+                reach: 0.0,
+                speed: 1.5,
+            },
+        );
+        *world.resource_mut::<PlayerEntity>() = PlayerEntity(Some(aggressor));
+        press_attack(&world);
+
+        // EquippedWeapon(read) -> CombatState(write): the canonical order.
+        {
+            let _weapon = world.query::<EquippedWeapon>().unwrap();
+            let _state = world.resource_mut::<CombatState>();
+        }
+
+        combat_input_system(&world, 1.0 / 60.0);
     }
 }
