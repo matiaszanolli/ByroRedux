@@ -528,6 +528,26 @@ pub struct SubRecord {
 #[derive(Debug)]
 pub struct FileHeader {
     pub master_files: Vec<String>,
+    /// HEDR `Num Records` (sub-record offset 4). **Not a parse-completeness
+    /// gate — its meaning differs by game.** Measured against the full file
+    /// walked to EOF with zero walker errors (#3730 / ESM-2026-08-30-D8-02):
+    ///
+    /// - Oblivion / FO3 / FNV / Skyrim: `record_count == records + groups`
+    ///   exactly (1,252,095 / 808,699 / 542,016 / 920,181 — all four match
+    ///   to the unit).
+    /// - Starfield: `record_count == records + 1` (3,829,247 vs 3,829,246)
+    ///   — records only, groups excluded.
+    /// - FO4 and FO76: neither formula, and both short by exactly 80,196
+    ///   (1,741,853 vs 1,661,657; 5,839,497 vs 5,759,301) against
+    ///   `records + groups`. The identical delta across two unrelated files
+    ///   is unexplained.
+    ///
+    /// Two independent walkers agree on the true on-disk counts for every
+    /// game with zero errors, which rules out "the FO4/FO76 walk drops
+    /// ~80k records" — this is `HEDR.count` semantics, not a walk defect.
+    /// The only production consumer today is a `log::info!` in
+    /// `parse_esm_with_load_order`; do not build a completeness assertion
+    /// on this field without accounting for the per-game formula above.
     pub record_count: u32,
     /// HEDR `Version` f32 (sub-record offset 0). 0.0 when absent (synthetic
     /// test fixtures often omit HEDR). Feed into [`GameKind::from_header`].
