@@ -99,6 +99,16 @@ pub struct Material {
     pub emissive_source: EmissiveSource,
     /// Specular highlight color (RGB, linear).
     pub specular_color: [f32; 3],
+    /// Whether [`Self::specular_color`] was actually authored by a bound
+    /// `NiMaterialProperty` / `BSLightingShaderProperty`, as opposed to
+    /// still holding the unauthored struct default (`[1.0; 3]`, visually
+    /// indistinguishable from a real authored white specular). Forwarded
+    /// from `ImportedMaterial::specular_authored` (`crates/nif`) by
+    /// `translate_material` and consumed by [`Self::resolve_pbr`]'s
+    /// classifier backstop — see [`PbrClassifierInputs::specular_authored`]'s
+    /// doc for why inferring authorship from the color VALUE alone is
+    /// unsafe (#1873, #2573).
+    pub specular_authored: bool,
     /// Specular intensity multiplier.
     pub specular_strength: f32,
     /// Diffuse tint (RGB, linear) from `NiMaterialProperty.diffuse`.
@@ -600,6 +610,10 @@ impl Default for Material {
             emissive_mult: 0.0,
             emissive_source: EmissiveSource::None,
             specular_color: [1.0, 1.0, 1.0],
+            // Conservative default matching `ImportedMaterial::default()`'s
+            // own `specular_authored: false` — no source has bound a real
+            // specular color yet.
+            specular_authored: false,
             specular_strength: 1.0,
             diffuse_color: [1.0, 1.0, 1.0],
             ambient_color: [1.0, 1.0, 1.0],
@@ -1266,13 +1280,22 @@ impl Material {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
-                // This backstop path (real content is pre-classified at
-                // NIF import via `classify_legacy_pbr`, or via BGSM,
-                // both of which leave metalness/roughness non-NaN) has
-                // no way to know whether `specular_color` was ever
-                // authored on this `Material` — assume not, matching
-                // the conservative default in `classify_legacy_pbr`.
-                specular_authored: false,
+                // This backstop path is unreachable for every
+                // pre-classified current producer (both NIF import via
+                // `classify_legacy_pbr` and BGSM/BGEM leave
+                // metalness/roughness non-NaN — see the doc above), but it
+                // is a real, live path for a source with no PBR signal at
+                // all (#2707 — the Starfield material-reference stub
+                // case). `Self::specular_authored` carries the real
+                // signal all the way from `MaterialInfo::specular_authored`
+                // (`crates/nif`) through `ImportedMaterial` and
+                // `translate_material` for exactly this reason — reading
+                // it here (rather than hardcoding `false`) matches the
+                // #1873 chrome-flyer fix's own reasoning: the unauthored
+                // default `[1.0; 3]` is visually indistinguishable from a
+                // genuinely authored white specular, so authorship must
+                // come from the flag, not the color value (#2573).
+                specular_authored: self.specular_authored,
                 has_gloss_map: self.gloss_map.is_some(),
             });
             if self.metalness.is_nan() {
@@ -2077,6 +2100,47 @@ mod tests {
         m.resolve_pbr();
         assert_eq!(m.metalness, 0.42);
         assert!(m.roughness.is_finite());
+    }
+
+    /// #2573 — `resolve_pbr`'s classifier backstop must read
+    /// `self.specular_authored`, not hardcode `false`. Both fixtures share
+    /// `env_map_scale > 0.3` (the branch that actually consults
+    /// `specular_authored`, per `classify_pbr_keyword`) and a bright
+    /// `specular_color` whose luminance would classify as metallic if (and
+    /// only if) the classifier trusts it as authored. Reverting the fix
+    /// (hardcoding `specular_authored: false` in `resolve_pbr` again) makes
+    /// the authored case fall back to the same dielectric result as the
+    /// unauthored case, failing this test's `assert_ne!`.
+    #[test]
+    fn resolve_pbr_forwards_specular_authored_to_the_classifier() {
+        let fixture = |specular_authored: bool| {
+            let mut m = Material {
+                env_map_scale: 1.0,
+                specular_color: [0.9, 0.9, 0.9],
+                specular_authored,
+                metalness: f32::NAN,
+                roughness: f32::NAN,
+                ..Material::default()
+            };
+            m.resolve_pbr();
+            m
+        };
+
+        let unauthored = fixture(false);
+        assert_eq!(
+            unauthored.metalness, 0.0,
+            "no specular_authored signal must fall back to dielectric, \
+             matching classify_pbr_keyword's own conservative default"
+        );
+
+        let authored = fixture(true);
+        assert!(
+            authored.metalness > 0.0,
+            "specular_authored: true must let the bright specular_color \
+             drive metalness up, proving resolve_pbr forwarded the real \
+             flag instead of hardcoding false"
+        );
+        assert_ne!(unauthored.metalness, authored.metalness);
     }
 
     #[test]

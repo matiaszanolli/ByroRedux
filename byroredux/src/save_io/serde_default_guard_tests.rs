@@ -418,8 +418,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN` allowlist
     // ("per-frame output re-derived every tick... re-resolved by
     // attach_animation_sinks on load").
-    const BASELINE_MAJOR: u16 = 20;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xdb24_cca4_a32b_5bde;
+    // #2573 (OBL-D5-03) — v21 adds `Material::specular_authored` as a
+    // required field on the registered `Material` column (see
+    // `FORMAT_MAJOR`'s own doc). Genuine save-shape change, bump taken.
+    const BASELINE_MAJOR: u16 = 21;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3a52_4c5a_94bc_ddc5;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

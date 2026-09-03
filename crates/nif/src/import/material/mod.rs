@@ -1511,6 +1511,7 @@ impl MaterialInfo {
             emissive_mult: self.emissive_mult,
             emissive_source: self.emissive_source,
             specular_color: self.specular_color,
+            specular_authored: self.specular_authored,
             diffuse_color: self.diffuse_color,
             ambient_color: self.ambient_color,
             specular_strength: self.specular_strength,

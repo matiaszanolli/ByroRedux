@@ -472,6 +472,11 @@ pub(crate) fn translate_material(
         emissive_mult: source.emissive_mult,
         emissive_source: source.emissive_source,
         specular_color: source.specular_color,
+        // #2573 — forwarded so `resolve_pbr`'s classifier backstop below
+        // can distinguish a genuinely authored specular color from the
+        // unauthored `[1.0; 3]` struct default instead of assuming "never
+        // authored".
+        specular_authored: source.specular_authored,
         specular_strength: source.specular_strength,
         diffuse_color: source.diffuse_color,
         ambient_color: source.ambient_color,
@@ -2092,6 +2097,10 @@ mod canonical_completeness_harness {
             emissive_mult: 1.5,
             emissive_source: EmissiveSource::Lighting,
             specular_color: [0.44, 0.55, 0.66],
+            // #2573 — `true` because the struct default is `false`, so the
+            // round-trip assertion below cannot false-pass against the
+            // default.
+            specular_authored: true,
             specular_strength: 2.5,
             diffuse_color: [0.77, 0.88, 0.99],
             ambient_color: [0.12, 0.34, 0.56],
@@ -2203,6 +2212,7 @@ mod canonical_completeness_harness {
         assert_eq!(material.emissive_mult, 1.5);
         assert_eq!(material.emissive_source, EmissiveSource::Lighting);
         assert_eq!(material.specular_color, [0.44, 0.55, 0.66]);
+        assert!(material.specular_authored, "#2573");
         assert_eq!(material.specular_strength, 2.5);
         assert_eq!(material.diffuse_color, [0.77, 0.88, 0.99]);
         assert_eq!(material.ambient_color, [0.12, 0.34, 0.56]);

@@ -145,7 +145,16 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `blend_in_target` is what it ramps toward. No pre-v20 snapshot has a
 /// correct value to infer here — the field didn't exist for `weight` to be
 /// derived from — so old snapshots are rejected rather than guessed at.
-pub const FORMAT_MAJOR: u16 = 20;
+/// Version 21 (#2573, OBL-D5-03) adds `Material::specular_authored` as a
+/// required field on the registered `Material` column — whether
+/// `specular_color` was actually authored by a bound `NiMaterialProperty` /
+/// `BSLightingShaderProperty`, as opposed to still holding the unauthored
+/// struct default. Like v10's `parallax_height_in_alpha` and v19's
+/// `parallax_height_scale`/`parallax_max_passes`, `false` happens to be the
+/// correct value for every pre-v21 snapshot (every prior build's
+/// `resolve_pbr` treated the field as unconditionally absent), but the
+/// bump is taken anyway per this doc's blanket rule.
+pub const FORMAT_MAJOR: u16 = 21;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

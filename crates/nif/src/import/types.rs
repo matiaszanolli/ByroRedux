@@ -614,6 +614,14 @@ pub struct ImportedMaterial {
     pub emissive_mult: f32,
     pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
     pub specular_color: [f32; 3],
+    /// Whether [`Self::specular_color`] was actually authored by a bound
+    /// `NiMaterialProperty` / `BSLightingShaderProperty`, forwarded from
+    /// `MaterialInfo::specular_authored` (`crates/nif/src/import/material/`)
+    /// by `into_imported_material`. Consumed by `Material::resolve_pbr`'s
+    /// classifier backstop on the canonical side — see that field's doc
+    /// for why the color VALUE alone cannot distinguish "authored white
+    /// specular" from the unauthored struct default (#1873, #2573).
+    pub specular_authored: bool,
     pub diffuse_color: [f32; 3],
     pub ambient_color: [f32; 3],
     pub specular_strength: f32,
@@ -726,6 +734,7 @@ impl Default for ImportedMaterial {
             emissive_mult: 0.0,
             emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
             specular_color: [1.0; 3],
+            specular_authored: false,
             diffuse_color: [1.0; 3],
             ambient_color: [1.0; 3],
             specular_strength: 0.0,
