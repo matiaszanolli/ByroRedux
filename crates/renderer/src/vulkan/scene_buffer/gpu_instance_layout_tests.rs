@@ -77,6 +77,23 @@ fn gpu_camera_is_368_bytes() {
         );
 }
 
+/// #3763 (SAFE-2026-08-30-D6-02) — `GpuLight` is hand-duplicated across
+/// four GLSL sources (`include/bindings.glsl`, `cluster_cull.comp`,
+/// `caustic_splat.comp`, `volumetrics_inject.comp`,
+/// `gpu_light_glsl_copies_stay_in_lockstep` in `shader_contract_tests.rs`
+/// pins those four against each other), but unlike `GpuInstance` (160 B)
+/// and `GpuCamera` (368 B) had no `size_of` pin against the Rust struct at
+/// all. Four `[f32; 4]` fields (`position_radius` / `color_type` /
+/// `direction_angle` / `params`) = 64 B.
+#[test]
+fn gpu_light_is_64_bytes() {
+    assert_eq!(
+        size_of::<GpuLight>(),
+        64,
+        "GpuLight must stay 64 B to match its four GLSL mirrors' std430 layout"
+    );
+}
+
 #[test]
 fn selected_ray_probe_is_144_bytes_std430_compatible() {
     assert_eq!(size_of::<GpuSelectedRayProbe>(), 144);

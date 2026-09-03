@@ -1893,6 +1893,16 @@ fn strip_struct_body(body: &str) -> Vec<String> {
 /// glow). Walks all four sources at compile time (`include_str!`, no
 /// glslangValidator dependency) and asserts their stripped field lists
 /// are byte-identical.
+///
+/// #3763 (SAFE-2026-08-30-D6-02) — this used to be the ONLY leg: mirror-
+/// vs-mirror across the four GLSL copies, never against `gpu_types.rs`.
+/// `GpuMaterial` and `GpuInstance` both have a second leg
+/// (`gpu_material_glsl_field_order_matches_rust_struct`,
+/// `gpu_instance_glsl_copies_stay_in_lockstep`'s own second half) that
+/// catches a Rust-only field append/reorder; `GpuLight` had none, so that
+/// exact class of drift shipped green. Adds it here, reusing the same
+/// `parse_rust_struct_fields`/`normalize_ident` machinery
+/// `gpu_instance_glsl_copies_stay_in_lockstep` uses.
 #[test]
 fn gpu_light_glsl_copies_stay_in_lockstep() {
     const SOURCES: &[(&str, &str)] = &[
@@ -1938,6 +1948,42 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
                 );
             }
         }
+    }
+
+    // Second leg (#3763): the shared GLSL field list must also match the
+    // Rust `#[repr(C)]` struct's declaration order. `strip_struct_body`
+    // above kept full "type name;" lines for the mirror-vs-mirror
+    // comparison; re-parse one representative source into bare field
+    // names via `parse_glsl_struct_fields` (leg 1 already proved all four
+    // are identical, so any one source stands in for all of them).
+    let (_, first_src) = SOURCES[0];
+    let glsl_fields = parse_glsl_struct_fields(first_src, "struct GpuLight");
+    let rust_src = include_str!("gpu_types.rs");
+    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuLight");
+
+    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
+    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
+
+    assert_eq!(
+        rust_norm.len(),
+        glsl_norm.len(),
+        "GpuLight field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
+         `struct GpuLight` (gpu_types.rs) and its four GLSL mirrors must stay in lockstep — \
+         see #3763 / SAFE-2026-08-30-D6-02.",
+        rust_norm.len(),
+        rust_fields,
+        glsl_norm.len(),
+        glsl_fields,
+    );
+
+    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
+        assert_eq!(
+            r, g,
+            "GpuLight field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. Every GLSL \
+             `struct GpuLight` mirror must declare fields in the SAME order as the Rust \
+             `#[repr(C)]` struct — see #3763 / SAFE-2026-08-30-D6-02.",
+            rust_fields[i], glsl_fields[i],
+        );
     }
 }
 
