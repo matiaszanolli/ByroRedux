@@ -273,7 +273,21 @@ impl App {
                 // signal. Latched, so the warning tracks increases rather
                 // than repeating every frame for the life of the menu.
                 let dropped = ui.dropped_host_calls();
-                if let Some(lost) = crate::host_call_gap(self.ui_dropped_host_calls, dropped) {
+                // #3772 — `host_call_gap_for_menu` resets the latch
+                // EXPLICITLY on a menu swap (effective latch 0 whenever
+                // `ui.menu_name` differs from what it was last latched
+                // against) rather than relying on `host_call_gap`'s
+                // decrease guard to infer one. A swap landing on a frame
+                // where the new bridge has already evicted N < the old
+                // latch would otherwise read as "un-dropped" (the same
+                // shape as same-bridge un-dropping, which cannot happen)
+                // and silently absorb the new menu's first N drops.
+                if let Some(lost) = crate::host_call_gap_for_menu(
+                    self.ui_dropped_host_calls,
+                    self.ui_dropped_host_calls_menu.as_deref(),
+                    &ui.menu_name,
+                    dropped,
+                ) {
                     log::warn!(
                         "Scaleform menu '{}' lost {lost} host call(s) to the \
                          {}-entry bridge cap since the last drain ({dropped} \
@@ -286,6 +300,7 @@ impl App {
                     );
                 }
                 self.ui_dropped_host_calls = dropped;
+                self.ui_dropped_host_calls_menu = Some(ui.menu_name.clone());
 
                 for call in host_calls {
                     log::debug!(

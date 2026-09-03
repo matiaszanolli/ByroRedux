@@ -173,6 +173,30 @@ fn host_call_gap(latched: u64, reported: u64) -> Option<u64> {
     reported.checked_sub(latched).filter(|lost| *lost > 0)
 }
 
+/// #3772 — combines the explicit per-menu latch reset with
+/// [`host_call_gap`]'s existing decrease guard, so the whole
+/// reset-then-gap decision is unit-testable without the full per-frame
+/// render machinery. `latched_menu` is the menu name the latch was last
+/// updated against (`None` before the first drain); `menu` is the current
+/// frame's menu. Returns the warning `host_call_gap` would report, using
+/// `0` as the effective latch whenever `menu` differs from
+/// `latched_menu` — an *explicit* reset, so a swap landing on a frame
+/// where the new bridge has already evicted `N < latched` is never
+/// misread as "un-dropped" the way comparing the bare latch against the
+/// new bridge's smaller count would be.
+///
+/// Callers still latch `reported`/`menu` themselves afterward (this
+/// function is a pure decision, not a mutator) — see `app_frame.rs`.
+fn host_call_gap_for_menu(
+    latched: u64,
+    latched_menu: Option<&str>,
+    menu: &str,
+    reported: u64,
+) -> Option<u64> {
+    let effective_latch = if latched_menu == Some(menu) { latched } else { 0 };
+    host_call_gap(effective_latch, reported)
+}
+
 #[cfg(test)]
 mod host_call_gap_tests {
     use super::host_call_gap;
@@ -197,6 +221,47 @@ mod host_call_gap_tests {
     fn a_menu_swap_resetting_the_counter_is_not_a_gap() {
         assert_eq!(host_call_gap(9, 0), None);
         assert_eq!(host_call_gap(u64::MAX, 3), None);
+    }
+}
+
+#[cfg(test)]
+mod host_call_gap_for_menu_tests {
+    use super::host_call_gap_for_menu;
+
+    /// #3772 — the exact lossy scenario the issue's table describes: menu A
+    /// latches at 1000, then menu B swaps in with a fresh bridge that has
+    /// ALREADY dropped 999 by the time this frame observes it (999 < 1000,
+    /// so the bare-latch comparison used to read this as "un-dropped" and
+    /// report nothing). The explicit per-menu reset must instead treat the
+    /// swap's first reading as a fresh baseline (0 → 999 is the gap, all
+    /// 999 reported) rather than folding it into A's latch.
+    #[test]
+    fn a_swap_to_a_bridge_that_already_dropped_fewer_than_the_old_latch_reports_all_of_them() {
+        // Menu A: no prior latch, first reading of 1000 — reported in full.
+        assert_eq!(host_call_gap_for_menu(0, None, "A", 1000), Some(1000));
+        // Same menu, same reading next frame: no new gap.
+        assert_eq!(host_call_gap_for_menu(1000, Some("A"), "A", 1000), None);
+        // Swap to menu B, whose fresh bridge already dropped 999 (< A's
+        // latched 1000). The bare-latch comparison (host_call_gap(1000, 999))
+        // would silently read this as a decrease and report nothing — the
+        // menu-aware version must report all 999 instead.
+        assert_eq!(host_call_gap_for_menu(1000, Some("A"), "B", 999), Some(999));
+    }
+
+    /// Sanity: staying on the same menu still applies `host_call_gap`'s
+    /// ordinary increase-only reporting, unaffected by the reset logic.
+    #[test]
+    fn same_menu_still_reports_only_increases() {
+        assert_eq!(host_call_gap_for_menu(1000, Some("A"), "A", 1000), None);
+        assert_eq!(host_call_gap_for_menu(1000, Some("A"), "A", 1005), Some(5));
+    }
+
+    /// The very first drain of a session (`latched_menu: None`) is always
+    /// treated as a reset — nothing to compare against yet.
+    #[test]
+    fn no_prior_menu_is_treated_as_a_reset() {
+        assert_eq!(host_call_gap_for_menu(0, None, "A", 0), None);
+        assert_eq!(host_call_gap_for_menu(0, None, "A", 5), Some(5));
     }
 }
 
@@ -333,7 +398,19 @@ struct App {
     /// than compared against zero so the warning fires on each *increase*,
     /// not every frame after the first eviction; a decrease means a new menu
     /// brought a fresh bridge, not that calls were un-dropped.
+    ///
+    /// #3772 — this latches a bare number, not the *identity* of the bridge
+    /// that produced it, so a swap landing on a frame where the new bridge
+    /// has already evicted N < the old latch reads as "un-dropped" (a
+    /// decrease) instead of "different menu" — the new menu's first N drops
+    /// are silently absorbed. [`Self::ui_dropped_host_calls_menu`] pairs the
+    /// latch with the menu name that produced it so a swap is an *explicit*
+    /// reset (`app_frame.rs`), not an inferred one.
     ui_dropped_host_calls: u64,
+    /// The menu name [`Self::ui_dropped_host_calls`] was last latched
+    /// against. `None` before the first Scaleform drain. See
+    /// `ui_dropped_host_calls`'s doc (#3772).
+    ui_dropped_host_calls_menu: Option<String>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
     /// Reusable per-frame water draw command buffer. Built alongside
@@ -684,6 +761,7 @@ impl App {
             ui_reported_host_methods: std::collections::HashSet::new(),
             ui_reported_host_methods_capped: false,
             ui_dropped_host_calls: 0,
+            ui_dropped_host_calls_menu: None,
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
