@@ -459,6 +459,14 @@ pub(super) fn spawn_water_plane(
         }
     };
 
+    // #3733 (NIFAL-2026-08-30-D1-02) — clone before the texture-resolve
+    // `if let` below consumes `normal_texture_path` by value. This is the
+    // one texture path this spawner has bound, so it's what
+    // `translate_texture_only_material` gets — same boundary helper
+    // `terrain.rs`/`terrain_lod.rs`/`object_lod.rs`/`terrain_lod_btr.rs`
+    // already use for populations with no source material record.
+    let canonical_material_texture_path = normal_texture_path.clone();
+
     // Texture resolve — the water material's normal_map_index points
     // here. When the WATR record's TNAM is unset (e.g., default
     // interior water with no XCWT), fall back to the canonical
@@ -511,6 +519,18 @@ pub(super) fn spawn_water_plane(
         GlobalTransform::new(position, Quat::IDENTITY, scale),
     );
     world.insert(entity, MeshHandle(mesh_handle));
+    // #3733 (NIFAL-2026-08-30-D1-02) — every drawn surface's canonical
+    // material is produced at one boundary (#2444); this water plane's
+    // `MeshHandle` reaches `collect_static_mesh_draws` like any other
+    // static, so without a `Material` component it fell into the render
+    // path's no-`Material` arm and shaded against hardcoded literals
+    // (roughness 0.5, metalness 0.0, …) on the RT/secondary path — the
+    // primary water pass ignores this (`water.frag` derives its optics
+    // from `WaterMaterial`, never `mat.roughness`/`mat.metalness`).
+    world.insert(
+        entity,
+        crate::material_translate::translate_texture_only_material(canonical_material_texture_path),
+    );
     let damage_per_second = xcwt_form
         .and_then(|form| waters.get(&form))
         .filter(|record| {
@@ -816,6 +836,10 @@ pub(crate) fn spawn_lod_water_plane(
         }
     };
 
+    // #3733 (NIFAL-2026-08-30-D1-02) — clone before the `if let` below
+    // consumes `normal_texture_path` by value; see `spawn_water_plane`'s
+    // sibling comment for the full rationale.
+    let canonical_material_texture_path = normal_texture_path.clone();
     let resolved_normal_idx = if let Some(path) = normal_texture_path {
         resolve_texture(ctx, tex_provider, Some(path.as_str()))
     } else {
@@ -843,6 +867,12 @@ pub(crate) fn spawn_lod_water_plane(
     world.insert(entity, Transform::IDENTITY);
     world.insert(entity, GlobalTransform::IDENTITY);
     world.insert(entity, MeshHandle(mesh_handle));
+    // #3733 (NIFAL-2026-08-30-D1-02) — see `spawn_water_plane`'s sibling
+    // comment; the LOD water frame has the same missing-`Material` shape.
+    world.insert(
+        entity,
+        crate::material_translate::translate_texture_only_material(canonical_material_texture_path),
+    );
     let damage_per_second = lod_water_form
         .and_then(|form| waters.get(&form))
         .filter(|record| {

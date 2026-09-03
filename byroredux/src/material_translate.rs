@@ -1719,52 +1719,70 @@ mod tests {
     /// wiring at the source level: what regressed before was not a wrong
     /// value but a missing `world.insert`, which silently rerouted the draw
     /// into `render/static_meshes.rs`'s hardcoded-literal arm.
+    ///
+    /// #3733 (NIFAL-2026-08-30-D1-02) — this used to be a hand-maintained
+    /// table of file names, and its own comment said to "keep this table in
+    /// step with `cell_loader`'s spawners". It wasn't: `terrain_lod_btr.rs`
+    /// (#3336) and `water.rs` (#3733) both spawned a `MeshHandle` with no
+    /// canonical `Material` and stayed invisible to this guard for as long
+    /// as each took to notice — the exact "a seventh spawner would recur
+    /// otherwise" failure mode. Re-derived from the actual spawner set
+    /// instead: scans every root-level `cell_loader/*.rs` file (the
+    /// `spawn/`/`references/` subdirectories are a different, already-
+    /// covered path — `spawn/mesh_instance.rs` always attaches its
+    /// canonical `Material` via `translate_material`/`attach_mesh_water`
+    /// upstream of any `MeshHandle` insert) and requires every file that
+    /// inserts a `MeshHandle` to also call one of the two boundary
+    /// functions, `_tests.rs` siblings excluded (test-only mocks, not real
+    /// spawners). Adding a new spawner file with no boundary call now fails
+    /// this test on its own, without anyone remembering to extend a list.
     #[test]
     fn every_exterior_spawner_inserts_a_boundary_material() {
-        // The three the audit named have no source material record, so they
-        // use the texture-path-only helper. `placement_lod` (Oblivion
-        // `_far.nif`) is the sibling the audit missed — same missing-`Material`
-        // shape, but its sub-meshes DO carry an `ImportedMaterial`, so it goes
-        // through the full boundary instead. `terrain_lod_btr` (Skyrim/FO4
-        // combined-LOD quadtree) is the fifth, added by #3336: enumerating
-        // only four files is exactly why it stayed invisible to this harness
-        // for as long as it did, so keep this table in step with
-        // `cell_loader`'s spawners.
-        for (name, src, boundary_fn) in [
-            (
-                "cell_loader/terrain.rs",
-                include_str!("cell_loader/terrain.rs"),
-                "translate_texture_only_material(",
-            ),
-            (
-                "cell_loader/terrain_lod.rs",
-                include_str!("cell_loader/terrain_lod.rs"),
-                "translate_texture_only_material(",
-            ),
-            (
-                "cell_loader/object_lod.rs",
-                include_str!("cell_loader/object_lod.rs"),
-                "translate_texture_only_material(",
-            ),
-            (
-                "cell_loader/placement_lod.rs",
-                include_str!("cell_loader/placement_lod.rs"),
-                "translate_material(",
-            ),
-            (
-                "cell_loader/terrain_lod_btr.rs",
-                include_str!("cell_loader/terrain_lod_btr.rs"),
-                "translate_texture_only_material(",
-            ),
-        ] {
+        let cell_loader_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cell_loader");
+        let boundary_fns = ["translate_texture_only_material(", "translate_material("];
+
+        let mut checked_files: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&cell_loader_dir)
+            .expect("cell_loader/ directory must exist next to material_translate.rs")
+        {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue; // subdirectories (spawn/, references/) and non-.rs files
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("utf-8 file name")
+                .to_string();
+            if name.ends_with("_tests.rs") {
+                continue; // test-only siblings — may build a mock MeshHandle, not a real spawner
+            }
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            if !src.contains("MeshHandle(") {
+                continue; // not a mesh spawner at all
+            }
             assert!(
-                src.contains(boundary_fn),
+                boundary_fns.iter().any(|f| src.contains(f)),
                 "{name}: exterior draws must get their canonical `Material` from the \
-                 translation boundary (`{boundary_fn}`). Without one they fall into the \
+                 translation boundary ({boundary_fns:?}). Without one they fall into the \
                  render path's no-`Material` arm and shade against hardcoded literals — \
                  a second materialization site outside the single source of truth (#2444)."
             );
+            checked_files.push(name);
         }
+
+        // Sanity: the scan must not be silently matching nothing (a wrong
+        // path, a renamed extension check, …).
+        assert!(
+            checked_files.len() >= 6,
+            "the directory scan found only {} MeshHandle-spawning files in cell_loader/ \
+             ({checked_files:?}) — expected at least the 6 known spawners (terrain, \
+             terrain_lod, object_lod, placement_lod, terrain_lod_btr, water); the scan itself \
+             may be broken, not the spawners",
+            checked_files.len()
+        );
     }
 
     /// #3465 — keep the two hand-written texture-role lists in the docs
