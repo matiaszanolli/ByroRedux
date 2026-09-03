@@ -1,21 +1,29 @@
-# SK-D5-LZ4-LOW-02: Post-decompression size-mismatch check is warn, not surfaced to any caller-visible metric
+# #2585 — SK-D5-LZ4-LOW-02: Post-decompression size-mismatch check is warn, not surfaced to any caller-visible metric
 
-**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/2585
-**Finding ID**: SK-D5-LZ4-LOW-02
+**Severity**: LOW · **Dimension**: BSA v105 (LZ4)
+**Location**: `crates/bsa/src/archive/extract.rs`
 
-**Severity**: LOW
-**Dimension**: BSA v105 (LZ4)
-**Location**: `crates/bsa/src/archive/extract.rs:154-164`
-**Status**: NEW (observation — not exercised on real data; the full sweep produced zero such warnings across all 65,637 files)
+## Resolution: no action required (per the issue's own text)
 
-## Description
-A declared/actual size mismatch after LZ4 frame decode logs `log::warn!` but returns `Ok` regardless — a deliberate, documented design choice (mirrors the BA2 zlib path). Recorded only because no `nif_stats`-style counter exists for the BSA layer either, so a future audit doesn't have to re-derive that this is intentional.
+Re-verified against current source: the code still matches the issue's
+description exactly — a declared/actual size mismatch after LZ4 frame
+decode logs `log::warn!` (with codec/path/both sizes/signed delta) and
+returns `Ok` regardless, mirroring the BA2 zlib path's identical
+`debug`-level choice (this one deliberately bumped to `warn` per the
+comment directly above it, "keeps the signal visible without breaking
+parse-rate on borderline content").
 
-## Impact
-None currently observed. Would only matter on a malformed/modded archive, surfacing downstream as a confusing NIF/DDS parse error rather than a clear BSA-layer diagnostic.
+The issue's own **Suggested Fix** and **TESTS** checklist both say this
+explicitly: "None required now" / "N/A — deliberate design choice, no
+action required." The issue exists purely as a documentation artifact —
+per its own **Description**, "Recorded only because no `nif_stats`-style
+counter exists for the BSA layer either, so a future audit doesn't have
+to re-derive that this is intentional." Its own **Impact** section
+confirms it is unexercised on real data (the full sweep produced zero
+such warnings across all 65,637 files).
 
-## Suggested Fix
-None required now; pipe into a future parse-rate-style gate if one is added for the BSA extraction layer.
-
-## Completeness Checks
-- [ ] **TESTS**: N/A — deliberate design choice, no action required
+That documentation purpose is now served by this ISSUE.md and the closed
+issue itself — no code change is warranted, and forcing one against an
+issue that explicitly asks for none would be exactly the kind of
+speculative fix this project's conventions caution against. Closing as
+resolved-by-verification.
