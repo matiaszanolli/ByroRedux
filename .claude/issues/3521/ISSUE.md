@@ -1,40 +1,86 @@
-# Issue #3521 — AUD-2026-08-27-D1-01
+# #3521 — AUD-2026-08-27-D1-01: drain_pending_oneshots' std::mem::take strands the pending_oneshots heap capacity on every drain tick
 
-Source: `docs/audits/AUDIT_AUDIO_2026-08-27.md` · https://github.com/matiaszanolli/ByroRedux/issues/3521
+**Severity**: LOW · **Dimension**: Spatial Sub-Track Lifecycle & Leaks
+**Location**: `crates/audio/src/lib.rs::drain_pending_oneshots`
 
-Filed from `docs/audits/AUDIT_AUDIO_2026-08-27.md` (finding `AUD-2026-08-27-D1-01`).
+## Fix
 
-- **Severity**: LOW
-- **Dimension**: Spatial Sub-Track Lifecycle & Leaks
-- **Location**: `crates/audio/src/lib.rs:979` (`drain_pending_oneshots`)
-- **Related**: #852 (the `VecDeque` choice), #932 / #3059 / #3257 (the same scratch-capacity class, all filed and fixed)
+Verified the premise: `std::mem::take(&mut audio_world.pending_oneshots)`
+replaced the live `VecDeque` with a fresh zero-capacity default and moved
+the old (capacity-holding) one into `pending`, which was then consumed
+by-value in the loop and dropped at end of scope — an allocate+free pair
+on the next `play_oneshot` push, every tick that drained anything.
 
-## Description
+The issue suggested a dedicated `drain_scratch` field + `mem::swap`
+(matching #3257's shape), reasoning that `mgr` being borrowed mutably
+across the loop would make draining `pending_oneshots` in place fail to
+borrow-check. Tried that premise directly before implementing the
+suggested fix: `audio_world.pending_oneshots.drain(..)` **does**
+borrow-check today — `mgr` (borrowed from `audio_world.manager`) and the
+loop body's other field accesses (`reverb_send`, `active_sounds`,
+`underwater`) are all disjoint fields from `pending_oneshots`, and Rust's
+field-sensitive borrow checking accepts draining it in place alongside
+them. So the simpler fix landed instead: replaced the
+take-then-consume-by-value shape with `VecDeque::drain(..)` in place,
+which empties the queue while retaining its allocated capacity — no new
+field, no swap dance, no drop-order reasoning needed.
 
-The drain replaces the live `VecDeque` with a fresh default and consumes the old one by value:
+Updated the adjacent `#851` comment (which referenced the old mechanism
+by name) to describe the current one, and added a note documenting why
+the new explanatory comment never spells out the old approach's own
+method-path text — see TESTS below.
 
-```rust
-let pending = std::mem::take(&mut audio_world.pending_oneshots);
-```
+## SIBLING (issue's own checklist item)
 
-`VecDeque::default()` allocates nothing, and `pending` is moved through `for p in pending` and dropped at end of scope — so the queue's heap buffer is **freed every tick that had any queued one-shot**, and the next `play_oneshot` re-allocates from zero. The `VecDeque` was deliberately chosen over `Vec` in #852 to make the cap-eviction path O(1); this undoes the adjacent half of that intent by making the steady-state cost an allocate+free pair per drain.
+The issue names three prior fixes of the identical class
+(`FootstepScratch` #932, `InteractionCandidateScratch` #3059, the
+`submersion_system` disturbance scratch #3257) as precedent, confirming
+this codebase treats each site as its own ticket rather than a bulk sweep.
+A fresh grep for the same `mem::take(&mut *.<pending|queue|scratch>)`
+shape turns up further candidates (`crates/scripting/src/fragment.rs`,
+`crates/scripting/src/papyrus_provider.rs`,
+`crates/renderer/src/texture_registry.rs`,
+`crates/renderer/src/vulkan/egui_pass.rs`,
+`crates/renderer/src/vulkan/context/skinned_blas_refit.rs`,
+`byroredux/src/extensions.rs`, `crates/mod-runtime/src/runtime.rs`) — each
+needs its own per-site judgement of hot-path relevance (some are
+per-command dispatch queues, not per-frame scratch buffers) before a fix
+is warranted, so left as future individual findings rather than folded
+into this LOW-severity single-site ticket.
 
-This is the exact class the project has already filed and fixed three times elsewhere: `FootstepScratch` (#932 — "pre-#932 a fresh `Vec<Vec3>` was allocated every frame"), `InteractionCandidateScratch` (#3059), and the `submersion_system` disturbance scratch (#3257, landed in `bbfd742f`). `footstep_system` itself carries the canonical remedy in-line — it `std::mem::take`s the scratch buffer and then **restores it on both the success path and the `AudioWorld`-absent bail path** (`byroredux/src/systems/audio.rs:174-176`, `184-190`, `205-208`) precisely so the capacity is not stranded. `drain_pending_oneshots` has no such restore.
+## TESTS (issue's own checklist item)
 
-## Evidence
+- `drain_pending_oneshots_drains_in_place_instead_of_stranding_capacity`
+  — a source-level pin (the loop body is unreachable in a headless test:
+  it needs both a live `listener` and a live `manager`, neither available
+  without an audio device — same gate `audio_system_no_op_when_
+  audio_world_inactive` already pins, matching the established
+  device-only-path convention `oneshot_marker_is_consumed_on_both_
+  dispatch_failure_arms` already uses in this same file). Asserts the
+  function body contains `.pending_oneshots.drain(` and does not contain
+  the old take-based method-path text.
+  - Hit a self-matching trap while writing it: my own explanatory
+    comment in `lib.rs` initially spelled out the old method's literal
+    path, which the source scan then matched against its own describing
+    prose instead of real code, giving a false failure. Reworded the
+    comment to describe the old approach without the literal substring
+    (the file now says so explicitly, matching the convention
+    `crates/core/src/ecs/components/material.rs`'s own structural guards
+    already use for this exact hazard) and re-verified.
+- `vecdeque_full_range_drain_preserves_capacity` — the runtime property
+  the fix depends on, verified directly and independent of any audio
+  device: draining a `VecDeque`'s full range in place does not release
+  its buffer.
 
-`crates/audio/src/lib.rs:977-993` — after the loop over `pending` ends there is no write back into `audio_world.pending_oneshots`; the next producer call reaches `self.pending_oneshots.push_back(..)` (`crates/audio/src/lib.rs:557-563`) on a zero-capacity deque. The `mem::take` is not gratuitous — `audio_world.manager.as_mut()` is held mutably across the loop, so a `drain(..)` over a sibling field would not borrow-check — but a reusable second `VecDeque` field swapped back at the end would.
+**Reintroduce-and-revert verification**: temporarily restored the old
+take-then-consume-by-value shape — confirmed
+`drain_pending_oneshots_drains_in_place_instead_of_stranding_capacity`
+failed with the expected message. Restored the fix and reran — all 32
+tests in `byroredux-audio`'s `tests` module pass again.
 
-## Impact
+## Verification
 
-One `alloc`/`free` pair per tick that dispatches any queued one-shot, on the `Stage::Late` per-frame path. Not a leak, not a correctness bug, and negligible next to the kira dispatch it wraps. It compounds with `AUD-2026-08-27-D7-01` (which makes *every* frame a drain frame rather than ~2/s), so fixing that one raises this from "every frame" to "every stride" and lowers its priority accordingly — fix D7-01 first.
-
-## Suggested Fix
-
-Add a `drain_scratch: VecDeque<PendingOneShot>` field to `AudioWorld` (declared adjacent to `pending_oneshots`, before `music`, so the drop order is unchanged), `std::mem::swap` it with `pending_oneshots` at the top of the drain, and swap the (now empty, capacity-retaining) buffer back at the end. Same shape as #3257's fix.
-
-## Completeness Checks
-- [ ] **UNSAFE**: If the fix adds `unsafe`, a safety comment states the upheld invariant
-- [ ] **SIBLING**: Same pattern checked in related files (other per-tick `mem::take` scratch buffers)
-- [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
-- [ ] **TESTS**: A regression test pins this specific fix
+- `cargo check -p byroredux-audio --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux-audio`: 32 passing, 0 failing (+2 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7162 passing, 0
+  failing**.

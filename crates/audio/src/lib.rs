@@ -1001,12 +1001,12 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     if audio_world.pending_oneshots.is_empty() {
         return;
     }
-    // Manager-active gate moves *before* the `mem::take` (#851).
-    // Pre-fix the take ran first, so on a hypothetical `manager =
-    // None` re-entry the drained Vec would be silently dropped — the
-    // `// Inactive — queue cleared` branch below was reachable in
-    // theory and would have lost the queued one-shots forever. In
-    // practice the parent `audio_system` early-returns at
+    // Manager-active gate moves *before* the drain below (#851).
+    // Pre-fix, an unconditional drain ran first, so on a hypothetical
+    // `manager = None` re-entry the drained items would be silently
+    // dropped — the `// Inactive — queue cleared` branch below was
+    // reachable in theory and would have lost the queued one-shots
+    // forever. In practice the parent `audio_system` early-returns at
     // `is_active()` before calling this helper, so the manager is
     // always `Some` here, but the defensive ordering keeps the
     // contract local: we only consume the queue once we know we can
@@ -1014,16 +1014,34 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     let Some(mgr) = audio_world.manager.as_mut() else {
         return;
     };
-    let pending = std::mem::take(&mut audio_world.pending_oneshots);
-    if pending.len() > 32 {
+    if audio_world.pending_oneshots.len() > 32 {
         log::warn!(
             "M44 Phase 3.5: drained {} pending one-shots in one tick — \
              upstream system is firing too fast (footstep stride, weapon \
              rate-of-fire, dialogue queue?)",
-            pending.len()
+            audio_world.pending_oneshots.len()
         );
     }
-    for p in pending {
+    // #3521 (AUD-2026-08-27-D1-01) — `VecDeque::drain(..)` in place,
+    // not the old swap-in-a-fresh-default-then-consume-by-value shape.
+    // That prior approach replaced the live queue with a fresh,
+    // zero-capacity default and dropped the old (capacity-holding) one
+    // at the end of this function, so every tick that drained anything
+    // paid an allocate+free pair on the next `play_oneshot` push.
+    // `drain(..)` empties `pending_oneshots` in place and keeps its
+    // allocated capacity for the next fill — same class of fix as
+    // `#932` / `#3059` / `#3257`. `mgr` (borrowed from
+    // `audio_world.manager`) and the field accesses below
+    // (`reverb_send`, `active_sounds`, `underwater`) are all disjoint
+    // fields from `pending_oneshots`, so the borrow checker accepts
+    // draining it in place across the loop.
+    //
+    // NOTE for future editors: this comment deliberately never spells
+    // out the old approach's own method-path text — the sibling
+    // regression test in `tests.rs` scans this function's source for
+    // exactly that substring, and writing it here would make the test
+    // match its own describing comment instead of real code.
+    for p in audio_world.pending_oneshots.drain(..) {
         let track_builder = SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send, if one exists and the level isn't muted.

@@ -1303,6 +1303,70 @@ fn reverb_send_gate_matches_silence_db_boundary() {
     assert!(reverb_send_gate_open(0.0));
 }
 
+/// #3521 (AUD-2026-08-27-D1-01) — `drain_pending_oneshots` must empty
+/// `pending_oneshots` **in place** (`VecDeque::drain(..)`), not via
+/// `std::mem::take` + consume-by-value. `mem::take` replaces the live
+/// queue with a fresh zero-capacity `VecDeque::default()` and drops the
+/// old (capacity-holding) one at end of scope, stranding the heap
+/// buffer on every tick that drained anything.
+///
+/// Like `oneshot_marker_is_consumed_on_both_dispatch_failure_arms`
+/// above, the loop body itself is unreachable in a headless test (it
+/// requires both a live `listener` and a live `manager`, neither
+/// available without an audio device) — `audio_system_no_op_when_
+/// audio_world_inactive` already pins that gate. So this pins the fix
+/// at the source level, matching that same convention.
+#[test]
+fn drain_pending_oneshots_drains_in_place_instead_of_stranding_capacity() {
+    const LIB_RS: &str = include_str!("lib.rs");
+    let start = LIB_RS
+        .find("fn drain_pending_oneshots(")
+        .expect("drain_pending_oneshots must still exist");
+    let rest = &LIB_RS[start..];
+    let end = rest
+        .find("\n}\n")
+        .expect("no terminator found for drain_pending_oneshots");
+    let body = &rest[..end];
+
+    assert!(
+        body.contains(".pending_oneshots.drain("),
+        "drain_pending_oneshots must drain pending_oneshots in place to \
+         retain its heap capacity across ticks"
+    );
+    assert!(
+        !body.contains("mem::take") && !body.contains("mem::replace"),
+        "drain_pending_oneshots must not swap pending_oneshots out for a \
+         fresh (zero-capacity) VecDeque — that's the exact regression \
+         #3521 fixed"
+    );
+}
+
+/// #3521 (AUD-2026-08-27-D1-01) — the runtime property the fix above
+/// depends on, verified directly and independent of any audio device:
+/// draining a `VecDeque`'s full range in place does not release its
+/// underlying buffer, so the next round of pushes doesn't reallocate
+/// from zero.
+#[test]
+fn vecdeque_full_range_drain_preserves_capacity() {
+    use std::collections::VecDeque;
+
+    let mut q: VecDeque<u32> = VecDeque::with_capacity(64);
+    for i in 0..8 {
+        q.push_back(i);
+    }
+    let cap_before = q.capacity();
+    assert!(cap_before >= 64);
+
+    let drained: Vec<u32> = q.drain(..).collect();
+    assert_eq!(drained, (0..8).collect::<Vec<_>>());
+    assert!(q.is_empty());
+    assert_eq!(
+        q.capacity(),
+        cap_before,
+        "drain(..) over the full range must not shrink the deque's capacity"
+    );
+}
+
 /// #2394 / ECS-D7-2026-08-07-01 — the one-shot dispatch loop must
 /// consume the `OneShotSound` marker on its two failure arms, not just
 /// on success. Leaving the marker re-collects the entity into `pending`
