@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 28 TIMESTAMP queries each:
+//! per frame-in-flight slot, 30 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -34,8 +34,10 @@
 //! | 25   | frame upscale (FSR / native blit) — end   |
 //! | 26   | presentation (exposure + ACES → swapchain) — start |
 //! | 27   | presentation (exposure + ACES → swapchain) — end   |
+//! | 28   | skin palette + bone-buffer transfers — start         |
+//! | 29   | skin palette + bone-buffer transfers — end           |
 //!
-//! The original three brackets (skin / BLAS refit / TAA) shipped
+//! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
 //! Phase 6 (main render / TLAS / cluster cull / SVGF) and the five
 //! added in Phase 7 (composite / SSAO / bloom / caustic splat /
@@ -84,8 +86,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × fourteen brackets.
-const QUERIES_PER_FRAME: u32 = 28;
+/// One TIMESTAMP query per bracket endpoint × fifteen brackets.
+const QUERIES_PER_FRAME: u32 = 30;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -115,6 +117,8 @@ const Q_UPSCALE_START: u32 = 24;
 const Q_UPSCALE_END: u32 = 25;
 const Q_PRESENTATION_START: u32 = 26;
 const Q_PRESENTATION_END: u32 = 27;
+const Q_SKIN_PALETTE_START: u32 = 28;
+const Q_SKIN_PALETTE_END: u32 = 29;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -133,6 +137,10 @@ const Q_PRESENTATION_END: u32 = 27;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GpuTimerSnapshot {
     pub skin_dispatch_ms: f32,
+    /// Bone-world / bind-inverse transfer commands plus `skin_palette.comp`.
+    /// Host-side staging memcpys are intentionally not included: timestamps
+    /// measure the GPU work recorded after those writes.
+    pub skin_palette_ms: f32,
     pub skin_blas_refit_ms: f32,
     pub taa_ms: f32,
     /// Wall-clock time for the main geometry render pass —
@@ -199,6 +207,7 @@ pub struct GpuTimerSnapshot {
     // lockstep; `snapshot_from_bits` below is the single place that
     // fills both.
     pub skin_dispatch_active: bool,
+    pub skin_palette_active: bool,
     pub skin_blas_refit_active: bool,
     pub taa_active: bool,
     pub main_render_active: bool,
@@ -223,7 +232,7 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u16 packs `BIT_*` flags
-    /// (one per bracket — currently 14). The bit-gated read in
+    /// (one per bracket — currently 15). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
@@ -234,6 +243,7 @@ pub struct GpuPerFrameTimers {
 }
 
 const BIT_SKIN_DISPATCH: u16 = 0x0001;
+const BIT_SKIN_PALETTE: u16 = 0x4000;
 const BIT_BLAS_REFIT: u16 = 0x0002;
 const BIT_TAA: u16 = 0x0004;
 const BIT_MAIN_RENDER: u16 = 0x0008;
@@ -270,6 +280,10 @@ fn snapshot_from_bits(
     };
     if snap.skin_dispatch_active {
         snap.skin_dispatch_ms = bracket_ms(Q_SKIN_DISPATCH_START);
+    }
+    snap.skin_palette_active = bits & BIT_SKIN_PALETTE != 0;
+    if snap.skin_palette_active {
+        snap.skin_palette_ms = bracket_ms(Q_SKIN_PALETTE_START);
     }
     snap.skin_blas_refit_active = bits & BIT_BLAS_REFIT != 0;
     if snap.skin_blas_refit_active {
@@ -385,7 +399,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all fourteen ms fields stay
+    /// nothing has been written yet — so all fifteen ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -393,9 +407,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to fourteen individual per-bracket `get_query_pool_results`
+        // of up to fifteen individual per-bracket `get_query_pool_results`
         // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 28-query pool when only a subset
+        // `WAIT`: WAIT-reading the full 30-query pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never
@@ -476,6 +490,47 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_SKIN_DISPATCH;
+    }
+
+    /// Write the skin-palette START timestamp. This bracket covers the GPU
+    /// bone-world / bind-inverse transfer commands and `skin_palette.comp`.
+    /// Host-side staging writes happen before the command buffer is submitted
+    /// and are therefore not part of this GPU measurement.
+    pub fn cmd_skin_palette_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_SKIN_PALETTE_START,
+            );
+        }
+    }
+
+    /// Write the skin-palette END timestamp. COMPUTE_SHADER is after the
+    /// transfer-to-compute barriers and palette dispatch in this bracket.
+    pub fn cmd_skin_palette_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_SKIN_PALETTE_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_SKIN_PALETTE;
     }
 
     /// Write the BLAS-refit START timestamp.
@@ -957,6 +1012,7 @@ mod tests {
         // No bits set — nothing ran this frame.
         let inactive = snapshot_from_bits(0, &ticks, 1.0);
         assert!(!inactive.skin_dispatch_active);
+        assert!(!inactive.skin_palette_active);
         assert_eq!(inactive.skin_dispatch_ms, 0.0);
 
         // BIT_SKIN_DISPATCH set, but start == end tick (genuinely
@@ -985,6 +1041,17 @@ mod tests {
         assert_eq!(snap.main_render_ms, (3_000u64 - 1_000) as f32 * 0.5);
     }
 
+    #[test]
+    fn skin_palette_bracket_reports_measured_duration() {
+        let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_SKIN_PALETTE_START as usize] = 4_000;
+        ticks[Q_SKIN_PALETTE_END as usize] = 4_750;
+
+        let snap = snapshot_from_bits(BIT_SKIN_PALETTE, &ticks, 0.25);
+        assert!(snap.skin_palette_active);
+        assert_eq!(snap.skin_palette_ms, 750.0 * 0.25);
+    }
+
     /// Every bracket's bit is independent — setting one must not mark
     /// any other bracket active, or a frame that only ran (say) TAA
     /// would misreport skin/BLAS/etc. as having run too.
@@ -994,6 +1061,7 @@ mod tests {
         let snap = snapshot_from_bits(BIT_TAA, &ticks, 1.0);
         assert!(snap.taa_active);
         assert!(!snap.skin_dispatch_active);
+        assert!(!snap.skin_palette_active);
         assert!(!snap.skin_blas_refit_active);
         assert!(!snap.main_render_active);
         assert!(!snap.tlas_build_active);

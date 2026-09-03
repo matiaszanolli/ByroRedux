@@ -2358,6 +2358,7 @@ impl VulkanContext {
         if let Some(ref timers) = self.gpu_timers {
             let snap = timers.last_snapshot();
             stats.gpu_skin_dispatch_ms = snap.skin_dispatch_ms;
+            stats.gpu_skin_palette_ms = snap.skin_palette_ms;
             stats.gpu_skin_blas_refit_ms = snap.skin_blas_refit_ms;
             stats.gpu_taa_ms = snap.taa_ms;
             stats.gpu_main_render_ms = snap.main_render_ms;
@@ -2375,6 +2376,7 @@ impl VulkanContext {
             // run" flags too, closing the gap #2278 opened at the producer
             // but nothing downstream ever read.
             stats.gpu_skin_dispatch_active = snap.skin_dispatch_active;
+            stats.gpu_skin_palette_active = snap.skin_palette_active;
             stats.gpu_skin_blas_refit_active = snap.skin_blas_refit_active;
             stats.gpu_taa_active = snap.taa_active;
             stats.gpu_main_render_active = snap.main_render_active;
@@ -2390,6 +2392,7 @@ impl VulkanContext {
             stats.gpu_presentation_active = snap.presentation_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
+            stats.gpu_skin_palette_ms = 0.0;
             stats.gpu_skin_blas_refit_ms = 0.0;
             stats.gpu_taa_ms = 0.0;
             stats.gpu_main_render_ms = 0.0;
@@ -2406,6 +2409,7 @@ impl VulkanContext {
             // No `GpuPerFrameTimers` at all (driver lacks timestamp
             // support) — every bracket is inactive, not just zero.
             stats.gpu_skin_dispatch_active = false;
+            stats.gpu_skin_palette_active = false;
             stats.gpu_skin_blas_refit_active = false;
             stats.gpu_taa_active = false;
             stats.gpu_main_render_active = false;

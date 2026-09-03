@@ -654,6 +654,10 @@ impl ConsoleCommand for SkinCoverageCommand {
             ms(cov.gpu_skin_dispatch_ms, cov.gpu_skin_dispatch_active),
         ));
         lines.push(format!(
+            "  gpu_skin_palette_ms    = {}",
+            ms(cov.gpu_skin_palette_ms, cov.gpu_skin_palette_active),
+        ));
+        lines.push(format!(
             "  gpu_skin_blas_refit_ms = {}",
             ms(cov.gpu_skin_blas_refit_ms, cov.gpu_skin_blas_refit_active),
         ));

@@ -165,6 +165,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             gpu_bracket_ms(cov.gpu_skin_dispatch_ms, cov.gpu_skin_dispatch_active),
         );
         gpu_pass_ms.insert(
+            "skin_palette".to_string(),
+            gpu_bracket_ms(cov.gpu_skin_palette_ms, cov.gpu_skin_palette_active),
+        );
+        gpu_pass_ms.insert(
             "skin_blas_refit".to_string(),
             gpu_bracket_ms(cov.gpu_skin_blas_refit_ms, cov.gpu_skin_blas_refit_active),
         );

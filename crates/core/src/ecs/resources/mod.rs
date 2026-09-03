@@ -645,6 +645,9 @@ pub struct SkinCoverageStats {
     /// pipelined cycle OR when the corresponding bracket didn't run
     /// (skin section skipped, TAA disabled, etc.).
     pub gpu_skin_dispatch_ms: f32,
+    /// GPU bone-buffer transfers plus `skin_palette.comp`. The staging
+    /// memcpys are host work and are not included in this timestamp bracket.
+    pub gpu_skin_palette_ms: f32,
     pub gpu_skin_blas_refit_ms: f32,
     pub gpu_taa_ms: f32,
     /// Main render pass (G-buffer + per-fragment RT loop) wall-clock
@@ -687,6 +690,7 @@ pub struct SkinCoverageStats {
     // not because it measured zero — the ambiguity #2278 fixed at the
     // producer but that had no consumer until now.
     pub gpu_skin_dispatch_active: bool,
+    pub gpu_skin_palette_active: bool,
     pub gpu_skin_blas_refit_active: bool,
     pub gpu_taa_active: bool,
     pub gpu_main_render_active: bool,
@@ -1388,6 +1392,7 @@ mod tests {
             refits_succeeded: 10,
             dispatches_skipped: 4, // some entities elided this frame
             gpu_skin_dispatch_ms: 1.234,
+            gpu_skin_palette_ms: 0.789,
             gpu_skin_blas_refit_ms: 2.345,
             gpu_taa_ms: 0.456,
             ..Default::default()
@@ -1400,6 +1405,7 @@ mod tests {
         );
         assert_eq!(cov.dispatches_skipped, 4);
         assert!((cov.gpu_skin_dispatch_ms - 1.234).abs() < 1e-6);
+        assert!((cov.gpu_skin_palette_ms - 0.789).abs() < 1e-6);
         assert!((cov.gpu_skin_blas_refit_ms - 2.345).abs() < 1e-6);
         assert!((cov.gpu_taa_ms - 0.456).abs() < 1e-6);
     }

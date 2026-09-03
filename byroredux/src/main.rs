@@ -116,7 +116,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 14] = [
+const BENCH_GPU_KEYS: [&str; 15] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -132,6 +132,7 @@ const BENCH_GPU_KEYS: [&str; 14] = [
     // #3629 — appended last so existing extractors are unaffected.
     "tlas_build",
     "caustic_splat",
+    "skin_palette",
 ];
 
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
@@ -144,7 +145,7 @@ const BENCH_GPU_KEYS: [&str; 14] = [
 /// extractor matching while giving the TSV the one bit it was missing — which
 /// zeros are real measurements. `none` (not the empty string) when every
 /// reported bracket ran, so a truncated line can never read as "all active".
-fn bench_gpu_inactive_token(active: [bool; 14]) -> String {
+fn bench_gpu_inactive_token(active: [bool; 15]) -> String {
     let inactive: Vec<&str> = BENCH_GPU_KEYS
         .iter()
         .zip(active)
@@ -307,14 +308,14 @@ mod bench_frame_distribution_tests {
     /// pass that ran and measured zero.
     #[test]
     fn inactive_brackets_are_named_never_silently_zero() {
-        assert_eq!(bench_gpu_inactive_token([true; 14]), "none");
+        assert_eq!(bench_gpu_inactive_token([true; 15]), "none");
         assert_eq!(
-            bench_gpu_inactive_token([false; 14]),
+            bench_gpu_inactive_token([false; 15]),
             BENCH_GPU_KEYS.join(",")
         );
         // The realistic case: no skinned draws and TAA off under an FSR
         // preset, everything else measured.
-        let mut active = [true; 14];
+        let mut active = [true; 15];
         active[0] = false;
         active[1] = false;
         active[2] = false;
@@ -328,14 +329,15 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            14,
-            "gpu_timers.rs owns 14 brackets; the bench line reported 12 of \
+            15,
+            "gpu_timers.rs owns 15 brackets; the bench line reported 12 of \
              them until #3629 while claiming a full per-pass breakdown"
         );
         assert_eq!(BENCH_GPU_KEYS[4], "main_render");
         assert_eq!(BENCH_GPU_KEYS[11], "presentation");
         assert_eq!(BENCH_GPU_KEYS[12], "tlas_build");
         assert_eq!(BENCH_GPU_KEYS[13], "caustic_splat");
+        assert_eq!(BENCH_GPU_KEYS[14], "skin_palette");
     }
 
     /// #3629 — the key list and the printed line were free to drift, and

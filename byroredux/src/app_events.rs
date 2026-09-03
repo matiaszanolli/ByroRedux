@@ -1020,6 +1020,7 @@ impl ApplicationHandler for App {
                                     // breakdown".
                                     s.gpu_tlas_build_ms,
                                     s.gpu_caustic_splat_ms,
+                                    s.gpu_skin_palette_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -1036,10 +1037,11 @@ impl ApplicationHandler for App {
                                     s.gpu_presentation_active,
                                     s.gpu_tlas_build_active,
                                     s.gpu_caustic_splat_active,
+                                    s.gpu_skin_palette_active,
                                 ],
                             )
                         })
-                        .unwrap_or(([0.0; 14], [false; 14]));
+                        .unwrap_or(([0.0; 15], [false; 15]));
                     let gpu_inactive = bench_gpu_inactive_token(gpu_active);
                     let rt_integrity_line = self
                         .world
@@ -1058,7 +1060,7 @@ impl ApplicationHandler for App {
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
                          gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
                          gpu_presentation={:.3} gpu_tlas_build={:.3} \
-                         gpu_caustic_splat={:.3}] gpu_inactive={} \
+                         gpu_caustic_splat={:.3} gpu_skin_palette={:.3}] gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
@@ -1101,6 +1103,7 @@ impl ApplicationHandler for App {
                         gpu[11],
                         gpu[12],
                         gpu[13],
+                        gpu[14],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

@@ -64,6 +64,23 @@ impl VulkanContext {
                     .upload_bone_worlds(&self.device, frame, bone_world)
                     .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
             }
+        }
+
+        // #3676 — the timestamp begins before the first transfer command in
+        // this skin-preparation chain. The staging writes above are host work
+        // and intentionally remain outside the GPU measurement; the bracket
+        // covers the device-local copies, their transfer barriers, and the
+        // palette compute dispatch below.
+        let mut skin_palette_timer_started = false;
+        let bone_world_copy_recorded = !skip_skin_gpu_refresh
+            && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
+        if bone_world_copy_recorded {
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                skin_palette_timer_started = true;
+            }
+        }
+        if !skip_skin_gpu_refresh {
             self.scene_buffers
                 .record_bone_world_copy(&self.device, cmd, frame);
         }
@@ -84,6 +101,12 @@ impl VulkanContext {
             0
         };
         if pending_capped > 0 {
+            if !skin_palette_timer_started {
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                    skin_palette_timer_started = true;
+                }
+            }
             let pending_slots: Vec<u32> = bind_inverse_pending_uploads
                 .iter()
                 .take(pending_capped)
@@ -121,6 +144,12 @@ impl VulkanContext {
             // for today's (unchanged) bone_world + bind_inverses, so a
             // full-range recompute would just rewrite identical data.
             if bone_count > 0 && !skip_skin_gpu_refresh {
+                if !skin_palette_timer_started {
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                        skin_palette_timer_started = true;
+                    }
+                }
                 let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
                 let bind_inverse_buf = self.scene_buffers.bind_inverses_persistent().buffer;
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
@@ -166,6 +195,12 @@ impl VulkanContext {
                         &[],
                     );
                 }
+            }
+        }
+
+        if skin_palette_timer_started {
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_skin_palette_end(&self.device, cmd, frame);
             }
         }
 
