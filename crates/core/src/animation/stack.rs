@@ -404,6 +404,41 @@ pub fn sample_blended_transform(
     registry: &AnimationClipRegistry,
     channel_name: FixedString,
 ) -> Option<(Vec3, Quat, f32)> {
+    // #3706 (ECS-2026-08-30-D10-06) — single-layer short-circuit. The
+    // two-pass walk below always runs twice even for the common
+    // steady-state case (one layer, no active fade): `registry.get()`,
+    // `effective_weight()`, and the `channels.get()` hash probe each pay
+    // their cost twice per bone per frame for no reason, since a single
+    // layer is trivially its own max-priority winner and its own whole
+    // `total_weight` — the normalisation the blend pass applies
+    // (`w = ew / total_weight`) is a no-op divide-by-self (`w = 1.0`)
+    // whenever it's the only contributor. Resolving the same four gates
+    // (registry lookup, weight cull, channel lookup, key-presence) once
+    // and returning the raw sampled triple is bit-identical to running
+    // both passes — see
+    // `single_layer_short_circuit_matches_two_pass_output` for the
+    // proof.
+    if let [layer] = stack.layers.as_slice() {
+        let clip = registry.get(layer.clip_handle)?;
+        // `clip.weight` pre-attenuates the layer per #469.
+        let ew = layer.effective_weight() * clip.weight;
+        // #3432 — NaN-safe: see the identical guard's own comment below.
+        if !(ew >= 0.001) {
+            return None;
+        }
+        let channel = clip.channels.get(&channel_name)?;
+        // #3471 — an all-empty channel is ordinary output (see
+        // `channel_has_keys`'s own doc), not a match; both passes below
+        // exclude it identically, so the short-circuit must too.
+        if !channel_has_keys(channel) {
+            return None;
+        }
+        let t = sample_translation(channel, layer.local_time).unwrap_or(Vec3::ZERO);
+        let r = sample_rotation(channel, layer.local_time).unwrap_or(Quat::IDENTITY);
+        let s = sample_scale(channel, layer.local_time).unwrap_or(1.0);
+        return Some((t, r, s));
+    }
+
     // Pass 1+2 fused: find max priority AND compute total weight at that
     // priority in a single walk. Running max — when a strictly higher
     // priority appears, reset total_weight to that layer's weight. #288.

@@ -1479,6 +1479,234 @@ mod tests {
         );
     }
 
+    /// #3706 (ECS-2026-08-30-D10-06) — the core equivalence proof: a
+    /// two-layer stack where the second layer is excluded by the weight
+    /// cull (`ew < 0.001`, a below-threshold `clip.weight`, distinct from
+    /// the #3471 keyless-channel exclusion already covered above) still
+    /// runs the full two-pass path (`stack.layers.len() == 2`), while an
+    /// otherwise-identical **one**-layer stack carrying only the real
+    /// contributor takes the new short-circuit. Both must produce
+    /// bit-identical output: with exactly one real contributor,
+    /// `total_weight == ew` exactly, so the two-pass path's own
+    /// normalisation (`w = ew / total_weight`) divides a value by itself
+    /// — always exactly `1.0` in IEEE 754 for a finite nonzero operand —
+    /// and every downstream `* w` is therefore an exact identity, not an
+    /// approximation.
+    #[test]
+    fn single_layer_short_circuit_matches_two_pass_output() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mk_clip = |weight: f32, tx: f32| {
+            let mut channels = FxHashMap::default();
+            channels.insert(
+                node,
+                TransformChannel {
+                    translation_keys: vec![
+                        TranslationKey {
+                            time: 0.0,
+                            value: Vec3::new(tx, 0.0, 0.0),
+                            forward: Vec3::ZERO,
+                            backward: Vec3::ZERO,
+                            tbc: None,
+                        },
+                        TranslationKey {
+                            time: 1.0,
+                            value: Vec3::new(tx, 5.0, 0.0),
+                            forward: Vec3::ZERO,
+                            backward: Vec3::ZERO,
+                            tbc: None,
+                        },
+                    ],
+                    translation_type: KeyType::Linear,
+                    rotation_keys: vec![
+                        RotationKey {
+                            time: 0.0,
+                            value: Quat::IDENTITY,
+                            tbc: None,
+                        },
+                        RotationKey {
+                            time: 1.0,
+                            value: Quat::from_rotation_y(1.0),
+                            tbc: None,
+                        },
+                    ],
+                    rotation_type: KeyType::Linear,
+                    scale_keys: vec![ScaleKey {
+                        time: 0.0,
+                        value: 2.0,
+                        forward: 0.0,
+                        backward: 0.0,
+                        tbc: None,
+                    }],
+                    scale_type: KeyType::Linear,
+                    priority: 0,
+                },
+            );
+            AnimationClip {
+                name: "c".to_string(),
+                duration: 1.0,
+                cycle_type: CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight,
+                accum_root_name: None,
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        };
+
+        // Two-pass path: a real contributor (weight 0.7, non-1.0 on
+        // purpose so `w = ew / total_weight` is a genuine division, not
+        // an already-trivial 1.0/1.0) plus a second layer excluded by
+        // the weight cull, not the channel-keys path.
+        let mut registry_two_pass = AnimationClipRegistry::new();
+        let h_real = registry_two_pass.add(mk_clip(0.7, 10.0));
+        let h_excluded = registry_two_pass.add(mk_clip(0.0, 999.0));
+        let mut two_pass_stack = AnimationStack::new();
+        let mut real_layer = AnimationLayer::new(h_real);
+        real_layer.local_time = 0.4;
+        two_pass_stack.layers.push(real_layer.clone());
+        two_pass_stack.layers.push(AnimationLayer::new(h_excluded));
+        assert_eq!(two_pass_stack.layers.len(), 2, "must exercise the two-pass path");
+
+        // Single-layer path: the identical real contributor alone, which
+        // must take the new short-circuit.
+        let mut registry_one = AnimationClipRegistry::new();
+        let h_solo = registry_one.add(mk_clip(0.7, 10.0));
+        let mut one_layer_stack = AnimationStack::new();
+        let mut solo_layer = AnimationLayer::new(h_solo);
+        solo_layer.local_time = 0.4;
+        one_layer_stack.layers.push(solo_layer);
+        assert_eq!(one_layer_stack.layers.len(), 1, "must exercise the short-circuit");
+
+        let two_pass_result = sample_blended_transform(&two_pass_stack, &registry_two_pass, node)
+            .expect("the one real contributor must still produce a transform");
+        let short_circuit_result = sample_blended_transform(&one_layer_stack, &registry_one, node)
+            .expect("a lone valid layer must produce a transform");
+
+        assert_eq!(
+            two_pass_result, short_circuit_result,
+            "single-layer short-circuit must be bit-identical to the two-pass path"
+        );
+    }
+
+    /// #3706 — the short-circuit's weight-cull gate must return `None`
+    /// exactly like the two-pass path's `total_weight < 0.001` early-out
+    /// does when the lone layer's effective weight is below threshold.
+    #[test]
+    fn single_layer_short_circuit_respects_the_weight_cull() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mut channels = FxHashMap::default();
+        channels.insert(
+            node,
+            TransformChannel {
+                translation_keys: vec![TranslationKey {
+                    time: 0.0,
+                    value: Vec3::new(10.0, 0.0, 0.0),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
+                    tbc: None,
+                }],
+                translation_type: KeyType::Linear,
+                rotation_keys: Vec::new(),
+                rotation_type: KeyType::Linear,
+                scale_keys: Vec::new(),
+                scale_type: KeyType::Linear,
+                priority: 0,
+            },
+        );
+        let clip = AnimationClip {
+            name: "c".to_string(),
+            duration: 1.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 0.0, // below the 0.001 threshold
+            accum_root_name: None,
+            channels,
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(clip);
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(handle));
+        assert_eq!(stack.layers.len(), 1);
+
+        assert!(
+            sample_blended_transform(&stack, &registry, node).is_none(),
+            "a below-threshold lone layer must still return None, matching \
+             the two-pass path's total_weight cull"
+        );
+    }
+
+    /// #3706 — the short-circuit's key-presence gate must return `None`
+    /// exactly like the two-pass path's `channel_has_keys` exclusion
+    /// (#3471) does for a lone all-empty channel.
+    #[test]
+    fn single_layer_short_circuit_respects_channel_has_keys() {
+        use crate::string::StringPool;
+
+        let mut pool = StringPool::new();
+        let node = pool.intern("root");
+
+        let mut channels = FxHashMap::default();
+        channels.insert(
+            node,
+            TransformChannel {
+                translation_keys: Vec::new(),
+                translation_type: KeyType::Linear,
+                rotation_keys: Vec::new(),
+                rotation_type: KeyType::Linear,
+                scale_keys: Vec::new(),
+                scale_type: KeyType::Linear,
+                priority: 0,
+            },
+        );
+        let clip = AnimationClip {
+            name: "c".to_string(),
+            duration: 1.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels,
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(clip);
+        let mut stack = AnimationStack::new();
+        stack.layers.push(AnimationLayer::new(handle));
+        assert_eq!(stack.layers.len(), 1);
+
+        assert!(
+            sample_blended_transform(&stack, &registry, node).is_none(),
+            "a lone all-empty channel must still return None (#3471), not the \
+             identity/fallback values"
+        );
+    }
+
     #[test]
     fn linear_scale_interpolation() {
         let ch = TransformChannel {
