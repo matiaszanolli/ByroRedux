@@ -35,6 +35,15 @@ pub(crate) fn resolve_sound_path(sounds: &HashMap<u32, SounRecord>, form_id: u32
         .filter(|p| !p.is_empty())
 }
 
+/// Look up a `SOUN` FormID's [`SounRecord::looping`] flag. `false` for an
+/// unresolved FormID, same fail-closed posture as [`resolve_sound_path`].
+/// #3775 — kept as its own pure lookup (mirroring `resolve_sound_path`'s
+/// shape) rather than folded into a combined return, so both stay
+/// independently unit-testable without a `World`/`AudioWorld`.
+pub(crate) fn sound_loops(sounds: &HashMap<u32, SounRecord>, form_id: u32) -> bool {
+    sounds.get(&form_id).is_some_and(|s| s.looping)
+}
+
 /// Normalise a `SOUN.FNAM` value to its archive key: lowercase,
 /// backslash-separated, under the `sound\` folder. `FNAM` is authored
 /// relative to `Data\Sound\` without that prefix (the same convention as
@@ -161,6 +170,8 @@ pub(crate) fn dispatch_region_ambient_music(
     music_form: Option<u32>,
 ) {
     let resolved = music_form.and_then(|form_id| resolve_sound_path(sounds, form_id));
+    // #3775 — whether the engine should loop this track continuously.
+    let looping = music_form.is_some_and(|form_id| sound_loops(sounds, form_id));
     // #3787 (FNV) / #3811 (Oblivion + Skyrim) — `music_form` was authored
     // (a real REGN chose an ambient directive) but never resolves as a
     // `SOUN` on any game: Oblivion's `RDMD` is a music-category enum, not
@@ -224,8 +235,13 @@ pub(crate) fn dispatch_region_ambient_music(
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         return;
     };
-    log::info!("REGN ambient: playing '{archive_path}'");
-    audio_world.play_music(streaming, REGN_AMBIENT_VOLUME, REGN_AMBIENT_CROSSFADE_SECS);
+    log::info!("REGN ambient: playing '{archive_path}'{}", if looping { " (looping)" } else { "" });
+    audio_world.play_music(
+        streaming,
+        REGN_AMBIENT_VOLUME,
+        REGN_AMBIENT_CROSSFADE_SECS,
+        looping,
+    );
 }
 
 fn stop_region_ambient_music(world: &mut World) {
@@ -243,6 +259,14 @@ mod tests {
             form_id,
             editor_id: String::new(),
             sound_path: path.to_string(),
+            looping: false,
+        }
+    }
+
+    fn looping_soun(form_id: u32, path: &str) -> SounRecord {
+        SounRecord {
+            looping: true,
+            ..soun(form_id, path)
         }
     }
 
@@ -270,6 +294,26 @@ mod tests {
         let mut sounds = HashMap::new();
         sounds.insert(0x5, soun(0x5, ""));
         assert_eq!(resolve_sound_path(&sounds, 0x5), None);
+    }
+
+    #[test]
+    fn sound_loops_true_for_a_looping_record() {
+        let mut sounds = HashMap::new();
+        sounds.insert(0x1234, looping_soun(0x1234, "amb\\wind_loop.wav"));
+        assert!(sound_loops(&sounds, 0x1234));
+    }
+
+    #[test]
+    fn sound_loops_false_for_a_non_looping_record() {
+        let mut sounds = HashMap::new();
+        sounds.insert(0x1234, soun(0x1234, "fx\\explosion01.wav"));
+        assert!(!sound_loops(&sounds, 0x1234));
+    }
+
+    #[test]
+    fn sound_loops_false_for_an_unresolved_form_id() {
+        let sounds = HashMap::new();
+        assert!(!sound_loops(&sounds, 0xDEAD_BEEF));
     }
 
     #[test]

@@ -1,93 +1,123 @@
-# #3775 — AUD-2026-08-30-D4-01: REGN ambient background music is dispatched without a loop region and has no re-trigger, so a region's ambient bed plays exactly once and then goes permanently silent
+# #3775 — AUD-2026-08-30-D4-01: REGN ambient background music plays once and goes permanently silent
 
-**Repo**: matiaszanolli/ByroRedux · **Filed**: 2026-08-30 · **HEAD**: `64f64480`
-**Labels**: medium, audio, bug
+**Severity**: MEDIUM · **Source**: `/audit-audio` — `docs/audits/AUDIT_AUDIO_2026-08-30.md` (Dimension 4)
 
----
+## Blocking research (the issue's own explicit prerequisite)
 
-**Audit**: `/audit-audio` — `docs/audits/AUDIT_AUDIO_2026-08-30.md` (Dimension 4 — Streaming Music Lifecycle), HEAD `64f64480`
-**Finding ID**: `AUD-2026-08-30-D4-01`
+The issue's "What this finding does NOT claim" section is explicit: it does
+NOT prescribe `loop_region(..)` as the fix, and continuation policy "must
+be settled against the SOUN flag layout (or a corpus census of REGN-
+referenced SOUN durations) before a value is chosen" — the SNDD/SNDX flag
+word was, at the time of writing, unparsed and unspecified in this codebase.
 
-- **Severity**: MEDIUM
-- **Status**: NEW
+Verified against xEdit's own record definitions (`wbDefinitionsTES4.pas` /
+`wbDefinitionsFO3.pas`, the parser source this ecosystem's tools are built
+on) before implementing anything:
 
-## Location
+- `SNDD`/`SNDX`'s `Flags` word carries an explicit, composable **`Loop`
+  bit — `0x0010`** — identical across Oblivion, FO3, and FNV. The bit sits
+  at the same byte offset (4) in every variant of the sub-record (8-byte
+  Oblivion `SNDD`, 12-byte `SNDX` shared by both eras, 36-byte FO3+
+  `SNDD`) — only the field's total *width* changed (`u16` → `u32`), never
+  the position of this specific bit, so a single byte-offset read decodes
+  it correctly for every era without a per-game branch.
+- A CS-wiki quote (search-surfaced, not independently re-fetched — noted
+  as such) describes `Loop` as engine-authoritative: it forces looping
+  "regardless of whether the source file is authored to loop or not."
+  This settles the policy question the issue raised: `Loop` is not
+  redundant with baked-in asset metadata, so decoding and applying it is
+  the correct continuation mechanism, not a guess.
+- Skyrim moved this entirely: `SOUN`'s `FNAM`/`SNDD` are `cpIgnore`d
+  "leftover, unused" in xEdit's own Skyrim definition, superseded by a
+  separate `SNDR` record's `LNAM.Looping` **enum** (value `0x08`, not a
+  composable bit, unrelated offset). Not decoded here — `SNDR` is a new
+  record type, comparable in scope to #3816's `MUSC`/`MUST` follow-up, not
+  a same-issue addition.
 
-- `crates/audio/src/lib.rs:579-611` — `AudioWorld::play_music`
-- `byroredux/src/asset_provider/audio.rs:158-205` — `dispatch_region_ambient_music`
-- guards at `byroredux/src/cell_loader/load.rs:552-561` and `byroredux/src/scene/world_setup.rs:534-541`
+## Fix
 
-## Description
+1. **`crates/plugin/src/esm/records/soun.rs`** — added `SounRecord::looping:
+   bool`, decoded from `SNDD`/`SNDX`'s Flags byte at offset 4, bit `0x10`.
+   No era/sub-record-type branching needed (see the research above). The
+   module's "deliberately NOT decoded" framing narrowed to cover only the
+   *remaining* attenuation-curve fields, which still have no spec/corpus
+   backing.
+2. **`crates/audio/src/lib.rs`** — `AudioWorld::play_music` gained a
+   `looping: bool` parameter; when set, applies kira's `.loop_region(0.0..)`
+   (loop the whole track from the start) before `mgr.play(..)`. This is
+   the actual defect fix: kira's `StreamingSoundSettings` default is
+   `loop_region: None`, and nothing else in the codebase ever set it —
+   confirmed unreachable via any other path (`play_music` has exactly one
+   production caller).
+3. **`byroredux/src/asset_provider/audio.rs`** — added
+   `sound_loops(sounds, form_id) -> bool`, a pure sibling to the existing
+   `resolve_sound_path` (same fail-closed-on-unresolved shape, same
+   independent unit-testability). `dispatch_region_ambient_music` looks it
+   up alongside the path resolve and threads it through to `play_music`.
 
-`play_music` hands `mgr.play(...)` a `StreamingSoundData` on which only `.volume(db)` and `.fade_in_tween(..)` have been set. kira's `StreamingSoundSettings::default()` is `loop_region: None`, so the track plays through once and stops.
+## Reachability caveat (found while implementing, not assumed)
 
-Nothing restarts it: `dispatch_region_ambient_music` is invoked **only** when `music_form` differs from the previously-installed `RegionAmbientRes.music_form`, and a player who stays inside one region never changes that value. There is no polling of `is_music_active()` anywhere in the tree, and no `set_loop_region` call anywhere in the workspace.
+#3811 (filed and fixed in this same working session) independently
+confirmed that `music_form` — the whole reason `dispatch_region_ambient_music`
+would ever call `play_music` — **never resolves as a `SOUN` on any
+currently-supported game**: Oblivion's `RDMD` is a music-category enum
+(not a FormID at all), Skyrim's `RDMO` targets `MUSC`, FNV's `RDSB`
+targets `MSET`. So today, this fix's `dispatch_region_ambient_music` path
+is unreachable in production until #3816's `MUSC`/`MUST`/`MSET` decode
+work lands — the "walk into a region, hear the bed once, then silence"
+*observable* behavior the issue describes cannot currently occur via this
+exact path (it never starts at all, matching #3811's finding, not "starts
+once"). This does not make the fix premature: `play_music`'s missing
+`loop_region` wiring is a real, independently-verified code-level defect
+(pinned by its own `#[ignore]`d integration test below, exercised directly
+against `AudioWorld` — no REGN/SOUN resolution involved), and it is
+exactly the shape of infrastructure-ahead-of-its-consumer this session
+already decided is legitimate to land now (`groundcover_translate.rs`'s
+`layer_affinity` is the precedent, per #3747's SIBLING check) rather than
+deferred until #3816 unblocks the whole chain end-to-end.
 
-Observable behaviour: walk into a REGN-tagged exterior, hear the ambient bed once, then silence for the remainder of the visit; the bed returns only after crossing into a differently-scored region and back.
+## SIBLING (issue's own checklist item)
 
-This is the **entire** shipped REGN audio feature (the 2026-08-23 `ede48ffb`/`3ef05d1b` work, marked `✓` at `docs/feature-matrix.md:148`), so the observable failure is that a feature the matrix reports as complete works for one track length per region entry.
+"the entity/static emitter path already sets `loop_region`; check whether
+cell-scoped music (MUSC) will inherit the same gap" — `MUSC` isn't decoded
+at all yet (tracked separately, #3816), so there is no MUSC-driven
+`play_music` call site today for this gap to apply to. Noted for #3816's
+own scope rather than fixed speculatively here.
 
-## FNV scope correction (from the sibling `/audit-fnv` pass)
+## LOCK_ORDER (issue's own checklist item)
 
-`/audit-fnv` measured that on **FNV**, REGN `RDSB`/`RDSI` are **`MSET`** FormIDs, not `SOUN` — 54 of 55 references target `MSET`, 0 target `SOUN`. `dispatch_region_ambient_music` resolves `music_form` through the `SOUN` map (`resolve_sound_path(sounds, form_id)`), so **on FNV this path cannot execute at all**: the resolve returns `None` and the dispatch falls straight through to `stop_region_ambient_music`.
+No poll was added (the fix is data-driven — the loop flag is resolved
+once per dispatch, not polled) — `dispatch_region_ambient_music`'s
+existing `SoundArchiveProvider` read-guard scoping is untouched; the new
+`sound_loops` lookup runs before that scoped block, same as the existing
+`resolved` lookup.
 
-That FNV-specific defect is owned separately by the FNV report and is being filed by a later publisher; it is recorded here so this finding's scope is not read as "broken on FNV in the once-then-silence way". On FNV the bed never starts; the once-then-silence behaviour described above is the Oblivion (`RDMD`) / Skyrim (`RDMO`) shape.
+## TESTS (issue's own checklist item — "assert the post-track-end state")
 
-## Evidence
+- `crates/plugin/src/esm/records/soun.rs` — 4 new tests: Loop bit decodes
+  from the 8-byte Oblivion `SNDD`, from the 36-byte FO3+ `SNDD` (same
+  offset, wider field), other flag bits don't falsely set `looping`, and
+  a missing/too-short sub-record defaults to `false` without panicking.
+- `byroredux/src/asset_provider/audio.rs` — 3 new tests for `sound_loops`
+  mirroring `resolve_sound_path`'s existing test shape exactly (found,
+  not-found, not-looping).
+- `crates/audio/src/tests.rs` — `play_music_looping_survives_track_end`,
+  mirroring the crate's own existing
+  `looping_emitter_survives_natural_duration_and_stops_on_emitter_remove`
+  pattern (real vanilla-FNV audio, wait well past natural track length,
+  assert still active) — this is the literal "assert the post-track-end
+  state" the issue's TESTS item asked for, applied to the music path
+  instead of the `AudioEmitter` path it was already proven on.
+  `#[ignore = "needs a working audio device and FNV game data"]`, same
+  gating convention as its sibling tests in this file.
 
-The whole configuration applied before play (`crates/audio/src/lib.rs:598-610`):
+## Verification
 
-```rust
-let db = linear_volume_to_db(volume);
-let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
-match mgr.play(configured) {
-    Ok(handle) => { self.music = Some(handle); }
-    Err(e) => { log::warn!("M44 Phase 5: play_music failed: {e}"); self.music = None; }
-}
-```
-
-kira's default, from the vendored crate (`kira-0.10.8/src/sound/streaming/settings.rs:37`): `loop_region: None`. The builder that is never called: `kira-0.10.8/src/sound/streaming/data.rs:106` `pub fn loop_region(mut self, loop_region: impl IntoOptionalRegion) -> Self`.
-
-A workspace-wide grep confirms the project never touches it on the music path — `grep -rn "loop_region\|set_loop_region" crates/ byroredux/` returns six hits, all on the **entity/static** path (`crates/audio/src/lib.rs:1161` plus its docstrings at `68`, `320`, `1157`, and one test assertion at `tests.rs:632/645`).
-
-The change guard, verbatim (`byroredux/src/cell_loader/load.rs:552-561`; `scene/world_setup.rs:534-541` is the same shape and the only other call site):
-
-```rust
-let previous_music_form = world
-    .try_resource::<crate::components::RegionAmbientRes>()
-    .and_then(|r| r.music_form);
-if previous_music_form != region_ambient.music_form {
-    crate::asset_provider::dispatch_region_ambient_music(
-        world, &index.sounds, region_ambient.music_form);
-}
-```
-
-`music_form` is the REGN `RDMD` (Oblivion) / `RDMO` (Skyrim) / `RDSB` (FNV) background-music FormID (`byroredux/src/components.rs:540-542`) — the field whose purpose is a continuous bed, not a stinger.
-
-Re-verified at HEAD.
-
-## What this finding does NOT claim
-
-It does **not** prescribe `loop_region(..)` as the fix, and **no replacement value or policy is proposed here**.
-
-`SounRecord` carries only `{form_id, editor_id, sound_path}` — the `SNDD`/`SNDX` flag word that would tell the engine whether a given SOUN is authored as a looping bed is **not parsed**. So "loop it", "restart on a timer", or "the vanilla asset is already a long pre-looped file and the real bug is elsewhere" cannot be distinguished from the data the engine currently has.
-
-Per the project's no-guessing rule, the continuation policy must be settled against the SOUN flag layout (or a corpus census of REGN-referenced SOUN durations) before a value is chosen. **The defect being reported is the absence of *any* continuation mechanism**, which is verifiable from the code alone.
-
-## Not covered by an open issue
-
-#3301 ("EX-16 items 1+5 remainder") scopes itself explicitly to `incidental`, the non-`Sound` RDAT kinds, and the `sounds` chance list, and opens by asserting that "REGN-driven ambient audio is wired end-to-end for exactly one field: `music`". #2372 is the parent umbrella. Neither mentions playback continuation.
-
-## Recommendation
-
-First parse the SOUN flag word (or census the referenced assets) to establish the intended semantics; only then wire the continuation. Whichever policy wins, add a regression test alongside `dispatch_with_no_music_form_stops_playback_without_panic` that asserts the *post-track-end* state, since none of the 13 existing `asset_provider::audio` tests observe playback past the dispatch call.
-
-## Related
-
-- #3301, #2372 (adjacent REGN scope, neither covering continuation)
-- `docs/feature-matrix.md:148` (marks the feature ✓)
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files — the entity/static emitter path already sets `loop_region`; check whether cell-scoped music (MUSC) will inherit the same gap
-- [ ] **LOCK_ORDER**: `dispatch_region_ambient_music` already scopes its `SoundArchiveProvider` read guard before `&mut World` use — preserve that if a poll is added
-- [ ] **TESTS**: A regression test pins this specific fix — assert the post-track-end state, not just the dispatch call
+- `cargo check -p byroredux-audio -p byroredux-plugin -p byroredux --tests`:
+  clean (one pre-existing, unrelated `unused_mut` warning in
+  `esm/records/grup_walker.rs` predates this fix).
+- `cargo test -q -p byroredux-audio -p byroredux-plugin -p byroredux`: all
+  passing.
+- `cargo test -q --no-fail-fast` (full workspace): **7084 passing, 0
+  failing** (+7 new non-ignored tests; the real-audio integration test is
+  `#[ignore]`d like its siblings).

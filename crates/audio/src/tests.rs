@@ -568,7 +568,9 @@ fn play_music_drives_streaming_playback_on_real_ogg() {
     }
 
     // play_music with 0.05s fade-in (short so the test is fast).
-    audio_world.play_music(streaming, 0.5, 0.05);
+    // Non-looping baseline — see `play_music_looping_survives_track_end`
+    // for the `looping: true` counterpart.
+    audio_world.play_music(streaming, 0.5, 0.05, false);
     assert!(
         audio_world.is_music_active(),
         "play_music must produce a Playing handle on first dispatch"
@@ -586,6 +588,68 @@ fn play_music_drives_streaming_playback_on_real_ogg() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// **#3775 (AUD-2026-08-30-D4-01)**: `play_music(.., looping: true)` must
+/// survive past the source track's natural end — the exact defect this
+/// issue reported: kira's `StreamingSoundSettings` default is
+/// `loop_region: None`, so with no continuation mechanism a track plays
+/// once and then falls silent. Mirrors
+/// `looping_emitter_survives_natural_duration_and_stops_on_emitter_remove`'s
+/// "wait well past natural duration, assert still active" shape — the
+/// same real-data pattern already pinned for `AudioEmitter`, now applied
+/// to the single-slot music path.
+///
+/// The short "creak" one-shot this test reuses (same fixture as the
+/// non-looping test above) is not independently timed here, so the wait
+/// is generously long (3s) rather than tuned to its exact duration —
+/// the assertion only needs "well past any plausible one-shot length",
+/// not a tight bound.
+///
+/// `#[ignore]` — needs working audio device + vanilla FNV data.
+#[test]
+#[ignore = "needs a working audio device and FNV game data"]
+fn play_music_looping_survives_track_end() {
+    use byroredux_bsa::BsaArchive;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+    let dir = std::env::var("BYROREDUX_FNV_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+    if !dir.is_dir() {
+        return;
+    }
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let bytes = bsa
+        .extract(
+            r"sound\fx\amb\~regions\goodsprings\oneshots\creak_low\amb_gsinterioroneshots_04.ogg",
+        )
+        .expect("vanilla creak OGG");
+
+    let streaming = load_streaming_sound_from_bytes(bytes).expect("decode");
+
+    let mut audio_world = AudioWorld::new();
+    if !audio_world.is_active() {
+        return;
+    }
+
+    audio_world.play_music(streaming, 0.5, 0.05, true);
+    assert!(audio_world.is_music_active());
+
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        audio_world.is_music_active(),
+        "looping music must survive past the source track's natural end — \
+         loop_region(0.0..) wasn't applied?"
+    );
+
+    // Clean stop so the test doesn't leak a playing handle.
+    audio_world.stop_music(0.05);
 }
 
 /// **Phase 4**: an `AudioEmitter` with `looping = true` plays

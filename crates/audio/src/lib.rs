@@ -590,7 +590,13 @@ impl AudioWorld {
     /// player position the way a campfire's crackle does. Volume
     /// is linear amplitude (1.0 = nominal); `fade_in_secs` controls
     /// the kira tween used to fade in (and to fade out any existing
-    /// track being replaced).
+    /// track being replaced). `looping` sets kira's `loop_region` to
+    /// the whole track (`0.0..`) so playback continues indefinitely
+    /// instead of stopping after one pass through — kira's own
+    /// default is `loop_region: None` (#3775 / AUD-2026-08-30-D4-01):
+    /// with no continuation mechanism at all, a non-looping track
+    /// plays exactly once and then goes silent until something
+    /// re-dispatches it.
     ///
     /// No-op when the manager is inactive (returns silently). When
     /// active and a track is already playing, the existing handle
@@ -602,6 +608,7 @@ impl AudioWorld {
         streaming_sound: StreamingSoundData<FromFileError>,
         volume: f32,
         fade_in_secs: f32,
+        looping: bool,
     ) {
         let Some(mgr) = self.manager.as_mut() else {
             return;
@@ -618,6 +625,11 @@ impl AudioWorld {
         }
         let db = linear_volume_to_db(volume);
         let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
+        let configured = if looping {
+            configured.loop_region(0.0..)
+        } else {
+            configured
+        };
         match mgr.play(configured) {
             Ok(handle) => {
                 self.music = Some(handle);
