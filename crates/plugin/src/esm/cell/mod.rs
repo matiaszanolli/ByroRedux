@@ -751,10 +751,17 @@ pub struct LightData {
 /// one of those was silently dropped at the catch-all `_ => {}` arm
 /// in `parse_txst_group`. See #813 / FO4-D4-NEW-01.
 ///
-/// Renderer-side decal rendering (`RenderLayer::Decal`) consumes the
-/// width / depth / parallax / colour fields once the M28 decal
-/// pipeline extension lands; until then the parsed payload rides
-/// through unused on the `TextureSet`.
+/// #3638 (FO4-2026-08-30-D6-02) — **no consumer exists**. This struct's
+/// own doc previously named a specific future milestone as the eventual
+/// reader, using the wrong milestone number — `M28` in this project's
+/// own tracking (`ROADMAP.md`) is the Rapier3D physics bridge, unrelated
+/// to decal rendering, and no decal-consuming milestone is tracked
+/// anywhere. 303 vanilla FO4 `DODT` payloads
+/// (width/height/depth/shininess/parallax/flags/RGB) parse cleanly and
+/// ride through unused on the `TextureSet` — the DNAM sibling from the
+/// same #813/#814 pair IS consumed (`TXST_FLAG_MODEL_SPACE_NORMALS` in
+/// `byroredux/src/cell_loader/refr.rs`), so this is a real, measured
+/// asymmetry, not a design choice.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DecalData {
     pub min_width: f32,
@@ -903,6 +910,8 @@ pub struct TextureSet {
     /// TXST decal-data (`DODT` sub-record). 207 of 382 vanilla
     /// `Fallout4.esm` TXST records carry a DODT payload — every
     /// decal-bearing TXST. See [`DecalData`] and #813 / FO4-D4-NEW-01.
+    /// #3638 — parsed here, but no renderer consumer exists yet; see
+    /// [`DecalData`]'s own doc for the measured 303-payload gap.
     pub decal_data: Option<DecalData>,
 }
 

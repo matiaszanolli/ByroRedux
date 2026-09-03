@@ -594,6 +594,52 @@ fn parse_txst_dodt_only_record_is_preserved() {
     );
 }
 
+/// #3638 (FO4-2026-08-30-D6-02) — `DecalData`'s doc previously named a
+/// specific future milestone as the eventual consumer, using the wrong
+/// milestone number; `M28` in this project's own tracking is the
+/// Rapier3D physics bridge, unrelated to decals, so that reference was a
+/// misnomer that could mislead a future reader into believing a real
+/// milestone was tracking this. Pins both halves of the correction: the
+/// stale claim is gone, and the honest deferral marker (naming this
+/// issue) is present at both the struct-level doc AND the field
+/// declaration in `TextureSet::decal_data`, so a reader landing on
+/// either one sees it.
+///
+/// NOTE for future editors: this test's own doc comment deliberately
+/// never spells out the stale claim's literal text — `mod.rs`'s own
+/// corrective doc (above the struct now) also describes the mistake in
+/// general terms rather than quoting it, for the same reason: quoting it
+/// anywhere in `mod.rs` would make the `.contains()` check below match
+/// the describing prose instead of a real regression.
+#[test]
+fn decal_data_doc_does_not_claim_a_nonexistent_m28_decal_milestone() {
+    let src = include_str!("../mod.rs");
+
+    assert!(
+        !src.contains("the M28 decal pipeline extension"),
+        "the stale M28-decal-milestone claim must not come back"
+    );
+    let struct_doc_start = src
+        .find("pub struct DecalData {")
+        .and_then(|i| src[..i].rfind("/// FO4/Skyrim TXST decal-data"))
+        .expect("DecalData's doc comment must still exist");
+    let field_decl = src
+        .find("pub decal_data: Option<DecalData>,")
+        .expect("decal_data field must still exist");
+    let struct_doc = &src[struct_doc_start..src.find("pub struct DecalData {").unwrap()];
+    let field_doc = &src[field_decl.saturating_sub(300)..field_decl];
+
+    assert!(
+        struct_doc.contains("#3638"),
+        "DecalData's struct-level doc must carry the #3638 marker"
+    );
+    assert!(
+        field_doc.contains("#3638"),
+        "the decal_data field's own doc must carry the #3638 marker too, \
+         not just DecalData's struct-level doc two hops away"
+    );
+}
+
 // ── #692 / O3-N-04 regression guards ──────────────────────────────
 //
 // CELL + REFR ownership tuple (XOWN / XRNK / XGLB). Pre-fix every
