@@ -477,6 +477,23 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
 /// reconciler, keeping those derived removals consistent (#3022).
 pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     disable_actor_ai(world, actor);
+    // #3708 (ECS-P2-03) — `disable_actor_ai` -> `clear_ambient_behavior`
+    // deliberately does NOT remove `AmbientPackageRuntime` (it's shared
+    // with the live schedule-handover path, where that runtime state must
+    // survive), so a corpse kept it forever: its
+    // `last_evaluated_game_minute` marker froze at the actor's final live
+    // evaluation, permanently satisfying `ambient_ai_package_system`'s
+    // pass-2 "due" gate on every subsequent frame whose game-minute
+    // differs, and pass 3 paid a real `package_candidates` clone (plus a
+    // `Dead` lookup) for it every time before the pass-3 loop's `Dead`
+    // skip ever ran. A corpse has no package to select — remove the
+    // runtime here, in the death-only path, not in the shared handover
+    // function. `EvaluatePackageRequest` is comparatively low-priority
+    // (it's a one-shot marker `scripting::package::scene_package_system`
+    // drains every tick regardless), removed alongside for the same
+    // reason: a corpse needs neither.
+    remove_component::<crate::components::AmbientPackageRuntime>(world, actor);
+    remove_component::<byroredux_scripting::EvaluatePackageRequest>(world, actor);
     let Some(skeleton_root) = world
         .get::<HavokAnimationTarget>(actor)
         .map(|target| target.skeleton_root)
@@ -534,6 +551,8 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::InventoryIndex;
     use byroredux_core::ecs::components::{FollowBehavior, FollowState};
+    use crate::components::AmbientPackageRuntime;
+    use byroredux_scripting::EvaluatePackageRequest;
 
     fn damage_fixture(
         health: f32,
@@ -971,6 +990,8 @@ mod tests {
         world.register::<Dead>();
         world.register::<FollowBehavior>();
         world.register::<FollowState>();
+        world.register::<AmbientPackageRuntime>();
+        world.register::<EvaluatePackageRequest>();
         let actor = world.spawn();
         world.insert(actor, Dead);
         world.insert(
@@ -986,10 +1007,36 @@ mod tests {
                 target_entity: Some(0),
             },
         );
+        // #3708 — the corpse's ambient-package runtime state. Pre-fix this
+        // survived death forever, keeping the actor in
+        // `ambient_ai_package_system`'s pass-1 query and paying a real
+        // `package_candidates` clone every frame its frozen minute marker
+        // disagreed with the current one.
+        world.insert(
+            actor,
+            AmbientPackageRuntime {
+                package_candidates: vec![0x1000, 0x2000],
+                active_package_form_id: Some(0x1000),
+                actor_form_id: 0x14,
+                last_evaluated_game_minute: Some(42),
+            },
+        );
+        world.insert(actor, EvaluatePackageRequest);
 
         assert_eq!(reconcile_dead_actor_runtime_state(&world), 1);
         assert!(world.get::<FollowBehavior>(actor).is_none());
         assert!(world.get::<FollowState>(actor).is_none());
+        assert!(
+            world.get::<AmbientPackageRuntime>(actor).is_none(),
+            "a corpse must not retain its ambient-package runtime — it has \
+             no package to select, and keeping it forever costs a \
+             package_candidates clone every frame the minute marker \
+             disagrees with the current one (#3708)"
+        );
+        assert!(
+            world.get::<EvaluatePackageRequest>(actor).is_none(),
+            "a corpse must not retain a pending package re-evaluation request"
+        );
         assert!(world.get::<Dead>(actor).is_some());
     }
 
