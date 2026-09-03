@@ -72,6 +72,16 @@ impl ConsoleCommand for StatsCommand {
                 "Draws:     {} cmds → {} batches → {} GPU calls",
                 stats.draw_command_count, stats.batch_count, stats.indirect_call_count
             ),
+            // #2689 (SAFE-D8-01) — `AnimationClipRegistry::release` never
+            // reuses a slot (reuse risks aliasing a still-live stale
+            // handle to unrelated new content), so every evict/reload
+            // cycle strands one clip header permanently. `stub` growing
+            // in lockstep with `clips` — or `stub == clips` — is the
+            // observable signal this issue's fix exists to surface.
+            format!(
+                "AnimClips: {} clips / {} stub (stranded, never reused)",
+                stats.anim_clip_count, stats.anim_clip_stub_count
+            ),
         ])
     }
 }

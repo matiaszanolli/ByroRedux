@@ -24,8 +24,26 @@ use super::types::AnimationClip;
 /// #790. `release` removes any path-binding pointing at the released
 /// handle so the next `get_or_insert_by_path` for the same key
 /// rebuilds rather than returning the empty stub.
+///
+/// The no-reuse guarantee above has a cost: `release` never returns its
+/// slot for reuse (see [`Self::add`]'s doc), so a repeated evict/reload
+/// cycle strands one small stub header per cycle, permanently. #2689
+/// (SAFE-D8-01) — [`Self::stub_slot_count`] surfaces that growth for the
+/// `stats` console command rather than leaving it silent.
 pub struct AnimationClipRegistry {
     clips: Vec<AnimationClip>,
+    /// Count of slots [`Self::release`] has cleared to an empty stub.
+    /// Monotonically increasing — released slots are never reused (see
+    /// [`Self::add`]'s doc for why: a live `clip_handle: u32` consumer
+    /// may still be holding a released handle and reading its empty-stub
+    /// contents, and recycling that index for unrelated new content
+    /// would alias it to a *different* clip, which is exactly the
+    /// invariant this registry exists to prevent). #2689 (SAFE-D8-01) —
+    /// each evict/reload cycle therefore strands one clip header
+    /// permanently (a few hundred bytes; single-digit MB over a long
+    /// session, not a per-frame leak). This counter makes that growth
+    /// observable instead of silent — see [`Self::stub_slot_count`].
+    stub_count: usize,
     /// Path-keyed memoisation. Populated by
     /// [`Self::get_or_insert_by_path`] and read by callers that want
     /// the cheap early-out before paying the parse cost.
@@ -53,9 +71,23 @@ impl AnimationClipRegistry {
         Self {
             clips: Vec::new(),
             clip_handles_by_path: HashMap::new(),
+            stub_count: 0,
         }
     }
 
+    /// Register a new clip and return its handle. Always allocates a
+    /// fresh slot at the end of `clips` — never recycles a slot
+    /// [`Self::release`] emptied. #2689 (SAFE-D8-01) considered reuse
+    /// (a free list) and rejected it: a released slot's `clip_handle: u32`
+    /// can still be live on an `AnimationPlayer`/`AnimationLayer`
+    /// somewhere, reading the empty-stub contents by design (see
+    /// `release`'s doc). Recycling that same index for a *new*, unrelated
+    /// clip would silently alias that stale handle to different content
+    /// the moment the new clip is pushed — exactly the aliasing bug this
+    /// registry's "no stale handle ever resolves to a different clip"
+    /// invariant exists to rule out. Monotonic growth is the price of
+    /// that guarantee; [`Self::stub_slot_count`] makes the resulting
+    /// (small, unbounded-but-slow) leak observable instead of silent.
     pub fn add(&mut self, clip: AnimationClip) -> u32 {
         let handle = self.clips.len() as u32;
         self.clips.push(clip);
@@ -187,7 +219,23 @@ impl AnimationClipRegistry {
         // Path-memo cleanup: drop reverse-map entries pointing here.
         // O(N) on path-map size; called rarely (LRU eviction freq).
         self.clip_handles_by_path.retain(|_, h| *h != handle);
+        // #2689 — this slot is now permanently stranded (see `add`'s doc
+        // for why it can never be reused); count it so the growth is
+        // observable.
+        self.stub_count += 1;
         true
+    }
+
+    /// Number of slots [`Self::release`] has stranded as empty stubs —
+    /// permanently unreachable content, growing by one per evict/reload
+    /// cycle. #2689 (SAFE-D8-01): the registry deliberately never reuses
+    /// these slots (see [`Self::add`]'s doc), so this counter is the
+    /// only signal of the resulting slow, unbounded growth. Compare
+    /// against [`Self::len`] — `stub_slot_count() == len()` means every
+    /// resident slot is dead weight, which would be the actionable
+    /// signal for finally implementing a generational-handle scheme.
+    pub fn stub_slot_count(&self) -> usize {
+        self.stub_count
     }
 }
 
@@ -415,5 +463,51 @@ mod tests {
         // is the populated rebuild.
         assert_eq!(reg.get(h1).unwrap().duration, 0.0);
         assert_eq!(reg.get(h2).unwrap().duration, 1.5);
+    }
+
+    /// #2689 (SAFE-D8-01) — `stub_slot_count` must track exactly how many
+    /// slots `release` has stranded: zero before any release, one per
+    /// successful (populated-slot) release, unaffected by releases that
+    /// return `false` (already-empty or out-of-range — nothing was
+    /// stranded that wasn't already counted).
+    #[test]
+    fn stub_slot_count_tracks_released_slots() {
+        let mut reg = AnimationClipRegistry::new();
+        assert_eq!(reg.stub_slot_count(), 0);
+
+        let h1 = reg.add(populated_clip());
+        let h2 = reg.add(populated_clip());
+        assert_eq!(reg.stub_slot_count(), 0, "adding a clip strands nothing");
+
+        assert!(reg.release(h1));
+        assert_eq!(reg.stub_slot_count(), 1);
+
+        // Idempotent re-release of the same handle must not double-count.
+        assert!(!reg.release(h1));
+        assert_eq!(reg.stub_slot_count(), 1);
+
+        // Out-of-range handle: nothing stranded, count unchanged.
+        assert!(!reg.release(99));
+        assert_eq!(reg.stub_slot_count(), 1);
+
+        assert!(reg.release(h2));
+        assert_eq!(reg.stub_slot_count(), 2);
+    }
+
+    /// Every evict/reload cycle through the path-memo API strands one
+    /// more slot, matching the issue's own framing ("one clip header per
+    /// evict/reload cycle, permanently") — `stub_slot_count` grows in
+    /// lockstep with `len()` under repeated cycles on the same key,
+    /// never shrinking back.
+    #[test]
+    fn stub_slot_count_grows_with_repeated_evict_reload_cycles() {
+        let mut reg = AnimationClipRegistry::new();
+        let key = "meshes\\churn.kf";
+        for cycle in 1..=5 {
+            let h = reg.get_or_insert_by_path(key.to_string(), populated_clip);
+            reg.release(h);
+            assert_eq!(reg.stub_slot_count(), cycle);
+            assert_eq!(reg.len(), cycle, "each cycle allocates a fresh slot, never reuses one");
+        }
     }
 }

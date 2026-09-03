@@ -359,6 +359,21 @@ pub struct DebugStats {
     /// loop on #1284: capture this from the `audit-runtime` baseline to
     /// know how far the next bump needs to go.
     pub skin_pool_overflow_attempts: u32,
+    /// `AnimationClipRegistry::len()` last frame — total clip slots,
+    /// including ones `release` has stranded as empty stubs (see
+    /// `anim_clip_stub_count`). Same "registry-wide, never drops"
+    /// caveat as `mesh_count` / `texture_count`.
+    pub anim_clip_count: u32,
+    /// `AnimationClipRegistry::stub_slot_count()` last frame — clip
+    /// slots permanently stranded empty by `release` (the cell-loader's
+    /// LRU eviction path). #2689 (SAFE-D8-01): the registry never
+    /// reuses a released slot (reuse would risk aliasing a still-live
+    /// stale handle to unrelated new content), so this grows by one per
+    /// evict/reload cycle on a churned clip and never shrinks.
+    /// `anim_clip_stub_count == anim_clip_count` means every resident
+    /// slot is dead weight — the actionable signal for finally
+    /// implementing a generational-handle scheme.
+    pub anim_clip_stub_count: u32,
 }
 
 impl Resource for DebugStats {}
@@ -382,6 +397,8 @@ impl Default for DebugStats {
             skin_pool_live: 0,
             skin_pool_max: 0,
             skin_pool_overflow_attempts: 0,
+            anim_clip_count: 0,
+            anim_clip_stub_count: 0,
         }
     }
 }

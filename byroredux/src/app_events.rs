@@ -600,6 +600,19 @@ impl ApplicationHandler for App {
                 }
             }
         }
+        // #2689 — read before the `DebugStats` write-lock block opens
+        // (not nested inside it) so this stays a plain sequential pair of
+        // resource acquisitions rather than a `DebugStats` write held
+        // across a second, independent resource read.
+        let (anim_clip_count, anim_clip_stub_count) = {
+            let registry = self
+                .world
+                .resource::<byroredux_core::animation::AnimationClipRegistry>();
+            (
+                registry.len() as u32,
+                registry.stub_slot_count() as u32,
+            )
+        };
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
             stats.push_frame_time(dt);
@@ -619,6 +632,11 @@ impl ApplicationHandler for App {
             stats.skin_pool_live = self.skin_slot_pool.live_slot_count();
             stats.skin_pool_max = self.skin_slot_pool.max_slot();
             stats.skin_pool_overflow_attempts = self.skin_slot_pool.overflow_attempt_count();
+            // #2689 (SAFE-D8-01) — surface the AnimationClipRegistry's
+            // permanently-stranded stub-slot count so the `stats` console
+            // command makes the evict/reload leak observable.
+            stats.anim_clip_count = anim_clip_count;
+            stats.anim_clip_stub_count = anim_clip_stub_count;
         }
 
         // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the
