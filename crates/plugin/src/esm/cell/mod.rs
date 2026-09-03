@@ -388,6 +388,22 @@ pub struct PlacedRef {
     /// on legacy fixtures that pre-date the field.
     pub form_id: u32,
     pub base_form_id: u32,
+    /// The ESM group-type this placement's REFR/ACHR/ACRE record was found
+    /// directly under: `6` = temporary, `8` = persistent, `9` = visible
+    /// distant (the standard CELL/WRLD children group-type codes). `0xFF`
+    /// on legacy fixtures/tests that pre-date this field and don't care.
+    ///
+    /// Not consumed anywhere yet — the engine's only "persistent" concept
+    /// today is the worldspace-level persistent CELL
+    /// (`byroredux/src/streaming.rs`), not per-REFR group membership. This
+    /// is the placement metadata a future streaming system (what stays
+    /// resident across cell transitions) and a save system (what must be
+    /// distinguished on restore) will need. Previously discarded entirely
+    /// at parse time — `parse_cell_group_inner` / `parse_wrld_children_inner`
+    /// matched `6 | 8 | 9` with one shared arm and passed the same `&mut
+    /// refs` for all three, so no downstream consumer could ever recover
+    /// which group a given REFR came from. See #3728.
+    pub group_type: u8,
     /// Position in Bethesda units (Z-up).
     pub position: [f32; 3],
     /// Euler rotation in radians (X, Y, Z).

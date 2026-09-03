@@ -81,6 +81,7 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
@@ -104,6 +105,7 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
@@ -365,6 +367,7 @@ fn deleted_refr_tombstone_is_skipped() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
     assert!(refs.is_empty(), "a Deleted-flagged REFR must place nothing");
@@ -442,6 +445,7 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "one REFR per record");
@@ -493,6 +497,7 @@ fn parse_refr_extracts_position_and_scale() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -531,6 +536,7 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -567,6 +573,7 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -624,6 +631,7 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -942,6 +950,7 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -975,6 +984,7 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -1079,6 +1089,7 @@ fn parse_refr_group_collects_navm_records() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 
@@ -1143,6 +1154,7 @@ fn parse_placements(record: &[u8]) -> Vec<PlacedRef> {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
     refs
@@ -1192,6 +1204,7 @@ fn deleted_placed_records_are_tombstoned_not_spawned() {
         &mut navmeshes,
         &mut pathgrids,
         &mut deleted,
+        6, // group_type: arbitrary — these tests don't exercise group membership
     )
     .unwrap();
 

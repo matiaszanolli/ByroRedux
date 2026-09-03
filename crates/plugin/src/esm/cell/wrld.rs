@@ -305,6 +305,7 @@ fn parse_wrld_children_inner(
                             &mut navmeshes,
                             &mut pathgrids,
                             &mut deleted,
+                            sub_group.group_type as u8,
                         )?;
                         let cell = match cell_target {
                             Some(grid) => exterior_cells.get_mut(&grid),

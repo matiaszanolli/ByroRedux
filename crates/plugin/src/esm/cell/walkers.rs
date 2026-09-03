@@ -169,6 +169,7 @@ fn parse_cell_group_inner(
                             &mut navmeshes,
                             &mut pathgrids,
                             &mut deleted,
+                            sub_group.group_type as u8,
                         )?;
                         if let Some(cell) = cells.get_mut(key) {
                             cell.references.extend(refs);
@@ -676,9 +677,10 @@ pub(crate) fn parse_refr_group(
     navmeshes: &mut Vec<NavmRecord>,
     pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
+    group_type: u8,
 ) -> Result<()> {
     parse_refr_group_inner(
-        reader, end, refs, landscape, navmeshes, pathgrids, deleted, 0,
+        reader, end, refs, landscape, navmeshes, pathgrids, deleted, group_type, 0,
     )
 }
 
@@ -691,6 +693,12 @@ fn parse_refr_group_inner(
     navmeshes: &mut Vec<NavmRecord>,
     pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
+    // #3728 — the group-type (6/8/9) of the CELL/WRLD children group this
+    // whole call tree was entered under. Fixed for the entire recursion:
+    // any further-nested group inside a 6/8/9 body is still scoped to that
+    // same temporary/persistent/visible-distant membership, so this is
+    // threaded unchanged (unlike `depth`, which increments).
+    group_type: u8,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -709,6 +717,7 @@ fn parse_refr_group_inner(
                 navmeshes,
                 pathgrids,
                 deleted,
+                group_type,
                 depth + 1,
             )?;
             continue;
@@ -1058,6 +1067,7 @@ fn parse_refr_group_inner(
                     // REFR placed) was retained.
                     form_id: header.form_id,
                     base_form_id,
+                    group_type,
                     position,
                     rotation,
                     scale,

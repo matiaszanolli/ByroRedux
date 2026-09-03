@@ -25,6 +25,7 @@ fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
     PlacedRef {
         form_id: 0,
         base_form_id,
+        group_type: 0xFF,
         position: [0.0; 3],
         rotation: [0.0; 3],
         scale: 1.0,

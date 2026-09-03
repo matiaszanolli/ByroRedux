@@ -246,6 +246,7 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
     let placed_ref = esm::cell::PlacedRef {
         form_id: 0x00AA_0001,
         base_form_id: 0x00AA_0002,
+        group_type: 0xFF,
         position: [0.0; 3],
         rotation: [0.0; 3],
         scale: 1.0,

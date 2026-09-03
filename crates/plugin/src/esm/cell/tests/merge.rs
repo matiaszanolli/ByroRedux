@@ -57,6 +57,7 @@ fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
     PlacedRef {
         form_id,
         base_form_id,
+        group_type: 0xFF,
         position: [0.0; 3],
         rotation: [0.0; 3],
         scale: 1.0,

@@ -141,6 +141,97 @@ fn parse_interior_without_edid_uses_form_id_identity_and_keeps_children() {
     assert_eq!(parsed.references[0].form_id, actor_form_id);
 }
 
+/// Regression: #3728 (ESM-2026-08-30-D5-01) — a REFR's persistent (8) vs
+/// temporary (6) group membership must survive onto its `PlacedRef`, not be
+/// discarded at parse time. Builds one interior CELL with two children
+/// groups — a type-6 (temporary) and a type-8 (persistent) — each holding
+/// one REFR, and asserts the two resulting `PlacedRef`s carry the group
+/// type they actually came from, not a shared/collapsed value.
+#[test]
+fn persistent_and_temporary_refrs_carry_distinct_group_type() {
+    let cell_form_id: u32 = 0x00AB_CDEF;
+    let temp_refr_form: u32 = 0x0000_1111;
+    let persistent_refr_form: u32 = 0x0000_2222;
+
+    let mut cell_subs = Vec::new();
+    cell_subs.extend_from_slice(b"DATA");
+    cell_subs.extend_from_slice(&1u16.to_le_bytes());
+    cell_subs.push(0x01); // is_interior
+
+    let mut cell = Vec::new();
+    cell.extend_from_slice(b"CELL");
+    cell.extend_from_slice(&(cell_subs.len() as u32).to_le_bytes());
+    cell.extend_from_slice(&0u32.to_le_bytes());
+    cell.extend_from_slice(&cell_form_id.to_le_bytes());
+    cell.extend_from_slice(&[0u8; 8]);
+    cell.extend_from_slice(&cell_subs);
+
+    let build_refr = |form_id: u32| -> Vec<u8> {
+        let mut subs = Vec::new();
+        subs.extend_from_slice(b"NAME");
+        subs.extend_from_slice(&4u16.to_le_bytes());
+        subs.extend_from_slice(&0x0000_0007u32.to_le_bytes()); // base form (STAT etc.)
+        subs.extend_from_slice(b"DATA");
+        subs.extend_from_slice(&24u16.to_le_bytes());
+        subs.extend_from_slice(&[0u8; 24]);
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(subs.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&form_id.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&subs);
+        record
+    };
+
+    let wrap_child_group = |group_type: u32, record: &[u8]| -> Vec<u8> {
+        let mut group = Vec::new();
+        group.extend_from_slice(b"GRUP");
+        group.extend_from_slice(&((24 + record.len()) as u32).to_le_bytes());
+        group.extend_from_slice(&cell_form_id.to_le_bytes());
+        group.extend_from_slice(&group_type.to_le_bytes());
+        group.extend_from_slice(&[0u8; 8]);
+        group.extend_from_slice(record);
+        group
+    };
+
+    cell.extend_from_slice(&wrap_child_group(6, &build_refr(temp_refr_form)));
+    cell.extend_from_slice(&wrap_child_group(8, &build_refr(persistent_refr_form)));
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &cell,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let mut cells = HashMap::new();
+    parse_cell_group(
+        &mut reader,
+        cell.len(),
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout4,
+    )
+    .unwrap();
+
+    let parsed = cells.get("cell_00abcdef").expect("FormID fallback key");
+    assert_eq!(parsed.references.len(), 2);
+
+    let temp = parsed
+        .references
+        .iter()
+        .find(|r| r.form_id == temp_refr_form)
+        .expect("temporary REFR must be present");
+    assert_eq!(temp.group_type, 6, "temporary REFR must carry group_type 6");
+
+    let persistent = parsed
+        .references
+        .iter()
+        .find(|r| r.form_id == persistent_refr_form)
+        .expect("persistent REFR must be present");
+    assert_eq!(
+        persistent.group_type, 8,
+        "persistent REFR must carry group_type 8, not the temporary group's value"
+    );
+}
+
 /// Regression: #970 / OBL-D3-NEW-06 — Oblivion CELL RCLR
 /// (3-byte RGB regional tint) was silently dropped by the walker;
 /// editor-authored cell-level colour overrides never surfaced to

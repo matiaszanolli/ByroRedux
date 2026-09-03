@@ -508,6 +508,7 @@ mod tests {
                 &mut navmeshes,
                 &mut pathgrids,
                 &mut deleted,
+                8, // arbitrary — this test only checks depth-guard byte accounting
             )
         });
         check("parse_modl_group", &any, &mut |r, end| {
