@@ -355,6 +355,10 @@ impl World {
     /// `T` (specifically an already-held `QueryWrite<T>` on the same
     /// thread) would cause a deadlock. Drop the offending guard
     /// before calling.
+    // #3249 — propagates this call site through to the lock tracker's
+    // recursive-read warning, so it can name where a second read guard
+    // was actually acquired instead of just the component type.
+    #[track_caller]
     pub fn get<T: Component>(&self, entity: EntityId) -> Option<ComponentRef<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
@@ -465,6 +469,8 @@ impl World {
     /// parked writer (#2386). Prefer reusing or dropping the first guard
     /// before calling. The release-build cost is a thread-local
     /// `HashMap` probe per acquisition, not a no-op.
+    // #3249 — see `World::get`'s identical note.
+    #[track_caller]
     pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
@@ -525,6 +531,8 @@ impl World {
     /// `BYRO_LOCK_ORDER_CHECK=1`, it additionally panics if the ordered lock graph detects
     /// a cross-thread ABBA risk (#313). Drop any offending guard
     /// before calling.
+    // #3249 — see `World::get`'s identical note.
+    #[track_caller]
     pub fn query_2_mut<A: Component, B: Component>(
         &self,
     ) -> Option<(QueryRead<'_, A>, QueryWrite<'_, B>)> {
@@ -697,6 +705,8 @@ impl World {
     ///
     /// Also panics if `R`'s `RwLock` is poisoned — a prior holder panicked
     /// mid-access (the #466 fail-fast lock-poison doctrine).
+    // #3249 — see `World::get`'s identical note.
+    #[track_caller]
     pub fn resource<R: Resource>(&self) -> ResourceRead<'_, R> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id).unwrap_or_else(|| {
@@ -829,6 +839,8 @@ impl World {
     ///
     /// Also panics (not `None`) if `R`'s `RwLock` is poisoned — the `try_`
     /// prefix is about existence, not poison recovery (#466 fail-fast).
+    // #3249 — see `World::get`'s identical note.
+    #[track_caller]
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;

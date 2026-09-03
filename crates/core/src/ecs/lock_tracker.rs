@@ -47,7 +47,7 @@
 
 use std::any::TypeId;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Per-lock-type tracker record. `type_name` is stored so panic
 /// messages can identify the conflict without the caller having to
@@ -68,12 +68,32 @@ struct LockState {
 
 thread_local! {
     static LOCKS: RefCell<HashMap<TypeId, LockState>> = RefCell::new(HashMap::new());
+    // #3249 (ECS-2026-08-24-02) — types this thread has already logged the
+    // recursive-read hazard warning for, ever (not per acquisition cycle).
+    // Pre-fix the warning fired once per 1→2 transition, which is once per
+    // *acquisition*, not once per process or per type: a recursive read on
+    // a per-frame path warned every single frame, forever. Membership here
+    // is permanent for the thread's lifetime — the hazard the warning
+    // reports (two live read guards on one thread, deadlock-prone behind a
+    // parked writer on some `RwLock` implementations) doesn't become less
+    // true on the second occurrence, but the operator only needs to hear
+    // about it once to go fix the call site.
+    static WARNED_RECURSIVE_READ_TYPES: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
     #[cfg(test)]
     static RECURSIVE_READ_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Record a read lock acquisition. Panics if a write lock is already held
 /// on this type from the same thread (would deadlock).
+///
+/// `#[track_caller]` (#3249) — propagated from [`TrackedRead::new`], which
+/// is propagated from each `World` query/resource method that constructs
+/// one, so the recursive-read warning below can name the actual user call
+/// site (e.g. `render/static_meshes.rs:142`) instead of just the component
+/// type name, which alone was not enough to locate the offending
+/// `query::<T>()` among the workspace's many call sites without a manual
+/// bisect (how ECS-2026-08-24-01 was actually found).
+#[track_caller]
 pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
     LOCKS.with(|locks| {
         let recursive_read = {
@@ -137,10 +157,25 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             // #2386 — recursive reads can deadlock behind a parked writer on
             // some RwLock implementations. TypeId-only tracking cannot tell a
             // true recursive lock from the same component type in two Worlds,
-            // so warn (once on 1→2) rather than rejecting valid multi-World use.
-            if entry.read_count == 1 {
+            // so warn rather than rejecting valid multi-World use.
+            //
+            // #3249 — de-duplicated per (thread, TypeId), not per
+            // acquisition: pre-fix this fired on every 1→2 transition, so a
+            // recursive read on a per-frame path warned every frame,
+            // forever. `HashSet::insert` returns `true` only the first time
+            // a TypeId is seen on this thread, so the log line — and the
+            // `format!` cost behind it — now fires at most once per type
+            // per thread for the life of the process.
+            if entry.read_count == 1
+                && WARNED_RECURSIVE_READ_TYPES.with(|warned| warned.borrow_mut().insert(type_id))
+            {
+                let caller = std::panic::Location::caller();
                 log::warn!(
-                    "ECS recursive-read hazard: a second `{type_name}` read guard is live on this thread; reuse/drop the first guard when both reads target one World (#2386)"
+                    "ECS recursive-read hazard: a second `{type_name}` read guard is live on \
+                     this thread, acquired at {caller}; reuse/drop the first guard when both \
+                     reads target one World (#2386). This warning fires once per type per \
+                     thread (#3249) — further recursive reads of `{type_name}` on this thread \
+                     are not logged."
                 );
                 #[cfg(test)]
                 RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
@@ -523,6 +558,7 @@ pub(crate) struct TrackedRead {
 
 impl TrackedRead {
     #[inline]
+    #[track_caller]
     pub(crate) fn new(type_id: TypeId, type_name: &'static str) -> Self {
         track_read(type_id, type_name);
         Self {
@@ -622,6 +658,67 @@ mod tests {
         untrack_read(id);
         untrack_read(id);
         untrack_read(id);
+        assert!(is_clean());
+    }
+
+    struct FakeRecursiveCycle;
+
+    /// #3249 — the warning must not repeat every time a recursive-read
+    /// sequence starts fresh, which is exactly the shape of a per-frame
+    /// system that recursively reads the same component: pre-fix, that
+    /// warned once per *acquisition* (every 1→2 transition), so a
+    /// per-frame hot path warned every frame, forever. De-duplicated per
+    /// (thread, TypeId) instead — at most once for the life of the
+    /// thread.
+    #[test]
+    fn recursive_read_warns_only_once_across_multiple_acquire_release_cycles() {
+        let id = TypeId::of::<FakeRecursiveCycle>();
+        take_recursive_read_warning_count();
+
+        // Three independent acquire/release cycles on the same type —
+        // the shape three ticks of a per-frame system would produce.
+        for _ in 0..3 {
+            track_read(id, "FakeRecursiveCycle");
+            track_read(id, "FakeRecursiveCycle");
+            untrack_read(id);
+            untrack_read(id);
+        }
+
+        assert_eq!(
+            take_recursive_read_warning_count(),
+            1,
+            "the recursive-read warning must fire at most once per type per thread, \
+             not once per acquire/release cycle — a per-frame recursive-read path \
+             would otherwise warn every frame forever (#3249)"
+        );
+        assert!(is_clean());
+    }
+
+    /// The de-dup set is keyed by `TypeId`, not a single global latch — a
+    /// different type's recursive read must still warn on its own first
+    /// occurrence even after another type has already warned.
+    #[test]
+    fn recursive_read_dedup_is_per_type_not_global() {
+        let id_a = TypeId::of::<FakeA>();
+        let id_b = TypeId::of::<FakeB>();
+        take_recursive_read_warning_count();
+
+        track_read(id_a, "FakeA");
+        track_read(id_a, "FakeA");
+        untrack_read(id_a);
+        untrack_read(id_a);
+
+        track_read(id_b, "FakeB");
+        track_read(id_b, "FakeB");
+        untrack_read(id_b);
+        untrack_read(id_b);
+
+        assert_eq!(
+            take_recursive_read_warning_count(),
+            2,
+            "a different TypeId's first recursive read must still warn, even after \
+             another type has already used up its one-time warning"
+        );
         assert!(is_clean());
     }
 
