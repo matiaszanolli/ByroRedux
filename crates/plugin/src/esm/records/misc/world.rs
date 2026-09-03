@@ -757,24 +757,40 @@ pub enum RegionDataPayload {
     Grass(Vec<u8>),
     Sound {
         /// `RDMD` (Oblivion) / `RDMO` (Skyrim) / `RDSB` (FNV) — the raw
-        /// 4-byte value, decoded generically as a FormID.
+        /// 4-byte value, decoded generically as a `u32` since its meaning
+        /// is per-era and none of the three targets `SOUN`.
         ///
-        /// #3787 — on FNV this is **confirmed NOT a `SOUN` FormID**: a
-        /// census across all 276 `FalloutNV.esm` REGN records found 44 of
-        /// 44 `RDSB` targets resolve as `MSET` (Media Set), 0 as `SOUN`.
+        /// **None of these three eras store a `SOUN` FormID here** — the
+        /// consumer-side assumption that this field always names a `SOUN`
+        /// was never true for any of them:
+        ///
+        /// - **Oblivion `RDMD`**: NOT a FormID at all — confirmed against
+        ///   the xEdit `wbDefinitionsTES4.pas` record definition as a
+        ///   `uint32` **enum** (`0 = Default`, `1 = Public`, `2 = Dungeon`),
+        ///   a coarse music-category selector. Oblivion's `REGN` has no
+        ///   `MUSC` (or equivalent) record at all to point at. FNV inherits
+        ///   this same enum unchanged (`fopdoc`'s `FalloutNV/Records/
+        ///   REGN.md`), consistent with the near-universal `0` values a
+        ///   census across every vanilla Oblivion region measured (#3811).
+        /// - **Skyrim `RDMO`**: a genuine FormID — confirmed against
+        ///   `wbDefinitionsTES5.pas`'s `wbFormIDCk(RDMO, 'Music', [MUSC], …)`
+        ///   as pointing at a `MUSC` ("Music Type") record, not `SOUN`.
+        ///   `MUSC` itself carries no direct audio path — it's a container
+        ///   (playback flags + priority/ducking + fade duration + an array
+        ///   of `MUST` "Music Track" FormIDs), and the actual file path +
+        ///   loop-point data live one level further down, in `MUST`. Not
+        ///   decoded here (#3811) — a real feature addition (two new
+        ///   record types plus a track-selection policy for the "Plays One
+        ///   Selection"/"Cycle Tracks" flags), not a doc-fix-sized change.
+        /// - **FNV `RDSB`**: `MSET` (Media Set) — census-confirmed 44/44
+        ///   (#3787), not `SOUN`. No MSET runtime exists yet.
+        ///
         /// `dispatch_region_ambient_music` (`byroredux/src/asset_provider/
-        /// audio.rs`) resolves `music_form` against the parsed `SounRecord`
-        /// map regardless, so it misses on every FNV region — the consumer
-        /// treats this field as if it always names a `SOUN`, which was
-        /// never true for FNV and is empirically **also** not true for
-        /// Oblivion or Skyrim (their `RDMD`/`RDMO` don't resolve as `SOUN`
-        /// either — Oblivion's values were measured near-universally `0`
-        /// across every vanilla region, consistent with a small enum
-        /// rather than a FormID at all; Skyrim's are real non-trivial
-        /// FormIDs that still don't match any parsed `SOUN` record). The
-        /// per-era target type this field actually names for Oblivion/
-        /// Skyrim was NOT further verified here — flagged as a follow-up,
-        /// not fixed. Do not assume `SOUN` for any era without checking.
+        /// audio.rs`) resolves this against the parsed `SounRecord` map
+        /// regardless, so it structurally misses on every game via this
+        /// path — logged once per process rather than treated as a missing
+        /// -archive content gap. See #3787 (FNV) / #3811 (Oblivion +
+        /// Skyrim, this doc) for the full census.
         music: Option<u32>,
         /// `RDSI` incidental sound form (FNV). Same caveat as `music`
         /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not

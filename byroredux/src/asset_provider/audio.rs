@@ -161,12 +161,12 @@ pub(crate) fn dispatch_region_ambient_music(
     music_form: Option<u32>,
 ) {
     let resolved = music_form.and_then(|form_id| resolve_sound_path(sounds, form_id));
-    // #3787 — `music_form` was authored (a real REGN chose an ambient
-    // directive) but didn't resolve as a `SOUN`. On FNV this is the
-    // expected, confirmed case: `RDSB`/`RDSI` are `MSET` (Media Set)
-    // FormIDs there, not `SOUN` (census: 44/44 `RDSB` + 10/11 `RDSI` are
-    // MSET, 0 SOUN — see `RegionDataPayload::Sound`'s doc). No MSET
-    // runtime exists yet, so this path is structurally unsupported rather
+    // #3787 (FNV) / #3811 (Oblivion + Skyrim) — `music_form` was authored
+    // (a real REGN chose an ambient directive) but never resolves as a
+    // `SOUN` on any game: Oblivion's `RDMD` is a music-category enum, not
+    // a FormID at all; Skyrim's `RDMO` targets `MUSC`; FNV's `RDSB`/`RDSI`
+    // target `MSET` (Media Set). No `MUSC`/`MUST` or `MSET` runtime exists
+    // yet, so this path is structurally unsupported on every game rather
     // than a content gap; log it once so "no archive supplied" (silent,
     // the common case per the doc above) is distinguishable from "an
     // ambient directive was authored but this engine build can't resolve
@@ -177,10 +177,12 @@ pub(crate) fn dispatch_region_ambient_music(
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             log::info!(
-                "REGN ambient: music_form did not resolve as a SOUN record — on FNV, \
-                 RDSB/RDSI are confirmed MSET (Media Set) FormIDs, which this engine \
-                 does not yet decode; region ambient music is unsupported pending an \
-                 MSET runtime (#3787), not a missing-archive content gap"
+                "REGN ambient: music_form did not resolve as a SOUN record on any \
+                 supported game — Oblivion's RDMD is a music-category enum (not a \
+                 FormID), Skyrim's RDMO targets MUSC, and FNV's RDSB/RDSI target MSET \
+                 (Media Set); none of those target types are decoded by this engine \
+                 yet, so region ambient music is unsupported pending that work \
+                 (#3787 / #3811), not a missing-archive content gap"
             );
         });
     }

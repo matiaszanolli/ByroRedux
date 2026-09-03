@@ -549,16 +549,17 @@ impl Resource for CellLightingRes {}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RegionAmbientRes {
     /// `RDMD` (Oblivion) / `RDMO` (Skyrim) / `RDSB` (FNV) — the winning
-    /// entry's raw background-music FormID.
-    ///
-    /// #3787 — NOT a `SOUN` FormID on FNV (census-confirmed `MSET`, Media
-    /// Set); also does not resolve as `SOUN` on Oblivion or Skyrim, though
-    /// their actual per-era target record type was not further verified.
+    /// entry's raw background-music word. Not a `SOUN` FormID on any of the
+    /// three eras: Oblivion's `RDMD` is a `uint32` music-category enum (not
+    /// a FormID at all), Skyrim's `RDMO` is a FormID but targets `MUSC`,
+    /// and FNV's `RDSB` targets `MSET` (Media Set) — see
+    /// `RegionDataPayload::Sound`'s doc in
+    /// `crates/plugin/src/esm/records/misc/world.rs` for the full
+    /// per-era census (#3787 FNV, #3811 Oblivion + Skyrim).
     /// `dispatch_region_ambient_music` (`asset_provider::audio`) currently
     /// resolves this against the `SounRecord` map regardless, which is why
     /// region ambient music is a structural no-op on every tested game via
-    /// this path — see `RegionDataPayload::Sound`'s doc in
-    /// `crates/plugin/src/esm/records/misc/world.rs` for the full census.
+    /// this path.
     pub music_form: Option<u32>,
     /// `RDSI` — FNV-only incidental FormID. Same caveat: census-confirmed
     /// `MSET`, not `SOUN` (#3787).
