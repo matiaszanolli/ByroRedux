@@ -1,33 +1,58 @@
-# #3707 — ECS-2026-08-30-D10-07: write_root_motion's zero-motion early return latches the previous tick's delta
-
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
+# #3707 — ECS-D10-07: write_root_motion's zero-motion early return latches the previous tick's delta
 
 **Severity**: LOW · **Dimension**: Animation Runtime
-**Location**: `byroredux/src/systems/animation.rs` (`write_root_motion`, ~:73-83); consumer `byroredux/src/systems/cinematic.rs` (`cinematic_root_motion_system`)
-**Source**: `docs/audits/AUDIT_ECS_2026-08-30.md` (ECS-D10-07)
+**Location**: `byroredux/src/systems/animation.rs` (`write_root_motion`)
 
-## Description
+## Fix
 
-`write_root_motion` returns before touching `RootMotionDelta` when this tick's motion is exactly `Vec3::ZERO`, so the component keeps whatever the last non-zero tick wrote. The only drain, `cinematic_root_motion_system`, zeroes it only for actors currently awaiting `ExitCartEnd`. An actor outside that window carries a stale delta indefinitely; when it later enters the window, the first tick has `current_time ~= prev_time`, so the write is skipped and the consumer applies the stale value.
+`write_root_motion` early-returned on `motion == Vec3::ZERO`, leaving
+`RootMotionDelta` holding whatever the last non-zero tick wrote — since
+the write is an assignment (`rm.0 = motion`), not an accumulation, a
+genuinely stationary tick needs to overwrite the component with zero, not
+skip it. The only drain, `cinematic_root_motion_system`, zeroes it only
+for actors currently awaiting `ExitCartEnd`, so a stale delta from an
+entity's previous motion window could survive indefinitely and surface as
+a one-frame position pop the next time that window opened.
 
-## Evidence
+Removed the early return per the issue's own suggested fix — the function
+now writes unconditionally (including `Vec3::ZERO`), keeping the existing
+`query_mut`/`get_mut` guards so an entity without the component stays
+untouched exactly as before.
 
-```rust
-// byroredux/src/systems/animation.rs
-fn write_root_motion(world: &World, entity: EntityId, motion: Vec3) {
-    if motion == Vec3::ZERO {
-        return;                                   // component keeps the old value
-    }
-```
+## SIBLING (issue's own checklist item)
 
-## Impact
+Checked both call sites (`byroredux/src/systems/animation.rs:758` — the
+player path, `:997` — the stack path). Both simply pass a computed
+`root_motion: Vec3` that already defaults to `Vec3::ZERO` when no accum
+root is animated this tick; neither needed any change to stay correct
+under the new unconditional-write contract.
 
-A single-frame position pop of up to one prior frame's root displacement at the start of a cart-exit cinematic. Not an integration leak — the write is an assignment, not `+=`.
+## TESTS (issue's own checklist item — "a regression test pins that a zero-motion tick clears a previously written delta")
 
-## Suggested Fix
+Added `root_motion_tests` (`byroredux/src/systems/animation.rs`), calling
+`write_root_motion` directly against a minimal `World`:
 
-Write unconditionally (including `Vec3::ZERO`) for entities that already have the component, keeping the `query_mut`/`get_mut` guards so entities without it stay untouched.
+- `zero_motion_tick_clears_a_previously_written_delta` — the literal
+  regression test the issue asked for: seed `RootMotionDelta` with a
+  non-zero value, call with `Vec3::ZERO`, assert it's cleared.
+- `non_zero_motion_still_writes_through` — the existing behavior stays
+  correct.
+- `entity_without_component_is_left_alone` — confirms the storage-presence
+  guard still no-ops cleanly for an entity that never had the component,
+  which is what lets `write_root_motion` run unconditionally on every
+  animated entity rather than only ones known in advance to carry root
+  motion.
 
-## Completeness Checks
-- [ ] **SIBLING**: Both the player and stack call sites of `write_root_motion` verified against the new unconditional write
-- [ ] **TESTS**: A regression test pins that a zero-motion tick clears a previously written delta
+Verified the guard actually catches the regression (this session's
+established quality bar): reintroduced the early return, reran — the
+first test failed with exactly the described stale-value symptom
+(`left: Vec3(3.0, 0.0, 4.0), right: Vec3(0.0, 0.0, 0.0)`), then reverted
+and confirmed a clean pass again.
+
+## Verification
+
+- `cargo check -p byroredux --tests`: clean.
+- `cargo test -q -p byroredux --bin byroredux`: 1,868 tests passing, 0
+  failing (+3 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7089 passing, 0
+  failing**.

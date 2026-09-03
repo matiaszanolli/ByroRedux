@@ -67,14 +67,21 @@ fn subtree_cache(world: &World, root: Option<EntityId>) -> Option<ResourceRead<'
     world.try_resource::<SubtreeCache>()
 }
 
-/// Write a non-zero root-motion delta into `RootMotionDelta` on
-/// `entity`. No-op when the motion is `Vec3::ZERO` or when the
-/// component isn't on the entity / storage isn't registered.
+/// Write this tick's root-motion delta into `RootMotionDelta` on
+/// `entity`. No-op only when the component isn't on the entity /
+/// storage isn't registered.
+///
+/// #3707 (ECS-D10-07) — writes `Vec3::ZERO` unconditionally too, not
+/// just non-zero motion. The prior early-return left `RootMotionDelta`
+/// holding whatever the last non-zero tick wrote, since this is an
+/// assignment (`rm.0 = motion`), not an accumulation — a genuinely
+/// stationary tick must overwrite the component with zero, or a
+/// downstream consumer that only drains it conditionally (
+/// `cinematic_root_motion_system`, which zeroes it only for actors
+/// currently awaiting `ExitCartEnd`) can read an arbitrarily stale
+/// delta from an entity's *previous* motion window.
 #[inline]
 fn write_root_motion(world: &World, entity: EntityId, motion: Vec3) {
-    if motion == Vec3::ZERO {
-        return;
-    }
     if let Some(mut rmq) = world.query_mut::<RootMotionDelta>() {
         if let Some(rm) = rmq.get_mut(entity) {
             rm.0 = motion;
@@ -2255,5 +2262,66 @@ mod sink_lifecycle_end_to_end_tests {
             !vis.get(child).unwrap().0,
             "visibility sink must be seeded from the clip, not defaulted to true"
         );
+    }
+}
+
+#[cfg(test)]
+mod root_motion_tests {
+    //! Regression tests for `write_root_motion` — #3707 (ECS-D10-07).
+    //!
+    //! `RootMotionDelta` is an assignment sink (`rm.0 = motion`), not an
+    //! accumulator, so a genuinely stationary tick must overwrite it with
+    //! `Vec3::ZERO` — otherwise the component keeps whatever the last
+    //! non-zero tick wrote, and the only drain
+    //! (`cinematic_root_motion_system`) zeroes it only for actors
+    //! currently awaiting `ExitCartEnd`, so a stale delta from an
+    //! entity's *previous* motion window can survive indefinitely and
+    //! surface as a position pop the next time that window opens.
+
+    use super::*;
+    use byroredux_core::ecs::World;
+    use byroredux_core::math::Vec3;
+
+    #[test]
+    fn zero_motion_tick_clears_a_previously_written_delta() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, RootMotionDelta(Vec3::new(3.0, 0.0, 4.0)));
+
+        write_root_motion(&world, e, Vec3::ZERO);
+
+        let q = world.query::<RootMotionDelta>().unwrap();
+        assert_eq!(
+            q.get(e).unwrap().0,
+            Vec3::ZERO,
+            "a zero-motion tick must overwrite the component, not leave the \
+             previous tick's delta latched"
+        );
+    }
+
+    #[test]
+    fn non_zero_motion_still_writes_through() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, RootMotionDelta(Vec3::ZERO));
+
+        write_root_motion(&world, e, Vec3::new(1.0, 2.0, 3.0));
+
+        let q = world.query::<RootMotionDelta>().unwrap();
+        assert_eq!(q.get(e).unwrap().0, Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    /// An entity without the component must stay untouched, not panic or
+    /// spuriously insert one — the storage-presence guards
+    /// (`query_mut`/`get_mut`) are the reason `write_root_motion` can run
+    /// unconditionally on every animated entity, not just ones known in
+    /// advance to carry root motion.
+    #[test]
+    fn entity_without_component_is_left_alone() {
+        let mut world = World::new();
+        let e = world.spawn();
+        // No RootMotionDelta inserted.
+        write_root_motion(&world, e, Vec3::new(1.0, 0.0, 0.0));
+        assert!(world.query::<RootMotionDelta>().is_none());
     }
 }
