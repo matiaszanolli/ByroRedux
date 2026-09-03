@@ -432,6 +432,56 @@ fn apply_effects_selects_get_stage_done_conditional_branch() {
     }
 }
 
+/// #3785 — a `Conditional` guard whose quest ref can't be resolved
+/// (`QuestRef::Property` with no VMAD to look it up in, the documented
+/// exposure) must decline the WHOLE `Conditional`, running neither
+/// `then_effects` nor `else_effects` — not silently fall into
+/// `else_effects` the way `is_some_and` used to collapse "false" and
+/// "unresolvable" into the same outcome. Both branches here would
+/// produce an observable `QuestStageAdvanced` if run, so a `0`-length
+/// `advances` and both stages staying undone together prove neither ran.
+#[test]
+fn apply_effects_declines_conditional_with_unresolvable_guard() {
+    let world = World::new();
+    let effects = vec![Effect::Conditional {
+        guards: vec![StageDoneGuard {
+            quest: QuestRef::Property("SomeQuestProperty".to_owned()),
+            stage: 2,
+            done: false,
+        }],
+        then_effects: vec![Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 35,
+        }],
+        else_effects: vec![Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 7,
+        }],
+    }];
+
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    let advances = apply_effects(
+        &effects,
+        Q,
+        // No VMAD to resolve `QuestRef::Property` against — the guard is
+        // unresolvable, matching the alias-bound / absent-property
+        // exposure the issue documents.
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    assert!(
+        advances.is_empty(),
+        "an unresolvable guard must run neither branch, got {advances:?}"
+    );
+    assert!(!stages.get_stage_done(Q, 35), "then_effects must not run");
+    assert!(!stages.get_stage_done(Q, 7), "else_effects must not run");
+}
+
 #[test]
 fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
     let mut world = World::new();

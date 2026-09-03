@@ -1517,10 +1517,35 @@ pub fn apply_effects(
             else_effects,
         } = effect
         {
+            // #3785 — `is_some_and` collapsed "the guard evaluated false" and
+            // "the guard's quest ref could not be resolved at all" into the
+            // same `false`, and unlike every sibling `resolve_quest_logged`
+            // caller (which simply skips the one effect via `?`), `false`
+            // here is NOT inert — it selects `else_effects` and runs them.
+            // An unresolvable guard must decline the WHOLE Conditional
+            // (neither branch), matching the decline-on-unmodeled-reference
+            // invariant every other site already follows.
+            let mut resolved = true;
             let passes = guards.iter().all(|guard| {
-                resolve_quest_logged(&guard.quest, context, vmad)
-                    .is_some_and(|quest| stages.get_stage_done(quest, guard.stage) == guard.done)
+                match resolve_quest_logged(&guard.quest, context, vmad) {
+                    Some(quest) => stages.get_stage_done(quest, guard.stage) == guard.done,
+                    None => {
+                        resolved = false;
+                        false
+                    }
+                }
             });
+            if !resolved {
+                // `resolve_quest_logged` already emitted a debug line per
+                // unresolved guard (correct for its inert callers); this is
+                // the one site where the consequence is a chosen branch, so
+                // it gets its own louder diagnostic.
+                log::warn!(
+                    "fragment effect: Conditional guard's quest ref could not be resolved — \
+                     declining the whole Conditional (neither then_effects nor else_effects run)"
+                );
+                continue;
+            }
             let branch = if passes { then_effects } else { else_effects };
             let mut ordered_tail = Vec::with_capacity(branch.len() + effects.len() - index - 1);
             ordered_tail.extend_from_slice(branch);

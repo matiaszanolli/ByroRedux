@@ -1,76 +1,43 @@
 # #3785 — SCR-D5-2026-08-30-01: an Effect::Conditional guard whose quest cannot be resolved does not decline — it silently selects the else branch and runs its effects
 
-**Repo**: matiaszanolli/ByroRedux · **Filed**: 2026-08-30 · **HEAD**: `64f64480`
-**Labels**: medium, scripting, quests, bug
+**Severity**: MEDIUM · **Location**: `crates/scripting/src/fragment.rs::apply_effects`
+**Source**: `docs/audits/AUDIT_SCRIPTING_2026-08-30.md` (SCR-D5-2026-08-30-01)
 
----
+`Effect::Conditional`'s guard evaluation used `is_some_and`, which collapses "the guard was
+evaluated and is false" and "the guard's quest ref could not be resolved at all" into the same
+`false`. Unlike every other `resolve_quest_logged` caller (which simply skips the one effect via
+`?`), `Conditional` has an `else` arm — `false` is NOT inert, it selects and runs `else_effects`
+(potentially `SetStage`/`SetObjectiveCompleted`/`Disable`/`SetGlobalValue`). Reachable via
+`QuestRef::Property` on a quest whose named property is absent from VMAD or alias-bound (#2186);
+871 `Conditional` effects exist across the Skyrim+FO4+Starfield corpus per the sibling audit.
 
-**Audit**: `/audit-scripting` — `docs/audits/AUDIT_SCRIPTING_2026-08-30.md` (Dimension 5 — Recognizer-Chain Soundness, dispatch half), HEAD `64f64480`
-**Finding ID**: `SCR-D5-2026-08-30-01`
+## Fix implemented
 
-- **Severity**: MEDIUM
-- **Status**: NEW
-- **Untrusted-Input**: No
+- `apply_effects`'s `Conditional` arm now distinguishes the third state: a `resolved` flag tracks
+  whether every guard resolved. When any guard doesn't, the whole `Conditional` is declined
+  (`continue` — neither `then_effects` nor `else_effects` run; the fragment body's remaining
+  effects still execute normally, matching every other declining-effect site's semantics).
+- Added a dedicated `log::warn!` at the guard-declining site — `resolve_quest_logged`'s own
+  `debug!` line stays unchanged for its many inert callers; this is the one site where the
+  consequence is a chosen branch, so it gets a louder, more specific diagnostic.
 
-## Location
+Regression test (issue's own TESTS checklist item):
+`apply_effects_declines_conditional_with_unresolvable_guard` — a `Conditional` with a
+`QuestRef::Property` guard and no VMAD (unresolvable) plus non-empty, distinguishable
+`then_effects`/`else_effects`; asserts zero `QuestStageAdvanced` and neither target stage marked
+done. Verified live: stashing the fix makes the test fail exactly as expected (`else_effects` ran,
+advanced to stage 7) before restoring.
 
-`crates/scripting/src/fragment.rs:1349-1357`
+**SIBLING** (issue's own checklist item): grepped every `resolve_*(...).is_some_and(...)` /
+`.unwrap_or(false)` chain in `crates/scripting/src/`. Found one more candidate —
+`actors_3d_loaded` (`fragment.rs`), which feeds `WaitForActors3DLoaded`'s suspend/poll decision.
+Its `false` branch is also non-inert in the sense that an unresolvable actor ref is
+indistinguishable from "not yet loaded" and both cause the same poll-and-retry — but the
+consequence there is a silent infinite retry loop, not a wrong state-changing effect execution,
+a meaningfully different severity/shape than this issue's defect. Not fixed here — flagged for
+separate triage since it needs its own investigation (timeout policy, diagnostic).
 
-## Description
+**LOCK_ORDER**: verified no-op — the fix is pure local control flow around already-acquired
+`guards`/`stages` references; no `World`/`RwLock` acquisition added or reordered.
 
-```rust
-let passes = guards.iter().all(|guard| {
-    resolve_quest_logged(&guard.quest, context, vmad)
-        .is_some_and(|quest| stages.get_stage_done(quest, guard.stage) == guard.done)
-});
-let branch = if passes { then_effects } else { else_effects };
-```
-
-`is_some_and` collapses two distinct outcomes into one `false`: *"the guard was evaluated and is false"* and *"the guard could not be evaluated at all"*.
-
-The 2026-08-24 pass checked this arm and correctly concluded it does not wrong-default to `true`; the question nobody asked is **what happens on the `false` side**. Because a `Conditional` has an `else` arm, `false` is **not inert** — it runs code. So an unevaluable predicate executes the branch the author reserved for the predicate being definitively false, which can be a `SetStage`, `SetObjectiveCompleted`, `Disable`, or `SetGlobalValue`.
-
-This is the decline-on-unmodeled invariant applied one layer later. Every sibling site gets it right: `apply_quest_scoped_effect`'s `resolve_quest_logged(quest, context, vmad)?` propagates `None` and the effect is simply not applied; `resolve_object` / `resolve_actor` decline the same way. **`Effect::Conditional` is the one place where "cannot resolve" has a *consequence*.**
-
-The tell is in the log line itself — `"fragment effect skipped: unresolved quest ref {via:?}"` is accurate for every other caller and actively wrong for this one, where nothing is skipped and a branch is chosen.
-
-## How reachable
-
-`QuestRef::SelfRef` / `OwningQuest` always resolve to the dispatch context, so the common intra-quest `GetStageDone(N)` guard is safe.
-
-The exposure is `QuestRef::Property(name)`, which returns `None` when the named property is absent from the quest's registered VMAD **or** when it is alias-bound (`alias >= 0`, declined at `ScriptInstance::object_form_id` per #2186). Correctly authored content should hit neither, so this is latent-not-live — hence MEDIUM rather than the HIGH the severity table assigns the recognizer-side analogue.
-
-It is filed rather than dropped because the failure is **silent**, has no fallback, and `AUDIT_SCRIPTING_2026-08-27.md`'s live-corpus histogram counts **871** `Conditional` effects across Skyrim + FO4 + Starfield — the shape is not hypothetical.
-
-## Evidence
-
-Re-verified at HEAD: `fragment.rs:1349-1353` unchanged, still `is_some_and`, with `let branch = if passes { then_effects } else { else_effects };` immediately following.
-
-## Suggested Fix
-
-Distinguish the third state:
-
-```rust
-let mut resolved = true;
-let passes = guards.iter().all(|guard| {
-    match resolve_quest_logged(&guard.quest, context, vmad) {
-        Some(q) => stages.get_stage_done(q, guard.stage) == guard.done,
-        None => { resolved = false; false }
-    }
-});
-if !resolved { continue; }   // decline the whole Conditional — run neither branch
-```
-
-and reword `resolve_quest_logged`'s message, or give the guard path its own `log::warn!` (an unresolvable guard is a data defect worth surfacing, not a routine skip).
-
-**Regression guard**: a `Conditional` with an unbound `QuestRef::Property` guard and non-empty `else_effects` must apply **neither** branch.
-
-## Related
-
-- #2186 (alias-bound properties decline at `ScriptInstance::object_form_id` — one of the two ways the resolve returns `None`)
-- #3279 (`Effect::Conditional`'s `lower_statements` recursion depth cap — same effect kind, different defect)
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files — every other `is_some_and` / `unwrap_or(false)` over a `resolve_*` result in `crates/scripting/src/`, especially any with a non-inert false arm
-- [ ] **LOCK_ORDER**: If a RwLock scope changes around the guard evaluation, TypeId-sorted acquisition is preserved
-- [ ] **TESTS**: A regression test pins this specific fix — an unresolvable guard must run neither branch
+Full workspace: `cargo test --no-fail-fast` 7038 passing, 0 failing.
