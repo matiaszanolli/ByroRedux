@@ -1084,13 +1084,14 @@ fn parse_refr_group_inner(
         } else if &header.record_type == b"LAND" {
             // Parse landscape heightmap, normals, and vertex colors.
             //
-            // At least one vanilla FNV LAND record (form `0x00150FC0`)
-            // reliably fails the body read on every ESM open — cause
-            // not yet identified, single cell affected. Observable
-            // symptom is a flat/untextured tile if that cell is ever
-            // rendered. Demoted from `warn` to `debug` per the audit's
-            // soft-fail guidance (#385 / D5-F5); the error context
-            // rides through so anyone investigating sees the real
+            // The one previously-known reliable failure here — FalloutNV.esm
+            // LAND `0x00150FC0` (The Strip, exterior -6,26), a zlib Adler-32
+            // trailer mismatch on an otherwise well-formed stream — is fixed
+            // at the source in `EsmReader::read_sub_records` (#3720). This
+            // soft-fail stays as a defensive floor for any *other* LAND body
+            // failure (demoted from `warn` to `debug` per the audit's
+            // soft-fail guidance, #385 / D5-F5): the error context rides
+            // through so anyone investigating a future case sees the real
             // failure mode instead of a generic message.
             match parse_land_record(reader, &header) {
                 Ok(land) => *landscape = Some(land),

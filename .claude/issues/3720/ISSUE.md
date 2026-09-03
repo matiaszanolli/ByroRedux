@@ -1,39 +1,61 @@
 # #3720 — ESM-2026-08-30-D8-01: the "cause not yet identified" FNV LAND 0x00150FC0 failure is an Adler-32 mismatch on an otherwise-perfect zlib stream
 
-*Filed 2026-08-30 from `docs/audits/`. Immutable snapshot of the issue as filed (TD10-001 / #1156); GitHub is authoritative for current state.*
-
-**Severity**: MEDIUM · **Dimension**: Real-Data Validation
-**Record / Sub-record**: `LAND` / `DATA`, `VNML`, `VHGT`
-**Location**: `crates/plugin/src/esm/reader.rs` (the `ZlibDecoder … read_to_end` in `read_sub_records`, ~:717-720); soft-fail site `crates/plugin/src/esm/cell/walkers.rs` (~:1027-1044)
+**Severity**: MEDIUM · **Location**: `crates/plugin/src/esm/reader.rs::read_sub_records`; soft-fail site `crates/plugin/src/esm/cell/walkers.rs`
 **Source**: `docs/audits/AUDIT_ESM_2026-08-30.md` (ESM-2026-08-30-D8-01)
 
-**Status note**: this is the **root cause** for the long-standing note at `walkers.rs` — *"At least one vanilla FNV LAND record (form `0x00150FC0`) reliably fails the body read on every ESM open — cause not yet identified"* (#385 / D5-F5). That comment can be deleted with the fix.
+Root cause for the long-standing `walkers.rs` comment — *"At least one vanilla
+FNV LAND record (form 0x00150FC0) reliably fails the body read on every ESM
+open — cause not yet identified"* (#385 / D5-F5). `read_sub_records`'s
+`ZlibDecoder::new(compressed).read_to_end(...)` validates the trailing
+Adler-32 checksum and errors on mismatch, even when the DEFLATE data itself
+inflates cleanly to the exact declared size.
 
-## Description
+## Verification
 
-The record's zlib **Adler-32 trailer is wrong**, not its stream. Raw DEFLATE recovers exactly the declared 4 385 bytes of well-formed `DATA`/`VNML`/`VHGT`.
+Independently confirmed against the real mounted `FalloutNV.esm` (throwaway
+`crates/plugin/examples/_tmp_land_adler32_verify.rs`, walking the GRUP tree
+via `EsmReader`'s public API to locate form `0x00150FC0`, deleted after use):
+before the fix, `read_sub_records` on this record failed; after the fix it
+succeeds with **exactly** `DATA(4) + VNML(3267) + VHGT(1096)` bytes — an
+identical match to the issue's own evidence, at file offset within
+`TheStripWorldNew` grid (-6, 26), parent CELL `0x0014F622`.
 
-## Evidence
+## Fix implemented
 
-- The record sits at file offset 185 401 092; `data_size` 4088, `flags` `0x00040000` (compressed); the 4-byte prefix declares **4 385** uncompressed bytes over 4 084 compressed.
-- `zlib.decompress` fails with `Error -3: incorrect data check` — an **Adler-32 trailer mismatch**, not a malformed stream.
-- Re-inflating the identical payload as raw DEFLATE (`decompressobj(-15)` after the 2-byte zlib header) yields **exactly 4 385 bytes** with `eof == True`, and those bytes parse cleanly as `DATA`(4) + `VNML`(3267) + `VHGT`(1096) — a structurally perfect LAND payload.
-- The #3399 ceilings are **not** involved: the ratio ceiling here is 2 091 008 bytes, ~477x the declared size.
+`read_sub_records`'s compressed-record path now retries on `ZlibDecoder`
+failure: skip the 2-byte zlib header and re-decode as raw DEFLATE
+(`flate2::read::DeflateDecoder`, no trailer to validate), accepting the
+recovery **only** when its output length exactly matches the already-validated
+declared size (the `#3399` ceiling). A length mismatch means the stream itself
+is corrupt, not just its checksum — the original zlib error surfaces instead
+of silently swallowing a real corruption. On successful recovery, logs once at
+`warn` naming the FormID, per the issue's own suggested fix.
 
-**Which cell**: worldspace `TheStripWorldNew`, exterior grid **(-6, 26)**, parent CELL FormID `0x0014F622` — The Strip, visitable content, not a dev cell.
+Every `#3399` bound stays intact — the `record_inflation_ceiling` check and
+the `decompressed.len() <= decompressed_size` guard both still run on the raw
+path exactly as before; the raw retry only replaces *how* the bytes are
+produced, not any of the size validation around them.
 
-## Impact
+**TESTS** (issue's own checklist item):
+`compressed_record_with_corrupt_adler32_trailer_recovers_via_raw_deflate`
+builds a well-formed compressed LAND record and flips the last 4 bytes (the
+Adler-32 trailer) — recovery must produce the exact original sub-records.
+`compressed_record_with_corrupt_deflate_body_still_errors` corrupts a byte
+*inside* the DEFLATE stream instead — must still hard-fail, proving the retry
+doesn't mask genuine corruption.
 
-One exterior tile of a major FNV location renders with no heightmap and no vertex normals (the flat/untextured symptom the existing comment predicts), visible only at `log::debug`. It is also the **sole non-zero entry in the walker-error column across all seven masters**, so it is the one place where "the ESM parse is clean" is not literally true.
+**SIBLING** (issue's own checklist item): checked `byroredux_bsa::safety::
+inflate_bounded`, whose contract this mirrors (#3410) — confirmed it has the
+identical exposure (propagates a checksum-only `Err` with no retry), but
+fixing it isn't a drop-in port: it's generic over an already-constructed
+`io::Read` (not raw bytes), and some of its call sites are LZ4-wrapped, not
+zlib, so a uniform retry can't apply. Filed as a separate, correctly-scoped
+follow-up: #3812.
 
-## Suggested Fix
+Deleted the stale "cause not yet identified" explanation in `walkers.rs`
+(kept the surrounding soft-fail `match` as a defensive floor for any *other*
+future LAND failure, per its own #385/D5-F5 guidance — only the now-false
+claim about this specific record was removed).
 
-On an inflate error whose recovered output length already equals the validated declared size, accept the buffer and log once at `warn` naming the FormID — a checksum-only failure is exactly recoverable, and Bethesda's own loader evidently tolerates it since the tile renders in the shipped game.
-
-Concretely: keep the `ZlibDecoder` path and, on `Err`, retry with a raw-DEFLATE decoder, accepting only when the byte count matches the declared size. That preserves every #3399 bound. Add a regression fixture built from a valid stream with a corrupted trailer.
-
-Visual confirmation: `TheStripWorldNew` (-6, 26) — see the `/audit-fnv` cross-pointer.
-
-## Completeness Checks
-- [ ] **SIBLING**: `byroredux_bsa::safety::inflate_bounded` checked for the same checksum-only failure mode (its contract is mirrored here)
-- [ ] **TESTS**: A regression fixture built from a valid stream with a corrupted Adler-32 trailer pins the recovery
+Full workspace: `cargo test --no-fail-fast` 7051 passing, 0 failing (+2 for
+the new regression tests).

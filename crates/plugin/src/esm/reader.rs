@@ -11,7 +11,7 @@
 //! identical in either layout, so we only need to branch on the
 //! additional skip at the end.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use flate2::read::ZlibDecoder;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -759,10 +759,51 @@ impl<'a> EsmReader<'a> {
             // `MAX_RECORD_INFLATED_BYTES` at most. A *short* decode
             // stays `Ok`, matching `byroredux_bsa::safety::inflate_bounded`
             // (#3410), whose contract this mirrors.
-            ZlibDecoder::new(compressed)
+            if let Err(zlib_err) = ZlibDecoder::new(compressed)
                 .take(decompressed_size as u64 + 1)
                 .read_to_end(&mut decompressed)
-                .context("Failed to decompress ESM record")?;
+            {
+                // Some shipped records (e.g. FalloutNV.esm LAND 0x00150FC0,
+                // The Strip exterior (-6, 26)) carry a well-formed DEFLATE
+                // stream behind a corrupt Adler-32 trailer — the checksum
+                // is wrong, not the data. flate2's `ZlibDecoder` validates
+                // that trailer and errors even though every byte inflated
+                // cleanly. Retry as raw DEFLATE (skip the 2-byte zlib
+                // header, no trailer to validate) and accept the recovery
+                // ONLY when its length exactly matches the validated
+                // declared size — a length mismatch means the stream
+                // itself is bad, not just its checksum, so the original
+                // zlib error should surface instead. Bethesda's own loader
+                // evidently tolerates this exact defect, since the tile
+                // renders in the shipped game. (#3720 / D8-01)
+                decompressed.clear();
+                ensure!(
+                    compressed.len() >= 2,
+                    "Compressed record {:08X}: zlib decompression failed ({}) and the \
+                     stream is too short for a raw-DEFLATE retry",
+                    header.form_id,
+                    zlib_err,
+                );
+                let raw_ok = flate2::read::DeflateDecoder::new(&compressed[2..])
+                    .take(decompressed_size as u64 + 1)
+                    .read_to_end(&mut decompressed)
+                    .is_ok()
+                    && decompressed.len() == decompressed_size;
+                ensure!(
+                    raw_ok,
+                    "Compressed record {:08X}: zlib decompression failed ({}), and the \
+                     raw-DEFLATE Adler-32-mismatch recovery did not reproduce the \
+                     declared {} bytes exactly",
+                    header.form_id,
+                    zlib_err,
+                    decompressed_size,
+                );
+                log::warn!(
+                    "ESM record {:08X}: zlib Adler-32 trailer mismatch on an otherwise \
+                     well-formed stream, recovered via raw DEFLATE ({decompressed_size} bytes, exact match)",
+                    header.form_id,
+                );
+            }
             ensure!(
                 decompressed.len() <= decompressed_size,
                 "Compressed record {:08X} inflated past its declared {} bytes                  — plugin is corrupt or hostile (decompression bomb)",
@@ -1794,6 +1835,65 @@ mod tests {
             subs[0].data.len() + 6,
             expected_len, // +6 for sub-type + length prefix
             "decompressed payload length must match the 4-byte prefix"
+        );
+    }
+
+    /// #3720 — a well-formed zlib stream whose 4-byte Adler-32 trailer has
+    /// been corrupted (the DEFLATE payload itself is untouched) must still
+    /// decode: `ZlibDecoder` rejects the checksum, but the raw-DEFLATE
+    /// retry recovers the exact declared byte count. Regression fixture
+    /// for `FalloutNV.esm` LAND `0x00150FC0` (The Strip, exterior -6,26),
+    /// whose real trailer is corrupt in exactly this way.
+    #[test]
+    fn compressed_record_with_corrupt_adler32_trailer_recovers_via_raw_deflate() {
+        let mut data = build_compressed_record(
+            b"LAND",
+            0x00150FC0,
+            &[(b"DATA", &[0u8; 4]), (b"VHGT", &[0u8; 8])],
+        );
+        // Flip the last 4 bytes of the compressed stream — the zlib
+        // Adler-32 trailer sits at the very end, after the DEFLATE data.
+        let len = data.len();
+        for byte in &mut data[len - 4..] {
+            *byte ^= 0xFF;
+        }
+
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let subs = reader
+            .read_sub_records(&header)
+            .expect("a checksum-only failure must still recover via raw DEFLATE");
+
+        assert_eq!(subs.len(), 2);
+        assert_eq!(&subs[0].sub_type, b"DATA");
+        assert_eq!(subs[0].data, [0u8; 4]);
+        assert_eq!(&subs[1].sub_type, b"VHGT");
+        assert_eq!(subs[1].data, [0u8; 8]);
+    }
+
+    /// #3720 sibling: corrupting the DEFLATE *body* (not just the trailer)
+    /// must still be a hard error — the raw-DEFLATE retry only masks a bad
+    /// checksum on an otherwise-correct stream, never a genuinely corrupt
+    /// one. A body-level corruption changes the decoded length (or fails
+    /// outright), so the retry's exact-length check rejects it.
+    #[test]
+    fn compressed_record_with_corrupt_deflate_body_still_errors() {
+        let mut data = build_compressed_record(
+            b"LAND",
+            0x00150FC1,
+            &[(b"DATA", &[0u8; 4]), (b"VHGT", &[0u8; 8])],
+        );
+        // Corrupt a byte well inside the DEFLATE stream, not the trailing
+        // Adler-32 — the compressed payload starts after the 24-byte
+        // Tes5Plus header + 4-byte decompressed-size prefix.
+        let compressed_start = 24 + 4;
+        data[compressed_start + 2] ^= 0xFF;
+
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        assert!(
+            reader.read_sub_records(&header).is_err(),
+            "a genuinely corrupt DEFLATE body must not be silently recovered"
         );
     }
 
