@@ -668,41 +668,63 @@ fn oblivion_runtime_size_cache_recovers_corrupted_block() {
 // walks entire mesh archives and asserts a per-game success-rate threshold.
 // The old /tmp-based single-file smoke tests were removed in N23.10.
 
-// ── #395: stream-position drift detector ─────────────────────────
+// ── #395 / #3711: stream-position drift detector ──────────────────
+//
+// `NiAlphaProperty` is a real entry on `FIXED_SIZE_BLOCK_TYPES` — used
+// throughout as the fixture type for tests that expect the detector to
+// actually evaluate its cache. `NiSourceTexture` is a real, well-known
+// variable-length type deliberately NOT on that list — #3711 found it was
+// the single largest false-positive emitter (1,187 of 4,280 warnings on
+// the real Oblivion corpus) before the allowlist gate existed.
+
+#[test]
+fn drift_warning_silent_for_a_type_not_on_the_allowlist() {
+    // #3711 — the actual fix: even a textbook "looks fixed-size" cache
+    // (three identical priors, a wildly-differing new sample) must never
+    // fire for a type that isn't on `FIXED_SIZE_BLOCK_TYPES`, because the
+    // pre-#3711 behavior — arm whenever priors happen to agree — is
+    // exactly what produced a 100% false-positive rate on real data: a
+    // variable-length type's first few same-file instances can
+    // coincidentally agree within ±2 bytes and then diverge later.
+    assert!(super::drift_warning("NiSourceTexture", 68, &[48, 48, 48]).is_none());
+    assert!(super::drift_warning("SomeUnknownFutureBlockType", 68, &[48, 48, 48]).is_none());
+}
 
 #[test]
 fn drift_warning_silent_with_too_few_samples() {
     // Need at least two prior samples to characterise the type.
-    assert!(super::drift_warning(100, &[]).is_none());
-    assert!(super::drift_warning(100, &[42]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 100, &[]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 100, &[42]).is_none());
 }
 
 #[test]
 fn drift_warning_silent_when_consumed_matches_cache() {
     // Fixed-size type, new sample matches → no fire.
-    assert!(super::drift_warning(48, &[48, 48, 48]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 48, &[48, 48, 48]).is_none());
     // Within ±2 byte tolerance — still considered a match.
-    assert!(super::drift_warning(50, &[48, 48, 48]).is_none());
-    assert!(super::drift_warning(46, &[48, 48, 48]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 50, &[48, 48, 48]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 46, &[48, 48, 48]).is_none());
 }
 
 #[test]
 fn drift_warning_silent_for_high_variance_types() {
-    // NiTriShapeData / NiSkinData / NiNode-with-children all have
-    // wildly varying consumed sizes legitimately. The detector
-    // recognises this from the cache spread (> 2 bytes) and stays
-    // silent regardless of the new sample.
+    // Even for an allowlisted type name, a cache with genuine spread (>2
+    // bytes) — e.g. a bug elsewhere caused pollution — must not fire. The
+    // ±2-byte agreement check is the second line of defense described in
+    // `drift_warning`'s doc.
     let prior = [40, 200, 1024];
-    assert!(super::drift_warning(48, &prior).is_none());
-    assert!(super::drift_warning(99999, &prior).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 48, &prior).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 99999, &prior).is_none());
 }
 
 #[test]
 fn drift_warning_fires_on_fixed_size_disagreement() {
     // Cache has 3 prior samples all = 48 (clearly a fixed-size
     // type). New sample 68 differs by 20 — > 2 byte tolerance,
-    // unambiguous drift.
-    let msg = super::drift_warning(68, &[48, 48, 48])
+    // unambiguous drift. Fires only because "NiAlphaProperty" is on
+    // FIXED_SIZE_BLOCK_TYPES — see the allowlist-silence test above for
+    // the same cache shape on a non-allowlisted type name.
+    let msg = super::drift_warning("NiAlphaProperty", 68, &[48, 48, 48])
         .expect("drift warning should fire on +20 byte deviation from fixed-size cache");
     assert!(
         msg.contains("consumed 68 bytes"),
@@ -722,7 +744,7 @@ fn drift_warning_fires_on_fixed_size_disagreement() {
 fn drift_warning_fires_on_short_consumed_too() {
     // Drift can be backward as well as forward — a parser that
     // under-consumed leaves bytes for the next reader to overshoot.
-    let msg = super::drift_warning(40, &[48, 48, 48])
+    let msg = super::drift_warning("NiAlphaProperty", 40, &[48, 48, 48])
         .expect("drift warning should fire on -8 byte deviation");
     assert!(msg.contains("consumed 40 bytes"));
 }
@@ -733,8 +755,24 @@ fn drift_warning_uses_min_distance_not_first_sample() {
     // considered fixed-size). New sample 50 is 2 away from 48
     // (within tolerance) → no fire. New sample 60 is 12 away from
     // the closest sample (48) → fire.
-    assert!(super::drift_warning(50, &[46, 47, 48]).is_none());
-    assert!(super::drift_warning(60, &[46, 47, 48]).is_some());
+    assert!(super::drift_warning("NiAlphaProperty", 50, &[46, 47, 48]).is_none());
+    assert!(super::drift_warning("NiAlphaProperty", 60, &[46, 47, 48]).is_some());
+}
+
+#[test]
+fn fixed_size_block_types_allowlist_is_sorted_for_binary_search() {
+    // `drift_warning` uses `binary_search`, which is undefined behaviour
+    // (silently wrong results, not a panic) over an unsorted slice — pin
+    // the invariant directly rather than relying on every future edit to
+    // remember it.
+    let mut sorted = super::FIXED_SIZE_BLOCK_TYPES.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(
+        super::FIXED_SIZE_BLOCK_TYPES,
+        sorted.as_slice(),
+        "FIXED_SIZE_BLOCK_TYPES must stay sorted — binary_search over an \
+         unsorted slice silently returns wrong results"
+    );
 }
 
 // ── #939: per-block-type drift histogram ─────────────────────────

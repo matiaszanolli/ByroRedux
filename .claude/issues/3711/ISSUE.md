@@ -1,49 +1,105 @@
-# #3711: NIF-2026-08-30-D1-01: the #395 sizeless-stream drift detector fires 4,280 times on an Oblivion corpus with zero real drift — 100% false-positive rate
+# #3711 — NIF-2026-08-30-D1-01: the #395 sizeless-stream drift detector fires 4,280 times on an Oblivion corpus with zero real drift
 
-**Labels**: bug, nif-parser, medium, nif, game:oblivion
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: MEDIUM · **Dimension**: Stream Position
+**Location**: `crates/nif/src/lib.rs` — `drift_warning`
 
----
+## Premise, re-verified against real data
 
-**Report**: `docs/audits/AUDIT_NIF_2026-08-30.md` · **Severity**: MEDIUM · **Dimension**: Stream Position
-**Game affected**: Oblivion (`bsver <= 11`) — every `no_block_sizes` file; by construction it cannot fire on the block-sized games.
+Re-ran the exact evidence in a throwaway probe (`crates/nif/examples/
+_tmp_drift_threshold_probe.rs`, deleted after use per #3746) against this
+machine's real Oblivion GOTY install (base + all eight DLC archives —
+`BYROREDUX_OBLIVION_DATA` unset, default path resolved): **9,612 NIFs,
+4,280 warnings, 0 real drift, 100% false-positive rate** — exact match to
+the issue's own numbers, confirming the premise held at current HEAD.
 
-## Location
-- `crates/nif/src/lib.rs` — `drift_warning` (currently `:917`), armed at `:524-543`
+## What was tried and measured before implementing anything
 
-## Description
-The `no_block_sizes` path has no header-driven recovery anchor, so #395 added a heuristic drift detector as its only guard: for each successfully parsed block it compares consumed size against prior parses of the same type in the same file and warns when the new value is more than 2 bytes from every prior.
+1. **Raise `prior.len()` alone** (the issue's own "failing that" fallback,
+   tried first as the smaller change): `>= 5` → 870 warnings; `>= 10` →
+   303 warnings. Reduces but never reaches zero — a long enough same-file
+   repeat run of a genuinely variable-length type (`NiTriStrips`,
+   `NiMaterialProperty` both still appear at threshold 10) eventually
+   beats any fixed sample-count requirement, because the underlying
+   distribution really does vary; a threshold only delays the first false
+   agreement; it can't prevent one.
+2. **Per-type classification, measured not guessed**: extended the probe
+   to capture the crate's own unconditional per-block `trace!` line
+   (`"Block {i} '{type}': offset {o}, consumed {c} bytes"`, already fired
+   for every block — no internal API changes needed) and computed, per
+   type, the **maximum within-file spread ever observed anywhere in the
+   9,612-file corpus**. The result was cleanly bimodal: 59 types NEVER
+   exceed a 2-byte spread even with hundreds of same-file repeats
+   (`NiAlphaProperty`, `NiZBufferProperty`, every PSys modifier/controller,
+   every Havok collision-object/constraint wrapper, …); every other type
+   ranges from a spread of 3 up to 1,285,752 (`NiTriStripsData`). No type
+   sits ambiguously in between. Structurally this tracks exactly what
+   you'd expect: the fixed bucket is blocks with no embedded strings and
+   no `Vec<T>` whose count varies per instance.
 
-The heuristic keys on a property that is **not stable** for most Oblivion block types — consumed size varies legitimately with embedded string length and child/property counts. Its `max - min > 2` variance escape hatch is evaluated over the priors only, so a type whose first two instances happen to agree arms the check for every later instance that does not.
+## Fix
 
-## Evidence
-Debug build (the detector is `#[cfg(debug_assertions)]`), full Oblivion corpus of 9,612 NIFs across all nine archives:
+Implemented the issue's primary suggested direction ("restrict it to
+types whose on-disk size genuinely is constant"), using the measured
+59-type list rather than the sample-threshold fallback (which the
+measurement above proved architecturally can't reach zero):
 
-```
-4,280 "Stream drift suspect" warnings
-    0 truncations, 0 hard failures, 0 recovered blocks, 0 real-parser drift
-```
+- Added `FIXED_SIZE_BLOCK_TYPES: &[&str]` (59 entries, sorted for
+  `binary_search`), with a doc comment explicitly marking it as a
+  **measurement** against a specific corpus, not a spec-derived guess —
+  per the no-guessing policy, warns against ever adding an entry from the
+  NIF spec alone without re-measuring.
+- `drift_warning` gained a `type_name: &str` parameter and now only
+  evaluates its priors-agreement heuristic for a type on that list — every
+  other type returns `None` immediately, regardless of how well its priors
+  happen to agree. The existing ±2-byte agreement check is kept as a
+  second line of defense for the allowlisted types (if the allowlist's
+  premise is ever wrong for some future NIF variant, this still silently
+  no-ops rather than spamming).
+- Updated the one call site (`dispatch_blocks`) to pass `type_name`.
 
-Top emitters are exactly the variable-length types: `NiSourceTexture` 1,187 · `NiTriStrips` 1,094 · `NiMaterialProperty` 914 · `NiNode` 342 · `NiTriShape` 119. Two representative warnings:
+## SIBLING (issue's own checklist item)
 
-```
-block 187 'NiSourceTexture' (offset 203754) consumed 68 bytes,
-  but 5 prior parse(s) of this type all consumed 72±1 bytes (median 72)
-block  38 'NiMaterialProperty' (offset 355279) consumed 75 bytes,
-  but 3 prior parse(s) of this type all consumed 79±2 bytes (median 80)
-```
+Checked the other `parsed_size_cache` consumer — the #324 recovery path
+(same file, a few lines below `drift_warning`'s call site): when a block's
+primary parse returns `Err`, it uses the cache's *median* as a skip-size
+recovery hint. Different risk shape from the warning heuristic this issue
+targets: it only ever runs on a genuine parse failure (not spuriously on
+every successful parse), and a wrong recovery there produces cascading
+downstream parse errors rather than log noise — the failure mode is
+self-announcing, not a silent false-positive-warning problem. The issue's
+own "Related" section already tracks this as a separate, adjacent gap
+(#3712 / D3-01), not something this fix's scope covers.
 
-A 4-byte swing on `NiSourceTexture` is one texture path four characters shorter than its siblings; a 4-5 byte swing on `NiMaterialProperty` is the block name. Both are correct parses. **False-positive rate on this corpus: 100%** (4,280 warnings, 0 true positives).
+## TESTS (issue's own checklist item — "assert a count of 0 against this 9,612-file corpus in a test")
 
-## Impact
-The one instrumentation surface guarding the only game where a parser drift cascades silently is unusable as shipped — ~0.45 warnings per file, so anyone who enables it learns to ignore the bucket, which is precisely what would hide a real drift. Defence-in-depth gap, not live corruption: no vanilla Oblivion file currently drifts.
+- `crates/nif/src/tests.rs` — rewrote the `drift_warning` unit tests to
+  pass a `type_name`, added
+  `drift_warning_silent_for_a_type_not_on_the_allowlist` (the actual fix:
+  even a textbook "looks fixed-size" cache must never fire for a type not
+  on the list), and `fixed_size_block_types_allowlist_is_sorted_for_binary_search`
+  (pins the `binary_search` precondition directly).
+- `crates/nif/tests/oblivion_stream_drift_corpus.rs` (new,
+  `#[ignore = "needs Oblivion game data on disk"]`) — the literal
+  "assert 0 against the 9,612-file corpus" test the issue asked for. Opens
+  all nine archives directly (base + eight DLC) rather than going through
+  `Game::mesh_archives()`'s Oblivion-restricted, all-or-nothing gate (see
+  #2334/#3712) — a drift-warning count is additive, so running against
+  just the base archive on a non-GOTY install is still a meaningful
+  partial check, not a misleading one. **Run and confirmed: 9 archives,
+  9,612 NIFs, 0 drift warnings.**
+- Verified the guard actually catches a regression (this session's
+  established quality bar): deliberately inserted `"NiSourceTexture"`
+  (the single largest pre-fix false-positive emitter, 1,187 of 4,280) into
+  `FIXED_SIZE_BLOCK_TYPES` at its correct sorted position, reran the
+  corpus test — it failed, reproducing **exactly 1,187** warnings (the
+  first ten messages logged match the original evidence's shape), then
+  reverted and confirmed 0 again.
 
-## Related
-#395, #324 (the sibling sizeless-recovery mechanism sharing `parsed_size_cache`). The companion coverage gap on the same sizeless path is filed alongside this one (D3-01).
+## Verification
 
-## Suggested Fix
-Key the detector on something invariant rather than total consumed size — the natural candidate is a per-type *fixed-field* byte count (consumed minus the summed length of the variable-length fields the parser already read), which the parser knows and the heuristic does not. Failing that, restrict it to types whose on-disk size genuinely is constant and require `prior.len() >= 5` before arming, then assert a count of 0 against this 9,612-file corpus in a test.
-
-## Completeness Checks
-- [ ] **SIBLING**: Same pattern checked in related files (the `parsed_size_cache` sizeless-recovery path shares this data)
-- [ ] **TESTS**: A regression test pins this specific fix — assert 0 warnings over the Oblivion corpus
+- `cargo check -p byroredux-nif --tests`: clean.
+- `cargo test -q -p byroredux-nif`: 1,221 lib tests + all integration
+  suites passing, 0 failing.
+- `cargo test -q --no-fail-fast` (full workspace): **7086 passing, 0
+  failing** (+2 new non-ignored tests; the corpus test is `#[ignore]`d
+  like its siblings but was run manually against real data above).

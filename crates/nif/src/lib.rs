@@ -528,7 +528,7 @@ fn dispatch_blocks(
                     // later block surfacing garbage enum values.
                     #[cfg(debug_assertions)]
                     if let Some(prior) = parsed_size_cache.get(type_name) {
-                        if let Some(msg) = drift_warning(final_consumed, prior) {
+                        if let Some(msg) = drift_warning(type_name, final_consumed, prior) {
                             log::warn!(
                                 "Stream drift suspect: block {} '{}' (offset {}) {} \
                                  — a previous block likely under- or over-consumed; \
@@ -896,6 +896,96 @@ fn is_ni_node_subclass(block_type_name: &str) -> bool {
     )
 }
 
+/// Block types empirically confirmed genuinely fixed-size on-disk: their
+/// within-file repeat-instance `consumed` byte count NEVER varies by more
+/// than 2 bytes anywhere across a real 9,612-file Oblivion corpus (base +
+/// all eight DLC archives), even for types repeated hundreds of times in a
+/// single file. Measured, not inferred from the type name or the NIF spec
+/// — see #3711 (NIF-2026-08-30-D1-01). Structurally this tracks which
+/// blocks carry no length-prefixed data (no embedded strings, no `Vec<T>`
+/// whose count varies per instance): controllers, interpolators, PSys
+/// modifiers, and simple flag-only properties/collision objects.
+///
+/// [`drift_warning`] only fires for a type on this list — #3711 found the
+/// prior "arm whenever the first couple of samples happen to agree"
+/// heuristic gave a **100% false-positive rate** (4,280 warnings, 0 real
+/// drift) on the same corpus, because every genuinely variable-length type
+/// (`NiSourceTexture`, `NiTriStrips`, `NiMaterialProperty`, `NiNode`, …)
+/// can coincidentally agree within ±2 bytes on its first couple of
+/// same-file instances and then diverge later — raising the sample-count
+/// threshold alone (tried: 5, then 10) only reduced the count (870, then
+/// 303), never reached zero, because a long enough same-file repeat run
+/// eventually beats any fixed threshold for a type that is not actually
+/// fixed-size. Sorted for `binary_search`.
+///
+/// Regenerate by re-running the corpus with a wider net if a new type
+/// needs adding — never add a type here from the NIF spec alone (the
+/// no-guessing policy: this list is a measurement, and mixing a
+/// spec-derived entry into a measured list silently changes what the list
+/// means to a future reader).
+#[cfg(any(debug_assertions, test))]
+const FIXED_SIZE_BLOCK_TYPES: &[&str] = &[
+    "BSKeyframeController",
+    "BSParentVelocityModifier",
+    "BSWindModifier",
+    "NiAlphaController",
+    "NiAlphaProperty",
+    "NiBlendBoolInterpolator",
+    "NiBlendFloatInterpolator",
+    "NiBlendPoint3Interpolator",
+    "NiBlendTransformInterpolator",
+    "NiBoolInterpolator",
+    "NiBoolTimelineInterpolator",
+    "NiBooleanExtraData",
+    "NiFloatInterpolator",
+    "NiIntegerExtraData",
+    "NiMaterialColorController",
+    "NiMeshParticleSystem",
+    "NiPSysAgeDeathModifier",
+    "NiPSysBoundUpdateModifier",
+    "NiPSysBoxEmitter",
+    "NiPSysColliderManager",
+    "NiPSysColorModifier",
+    "NiPSysCylinderEmitter",
+    "NiPSysDragModifier",
+    "NiPSysGravityModifier",
+    "NiPSysGravityStrengthCtlr",
+    "NiPSysGrowFadeModifier",
+    "NiPSysMeshEmitter",
+    "NiPSysMeshUpdateModifier",
+    "NiPSysModifierActiveCtlr",
+    "NiPSysPlanarCollider",
+    "NiPSysPositionModifier",
+    "NiPSysRotationModifier",
+    "NiPSysSpawnModifier",
+    "NiPSysSphereEmitter",
+    "NiPSysUpdateCtlr",
+    "NiPathInterpolator",
+    "NiPoint3Interpolator",
+    "NiStencilProperty",
+    "NiTextureTransformController",
+    "NiTransformController",
+    "NiTransformInterpolator",
+    "NiVertexColorProperty",
+    "NiVisController",
+    "NiZBufferProperty",
+    "bhkBlendCollisionObject",
+    "bhkBlendController",
+    "bhkBoxShape",
+    "bhkCapsuleShape",
+    "bhkCollisionObject",
+    "bhkConvexSweepShape",
+    "bhkConvexTransformShape",
+    "bhkHingeConstraint",
+    "bhkLimitedHingeConstraint",
+    "bhkPackedNiTriStripsShape",
+    "bhkRagdollConstraint",
+    "bhkSPCollisionObject",
+    "bhkSimpleShapePhantom",
+    "bhkStiffSpringConstraint",
+    "bhkTransformShape",
+];
+
 /// Heuristic stream-drift detector for Oblivion-style NIFs (no
 /// per-block size table). Returns `Some(msg)` when the freshly-parsed
 /// `consumed` byte count disagrees with previously-parsed instances of
@@ -908,12 +998,11 @@ fn is_ni_node_subclass(block_type_name: &str) -> bool {
 /// clean — release strips the dead code, and `cargo test --release` (a
 /// rare but valid invocation) still compiles the regression suite.
 ///
-/// The detector intentionally only fires when prior samples agree with
-/// each other within ±2 bytes — a low-variance signature that suggests
-/// a fixed-size type. Variable-size types (NiTriShapeData, NiSkinData,
-/// any block carrying a `Vec<T>` whose count varies per instance)
-/// generate cache entries with high natural variance and are
-/// silently ignored to keep false positives near zero.
+/// Only fires for a type on [`FIXED_SIZE_BLOCK_TYPES`] — see that list's
+/// doc for why (#3711). The ±2-byte agreement-among-priors check below is
+/// kept as a second line of defense (if the allowlist's premise is ever
+/// wrong for some future NIF variant, this silently no-ops rather than
+/// spamming), not the primary filter anymore.
 ///
 /// The actual buggy parser is almost always one or two blocks
 /// upstream of where the warning fires — by the time a downstream
@@ -921,7 +1010,10 @@ fn is_ni_node_subclass(block_type_name: &str) -> bool {
 /// with a wrong byte count. The earliest detector firing is the most
 /// useful breadcrumb. See #395.
 #[cfg(any(debug_assertions, test))]
-fn drift_warning(consumed: u32, prior: &[u32]) -> Option<String> {
+fn drift_warning(type_name: &str, consumed: u32, prior: &[u32]) -> Option<String> {
+    if FIXED_SIZE_BLOCK_TYPES.binary_search(&type_name).is_err() {
+        return None;
+    }
     if prior.len() < 2 {
         return None;
     }
