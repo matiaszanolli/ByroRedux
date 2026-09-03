@@ -54,6 +54,19 @@ impl App {
         // render_one_frame's total wall as ~47 ms while the
         // GPU + per-call CPU brackets sum to ~18 ms).
         let rof_pre_t0 = Instant::now();
+        // #3674 (PERF-D9-2026-08-30-01) — captured HERE, at the true start
+        // of the frame, not re-derived later after `draw_frame` has already
+        // run. `between_frames_ms` is documented as the wall time between
+        // frames — "if `acquire_ms` is small but this is large, the
+        // bottleneck is outside the engine's render path" — which only
+        // holds if the sample is taken before this frame's own render work
+        // starts. Re-reading `last_redraw_end.elapsed()` after `draw_frame`
+        // returns (the pre-fix site) silently folded `rof_pre_draw` +
+        // `rof_draw_call` into the "outside the engine" bucket every frame.
+        let between_frames_ns = self
+            .last_redraw_end
+            .map(|t| t.elapsed().as_nanos() as u64)
+            .unwrap_or(0);
         let mut rof_pre_draw_ns: u64 = 0;
         let mut rof_draw_call_ns: u64 = 0;
         // Phase 4 — populate the panel snapshot from the
@@ -627,10 +640,10 @@ impl App {
                         cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
                         cpu_t.submit_present_ms = ft.submit_present_ns as f32 * NS_TO_MS;
                         cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
-                        cpu_t.between_frames_ms = self
-                            .last_redraw_end
-                            .map(|t| t.elapsed().as_nanos() as f32 * NS_TO_MS)
-                            .unwrap_or(0.0);
+                        // #3674 — the gap captured at `rof_pre_t0`
+                        // (this frame's true start), not re-sampled here
+                        // after `draw_frame` has already run.
+                        cpu_t.between_frames_ms = between_frames_ns as f32 * NS_TO_MS;
                     }
                     if is_benching {
                         self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
@@ -694,6 +707,68 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+    }
+}
+
+/// #3674 (PERF-D9-2026-08-30-01) — `between_frames_ns` must be captured
+/// at `render_one_frame`'s true start, before `draw_frame` runs, not
+/// re-derived at the `CpuFrameTimings` assignment site after this
+/// frame's own render work has already elapsed — otherwise the metric
+/// silently folds `rof_pre_draw` + `rof_draw_call` into what's supposed
+/// to be the "outside the engine" bucket every frame. A live `App` test
+/// is impractical here for the same reason the sibling modules above
+/// give (a real `VulkanContext` has 70+ loader fields with no safe
+/// test defaults) — a static source assertion pins the ordering
+/// instead.
+#[cfg(test)]
+mod between_frames_capture_ordering_tests {
+    #[test]
+    fn between_frames_is_captured_before_draw_frame_runs() {
+        // Scoped to the PRODUCTION portion of the file, ending at this
+        // test module's own opening line — the file-top comment on the
+        // sibling test modules above warns exactly about this trap: an
+        // unscoped `find` over the whole file (via `include_str!`) can
+        // match a needle inside the test module's own source (its
+        // `.find("...")` argument strings are themselves substrings of
+        // the file), silently pinning nothing rather than failing when
+        // the real production site is missing. This needle is
+        // particularly exposed to it: the assignment-line search string
+        // is byte-identical to this call's own argument, so an unscoped
+        // search would ALWAYS find a match, even with the production
+        // site deleted outright.
+        let full_src = include_str!("app_frame.rs");
+        let module_start = full_src
+            .find("mod between_frames_capture_ordering_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+
+        let capture_pos = src
+            .find("let between_frames_ns = self")
+            .expect("render_one_frame must capture between_frames_ns near its true start (#3674)");
+        let draw_call_pos = src
+            .find("let draw_result = ctx.draw_frame(FrameInputs {")
+            .expect("render_one_frame must call draw_frame and capture its Result (#2522)");
+        let assignment_pos = src
+            .find("cpu_t.between_frames_ms = between_frames_ns as f32 * NS_TO_MS;")
+            .expect(
+                "CpuFrameTimings::between_frames_ms must be assigned from the \
+                 pre-captured between_frames_ns local, not re-derived from \
+                 last_redraw_end.elapsed() at the assignment site (#3674)",
+            );
+
+        assert!(
+            capture_pos < draw_call_pos,
+            "between_frames_ns must be captured BEFORE draw_frame runs — capturing \
+             it after would fold this frame's own render-path cost \
+             (rof_pre_draw + rof_draw_call) into the 'outside the engine' \
+             metric, exactly the #3674 defect this test exists to prevent."
+        );
+        assert!(
+            draw_call_pos < assignment_pos,
+            "sanity: the CpuFrameTimings assignment happens after draw_frame \
+             returns, which is exactly why it must read a pre-captured value \
+             rather than sampling elapsed() again at that point."
+        );
     }
 }
 

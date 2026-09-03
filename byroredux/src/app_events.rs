@@ -1151,6 +1151,14 @@ impl ApplicationHandler for App {
         // actually spent inside this handler. Pre / scheduler /
         // post split lets the operator localize without
         // per-system instrumentation.
+        //
+        // #3674 — that 501 ms figure was measured before
+        // `between_frames_ms`'s sample point was fixed to the true
+        // frame-start anchor (it used to be re-read after `draw_frame`
+        // returned, folding in this frame's own render-path cost). It's
+        // kept here as the historical motivation for the pre/scheduler/
+        // post split, not as a currently-accurate reference number — a
+        // fresh measurement would read lower.
         const NS_TO_MS: f32 = 1.0e-6;
         let atw_post_ns = atw_post_t0.elapsed().as_nanos() as u64;
         let mut cpu_t = self
