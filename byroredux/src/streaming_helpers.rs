@@ -579,7 +579,6 @@ fn finish_streaming_import(
             cell_loader::finish_partial_import(
                 world,
                 Some(&mut state.mat_provider),
-                Some(state.tex_provider.as_ref()),
                 &model_path,
                 partial,
             );

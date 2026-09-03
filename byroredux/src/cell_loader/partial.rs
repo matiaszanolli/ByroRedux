@@ -1,14 +1,15 @@
 //! Drain a streaming-worker [`PartialNifImport`] into the
 //! [`NifImportRegistry`].
 //!
-//! The streaming worker (see `crate::streaming`) parses NIFs off the
-//! main thread and ships a [`PartialNifImport`] back; this function
-//! finishes the import — merges BGSM materials, registers any
+//! The streaming worker (see `crate::streaming`) parses and imports NIFs off
+//! the main thread, then ships a [`PartialNifImport`] back; this function
+//! rebinds worker-local string handles, merges BGSM materials, registers any
 //! embedded animation clip, and caches the resulting
 //! `Arc<CachedNifImport>` in `NifImportRegistry` so subsequent
 //! placements of the same model hit cache.
 
 use byroredux_core::ecs::World;
+use byroredux_core::string::StringPool;
 use std::sync::Arc;
 
 use crate::asset_provider::{merge_external_material, MaterialProvider};
@@ -19,7 +20,6 @@ use super::references::{find_flame_attach_offset, furniture_component};
 pub(crate) fn finish_partial_import(
     world: &mut World,
     mat_provider: Option<&mut MaterialProvider>,
-    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
     model_path: &str,
     partial: crate::streaming::PartialNifImport,
 ) {
@@ -32,7 +32,7 @@ pub(crate) fn finish_partial_import(
     // can populate the cache before B's worker runs, so B's payload
     // still arrives carrying paths that are now cached. Skipping
     // here prevents:
-    //   * a redundant `import_nif_with_collision` walk + BGSM merge,
+    //   * a redundant mesh/collision import walk + BGSM merge,
     //   * a stale `convert_nif_clip` + `clip_reg.add` (which would
     //     leak the previous clip handle and overwrite the cache
     //     entry's clip mapping), and
@@ -51,6 +51,9 @@ pub(crate) fn finish_partial_import(
     }
     let crate::streaming::PartialNifImport {
         scene,
+        mut meshes,
+        collisions,
+        worker_pool,
         // #1214 — surface BSXFlags onto the cache entry so the spawn
         // site can attach a `BSXFlags` ECS row on the placement root.
         // Pre-#1214 this field was discarded.
@@ -66,13 +69,10 @@ pub(crate) fn finish_partial_import(
     let collision_authoring =
         byroredux_nif::import::collision::summarize_collision_authoring(&scene);
 
-    let (mut meshes, collisions) = {
+    let mut meshes = {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-        byroredux_nif::import::import_nif_with_collision_and_resolver(
-            &scene,
-            &mut pool,
-            mesh_resolver,
-        )
+        reintern_imported_meshes(&mut meshes, &worker_pool, &mut pool);
+        meshes
     };
     if let Some(provider) = mat_provider {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
@@ -164,5 +164,30 @@ pub(crate) fn finish_partial_import(
         for h in freed_clip_handles {
             clip_reg.release(h);
         }
+    }
+}
+
+/// Rebind the `FixedString` texture/material paths produced by a worker-local
+/// import pool to the process-wide ECS pool. Symbols are indices into their
+/// owning pool rather than self-describing strings, so carrying the pool
+/// alongside the imported meshes is necessary before the worker payload is
+/// dropped. `MaterialTextureSet::map_ref` keeps this pass exhaustive as new
+/// semantic texture roles are added.
+fn reintern_imported_meshes(
+    meshes: &mut [byroredux_nif::import::ImportedMesh],
+    worker_pool: &StringPool,
+    world_pool: &mut StringPool,
+) {
+    for mesh in meshes {
+        mesh.material.textures = mesh.material.textures.map_ref(|path| {
+            path.as_ref()
+                .and_then(|symbol| worker_pool.resolve(*symbol))
+                .map(|path| world_pool.intern(path))
+        });
+        mesh.material.material_path = mesh
+            .material
+            .material_path
+            .and_then(|symbol| worker_pool.resolve(symbol))
+            .map(|path| world_pool.intern(path));
     }
 }

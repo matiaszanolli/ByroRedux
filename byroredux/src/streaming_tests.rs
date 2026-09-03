@@ -14,6 +14,7 @@ use super::{
     StreamingWorkerTimings,
 };
 use crate::cell_loader::UnloadPhaseTimings;
+use crate::asset_provider::TextureProvider;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::Vec3;
 use std::collections::HashMap;
@@ -624,10 +625,11 @@ fn stream_parse_pool_runs_tasks_on_its_own_dedicated_threads() {
 #[test]
 fn pre_parse_parallel_branch_uses_the_dedicated_pool() {
     let pool = build_stream_parse_pool();
+    let tex_provider = TextureProvider::new();
     let extracted = (0..8)
         .map(|index| (format!("meshes\\synthetic-{index}.nif"), None))
         .collect();
-    let (results, thread_names) = parse_extracted_nifs(extracted, &pool);
+    let (results, thread_names) = parse_extracted_nifs(extracted, &pool, &tex_provider);
 
     assert_eq!(results.len(), 8, "fixture must cross PRE_PARSE_RAYON_MIN");
     assert!(

@@ -25,6 +25,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
+use byroredux_core::string::StringPool;
 use byroredux_renderer::VulkanContext;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -469,7 +470,7 @@ pub(crate) fn lod_water_recenter_delta(old_grid: (i32, i32), new_grid: (i32, i32
 
 /// Worker request — main thread asks the worker to pre-parse a cell.
 /// Carries everything the worker needs to extract NIF bytes from BSA
-/// and run the pool-free portion of the import pipeline.
+/// and run the worker-safe parse/import portion of the pipeline.
 pub struct LoadCellRequest {
     pub gx: i32,
     pub gy: i32,
@@ -542,16 +543,24 @@ impl StreamingCellApplyJob {
     }
 }
 
-/// Pool-free portion of NIF import — everything the worker can do
-/// off-thread. The main-thread drain step takes a `PartialNifImport`,
-/// runs `import_nif_with_collision` (string interning, needs the
-/// world's `StringPool`) and `merge_external_material` (needs the
-/// `MaterialProvider`), and assembles the full
-/// `cell_loader::CachedNifImport`.
+/// Worker portion of NIF import. Meshes and collisions are imported against
+/// `worker_pool` before the payload crosses to the main thread. Their
+/// `FixedString` handles are valid only with that pool; the drain re-interns
+/// the material paths into the world's pool before caching the result.
+/// External Starfield `.mesh` data is resolved through the immutable
+/// `TextureProvider` while the worker owns the NIF import.
 pub struct PartialNifImport {
-    /// Parsed scene — needed by the main-thread import step
-    /// (`import_nif_with_collision` walks this).
+    /// Parsed scene — still needed by the drain for pool-free metadata such
+    /// as collision authoring, flame markers, and furniture markers.
     pub scene: byroredux_nif::scene::NifScene,
+    /// Meshes produced by the worker-local import walk. Texture/material
+    /// handles in these meshes refer to `worker_pool` until the drain's
+    /// re-intern boundary runs.
+    pub meshes: Vec<byroredux_nif::import::ImportedMesh>,
+    /// Collision geometry produced alongside `meshes` on the worker.
+    pub collisions: Vec<byroredux_nif::import::ImportedCollision>,
+    /// Interner that owns the `FixedString` symbols embedded in `meshes`.
+    pub worker_pool: StringPool,
     /// BSXFlags bit-set extracted from the scene root. Bit 5 indicates
     /// marker children on classic content; the NIF walker filters those
     /// children individually while preserving sibling geometry (#3036).
@@ -1166,7 +1175,7 @@ where
 
 /// Per-cell pre-parse: walk references, resolve unique model paths,
 /// extract NIF bytes from the texture provider's mesh archives, and
-/// run the pool-free portion of the NIF import pipeline.
+/// run the worker-safe parse/import portion of the NIF pipeline.
 ///
 /// `cached_keys` is the main-thread snapshot of
 /// [`crate::cell_loader::NifImportRegistry`] at request-build time;
@@ -1181,7 +1190,10 @@ where
 /// the worker thread (#854). Preserved verbatim across the #877
 /// refactor; extracted in #1262 (NIF-D5-NEW-02) to avoid duplicating
 /// the closure between the serial / parallel branches.
-fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<PartialNifImport>) {
+fn parse_one_nif(
+    (path, bytes): (String, Option<Vec<u8>>),
+    mesh_resolver: &TextureProvider,
+) -> (String, Option<PartialNifImport>) {
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(bytes) = bytes else {
             log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
@@ -1209,8 +1221,18 @@ fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<Pa
                  NiControllerSequence animation(s) present; playing the first."
             );
         }
+        let mut worker_pool = StringPool::new();
+        let (meshes, collisions) =
+            byroredux_nif::import::import_nif_with_collision_and_resolver(
+                &scene,
+                &mut worker_pool,
+                Some(mesh_resolver),
+            );
         Some(PartialNifImport {
             scene,
+            meshes,
+            collisions,
+            worker_pool,
             bsx,
             root_flags,
             lights,
@@ -1239,10 +1261,14 @@ type ParsedNifResult = (String, Option<PartialNifImport>);
 fn parse_extracted_nifs(
     extracted: Vec<(String, Option<Vec<u8>>)>,
     stream_pool: &rayon::ThreadPool,
+    mesh_resolver: &TextureProvider,
 ) -> (Vec<ParsedNifResult>, Vec<String>) {
     if extracted.len() < PRE_PARSE_RAYON_MIN {
         return (
-            extracted.into_iter().map(parse_one_nif).collect(),
+            extracted
+                .into_iter()
+                .map(|item| parse_one_nif(item, mesh_resolver))
+                .collect(),
             Vec::new(),
         );
     }
@@ -1252,7 +1278,7 @@ fn parse_extracted_nifs(
             .into_par_iter()
             .map(|item| {
                 let thread_name = std::thread::current().name().map(str::to_string);
-                (parse_one_nif(item), thread_name)
+                (parse_one_nif(item, mesh_resolver), thread_name)
             })
             .collect()
     });
@@ -1409,8 +1435,10 @@ fn pre_parse_cell(
         })
         .collect();
 
-    // Phase 2: parse + import. Each worker owns its `Vec<u8>` for the
-    // whole closure — no shared mutex on the hot path.
+    // Phase 2: parse + import. Each worker owns its `Vec<u8>` and its
+    // `StringPool` for the whole closure — no world-resource access on the
+    // hot path. The immutable texture provider is safe to share; its archive
+    // file handles already serialize extraction internally.
     //
     // #1262 / NIF-D5-NEW-02 — rayon's worker-wake + join overhead
     // (~50-200 µs typical) dominates at small N. Post-#862 the NIF
@@ -1425,7 +1453,8 @@ fn pre_parse_cell(
     // or break-even; N≥8 the parallel speedup outpaces wake-overhead.
     // #3089 — `parse_extracted_nifs` dispatches the fan-out into the worker's
     // dedicated pool and returns the actual worker names as an observable.
-    let (results, parallel_parse_threads) = parse_extracted_nifs(extracted, stream_pool);
+    let (results, parallel_parse_threads) =
+        parse_extracted_nifs(extracted, stream_pool, tex_provider);
     parsed.extend(results);
 
     LoadCellPayload {

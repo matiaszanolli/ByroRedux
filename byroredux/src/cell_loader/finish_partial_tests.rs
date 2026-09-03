@@ -1,7 +1,7 @@
 //! Regression tests for `finish_partial_import` — issue #864.
 //!
 //! The early-out at the top of `finish_partial_import` shorts the
-//! main-thread import + clip-conversion + cache-insert pipeline when
+//! main-thread material merge + clip-conversion + cache-insert pipeline when
 //! `NifImportRegistry` already carries an entry for the model path.
 //! Without it, a streaming-worker payload arriving for an already-
 //! cached model (possible because the cached-keys snapshot in #862
@@ -52,6 +52,9 @@ fn dummy_partial() -> crate::streaming::PartialNifImport {
 fn dummy_partial_with(bsx: u32) -> crate::streaming::PartialNifImport {
     crate::streaming::PartialNifImport {
         scene: byroredux_nif::scene::NifScene::default(),
+        meshes: Vec::new(),
+        collisions: Vec::new(),
+        worker_pool: StringPool::new(),
         bsx,
         root_flags: 0,
         lights: Vec::new(),
@@ -145,8 +148,15 @@ fn marker_scene(include_real_geometry: bool) -> NifScene {
 }
 
 fn partial_with_marker_scene(include_real_geometry: bool) -> crate::streaming::PartialNifImport {
+    let scene = marker_scene(include_real_geometry);
+    let mut worker_pool = StringPool::new();
+    let (meshes, collisions) =
+        byroredux_nif::import::import_nif_with_collision(&scene, &mut worker_pool);
     crate::streaming::PartialNifImport {
-        scene: marker_scene(include_real_geometry),
+        scene,
+        meshes,
+        collisions,
+        worker_pool,
         bsx: 0x20,
         root_flags: 0,
         lights: Vec::new(),
@@ -161,6 +171,70 @@ fn world_with_registries() -> World {
     world.insert_resource(AnimationClipRegistry::new());
     world.insert_resource(NifImportRegistry::new());
     world
+}
+
+/// A worker-local import produces `FixedString` symbols that cannot be
+/// consumed with the world's pool until the drain re-interns them.
+#[test]
+fn finish_partial_import_reinterns_worker_material_symbols() {
+    let mut worker_pool = StringPool::new();
+    let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    mesh.material.material_path = Some(worker_pool.intern("materials\\worker.bgsm"));
+    mesh.material.textures.base_color = Some(worker_pool.intern("textures\\worker.dds"));
+
+    let partial = crate::streaming::PartialNifImport {
+        scene: NifScene::default(),
+        meshes: vec![mesh],
+        collisions: Vec::new(),
+        worker_pool,
+        bsx: 0,
+        root_flags: 0,
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
+    };
+    let mut world = world_with_registries();
+    // Ensure worker and world symbol indices differ; the test must exercise
+    // string resolution/re-interning rather than accidentally pass through
+    // identical numeric handles.
+    world
+        .resource_mut::<StringPool>()
+        .intern("world/preexisting-symbol");
+
+    finish_partial_import(&mut world, None, "worker.nif", partial);
+
+    let (material_path, base_color) = {
+        let reg = world.resource::<NifImportRegistry>();
+        let cached = reg
+            .get("meshes\\worker.nif")
+            .expect("worker import inserted into cache")
+            .as_ref()
+            .expect("worker import is positive");
+        (
+            cached.meshes[0]
+                .material
+                .material_path
+                .expect("material path survived re-interning"),
+            cached.meshes[0]
+                .material
+                .textures
+                .base_color
+                .expect("base-color path survived re-interning"),
+        )
+    };
+    let world_pool = world.resource::<StringPool>();
+    assert_eq!(
+        world_pool.resolve(material_path),
+        Some("materials\\worker.bgsm")
+    );
+    assert_eq!(world_pool.resolve(base_color), Some("textures\\worker.dds"));
 }
 
 /// Pre-cached positive entry — `finish_partial_import` must early-out
@@ -179,7 +253,7 @@ fn finish_partial_import_early_outs_on_already_cached_positive_entry() {
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
     assert_eq!(world.resource::<AnimationClipRegistry>().len(), 0);
 
-    finish_partial_import(&mut world, None, None, "test.nif", dummy_partial());
+    finish_partial_import(&mut world, None, "test.nif", dummy_partial());
 
     // Cache entry preserved (same Arc pointer — the early-out didn't
     // rebuild and overwrite).
@@ -214,7 +288,7 @@ fn finish_partial_import_early_outs_on_already_cached_negative_entry() {
     }
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
 
-    finish_partial_import(&mut world, None, None, "broken.nif", dummy_partial());
+    finish_partial_import(&mut world, None, "broken.nif", dummy_partial());
 
     // Cache entry stays negative — the worker's payload (which would
     // have produced a positive entry) is dropped silently.
@@ -244,7 +318,6 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
     finish_partial_import(
         &mut world,
         None,
-        None,
         "Meshes/Clutter/Rock_Cliff.NIF",
         dummy_partial(),
     );
@@ -267,7 +340,7 @@ fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
     let mut world = world_with_registries();
     let partial = dummy_partial_with(0xA2);
 
-    finish_partial_import(&mut world, None, None, "hitfloorsolidfull01.nif", partial);
+    finish_partial_import(&mut world, None, "hitfloorsolidfull01.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg
@@ -288,7 +361,7 @@ fn finish_partial_import_marker_only_scene_imports_empty() {
     let mut world = world_with_registries();
     let partial = partial_with_marker_scene(false);
 
-    finish_partial_import(&mut world, None, None, "xmarkerheading.nif", partial);
+    finish_partial_import(&mut world, None, "xmarkerheading.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg
@@ -307,7 +380,7 @@ fn finish_partial_import_bsx_bit5_keeps_real_geometry_sibling() {
     let mut world = world_with_registries();
     let partial = partial_with_marker_scene(true);
 
-    finish_partial_import(&mut world, None, None, "stool01.nif", partial);
+    finish_partial_import(&mut world, None, "stool01.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
     let cached = reg
@@ -397,6 +470,9 @@ fn finish_partial_import_populates_furniture_and_flame_offset() {
     let mut world = world_with_registries();
     let partial = crate::streaming::PartialNifImport {
         scene: furniture_and_flame_scene(),
+        meshes: Vec::new(),
+        collisions: Vec::new(),
+        worker_pool: StringPool::new(),
         bsx: 0,
         root_flags: 0,
         lights: Vec::new(),
@@ -404,7 +480,7 @@ fn finish_partial_import_populates_furniture_and_flame_offset() {
         embedded_clip: None,
     };
 
-    finish_partial_import(&mut world, None, None, "furnace01.nif", partial);
+    finish_partial_import(&mut world, None, "furnace01.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
     let cached = reg
