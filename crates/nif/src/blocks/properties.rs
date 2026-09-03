@@ -133,6 +133,22 @@ pub struct NiTexturingProperty {
     /// found 1,433 `APPLY_HILIGHT2` properties across 741 distinct meshes —
     /// cave and stone architecture and rock clutter. FNV/FO3/Skyrim are
     /// 100 % `APPLY_MODULATE`, so the field is inert there.
+    ///
+    /// #3625 (OBL-D4-02) — values 1 (`APPLY_DECAL`) and 3 (`APPLY_HILIGHT`)
+    /// are decoded here and stored, but have **no consumer**:
+    /// `legacy_properties.rs` reads only `apply_mode == APPLY_HILIGHT2`
+    /// (value 4). A full-corpus histogram over 30,121 Oblivion
+    /// `NiTexturingProperty` instances measured `APPLY_DECAL = 18`,
+    /// `APPLY_MODULATE = 28,166` (default), `APPLY_HILIGHT = 663`,
+    /// `APPLY_HILIGHT2 = 1,274` — 681 properties (663 + 18) carry a
+    /// non-default blend intent the renderer never sees. Deliberately not
+    /// consumed: value 3 is documented above as PS2-only and Gamebryo v3.2
+    /// renamed both 3 and 4 to `APPLY_DEPRECATED`/`APPLY_DEPRECATED2`, so
+    /// their real semantics on Oblivion PC content are genuinely
+    /// uncertain — this project's no-guessing policy means no blend-mode
+    /// heuristic is invented here without a primary source. Recorded so a
+    /// future decision has a measured number attached, not silently
+    /// dropped.
     pub apply_mode: u32,
     pub texture_count: u32,
     pub base_texture: Option<TexDesc>,

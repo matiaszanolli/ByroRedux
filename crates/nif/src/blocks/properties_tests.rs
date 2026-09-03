@@ -1407,3 +1407,33 @@ fn tex_desc_body_reads_nothing_for_the_20_1_0_x_gap_band() {
         );
     }
 }
+
+/// #3625 (OBL-D4-02) — `apply_mode` values 1 (`APPLY_DECAL`) and 3
+/// (`APPLY_HILIGHT`) are decoded and stored but have no consumer
+/// (`legacy_properties.rs` reads only value 4, `APPLY_HILIGHT2`). This
+/// pins the measured record staying in the field's doc comment, so a
+/// future editor who drops the note doesn't silently lose the only
+/// evidence a decision here has a number attached — matching this
+/// project's no-guessing policy (no heuristic invented for the two
+/// unconsumed values without a primary source).
+#[test]
+fn apply_mode_doc_records_the_unconsumed_value_measurement() {
+    let src = include_str!("properties.rs");
+    let field_doc_start = src
+        .find("/// nif.xml `ApplyMode`")
+        .expect("apply_mode's doc comment must still start with this line");
+    let field_decl = src[field_doc_start..]
+        .find("pub apply_mode: u32,")
+        .map(|i| field_doc_start + i)
+        .expect("apply_mode field declaration must still exist");
+    let doc = &src[field_doc_start..field_decl];
+
+    assert!(doc.contains("#3625"), "the apply_mode doc must carry the #3625 marker");
+    for needle in ["APPLY_DECAL = 18", "APPLY_HILIGHT = 663", "APPLY_HILIGHT2 = 1,274"] {
+        assert!(
+            doc.contains(needle),
+            "apply_mode's doc must still record the measured histogram \
+             (\"{needle}\" missing)"
+        );
+    }
+}

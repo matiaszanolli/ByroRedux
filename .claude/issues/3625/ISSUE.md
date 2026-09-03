@@ -1,50 +1,48 @@
-# #3625: OBL-D4-02: NiTexturingProperty Apply Mode values 1 and 3 are decoded and then dropped (681 Oblivion properties)
+# #3625 — OBL-D4-02: NiTexturingProperty Apply Mode values 1 and 3 are decoded and then dropped (681 Oblivion properties)
 
-**Source**: `docs/audits/AUDIT_OBLIVION_2026-08-30.md` — Dimension 4 (Rendering Path for Oblivion Shaders)
-**Severity**: LOW
-**Location**: `crates/nif/src/blocks/properties.rs` (`NiTexturingProperty::apply_mode`), `crates/nif/src/import/material/legacy_properties.rs` (the sole consumer)
+**Severity**: LOW · **Dimension**: Rendering Path for Oblivion Shaders
+**Location**: `crates/nif/src/blocks/properties.rs::NiTexturingProperty::apply_mode`
 
-## Description
+## Fix
 
-`apply_mode` is decoded from both its on-disk homes and then consumed at exactly one site,
-for exactly one value (`APPLY_HILIGHT2`, 4). Values 1 (`APPLY_DECAL`) and 3
-(`APPLY_HILIGHT`) are decoded and dropped.
+The issue's own suggested fix is explicit: **"No heuristic is proposed
+and none should be invented"** (this project's no-guessing policy) —
+either establish the semantics from a primary source before consuming
+values 1/3, or document them as deliberately dropped. No primary source
+for the real Oblivion-PC semantics of `APPLY_DECAL`/`APPLY_HILIGHT`
+exists (value 3 is PS2-only per nif.xml, and Gamebryo v3.2 renamed both
+3 and 4 to `APPLY_DEPRECATED`/`APPLY_DEPRECATED2`), so applied the
+documentation option: extended `apply_mode`'s doc comment with the
+measured histogram (`APPLY_DECAL = 18`, `APPLY_HILIGHT = 663`,
+`APPLY_HILIGHT2 = 1,274` out of 30,121 instances) and an explicit note
+that the 681 non-default-non-HILIGHT2 properties are deliberately
+unconsumed pending a primary source, not silently forgotten.
 
-## Evidence
+Left `legacy_properties.rs`'s consumer site untouched — it makes no
+claim about values 1/3 either way, so there was nothing misleading to
+correct there (unlike #3544's stale "compositor exists" claim).
 
-Verified 2026-08-30 — the only read of the field outside the parser is:
+## TESTS (issue's own checklist item — conditional: "if either value is
+later consumed, a regression test pins the decode and the downstream
+material effect")
 
-```
-crates/nif/src/import/material/legacy_properties.rs: if tex_prop.apply_mode == APPLY_HILIGHT2 && ...
-```
+Neither value was consumed, so that conditional test doesn't apply. Added
+a source-scan regression instead:
+`apply_mode_doc_records_the_unconsumed_value_measurement` pins that the
+`apply_mode` field's doc comment still carries the `#3625` marker and the
+three measured histogram numbers — so a future edit that trims the doc
+(e.g. during an unrelated cleanup pass) doesn't silently lose the only
+record that this gap was measured rather than unknown.
 
-Measured apply-mode histogram over 30,121 Oblivion `NiTexturingProperty` instances:
+**Reintroduce-and-revert verification**: temporarily removed the added
+doc paragraph — confirmed the new test failed with the expected message.
+Restored the fix and reran — all 33 tests in
+`blocks::properties::tests` pass again.
 
-| value | name | count |
-|---|---|---|
-| 1 | `APPLY_DECAL` | 18 |
-| 2 | `APPLY_MODULATE` (default) | 28,166 |
-| 3 | `APPLY_HILIGHT` | 663 |
-| 4 | `APPLY_HILIGHT2` | 1,274 |
+## Verification
 
-## Impact
-
-681 properties (663 + 18) carry a non-default blend intent the renderer never sees. The
-magnitude is small and the semantics are genuinely uncertain — value 3 is documented in the
-parser as "PS2 only", and Gamebryo v3.2 renamed both 3 and 4 to
-`APPLY_DEPRECATED`/`APPLY_DEPRECATED2`.
-
-## Suggested Fix
-
-**No heuristic is proposed and none should be invented** (project no-guessing policy). This
-issue records the measurement so a future decision has a number attached: either establish
-the semantics from a primary source before consuming values 1 and 3, or document them as
-deliberately dropped at the field's doc comment.
-
-## Related
-
-#3530 / OBL-D4-01 — the `APPLY_HILIGHT2` consumer, which is itself currently inert on
-vanilla Oblivion.
-
-## Completeness Checks
-- [ ] **TESTS**: if either value is later consumed, a regression test pins the decode and the downstream material effect
+- `cargo check -p byroredux-nif --tests`: clean, zero warnings.
+- `cargo test -q -p byroredux-nif --lib blocks::properties::tests::`: 33
+  passing, 0 failing (+1 new).
+- `cargo test -q --no-fail-fast` (full workspace): **7171 passing, 0
+  failing**.
