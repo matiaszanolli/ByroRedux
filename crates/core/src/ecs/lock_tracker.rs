@@ -114,8 +114,14 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
         // mutation below (the recursive bump or the fresh insert) keeps
         // the same "no orphaned half-acquired state" property: a panic
         // here leaves `LOCKS` exactly as it was before this call.
+        //
+        // #3680 — `is_enabled()` gates the borrow/filter/collect below,
+        // not just `record_and_check`'s own internal check, so the
+        // documented "one relaxed load" fast path is real: a debug build
+        // with the detector off (the default) never touches `LOCKS` a
+        // second time or allocates a `Vec` for this at all.
         #[cfg(debug_assertions)]
-        {
+        if global_order::is_enabled() {
             let held_others = locks
                 .borrow()
                 .iter()
@@ -178,8 +184,11 @@ pub(crate) fn track_write(type_id: TypeId, type_name: &'static str) {
             }
         }
 
+        // #3680 — see the identical comment in `track_read`: `is_enabled()`
+        // gates the borrow/collect itself, so the disabled fast path is
+        // really just the one relaxed load `ENABLED`'s doc promises.
         #[cfg(debug_assertions)]
-        {
+        if global_order::is_enabled() {
             let held_others = locks
                 .borrow()
                 .iter()
@@ -459,6 +468,18 @@ mod global_order {
     #[cfg(test)]
     pub(super) fn set_enabled_for_tests(on: bool) {
         ENABLED.store(on, Ordering::SeqCst);
+    }
+
+    /// #3680 (PERF-D1-2026-08-30-04) — the one relaxed load `ENABLED`'s
+    /// own doc comment promises the per-acquire fast path. `track_read`/
+    /// `track_write` check this BEFORE ever borrowing `LOCKS` or building
+    /// `held_others`, so a debug build with the detector off (the
+    /// default) pays exactly this and nothing else per acquisition —
+    /// `record_and_check` used to be the only place checking `ENABLED`,
+    /// reached only after the caller had already collected a `Vec` that
+    /// the disabled check then discarded.
+    pub(super) fn is_enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
     }
 
     /// Test-only — clear the graph between tests so a previous
