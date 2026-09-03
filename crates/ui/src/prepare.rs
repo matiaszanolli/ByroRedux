@@ -53,6 +53,15 @@ pub(crate) struct PreparedMovie {
     /// The root movie's `ImportAssets` targets, resolved to archive paths.
     /// Empty unless the caller passed a `movie_url` (the archive route).
     pub import_asset_paths: Vec<String>,
+    /// #3770 — one message per root-movie `ImportAssets` URL that failed
+    /// to resolve to an archive path. Pre-#3770 a single such failure
+    /// aborted the whole scan (`import_asset_paths` above ending up
+    /// empty) AND the movie load itself; now the resolvable siblings
+    /// still populate `import_asset_paths` and these messages surface
+    /// through `NavigatorState.errors` (`SwfPlayer::from_resource_provider`
+    /// pushes them in at `ScaleformNavigatorRuntime::create`), matching
+    /// the non-fatal policy fetch-time and depth-≥1 failures already had.
+    pub root_import_errors: Vec<String>,
     pub decode_counts: SwfDecodeCounts,
 }
 
@@ -88,6 +97,7 @@ pub(crate) fn prepare_movie(
             host_object_state: ScaleformHostObjectState::NotRequired,
             data: swf_data.to_vec(),
             import_asset_paths: Vec::new(),
+            root_import_errors: Vec::new(),
             decode_counts: SwfDecodeCounts {
                 decompresses: 1,
                 tag_parses: 0,
@@ -99,9 +109,14 @@ pub(crate) fn prepare_movie(
     // Read before injection, which consumes the tag list. Equivalent to
     // reading it after: injection only replaces and inserts `DoAbc`/`DoAbc2`
     // tags, and never touches `ImportAssets`.
-    let import_asset_paths = match movie_url {
-        Some(movie_url) => import_asset_paths_from_tags(movie_url, &movie.tags)?,
-        None => Vec::new(),
+    //
+    // #3770 — partitioned, not `?`-short-circuited: a single unresolvable
+    // URL must not cost every other resolvable sibling (or the movie load
+    // itself). `root_import_errors` surfaces through `NavigatorState.errors`
+    // once the navigator exists — see `PreparedMovie::root_import_errors`.
+    let (import_asset_paths, root_import_errors) = match movie_url {
+        Some(movie_url) => import_asset_paths_from_tags(movie_url, &movie.tags),
+        None => (Vec::new(), Vec::new()),
     };
     let (patched, host_object_state) = inject_into_parsed_movie(movie, catalog)?;
 
@@ -110,6 +125,7 @@ pub(crate) fn prepare_movie(
         host_object_state,
         data: patched.unwrap_or_else(|| swf_data.to_vec()),
         import_asset_paths,
+        root_import_errors,
         decode_counts: SwfDecodeCounts {
             decompresses: 1,
             tag_parses: 1,

@@ -124,14 +124,22 @@ impl ScaleformNavigatorRuntime {
     /// `import_paths` is the root movie's `ImportAssets` list, extracted by
     /// the caller from the tag parse it already performed (#2968) — this used
     /// to re-decompress and re-parse the whole movie to recover it.
+    /// `import_errors` is #3770's partition counterpart: one message per
+    /// root-movie `ImportAssets` URL that failed to resolve, pushed straight
+    /// into the fresh state's `errors` so it surfaces through
+    /// `SwfPlayer::resource_errors` the same way a fetch-time or nested-import
+    /// failure already does — a bad root import degrades, it does not abort
+    /// the menu load.
     pub(crate) fn create(
         movie_url: Url,
         import_paths: Vec<String>,
+        import_errors: Vec<String>,
         provider: Arc<dyn ScaleformResourceProvider>,
     ) -> Result<(ScaleformNavigator, Self, String), String> {
         let executor = NullExecutor::new();
         let mut state = NavigatorState::default();
         extend_import_asset_paths(&mut state, import_paths);
+        state.errors.extend(import_errors);
         let state = Rc::new(RefCell::new(state));
         let navigator = ScaleformNavigator {
             movie_url: movie_url.clone(),
@@ -278,7 +286,14 @@ fn load_archive_resource(
     };
     if is_import_asset {
         match import_asset_paths(&resolved, &body) {
-            Ok(paths) => extend_import_asset_paths(&mut state.borrow_mut(), paths),
+            Ok((paths, errors)) => {
+                let mut state = state.borrow_mut();
+                extend_import_asset_paths(&mut state, paths);
+                // #3770 — a per-URL resolve failure inside this nested
+                // import degrades only that one path, not the whole
+                // resource: the resource itself decoded fine.
+                state.errors.extend(errors);
+            }
             Err(message) => return record_degraded(state, &request_url, message),
         }
     }
@@ -496,15 +511,24 @@ fn archive_path_from_url(url: &Url) -> Result<String, String> {
     Ok(components.join("\\"))
 }
 
-fn import_asset_paths(movie_url: &Url, movie_data: &[u8]) -> Result<Vec<String>, String> {
+/// A decompress/parse failure here is still genuinely fatal for the WHOLE
+/// import (there is no tag list to partition at all) and stays an `Err`,
+/// degrading this one nested resource via [`record_degraded`] same as
+/// before. Once tags exist, [`import_asset_paths_from_tags`]'s own
+/// partition (#3770) applies — the `Ok` payload carries both the
+/// resolved paths and any per-URL failures.
+fn import_asset_paths(
+    movie_url: &Url,
+    movie_data: &[u8],
+) -> Result<(Vec<String>, Vec<String>), String> {
     if !is_swf(movie_data) {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let decompressed = swf::decompress_swf(movie_data)
         .map_err(|error| format!("failed to decompress imported Scaleform movie: {error}"))?;
     let movie = swf::parse_swf(&decompressed)
         .map_err(|error| format!("failed to parse imported Scaleform movie: {error}"))?;
-    import_asset_paths_from_tags(movie_url, &movie.tags)
+    Ok(import_asset_paths_from_tags(movie_url, &movie.tags))
 }
 
 /// [`import_asset_paths`] over tags the caller already parsed (#2968).
@@ -514,24 +538,36 @@ fn import_asset_paths(movie_url: &Url, movie_data: &[u8]) -> Result<Vec<String>,
 /// `ImportAssets` was one of the four whole-stream inflates a menu open used
 /// to pay for. Dependency fetches, which arrive as raw bytes, still go through
 /// the byte-taking wrapper above.
+/// #3770 — partitions rather than short-circuits: a single unresolvable
+/// `ImportAssets` URL used to `.collect()`-abort the whole scan, losing
+/// every OTHER resolvable sibling in the same movie too. Returns
+/// `(resolved archive paths, one message per unresolvable URL)` so a
+/// caller can keep the resolvable set and still surface what failed —
+/// mirroring the fetch-time policy [`record_degraded`]'s doc states: "a
+/// dependency that fails to fetch is recorded, not fatal."
 pub(crate) fn import_asset_paths_from_tags(
     movie_url: &Url,
     tags: &[Tag<'_>],
-) -> Result<Vec<String>, String> {
-    tags.iter()
-        .filter_map(|tag| match tag {
-            Tag::ImportAssets { url, .. } => Some(url.to_string_lossy(swf::UTF_8)),
-            _ => None,
-        })
-        .map(|relative| {
-            movie_url
-                .join(&relative.replace('\\', "/"))
-                .map_err(|error| {
-                    format!("invalid ImportAssets URL {relative:?} in {movie_url}: {error}")
-                })
-                .and_then(|url| archive_path_from_url(&url))
-        })
-        .collect()
+) -> (Vec<String>, Vec<String>) {
+    let mut paths = Vec::new();
+    let mut errors = Vec::new();
+    for tag in tags {
+        let Tag::ImportAssets { url, .. } = tag else {
+            continue;
+        };
+        let relative = url.to_string_lossy(swf::UTF_8);
+        let resolved = movie_url
+            .join(&relative.replace('\\', "/"))
+            .map_err(|error| {
+                format!("invalid ImportAssets URL {relative:?} in {movie_url}: {error}")
+            })
+            .and_then(|url| archive_path_from_url(&url));
+        match resolved {
+            Ok(path) => paths.push(path),
+            Err(message) => errors.push(message),
+        }
+    }
+    (paths, errors)
 }
 
 fn prepare_import_asset_swf(movie_data: &[u8]) -> Result<(Vec<u8>, bool), String> {
@@ -700,6 +736,7 @@ mod tests {
         let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
             archive_movie_url("interface\\hudmenu.swf").unwrap(),
             Vec::new(),
+            Vec::new(),
             provider.clone() as Arc<dyn ScaleformResourceProvider>,
         )
         .unwrap();
@@ -745,6 +782,7 @@ mod tests {
         let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
             archive_movie_url("interface\\hudmenu.swf").unwrap(),
             Vec::new(),
+            Vec::new(),
             provider.clone() as Arc<dyn ScaleformResourceProvider>,
         )
         .unwrap();
@@ -780,6 +818,7 @@ mod tests {
         )])));
         let (navigator, mut runtime, movie_url) = ScaleformNavigatorRuntime::create(
             archive_movie_url("interface\\hudmenu.swf").unwrap(),
+            Vec::new(),
             Vec::new(),
             provider,
         )
@@ -868,6 +907,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
+    }
+
+    /// #3770 — a root movie with one unresolvable `ImportAssets` URL
+    /// (here, absolute with a non-`file` scheme — the documented reachable
+    /// trigger: `movie_url.join` succeeds since the URL is already
+    /// absolute, then `archive_path_from_url` rejects the scheme) must
+    /// still load, with a resolvable sibling `ImportAssets` still fetched
+    /// and the failure recorded in `resource_errors()` — not the whole
+    /// menu load failing the way `.collect()`-short-circuiting used to.
+    #[test]
+    fn root_movie_with_one_unresolvable_import_still_loads() {
+        let imported = movie(vec![
+            Tag::FileAttributes(FileAttributes::IS_ACTION_SCRIPT_3),
+            Tag::DoAbc(&[0, 0, 0, 0]),
+        ]);
+        let root = movie(vec![
+            Tag::FileAttributes(FileAttributes::IS_ACTION_SCRIPT_3),
+            Tag::ImportAssets {
+                url: SwfStr::from_utf8_str("fonts_en.swf"),
+                imports: Vec::new(),
+            },
+            Tag::ImportAssets {
+                url: SwfStr::from_utf8_str("http://unreachable.example/x.swf"),
+                imports: Vec::new(),
+            },
+        ]);
+        let provider = Arc::new(MemoryProvider(HashMap::from([
+            ("interface\\hudmenu.swf".to_string(), root),
+            ("interface\\fonts_en.swf".to_string(), imported),
+        ])));
+
+        let mut player = SwfPlayer::from_resource_provider(
+            provider,
+            "interface\\hudmenu.swf",
+            64,
+            64,
+            None,
+        )
+        .expect("one unresolvable ImportAssets URL must not fail the whole menu load (#3770)");
+        player.tick(1.0 / 30.0);
+
+        // The resolvable sibling still fetched normally.
+        assert_eq!(
+            player.resource_loads()[0].archive_path,
+            "interface\\fonts_en.swf"
+        );
+        // The unresolvable one is recorded, not silently dropped.
+        assert!(
+            player
+                .resource_errors()
+                .iter()
+                .any(|e| e.contains("unreachable.example")),
+            "expected an error mentioning the unresolvable URL, got {:?}",
+            player.resource_errors()
+        );
     }
 
     /// Regression for #2720 / CONC-D7-UI-04: a dependency that isn't in the

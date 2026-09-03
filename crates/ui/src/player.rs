@@ -237,7 +237,12 @@ impl SwfPlayer {
         let prepared = prepare_movie(&swf_data, profile, Some(&movie_url))
             .map_err(|error| anyhow!("{error}"))?;
         let (navigator, runtime, movie_url) =
-            ScaleformNavigatorRuntime::create(movie_url, prepared.import_asset_paths, provider)
+            ScaleformNavigatorRuntime::create(
+                movie_url,
+                prepared.import_asset_paths,
+                prepared.root_import_errors,
+                provider,
+            )
                 .map_err(|error| {
                     anyhow!("Failed to configure Scaleform archive loading: {error}")
                 })?;
