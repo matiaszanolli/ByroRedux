@@ -131,7 +131,12 @@ pub fn try_reconstruct_sse_geometry(
     // `remap_bs_tri_shape_bone_indices` keeps its `vertex_map` reads: that
     // one uses the map correctly, as a global -> partition-local inverse.
     let vertex_count = decoded.positions.len();
-    let mut indices = Vec::new();
+    let index_count = partition
+        .partitions
+        .iter()
+        .map(|part| part.triangles.len())
+        .sum::<usize>();
+    let mut indices = Vec::with_capacity(index_count.saturating_mul(3));
     let mut dropped_triangles: u32 = 0;
     for part in &partition.partitions {
         for tri in &part.triangles {

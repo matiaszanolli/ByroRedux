@@ -299,6 +299,12 @@ impl NiSkinPartition {
             let mut triangles = Vec::new();
             if has_faces {
                 if num_strips > 0 {
+                    // The authored triangle count is available before the
+                    // strip payload. Reserve the de-strip output up front so
+                    // large skin partitions do not repeatedly grow while
+                    // flattening their strips (#3691).
+                    triangles =
+                        stream.allocate_vec_sized::<[u16; 3]>(num_triangles as u32)?;
                     // #1549 — de-strip the jagged strip arrays into a triangle
                     // list. LE / converted skinned meshes author strips, not
                     // indexed tris; pre-fix these were skipped, leaving
@@ -633,6 +639,10 @@ mod tests {
         let p = &part.partitions[0];
         // Strip [0,1,2,3] → tris [0,1,2] (even) and [1,3,2] (odd-index swap).
         assert_eq!(p.triangles, vec![[0, 1, 2], [1, 3, 2]]);
+        assert!(
+            p.triangles.capacity() >= num_tris as usize,
+            "strip de-triangulation should reserve the authored triangle count"
+        );
         assert_eq!(stream.position() as usize, data.len());
     }
 

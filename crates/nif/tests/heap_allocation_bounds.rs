@@ -512,3 +512,143 @@ fn parse_skyrim_se_geometry_particle_stays_within_heap_budget() {
         stats.max_bytes
     );
 }
+
+// ── #3691 — skinning allocation-family coverage ────────────────────
+
+fn ni_transform_identity(buf: &mut Vec<u8>) {
+    for row in 0..3 {
+        for col in 0..3 {
+            wf32(buf, if row == col { 1.0 } else { 0.0 });
+        }
+    }
+    for _ in 0..3 {
+        wf32(buf, 0.0);
+    }
+    wf32(buf, 1.0);
+}
+
+/// Populated modern `NiSkinData`: two bones, each carrying eight vertex
+/// weights. This keeps the parser's bone and per-bone weight allocations on
+/// the measured path instead of letting a zero-bone fixture pass vacuously.
+fn ni_skin_data_block() -> Vec<u8> {
+    let mut d = Vec::new();
+    ni_transform_identity(&mut d); // skin transform
+    w32(&mut d, 2); // num_bones
+    w8(&mut d, 1); // has vertex weights
+
+    for bone in 0..2u16 {
+        ni_transform_identity(&mut d); // bone skin transform
+        for _ in 0..3 {
+            wf32(&mut d, 0.0); // bounding-sphere center
+        }
+        wf32(&mut d, 1.0); // bounding-sphere radius
+        w16(&mut d, 8); // num_vertices
+        for vertex in 0..8u16 {
+            w16(&mut d, vertex);
+            wf32(&mut d, if vertex == bone { 1.0 } else { 0.0 });
+        }
+    }
+    d
+}
+
+/// Populated modern `NiSkinPartition`: one strip-authored partition with
+/// eight vertices, two bones, and four triangles. The strip branch is
+/// intentional — it exercises the #3691 pre-sized de-strip output vector.
+fn ni_skin_partition_block() -> Vec<u8> {
+    let mut d = Vec::new();
+    w32(&mut d, 1); // num_partitions
+    w16(&mut d, 8); // num_vertices
+    w16(&mut d, 4); // num_triangles
+    w16(&mut d, 2); // num_bones
+    w16(&mut d, 1); // num_strips
+    w16(&mut d, 2); // num_weights_per_vertex
+    w16(&mut d, 0); // bones[0]
+    w16(&mut d, 1); // bones[1]
+    w8(&mut d, 1); // has vertex map
+    for vertex in 0..8u16 {
+        w16(&mut d, vertex);
+    }
+    w8(&mut d, 1); // has vertex weights
+    for vertex in 0..8u16 {
+        wf32(&mut d, if vertex % 2 == 0 { 1.0 } else { 0.0 });
+        wf32(&mut d, if vertex % 2 == 1 { 1.0 } else { 0.0 });
+    }
+    w16(&mut d, 6); // one six-index strip => four triangles
+    w8(&mut d, 1); // has faces
+    for vertex in 0..6u16 {
+        w16(&mut d, vertex);
+    }
+    w8(&mut d, 1); // has bone indices
+    for vertex in 0..8u8 {
+        d.extend_from_slice(&[vertex % 2, (vertex + 1) % 2]);
+    }
+    d
+}
+
+/// Build a v20.2 / BSVER 34 NIF carrying both legacy skinning blocks.
+/// `parse_nif` dispatches every declared block, so the blocks need no mesh
+/// wrapper to exercise their parser allocations.
+fn build_skin_blocks_nif() -> Vec<u8> {
+    let mut nif = Vec::new();
+    nif.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+    w32(&mut nif, 0x14020007); // version 20.2.0.7
+    w8(&mut nif, 1); // little-endian
+    w32(&mut nif, 12); // user_version
+    let num_blocks: u32 = 2;
+    w32(&mut nif, num_blocks);
+    w32(&mut nif, 34); // BSVER = FO3/FNV; keeps the legacy partition layout
+    wshort(&mut nif, "ByroRedux Test"); // author
+    wshort(&mut nif, ""); // process_script
+    wshort(&mut nif, ""); // export_script
+    w16(&mut nif, 2); // block type count
+    wsstr(&mut nif, "NiSkinData");
+    wsstr(&mut nif, "NiSkinPartition");
+    w16(&mut nif, 0); // block 0 -> NiSkinData
+    w16(&mut nif, 1); // block 1 -> NiSkinPartition
+
+    let block_sizes_offset = nif.len();
+    w32(&mut nif, 0);
+    w32(&mut nif, 0);
+    w32(&mut nif, 0); // string table: num_strings
+    w32(&mut nif, 0); // string table: max_string_length
+    w32(&mut nif, 0); // num_groups
+
+    let skin_data_start = nif.len();
+    nif.extend_from_slice(&ni_skin_data_block());
+    let skin_data_size = (nif.len() - skin_data_start) as u32;
+    nif[block_sizes_offset..block_sizes_offset + 4]
+        .copy_from_slice(&skin_data_size.to_le_bytes());
+
+    let partition_start = nif.len();
+    nif.extend_from_slice(&ni_skin_partition_block());
+    let partition_size = (nif.len() - partition_start) as u32;
+    nif[block_sizes_offset + 4..block_sizes_offset + 8]
+        .copy_from_slice(&partition_size.to_le_bytes());
+    nif
+}
+
+/// #3691 — populated skinning allocation-bound gate. This fixture covers
+/// `NiSkinData`'s per-bone/weight vectors and `NiSkinPartition`'s strip
+/// triangle output, so a future `Vec::new()` regression in either path is
+/// measured by the same dhat CI job as the sibling parser fixtures.
+#[test]
+fn parse_skin_blocks_stays_within_heap_budget() {
+    let nif_bytes = build_skin_blocks_nif();
+
+    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _profiler = dhat::Profiler::builder().testing().build();
+    let scene = parse_nif(&nif_bytes).expect("synthetic skin-block NIF should parse");
+    let stats = dhat::HeapStats::get();
+
+    assert_eq!(scene.blocks.len(), 2, "fixture declares both skin blocks");
+    assert!(
+        stats.max_blocks < 220,
+        "max_blocks regression: {} >= 220 — skinning parser likely reintroduced an unreserved vector growth site. See #3691 / #833 / #831.",
+        stats.max_blocks
+    );
+    assert!(
+        stats.max_bytes < 24 * 1024,
+        "max_bytes regression: {} >= 24576 — skinning parser allocation family exceeded its bound. See #3691 / #1247.",
+        stats.max_bytes
+    );
+}
