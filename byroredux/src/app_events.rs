@@ -628,6 +628,70 @@ impl ApplicationHandler for App {
         if let Some(ref ctx) = self.renderer {
             let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
             ctx.fill_scratch_telemetry(&mut tlm.rows);
+            tlm.renderer_row_count = tlm.rows.len();
+
+            // #3694 — the engine binary's own seven `build_render_data`
+            // scratches (`render/mod.rs`'s own doc names this exact set as
+            // "owned by the caller and cleared on entry"). Appended after
+            // `fill_scratch_telemetry`'s rows rather than folded into it:
+            // that function only ever sees renderer-owned fields, and
+            // `draw_commands` in particular is the quantity five of its
+            // own rows (`gpu_instances_scratch`, `previous_models_scratch`,
+            // `batches_scratch`, both rigid-motion maps) are `reserve()`d
+            // against, so it belongs in the same report even though it
+            // lives on `App`, not `VulkanContext`.
+            use byroredux_core::ecs::ScratchRow;
+            tlm.rows.push(ScratchRow {
+                name: "draw_commands",
+                len: self.draw_commands.len(),
+                capacity: self.draw_commands.capacity(),
+                elem_size_bytes: std::mem::size_of::<
+                    byroredux_renderer::vulkan::context::DrawCommand,
+                >(),
+            });
+            tlm.rows.push(ScratchRow {
+                name: "water_commands",
+                len: self.water_commands.len(),
+                capacity: self.water_commands.capacity(),
+                elem_size_bytes: std::mem::size_of::<
+                    byroredux_renderer::vulkan::water::WaterDrawCommand,
+                >(),
+            });
+            tlm.rows.push(ScratchRow {
+                name: "gpu_lights",
+                len: self.gpu_lights.len(),
+                capacity: self.gpu_lights.capacity(),
+                elem_size_bytes: std::mem::size_of::<byroredux_renderer::GpuLight>(),
+            });
+            tlm.rows.push(ScratchRow {
+                name: "gpu_fog_volumes",
+                len: self.gpu_fog_volumes.len(),
+                capacity: self.gpu_fog_volumes.capacity(),
+                elem_size_bytes: std::mem::size_of::<byroredux_renderer::GpuFogVolume>(),
+            });
+            tlm.rows.push(ScratchRow {
+                name: "light_sort_scratch",
+                len: self.light_sort_scratch.len(),
+                capacity: self.light_sort_scratch.capacity(),
+                elem_size_bytes: std::mem::size_of::<(f32, byroredux_renderer::GpuLight)>(),
+            });
+            tlm.rows.push(ScratchRow {
+                name: "bone_world",
+                len: self.bone_world.len(),
+                capacity: self.bone_world.capacity(),
+                elem_size_bytes: std::mem::size_of::<[[f32; 4]; 4]>(),
+            });
+            // Hash-container row: same len/capacity-only caveat as the
+            // renderer's own `skin_dispatch_seen_scratch` /
+            // `blend_seen_scratch` rows — no control-byte / load-factor
+            // slack, a proportional signal rather than an allocator-exact
+            // one.
+            tlm.rows.push(ScratchRow {
+                name: "skin_offsets",
+                len: self.skin_offsets.len(),
+                capacity: self.skin_offsets.capacity(),
+                elem_size_bytes: std::mem::size_of::<(byroredux_core::ecs::EntityId, u32)>(),
+            });
         }
 
         // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so

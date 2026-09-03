@@ -510,6 +510,15 @@ pub struct ScratchTelemetry {
     /// `MAX_MATERIALS` in `crates/renderer/src/vulkan/scene_buffer/
     /// constants.rs`. Surfaced by the `mem` console command.
     pub materials_overflow: usize,
+    /// #3694 — split point in `rows`: `rows[..renderer_row_count]` came
+    /// from `VulkanContext::fill_scratch_telemetry` (renderer-owned
+    /// scratches); `rows[renderer_row_count..]` are the engine binary's
+    /// own `build_render_data` scratches, appended right after by the
+    /// producer in `byroredux::app_events`. Lets `ctx.scratch` label the
+    /// two groups without threading a per-row tag through all 24+
+    /// `ScratchRow` construction sites — the producer already knows the
+    /// boundary at push time, for free.
+    pub renderer_row_count: usize,
 }
 
 impl Resource for ScratchTelemetry {}

@@ -243,7 +243,17 @@ impl ConsoleCommand for CtxScratchCommand {
                 "name", "len", "capacity", "bytes_used", "wasted"
             ),
         ];
-        for row in &tlm.rows {
+        // #3694 — `renderer_row_count` splits `rows` into the renderer's
+        // own scratches (`VulkanContext::fill_scratch_telemetry`) and the
+        // engine binary's `build_render_data` scratches, appended after.
+        // `.min(rows.len())` degrades to "everything is renderer, nothing
+        // is engine" rather than panicking if a future producer forgets
+        // to set the split point — matches this command's existing
+        // fail-soft style ("renderer not initialized yet" above).
+        let split = tlm.renderer_row_count.min(tlm.rows.len());
+        let (renderer_rows, engine_rows) = tlm.rows.split_at(split);
+        lines.push("  renderer:".to_string());
+        for row in renderer_rows {
             lines.push(format!(
                 "  {:<26} {:>10} {:>10} {:>10} B {:>10} B",
                 row.name,
@@ -252,6 +262,19 @@ impl ConsoleCommand for CtxScratchCommand {
                 row.bytes_used(),
                 row.wasted_bytes(),
             ));
+        }
+        if !engine_rows.is_empty() {
+            lines.push("  engine:".to_string());
+            for row in engine_rows {
+                lines.push(format!(
+                    "  {:<26} {:>10} {:>10} {:>10} B {:>10} B",
+                    row.name,
+                    row.len,
+                    row.capacity,
+                    row.bytes_used(),
+                    row.wasted_bytes(),
+                ));
+            }
         }
         lines.push(format!(
             "  total: {} bytes used, {} bytes wasted across {} scratches",
@@ -280,6 +303,105 @@ impl ConsoleCommand for CtxScratchCommand {
         CommandOutput::lines(lines)
     }
 }
+
+/// #3694 — `CtxScratchCommand` takes `&World` only (no `VulkanContext`),
+/// so unlike most renderer-adjacent commands this one is directly
+/// unit-testable: seed a `World` with a `ScratchTelemetry` resource and
+/// inspect the returned `CommandOutput::lines`.
+#[cfg(test)]
+mod ctx_scratch_tests {
+    use super::*;
+    use byroredux_core::ecs::ScratchRow;
+
+    fn row(name: &'static str) -> ScratchRow {
+        ScratchRow {
+            name,
+            len: 1,
+            capacity: 2,
+            elem_size_bytes: 4,
+        }
+    }
+
+    /// The renderer/engine split must land at `renderer_row_count`: every
+    /// row before it prints under `renderer:`, every row from it onward
+    /// prints under `engine:` — pinning the fix's core claim, that the
+    /// engine's seven `build_render_data` scratches are no longer
+    /// invisible to this report.
+    #[test]
+    fn rows_are_grouped_by_renderer_row_count() {
+        let mut world = World::new();
+        world.insert_resource(ScratchTelemetry {
+            rows: vec![row("gpu_instances_scratch"), row("draw_commands")],
+            renderer_row_count: 1,
+            ..Default::default()
+        });
+
+        let output = CtxScratchCommand.execute(&world, "");
+        let renderer_idx = output
+            .lines
+            .iter()
+            .position(|l| l.trim() == "renderer:")
+            .expect("must print a renderer: header");
+        let engine_idx = output
+            .lines
+            .iter()
+            .position(|l| l.trim() == "engine:")
+            .expect("must print an engine: header");
+        assert!(renderer_idx < engine_idx, "renderer section must come first");
+
+        let gpu_instances_idx = output
+            .lines
+            .iter()
+            .position(|l| l.contains("gpu_instances_scratch"))
+            .expect("gpu_instances_scratch row must be present");
+        let draw_commands_idx = output
+            .lines
+            .iter()
+            .position(|l| l.contains("draw_commands"))
+            .expect("draw_commands row must be present");
+        assert!(
+            renderer_idx < gpu_instances_idx && gpu_instances_idx < engine_idx,
+            "the renderer-owned row must print between the two headers"
+        );
+        assert!(
+            draw_commands_idx > engine_idx,
+            "draw_commands must print under the engine: header, not renderer: \
+             — this is the exact defect #3694 fixed"
+        );
+    }
+
+    /// A `renderer_row_count` past `rows.len()` (stale/misordered producer)
+    /// must degrade to "everything renderer, no engine section" rather
+    /// than panic on an out-of-bounds `split_at`.
+    #[test]
+    fn out_of_range_split_point_does_not_panic() {
+        let mut world = World::new();
+        world.insert_resource(ScratchTelemetry {
+            rows: vec![row("gpu_instances_scratch")],
+            renderer_row_count: 99,
+            ..Default::default()
+        });
+
+        let output = CtxScratchCommand.execute(&world, "");
+        assert!(
+            !output.lines.iter().any(|l| l.trim() == "engine:"),
+            "no engine rows means no engine: header"
+        );
+    }
+
+    /// Empty `rows` keeps the existing pre-#3694 early-out message —
+    /// this fix must not change that behavior.
+    #[test]
+    fn empty_rows_still_reports_renderer_not_initialized() {
+        let mut world = World::new();
+        world.insert_resource(ScratchTelemetry::default());
+
+        let output = CtxScratchCommand.execute(&world, "");
+        assert_eq!(output.lines.len(), 1);
+        assert!(output.lines[0].contains("renderer not initialized yet"));
+    }
+}
+
 /// `ctx.upscaler` — print the active render-to-output reconstruction path.
 ///
 /// Names the selected mode, the render/output extents, and, when FSR is
