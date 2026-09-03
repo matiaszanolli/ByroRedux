@@ -1,58 +1,115 @@
-# #3713: NIF-2026-08-30-D5-01: four constraint types have real CInfo parsers but stay on is_havok_constraint_stub, so their drift is suppressed and nothing asserts it
+# #3713 — NIF-2026-08-30-D5-01: four constraint types have real CInfo parsers but stay on is_havok_constraint_stub, so their drift is suppressed and nothing asserts it
 
-**Labels**: bug, nif-parser, medium, nif, physics, test-gap
-**Filed**: 2026-08-30 (audit-publish)
+**Severity**: MEDIUM · **Dimension**: Collision/Shader Parsing
+**Location**: `crates/nif/src/lib.rs::is_havok_constraint_stub`, `crates/nif/src/corpus.rs`
 
----
+## Premise correction (verified before implementing)
 
-**Report**: `docs/audits/AUDIT_NIF_2026-08-30.md` · **Severity**: MEDIUM · **Dimension**: Collision/Shader Parsing
-**Game affected**: Oblivion, Fallout 3, Fallout NV, Skyrim SE (the games whose corpora contain `bhk*Constraint` blocks; FO4/FO76/Starfield ship none)
+The issue's suggested fix names **four** decoded types
+(`bhkRagdollConstraint`, `bhkLimitedHingeConstraint`, `bhkHingeConstraint`
+#3330, `bhkMalleableConstraint`) and instructs keeping
+`bhkPrismaticConstraint` on the stub list as one of "the five genuinely
+name-only types". That premise is stale: **#3792**, filed and closed
+*after* this issue but evidently fixed earlier in real time, gave
+`bhkPrismaticConstraint` typed CInfo decoders too
+(`PrismaticCInfo::parse_fo3` / `parse_oblivion`, both call sites in
+`constraints.rs` explicitly commented `// #3792`). Confirmed by reading
+the current source before touching anything — per this session's
+standing practice of verifying an audit-finding premise against current
+code before implementing. The correct current split is **five** decoded
+types, **four** remaining name-only stubs
+(`bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint`,
+`bhkGenericConstraint`, `bhkBallSocketConstraintChain`).
 
-## Location
-- `crates/nif/src/lib.rs` — `is_havok_constraint_stub` (currently `:185-199`), consumed at `:471-484`
-- `crates/nif/src/blocks/collision/constraints.rs` — the real CInfo parsers it shadows
+## Fix
 
-## Description
-`is_havok_constraint_stub` lists nine constraint type names and routes any drift on them into `stubbed_drift_histogram` instead of `drift_histogram`, explicitly so that "a future audit running `nif_stats --drift-histogram` doesn't see ~45 systematic under-reads per skeleton load and falsely conclude constraints parse cleanly".
+Narrowed `is_havok_constraint_stub` to the four genuinely name-only
+types, so all five decoded types' motor-tail residual now routes through
+the real `drift_histogram` instead of the suppressed
+`stubbed_drift_histogram` — closing exactly the blind spot that hid the
+historic `bhkHingeConstraint` +128 under-read (a whole missing parser)
+until #3330 found it by hand.
 
-**Four of those nine** — `bhkRagdollConstraint`, `bhkLimitedHingeConstraint`, `bhkHingeConstraint` (#3330) and `bhkMalleableConstraint` — are no longer name-only stubs; they have typed CInfo parsers whose residual is a small, known, fully-predictable tail. They are still on the list, so a genuine regression inside `RagdollCInfo::parse_fo3` or `LimitedHingeCInfo::parse_fo3` lands in the same bucket as the intended motor tail, indistinguishable from it.
+Added `corpus::is_known_constraint_motor_tail_drift(type_name, drift)` —
+a pure predicate for the by-design "motor left for `block_size` recovery"
+residual, characterised against nif.xml's `bhkConstraintMotorCInfo`
+(1-byte `hkMotorType` discriminator + conditional payload): `1`
+(`MOTOR_NONE`), `18` (`bhkSpringDamperConstraintMotor`, 17 B), `19`
+(`bhkLimitedForceConstraintMotor`, 18 B, `MOTOR_VELOCITY`), `26`
+(`bhkPositionConstraintMotor`, 25 B). `bhkMalleableConstraint`'s own
+residual additionally stacks its trailing `Strength: f32` (4 B) on top of
+its *wrapped* inner type's own motor-tail drift — `{4}` alone for a
+non-motor inner (BallAndSocket/StiffSpring) or `{5, 22, 23, 30}` (each
+base value + 4) for a motor-bearing inner. This composition rule was
+**corrected once already during this fix** — see the real-data note
+below.
 
-The bucket's stated purpose — "spot a new stub regression (constraint type drifts from its expected stub size)" — **has no implementation**: no test, gate or baseline reads `stubbed_drift_histogram` or asserts any expected value.
+Placed the predicate in `corpus.rs` (not `lib.rs`) since it needs to be
+callable from an integration test crate — `corpus` is this crate's
+existing home for exactly that ("shared conventions... both the
+`nif_stats` example and the `tests/common` baseline harness" need).
 
-## Evidence
-`is_havok_constraint_stub` returns `true` for all nine names including the four with real parsers (verified against current source).
+## Real-data verification (not guessed — measured)
 
-**`bhkHingeConstraint` is the proof this matters.** A sweep of the same corpora taken 2026-08-27 recorded:
+Built and ran `nif_stats --drift-histogram` (`--release`) against all
+four affected games' base Meshes archives on this machine:
 
-```
-bhkHingeConstraint  drift=+128  count=6   (FO3)
-bhkHingeConstraint  drift=+128  count=4   (FNV)
-bhkHingeConstraint  drift=+128  count=8   (Skyrim SE)
-```
-
-+128 is exactly the full FO3+ `bhkHingeConstraintCInfo` — 8 × `Vector4` (nif.xml:2457-2464) — i.e. the constraint's entire payload was undecoded on **100% of instances in three games**. That is not a motor tail; it is a whole missing parser, and it sat inside the suppressed bucket where no gate looks until #3330 went hunting by hand. The 2026-08-30 sweep confirms #3330 fixed it, but the routing that concealed it is unchanged for the three remaining real parsers.
-
-Current residual on every constraint type, characterised byte-for-byte against nif.xml — which is what makes it assertable:
-
-| observed drift | composition | nif.xml sizes |
+| game | events | values observed |
 |---|---|---|
-| +1 (FNV 1,301 · FO3 931 · SkyrimSE 1,575) | motor type byte, `MOTOR_NONE` | 1 (`hkMotorType` is a `byte`, nif.xml:2370) |
-| +18 (FO3 10) | type byte + `bhkSpringDamperConstraintMotor` | 1 + 17 (`size="17"`) |
-| +26 (FO3 34 · FNV 1) | type byte + `bhkPositionConstraintMotor` | 1 + 25 (`size="25"`) |
-| +5 / +4 (`bhkMalleableConstraint`, FNV 143 · FO3 60) | motor byte + `Strength` f32 / `Strength` alone | 1 + 4 / 4 |
-| +32 (`bhkBallAndSocketConstraint`, SkyrimSE 30) | whole undecoded CInfo | `size="32"` |
-| +36 (`bhkStiffSpringConstraint`) | whole undecoded CInfo | 2×Vec4 + f32 = 36 |
-| +141 (`bhkPrismaticConstraint`, FO3 9 · FNV 3) | whole undecoded CInfo + motor byte | 140 + 1 |
+| Oblivion | 0 | (no `block_sizes` table pre-20.2.0.7 — drift detection doesn't apply at all, consistent with the issue's own table listing zero Oblivion rows) |
+| Fallout 3 | 860 | `+26`, `+1` (Ragdoll/LimitedHinge), `+5`/`+4` (Malleable), `+1` (Prismatic) |
+| Fallout NV | 1,115 | `+26`, `+1`, `+5` |
+| Skyrim SE | 1,575 (matches the issue's own cited count exactly) | `+1` only |
 
-## Impact
-Instrumentation, not live corruption — the current residuals are all correct, and FO3+ files are never sizeless so `block_sizes` keeps the outer stream aligned. The exposure is that the one telemetry surface able to notice a constraint-decode regression deliberately discards it for exactly the types that now have something to regress, and the hinge case shows the blind spot can persist across many releases. Constraint CInfo decode is also the sole per-game seam in PHYSAL, so a silent drift here mislabels ragdoll joint frames rather than failing loudly.
+**My first draft of the composition rule was wrong** — it modeled
+Malleable's residual as the bare 4-value set *or* a flat `+4`, missing
+that FO3's real +5 (59 occurrences) is `1 + 4` (a `MOTOR_NONE` inner
+stacked with the Strength trailer), not a value the first draft's
+`MOTOR_TAIL_DRIFTS.contains(&drift) || (Malleable && drift == 4)` logic
+accepted. Caught immediately by running against real FO3 data before
+writing the corpus test, corrected to the additive model above, and
+reran against all four games with zero anomalies (4,069 total events,
+all within the known set).
 
-## Related
-#117 (the original stubs), #3330 (the fix whose absence this blind spot hid), #979.
+## SIBLING (issue's own checklist item)
 
-## Suggested Fix
-Narrow `is_havok_constraint_stub` to the five genuinely name-only types (`bhkBallAndSocketConstraint`, `bhkPrismaticConstraint`, `bhkStiffSpringConstraint`, `bhkGenericConstraint`, `bhkBallSocketConstraintChain`) so the four decoded types report through the real `drift_histogram`. Then replace the suppression with an assertion: the residual for a decoded constraint is now known to be exactly 1, 18, 26, or 4/5, so a per-game gate asserting membership in that set turns the invisible +128 class into a red build. The values are already measured per game in the table above.
+No `bhk*` dispatch-arm/`resolve_shape` name changed — only which bucket a
+type's drift routes into. `resolve_shape` and the shape-dispatch table are
+untouched.
 
-## Completeness Checks
-- [ ] **SIBLING**: adding/removing a `bhk*` name here needs its `resolve_shape` / dispatch-arm counterpart checked (see the shape-dispatch parity rule)
-- [ ] **TESTS**: A regression test pins this specific fix — assert the measured residual set per game
+## TESTS (issue's own checklist item)
+
+Unit tests in `corpus.rs` (no corpus needed): the four bare motor-tail
+values accepted for every decoded type; Malleable's additive
+`{4, 5, 22, 23, 30}` set accepted while the *bare* four values are
+rejected for Malleable specifically; the historic +128 rejected for any
+type.
+
+Real-corpus regression test `tests/constraint_drift_corpus.rs`
+(`#[ignore]`d, matching this crate's established convention for
+real-game-data tests, e.g. `oblivion_stream_drift_corpus.rs`): re-parses
+Oblivion/FO3/FNV/SkyrimSE's mesh archives via `common::
+open_all_mesh_archives`, asserts every `drift_histogram` entry for a
+decoded constraint type is `is_known_constraint_motor_tail_drift`. Run
+against real data: **4,069 events, 0 anomalies**.
+
+**Reintroduce-and-revert verification, two separate probes**:
+1. Unit level — confirmed `known_motor_tail_drifts_are_accepted_for_any_decoded_type`
+   and the Malleable test fail when the composition rule regresses (checked
+   during development against the corrected vs. first-draft logic).
+2. Corpus level — dropped `1` from `MOTOR_TAIL_DRIFTS` (replaced with a
+   sentinel `999`), reran the real-data corpus test: failed with 3,127+
+   listed violations across all four games (the dominant `+1` residual).
+   Restored the fix and reran — passes again with the same 4,069-event,
+   zero-anomaly result.
+
+## Verification
+
+- `cargo check -p byroredux-nif --tests`: clean, zero warnings.
+- `cargo test -p byroredux-nif --lib corpus::`: 7 tests passing, 0
+  failing (+3 new).
+- `cargo test -q -p byroredux-nif`: 1227 tests passing (+3), 0 failing.
+- `cargo test --release -p byroredux-nif --test constraint_drift_corpus -- --ignored --nocapture`:
+  1 passing against real 4-game corpus (4,069 events, 0 anomalies).
+- `cargo test -q --no-fail-fast` (full workspace): **7132 passing, 0
+  failing**.

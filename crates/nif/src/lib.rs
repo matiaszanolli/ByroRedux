@@ -160,43 +160,43 @@ fn is_animation_block(type_name: &str) -> bool {
     )
 }
 
-/// Return true for the Havok constraint block types whose parsers
-/// intentionally consume only the 16-byte `bhkConstraintCInfo` base
-/// and delegate the rest of the payload to the outer block_sizes
-/// reconciliation path (#117).
+/// Return true for the Havok constraint block types whose parsers are
+/// still NAME-ONLY stubs — they consume only the 16-byte
+/// `bhkConstraintCInfo` base and delegate the rest of the payload to the
+/// outer block_sizes reconciliation path (#117).
 ///
 /// The stubs are correct — every skeleton NIF contains 10–50 constraint
 /// blocks and all of them under-consume by design. Without this list
 /// the reconciliation path would fire a `warn!` for each, drowning
 /// real parser-drift signals in an actor-spawn log (#462).
 ///
-/// Note (#1605): `bhkRagdollConstraint` / `bhkLimitedHingeConstraint` /
-/// `bhkMalleableConstraint` now have *typed* CInfo decoders
-/// (`blocks::collision::constraints.rs`) but are kept on this list
-/// deliberately — those decoders under-read by design (the trailing
-/// `bhkConstraintMotorCInfo` is left for `block_size` recovery), so
-/// dropping them would re-introduce the #462 warn-spam. Over-reads in the
-/// typed decoders are instead pinned by exact-consumption assertions in
-/// `bhk_constraint_tests.rs` (`stream.position() == 16 + prefix`), so a
-/// regression fails CI there rather than only in the runtime histogram.
-/// Replacing this blanket suppression with a *signed* tolerance (suppress
-/// the expected under-read, still `warn!` on any over-read) is tracked as
-/// #1605.
+/// #3713 — `bhkRagdollConstraint` / `bhkLimitedHingeConstraint` /
+/// `bhkHingeConstraint` (#3330) / `bhkMalleableConstraint` /
+/// `bhkPrismaticConstraint` (#3792) now have *typed* CInfo decoders
+/// (`blocks::collision::constraints.rs`) and were REMOVED from this list:
+/// keeping a decoded type here routed its residual into
+/// `stubbed_drift_histogram` instead of the real `drift_histogram`,
+/// which is exactly what hid the historic `bhkHingeConstraint` +128
+/// under-read (a whole missing parser, not the intended motor tail) from
+/// every drift-based audit until #3330 found it by hand. The five decoded
+/// types under-read by design too — the trailing `bhkConstraintMotorCInfo`
+/// is left for `block_size` recovery — but now that under-read is a
+/// small, known, per-type set of values
+/// ([`corpus::is_known_constraint_motor_tail_drift`]), assertable instead
+/// of suppressed. Over-reads in the typed decoders are additionally pinned
+/// by exact-consumption assertions in `bhk_constraint_tests.rs`
+/// (`stream.position() == 16 + prefix`).
 fn is_havok_constraint_stub(type_name: &str) -> bool {
     matches!(
         type_name,
         "bhkBallAndSocketConstraint"
-            | "bhkHingeConstraint"
-            | "bhkLimitedHingeConstraint"
-            | "bhkPrismaticConstraint"
-            | "bhkRagdollConstraint"
             | "bhkStiffSpringConstraint"
-            | "bhkMalleableConstraint"
             | "bhkGenericConstraint"
             // #979 / NIF-D5-NEW-03
             | "bhkBallSocketConstraintChain"
     )
 }
+
 
 /// Parse a NIF file from raw bytes.
 ///
