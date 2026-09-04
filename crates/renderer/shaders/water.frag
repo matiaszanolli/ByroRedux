@@ -1117,10 +1117,12 @@ void main() {
     // ── Alpha ──
     // Waterfalls are heavily opaque; flat water lets some of the
     // refraction colour through but is mostly opaque at the surface
-    // since refraction is already baked into surfaceColor. Use a
-    // grazing-angle alpha boost so the water plane edges remain
-    // visible at low view angles (avoids the classic "water vanishes
-    // at the shoreline" artefact).
+    // since refraction is already baked into surfaceColor. The blend
+    // coverage must therefore include the reflected-energy share as
+    // well as the authored absorption opacity. Otherwise Fresnel is
+    // applied once while building surfaceColor and effectively applied
+    // a second time by a low output alpha, making legacy water with an
+    // authored ~0.2 opacity disappear even at grazing angles.
     float baseAlpha = authoredOpacity;
     // FO4/FO76 expose a depth-dependent alpha ramp. Preserve the legacy
     // constant-opacity path when the tuple is all zero, otherwise blend the
@@ -1137,10 +1139,13 @@ void main() {
         baseAlpha = mix(clamp(push.alpha.x, 0.0, 1.0),
                         clamp(push.alpha.y, 0.0, 1.0), alphaT);
     }
-    float grazingBoost = pow(1.0 - NdotV, 2.0) * 0.1;
+    // Union rather than add the two independent coverage terms so the
+    // result remains bounded and increases monotonically with Fresnel.
+    // Preserve authored zero as an explicit invisible-water value.
+    float reflectedCoverage = 1.0 - (1.0 - baseAlpha) * (1.0 - fresnel);
     float alpha = baseAlpha <= 0.0
         ? 0.0
-        : clamp(baseAlpha + grazingBoost + foamMask * 0.1, 0.0, 1.0);
+        : clamp(reflectedCoverage + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
 

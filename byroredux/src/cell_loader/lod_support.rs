@@ -9,6 +9,7 @@
 //! and `ImportedMesh` → renderer conversion live here so providers cannot
 //! drift on scheduling, vertex defaults, or bound math (TD2-105 / #2064).
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use byroredux_core::math::Vec3;
@@ -47,8 +48,10 @@ pub(crate) struct LodReconcileInput<'a> {
     pub(crate) player_grid: (i32, i32),
     /// Worldspace-relative cell-grid origin used by Skyrim+/FO4 baked LOD.
     pub(crate) lod_grid_origin: (i32, i32),
-    /// The full-detail streaming hysteresis boundary (`radius_unload`).
-    pub(crate) max_full_cell_radius: i32,
+    /// Cells whose full-detail representation is actually resident now.
+    /// The unload radius is only a possible residency bound, not a promise
+    /// that every cell inside it has been populated.
+    pub(crate) resident_full_cells: &'a HashSet<(i32, i32)>,
 }
 
 /// Whether `game` ships Bethesda's prebaked **combined** distant LOD — the

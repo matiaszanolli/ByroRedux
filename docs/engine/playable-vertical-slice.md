@@ -134,6 +134,20 @@ Order within the push:
 - W4: add underwater audio, breath/drowning, and splash/ripple feedback after the
   traversal and visual gates are stable.
 
+**W0 closed 2026-09-04:** `m-exteriors.sh water` now freezes paired
+above-surface and submerged fly-camera poses on the Skyrim `(2,-10)`
+`RiverWater` tile and the older-generation FNV Lake Mead `(19,13)` CELL water.
+The gate retains both captures plus an unescaped transition log and requires
+the intended WATR source, canonical camera-containing volume, Skyrim's nonzero
+authored flow, finite pre-tonemap output at both poses, and a non-trivial image
+delta across the waterline. The first captures also exposed a real visibility
+defect: the water shader built a complete reflected/refracted `surfaceColor`
+and then attenuated that result a second time with low authored alpha. Output
+coverage now includes the Schlick Fresnel share while preserving authored zero
+opacity as fully transparent. Skyrim mesh-bound water also no longer treats
+generic `Material` defaults as authored opacity/reflectivity. W1 traversal and
+the wider shoreline/LOD perceptual capture set remain open.
+
 **Bootstrap landed 2026-08-10:** live dynamic-body current drag now consumes
 `WaterFlow` in the same pre-step as buoyancy, with bounded velocity matching and
 real Rapier coverage. `water.dump` and `water.contacts` are registered and the

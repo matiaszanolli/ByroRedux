@@ -178,10 +178,24 @@ pub(crate) fn water_material_from_mesh(
         },
         ..Default::default()
     };
-    if material.env_map_scale.is_finite() {
+    // Skyrim's `BSWaterShaderProperty` has no opacity or environment-scale
+    // scalars. Its translated `Material` therefore carries the generic
+    // defaults (`alpha = 1`, `env_map_scale = 0`), which are absence
+    // sentinels here rather than authored water optics. Applying them made
+    // vanilla mesh water (for example `Water1024.nif`) fully opaque and
+    // disabled reflection, producing a white sheet over the river bed.
+    //
+    // A zero water-flag word identifies the older field-less
+    // `WaterShaderProperty` compatibility path, where env-map scale and alpha
+    // can come from the legacy property chain and retain their old behavior.
+    // On Skyrim+ mesh water, only non-default values can be genuine companion
+    // property data; otherwise keep `WaterMaterial`'s calibrated defaults.
+    let legacy_water_property = water.shader_flags == 0;
+    if material.env_map_scale.is_finite() && (legacy_water_property || material.env_map_scale > 0.0)
+    {
         water.reflectivity = material.env_map_scale.clamp(0.0, 1.0);
     }
-    if material.alpha.is_finite() {
+    if material.alpha.is_finite() && (legacy_water_property || material.alpha != 1.0) {
         water.opacity = material.alpha.clamp(0.0, 1.0);
     }
     // `BSWaterShaderProperty.uv_scale` is preserved by the NIF material
@@ -1208,12 +1222,27 @@ mod tests {
     #[test]
     fn mesh_water_preserves_real_normal_handle_and_optical_scalars() {
         let mut material = Material::default();
+        material.water_shader_flags = 0xC4;
         material.env_map_scale = 0.42;
         material.alpha = 0.73;
         let water = water_material_from_mesh(&material, 17, 0);
         assert_eq!(water.normal_map_index, 17);
         assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
         assert!((water.opacity - 0.73).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn skyrim_mesh_water_does_not_treat_generic_material_defaults_as_authored_optics() {
+        let mut material = Material::default();
+        // `Water1024.nif`'s exact shape: a Skyrim BSWaterShaderProperty with
+        // nif.xml's 0xC4 flags and no scalar-bearing companion property.
+        material.water_shader_flags = 0xC4;
+        material.env_map_scale = 0.0;
+
+        let water = water_material_from_mesh(&material, 0, 0);
+        let defaults = WaterMaterial::default();
+        assert_eq!(water.reflectivity, defaults.reflectivity);
+        assert_eq!(water.opacity, defaults.opacity);
     }
 
     #[test]

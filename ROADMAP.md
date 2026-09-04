@@ -141,10 +141,17 @@ scale 6 is the largest candidate above the 0.995 linear block-SSIM floor
 variant exposed the absolute-space 256-ULP origin jump (16 world units); the
 shared helper now steps in camera-relative space before reconstructing an
 absolute ray origin, restoring blocker hit/visibility agreement.
-Water work that is headless (character contact/current response and
-coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
-captures wait for the R3 visibility gate. The underlying playable-slice closure
-contract remains in
+The R3 visibility gate now clears renderer-facing water work. WATAL W0 closed
+on 2026-09-04 with frozen, paired waterline captures for Skyrim
+`Tamriel (2,-10)` and FNV Lake Mead `(19,13)`: the new
+`m-exteriors.sh water` mode hard-gates WATR provenance, canonical volume
+membership, authored Skyrim flow, finite output, and a material above/below
+image delta. Its first run also fixed double attenuation of Fresnel reflection
+at low authored opacity and stopped Skyrim mesh water from treating generic
+material defaults as authored optics. W1's real-character enter/swim/surface/
+exit traversal is now the next water slice; dynamic-body contact/current and
+shoreline/LOD perceptual gates remain after it. The underlying closure contract
+remains in
 [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure),
 and the render/physics design remains in [`docs/engine/watal.md`](docs/engine/watal.md).
 

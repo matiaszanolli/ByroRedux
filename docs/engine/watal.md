@@ -15,13 +15,14 @@ the renderer *and* the physics solver consume identically for every game.
 `Imported*` → one resolved, game-agnostic representation). The verbs stay
 `translate` / `canonical` / `resolve`; **WATAL** names the layer as a whole.
 
-**Status**: ACTIVE (design 2026-06-19; implementation checkpoint 2026-08-10).
+**Status**: ACTIVE (design 2026-06-19; implementation checkpoint 2026-09-04).
 The layer is now double-ended in production: canonical WATR/XCLW/XCWT state feeds
 the renderer, while dynamic Rapier bodies receive `WaterContact`, buoyancy,
 submerged damping, and bounded current drag from the same `WaterFlow`. Phase 0 is
 closed; Phase 1 and Phase 2 are partial. Character swimming and bounded drowning
-damage are live; the remaining Skyrim tail and cross-game visual smoke matrix
-remain open. The verified Skyrim underwater fog tail is now promoted;
+damage are live; W0's Skyrim/FNV real-data waterline smoke is closed, while the
+remaining Skyrim tail, character traversal, and wider shoreline/LOD visual
+matrix remain open. The verified Skyrim underwater fog tail is now promoted;
 localized surface disturbance emitters and transient
 `SplashEvent`/`RippleEvent` markers plus concrete spatial audio are now live.
 The CELL boundary now preserves XCLW as a tri-state: absent means inherit the
@@ -653,7 +654,8 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    Current force matches velocity along the canonical flow axis instead of adding
    an unbounded constant acceleration. Water remains a trigger volume, not a
    solid Rapier plane, so entering it cannot block bodies or the character.
-   Remaining Phase 2 scope is a real-data GPU smoke. The existing
+   W0's real-data waterline GPU smoke is closed. Remaining Phase 2 scope is a
+   real-data dynamic-body contact/current gate plus player traversal. The existing
    dry→wet one-shot wake and settled-float sleep
    discipline remains load-bearing: water must never pin the exterior physics
    world awake. Test gate for body physics is closed (rise, settle, downstream
@@ -682,7 +684,12 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
 - **Shipped 2026-08-20:** `water.dump` now reports the worldspace-level LOD
   water entity, authored height, and resolved NAM3 water form when present;
   the provenance is attached to the render-only LOD entity and disappears with
-  it on unload. A real-data GPU smoke remains open.
+  it on unload.
+- **Shipped 2026-09-04:** `m-exteriors.sh water` is the real-data W0 GPU gate.
+  It runs the Skyrim `(2,-10)` flowing-water fixture and FNV Lake Mead
+  `(19,13)`, retaining paired above/below captures, `water.dump`,
+  `water.contacts`, finite-output telemetry, and an image-delta verdict.
+  Dynamic-body contact and character traversal remain separate open gates.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 

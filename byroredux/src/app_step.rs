@@ -245,6 +245,7 @@ impl App {
             state.lod_reconcile_pending,
             usize::from(full_detail_worked),
             grid_changed,
+            state.loaded_residency_changed,
             Self::MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME,
         ) else {
             return;
@@ -256,7 +257,11 @@ impl App {
             state,
             player_grid,
             lod_budget,
-            Some(streaming_deadline),
+            // Boundary handoff is presentation-atomic: the outgoing full
+            // cells were visible last frame and their LOD replacements must
+            // settle before this frame renders. Steady-state reconciliation
+            // remains deadline-limited.
+            (!grid_changed).then_some(streaming_deadline),
         );
         state
             .telemetry
@@ -1038,16 +1043,14 @@ impl App {
     }
 }
 
-/// Preserve the historical door-transition default, but honor an explicit
-/// boot-time radius so traversal smokes and constrained machines do not
-/// unexpectedly expand to an 11×11 exterior ring.
+/// Use the same full-detail radius as cold exterior startup. An explicit
+/// boot-time override still wins for traversal smokes and constrained hosts.
 fn exterior_transition_radius(args: &[String]) -> i32 {
-    const DEFAULT_TRANSITION_RADIUS: i32 = 5;
     args.iter()
         .position(|arg| arg == "--radius")
         .and_then(|index| args.get(index + 1))
         .map(|value| crate::scene::parse_exterior_radius(value))
-        .unwrap_or(DEFAULT_TRANSITION_RADIUS)
+        .unwrap_or(crate::scene::DEFAULT_EXTERIOR_RADIUS)
 }
 
 #[cfg(test)]
@@ -1061,8 +1064,11 @@ mod tests {
     }
 
     #[test]
-    fn door_transition_keeps_its_historical_default_radius() {
-        assert_eq!(exterior_transition_radius(&[]), 5);
+    fn door_transition_matches_cold_start_default_radius() {
+        assert_eq!(
+            exterior_transition_radius(&[]),
+            crate::scene::DEFAULT_EXTERIOR_RADIUS
+        );
     }
 
     /// #3671 — interior transitions must retain the resumable reference
@@ -1076,7 +1082,7 @@ mod tests {
             .expect("step_cell_transition must still exist");
         let body = &src[fn_start..];
         let body_end = body
-            .find("\n    }\n}\n\n/// Preserve the historical")
+            .find("\n    }\n}\n\n/// Use the same full-detail radius")
             .expect("step_cell_transition body boundary not found");
         let body = &body[..body_end];
         assert!(

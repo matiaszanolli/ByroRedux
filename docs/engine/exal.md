@@ -334,13 +334,10 @@ Per-game impls (the runtime source per the Q3 finding):
     **materialised per placement** as the `VisibleWhenDistant` marker
     (`byroredux/src/components.rs`, set at cell-load from
     `StaticObject::visible_when_distant`). Redux does **not** yet run an active
-    per-record cull off it: full REFRs only spawn inside the streaming ring
-    (`d <= radius_unload`) and both LOD rings load strictly outside it
-    (`d > radius_unload`, #1866), so the conservative ring already guarantees a
-    full model and its LOD proxy never coexist — there is no z-fight to cull.
-    Turning the marker into an active suppression means decoupling the full-detail
-    radius from the streaming ring (reintroducing the #1866 overlap risk) and
-    needs real-game visual validation before it is enabled.
+    per-record cull off it. Instead, reconciliation uses the actual resident
+    full-cell set: a baked object quad is admitted only when its footprint
+    intersects no resident full cell. That keeps the no-z-fight invariant
+    without falsely suppressing LOD in never-populated hysteresis cells.
     **Correction (2026-08-26, #3307)**: radius decoupling isn't the only
     obstacle — a cull also needs something to suppress. The bake carries no
     per-source-object identity: a quad's sub-meshes are material/type groups
@@ -666,8 +663,9 @@ render-pass / pipeline.
 
    **Deferred follow-ups** (clearly de-risked now): coarser LOD bands (8/16/32 —
    both terrain + object LOD load level 4 only); the **VWD / "Has Distant LOD"
-   record-header flag** to cull full models at the boundary ring (today's
-   "outside full-detail only" rule avoids the conflict more conservatively);
+   record-header flag** to cull full models at finer-than-quad granularity
+   (today's actual-resident-cell footprint rule avoids the conflict at whole
+   quad granularity);
    `.btr` per-quad **normal map** (`_n.dds`) — the block carries the mesh's own
    per-vertex normals today, matching the synth path; the `PlacementLodProvider`
    for Oblivion/FO3/FNV (`DistantLOD\*.lod` → `_far.nif`).

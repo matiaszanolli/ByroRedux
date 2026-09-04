@@ -35,10 +35,10 @@ fn clamps_above_twelve_to_twelve() {
 
 #[test]
 fn falls_back_to_default_on_parse_failure() {
-    // Non-numeric input → fall back to 5 (default 11×11 grid).
-    assert_eq!(parse_exterior_radius("foo"), 5);
-    assert_eq!(parse_exterior_radius(""), 5);
-    assert_eq!(parse_exterior_radius("3.5"), 5);
+    // Non-numeric input → fall back to the shared cold-start / transition default.
+    assert_eq!(parse_exterior_radius("foo"), super::DEFAULT_EXTERIOR_RADIUS);
+    assert_eq!(parse_exterior_radius(""), super::DEFAULT_EXTERIOR_RADIUS);
+    assert_eq!(parse_exterior_radius("3.5"), super::DEFAULT_EXTERIOR_RADIUS);
 }
 
 #[test]

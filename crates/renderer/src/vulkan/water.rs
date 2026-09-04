@@ -1073,6 +1073,16 @@ mod tests {
     }
 
     #[test]
+    fn water_fragment_shader_counts_fresnel_reflection_as_surface_coverage() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("float reflectedCoverage = 1.0 - (1.0 - baseAlpha) * (1.0 - fresnel);")
+        );
+        assert!(src.contains("clamp(reflectedCoverage + foamMask * 0.1"));
+        assert!(!src.contains("float grazingBoost"));
+    }
+
+    #[test]
     fn water_fragment_shader_uses_authored_depth_alpha_ramp() {
         let src = include_str!("../../shaders/water.frag");
         assert!(src.contains("push.alpha.x > 0.0 || push.alpha.y > 0.0"));

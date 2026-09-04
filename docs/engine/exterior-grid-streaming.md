@@ -17,9 +17,8 @@ wholesale — walking across a cell boundary, and a door teleport.
 > `script.activate`. **ROADMAP.md**'s M40 row itself cites
 > `byroredux/src/main.rs:1100-1113` and `radius_load=3` for the
 > transition/streaming radius — both moved: the logic now lives in
-> `byroredux/src/app_step.rs` (per `#1858`/TD1-003) with
-> `DEFAULT_TRANSITION_RADIUS = 5`. Not fixed here — flagged so the next
-> doc pass on those two files knows where to look.
+> `byroredux/src/app_step.rs` (per `#1858`/TD1-003), and cold starts plus
+> door transitions now share `scene::DEFAULT_EXTERIOR_RADIUS = 12`.
 
 ## 1. CLI entry: `--esm X.esm --grid gx,gy --radius N`
 
@@ -27,7 +26,7 @@ wholesale — walking across a cell boundary, and a door teleport.
 function [Pipeline Overview](pipeline-overview.md) covers for `--cell`)
 handles `--grid` at `scene.rs:228-263`. `--radius` is parsed by
 `parse_exterior_radius` (`scene.rs:50-55`) and **clamped to `1..=12`**,
-default 5 — CLAUDE.md's Quick Reference and README's `--radius 3
+default 12 — CLAUDE.md's Quick Reference and README's `--radius 3
 (1..=7)` note are both stale on the actual bound.
 
 There's no separate "bulk grid loader" — the CLI's initial load *is* the
@@ -131,6 +130,17 @@ removed immediately. Interactive bootstrap defers this work; deterministic
 `FullRadius` benchmark bootstrap passes an unlimited budget and settles all
 three providers before returning.
 
+The handoff is keyed to the actual `state.loaded` coordinates, not to the
+larger `radius_unload` hysteresis bound. Finest terrain blocks hole only cells
+that really have full terrain; object/placement LOD rejects only footprints
+that intersect real full-cell residency. This matters at startup: a radius-12
+load does not populate the possible radius-13 hysteresis ring, so treating the
+bound as populated would cut a permanent one-cell moat before LOD begins.
+On a cell-boundary crossing, reconciliation settles the newly exposed LOD
+footprints without the steady-state attempt/deadline cap before the next frame
+is presented. The last frame therefore shows the outgoing full cells and the
+next shows their LOD replacement; no intermediate empty band is rendered.
+
 ## 5. Streaming Phase 2: door teleport
 
 The interior↔exterior (and interior↔interior) cell swap is triggered by
@@ -160,7 +170,7 @@ takes the pending transition and dispatches:
   and drains the existing `WorldStreamingState`, then calls the same
   `build_exterior_world_context` + `WorldStreamingState::new` +
   foreground-first `stream_initial_radius` used at interactive boot, with
-  `DEFAULT_TRANSITION_RADIUS = 5` (`app_step.rs:270`).
+  `scene::DEFAULT_EXTERIOR_RADIUS = 12` (shared with cold startup).
 
 Despawn, in both cases, walks `CellRoot` (`crates/core/src/ecs/components/cell_root.rs:20`)
 — every cell-owned entity carries one, pointing at that cell's root

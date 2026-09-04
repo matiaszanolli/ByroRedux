@@ -42,7 +42,7 @@
 //! loader is "resolve the filename → extract from BSA → `import_nif_scene`
 //! → spawn the meshes as LOD entities", reusing the proven paths.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::storage::EntityId;
@@ -90,13 +90,23 @@ impl ObjectLodBlock {
     }
 }
 
+fn quad_intersects_full_detail(
+    level: i32,
+    qx: i32,
+    qy: i32,
+    resident_full_cells: &HashSet<(i32, i32)>,
+) -> bool {
+    resident_full_cells
+        .iter()
+        .any(|&(gx, gy)| gx >= qx && gx < qx + level && gy >= qy && gy < qy + level)
+}
+
 /// Stream the distant **object** LOD bands around the player (Skyrim+/FO4).
 /// Mirrors [`super::terrain_lod::stream_lod_blocks`]: quads entering the ring
-/// load their `.bto`, quads leaving unload. A quad loads only when it is
-/// **entirely outside** `max_full_cell_radius`, so the baked LOD never
-/// overlaps a resident full model (the runtime half of the VWD rule; proper
-/// per-record full-model culling at the boundary is a further follow-up,
-/// #1866).
+/// load their `.bto`, quads leaving unload. A quad loads whenever its authored
+/// footprint intersects no actually-resident full-detail cell, so the baked
+/// LOD never overlaps a resident full model without suppressing never-loaded
+/// cells in the streaming hysteresis band.
 ///
 /// Which **level** each quad draws at comes from [`super::lod_bands`]: a
 /// quadtree descent over the game's own `[TerrainManager]` band distances,
@@ -105,17 +115,6 @@ impl ObjectLodBlock {
 /// (FO4) out to the vanilla `fBlockMaximumDistance`, with band-switch
 /// hysteresis. Because the descent partitions the ring, two levels can never
 /// both claim the same ground.
-///
-/// `max_full_cell_radius` **must** be the caller's cell-streaming
-/// `radius_unload`, not `radius_load` — #1866 / LC0703-01. Full cells load at
-/// `radius_load` but only unload past `radius_unload` (`radius_load + 1`,
-/// the streaming hysteresis band that prevents load/unload thrash at the
-/// boundary — see `streaming.rs`), so a cell at exactly `radius_load + 1`
-/// can still hold a resident full REFR. Gating this ring on `radius_load`
-/// let a quad covering that cell become LOD-eligible while the full model
-/// was still there, producing full-model/LOD z-fighting in that one-cell
-/// band. Gating on `radius_unload` instead means a quad only loads once
-/// every cell it covers is provably beyond any possible full-cell residency.
 ///
 /// No-op only where [`object_lod_scheme`] returns `None` — today just
 /// Oblivion, which uses the `DistantLOD\*.lod` + `_far.nif` placement
@@ -145,7 +144,9 @@ pub(crate) fn stream_object_lod_blocks(
         ladder: &ladder,
         player: player_grid,
         grid_origin: input.lod_grid_origin,
-        exclude_within: input.max_full_cell_radius,
+        // Build the whole authored partition. Actual full-detail residency,
+        // not the larger possible hysteresis area, is filtered below.
+        exclude_within: -1,
         world_bounds: worldspace_cell_bounds(wctx),
         // #3502 — the object ring's only fallback for a missing quad is the
         // `ObjectLodBlock::empty()` sentinel below, so subdividing into an
@@ -170,6 +171,9 @@ pub(crate) fn stream_object_lod_blocks(
             })
         },
     );
+    desired.retain(|&(level, qx, qy)| {
+        !quad_intersects_full_detail(level, qx, qy, input.resident_full_cells)
+    });
     // Closest-first, so a budgeted reconcile fills the near bands before the
     // far ones. Ties break on level so a quad's own band stays grouped.
     desired.sort_unstable_by_key(|&(level, qx, qy)| {
@@ -454,11 +458,12 @@ fn spawn_object_lod_quad(
         );
         world.insert(entity, RenderLayer::Architecture);
         // No BLAS, lean static draw, kept out of the TLAS (shared with terrain
-        // LOD). The active full-model VWD cull is deferred; quads load only
-        // outside the full-detail ring, so no resident full model conflicts
-        // here. The per-record VWD signal is now materialised as the
+        // LOD). The active full-model VWD cull is deferred; reconciliation
+        // rejects any quad intersecting actual full-cell residency, so no
+        // resident full model conflicts here. The per-record VWD signal is
+        // now materialised as the
         // `VisibleWhenDistant` marker at spawn (#1889) — the hook that cull
-        // would read once the full-detail radius is decoupled from the ring.
+        // would read once handoff becomes finer than a whole LOD quad.
         world.insert(entity, IsLodTerrain);
 
         entities.push(entity);
@@ -687,6 +692,22 @@ mod submesh_texture_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_quad_handoff_tracks_actual_full_cell_residency() {
+        let resident = HashSet::from([(2, 1), (-5, -6)]);
+
+        assert!(quad_intersects_full_detail(4, 0, 0, &resident));
+        assert!(quad_intersects_full_detail(4, -8, -8, &resident));
+        assert!(
+            !quad_intersects_full_detail(4, 4, 0, &resident),
+            "an equally near but never-loaded quad remains LOD-owned"
+        );
+        assert!(
+            !quad_intersects_full_detail(4, 0, 4, &resident),
+            "the upper bound of a quad footprint is exclusive"
+        );
+    }
     use crate::cell_loader::lod_support::quad_origin;
     use byroredux_plugin::esm::reader::GameKind;
 

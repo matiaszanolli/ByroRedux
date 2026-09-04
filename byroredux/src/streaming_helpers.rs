@@ -12,7 +12,7 @@ use crate::cell_loader::{
 };
 use crate::streaming::{LodBlock, LodWaterPlane};
 use crate::{cell_loader, streaming};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Cell-streaming SVGF/TAA recovery window — bumps both pipelines'
 /// elevated-α / history-reset windows when a cell loads or unloads,
@@ -40,13 +40,20 @@ pub(crate) fn lod_reconcile_budget_for_frame(
     reconcile_pending: bool,
     cells_spawned: usize,
     grid_changed: bool,
+    residency_changed: bool,
     idle_attempts_per_provider: usize,
 ) -> Option<usize> {
     if !reconcile_pending {
         None
+    } else if grid_changed {
+        // A boundary crossing has already removed the outgoing full cells,
+        // but the frame has not rendered yet. Settle every newly-exposed LOD
+        // footprint now so the next presented frame switches atomically from
+        // full detail to LOD instead of showing a budget-shaped empty strip.
+        Some(usize::MAX)
     } else if cells_spawned == 0 {
         Some(idle_attempts_per_provider)
-    } else if grid_changed {
+    } else if residency_changed {
         Some(0)
     } else {
         None
@@ -94,12 +101,13 @@ pub(crate) fn reconcile_lod_rings(
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
     let lod_grid_origin = cell_loader::worldspace_lod_grid_origin(wctx.as_ref());
+    let resident_full_cells: HashSet<_> = state.loaded.keys().copied().collect();
     let input = LodReconcileInput {
         tex_provider: tex_provider.as_ref(),
         wctx: wctx.as_ref(),
         player_grid,
         lod_grid_origin,
-        max_full_cell_radius: state.radius_unload,
+        resident_full_cells: &resident_full_cells,
     };
     // Every provider draws on its own attempt allowance (so a large terrain
     // ring cannot starve the active object scheme) but shares ONE wall-clock
@@ -769,8 +777,10 @@ pub(crate) fn advance_streaming_apply(
                                 cell_root: info.cell_root,
                             },
                         );
-                        // #3688 — invalidates `reconcile_lod_rings`' diagnostics gate.
+                        // Full detail became authoritative here. Reconcile
+                        // resident LOD in this same frame before rendering.
                         state.loaded_residency_changed = true;
+                        state.lod_reconcile_pending = true;
                         ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
                     }
                 }
@@ -848,8 +858,10 @@ pub fn consume_streaming_payload(
                     cell_root: info.cell_root,
                 },
             );
-            // #3688 — invalidates `reconcile_lod_rings`' diagnostics gate.
+            // Full detail became authoritative here. Reconcile resident LOD
+            // before rendering the newly-populated coordinate.
             state.loaded_residency_changed = true;
+            state.lod_reconcile_pending = true;
             // Newly-spawned instances mean a TLAS rebuild + fresh
             // pixels with no history. Bump the SVGF/TAA recovery
             // window so the ghosting transient on the just-streamed
@@ -969,24 +981,34 @@ mod tests {
     fn deferred_lod_uses_only_idle_main_thread_frames() {
         const CAP: usize = 2;
         assert_eq!(
-            lod_reconcile_budget_for_frame(true, 0, false, CAP),
+            lod_reconcile_budget_for_frame(true, 0, false, false, CAP),
             Some(CAP),
             "an idle frame advances the ring"
         );
         assert_eq!(
-            lod_reconcile_budget_for_frame(true, 1, false, CAP),
+            lod_reconcile_budget_for_frame(true, 1, false, false, CAP),
             None,
             "full-detail cell apply owns a normal frame"
         );
         assert_eq!(
-            lod_reconcile_budget_for_frame(true, 1, true, CAP),
-            Some(0),
-            "a crossing still performs immediate reclaim with no new work"
+            lod_reconcile_budget_for_frame(true, 1, true, false, CAP),
+            Some(usize::MAX),
+            "a crossing settles the handoff before the next rendered frame"
         );
         assert_eq!(
-            lod_reconcile_budget_for_frame(false, 0, true, CAP),
+            lod_reconcile_budget_for_frame(true, 0, true, false, CAP),
+            Some(usize::MAX),
+            "crossing priority is independent of whether full-detail apply also worked"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(false, 0, true, false, CAP),
             None,
             "a settled ring does no steady-state work"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 1, false, true, CAP),
+            Some(0),
+            "a completed full-detail cell remasks resident LOD immediately"
         );
     }
 

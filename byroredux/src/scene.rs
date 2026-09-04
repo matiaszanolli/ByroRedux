@@ -34,9 +34,14 @@ use byroredux_sdk::studio::{AssetBounds, AssetSource, BoundSphere, CornellFit};
 #[allow(unused_imports)]
 use crate::components::{GameTimeRes, SkyParamsRes, WeatherDataRes};
 
+/// Default full-detail exterior radius. Cold starts and door transitions use
+/// the same value so entering the same worldspace through a door cannot
+/// silently shorten its non-LOD horizon.
+pub(crate) const DEFAULT_EXTERIOR_RADIUS: i32 = 12;
+
 /// Parse the `--radius` CLI argument into a clamped grid radius for
-/// [`cell_loader::load_exterior_cells`]. Falls back to `3` (7×7 = 49
-/// cells, ~28K terrain units view distance) on any parse failure so
+/// [`cell_loader::load_exterior_cells`]. Falls back to the default on any
+/// parse failure so
 /// an unparseable value loads the default rather than silently
 /// bailing. Clamped to `1..=12` — below 1 the center cell alone isn't
 /// useful, above 12 the cell count (25×25 = 625) approaches the
@@ -51,7 +56,7 @@ use crate::components::{GameTimeRes, SkyParamsRes, WeatherDataRes};
 pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
     match s.trim().parse::<i32>() {
         Ok(r) => r.clamp(1, 12),
-        Err(_) => 5,
+        Err(_) => DEFAULT_EXTERIOR_RADIUS,
     }
 }
 
@@ -767,7 +772,7 @@ pub(crate) fn setup_scene(
             // (25×25 = 625 cells, ~98K-unit view). Distant content beyond it
             // is the engine LOD ring; the user wants non-distant geometry to
             // reach much further by default. Override with `--radius N`.
-            .unwrap_or(12);
+            .unwrap_or(DEFAULT_EXTERIOR_RADIUS);
 
         // #561 — repeatable `--master <path>` arg. Order matters:
         // base masters first, then any required intermediate masters

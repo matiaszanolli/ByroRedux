@@ -243,29 +243,23 @@ pub(crate) fn full_model_path(model_path: &str) -> String {
 }
 
 /// Cells whose `.lod` should be resident this frame: within the LOD ring
-/// (`lod_radius`, Chebyshev) of the player **and** entirely beyond
-/// `max_full_cell_radius`, so distant objects never overlap a resident full
-/// model. Mirrors the desired-set logic in
+/// (`lod_radius`, Chebyshev) of the player and not actually resident at full
+/// detail, so distant objects never overlap a resident full model while LOD
+/// still fills unpopulated hysteresis cells. Mirrors the desired-set logic in
 /// [`super::object_lod::stream_object_lod_blocks`], but per-cell (the
 /// placement files are one-per-cell, not one-per-quad).
-///
-/// `max_full_cell_radius` **must** be the caller's cell-streaming
-/// `radius_unload`, not `radius_load` — see the identical note on
-/// [`stream_object_lod_blocks`] (#1866 / LC0703-01): full cells can still be
-/// resident up through `radius_load + 1` under the load/unload hysteresis
-/// band, so gating on `radius_load` let this ring load one cell early and
-/// z-fight a still-resident full model.
 pub(crate) fn placement_lod_cells_in_radius(
     player: (i32, i32),
-    max_full_cell_radius: i32,
+    resident_full_cells: &std::collections::HashSet<(i32, i32)>,
     lod_radius: i32,
 ) -> Vec<(i32, i32)> {
     let mut cells = Vec::new();
     for dj in -lod_radius..=lod_radius {
         for di in -lod_radius..=lod_radius {
             let cheb = di.abs().max(dj.abs());
-            if cheb > max_full_cell_radius && cheb <= lod_radius {
-                cells.push((player.0 + di, player.1 + dj));
+            let coord = (player.0 + di, player.1 + dj);
+            if cheb <= lod_radius && !resident_full_cells.contains(&coord) {
+                cells.push(coord);
             }
         }
     }
@@ -305,12 +299,8 @@ impl PlacementLodBlock {
 /// Stream the distant **object** LOD ring around the player for the
 /// placement scheme (Oblivion only — see FO3-D4-01 below). Mirrors
 /// [`super::object_lod::stream_object_lod_blocks`]: cells entering the ring
-/// load their `.lod`, cells leaving unload. A cell loads only when it is
-/// **entirely outside** `max_full_cell_radius`, so the distant `_far.nif`
-/// never overlaps a resident full model.
-///
-/// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
-/// [`placement_lod_cells_in_radius`] (#1866 / LC0703-01).
+/// load their `.lod`, cells leaving unload. A cell loads only while the same
+/// coordinate has no actually-resident full-detail representation.
 ///
 /// No-op for everything but Oblivion. The `DistantLOD\*.lod` scheme this
 /// module implements was reverse-engineered and validated against all 9889
@@ -350,14 +340,13 @@ pub(crate) fn stream_placement_lod_blocks(
     let tex_provider = input.tex_provider;
     let wctx = input.wctx;
     let player_grid = input.player_grid;
-    let max_full_cell_radius = input.max_full_cell_radius;
     if !placement_lod_supported(wctx.record_index.game) {
         return true;
     }
 
     let mut desired = placement_lod_cells_in_radius(
         player_grid,
-        max_full_cell_radius,
+        input.resident_full_cells,
         PLACEMENT_LOD_RADIUS_CELLS,
     );
     sort_lod_coords_nearest(&mut desired, |(cx, cy)| {
@@ -624,8 +613,8 @@ fn spawn_placement_lod_cell(
                 world.insert(entity, sub.material.clone());
                 world.insert(entity, RenderLayer::Architecture);
                 // No BLAS, lean static draw, kept out of the TLAS (shared with
-                // terrain / object LOD). Cells load only outside the
-                // full-detail ring, so no resident full model conflicts.
+                // terrain / object LOD). Cells load only where that exact
+                // coordinate has no resident full-detail representation.
                 world.insert(entity, IsLodTerrain);
                 entities.push(entity);
             }
@@ -876,8 +865,10 @@ mod tests {
 
     #[test]
     fn ring_excludes_full_detail_and_caps_at_lod_radius() {
-        // full_radius=1, lod_radius=2: only the ring of Chebyshev distance 2.
-        let cells = placement_lod_cells_in_radius((0, 0), 1, 2);
+        let resident: std::collections::HashSet<_> = (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |y| (x, y)))
+            .collect();
+        let cells = placement_lod_cells_in_radius((0, 0), &resident, 2);
         // Distance-2 ring around origin = the 5×5 border = 16 cells.
         assert_eq!(cells.len(), 16);
         // No cell inside the full-detail ring (cheb <= 1).
@@ -886,32 +877,20 @@ mod tests {
         assert!(!cells.contains(&(0, 0)));
     }
 
-    /// #1866 / LC0703-01 — a cell at exactly the streaming hysteresis
-    /// boundary (`radius_load + 1 == radius_unload`) must NOT be desired
-    /// when gated on `radius_unload`, even though gating on `radius_load`
-    /// (the pre-fix behaviour) would have included it. That one-cell band
-    /// is exactly where a full REFR can still be resident (full cells only
-    /// unload past `radius_unload`), so loading `.lod` there would z-fight
-    /// a still-resident full model.
     #[test]
-    fn ring_excludes_hysteresis_band_when_gated_on_radius_unload() {
-        let radius_load = 1;
-        let radius_unload = radius_load + 1; // streaming.rs's hysteresis rule
+    fn ring_fills_never_loaded_hysteresis_cells_but_excludes_residents() {
         let lod_radius = 4;
+        let resident = std::collections::HashSet::from([(2, 0)]);
 
-        // Sanity: radius_load gating reproduces the pre-fix bug.
-        let buggy = placement_lod_cells_in_radius((0, 0), radius_load, lod_radius);
-        assert!(buggy.contains(&(2, 0)), "distance-2 cell == radius_unload");
-
-        // Fixed: radius_unload gating excludes the hysteresis-band cell.
-        let fixed = placement_lod_cells_in_radius((0, 0), radius_unload, lod_radius);
+        let cells = placement_lod_cells_in_radius((0, 0), &resident, lod_radius);
         assert!(
-            !fixed.contains(&(2, 0)),
-            "a cell at exactly radius_load+1 can still hold a resident full \
-             REFR under the load/unload hysteresis band — LOD must not load there"
+            !cells.contains(&(2, 0)),
+            "an actually-resident hysteresis cell remains full detail"
         );
-        // A cell safely beyond the hysteresis band still loads.
-        assert!(fixed.contains(&(3, 0)));
+        assert!(
+            cells.contains(&(-2, 0)),
+            "an equally distant cell that was never loaded belongs to LOD"
+        );
     }
 
     #[test]

@@ -192,15 +192,10 @@ impl Component for IsLodTerrain {
 /// EXAL §5.2 calls for: the hook a full-model cull would read to suppress the
 /// full mesh once its LOD proxy covers the cell.
 ///
-/// **No render-time consumer today, by design.** Full REFRs only ever spawn
-/// inside the cell-streaming ring (`d <= radius_unload`) and both LOD rings load
-/// strictly outside it (`d > radius_unload`, #1866), so a full model and its LOD
-/// proxy never coexist — the conservative ring already prevents the z-fighting a
-/// per-record cull would. Turning this marker into an active cull requires
-/// decoupling the full-detail radius from the streaming ring (which would
-/// reintroduce the #1866 overlap risk and needs real-game visual validation
-/// before it can be enabled). This component materialises the signal so that
-/// work does not have to re-derive the parse→spawn plumbing. See #1889.
+/// **No render-time consumer today, by design.** LOD reconciliation now tests
+/// actual full-cell residency and rejects any proxy footprint that intersects
+/// it, so a full model and its LOD proxy still never coexist. This component
+/// materialises the signal for a future finer-grained handoff. See #1889.
 ///
 /// **Correction (2026-08-26, #3307)**: radius decoupling turns out not to be
 /// the only obstacle — a cull also needs something to suppress. Still true:

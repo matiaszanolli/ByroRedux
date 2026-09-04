@@ -22,9 +22,16 @@
 #             Every phase captures a PNG and gates the live clock, environment,
 #             pre-tonemap finite counter, and canonical water ownership without
 #             restarting the world or resetting its resources.
+#   water     fixed real-data waterline poses for Skyrim and FNV. Captures one
+#             frame above and one below the same authored surface, then gates
+#             WATR provenance, canonical volume membership, current provenance,
+#             image health, and a material above/below visual delta (EX-13/W0).
 #
 # Usage:
-#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]
+#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]
+#
+# `water` currently supports `fnv`, `skyrim`, or `all` (the two frozen W0
+# fixtures); `all water` intentionally means those two profiles.
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
@@ -51,12 +58,13 @@ PORT="${BYRO_DEBUG_PORT:-9876}"
 case "$MODE" in
     static)   BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
     cycle)    BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
+    water)    BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
     boundary) BENCH_FRAMES="${BYROREDUX_BOUNDARY_FRAMES:-900}" ;;
     # Six out-and-back traversals need materially more logical frames than the
     # single one-way pass; the clock also pauses on every boundary.
     soak)     BENCH_FRAMES="${BYROREDUX_SOAK_FRAMES:-1800}" ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]"
         exit 2
         ;;
 esac
@@ -142,11 +150,40 @@ run_profile () {
     local debug_log="$profile_dir/debug.log"
     local screenshot="$profile_dir/frame.png"
     local command_file="$profile_dir/command.txt"
+    local water_surface_pos="" water_submerged_pos="" water_look=""
+    local water_source="" water_requires_flow=0
+    if [[ "$MODE" == water ]]; then
+        case "$label" in
+            fnv)
+                # Lake Mead: full-detail WastelandNV CELL water, surface Y=2600.
+                # Use the neighbouring open-water tile rather than the
+                # crashed-aircraft placement in the fixture's centre.
+                water_surface_pos="84000 2700 -55000"
+                water_submerged_pos="84000 2450 -55000"
+                water_look="45 -12"
+                water_source="0x001009CA"
+                ;;
+            skyrim)
+                # BleakfallsBarrowPath: authored RiverWater tile, surface Y=-250.
+                water_surface_pos="14976 -100 42000"
+                water_submerged_pos="14976 -400 42000"
+                water_look="0 -15"
+                water_source="0x000E717C"
+                water_requires_flow=1
+                ;;
+            *)
+                echo "exterior-smoke[$label]: HARD FAIL - no frozen water fixture for this profile"
+                return 1
+                ;;
+        esac
+    fi
     local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
     if [[ "$MODE" == boundary ]]; then
         bench_args+=(--bench-mode renderer-stepped --bench-camera grid-cross --fly)
     elif [[ "$MODE" == soak ]]; then
         bench_args+=(--bench-mode renderer-stepped --bench-camera grid-soak --fly)
+    elif [[ "$MODE" == water ]]; then
+        bench_args+=(--bench-mode system-live --fly)
     else
         bench_args+=(--bench-mode system-live)
     fi
@@ -207,6 +244,34 @@ screenshot $profile_dir/night.png
 r.health
 stats
 light.dump
+water.contacts
+tex.missing
+mesh.cache
+mesh.cache failed
+ctx.scratch
+cam.where
+lod.coverage
+terrain.seams
+world.owners
+world.owners report
+.quit
+EOF
+    elif [[ "$MODE" == water ]]; then
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
+time.pause
+time.set 12:00
+cam.pos $water_surface_pos
+input.look $water_look
+water.dump
+r.health
+screenshot $profile_dir/water-surface.png
+cam.pos $water_submerged_pos
+water.dump
+r.health
+screenshot $profile_dir/water-underwater.png
+stats
+light.dump
+env.health
 water.contacts
 tex.missing
 mesh.cache
@@ -374,6 +439,63 @@ EOF
             hard_fail=1
         else
             echo "exterior-smoke[$label]: PASS pre-tonemap output stayed finite across the clock cycle"
+        fi
+    fi
+
+    if [[ "$MODE" == water ]]; then
+        local water_log="$profile_dir/water-transition.log"
+        local surface_image="$profile_dir/water-surface.png"
+        local submerged_image="$profile_dir/water-underwater.png"
+        sed 's/\\n/\n/g' "$debug_log" > "$water_log"
+
+        if ! grep -Eq 'camera=[0-9]+ pos=\[[^]]+\] submerged=false depth=0[.]00 material=none' "$water_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - above-surface pose did not report dry camera state"
+            hard_fail=1
+        elif ! grep -Eq "camera=[0-9]+ pos=\\[[^]]+\\] submerged=true depth=[1-9][0-9.]* material=$water_source" "$water_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - below-surface pose did not enter WATR $water_source"
+            hard_fail=1
+        elif ! grep -E "plane=[0-9]+ camera_inside=true .*source=$water_source" "$water_log" >/dev/null; then
+            echo "exterior-smoke[$label]: HARD FAIL - WATR $water_source has no camera-containing canonical volume"
+            hard_fail=1
+        elif (( water_requires_flow != 0 )) \
+                && grep -E "plane=[0-9]+ camera_inside=true .*source=$water_source" "$water_log" \
+                    | grep -Fq 'flow=none'; then
+            echo "exterior-smoke[$label]: HARD FAIL - authored river WATR $water_source lost its canonical flow"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS waterline transition and WATR $water_source provenance"
+        fi
+
+        local water_health_samples
+        water_health_samples="$(grep -cE 'since startup: *rgb=0 alpha=0' "$water_log" || true)"
+        if (( water_health_samples < 2 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - waterline captures did not both report finite pre-tonemap output"
+            hard_fail=1
+        fi
+
+        if image_health "$surface_image"; then
+            echo "exterior-smoke[$label]: PASS water surface image mean=$IMAGE_MEAN stddev=$IMAGE_STDDEV"
+        else
+            echo "exterior-smoke[$label]: HARD FAIL - water surface screenshot is unhealthy"
+            hard_fail=1
+        fi
+        if image_health "$submerged_image"; then
+            echo "exterior-smoke[$label]: PASS underwater image mean=$IMAGE_MEAN stddev=$IMAGE_STDDEV"
+        else
+            echo "exterior-smoke[$label]: HARD FAIL - underwater screenshot is unhealthy"
+            hard_fail=1
+        fi
+
+        local waterline_delta
+        waterline_delta="$(magick "$surface_image" "$submerged_image" \
+            -compose difference -composite -colorspace RGB \
+            -format '%[fx:mean]' info: 2>/dev/null || true)"
+        if [[ -z "$waterline_delta" ]] \
+                || ! awk -v delta="$waterline_delta" 'BEGIN { exit !(delta > 0.01) }'; then
+            echo "exterior-smoke[$label]: HARD FAIL - above/below captures have no material visual transition (delta=${waterline_delta:-missing})"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS waterline visual delta=$waterline_delta"
         fi
     fi
 
@@ -618,8 +740,13 @@ fnv_run () {
     local meshes="$FNV_DATA/Fallout - Meshes.bsa"
     local textures="$FNV_DATA/Fallout - Textures.bsa"
     profile_ready fnv "$esm" "$meshes" "$textures" || return 0
-    run_profile fnv "$FNV_DATA" WastelandNV 0,0 2500 700 \
-        --esm "$esm" --grid 0,0 --radius 1 --wrld WastelandNV \
+    local grid="0,0"
+    if [[ "$MODE" == water ]]; then
+        # Lake Mead: contiguous full-detail CELL water around grid (19,13).
+        grid="19,13"
+    fi
+    run_profile fnv "$FNV_DATA" WastelandNV "$grid" 2500 700 \
+        --esm "$esm" --grid "$grid" --radius 1 --wrld WastelandNV \
         --bsa "$meshes" --textures-bsa "$textures"
 }
 
@@ -659,7 +786,7 @@ skyrim_run () {
     profile_ready skyrim "${required[@]}" || return 0
 
     local grid="2,-4"
-    if [[ "$MODE" == cycle ]]; then
+    if [[ "$MODE" == cycle || "$MODE" == water ]]; then
         # BleakfallsBarrowPath: the established WATAL water-adjacent streaming
         # fixture. Static/population baselines retain their historical grid.
         grid="2,-10"
@@ -712,13 +839,17 @@ case "$GAME" in
     fo4)       run_selected fo4_run ;;
     all)
         run_selected fnv_run
-        run_selected fo3_run
-        run_selected oblivion_run
+        if [[ "$MODE" != water ]]; then
+            run_selected fo3_run
+            run_selected oblivion_run
+        fi
         run_selected skyrim_run
-        run_selected fo4_run
+        if [[ "$MODE" != water ]]; then
+            run_selected fo4_run
+        fi
         ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]"
         exit 2
         ;;
 esac
