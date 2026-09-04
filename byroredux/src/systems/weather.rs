@@ -544,6 +544,27 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
     }
 }
 
+#[cfg(test)]
+mod procedural_cloud_transition_tests {
+    use super::*;
+
+    #[test]
+    fn coverage_crossfades_with_the_rest_of_the_weather_state() {
+        let source = WeatherSkyState {
+            cloud_coverage: 0.2,
+            ..WeatherSkyState::default()
+        };
+        let target = WeatherSkyState {
+            cloud_coverage: 0.8,
+            ..WeatherSkyState::default()
+        };
+
+        let halfway = lerp_weather_sky(source, target, 0.5);
+
+        assert!((halfway.cloud_coverage - 0.5).abs() < f32::EPSILON);
+    }
+}
+
 fn lerp_cloud_velocities(a: [[f32; 2]; 4], b: [[f32; 2]; 4], t: f32) -> [[f32; 2]; 4] {
     let mut result = [[0.0; 2]; 4];
     for layer in 0..4 {

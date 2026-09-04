@@ -146,6 +146,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 |:-:|---------|-------------------|-------|
 | `[x]` | **Sky gradient** | Gamebryo skydome | 10 color groups × 6 TOD slots interpolated |
 | `[x]` | Sun disc with game-time arc | — | Per-frame arc from world time |
+| `[x]` | Procedural cloud body | WTHR cloud deck | Continuous wind-advected multi-octave field; WTHR classification drives coverage and PNAM/JNAM tint it, while authored DDS layers supply game-specific detail |
 | `[x]` | Cloud layers 1–4 (DNAM/CNAM/ANAM/BNAM) | 4 layers | Parallax scroll on all four |
 | `[x]` | Weather fade transitions | 8 s crossfade | `WeatherTransitionRes` post-TOD-sample blend |
 | `[x]` | Horizon fog | — | |
