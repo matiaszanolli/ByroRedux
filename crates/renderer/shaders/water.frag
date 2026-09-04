@@ -955,6 +955,12 @@ void main() {
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
     float refrDist = push.deep.a; // default: full deep tint on skip
+    // #3822 (REN-WD-D15-01) — hoisted out of the `if` block below so the
+    // alpha computation further down can tell "the RT refraction actually
+    // resolved" apart from "TIR / miss / no RT" (see the coverage comment
+    // there). Defaults to false for every path that skips ray tracing
+    // entirely (waterfalls, lava, disabled-refraction materials).
+    bool refrHit = false;
     // A negative refraction-magnitude lane is WATAL's compact canonical
     // "authored refractions disabled" sentinel for mesh water. Zero remains
     // the legacy/default fully perturbed-normal path.
@@ -970,7 +976,6 @@ void main() {
             : 1.0;
         vec3 refractionNormal = normalize(mix(N, Nperturbed, refractionNormalWeight));
         vec3 Tdir = refract(-V, refractionNormal, eta);
-        bool refrHit;
         // If TIR (total internal reflection) — possible only while viewing
         // from the water side — refract returns zero and all energy goes to
         // the already-resolved reflection.
@@ -1143,9 +1148,21 @@ void main() {
     // result remains bounded and increases monotonically with Fresnel.
     // Preserve authored zero as an explicit invisible-water value.
     float reflectedCoverage = 1.0 - (1.0 - baseAlpha) * (1.0 - fresnel);
+    // #3822 (REN-WD-D15-01) — a third, independent coverage term for the
+    // refraction half. When `refrHit` is true, `refrColor` already IS the
+    // RT-resolved, Beer-Lambert-attenuated backdrop (`absorbWaterColumn`
+    // above); blending the surface over the framebuffer at anything less
+    // than full coverage then re-admits the un-attenuated raw raster of
+    // that SAME geometry underneath it, discarding most of the authored
+    // fog/extinction work in proportion to how transparent the water is.
+    // The authored opacity should only substitute for a refraction the
+    // engine could NOT trace (TIR / miss / no RT — all leave `refrHit`
+    // false), not compete with one it did. Union'd the same way as the
+    // reflected term above so the result stays bounded and monotonic.
+    float refractionCoverage = refrHit ? 1.0 : 0.0;
     float alpha = baseAlpha <= 0.0
         ? 0.0
-        : clamp(reflectedCoverage + foamMask * 0.1, 0.0, 1.0);
+        : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
 
@@ -1244,8 +1261,21 @@ void main() {
                         // Making the bound explicit means the splat no longer
                         // depends on it, and the two caustic writers now state
                         // the same rule.
+                        //
+                        // #3820 (REN-WD-D2-01) — `causticSize` must be the
+                        // BOUND IMAGE's own extent, not `screen.xy` (the
+                        // render extent). They usually match, but
+                        // `resize.rs` deliberately rebinds this image to the
+                        // 1x1 `placeholder_caustic_sink` when the real
+                        // accumulator failed to (re)create — exactly the
+                        // case the comment above says no longer needs
+                        // Vulkan's out-of-range-write discard rule. An
+                        // out-of-range image ATOMIC (unlike a plain store)
+                        // is not covered by that rule, so bounding on
+                        // `screen.xy` still let every water fragment issue
+                        // `imageAtomicAdd` far outside the 1x1 fallback.
                         ivec2 pixel = ivec2(uv01 * screen.xy);
-                        ivec2 causticSize = ivec2(screen.xy);
+                        ivec2 causticSize = imageSize(waterCausticAccum);
                         if (all(greaterThanEqual(pixel, ivec2(0)))
                             && all(lessThan(pixel, causticSize))) {
                             // 5. Directional weighting — caustic

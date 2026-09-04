@@ -550,6 +550,26 @@ pub struct BlendPipelineCtx<'a> {
 /// `hdr_blend` is the one attachment state that depends on the caller's
 /// authored (src, dst) Gamebryo blend factors, so it's built by the
 /// caller and passed in; every other state here is fixed.
+/// A "coverage blend" attachment state: the transparent fragment's own
+/// alpha attenuates whatever the opaque pass already wrote to this
+/// attachment (`SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA` on color, replace on
+/// alpha), rather than either overwriting it or leaving it untouched.
+/// Used for the raw-indirect and albedo G-buffer slots so a transparent
+/// surface's own coverage — not just its presence — decides how much of
+/// the receiver's demodulated GI composite adds back in (#2745, and
+/// #3821 / REN-WD-D8-01 for the water pipeline's adoption of it).
+pub(crate) fn auxiliary_blend_attachment() -> vk::PipelineColorBlendAttachmentState {
+    vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD)
+}
+
 fn blend_gbuffer_attachments(
     hdr_blend: vk::PipelineColorBlendAttachmentState,
     preserve_opaque_gbuffer: bool,
@@ -560,15 +580,7 @@ fn blend_gbuffer_attachments(
     let no_write = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
-    let auxiliary_blend = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-        .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD);
+    let auxiliary_blend = auxiliary_blend_attachment();
     // MAX over ONE/ONE: a stack of overlapping translucent surfaces reports
     // the most reactive coverage in the stack rather than whichever happened
     // to draw last. AMD's integration contract asks for exactly this
@@ -657,7 +669,9 @@ fn blend_gbuffer_attachments(
 /// The lane has no other consumer: `taa.comp` forwards HDR alpha
 /// untouched and `composite.frag` forwards it to the swapchain, which
 /// ignores it (#676 / DEN-6, DEN-11).
-fn coverage_alpha_factors(dst_factor: vk::BlendFactor) -> (vk::BlendFactor, vk::BlendFactor) {
+pub(crate) fn coverage_alpha_factors(
+    dst_factor: vk::BlendFactor,
+) -> (vk::BlendFactor, vk::BlendFactor) {
     if dst_factor == vk::BlendFactor::ONE {
         (vk::BlendFactor::ZERO, vk::BlendFactor::ONE)
     } else {
@@ -1020,6 +1034,23 @@ pub fn create_ui_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3821 (REN-WD-D8-01) — `auxiliary_blend_attachment` is now shared
+    /// between the ordinary blend pipeline's raw_indirect/albedo coverage
+    /// slots and the water pipeline's. Pin its exact factors so a change
+    /// to one caller's needs can't silently drift the other's.
+    #[test]
+    fn auxiliary_blend_attachment_is_a_src_alpha_coverage_blend() {
+        let a = auxiliary_blend_attachment();
+        assert_eq!(a.color_write_mask, vk::ColorComponentFlags::RGBA);
+        assert_eq!(a.blend_enable, vk::TRUE);
+        assert_eq!(a.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
+        assert_eq!(a.dst_color_blend_factor, vk::BlendFactor::ONE_MINUS_SRC_ALPHA);
+        assert_eq!(a.color_blend_op, vk::BlendOp::ADD);
+        assert_eq!(a.src_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(a.dst_alpha_blend_factor, vk::BlendFactor::ZERO);
+        assert_eq!(a.alpha_blend_op, vk::BlendOp::ADD);
+    }
 
     /// Regression: #392 — every Gamebryo `AlphaFunction` value (0..10)
     /// must map to a distinct, correct `vk::BlendFactor`. The previous

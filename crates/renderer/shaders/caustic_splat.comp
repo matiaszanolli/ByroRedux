@@ -231,7 +231,12 @@ vec3 getCausticHitTriNormal(uint instanceIdx, uint primitiveIdx) {
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = ivec2(causticScreen.xy);
+    // #3820 (REN-WD-D2-01) — bound on the actual accumulator image, not
+    // `causticScreen.xy` (the render extent). See the matching fix/comment
+    // in `water.frag`'s caustic-splat block for the failure mode this
+    // guards against (an out-of-range image ATOMIC is not covered by
+    // Vulkan's out-of-range-write discard rule the way a plain store is).
+    ivec2 size = imageSize(causticAccum).xy;
     if (any(greaterThanEqual(pixel, size))) return;
 
     // Temporal-EMA decay pass (parked camera). Every pixel scales its own

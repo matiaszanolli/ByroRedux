@@ -1463,6 +1463,25 @@ mod tests {
         assert!(shader.contains("imageAtomicAdd(causticAccum, ivec3(q, channel), fv)"));
     }
 
+    /// #3820 (REN-WD-D2-01) — sibling of the `water.frag` fix: the glass
+    /// caustic splat must bound its dispatch/atomic writes against the
+    /// actual `causticAccum` image, not `causticScreen.xy` (the render
+    /// extent uniform). See `water.rs`'s matching test for the failure mode
+    /// this generally guards against.
+    #[test]
+    fn caustic_splat_bounds_against_the_accumulator_image_not_screen_extent() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        assert!(
+            shader.contains("ivec2 size = imageSize(causticAccum).xy;"),
+            "caustic_splat.comp's dispatch/write bound must be imageSize(causticAccum).xy, \
+             not derived from causticScreen.xy"
+        );
+        assert!(
+            !shader.contains("ivec2 size = ivec2(causticScreen.xy);"),
+            "the old causticScreen.xy-derived bound must not be reintroduced"
+        );
+    }
+
     #[test]
     fn glass_caustic_source_comes_from_committed_glass_hit_not_opaque_gbuffer() {
         let shader = include_str!("../../shaders/caustic_splat.comp");

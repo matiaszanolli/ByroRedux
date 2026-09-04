@@ -18,13 +18,17 @@
 //! - a growable per-frame [`GpuWaterParams`] SSBO carrying the full authored material
 //!   payload, selected by a compact 16-byte [`WaterPush`] draw index;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
-//!   attachments 1..=5 (normal, motion, mesh_id, raw_indirect, albedo) are
-//!   masked off (`color_write_mask = 0`) so water never pollutes the
-//!   G-buffer feeding SVGF / motion-vector reprojection, while attachments
-//!   6 and 7 — the FSR reactive and transparency-and-composition masks —
-//!   ARE written, MAX-blended at full strength: water's surface colour
-//!   comes from reflection and refraction that neither depth nor motion
-//!   describes, so the upscaler has to be told. The blend table in
+//!   attachments 1..=3 (normal, motion, mesh_id) are masked off
+//!   (`color_write_mask = 0`) so water never pollutes the G-buffer feeding
+//!   SVGF / motion-vector reprojection. Attachments 4 and 5 (raw_indirect,
+//!   albedo) are coverage-blended (`auxiliary_blend_attachment`, #3821 /
+//!   REN-WD-D8-01) so the opaque receiver's demodulated GI is attenuated
+//!   by water's own coverage instead of composite adding it back at 100%
+//!   underneath an alpha-blended water surface. Attachments 6 and 7 — the
+//!   FSR reactive and transparency-and-composition masks — ARE written,
+//!   MAX-blended at full strength: water's surface colour comes from
+//!   reflection and refraction that neither depth nor motion describes, so
+//!   the upscaler has to be told. The blend table in
 //!   `create_water_pipeline` is the authority here, and
 //!   `attachment_doc_pin_tests` holds this list to it — before #3604 the
 //!   two disagreed and this one claimed water wrote no FSR mask at all;
@@ -54,7 +58,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, write_storage_image, DescriptorPoolBuilder};
-use super::pipeline::load_shader_module;
+use super::pipeline::{auxiliary_blend_attachment, coverage_alpha_factors, load_shader_module};
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -844,23 +848,44 @@ fn build_pipeline(
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
     // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR (attachment 0).
-    // Attachments 1..=5 are write-masked off: water never updates
-    // the G-buffer (normal / motion / mesh_id / raw_indirect /
-    // albedo) so SVGF and motion-vector reprojection see only the
-    // opaque pass behind the water. Attachments 6 and 7 (the FSR
-    // masks) are written — see below.
+    // Attachments 1..=3 (normal, motion, mesh_id) are write-masked off:
+    // water never updates those slots, so SVGF and motion-vector
+    // reprojection see only the opaque pass behind the water. Attachments
+    // 4 and 5 (raw_indirect, albedo) are coverage-blended (#3821 /
+    // REN-WD-D8-01, see `auxiliary_blend` below) so the opaque receiver's
+    // demodulated GI is attenuated by water's own coverage rather than
+    // left untouched for composite to add back at 100%. Attachments 6
+    // and 7 (the FSR masks) are written — see below.
+    // #3826 (REN-WD-D8-02) — the alpha lane routes through the same
+    // `coverage_alpha_factors` accumulated-coverage convention every other
+    // transparent writer uses (#2466), rather than hardcoding `(ONE, ZERO)`
+    // ("replace" — the destination's already-accumulated coverage is
+    // discarded outright). With a classic `ONE_MINUS_SRC_ALPHA` color dst
+    // factor this resolves to `(ONE, ONE_MINUS_SRC_ALPHA)`, the over-
+    // operator: water drawn over an already-blended transparent (spray,
+    // fog cards, particles) against open sky attenuates the existing
+    // coverage instead of overwriting it, so composite's sky arm doesn't
+    // re-admit sky a prior layer had already covered.
+    let (hdr_src_alpha_factor, hdr_dst_alpha_factor) =
+        coverage_alpha_factors(vk::BlendFactor::ONE_MINUS_SRC_ALPHA);
     let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
         .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
         .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
         .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .src_alpha_blend_factor(hdr_src_alpha_factor)
+        .dst_alpha_blend_factor(hdr_dst_alpha_factor)
         .alpha_blend_op(vk::BlendOp::ADD);
     let masked_off = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
+    // #3821 (REN-WD-D8-01) — same coverage-blend shape the ordinary
+    // alpha-blend pipeline uses on its non-`preserve_opaque_gbuffer` arm
+    // (`pipeline::blend_gbuffer_attachments`). Shared via
+    // `auxiliary_blend_attachment` rather than duplicated so the two
+    // pipelines' coverage semantics cannot drift apart.
+    let auxiliary_blend = auxiliary_blend_attachment();
     // Water is the canonical transparency-and-composition case: its surface
     // colour comes from reflection and refraction that neither depth nor
     // motion describes, so it writes both FSR masks at full strength with
@@ -886,8 +911,8 @@ fn build_pipeline(
         masked_off,
         masked_off,
         masked_off,
-        masked_off,
-        masked_off,
+        auxiliary_blend,
+        auxiliary_blend,
         fsr_mask_max,
         fsr_mask_max,
     ];
@@ -960,6 +985,28 @@ mod tests {
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
         assert_eq!(INITIAL_WATER_DRAW_CAPACITY, 8);
+    }
+
+    /// #3826 (REN-WD-D8-02) — the HDR attachment's alpha lane must route
+    /// through `coverage_alpha_factors` (the shared accumulated-coverage
+    /// convention, #2466), not a hardcoded `(ONE, ZERO)` "replace" pair.
+    /// The old pair overwrote an already-blended transparent's accumulated
+    /// sky coverage instead of attenuating it — see the module-level
+    /// comment above `hdr_blend` for the failure this caused.
+    #[test]
+    fn water_hdr_alpha_lane_uses_coverage_alpha_factors_not_a_hardcoded_replace() {
+        let src = include_str!("water.rs");
+        assert!(
+            src.contains("coverage_alpha_factors(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)"),
+            "hdr_blend's alpha lane must derive from coverage_alpha_factors, matching every \
+             other transparent writer's coverage convention"
+        );
+        assert!(
+            !src.contains(
+                ".src_alpha_blend_factor(vk::BlendFactor::ONE)\n        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)"
+            ),
+            "the old hardcoded replace-style alpha factors on hdr_blend must not come back"
+        );
     }
 
     #[test]
@@ -1078,7 +1125,10 @@ mod tests {
         assert!(
             src.contains("float reflectedCoverage = 1.0 - (1.0 - baseAlpha) * (1.0 - fresnel);")
         );
-        assert!(src.contains("clamp(reflectedCoverage + foamMask * 0.1"));
+        // #3822 (REN-WD-D15-01) widened this clamp to union in a second,
+        // independent `refractionCoverage` term — `reflectedCoverage` must
+        // still feed it via `max(...)`, not have been dropped or replaced.
+        assert!(src.contains("clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1"));
         assert!(!src.contains("float grazingBoost"));
     }
 
@@ -1193,6 +1243,66 @@ mod tests {
         assert!(
             src.contains("dot(causticNormal, Nsurface)"),
             "water caustic normal needs a top-side stability clamp"
+        );
+    }
+
+    /// #3820 (REN-WD-D2-01) — the water-side caustic splat must bound its
+    /// `imageAtomicAdd` against the actual bound accumulator image, not
+    /// `screen.xy` (the render extent). `resize.rs` deliberately rebinds
+    /// this image to the 1x1 `placeholder_caustic_sink` when the real
+    /// accumulator fails to (re)create, and an out-of-range image atomic —
+    /// unlike a plain store — is not covered by Vulkan's out-of-range-write
+    /// discard guarantee, so a `screen.xy` bound stays wrong exactly when
+    /// the fallback needs it to be right.
+    #[test]
+    fn water_caustic_splat_bounds_against_the_accumulator_image_not_screen_extent() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("ivec2 causticSize = imageSize(waterCausticAccum);"),
+            "water.frag's caustic-splat causticSize must be imageSize(waterCausticAccum), \
+             not derived from screen.xy — an out-of-range imageAtomicAdd against the 1x1 \
+             placeholder_caustic_sink fallback is not covered by Vulkan's discard-on-OOB-store \
+             guarantee"
+        );
+        assert!(
+            !src.contains("ivec2 causticSize = ivec2(screen.xy);"),
+            "the old screen.xy-derived caustic bound must not be reintroduced"
+        );
+    }
+
+    /// #3822 (REN-WD-D15-01) — the refraction half of water's alpha must
+    /// stop competing with an RT refraction it already resolved. `refrHit`
+    /// is hoisted out of the refraction `if` block and feeds a third,
+    /// independent `refractionCoverage` term that unions with the existing
+    /// `reflectedCoverage` term — mirroring the shape of the reflection-half
+    /// fix `b15b0527` already landed, so the two don't diverge in style.
+    #[test]
+    fn water_fragment_shader_lets_resolved_refraction_fully_cover_the_surface() {
+        let src = include_str!("../../shaders/water.frag");
+        let refr_hit_decl = src
+            .find("bool refrHit = false;")
+            .expect("refrHit must be hoisted to outer scope, defaulting false, so the alpha \
+                     block below can read whether RT refraction actually resolved");
+        let refraction_coverage = src
+            .find("float refractionCoverage = refrHit ? 1.0 : 0.0;")
+            .expect("water.frag must gate a coverage term on whether the RT refraction \
+                     resolved, not just on the authored ANAM/Fresnel terms");
+        assert!(
+            refr_hit_decl < refraction_coverage,
+            "refrHit must be declared before the alpha block reads it"
+        );
+        assert!(
+            src.contains("clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0)"),
+            "the refraction coverage term must union with reflectedCoverage (max), not add — \
+             the result must stay bounded and monotonic the same way the existing reflection \
+             term already is"
+        );
+        // The old bare declaration inside the refraction `if` block (no
+        // initializer, no outer visibility) must not come back — that was
+        // the shape that made `refrHit` invisible to the alpha computation.
+        assert!(
+            !src.contains("        bool refrHit;\n"),
+            "refrHit must not be re-declared uninitialized inside the refraction if-block"
         );
     }
 
@@ -1800,22 +1910,29 @@ mod attachment_doc_pin_tests {
         assert_eq!(
             table,
             "let attachments = [ hdr_blend, masked_off, masked_off, masked_off, \
-             masked_off, masked_off, fsr_mask_max, fsr_mask_max, ];",
+             auxiliary_blend, auxiliary_blend, fsr_mask_max, fsr_mask_max, ];",
             "the water blend table changed — update the module doc's \
-             attachment list in the same edit (#3604)",
+             attachment list in the same edit (#3604, #3821)",
         );
 
         let doc = module_doc();
         assert!(
-            doc.contains("1..=5"),
-            "the module doc must name the write-masked range as 1..=5, \
-             matching the five `masked_off` entries in the blend table \
-             (#3604)",
+            doc.contains("1..=3"),
+            "the module doc must name the write-masked range as 1..=3, \
+             matching the three `masked_off` entries in the blend table \
+             (#3821 / REN-WD-D8-01 narrowed this from 1..=5 when \
+             attachments 4/5 became coverage-blended)",
         );
         assert!(
-            !doc.contains("1..6"),
-            "the module doc still claims attachments 1..6 are masked off — \
-             the table masks 1..=5 and WRITES 6 and 7 (#3604)",
+            !doc.contains("1..=5") && !doc.contains("1..6"),
+            "the module doc still claims attachments 1..=5 (or 1..6) are \
+             masked off — the table masks only 1..=3, coverage-blends 4/5, \
+             and WRITES 6 and 7 (#3821)",
+        );
+        assert!(
+            doc.contains("coverage-blended") || doc.contains("auxiliary_blend"),
+            "the module doc must state that attachments 4 and 5 are \
+             coverage-blended, not masked off (#3821 / REN-WD-D8-01)",
         );
         assert!(
             !doc.contains("reservoir"),
