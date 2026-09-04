@@ -511,7 +511,7 @@ impl ConsoleCommand for ScriptActivateCommand {
         ))
     }
 }
-/// `mat.list` — tabulate every entity carrying a [`Material`], with the
+/// `mat.list [limit]` — tabulate entities carrying a [`Material`], with the
 /// RT-relevant scalars at a glance. The companion to `mat.set`: it gives
 /// you the entity ids to sweep. Built for the Cornell-box harness
 /// (`--cornell`, see [`crate::cornell`]) but works on any loaded scene.
@@ -521,9 +521,17 @@ impl ConsoleCommand for MatListCommand {
         "mat.list"
     }
     fn description(&self) -> &str {
-        "List entities with a Material + their PBR scalars (companion to mat.set)"
+        "List entities with a Material + their PBR scalars; optional row limit"
     }
-    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let limit = if args.trim().is_empty() {
+            usize::MAX
+        } else {
+            match args.trim().parse::<usize>() {
+                Ok(limit) if limit > 0 => limit,
+                _ => return CommandOutput::line("usage: mat.list [positive-limit]"),
+            }
+        };
         // #3648 SIBLING — snapshot into owned rows so the `Material` query
         // guard is released before the `resolve_entity_name` calls below.
         // Borrowing `&Material` out of `q` kept it live across `Name` ->
@@ -544,7 +552,7 @@ impl ConsoleCommand for MatListCommand {
             "{:>5}  {:<20} {:>5} {:>5} {:>5} {:>5} {:>4}  {:<14}",
             "id", "name", "metal", "rough", "alpha", "emul", "kind", "diffuse(rgb)"
         )];
-        for (e, m) in &rows {
+        for (e, m) in rows.iter().take(limit) {
             let e = *e;
             let name = resolve_entity_name(world, e).unwrap_or_else(|| "-".to_string());
             let name: String = name.chars().take(20).collect();

@@ -50,6 +50,7 @@ Selected modifier / diagnostic flags (all read from `effective_args()`):
 | `--bench-camera PATH` | Non-static frame-indexed path required by `renderer-stepped` (`pan`, `orbit`, `dolly`, `grid-cross`, `cut`) |
 | `--bench-hold` | Keep running after the bench summary so `byro-dbg` can attach |
 | `--screenshot PATH` | Capture a PNG on the bench-exit frame (requires `--bench-frames`) |
+| `--render-debug-mode MODE` | Seed a named renderer correctness view before the first frame |
 | `--camera-pos x,y,z` / `--camera-forward x,y,z` | Override the auto-framed initial camera pose |
 | `--fly` / `--player` | Start in fly-camera vs kinematic-character mode (M28.5) |
 | `--sounds-bsa PATH` | Sound archive for footstep/splash defaults + REGN ambient dispatch (M44). Repeatable — override/mod archives listed before the vanilla one, first hit wins (#3776) |

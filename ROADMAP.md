@@ -120,9 +120,15 @@ ignored hardware suite passed serially on the RTX 4070 Ti (five tests covering
 L0-L5, forced BLAS pressure, repeated visibility, and the million-unit
 translation). That run caught a post-composite bloom add contaminating raw
 correctness views; bloom now obeys the shared raw-output policy before it can
-mutate the scene image. Remaining recovery gates are publishing durable RT-CI
-comparison artifacts and a provider-backed five-game capture matrix; the
-detailed status is maintained in the linked recovery plan. Forced BLAS pressure
+mutate the scene image. The durable RT-CI publication path is now wired through
+the manually dispatched `RT Correctness Gates` workflow, and the provider-backed
+material matrix passed three cold runs each across Oblivion, FNV, Skyrim SE,
+FO4, and Starfield (45 captures plus role/source/oracle logs and checksums).
+Remaining recovery work is the first published self-hosted workflow artifact,
+Starfield CDB `.mat` per-field extraction (the current matrix honestly records
+presence with absent roles), exact residual overlay-source attribution, and the
+R6 documentation-contract close. Detailed status remains in the linked recovery
+plan. Forced BLAS pressure
 is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
 draws are protected before recovery builds, missing retained rigid BLAS are
 restored from dedicated or global geometry buffers before TLAS publication,

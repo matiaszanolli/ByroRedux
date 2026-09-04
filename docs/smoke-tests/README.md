@@ -10,6 +10,11 @@ invokes all three playable-slice scripts to pin that contract; the manually
 dispatched `Playable Smoke Gates` workflow runs the real gates on the
 `byroredux-game-data` self-hosted runner.
 
+Renderer/material correctness has a separate manually dispatched
+`RT Correctness Gates` workflow. Its material job runs the five-game provider
+matrix below on a runner carrying both `byroredux-rt` and
+`byroredux-game-data`, and retains the complete capture directory for 30 days.
+
 ## Playable-slice gates are game-parameterised (#3039)
 
 `p0-door-interaction.sh`, `p1-character-traversal.sh` and `p2-melee-core.sh`
@@ -90,6 +95,7 @@ Inventory` returned nothing.
 
 | Script | Milestone | Verifies |
 |--------|-----------|----------|
+| [`../../scripts/material-provider-matrix.sh`](../../scripts/material-provider-matrix.sh) | RT recovery R5.5 provider baseline | Runs three cold processes for Oblivion, FNV, Skyrim SE, FO4, and Starfield; keeps one loaded world per run while capturing direct/lobe/role views; retains sampled 26-role `mat.dump`, `tex.missing`, manifests and SHA-256 provenance; requires inline-NIF sources on legacy titles, a present BGSM/BGEM fill on FO4, and a real CDB `.mat` reference on Starfield; gates measured pixel-domain repeatability after per-mode settling. Invoke under Xvfb as documented in the script header. |
 | [`p0-door-interaction.sh`](p0-door-interaction.sh) | Playable slice P0 close-out | Game-parameterised (#3039). On Skyrim: loads the Bannered Mare at a deterministic camera pose, selects the authored XTEL exit, observes the native `[E] Open` prompt, injects one physical `KeyE` pulse through `ActionBindings`/`ActionState`, and requires exactly one canonical `ActivateEvent` plus a completed deferred transition to `WhiterunWorld (6,-2)`. The 2026-08-10 close-out run passed with 5,183 source-cell entities. |
 | [`p1-character-traversal.sh`](p1-character-traversal.sh) | Playable slice P1 traversal gate | Game-parameterised (#3039); the exterior route is a fixture array. On Skyrim: spawns the real character capsule in the Bannered Mare, walks away and back through binding-aware held input, activates both sides of the XTEL door, crosses `WhiterunWorld (6,-2) → (6,-3) → (6,-2)` through the Rapier KCC, and requires grounded control after the round trip. It uses a radius-1 exterior ring and deterministic `InputState` yaw; no camera/body teleport participates in the route. |
 | [`p2-melee-core.sh`](p2-melee-core.sh) | Playable slice P2 combat-core checkpoint | Game-parameterised (#3039). On Skyrim: preflights CELL `000371DE`, grounded reference/base `000383F7`/`000E9895`, and the two Draugr weapon leaves the deterministic LVLI expansion really reaches (#3417); uses setup-only `combat.approach` to place the real character capsule on nearby authored collision; then requires `grounded=true` for every bound attack needed to reduce 50 Health to zero. Damage is derived from live `inventory.status` (authored `EquippedWeapon` or the documented unarmed fallback), not pinned to a literal. The gate also proves `settings.status` is live before requiring one `Dead` transition and the existing 18-body ragdoll. Closes with vertical-slice gate 5 (#3009): saves a slot, verifies it decodes with an `Inventory` column, terminates the engine, relaunches the identical invocation with `--load`, and requires the id-free half of `inventory.status` plus the equipped-weapon line to come back unchanged. Saves are redirected to the harness temp dir via `BYROREDUX_SAVE_DIR`, so the operator's own ring is untouched. |

@@ -17,8 +17,10 @@
 > constants contract. The FO3/FNV TXST↔NIF slot 2-5 permutation is pinned as
 > semantic roles, and `mat.dump <entity>` reports every resolved role's
 > path, provenance class, GPU handle/set/binding, dimensionality and colour
-> space. Inline-NIF versus BGSM/BGEM/.mat per-role provenance and the five-game
-> fixture matrix remain recovery work; see
+> space. Inline-NIF versus BGSM/BGEM per-role provenance now survives to the
+> dump, and the three-run five-game provider matrix is green. Starfield CDB
+> `.mat` references are identified but their per-field texture payload is not
+> decoded yet, so those roles remain explicitly absent; see
 > [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
 >
 > **2026-08-25 lighting/material convergence.** The canonical record is now

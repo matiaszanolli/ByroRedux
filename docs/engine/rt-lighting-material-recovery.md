@@ -34,8 +34,8 @@ re-implement or revert them.
 | R1 ingestion | XCLL rotation fields renamed; the axis-invariant test is ignored as an explicit xfail; punctual per-light flat fill removed | Remove the XCLL type-3 `Lo` bypass; validate an XCLL-specific angle conversion; emit kind/direction/fade/provenance in `light.dump` |
 | R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
 | R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Closed: measured five-scene RT-LOD sweep plus repeated and one-million-unit Cornell visibility/probe gates |
-| R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures | Full ignored suite passed on an RTX 4070 Ti (2026-09-03); wire it into the RT CI worker and publish durable comparison artifacts |
-| R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; provenance dump; BGSM/BGEM forwarding; lobe and role views; 432-byte shader contract | Provider-backed five-game fixture capture remains hardware/content gated |
+| R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures; manual RT-CI workflow with retained logs/images/manifests | Dispatch the first self-hosted workflow run and retain its published artifact as the CI baseline |
+| R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; per-role NIF/BGSM/BGEM provenance; lobe and role views; 432-byte shader contract; three-run provider matrix across five games | Decode Starfield CDB `.mat` fields (the matrix currently proves reference/presence and explicit unsupported roles), then close remaining exact overlay-source gaps |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
 
 The old `28155b79` benchmark and its issue #2367 are historical evidence, not
@@ -106,17 +106,26 @@ carried forward.
   TLAS-count assertions and a real frame-graph break: bloom ran after composite
   and added roughly 75% to categorical raw output even though composite,
   upscaling, and presentation had selected their bypass paths. Bloom now gates
-  on the shared raw-output policy before dispatch/apply. RT-CI scheduling and
-  durable comparison-artifact publication remain open.
-- **R5 canonical roles and authored response complete; provider breadth remains.**
+  on the shared raw-output policy before dispatch/apply. The manually
+  dispatched `RT Correctness Gates` workflow now runs the serialized suite on
+  the `byroredux-rt` runner and publishes images, command logs, runner
+  provenance, and SHA-256 manifests for 30 days. The first remote dispatch is
+  the remaining operational step; the same artifact path is locally proven.
+- **R5 canonical roles, authored response, and provider breadth baseline complete.**
   The 432-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
   Fresnel, palette, lighting-mask and back-lighting inputs through upload,
   hashing, GLSL layout and shading. Soft/rim/back terms share the selected
   light's visibility; glass uses authored refraction/blur/scratch/dirt inputs.
   `mat.dump`, `material_lobe`, and `material_role` expose the canonical result
-  without a game/file-format shader branch. Existing synthetic and archive
-  tests cover the role walk and per-generation mappings; a redistributable
-  provider-backed five-game capture set remains open.
+  without a game/file-format shader branch. `mat.dump` walks all 26 roles and
+  records whether each resolved path came from the inline NIF set or a
+  BGSM/BGEM fill. `scripts/material-provider-matrix.sh` passed three cold
+  processes each for Oblivion, FNV, Skyrim SE, FO4, and Starfield on the RTX
+  4070 Ti: 45 screenshots plus material dumps, texture-miss output, source
+  assertions, SHA-256 provenance, and bounded pixel-domain repeatability.
+  Starfield's shipped `.mat` references are present and explicitly reported,
+  but CDB per-field extraction is still missing, so its roles honestly remain
+  absent instead of being guessed.
 - **R6 partially complete.** `renderer.md` is reconciled with the live light,
   cluster, origin, debug-view, flag and dump contracts. This plan, ROADMAP, and
   the adjacent lighting/shader/material documents are being brought to the
@@ -522,8 +531,9 @@ threshold.
 Prefer scalar probe assertions and tolerant linear-image metrics over exact PNG
 hashes. Store expected images only after their analytic and debug-channel
 assertions pass. The five-test ignored suite covering L0-L5 passed serially on
-the RTX 4070 Ti on 2026-09-03; keep it serialized on the RT-capable integration
-runner until CI has equivalent hardware and durable artifacts.
+the RTX 4070 Ti on 2026-09-03. `.github/workflows/rt-correctness.yml` keeps it
+serialized on the `byroredux-rt` worker and always publishes the retained
+capture directory, stdout/stderr, GPU/Vulkan identity, and checksum manifest.
 
 Every renderer bug fixed after this plan must name the earliest rung that
 would catch it; if none does, add a rung/variant before closing the bug.
@@ -593,6 +603,20 @@ Pin at least one fixture from Oblivion, FNV, Skyrim SE, FO4 and Starfield, plus
 synthetic tests. Assertions cover role paths, view colour space, cube-vs-2D,
 normal-space flag, lobe, and placeholder count. FO4 must include a TXST 2-5
 permutation case and an MNAM-only REFR overlay.
+
+**Implemented provider baseline (2026-09-03).**
+`scripts/material-provider-matrix.sh 3 30` uses the Gilded Carafe, Prospector
+Saloon, Bannered Mare, MedTek Research, and Starfield's compact shipped
+`AAAMarkers` material fixture. One loaded world per run is warmed by 30
+successful frame-drained stats requests, switched through `material_lobe`,
+`material_role`, and `direct_only`, and allowed five/30 settling frames before
+capture. Legacy rows must expose `nif-texture-set`; FO4 must expose a present
+BGSM/BGEM-filled role; Starfield must expose a CDB-backed `.mat` reference.
+Categorical repeatability is bounded at 0.6% changed pixels and 0.6 mean
+absolute channel error. Direct RT is bounded at 8%/2.5 except Oblivion's
+alpha-heavy foliage fixture (45%/3.0), where reservoir noise is spatially broad
+but low-amplitude. The local 45-image run passed these measured bounds; hashes
+are provenance, not an equality oracle.
 
 **Exit:** every sampled material texture on the matrix has a canonical role,
 source and colour-space decision; no renderer branch asks which game/file

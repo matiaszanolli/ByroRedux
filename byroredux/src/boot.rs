@@ -121,6 +121,17 @@ pub(crate) fn run() -> Result<()> {
     // rendering diagnostics / visual regression baselines.
     let screenshot_path = parse_string_arg(&args, "--screenshot");
 
+    // Seed a named correctness view before the first rendered frame. This is
+    // primarily useful for deterministic captures of very large scenes: a
+    // categorical material view avoids entering the full RT path merely to
+    // reach a later `--bench-hold` debug session.
+    let initial_render_debug_mode = parse_string_arg(&args, "--render-debug-mode")
+        .map(|mode| {
+            mode.parse::<byroredux_renderer::RenderDebugMode>()
+                .map_err(|error| anyhow::anyhow!(error))
+        })
+        .transpose()?;
+
     // --bench-hold: after `--bench-frames N` emits its summary, keep
     // the engine running (rendering, debug server reachable) instead
     // of exiting. The bench summary still prints exactly once, at the
@@ -363,6 +374,11 @@ pub(crate) fn run() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new(debug_mode, &args, renderer_config);
+    if let Some(mode) = initial_render_debug_mode {
+        app.world
+            .resource_mut::<crate::components::RenderDebugControl>()
+            .pending_mode = Some(mode);
+    }
     app.bench_mode = bench_mode;
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;

@@ -747,6 +747,23 @@ fn mat_list_tabulates_materials() {
     );
     assert!(out.contains("probe_a"), "name missing: {out}");
     assert!(out.contains("kind"), "header missing: {out}");
+
+    let second = world.spawn();
+    world.insert(second, Material::default());
+    let limited = MatListCommand.execute(&world, "1").lines.join("\n");
+    assert!(
+        limited.contains(&e.to_string()),
+        "first row missing: {limited}"
+    );
+    assert_eq!(
+        limited.lines().count(),
+        2,
+        "row limit was ignored: {limited}"
+    );
+    assert_eq!(
+        MatListCommand.execute(&world, "0").lines,
+        ["usage: mat.list [positive-limit]"]
+    );
 }
 
 #[test]
