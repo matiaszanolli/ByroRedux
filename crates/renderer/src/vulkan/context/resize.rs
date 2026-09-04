@@ -1565,6 +1565,51 @@ mod tests {
         );
     }
 
+    /// #3636 — the presentation descriptor must never be left naming a
+    /// destroyed upscale output view.
+    ///
+    /// `FrameUpscaler::recreate` is an unconditional destroy + `Self::new`,
+    /// so every resize (and every preset switch) replaces the output
+    /// `VkImage`/`VkImageView` handles. `PresentationPipeline` writes those
+    /// views into its descriptor sets exactly once, in `create`/
+    /// `write_inputs` — there is no `rebind_upscaled_views` sibling to
+    /// `composite.rs::rebind_hdr_views`. The only thing keeping the
+    /// presentation descriptor off a destroyed view is source ordering:
+    /// retire the old presentation pipeline, THEN recreate the upscaler
+    /// (destroying its old views), THEN rebuild presentation against the
+    /// fresh ones. A live-device reproduction needs an actual resize with a
+    /// real allocator; this pins the ordering at the source level instead,
+    /// matching `ssao_recreate_failure_rebinds_binding_7_to_the_placeholder`
+    /// above.
+    #[test]
+    fn presentation_is_retired_before_the_upscaler_view_handoff_it_depends_on() {
+        let src = production_src();
+
+        let presentation_destroy_pos = src
+            .find("unsafe { presentation.destroy(&self.device) }")
+            .expect("the old presentation pipeline must still be explicitly destroyed");
+        let upscaler_recreate_pos = src
+            .find("upscaler.recreate(")
+            .expect("the upscaler must still be recreated during resize");
+        let presentation_new_pos = src
+            .find("PresentationPipeline::new(")
+            .expect("presentation must still be rebuilt during resize");
+
+        assert!(
+            presentation_destroy_pos < upscaler_recreate_pos,
+            "presentation must be retired BEFORE the upscaler destroys the output \
+             views its descriptor sets reference — otherwise `destroy` runs against \
+             a pipeline that's about to be rebuilt anyway, but more importantly \
+             nothing has retired the *descriptor* naming those views before they die"
+        );
+        assert!(
+            upscaler_recreate_pos < presentation_new_pos,
+            "presentation must be rebuilt AFTER the upscaler produces its fresh \
+             output views — rebuilding first would bind presentation's descriptor \
+             sets to image views `upscaler.recreate` is about to destroy (#3636)"
+        );
+    }
+
     /// #2142 / RL-D6-02 — the water set-2 rebind must NOT be gated on the
     /// accumulator being present.
     ///
