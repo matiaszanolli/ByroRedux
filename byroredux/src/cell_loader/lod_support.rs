@@ -218,6 +218,28 @@ impl LodWorkBudget {
         Self::new(usize::MAX)
     }
 
+    /// Select the right constructor from a reconcile call's two independent
+    /// inputs — an attempt cap (possibly `usize::MAX`) and an optional
+    /// deadline — WITHOUT letting either one silently override the other.
+    ///
+    /// #3823 (REN-WD-D15-02) — extracted from `streaming_helpers::
+    /// reconcile_lod_rings`'s `make_budget` closure so this selection logic
+    /// is unit-testable on its own. The bug this guards against: an earlier
+    /// version matched on `(usize::MAX, _)` first, so ANY deadline passed
+    /// alongside an unbounded attempt count was silently discarded — the
+    /// per-frame boundary-crossing caller in `app_step.rs` passes exactly
+    /// that combination (unbounded attempts, a real deadline) as its safety
+    /// ceiling against a pathological LOD ring, and that ceiling would have
+    /// been a no-op. `unlimited()` (genuinely untimed) is reached only by
+    /// the one-time world-setup bootstrap's `(usize::MAX, None)`.
+    pub(crate) fn for_reconcile(max_attempts: usize, deadline: Option<Instant>) -> Self {
+        match (max_attempts, deadline) {
+            (usize::MAX, None) => Self::unlimited(),
+            (attempts, Some(at)) => Self::with_deadline(attempts, at),
+            (attempts, None) => Self::new(attempts),
+        }
+    }
+
     /// Reserve one potentially expensive provider attempt.
     ///
     /// Refuses once either bound is hit — except for the very first attempt,
@@ -468,6 +490,49 @@ mod tests {
         for _ in 0..1_000 {
             assert!(budget.try_take());
         }
+    }
+
+    /// #3823 (REN-WD-D15-02) — `for_reconcile` must not let an unbounded
+    /// attempt count silently discard a caller-supplied deadline. This is
+    /// the exact combination `app_step.rs`'s boundary-crossing safety
+    /// ceiling relies on: unbounded attempts (every newly-exposed LOD
+    /// footprint should settle atomically) PAIRED with a deadline (so a
+    /// pathological ring cannot hang the frame).
+    #[test]
+    fn for_reconcile_honors_a_deadline_even_with_unbounded_attempts() {
+        let mut budget = LodWorkBudget::for_reconcile(usize::MAX, Some(Instant::now()));
+        assert!(
+            budget.try_take(),
+            "first attempt must always be admitted regardless of the deadline"
+        );
+        assert!(
+            !budget.try_take(),
+            "an already-elapsed deadline must still yield the second attempt, \
+             even though the attempt count is unbounded — this is the safety \
+             ceiling a pathological LOD ring relies on"
+        );
+    }
+
+    /// The genuinely-untimed bootstrap combination must still route to
+    /// `unlimited()`, not accidentally pick up a deadline from nowhere.
+    #[test]
+    fn for_reconcile_stays_untimed_with_no_deadline() {
+        let mut budget = LodWorkBudget::for_reconcile(usize::MAX, None);
+        for _ in 0..1_000 {
+            assert!(budget.try_take());
+        }
+    }
+
+    /// A finite attempt count with a live deadline still caps on attempts
+    /// first, matching `with_deadline`'s own contract — `for_reconcile` must
+    /// not special-case away the ordinary bounded-and-timed path either.
+    #[test]
+    fn for_reconcile_finite_attempts_still_caps_under_a_live_deadline() {
+        let mut budget =
+            LodWorkBudget::for_reconcile(2, Some(Instant::now() + Duration::from_secs(30)));
+        assert!(budget.try_take());
+        assert!(budget.try_take());
+        assert!(!budget.try_take(), "attempt cap must still apply");
     }
 
     #[test]

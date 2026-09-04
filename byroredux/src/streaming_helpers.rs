@@ -34,8 +34,12 @@ pub(crate) struct LodReconcileProgress {
 /// Decide whether and how much deferred LOD work belongs in this frame.
 ///
 /// Full-detail cell spawns win the main-thread budget. A boundary crossing
-/// still runs a zero-budget reconcile so stale/out-of-ring geometry is
-/// reclaimed immediately, but new LOD work waits for the next idle frame.
+/// requests an unbounded per-provider attempt count (`usize::MAX`) so the
+/// caller can attempt every newly-exposed LOD footprint atomically before the
+/// next frame renders — but the CALLER (`app_step.rs`) is responsible for
+/// pairing that with a deadline; this function only decides the attempt
+/// count, not the time bound (#3823 / REN-WD-D15-02). Everywhere else, new
+/// LOD work waits for the next idle frame.
 pub(crate) fn lod_reconcile_budget_for_frame(
     reconcile_pending: bool,
     cells_spawned: usize,
@@ -47,9 +51,12 @@ pub(crate) fn lod_reconcile_budget_for_frame(
         None
     } else if grid_changed {
         // A boundary crossing has already removed the outgoing full cells,
-        // but the frame has not rendered yet. Settle every newly-exposed LOD
+        // but the frame has not rendered yet. Attempt every newly-exposed LOD
         // footprint now so the next presented frame switches atomically from
         // full detail to LOD instead of showing a budget-shaped empty strip.
+        // #3823 (REN-WD-D15-02) — unbounded ATTEMPT COUNT here is fine and
+        // intentional; it is the caller's paired deadline that keeps a
+        // pathological ring from hanging the frame, not this cap.
         Some(usize::MAX)
     } else if cells_spawned == 0 {
         Some(idle_attempts_per_provider)
@@ -89,7 +96,11 @@ pub(crate) fn should_resample_terrain_seam(
 ///
 /// Reclaims are always immediate inside the provider functions. The budget
 /// covers only potentially expensive archive/import/upload attempts. Passing
-/// `usize::MAX` preserves the deterministic full-radius bootstrap contract.
+/// `usize::MAX` preserves the deterministic full-radius bootstrap contract
+/// for the one-time world-setup caller (untimed there); the per-frame
+/// boundary-crossing caller also passes `usize::MAX` but pairs it with a
+/// deadline, which `make_budget` below honors regardless of attempt count
+/// (#3823 / REN-WD-D15-02).
 pub(crate) fn reconcile_lod_rings(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -113,13 +124,19 @@ pub(crate) fn reconcile_lod_rings(
     // ring cannot starve the active object scheme) but shares ONE wall-clock
     // deadline with the rest of the frame's streaming work — the attempt
     // count bounds fairness, the deadline bounds the frame (EX-07 / #2376).
-    // `usize::MAX` remains the deterministic full-radius bootstrap contract
-    // and is deliberately left untimed.
-    let make_budget = || match (max_attempts_per_provider, deadline) {
-        (usize::MAX, _) => LodWorkBudget::unlimited(),
-        (attempts, Some(at)) => LodWorkBudget::with_deadline(attempts, at),
-        (attempts, None) => LodWorkBudget::new(attempts),
-    };
+    //
+    // #3823 (REN-WD-D15-02) — `max_attempts_per_provider == usize::MAX` and
+    // "untimed" are INDEPENDENT axes, not implied by each other. The
+    // one-time world-setup bootstrap (`scene/world_setup.rs`) passes
+    // `(usize::MAX, None)` and is deliberately untimed — it runs once before
+    // the first frame. The per-frame boundary-crossing caller
+    // (`app_step.rs`) passes `(usize::MAX, Some(deadline))` — unbounded
+    // attempts is still the right shape (every newly-exposed LOD footprint
+    // should settle atomically), but it MUST still honor a caller-supplied
+    // deadline as a safety ceiling against a pathological ring. See
+    // `LodWorkBudget::for_reconcile`'s doc for the bug this replaced (an
+    // `(usize::MAX, _)` match arm that discarded any deadline outright).
+    let make_budget = || LodWorkBudget::for_reconcile(max_attempts_per_provider, deadline);
 
     let mut terrain_budget = make_budget();
     let terrain_complete = cell_loader::stream_lod_blocks(

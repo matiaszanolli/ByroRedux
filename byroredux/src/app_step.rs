@@ -35,6 +35,23 @@ impl App {
     /// full-detail cell payload was applied. Terrain plus exactly one of
     /// object/placement can therefore spend at most four attempts.
     const MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME: usize = 2;
+    /// #3823 (REN-WD-D15-02) — safety ceiling on the boundary-crossing LOD
+    /// reconcile (`grid_changed`), which runs with an unbounded per-provider
+    /// attempt count (`usize::MAX`) so the newly-exposed ring can settle
+    /// atomically before the frame renders (no budget-shaped empty strip).
+    /// `LodWorkBudget::try_take` degrades cooperatively past a deadline — it
+    /// always admits a provider's first attempt, then refuses further ones —
+    /// so a generous deadline bounds the pathological case (an oversized or
+    /// degenerate ring hanging the frame, `#3540`'s failure shape) without
+    /// truncating the realistic one: a normal ring settles in well under
+    /// this. This is a SAFETY CEILING, not a performance target — deliberately
+    /// far larger than `STREAMING_APPLY_BUDGET` so it does not fire on any
+    /// boundary crossing that was already completing atomically before this
+    /// bound existed. Computed fresh at the reconcile call site rather than
+    /// reusing `streaming_deadline`, which is scoped to the interactive
+    /// per-frame budget and may already be exhausted by the full-detail
+    /// apply step that runs earlier in the same tick.
+    const BOUNDARY_LOD_RECONCILE_SAFETY_CEILING: Duration = Duration::from_millis(500);
 
     pub(crate) fn step_streaming(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
@@ -251,17 +268,28 @@ impl App {
             return;
         };
         let lod_started = Instant::now();
+        // #3823 (REN-WD-D15-02) — the boundary-crossing handoff is
+        // presentation-atomic in intent (the outgoing full cells were
+        // visible last frame, so their LOD replacements should settle
+        // before this frame renders), but "intent" is not a bound: pair
+        // `lod_budget`'s unbounded attempt count with a generous, dedicated
+        // safety ceiling instead of the tight interactive `streaming_deadline`
+        // (which may already be exhausted by this tick's full-detail apply
+        // step) or no deadline at all (the previous shape, unbounded work on
+        // exactly the frame with the largest newly-exposed footprint).
+        // Steady-state reconciliation keeps sharing `streaming_deadline`.
+        let lod_deadline = if grid_changed {
+            Some(Instant::now() + Self::BOUNDARY_LOD_RECONCILE_SAFETY_CEILING)
+        } else {
+            Some(streaming_deadline)
+        };
         let progress = reconcile_lod_rings(
             &mut self.world,
             ctx,
             state,
             player_grid,
             lod_budget,
-            // Boundary handoff is presentation-atomic: the outgoing full
-            // cells were visible last frame and their LOD replacements must
-            // settle before this frame renders. Steady-state reconciliation
-            // remains deadline-limited.
-            (!grid_changed).then_some(streaming_deadline),
+            lod_deadline,
         );
         state
             .telemetry
