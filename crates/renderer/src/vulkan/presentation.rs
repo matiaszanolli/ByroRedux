@@ -740,42 +740,6 @@ impl PresentationPipeline {
         }
     }
 
-    pub fn recreate(
-        &mut self,
-        device: &ash::Device,
-        pipeline_cache: vk::PipelineCache,
-        swapchain_format: vk::Format,
-        swapchain_views: &[vk::ImageView],
-        upscaled_views: &[vk::ImageView],
-        extent: vk::Extent2D,
-    ) -> Result<()> {
-        // Capture before `destroy`/overwrite: the health buffers are owned by
-        // `VulkanContext` and deliberately survive a swapchain recreate, so
-        // the rebuilt pipeline must rebind the same ones.
-        let health_buffers = std::mem::take(&mut self.health_buffers);
-        // Borrowed handle, not owned — `destroy` leaves it set, but read it
-        // out explicitly so the rebuild does not depend on that.
-        let overlay_pipeline_layout = self.overlay_pipeline_layout;
-        unsafe {
-            // SAFETY: swapchain recreation waits for device idle before this
-            // method is called.
-            self.destroy(device);
-        }
-        *self = Self::new(
-            device,
-            pipeline_cache,
-            PresentationTargets {
-                swapchain_format,
-                swapchain_views,
-                upscaled_views,
-                health_buffers: &health_buffers,
-                extent,
-            },
-            overlay_pipeline_layout,
-        )?;
-        Ok(())
-    }
-
     /// # Safety
     ///
     /// No in-flight command buffer may reference this pipeline.
