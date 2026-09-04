@@ -58,6 +58,24 @@ impl ConsoleCommand for DepthStatsCommand {
         };
 
         let stats = camera.analyze_depth_field(&capture.samples);
+        // #3630 — `analyze_depth_field` returns early with `bands` empty (and
+        // `cleared`/`invalid` both 0) when `near <= 0.0 || far <= near`: its
+        // documented contract for a capture that disagrees with the camera is
+        // "report nothing rather than guess". `stats.bands.is_empty()` can
+        // only be true on that early-return path — every other path always
+        // populates at least one decade band, even with zero samples in it —
+        // so it's an unambiguous signal of a rejected (degenerate) camera.
+        // Without this check, `geometry = total - cleared - invalid` reads as
+        // the full sample count (since cleared and invalid both stayed 0) and
+        // the per-band loop *also* prints "no geometry in frame" (every band
+        // is empty because there are no bands) — two contradictory lines,
+        // neither saying the camera was rejected.
+        if stats.bands.is_empty() && stats.total > 0 {
+            return CommandOutput::line(format!(
+                "depth {}x{} ({} samples)  degenerate camera (near={:.3}, far={:.0}) — analysis rejected",
+                capture.width, capture.height, stats.total, camera.near, camera.far
+            ));
+        }
         let mut out = vec![
             format!(
                 "depth {}x{} ({} samples)  near={:.3} far={:.0}",
@@ -103,5 +121,92 @@ impl ConsoleCommand for DepthStatsCommand {
             out.push("  (no geometry in frame — every sample is background)".to_string());
         }
         CommandOutput::lines(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::DepthCapture;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    fn world_with_capture(camera: Camera, samples: Vec<f32>) -> World {
+        let mut world = World::new();
+        let camera_entity = world.spawn();
+        world.insert(camera_entity, camera);
+        world.insert_resource(ActiveCamera(camera_entity));
+        world.insert_resource(DepthCaptureBridge {
+            requested: Arc::new(AtomicBool::new(false)),
+            result: Arc::new(Mutex::new(Some(DepthCapture {
+                width: 2,
+                height: 2,
+                samples,
+            }))),
+        });
+        world
+    }
+
+    // #3630 — a degenerate camera (`near <= 0.0 || far <= near`) must be
+    // reported as rejected, not read out as a full frame of geometry with an
+    // empty band table.
+    #[test]
+    fn degenerate_camera_is_reported_as_rejected_not_as_geometry() {
+        let world = world_with_capture(
+            Camera::new(1.0, 1.0, 0.0, 100.0), // near == 0.0 — degenerate
+            vec![0.5; 4],
+        );
+
+        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            output.contains("degenerate camera") && output.contains("analysis rejected"),
+            "expected an explicit rejection line, got: {output}"
+        );
+        assert!(
+            !output.contains("geometry="),
+            "a rejected camera must not report a geometry count: {output}"
+        );
+        assert!(
+            !output.contains("no geometry in frame"),
+            "a rejected camera must not be confused with a frame that legitimately \
+             has no geometry: {output}"
+        );
+    }
+
+    // Sibling of the above with the other half of the degenerate condition
+    // (`far <= near`), to pin both branches of `analyze_depth_field`'s guard.
+    #[test]
+    fn far_at_or_behind_near_is_also_reported_as_rejected() {
+        let world = world_with_capture(
+            Camera::new(1.0, 1.0, 10.0, 10.0), // far == near — degenerate
+            vec![0.5; 4],
+        );
+
+        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            output.contains("degenerate camera") && output.contains("analysis rejected"),
+            "expected an explicit rejection line, got: {output}"
+        );
+    }
+
+    // A well-formed camera with a genuinely empty frame (all samples cleared
+    // to the far plane) must still take the normal "no geometry in frame"
+    // path — the fix must not swallow that legitimate case.
+    #[test]
+    fn well_formed_camera_with_no_geometry_still_reports_the_normal_message() {
+        let world = world_with_capture(
+            Camera::new(1.0, 1.0, 1.0, 100.0),
+            vec![1.0; 4], // z >= 1.0 — every sample is background/cleared
+        );
+
+        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            !output.contains("degenerate camera"),
+            "a well-formed camera must not be reported as degenerate: {output}"
+        );
+        assert!(
+            output.contains("no geometry in frame"),
+            "expected the normal empty-frame message, got: {output}"
+        );
     }
 }
