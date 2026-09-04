@@ -1117,6 +1117,10 @@ impl DalcCubeYup {
 /// extension point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WeatherSkyState {
+    /// Broad procedural cloud occupancy in `[0, 1]`, derived from the WTHR
+    /// weather classification. Authored cloud textures remain detail masks;
+    /// this value supplies the continuous cloud body between their sprites.
+    pub(crate) cloud_coverage: f32,
     /// Current TOD-sampled cloud tint and alpha multiplier per rendered layer.
     /// `[r, g, b, alpha]`, in raw monitor-space authoring units.
     pub(crate) cloud_tints: [[f32; 4]; 4],
@@ -1147,6 +1151,7 @@ pub(crate) struct WeatherSkyState {
 impl Default for WeatherSkyState {
     fn default() -> Self {
         Self {
+            cloud_coverage: 0.35,
             cloud_tints: [[1.0, 1.0, 1.0, 1.0]; 4],
             precipitation: [0.0; 2],
             thunder_frequency: 0.0,

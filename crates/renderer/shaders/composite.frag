@@ -56,7 +56,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 weather_wind; // wind direction x/z, normalized speed, reserved
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky; // stars RGB, sun glare
-    vec4 weather_aurora; // aurora intensity, follows-sun flag, reserved
+    vec4 weather_aurora; // aurora intensity, follows-sun flag, procedural cloud coverage, reserved
     vec4 cloud_tint_0; // PNAM/JNAM tint + alpha
     vec4 cloud_tint_1;
     vec4 cloud_tint_2;
@@ -305,6 +305,92 @@ float weather_hash21(vec2 p) {
     return fract(p.x * p.y);
 }
 
+// Smooth value noise for the broad cloud body. Authored WTHR cloud DDS
+// layers are composited later as game-specific detail; this field prevents
+// gaps between those finite sprites from exposing an implausibly empty sky.
+float weather_cloud_noise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 local = fract(p);
+    vec2 smooth_local = local * local * (3.0 - 2.0 * local);
+    float a = weather_hash21(cell);
+    float b = weather_hash21(cell + vec2(1.0, 0.0));
+    float c = weather_hash21(cell + vec2(0.0, 1.0));
+    float d = weather_hash21(cell + vec2(1.0, 1.0));
+    return mix(mix(a, b, smooth_local.x), mix(c, d, smooth_local.x), smooth_local.y);
+}
+
+float weather_cloud_fbm(vec2 p) {
+    // Explicit octaves let glslang fully unroll this hot sky-only path.
+    float value = weather_cloud_noise(p) * 0.5333333;
+    p = p * 2.03 + vec2(17.13, 9.71);
+    value += weather_cloud_noise(p) * 0.2666667;
+    p = p * 2.01 + vec2(8.37, 19.19);
+    value += weather_cloud_noise(p) * 0.1333333;
+    p = p * 2.04 + vec2(13.91, 3.17);
+    value += weather_cloud_noise(p) * 0.0666667;
+    return value;
+}
+
+// Continuous procedural cloud body. The return value is premultiplication-
+// ready RGB + opacity. WTHR classification supplies broad coverage, its wind
+// advects the field, and its PNAM/JNAM tables tint the result. Using the same
+// infinite overhead plane as the authored layers keeps both representations
+// locked together during camera motion and weather transitions.
+vec4 weather_procedural_cloud(vec3 sky, vec3 dir, float elevation, vec3 sun_direction) {
+    float coverage = clamp(params.weather_aurora.z, 0.0, 1.0);
+    float horizon_fade = smoothstep(0.015, 0.16, elevation);
+    vec2 wind = params.weather_wind.xz;
+    float wind_speed = params.weather_wind.y;
+    float time = params.weather_params.w;
+    vec2 plane = dir.xz / max(elevation, 0.065);
+    vec2 drift = wind * time * (0.0012 + wind_speed * 0.0065);
+
+    // Frequencies are chosen in view-plane units rather than texture UVs:
+    // the lowest octave must still cross several cells in a near-zenith
+    // view, where `dir.xz / dir.y` spans only a small interval.
+    vec2 broad_coord = plane * 4.75 + drift;
+    float warp = weather_cloud_fbm(plane * 2.10 + drift * 0.37 + vec2(7.1, 19.3));
+    broad_coord += vec2(warp - 0.5, 0.5 - warp) * 0.72;
+    float broad = weather_cloud_fbm(broad_coord);
+    float detail = weather_cloud_fbm(plane * 16.0 - drift * 0.61 + vec2(31.7, 11.3));
+    float field = broad * 0.80 + detail * 0.20;
+    float threshold = mix(0.62, 0.34, coverage);
+    float density = smoothstep(threshold, threshold + 0.10, field);
+
+    vec4 tint = (params.cloud_tint_0 + params.cloud_tint_1
+        + params.cloud_tint_2 + params.cloud_tint_3) * 0.25;
+    float day = smoothstep(-0.08, 0.22, sun_direction.y);
+    float sun_facing = max(dot(dir, sun_direction), 0.0);
+    float edge = smoothstep(0.08, 0.72, 1.0 - density)
+        * pow(sun_facing, 10.0) * day;
+    // One offset density tap approximates optical depth toward the sun. It
+    // gives the body a darker underside and bright windward crown without a
+    // full ray march, which is important because this runs for every clear-
+    // depth pixel in the composition pass.
+    float light_field = weather_cloud_fbm(
+        broad_coord + sun_direction.xz * mix(0.18, 0.52, day)
+    );
+    float self_shadow = clamp((field - light_field) * 2.4 + 0.42, 0.0, 1.0);
+    vec3 daylight_cloud = mix(
+        vec3(0.43, 0.48, 0.56),
+        vec3(0.98, 0.96, 0.91),
+        1.0 - self_shadow
+    );
+    vec3 cloud_lit = mix(sky * 0.34, daylight_cloud, day);
+    // WTHR remains the artistic colour authority, but treating its RGB as a
+    // pure multiplier can collapse a bright cloud into the sky on records
+    // with subdued tints (notably FNV's clear weather). Preserve enough
+    // neutral daylight contrast for the body to read, then bias it toward
+    // the authored tint.
+    cloud_lit *= mix(vec3(1.0), max(tint.rgb, vec3(0.08)), 0.45);
+    cloud_lit += params.sun_color.rgb * edge * params.sun_dir.w * 0.055;
+
+    float authored_alpha = clamp(tint.a, 0.0, 1.0);
+    float opacity = density * horizon_fade
+        * mix(0.58, 0.95, coverage) * mix(0.78, 1.0, authored_alpha);
+    return vec4(cloud_lit, clamp(opacity, 0.0, 0.96));
+}
+
 float weather_star_field(vec3 dir) {
     if (dir.y <= 0.02) {
         return 0.0;
@@ -321,14 +407,15 @@ float weather_star_field(vec3 dir) {
     return rare * point * bright;
 }
 
-vec3 weather_sky_details(vec3 sky, vec3 dir, float elevation) {
+vec3 weather_sky_details(vec3 sky, vec3 dir, float elevation, float cloud_occlusion) {
     if (params.depth_params.x <= 0.5) {
         return sky;
     }
     // sun_dir.y is positive while the sun is above the horizon and is the
     // canonical day/night signal already used by the TOD system.
     float night = 1.0 - smoothstep(-0.08, 0.20, params.sun_dir.y);
-    float stars = weather_star_field(dir) * night;
+    float sky_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0);
+    float stars = weather_star_field(dir) * night * sky_visibility;
     sky += params.weather_sky.rgb * stars;
 
     // At night WTHR's SKY_SUN colour is the authored moon tint in the legacy
@@ -344,7 +431,7 @@ vec3 weather_sky_details(vec3 sky, vec3 dir, float elevation) {
     if (moon_cos > moon_edge && elevation > 0.0) {
         float moon_disc = smoothstep(moon_edge, 1.0, moon_cos);
         sky += params.sun_color.rgb * moon_disc
-            * params.weather_lightning.w * night * 0.65;
+            * params.weather_lightning.w * night * 0.65 * sky_visibility;
     }
 
     float aurora = params.weather_aurora.x * night
@@ -356,7 +443,7 @@ vec3 weather_sky_details(vec3 sky, vec3 dir, float elevation) {
         float bands = 0.5 + 0.5 * sin(dir.x * 17.0 + dir.z * 5.0 + travel);
         float curtains = 0.5 + 0.5 * sin(dir.z * 31.0 - dir.x * 7.0 + bands * 2.0);
         vec3 aurora_color = mix(vec3(0.08, 0.42, 0.28), vec3(0.18, 0.35, 0.75), curtains);
-        sky += aurora_color * aurora * bands * curtains * 0.38;
+        sky += aurora_color * aurora * bands * curtains * 0.38 * sky_visibility;
     }
 
     return sky;
@@ -456,6 +543,14 @@ vec3 compute_sky(vec3 dir) {
         sky = mix(horizon, params.sky_lower.xyz, below);
     }
 
+    // Broad cloud body first; authored WTHR layers below add their original
+    // silhouettes and colour variation without being solely responsible for
+    // sky occupancy. Accumulate opacity so celestial objects remain behind
+    // both representations instead of painting over cloud cover.
+    vec4 procedural_cloud = weather_procedural_cloud(sky, dir, elevation, sun_direction);
+    sky = mix(sky, procedural_cloud.rgb, procedural_cloud.a);
+    float cloud_occlusion = procedural_cloud.a;
+
     // Cloud layer 0 (from WTHR cloud_textures[0]).
     //
     // Project the upper hemisphere onto an infinite horizontal plane
@@ -486,7 +581,9 @@ vec3 compute_sky(vec3 dir) {
         float horizon_fade = smoothstep(0.0, 0.12, elevation);
         vec4 tint = params.cloud_tint_0;
         cloud.rgb *= tint.rgb;
-        sky = mix(sky, cloud.rgb, cloud.a * tint.a * horizon_fade);
+        float layer_alpha = cloud.a * tint.a * horizon_fade;
+        sky = mix(sky, cloud.rgb, layer_alpha);
+        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha);
     }
 
     // Cloud layer 1 (WTHR CNAM — higher-altitude deck, opposite drift direction).
@@ -501,7 +598,9 @@ vec3 compute_sky(vec3 dir) {
         float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_1 = params.cloud_tint_1;
         cloud_1.rgb *= tint_1.rgb;
-        sky = mix(sky, cloud_1.rgb, cloud_1.a * tint_1.a * horizon_fade_1);
+        float layer_alpha_1 = cloud_1.a * tint_1.a * horizon_fade_1;
+        sky = mix(sky, cloud_1.rgb, layer_alpha_1);
+        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_1);
     }
 
     // Cloud layer 2 (WTHR ANAM, M33.1) — same projection / fade as layer 1.
@@ -514,7 +613,9 @@ vec3 compute_sky(vec3 dir) {
         float horizon_fade_2 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_2 = params.cloud_tint_2;
         cloud_2.rgb *= tint_2.rgb;
-        sky = mix(sky, cloud_2.rgb, cloud_2.a * tint_2.a * horizon_fade_2);
+        float layer_alpha_2 = cloud_2.a * tint_2.a * horizon_fade_2;
+        sky = mix(sky, cloud_2.rgb, layer_alpha_2);
+        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_2);
     }
 
     // Cloud layer 3 (WTHR BNAM, M33.1) — same projection / fade as layer 1.
@@ -527,7 +628,9 @@ vec3 compute_sky(vec3 dir) {
         float horizon_fade_3 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_3 = params.cloud_tint_3;
         cloud_3.rgb *= tint_3.rgb;
-        sky = mix(sky, cloud_3.rgb, cloud_3.a * tint_3.a * horizon_fade_3);
+        float layer_alpha_3 = cloud_3.a * tint_3.a * horizon_fade_3;
+        sky = mix(sky, cloud_3.rgb, layer_alpha_3);
+        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_3);
     }
 
     // Sun disc: bright circular spot with a soft edge.
@@ -590,7 +693,8 @@ vec3 compute_sky(vec3 dir) {
             disc_color = sun_col * sprite.rgb;
         }
 
-        sky += disc_color * sun_intensity * params.weather_sky.w * disc;
+        float sun_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0) * 0.94;
+        sky += disc_color * sun_intensity * params.weather_sky.w * disc * sun_visibility;
     }
 
     // Sun glow: soft radial halo around the sun.
@@ -612,9 +716,10 @@ vec3 compute_sky(vec3 dir) {
     // without washing the rest of the sky.
     float glow = max(cos_angle, 0.0);
     glow = pow(glow, 8.0);
-    sky += sun_col * glow * 0.10 * sun_intensity * params.weather_sky.w;
+    float glow_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0) * 0.82;
+    sky += sun_col * glow * 0.10 * sun_intensity * params.weather_sky.w * glow_visibility;
 
-    return weather_sky_details(sky, dir, elevation);
+    return weather_sky_details(sky, dir, elevation, cloud_occlusion);
 }
 
 void main() {

@@ -1188,6 +1188,10 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
     let angle = (wthr.wind_direction as f32).to_radians();
 
     WeatherSkyState {
+        // The same WTHR classification that controls atmospheric occupancy
+        // is the stable cross-game signal for broad cloud cover. Individual
+        // PNAM/JNAM alpha tables still shape the authored detail layers.
+        cloud_coverage: fog_coverage_from_weather(wthr.classification),
         cloud_tints,
         precipitation: precipitation_components(wthr.classification),
         thunder_frequency: wthr.thunder_frequency as f32 / 255.0,
@@ -3347,6 +3351,7 @@ mod tests {
             let translated = translate_weather(&weather, None);
             assert_eq!(translated.fog_media[0].coverage, expected);
             assert_eq!(translated.fog_media[1].coverage, expected);
+            assert_eq!(translated.weather.cloud_coverage, expected);
             let expected_precipitation = if classification & WTHR_RAINY != 0 {
                 1.0
             } else if classification & WTHR_SNOW != 0 {

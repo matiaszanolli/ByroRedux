@@ -912,7 +912,9 @@ pub(super) fn build_composite_params(
             } else {
                 0.0
             },
-            0.0,
+            // Broad procedural-cloud occupancy. Reuses the first reserved
+            // lane so CompositeParams keeps its established 480-byte ABI.
+            sky_params.weather.cloud_coverage,
             0.0,
         ],
         cloud_tint_0: sky_params.weather.cloud_tints[0],

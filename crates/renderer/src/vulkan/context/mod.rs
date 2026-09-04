@@ -769,6 +769,9 @@ pub struct SkyDalcCube {
 /// the renderer remains independent of WTHR's per-game byte layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkyWeatherParams {
+    /// Broad procedural cloud occupancy in `[0, 1]`. Authored cloud DDS
+    /// layers provide weather-specific detail on top of this continuous body.
+    pub cloud_coverage: f32,
     /// `[r, g, b, alpha]` cloud tint for the four compatibility layers.
     pub cloud_tints: [[f32; 4]; 4],
     /// `[rain, snow]` precipitation intensity.
@@ -793,6 +796,7 @@ pub struct SkyWeatherParams {
 impl Default for SkyWeatherParams {
     fn default() -> Self {
         Self {
+            cloud_coverage: 0.35,
             cloud_tints: [[1.0, 1.0, 1.0, 1.0]; 4],
             precipitation: [0.0; 2],
             thunder_frequency: 0.0,

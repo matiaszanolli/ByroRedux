@@ -114,7 +114,7 @@ pub struct CompositeParams {
     pub weather_lightning: [f32; 4],
     /// Stars RGB and sun-glare multiplier.
     pub weather_sky: [f32; 4],
-    /// Aurora intensity, follows-sun flag, and reserved lanes.
+    /// Aurora intensity, follows-sun flag, procedural cloud coverage, reserved.
     pub weather_aurora: [f32; 4],
     /// Current PNAM/JNAM cloud tints and alpha multipliers.
     pub cloud_tint_0: [f32; 4],
@@ -1786,6 +1786,37 @@ mod composite_params_layout_tests {
         assert!(
             !shader.contains("depth >= 0.9999") && !shader.contains("depth < 0.9999"),
             "composite depth classification must reserve only the exact clear value for background"
+        );
+    }
+
+    #[test]
+    fn procedural_cloud_body_composes_with_authored_layers_and_occludes_celestials() {
+        let shader = include_str!("../../shaders/composite.frag");
+
+        for needle in [
+            "float weather_cloud_fbm(vec2 p)",
+            "vec4 weather_procedural_cloud(",
+            "float coverage = clamp(params.weather_aurora.z, 0.0, 1.0);",
+            "vec4 procedural_cloud = weather_procedural_cloud(",
+            "cloud_occlusion = 1.0 - (1.0 - cloud_occlusion)",
+            "float sun_visibility = 1.0 - clamp(cloud_occlusion",
+            "float stars = weather_star_field(dir) * night * sky_visibility;",
+        ] {
+            assert!(
+                shader.contains(needle),
+                "procedural/authored cloud composition must retain `{needle}`"
+            );
+        }
+
+        let procedural = shader
+            .find("vec4 procedural_cloud = weather_procedural_cloud(")
+            .expect("procedural cloud call");
+        let authored = shader
+            .find("// Cloud layer 0 (from WTHR cloud_textures[0]).")
+            .expect("authored cloud layer");
+        assert!(
+            procedural < authored,
+            "the continuous cloud body belongs behind authored WTHR detail"
         );
     }
 

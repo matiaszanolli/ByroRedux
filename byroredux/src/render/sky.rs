@@ -133,6 +133,7 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         })
         .unwrap_or_default();
     let weather = SkyWeatherParams {
+        cloud_coverage: sky_res.weather.cloud_coverage,
         cloud_tints: sky_res.weather.cloud_tints,
         precipitation: sky_res.weather.precipitation,
         thunder_frequency: sky_res.weather.thunder_frequency,

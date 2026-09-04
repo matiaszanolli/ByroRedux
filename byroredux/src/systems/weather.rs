@@ -513,6 +513,7 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
     ];
     let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
     WeatherSkyState {
+        cloud_coverage: lerp1(a.cloud_coverage, b.cloud_coverage, t),
         cloud_tints,
         precipitation: [
             lerp1(a.precipitation[0], b.precipitation[0], t),
