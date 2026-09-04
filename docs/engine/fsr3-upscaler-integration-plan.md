@@ -846,48 +846,38 @@ unexercised.
    recovered and net frame recovery separately, so the gross pixel saving is
    never quoted as the player-visible win.
 
-   **Current table — stepped camera, engine `34074b93`, 2026-08-14 (#2835).**
-   Raw rows: `docs/audits/BENCH_stepped-camera_34074b93.tsv`. 75 runs, zero
+   **Current table — stepped camera, engine `2da754e7`, 2026-09-03.**
+   Raw rows: `docs/audits/BENCH_stepped-camera_2da754e7.tsv`. 75 runs, zero
    failures, every scene-state fingerprint gate passing.
 
    | scene | TAA | FSR Quality | net recovery |
    |---|---:|---:|---:|
-   | Cornell (37 ent) | 175.7 fps / 5.69 ms | 277.6 fps / 3.60 ms | +2.09 ms (+37%) |
-   | Prospector (3757 ent) | 71.0 fps / 14.08 ms | 129.2 fps / 7.74 ms | +6.34 ms (+45%) |
-   | Whiterun (5183 ent) | 89.9 fps / 11.12 ms | 157.5 fps / 6.35 ms | +4.77 ms (+43%) |
-   | MedTek (32920 ent) | 42.5 fps / 23.52 ms | 69.4 fps / 14.40 ms | +9.12 ms (+39%) |
-   | Dugout Inn (7346 ent) | 81.9 fps / 12.21 ms | 103.9 fps / 9.63 ms | +2.58 ms (+21%) |
+   | Cornell (37 ent) | 99.9 fps / 10.01 ms | 133.8 fps / 7.47 ms | +2.54 ms (+25%) |
+   | Prospector (3146 ent) | 74.0 fps / 13.51 ms | 95.8 fps / 10.43 ms | +3.08 ms (+23%) |
+   | Whiterun (5765 ent) | 89.9 fps / 11.12 ms | 108.5 fps / 9.22 ms | +1.90 ms (+17%) |
+   | MedTek (39537 ent) | 27.1 fps / 36.95 ms | 46.8 fps / 21.36 ms | +15.59 ms (+42%) |
+   | Dugout Inn (11592 ent) | 96.4 fps / 10.38 ms | 102.6 fps / 9.75 ms | +0.63 ms (+6%) |
 
-   > **Not comparable with the superseded table below**, and the gap is not a
-   > regression. Three things changed at once: the workload (`f19f7f15` swapped
-   > a parked capture for `--bench-mode renderer-stepped --bench-camera orbit`,
-   > so the camera now moves and every frame pays disocclusion), the framing
-   > (`76373774` fixed the orbit/dolly radius, which had been the camera's
-   > distance from the **world origin** — Prospector and Dugout were previously
-   > rendering an *empty view*, `gpu_main_render` 0.010 ms against 1214 draws),
-   > and the engine (`4de5e78e` corrected `viewSpaceToMetersFactor`, which per
-   > #2834 shifts FSR's own distance-tuned thresholds — that shift *is* the
-   > measurement of the fix). Entity counts also moved with content work.
-   >
-   > What survives the methodology change is the shape of the result, which is
-   > the part the default switch rests on: FSR Quality is a net win on every
-   > scene, and the ordering across presets is unchanged.
+   The preceding record was 1,059 commits old, entity counts moved materially,
+   and the run used shared desktop hardware, so old-vs-new absolute deltas are
+   not attributed to individual code changes. The decision shape remains
+   stable: Quality wins on every scene (+6% to +42%), while Performance reaches
+   +27% to +50%.
 
-   The upscale dispatch costs 0.15–0.23 ms and presentation ~0.01 ms, both
-   effectively flat across scenes — so on every game scene the net recovery
-   tracks the render-work recovery closely, and the preset's cost is a rounding
-   error against what it saves.
+   The upscale dispatch is generally ~0.15–0.23 ms and presentation remains
+   ~0.01 ms. **Native AA is a net loss everywhere** (−2% to −15%), the expected
+   result when reconstruction is paid at 1.0× without saving render pixels.
 
-   **Native AA is at best break-even and usually a net loss** (−5% to +1%;
-   Prospector's +1% is inside its own ±0.22 ms run spread, i.e. not a win).
-   That is the expected result, not a defect: at 1.0× it pays reconstruction
-   with no pixel savings. It exists to separate reconstruction quality from
-   upscaling quality, and should not be offered as a performance option.
+   **Dugout Inn remains the weakest Quality case (+6%)**. MedTek is strongest
+   (+42%), and its Quality result beats Performance in wall time in this
+   capture because fixed/CPU work and shared-desktop variance dominate the
+   final resolution step.
 
-   **Dugout Inn is the weakest case for Quality (+21%)** and the one scene
-   where the preset ladder matters most — Performance recovers +59% there. Its
-   render-resolution work (8.87 ms at Quality) stays a larger share of the
-   frame than elsewhere, so less of the frame is upscaler-addressable.
+   Two discarded attempts also exposed and fixed an integrity bug: repeated
+   focus-stealing benchmark windows could accept incidental gameplay input and
+   activate a door into exterior streaming. `2da754e7` makes finite named
+   benchmarks own input until their summary is printed; the official pass was
+   rebuilt from that exact commit.
 
    <details><summary>Superseded — parked camera, harness <code>e153b50c</code>, 2026-07-24</summary>
 

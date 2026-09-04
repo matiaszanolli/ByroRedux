@@ -391,27 +391,23 @@ The per-frame work split across helper methods on `App`:
 
 ## Per-frame timing reference
 
-Bench-of-record numbers (RTX 4070 Ti, Ryzen 9 7950X), from the
-R6a-stale-13 refresh at commit `4e2ebe8c` (2026-05-28). See
+Bench-of-record native-TAA numbers (RTX 4070 Ti, Ryzen 9 7950X), from the
+75-run stepped-camera refresh at commit `2da754e7` (2026-09-03). See
 [ROADMAP.md](../../ROADMAP.md) for the authoritative, continuously
 refreshed bench table:
 
 | Cell | Entities | FPS | Frame | Fence | Draws |
 |---|---|---|---|---|---|
-| FNV Prospector Saloon (interior) | 3507 | 71.4 | 14.00 ms | 11.65 ms | 1225 |
-| Skyrim SE Whiterun Bannered Mare (interior) | 3211 | 329.8 | 3.03 ms | 1.01 ms | 1296 |
-| FO4 MedTekResearch01 (interior) | 15546 | 90.7 | 11.02 ms | 4.73 ms | 8304 |
+| FNV Prospector Saloon (interior) | 3146 | 74.0 | 13.51 ms | 10.80 ms | 928 |
+| Skyrim SE Whiterun Bannered Mare (interior) | 5765 | 89.9 | 11.12 ms | 7.59 ms | 1260 |
+| FO4 MedTekResearch01 (interior) | 39537 | 27.1 | 36.95 ms | 15.53 ms | 13545 |
 
-Whiterun is the control bench (Skyrim ships real `bhk` collision, so its
-entity count is stable); it rose +14.6% FPS over the 125-commit window vs
-the prior `a9bbe8d1` record, confirming the steady-state hot path did not
-regress. FNV and FO4 grew their entity counts ~37–42% after #1294 began
-synthesizing static-trimesh colliders for architecture that has no
-authored `bhk` collision — each synthesized collider adds RT BLAS
-geometry, which drove Prospector's `fence` super-linearly (2.62 → 11.65 ms)
-and its FPS down 56%. That collider cost is tracked as a follow-up
-(R6a-stale-13-collider-cost). FO4's CPU side actually improved (`brd`
-7.81 → 2.63 ms), so MedTek is now GPU-bound rather than CPU-bound.
+These are medians of three 300-frame repetitions under
+`renderer-stepped/orbit`; the full record also covers Cornell and FO4 Dugout
+Inn plus all four FSR presets. Every repetition passed the entity/TLAS/state
+fingerprint gate. Because the prior record was 1,059 commits old and scene
+populations moved, the refresh replaces stale absolute claims rather than
+attributing old-vs-new differences to individual renderer changes.
 
 The CPU game-loop work itself (scheduler.run + build_render_data) stays
 well under the GPU path. The debug-UI Metrics panel breaks the per-frame

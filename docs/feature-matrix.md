@@ -7,9 +7,8 @@ run the engine, what do you see?
 **Legend:** ✓ Working · ~ Partial / known gaps · ✗ Not started · — Not applicable
 
 **Bench record:** Numbers in the *Cells* row reference the stepped-camera
-75-run matrix (`34074b93`, 2026-08-14). It is intentionally a dated record and
-is currently beyond the 30-commit freshness gate; see
-[ROADMAP.md](../ROADMAP.md) for the live staleness warning and repro commands.
+75-run matrix (`2da754e7`, 2026-09-03): all 75 state-gated runs accepted. See
+[ROADMAP.md](../ROADMAP.md) for the full preset table and repro commands.
 
 ---
 
@@ -21,7 +20,7 @@ is currently beyond the 30-commit freshness gate; see
 | **Exterior grid (7×7)** | bench pending | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **LAND heightmap + splatting** | parse ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **World streaming (M40)** | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| **Confirmed bench** | device check pending | device check pending | 3 757 ent · 71.0 FPS TAA | 5 183 ent · 89.9 FPS TAA | 32 920 ent · 42.5 FPS TAA | — | Cydonia walkable |
+| **Confirmed bench** | device check pending | device check pending | 3 146 ent · 74.0 FPS TAA | 5 765 ent · 89.9 FPS TAA | 39 537 ent · 27.1 FPS TAA | — | Cydonia walkable |
 
 **Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — the wiring
 is implemented and game-agnostic; only an on-device exterior render bench

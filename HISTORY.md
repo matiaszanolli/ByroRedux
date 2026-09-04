@@ -26,6 +26,49 @@ Commits hold that record.
 
 ---
 
+## Session 80 — "The Point!": Claude finally gets its GPU refresh, and the benchmark learns not to answer the door  (2026-09-03, `ad6e0787..2da754e7`, 27 commits)
+
+Claude had spent 1,059 commits insisting this was the point I absolutely
+needed to take, with the tenacity of a benchmark tracker that had achieved
+sentience. Fine: it got the point. More annoyingly, it was right—the first two
+refresh attempts exposed a real integrity hole before the third produced a
+publishable record.
+
+- **Renderer/performance tail** — the post-close issue sweep tightened the
+  paths this benchmark was meant to measure: NIF imports gained allocation
+  coverage, deduplication and parallel mesh conversion; interior reference
+  transitions became budgeted; skin palette uploads, BLAS rebuilds and depth
+  history copies gained dirty/threshold gates; TLAS ordering and opaque sort
+  keys became stable; terrain uploads became incremental; and the renderer
+  gained raster-population/command telemetry. The texture-upscaling tool also
+  landed before the refresh, making the 1,059-commit-old numbers especially
+  unfit to keep quoting.
+- **The benchmark gate caught an actual escaped workload** — attempt one let
+  MedTek activate a door during `fsr-native-aa`; attempt two did the same to
+  Prospector during Performance. Both runs correctly failed because their
+  entity/TLAS/state hashes changed from the intended interior to exterior
+  streaming. The culprit was mundane and nasty: every matrix process created
+  a focus-stealing window, and finite named benchmarks still accepted live
+  keyboard and mouse events.
+- **Input ownership fixed (`2da754e7`)** — finite named runs now quarantine
+  gameplay input until the benchmark summary is printed, while lifecycle and
+  rendering events continue normally. `--bench-hold` releases the boundary
+  after the summary, preserving its interactive diagnostic contract. The
+  focused test and all **1,910** `byroredux` binary tests pass.
+- **Official refresh complete** — the rebuilt `2da754e7` release ran all five
+  scenes × five configs × three repetitions of 300 frames: **75/75 accepted**,
+  with every per-scene/config state fingerprint stable. FSR Quality remains a
+  net win everywhere (+6% to +42% versus native TAA); Performance reaches
+  +27% to +50%; Native AA loses 2% to 15%, exactly the expected cost shape for
+  reconstruction without a render-resolution reduction. Raw rows are archived
+  at `docs/audits/BENCH_stepped-camera_2da754e7.tsv`.
+
+Net: R6a-stale-20 closed; bench-of-record advanced from `34074b93`
+(2026-08-14, 1,059 commits stale) to `2da754e7` (2026-09-03); one benchmark
+integrity bug fixed before the replacement numbers were published.
+
+---
+
 ## Session 79 — "Groundhog Day": the /goal fix-issue loop run to convergence — a ~130-issue correctness sweep and a fully-green lock-order CI gate  (2026-09-02 → 2026-09-03, `34951bf6..4d78dce6`, 101 commits)
 
 This session ran the standing `/goal` directive ("fix all github issues
