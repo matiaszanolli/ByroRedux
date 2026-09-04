@@ -1590,10 +1590,26 @@ impl VulkanContext {
     /// jitter itself and the DOF gate that exists to avoid conflicting with
     /// it — must key on this, not on mode selection. Sharing one accessor
     /// is what keeps the two from drifting apart again.
+    ///
+    /// #3632 — also `false` whenever `record_upscale_pass` is about to pass
+    /// `force_native_blit: true` into `FrameUpscaler::record` (any render-
+    /// debug view that requires raw, unreconstructed output). That path
+    /// bridges straight to a native blit exactly like a missing context or a
+    /// latched `dispatch_failure` does — the frame is never reconstructed —
+    /// so it must fall out of this predicate the same way, or the jitter and
+    /// DOF gates above apply FSR's sub-pixel offset to a frame nothing ever
+    /// resolves it back out of. `self.render_debug_flags` / `render_debug_
+    /// mode` are frame-stable (only a console command changes them, never
+    /// mid-frame), so evaluating the same predicate again in
+    /// `record_upscale_pass` cannot disagree with this one.
     pub(super) fn is_fsr_dispatch_active(&self) -> bool {
         self.frame_upscaler
             .as_ref()
             .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
+            && !crate::shader_constants::render_debug_requires_raw_output(
+                self.render_debug_flags,
+                self.render_debug_mode.shader_value(),
+            )
     }
 
     pub fn draw_frame(&mut self, inputs: FrameInputs) -> Result<bool> {
@@ -2207,6 +2223,54 @@ impl VulkanContext {
         }
 
         Ok(suboptimal || present_suboptimal)
+    }
+}
+
+// #3632 — `VulkanContext::is_fsr_dispatch_active` needs a live Vulkan device
+// to exercise end-to-end (its inputs are `self.frame_upscaler` and the
+// render-debug fields), so — matching this file's `composite_params_tests`
+// / this crate's `fsr_startup_failure_promotes_to_taa_tests` pattern — this
+// pins the fix at the source level: the raw-output predicate must be AND-ed
+// into the upscaler check, never OR-ed or left independent, so it can only
+// narrow `true` to `false` and never manufacture a `true` the upscaler
+// check didn't already produce.
+#[cfg(test)]
+mod is_fsr_dispatch_active_tests {
+    fn production_src() -> &'static str {
+        include_str!("draw.rs")
+    }
+
+    #[test]
+    fn folds_the_raw_output_debug_predicate_into_the_fsr_dispatch_check() {
+        let src = production_src();
+        let fn_start = src
+            .find("pub(super) fn is_fsr_dispatch_active(&self) -> bool {")
+            .expect("is_fsr_dispatch_active must still exist with this signature");
+        let fn_end = src[fn_start..]
+            .find("\n    pub fn draw_frame(")
+            .map(|offset| fn_start + offset)
+            .expect("is_fsr_dispatch_active must be immediately followed by draw_frame");
+        let body = &src[fn_start..fn_end];
+
+        let upscaler_check_pos = body
+            .find("is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())")
+            .expect("must still start from FrameUpscaler's own dispatch-active check");
+        let raw_output_pos = body.find("render_debug_requires_raw_output(").expect(
+            "#3632 — the accessor must also gate on force_native_debug's raw-output \
+             predicate, or a debug view that bridges straight to a native blit is left \
+             jittered by a jitter gate that thinks FSR is still reconstructing",
+        );
+        assert!(
+            upscaler_check_pos < raw_output_pos,
+            "the upscaler dispatch check must come first, matching the doc comment's framing"
+        );
+        assert!(
+            body[upscaler_check_pos..raw_output_pos].contains("&&")
+                && body[upscaler_check_pos..raw_output_pos].contains('!'),
+            "the raw-output predicate must be AND-ed in as a negated (suppressing) \
+             condition, never OR-ed — it can only turn `true` into `false`, never \
+             manufacture a `true` the upscaler check didn't already produce"
+        );
     }
 }
 
