@@ -692,6 +692,30 @@ pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
     }
 }
 
+/// Pick the finest of a shared-geometry object's 3 LODs by triangle count.
+///
+/// The 3 LODs are alternative triangulations of the same surface, stored
+/// back-to-back in one index buffer; LOD index is not a reliable detail
+/// order (some objects ship lod0 ≫ lod2, others lod0 ≪ lod2), so the
+/// selection has to compare counts rather than trust index order.
+///
+/// #3641 — a tie (49 of 46,422 objects in the measured CSG corpus:
+/// alternative triangulations of one surface, visually equivalent either
+/// way) explicitly keeps the **highest** LOD index, matching the behaviour
+/// `Iterator::max_by_key`'s incidental last-wins tie rule produced before
+/// this was pulled out into its own function. Stated here so a future
+/// refactor to `max_by` (first-wins on ties) or a different iterator can't
+/// silently flip it.
+fn select_finest_lod(lod_counts: [u32; 3], lod_offsets: [u32; 3]) -> (u32, u32) {
+    let mut best = (lod_counts[0], lod_offsets[0]);
+    for i in 1..3 {
+        if lod_counts[i] >= best.0 {
+            best = (lod_counts[i], lod_offsets[i]);
+        }
+    }
+    best
+}
+
 /// Resolve every `BSPackedCombinedSharedGeomDataExtra` object in a
 /// precombined `_oc.nif` scene, producing one spawnable [`ImportedMesh`] per
 /// placed instance (M49). Pure (no GPU / ECS) so it is unit-testable against
