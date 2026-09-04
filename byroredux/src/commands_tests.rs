@@ -765,10 +765,12 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
     paths.base_color = Some(r"textures\architecture\wall_d.dds".to_string());
     paths.normal = Some(r"textures\architecture\wall_n.dds".to_string());
     paths.environment = Some(r"textures\cubemaps\interior.dds".to_string());
+    paths.glass_dirt_overlay = Some(r"textures\effects\glass_dirt.dds".to_string());
     let mut sources = MaterialTextureSet::default();
-    sources.base_color = MaterialTextureSource::MeshMaterial;
+    sources.base_color = MaterialTextureSource::NifTextureSet;
     sources.normal = MaterialTextureSource::DerivedNormal;
     sources.environment = MaterialTextureSource::TxstOverride;
+    sources.glass_dirt_overlay = MaterialTextureSource::Bgem;
     world.insert(
         entity,
         MaterialTextureDebugInfo {
@@ -781,6 +783,7 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
     handles.base_color = 17;
     handles.normal = 18;
     handles.environment = 19;
+    handles.glass_dirt_overlay = 20;
     world.insert(
         entity,
         MaterialTextureHandles {
@@ -798,7 +801,9 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
     assert!(out.contains("flags=0x000000a0"), "flag word missing: {out}");
     assert!(out.contains("lobe=disney-pbr"), "lobe missing: {out}");
     assert!(
-        out.contains("base_color") && out.contains("mesh-material") && out.contains(r"wall_d.dds"),
+        out.contains("base_color")
+            && out.contains("nif-texture-set")
+            && out.contains(r"wall_d.dds"),
         "base slot provenance missing: {out}"
     );
     assert!(
@@ -811,6 +816,13 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
             && out.contains("txst-override")
             && out.contains("cube"),
         "cubemap binding/provenance missing: {out}"
+    );
+    assert!(
+        out.contains("glass_dirt_overlay")
+            && out.contains("bgem")
+            && out.contains("present")
+            && out.contains(r"glass_dirt.dds"),
+        "new canonical roles must participate in the generic dump walk: {out}"
     );
 }
 

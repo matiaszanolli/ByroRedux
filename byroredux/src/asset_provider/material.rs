@@ -2,7 +2,7 @@ use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, BgsmFile, TemplateCache, TemplateResolver};
-use byroredux_nif::import::ImportedMaterial;
+use byroredux_nif::import::{ImportedMaterial, ImportedTextureSource, MaterialTextureSet};
 use byroredux_sfmaterial::{CdbHeaderInfo, ComponentDatabaseFile};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1038,6 +1038,51 @@ impl MergeOutcome {
     }
 }
 
+/// Mark only the texture roles an external material actually filled. Inline
+/// NIF values win the merge and retain `NifTextureSet`; this before/after
+/// comparison records that precedence instead of guessing from the final
+/// material path in `mat.dump`.
+fn record_external_texture_sources(
+    material: &mut ImportedMaterial,
+    before: &MaterialTextureSet<Option<byroredux_core::string::FixedString>>,
+    source: ImportedTextureSource,
+) {
+    macro_rules! record {
+        ($field:ident) => {
+            if before.$field.is_none() && material.textures.$field.is_some() {
+                material.texture_sources.$field = source;
+            }
+        };
+    }
+    record!(base_color);
+    record!(normal);
+    record!(emissive);
+    record!(detail);
+    record!(smooth_spec);
+    record!(dark);
+    record!(height);
+    record!(environment);
+    record!(environment_mask);
+    record!(tint);
+    record!(inner_layer);
+    record!(specular);
+    record!(lighting_mask);
+    record!(back_lighting);
+    record!(lighting);
+    record!(flow);
+    record!(wrinkle);
+    record!(greyscale_lut);
+    record!(reflectance);
+    record!(emittance_gradient);
+    record!(glass_roughness_scratch);
+    record!(glass_dirt_overlay);
+    for index in 0..material.textures.decals.len() {
+        if before.decals[index].is_none() && material.textures.decals[index].is_some() {
+            material.texture_sources.decals[index] = source;
+        }
+    }
+}
+
 /// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
 /// source-normalized NIF material payload.
 ///
@@ -1063,6 +1108,7 @@ pub(crate) fn merge_external_material(
     provider: &mut MaterialProvider,
     pool: &mut byroredux_core::string::StringPool,
 ) -> MergeOutcome {
+    let textures_before = material.textures;
     let Some(path_sym) = material.material_path else {
         return MergeOutcome::Unresolved;
     };
@@ -1960,6 +2006,13 @@ pub(crate) fn merge_external_material(
     // `touched == false` is not currently possible — the `PresenceOnly`
     // arm is deliberate rather than defensive, and stays correct if a
     // future arm resolves without forwarding anything.
+    let source = match dispatch_kind {
+        Some(MaterialKind::Bgsm) => ImportedTextureSource::Bgsm,
+        Some(MaterialKind::Bgem) => ImportedTextureSource::Bgem,
+        None => ImportedTextureSource::Mat,
+    };
+    record_external_texture_sources(material, &textures_before, source);
+
     if touched {
         MergeOutcome::Merged
     } else {

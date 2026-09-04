@@ -928,6 +928,19 @@ impl VulkanContext {
     /// fixed position `record_post_passes` calls it from, AFTER
     /// `record_composite_pass` and BEFORE `record_upscale_pass`.
     fn record_bloom_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // Correctness views are already final in the composite scene image.
+        // Bloom is applied in-place *after* composite, so the shader's own
+        // raw-output early return cannot protect them here. Without this
+        // gate a flat categorical value such as 0.10 was raised to ~0.175,
+        // invalidating the Cornell material oracle even though composite and
+        // presentation both selected their raw paths.
+        if crate::shader_constants::render_debug_requires_raw_output(
+            self.render_debug_flags,
+            self.render_debug_mode.shader_value(),
+        ) {
+            return;
+        }
+
         // SAFETY: `cmd` is recording outside a render pass, and bloom's input
         // view, pipeline resources, and timers are live for the current frame.
         unsafe {
@@ -1286,6 +1299,37 @@ mod tests {
             "record_neutral_frame must be called from exactly one place — \
              the latch-gated `if should_clear` — not unconditionally at \
              each skip site"
+        );
+    }
+
+    /// Bloom mutates composite's scene image after the composite shader has
+    /// returned, so raw correctness views need a CPU-side gate here; their
+    /// shader early returns cannot prevent the later in-place add.
+    #[test]
+    fn record_bloom_pass_skips_raw_correctness_views_before_dispatch() {
+        let full_src = include_str!("post_passes.rs");
+        let test_mod_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        let src = &full_src[..test_mod_start];
+        let fn_start = src
+            .find("fn record_bloom_pass(")
+            .expect("record_bloom_pass must still exist");
+        let fn_end = src[fn_start..]
+            .find("\n    fn record_composite_pass(")
+            .map(|rel| fn_start + rel)
+            .expect("record_composite_pass must still follow record_bloom_pass");
+        let body = &src[fn_start..fn_end];
+        let gate = body
+            .find("render_debug_requires_raw_output(")
+            .expect("bloom must consult the shared raw-output policy");
+        let dispatch = body
+            .find("bloom.dispatch(")
+            .expect("bloom dispatch must still exist");
+
+        assert!(
+            gate < dispatch && body[gate..dispatch].contains("return;"),
+            "record_bloom_pass must return before dispatch for raw correctness views"
         );
     }
 }

@@ -180,7 +180,32 @@ name = "Starfield"
 subdir = "Starfield/Data"
 root = ""
 esm = "Starfield.esm"
-default_bsas = []
-default_textures_bsas = []
-default_materials_bsas = []
-sample_cells = []
+# R5.5 material-provider matrix baseline. MeshesPatch must precede the base
+# archives because archive lookup is first-listed-wins. LOD/face archives are
+# included for the same complete Cydonia path documented by game-compatibility.
+default_bsas = [
+    "Starfield - MeshesPatch.ba2",
+    "Starfield - Meshes01.ba2",
+    "Starfield - Meshes02.ba2",
+    "Starfield - LODMeshesPatch.ba2",
+    "Starfield - LODMeshes.ba2",
+    "Starfield - FaceMeshes.ba2",
+]
+default_textures_bsas = [
+    "Starfield - TexturesPatch01.ba2",
+    "Starfield - TexturesPatch02.ba2",
+    "Starfield - GeneratedTextures.ba2",
+    "Starfield - Textures01.ba2",
+    "Starfield - Textures02.ba2",
+    "Starfield - Textures03.ba2",
+    "Starfield - Textures04.ba2",
+    "Starfield - Textures05.ba2",
+    "Starfield - Textures06.ba2",
+    "Starfield - Textures07.ba2",
+    "Starfield - Textures08.ba2",
+    "Starfield - Textures09.ba2",
+    "Starfield - Textures10.ba2",
+    "Starfield - Textures11.ba2",
+]
+default_materials_bsas = ["Starfield - Materials.ba2"]
+sample_cells = ["citycydoniamainlevel"]

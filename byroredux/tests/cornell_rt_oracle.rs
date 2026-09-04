@@ -14,18 +14,58 @@
 //! and normal-mapped probe geometry.
 
 use image::RgbImage;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const FRAMES: &str = "30";
 const DIRECT_DEBUG: &str = "0x4000000";
 const SHADOW_VISIBILITY_DEBUG: &str = "0x84000000";
 const COMPOSITE_DEBUG: &str = "0";
+static CAPTURE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+/// Keeps ad-hoc test artifacts temporary while allowing the RT integration
+/// runner to retain every capture and process log. The workflow sets
+/// `BYROREDUX_RT_ARTIFACT_DIR`; ordinary local runs preserve the old tempdir
+/// behaviour.
+struct OracleArtifacts {
+    path: PathBuf,
+    _temporary: Option<tempfile::TempDir>,
+}
+
+impl OracleArtifacts {
+    fn new(test_name: &str) -> Self {
+        if let Some(root) = std::env::var_os("BYROREDUX_RT_ARTIFACT_DIR") {
+            let path = PathBuf::from(root).join(test_name);
+            std::fs::create_dir_all(&path).unwrap_or_else(|error| {
+                panic!(
+                    "create persistent Cornell artifact dir {}: {error}",
+                    path.display()
+                )
+            });
+            Self {
+                path,
+                _temporary: None,
+            }
+        } else {
+            let temporary = tempfile::tempdir().expect("create Cornell oracle tempdir");
+            let path = temporary.path().to_path_buf();
+            Self {
+                path,
+                _temporary: Some(temporary),
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
-    let workdir = tempfile::tempdir().expect("create Cornell oracle tempdir");
+    let workdir = OracleArtifacts::new("l0-l2-transport");
 
     let l0 = capture(
         workdir.path(),
@@ -76,7 +116,7 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_l3_l4_volumetric_partition_does_not_leak() {
-    let workdir = tempfile::tempdir().expect("create volumetric Cornell tempdir");
+    let workdir = OracleArtifacts::new("l3-l4-volumetrics");
     let l3 = capture(
         workdir.path(),
         "l3",
@@ -90,7 +130,8 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
         "l4",
         COMPOSITE_DEBUG,
         "lights_uploaded=1",
-        "tlas_emitted=5",
+        // Receiver plus the opaque partition; fog/light are not TLAS meshes.
+        "tlas_emitted=2",
         &[],
     );
 
@@ -124,13 +165,14 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_l5_exposes_canonical_material_lobes() {
-    let workdir = tempfile::tempdir().expect("create material Cornell tempdir");
+    let workdir = OracleArtifacts::new("l5-materials");
     let l5 = capture(
         workdir.path(),
         "l5",
         COMPOSITE_DEBUG,
         "lights_uploaded=1",
-        "tlas_emitted=2",
+        // One receiver plus the four canonical material-role probes.
+        "tlas_emitted=5",
         &[],
     );
 
@@ -163,7 +205,7 @@ fn cornell_l5_exposes_canonical_material_lobes() {
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_forced_low_blas_budget_preserves_rt_shadows() {
-    let workdir = tempfile::tempdir().expect("create forced-budget Cornell tempdir");
+    let workdir = OracleArtifacts::new("forced-blas-pressure");
     let l2 = capture(
         workdir.path(),
         "l2",
@@ -183,7 +225,7 @@ fn cornell_forced_low_blas_budget_preserves_rt_shadows() {
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_l2_visibility_is_repeatable_and_large_coordinate_stable() {
-    let workdir = tempfile::tempdir().expect("create translated Cornell tempdir");
+    let workdir = OracleArtifacts::new("l2-repeat-and-large-coordinate");
     let mut captures = Vec::new();
     for _ in 0..3 {
         captures.push(capture(
@@ -279,7 +321,8 @@ fn capture(
     expected_tlas: &str,
     extra_args: &[&str],
 ) -> RgbImage {
-    let output_path = workdir.join(format!("cornell-{rung}.png"));
+    let capture_sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let output_path = workdir.join(format!("{capture_sequence:03}-cornell-{rung}.png"));
     let output_string = output_path
         .to_str()
         .unwrap_or_else(|| panic!("non-UTF-8 output path: {output_path:?}"));
@@ -328,6 +371,14 @@ fn capture(
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("launch Cornell {rung}: {error}"));
+
+    // The integration workflow uploads this directory with `if: always()`.
+    // Retaining process logs next to the image makes a failed analytic probe
+    // diagnosable without reproducing the runner's GPU/driver state.
+    std::fs::write(output_path.with_extension("stdout.log"), &output.stdout)
+        .expect("write Cornell oracle stdout artifact");
+    std::fs::write(output_path.with_extension("stderr.log"), &output.stderr)
+        .expect("write Cornell oracle stderr artifact");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

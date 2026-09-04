@@ -122,25 +122,27 @@ pub(super) fn resolve_mesh_paths(
                 .material
                 .textures
                 .map_ref(|path| resolve_to_owned(&pool, *path));
-            let mut sources = mesh.material.textures.map_ref(|path| {
-                if path.is_some() {
-                    MaterialTextureSource::MeshMaterial
-                } else {
-                    MaterialTextureSource::Absent
-                }
-            });
+            let mut sources = mesh.material.textures.zip_map_ref(
+                &mesh.material.texture_sources,
+                |path, source| {
+                    if path.is_some() {
+                        (*source).into()
+                    } else {
+                        MaterialTextureSource::Absent
+                    }
+                },
+            );
             let resolve_effective =
-                |override_path: Option<FixedString>, mesh_path: Option<FixedString>| {
+                |override_path: Option<FixedString>,
+                 mesh_path: Option<FixedString>,
+                 mesh_source: MaterialTextureSource| {
                     if let Some(path) = override_path {
                         (
                             resolve_to_owned(&pool, Some(path)),
                             MaterialTextureSource::TxstOverride,
                         )
                     } else if let Some(path) = mesh_path {
-                        (
-                            resolve_to_owned(&pool, Some(path)),
-                            MaterialTextureSource::MeshMaterial,
-                        )
+                        (resolve_to_owned(&pool, Some(path)), mesh_source)
                     } else {
                         (None, MaterialTextureSource::Absent)
                     }
@@ -162,6 +164,7 @@ pub(super) fn resolve_mesh_paths(
             (textures.base_color, sources.base_color) = resolve_effective(
                 ov.and_then(|o| o.diffuse),
                 mesh.material.textures.base_color,
+                sources.base_color,
             );
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
             // load-time convention, not an explicit NIF slot. When the
@@ -183,8 +186,11 @@ pub(super) fn resolve_mesh_paths(
             // per-game answer, which is what a `GameKind` gate would have
             // required for FNV. A mesh on any game that really does ship the
             // sibling still gets it.
-            (textures.normal, sources.normal) =
-                resolve_effective(ov.and_then(|o| o.normal), mesh.material.textures.normal);
+            (textures.normal, sources.normal) = resolve_effective(
+                ov.and_then(|o| o.normal),
+                mesh.material.textures.normal,
+                sources.normal,
+            );
             if textures.normal.is_none() {
                 textures.normal = textures.base_color.as_deref().and_then(|base| {
                     match tex_provider {
@@ -253,16 +259,19 @@ pub(super) fn resolve_mesh_paths(
             (textures.emissive, sources.emissive) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive)),
                 mesh.material.textures.emissive,
+                sources.emissive,
             );
             // Slot 2 on the tint family (FaceTint / SkinTint / HairTint) is the
             // `*_sk.dds` skin-tint mask, not a glow map.
             (textures.tint, sources.tint) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::Tint)),
                 mesh.material.textures.tint,
+                sources.tint,
             );
             (textures.height, sources.height) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
                 mesh.material.textures.height,
+                sources.height,
             );
 
             // #3596 — Oblivion's `APPLY_HILIGHT2` parallax route. The
@@ -286,12 +295,14 @@ pub(super) fn resolve_mesh_paths(
             (textures.greyscale_lut, sources.greyscale_lut) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::GreyscaleLut)),
                 mesh.material.textures.greyscale_lut,
+                sources.greyscale_lut,
             );
             // Slot 3 on FaceTint is a complexion detail map; routing it to
             // `height` made the shader ray-march POM over a face.
             (textures.detail, sources.detail) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Detail)),
                 mesh.material.textures.detail,
+                sources.detail,
             );
             // BGSM authors smoothness/specular-strength separately from its
             // standalone specular-colour map (#3234). Neither is a raw TXST
@@ -299,18 +310,22 @@ pub(super) fn resolve_mesh_paths(
             (textures.smooth_spec, sources.smooth_spec) = resolve_effective(
                 ov.and_then(|o| o.smooth_spec),
                 mesh.material.textures.smooth_spec,
+                sources.smooth_spec,
             );
             (textures.environment, sources.environment) = resolve_effective(
                 ov.and_then(|o| pick(4, o.env, TextureRole::Environment)),
                 mesh.material.textures.environment,
+                sources.environment,
             );
             (textures.environment_mask, sources.environment_mask) = resolve_effective(
                 ov.and_then(|o| pick(5, o.env_mask, TextureRole::EnvironmentMask)),
                 mesh.material.textures.environment_mask,
+                sources.environment_mask,
             );
             (textures.inner_layer, sources.inner_layer) = resolve_effective(
                 ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer)),
                 mesh.material.textures.inner_layer,
+                sources.inner_layer,
             );
             // Specular comes from Skyrim/FO4 slot 7 or FO76 slot 6. The table
             // chooses the source; the overlay field names remain raw-slot
@@ -320,15 +335,20 @@ pub(super) fn resolve_mesh_paths(
                     .or_else(|| pick(6, o.inner, TextureRole::Specular))
                     .or_else(|| pick(7, o.specular, TextureRole::Specular))
             });
-            (textures.specular, sources.specular) =
-                resolve_effective(specular_override, mesh.material.textures.specular);
+            (textures.specular, sources.specular) = resolve_effective(
+                specular_override,
+                mesh.material.textures.specular,
+                sources.specular,
+            );
             (textures.lighting_mask, sources.lighting_mask) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::LightingMask)),
                 mesh.material.textures.lighting_mask,
+                sources.lighting_mask,
             );
             (textures.back_lighting, sources.back_lighting) = resolve_effective(
                 ov.and_then(|o| pick(7, o.specular, TextureRole::BackLighting)),
                 mesh.material.textures.back_lighting,
+                sources.back_lighting,
             );
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
             // index, so `merge_from_texture_set`'s direct `o.wrinkle` fill
@@ -352,16 +372,23 @@ pub(super) fn resolve_mesh_paths(
                         .or_else(|| pick(5, o.env_mask, TextureRole::Wrinkle))
                 }),
                 mesh.material.textures.wrinkle,
+                sources.wrinkle,
             );
             // #2594 — `lighting` / `flow` are BGSM-only roles with no
             // BSShaderTextureSet wire-slot analog either (same shape as
             // `wrinkle` above): a raw TXST/XTXR override can never
             // supply them, only a `.bgsm`/`.bgem` `material_path`
             // override via `fill_from_bgsm` can.
-            (textures.lighting, sources.lighting) =
-                resolve_effective(ov.and_then(|o| o.lighting), mesh.material.textures.lighting);
-            (textures.flow, sources.flow) =
-                resolve_effective(ov.and_then(|o| o.flow), mesh.material.textures.flow);
+            (textures.lighting, sources.lighting) = resolve_effective(
+                ov.and_then(|o| o.lighting),
+                mesh.material.textures.lighting,
+                sources.lighting,
+            );
+            (textures.flow, sources.flow) = resolve_effective(
+                ov.and_then(|o| o.flow),
+                mesh.material.textures.flow,
+                sources.flow,
+            );
             let material_path = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.material_path)
@@ -1710,7 +1737,7 @@ mod tests {
         );
         assert_eq!(
             resolved[0].sources.lighting,
-            MaterialTextureSource::MeshMaterial
+            MaterialTextureSource::NifTextureSet
         );
         assert!(resolved[0].textures.flow.is_none());
     }

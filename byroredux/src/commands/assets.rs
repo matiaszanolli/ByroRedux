@@ -842,8 +842,8 @@ mod tex_missing_tests {
         let mut paths = MaterialTextureSet::<Option<String>>::default();
         paths.normal = Some("textures/wall_n.dds".to_string());
         let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
-        sources.base_color = MaterialTextureSource::MeshMaterial;
-        sources.normal = MaterialTextureSource::MeshMaterial;
+        sources.base_color = MaterialTextureSource::NifTextureSet;
+        sources.normal = MaterialTextureSource::NifTextureSet;
         world.insert(
             e,
             MaterialTextureDebugInfo {
@@ -874,7 +874,7 @@ mod tex_missing_tests {
         world.insert(e, handles(set));
         // Every non-base role is handle 0 AND Absent — nothing fell back.
         let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
-        sources.base_color = MaterialTextureSource::MeshMaterial;
+        sources.base_color = MaterialTextureSource::NifTextureSet;
         world.insert(
             e,
             MaterialTextureDebugInfo {

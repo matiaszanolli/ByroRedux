@@ -351,9 +351,14 @@ pub(crate) enum MaterialTextureSource {
     /// No path was authored or synthesized for this semantic role.
     #[default]
     Absent,
-    /// The effective path arrived with the imported mesh material. This can
-    /// be an inline NIF texture set or a path filled by BGSM/BGEM/.mat merge.
-    MeshMaterial,
+    /// The effective path came from an inline NIF texture set/property.
+    NifTextureSet,
+    /// An external BGSM chain filled the canonical role.
+    Bgsm,
+    /// An external BGEM filled the canonical role.
+    Bgem,
+    /// A Starfield `.mat`/CDB record filled the canonical role.
+    Mat,
     /// A placement-level XATO/XTNM/XTXR texture-set override won.
     TxstOverride,
     /// The legacy `<base>_n.dds` convention synthesized a normal path.
@@ -366,10 +371,24 @@ impl MaterialTextureSource {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Absent => "absent",
-            Self::MeshMaterial => "mesh-material",
+            Self::NifTextureSet => "nif-texture-set",
+            Self::Bgsm => "bgsm",
+            Self::Bgem => "bgem",
+            Self::Mat => "mat",
             Self::TxstOverride => "txst-override",
             Self::DerivedNormal => "derived-normal",
             Self::RuntimeOverride => "runtime-override",
+        }
+    }
+}
+
+impl From<byroredux_nif::import::ImportedTextureSource> for MaterialTextureSource {
+    fn from(source: byroredux_nif::import::ImportedTextureSource) -> Self {
+        match source {
+            byroredux_nif::import::ImportedTextureSource::NifTextureSet => Self::NifTextureSet,
+            byroredux_nif::import::ImportedTextureSource::Bgsm => Self::Bgsm,
+            byroredux_nif::import::ImportedTextureSource::Bgem => Self::Bgem,
+            byroredux_nif::import::ImportedTextureSource::Mat => Self::Mat,
         }
     }
 }

@@ -1460,6 +1460,7 @@ impl MaterialInfo {
 
         super::types::ImportedMaterial {
             textures,
+            texture_sources: super::types::MaterialTextureSet::default(),
             water_shader_flags: self.water_shader_flags,
             is_water_shader: self.is_water_shader,
             material_path: self.material_path,

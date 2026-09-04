@@ -294,6 +294,22 @@ pub use crate::blocks::node::BsRangeKind;
 /// consumers downstream of the NIF crate.
 pub use crate::blocks::tri_shape::BsSubIndexTriShapeData;
 
+/// Provenance of a canonical texture path while it is still attached to an
+/// imported NIF material.
+///
+/// Inline NIF authoring is the default. The application-side material
+/// provider changes only roles it actually fills from an external sidecar;
+/// this lets diagnostics distinguish NIF texture sets from BGSM/BGEM without
+/// teaching the renderer about either file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportedTextureSource {
+    #[default]
+    NifTextureSet,
+    Bgsm,
+    Bgem,
+    Mat,
+}
+
 /// Source-agnostic texture roles produced by NIF material translation.
 ///
 /// Game-specific slot numbers and container formats stop at the NIF import
@@ -414,6 +430,43 @@ impl<T> MaterialTextureSet<T> {
             glass_roughness_scratch: map(&self.glass_roughness_scratch),
             glass_dirt_overlay: map(&self.glass_dirt_overlay),
             decals: std::array::from_fn(|index| map(&self.decals[index])),
+        }
+    }
+
+    /// Zip two canonical role sets without repeating their field order at
+    /// every pipeline boundary.
+    pub fn zip_map_ref<U, V>(
+        &self,
+        other: &MaterialTextureSet<U>,
+        mut map: impl FnMut(&T, &U) -> V,
+    ) -> MaterialTextureSet<V> {
+        MaterialTextureSet {
+            base_color: map(&self.base_color, &other.base_color),
+            normal: map(&self.normal, &other.normal),
+            emissive: map(&self.emissive, &other.emissive),
+            detail: map(&self.detail, &other.detail),
+            smooth_spec: map(&self.smooth_spec, &other.smooth_spec),
+            dark: map(&self.dark, &other.dark),
+            height: map(&self.height, &other.height),
+            environment: map(&self.environment, &other.environment),
+            environment_mask: map(&self.environment_mask, &other.environment_mask),
+            tint: map(&self.tint, &other.tint),
+            inner_layer: map(&self.inner_layer, &other.inner_layer),
+            specular: map(&self.specular, &other.specular),
+            lighting_mask: map(&self.lighting_mask, &other.lighting_mask),
+            back_lighting: map(&self.back_lighting, &other.back_lighting),
+            lighting: map(&self.lighting, &other.lighting),
+            flow: map(&self.flow, &other.flow),
+            wrinkle: map(&self.wrinkle, &other.wrinkle),
+            greyscale_lut: map(&self.greyscale_lut, &other.greyscale_lut),
+            reflectance: map(&self.reflectance, &other.reflectance),
+            emittance_gradient: map(&self.emittance_gradient, &other.emittance_gradient),
+            glass_roughness_scratch: map(
+                &self.glass_roughness_scratch,
+                &other.glass_roughness_scratch,
+            ),
+            glass_dirt_overlay: map(&self.glass_dirt_overlay, &other.glass_dirt_overlay),
+            decals: std::array::from_fn(|index| map(&self.decals[index], &other.decals[index])),
         }
     }
 
@@ -543,6 +596,9 @@ pub struct ImportedMaterial {
     /// Whether the source shader is a dedicated mesh-water shader.
     pub is_water_shader: bool,
     pub textures: MaterialTextureSet<Option<FixedString>>,
+    /// Per-role source retained for cold-path diagnostics. A role with no
+    /// path is still treated as absent downstream regardless of this value.
+    pub texture_sources: MaterialTextureSet<ImportedTextureSource>,
     pub material_path: Option<FixedString>,
     pub has_alpha: bool,
     pub src_blend_mode: u8,
@@ -694,6 +750,7 @@ impl Default for ImportedMaterial {
             water_shader_flags: 0,
             is_water_shader: false,
             textures: MaterialTextureSet::default(),
+            texture_sources: MaterialTextureSet::default(),
             material_path: None,
             has_alpha: false,
             src_blend_mode: 6,

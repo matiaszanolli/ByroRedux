@@ -115,10 +115,14 @@ expected constant directional response, and L2 is a white visibility field
 with the blocker plus its predicted hard shadow in black. L3/L4 add a
 volumetric non-leakage gate; L5 adds categorical material populations. The
 canonical 432-byte `GpuMaterial` now also consumes BGEM glass optics and
-source-normalized soft/rim/back/Fresnel/palette inputs. Remaining recovery
-gates are scheduling L5 on the RT-capable worker and publishing a
-provider-backed five-game capture matrix; the detailed status is maintained
-in the linked recovery plan. Forced BLAS pressure
+source-normalized soft/rim/back/Fresnel/palette inputs. On 2026-09-03 the full
+ignored hardware suite passed serially on the RTX 4070 Ti (five tests covering
+L0-L5, forced BLAS pressure, repeated visibility, and the million-unit
+translation). That run caught a post-composite bloom add contaminating raw
+correctness views; bloom now obeys the shared raw-output policy before it can
+mutate the scene image. Remaining recovery gates are publishing durable RT-CI
+comparison artifacts and a provider-backed five-game capture matrix; the
+detailed status is maintained in the linked recovery plan. Forced BLAS pressure
 is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
 draws are protected before recovery builds, missing retained rigid BLAS are
 restored from dedicated or global geometry buffers before TLAS publication,

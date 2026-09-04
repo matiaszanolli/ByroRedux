@@ -231,6 +231,64 @@ fn bgsm_merge_forwards_inner_layer_texture() {
     assert_eq!(pool.resolve(handle), Some("effects/glass/icelayer.dds"));
 }
 
+#[test]
+fn external_merge_records_only_the_roles_it_filled() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/provenance.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                diffuse_texture: "bgsm_diffuse.dds".into(),
+                normal_texture: "bgsm_normal.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.textures.base_color = Some(pool.intern("inline_diffuse.dds"));
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.texture_sources.base_color,
+        byroredux_nif::import::ImportedTextureSource::NifTextureSet,
+        "the inline NIF role wins and keeps its source"
+    );
+    assert_eq!(
+        mesh.material.texture_sources.normal,
+        byroredux_nif::import::ImportedTextureSource::Bgsm,
+        "the role filled by the external chain records BGSM provenance"
+    );
+}
+
+#[test]
+fn bgem_merge_records_effect_texture_provenance() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/provenance.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            base_texture: "effect_base.dds".into(),
+            glow_texture: "effect_glow.dds".into(),
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(
+        mesh.material.texture_sources.base_color,
+        byroredux_nif::import::ImportedTextureSource::Bgem
+    );
+    assert_eq!(
+        mesh.material.texture_sources.emissive,
+        byroredux_nif::import::ImportedTextureSource::Bgem
+    );
+}
+
 /// Regression for #1077 / FO4-D6-003 Phase 1 — BGSM-only shader
 /// flags (`translucency`, `model_space_normals`) must forward to
 /// `ImportedMesh`'s matching sinks. Pre-fix the parser decoded both

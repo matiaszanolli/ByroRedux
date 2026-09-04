@@ -34,7 +34,7 @@ re-implement or revert them.
 | R1 ingestion | XCLL rotation fields renamed; the axis-invariant test is ignored as an explicit xfail; punctual per-light flat fill removed | Remove the XCLL type-3 `Lo` bypass; validate an XCLL-specific angle conversion; emit kind/direction/fade/provenance in `light.dump` |
 | R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
 | R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Closed: measured five-scene RT-LOD sweep plus repeated and one-million-unit Cornell visibility/probe gates |
-| R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures | Schedule the ignored hardware captures on the RT CI worker and publish comparison artifacts |
+| R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures | Full ignored suite passed on an RTX 4070 Ti (2026-09-03); wire it into the RT CI worker and publish durable comparison artifacts |
 | R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; provenance dump; BGSM/BGEM forwarding; lobe and role views; 432-byte shader contract | Provider-backed five-game fixture capture remains hardware/content gated |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
 
@@ -101,9 +101,13 @@ carried forward.
   material-probe rungs. CPU tests pin CLI selection and one-variable scene
   changes. The ignored `cornell_rt_oracle` gate covers L0/L1 analytic output,
   L2 visibility, L3/L4 volumetric non-leakage, and categorical dielectric,
-  metal, and glass populations in L5. L0-L4 have passed on the RTX 4070 Ti;
-  L5 is ready for the same RT-capable worker but is not claimed as executed in
-  the current no-GPU environment.
+  metal, and glass populations in L5. On 2026-09-03 all five ignored hardware
+  tests passed serially on the RTX 4070 Ti. The hardware run exposed two stale
+  TLAS-count assertions and a real frame-graph break: bloom ran after composite
+  and added roughly 75% to categorical raw output even though composite,
+  upscaling, and presentation had selected their bypass paths. Bloom now gates
+  on the shared raw-output policy before dispatch/apply. RT-CI scheduling and
+  durable comparison-artifact publication remain open.
 - **R5 canonical roles and authored response complete; provider breadth remains.**
   The 432-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
   Fresnel, palette, lighting-mask and back-lighting inputs through upload,
@@ -511,14 +515,15 @@ threshold.
 | L0 | albedo plane, no emitted/ambient light | radiance is zero before display encoding |
 | L1 | one white directional, specular-disabled Lambert plane | constant N.L and energy match the analytic CPU result |
 | L2 | one opaque blocker | binary visibility mask and penumbra-free hard edge match geometry |
-| L3 | point/spot cluster plus reservoir selection | candidate list and selected-light identity are deterministic |
-| L4 | one diffuse bounce and coloured Cornell walls | indirect-only channel has expected sign, colour bleed and bounded energy |
+| L3 | an unobstructed point-lit local fog volume | left/right in-scattered radiance is balanced |
+| L4 | one thin opaque partition in that volume | broad shadow and wall-adjacent froxel remain dark without leakage while the lit control is unchanged |
 | L5 | dielectric, metal, glass and normal-role probes | lobe/role view selects the declared material contract |
 
-L0-L2 enter CI first. Prefer scalar probe assertions and tolerant linear-image
-metrics over exact PNG hashes. Store expected images only after their analytic
-and debug-channel assertions pass. L3-L5 may run on the RT-capable integration
-runner until CI has equivalent hardware.
+Prefer scalar probe assertions and tolerant linear-image metrics over exact PNG
+hashes. Store expected images only after their analytic and debug-channel
+assertions pass. The five-test ignored suite covering L0-L5 passed serially on
+the RTX 4070 Ti on 2026-09-03; keep it serialized on the RT-capable integration
+runner until CI has equivalent hardware and durable artifacts.
 
 Every renderer bug fixed after this plan must name the earliest rung that
 would catch it; if none does, add a rung/variant before closing the bug.

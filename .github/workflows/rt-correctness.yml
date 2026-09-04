@@ -1,0 +1,88 @@
+name: RT Correctness Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: Hardware correctness gate to execute
+        required: true
+        default: cornell
+        type: choice
+        options:
+          - cornell
+          - material-provider-matrix
+          - all
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  cornell:
+    name: Cornell L0-L5 oracle
+    if: inputs.gate == 'cornell' || inputs.gate == 'all'
+    runs-on: [self-hosted, linux, x64, byroredux-rt]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build renderer oracle
+        run: cargo build --release -p byroredux --bin byroredux
+      - name: Record runner provenance
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/target/rt-correctness-artifacts
+        run: |
+          mkdir -p "$ARTIFACT_DIR"
+          git rev-parse HEAD > "$ARTIFACT_DIR/revision.txt"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$ARTIFACT_DIR/timestamp-utc.txt"
+          nvidia-smi --query-gpu=name,driver_version --format=csv,noheader \
+            > "$ARTIFACT_DIR/gpu.txt" 2>&1 || true
+          vulkaninfo --summary > "$ARTIFACT_DIR/vulkan-summary.txt" 2>&1 || true
+      - name: Run serialized hardware oracle
+        env:
+          BYROREDUX_RT_ARTIFACT_DIR: ${{ github.workspace }}/target/rt-correctness-artifacts
+        run: xvfb-run -a cargo test --release -p byroredux --test cornell_rt_oracle -- --ignored --nocapture --test-threads=1
+      - name: Build artifact manifest
+        if: always()
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/target/rt-correctness-artifacts
+        run: |
+          if [[ -d "$ARTIFACT_DIR" ]]; then
+            find "$ARTIFACT_DIR" -type f ! -name sha256sums.txt -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > "$ARTIFACT_DIR/sha256sums.txt"
+          fi
+      - name: Publish Cornell evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cornell-rt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/rt-correctness-artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+  material-provider-matrix:
+    name: Five-game material provider matrix
+    if: inputs.gate == 'material-provider-matrix' || inputs.gate == 'all'
+    runs-on: [self-hosted, linux, x64, byroredux-rt, byroredux-game-data]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build engine and debugger
+        run: cargo build --release -p byroredux -p byro-dbg
+      - name: Run provider-backed matrix
+        env:
+          BYROREDUX_GAMES_ROOT: ${{ vars.BYROREDUX_GAMES_ROOT }}
+          BYROREDUX_MATERIAL_MATRIX_OUT: ${{ github.workspace }}/target/material-provider-matrix
+        run: xvfb-run -a --server-args="-screen 0 1280x720x24" bash -c 'scripts/material-provider-matrix.sh 3 30'
+      - name: Publish material evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: material-provider-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/material-provider-matrix
+          if-no-files-found: error
+          retention-days: 30

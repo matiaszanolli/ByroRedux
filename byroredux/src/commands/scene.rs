@@ -660,159 +660,38 @@ impl ConsoleCommand for MatDumpCommand {
             handles.parallax_max_passes,
         ));
         lines.push(
-            "  textures (role | handle | set binding | color | view | source | path):".into(),
+            "  textures (role | handle | set binding | color | view | state | source | path):"
+                .into(),
         );
 
         let p = &debug.paths;
         let s = &debug.sources;
         let h = &handles.textures;
-        type TextureSlot<'a> = (
-            &'a str,
-            Option<&'a str>,
-            MaterialTextureSource,
-            u32,
-            &'a str,
-            &'a str,
-        );
-        let slots: [TextureSlot<'_>; 18] = [
-            (
-                "base_color",
-                p.base_color.as_deref(),
-                s.base_color,
-                h.base_color,
-                "sRGB",
-                "2D",
-            ),
-            (
-                "normal",
-                p.normal.as_deref(),
-                s.normal,
-                h.normal,
-                "linear",
-                "2D",
-            ),
-            (
-                "emissive",
-                p.emissive.as_deref(),
-                s.emissive,
-                h.emissive,
-                "sRGB",
-                "2D",
-            ),
-            (
-                "detail",
-                p.detail.as_deref(),
-                s.detail,
-                h.detail,
-                "sRGB",
-                "2D",
-            ),
-            (
-                "smooth_spec",
-                p.smooth_spec.as_deref(),
-                s.smooth_spec,
-                h.smooth_spec,
-                "linear",
-                "2D",
-            ),
-            ("dark", p.dark.as_deref(), s.dark, h.dark, "sRGB", "2D"),
-            (
-                "height",
-                p.height.as_deref(),
-                s.height,
-                h.height,
-                "linear",
-                "2D",
-            ),
-            (
-                "environment",
-                p.environment.as_deref(),
-                s.environment,
-                h.environment,
-                "sRGB",
-                "cube",
-            ),
-            (
-                "environment_mask",
-                p.environment_mask.as_deref(),
-                s.environment_mask,
-                h.environment_mask,
-                "linear",
-                "2D",
-            ),
-            ("tint", p.tint.as_deref(), s.tint, h.tint, "sRGB", "2D"),
-            (
-                "inner_layer",
-                p.inner_layer.as_deref(),
-                s.inner_layer,
-                h.inner_layer,
-                "sRGB",
-                "2D",
-            ),
-            (
-                "specular",
-                p.specular.as_deref(),
-                s.specular,
-                h.specular,
-                "linear",
-                "2D",
-            ),
-            (
-                "lighting",
-                p.lighting.as_deref(),
-                s.lighting,
-                h.lighting,
-                "linear",
-                "2D",
-            ),
-            ("flow", p.flow.as_deref(), s.flow, h.flow, "linear", "2D"),
-            (
-                "wrinkle",
-                p.wrinkle.as_deref(),
-                s.wrinkle,
-                h.wrinkle,
-                "linear",
-                "2D",
-            ),
-            (
-                "greyscale_lut",
-                p.greyscale_lut.as_deref(),
-                s.greyscale_lut,
-                h.greyscale_lut,
-                "sRGB",
-                "2D",
-            ),
-            (
-                "reflectance",
-                p.reflectance.as_deref(),
-                s.reflectance,
-                h.reflectance,
-                "linear",
-                "2D",
-            ),
-            (
-                "emittance_gradient",
-                p.emittance_gradient.as_deref(),
-                s.emittance_gradient,
-                h.emittance_gradient,
-                "sRGB",
-                "2D",
-            ),
-        ];
-        for (role, path, source, handle, color, view) in slots {
+        let texture_contract = |role: &str| match role {
+            "environment" => ("sRGB", "cube"),
+            "base_color" | "emissive" | "detail" | "dark" | "tint" | "inner_layer"
+            | "greyscale_lut" | "emittance_gradient" | "glass_dirt_overlay" | "decal0"
+            | "decal1" | "decal2" | "decal3" => ("sRGB", "2D"),
+            _ => ("linear", "2D"),
+        };
+        for (((role, path), (source_role, source)), (handle_role, handle)) in
+            p.roles().zip(s.roles()).zip(h.roles())
+        {
+            debug_assert_eq!(role, source_role);
+            debug_assert_eq!(role, handle_role);
+            let (color, view) = texture_contract(role);
             let binding = if view == "cube" { 1 } else { 0 };
+            let state = if matches!(*source, MaterialTextureSource::Absent) {
+                "absent"
+            } else if *handle == 0 {
+                "placeholder"
+            } else {
+                "present"
+            };
             lines.push(format!(
-                "    {role:<20} {handle:>5}  set=0 binding={binding}  {color:<6} {view:<4} {:<16} {}",
+                "    {role:<24} {handle:>5}  set=0 binding={binding}  {color:<6} {view:<4} {state:<11} {:<16} {}",
                 source.label(),
-                path.unwrap_or("<none>")
-            ));
-        }
-        for i in 0..4 {
-            lines.push(format!(
-                "    decal[{i}]             {:>5}  set=0 binding=0  sRGB   2D   {:<16} {}",
-                h.decals[i],
-                s.decals[i].label(),
-                p.decals[i].as_deref().unwrap_or("<none>")
+                path.as_deref().unwrap_or("<none>")
             ));
         }
 

@@ -913,13 +913,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 resolve_owned(mesh.material.material_path),
             )
         };
-        let mut texture_sources = mesh.material.textures.map_ref(|path| {
-            if path.is_some() {
-                MaterialTextureSource::MeshMaterial
-            } else {
-                MaterialTextureSource::Absent
-            }
-        });
+        let mut texture_sources =
+            mesh.material
+                .textures
+                .zip_map_ref(&mesh.material.texture_sources, |path, source| {
+                    if path.is_some() {
+                        (*source).into()
+                    } else {
+                        MaterialTextureSource::Absent
+                    }
+                });
 
         // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
         // convention, not an explicit NIF slot. When the mesh authored no
