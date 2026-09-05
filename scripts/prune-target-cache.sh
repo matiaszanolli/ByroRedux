@@ -210,14 +210,28 @@ fi
 # cargo output (profile dirs, doc, a target-triple cross-compile dir, the
 # cargo bookkeeping files) is an ad-hoc tree some script pointed
 # CARGO_TARGET_DIR at. Prune it if untouched in --age-days.
+#
+# The target-triple check needs an EXACT match against rustc's own list, not
+# a "looks like N hyphen-separated segments" pattern: this workspace's ad-hoc
+# probe names (renderer-anchor-c25-v-head-filtered-r3,
+# rt-decomposition-medtek-2026-08-11, …) all have 2+ hyphens too, so a loose
+# pattern silently reclassified them as "standard" and skipped every one.
+_target_triples=""
+is_known_target_triple() {
+    if [[ -z "${_target_triples}" ]]; then
+        _target_triples="$(rustc --print target-list 2>/dev/null)"$'\n'
+    fi
+    [[ $'\n'"${_target_triples}" == *$'\n'"$1"$'\n'* ]]
+}
+
 is_standard_subdir() {
     case "$1" in
-    debug | release | doc | tmp | miri | package | .rustc_info.json | CACHEDIR.TAG)
+    debug | release | doc | tmp | miri | package | \
+        .rustc_info.json | .rustdoc_fingerprint.json | CACHEDIR.TAG)
         return 0
         ;;
     esac
-    # Rust target-triple shape, e.g. x86_64-pc-windows-gnu, wasm32-unknown-unknown.
-    [[ "$1" =~ ^[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+ ]]
+    is_known_target_triple "$1"
 }
 
 while IFS= read -r -d '' entry; do
