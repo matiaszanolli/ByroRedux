@@ -30,7 +30,11 @@ impl TextureProvider {
     /// path-building sites) go through unchanged.
     pub(crate) fn extract(&self, path: &str) -> Option<Vec<u8>> {
         let normalized = normalize_texture_path(path);
-        for archive in &self.texture_archives {
+        // #3637 — last-listed archive wins, matching Bethesda's own load-
+        // order precedence (a later `--textures-bsa` overrides an earlier
+        // one). Checking from the end and returning on first hit means the
+        // last-listed archive that actually carries the path answers.
+        for archive in self.texture_archives.iter().rev() {
             if let Ok(data) = archive.extract(normalized.as_ref()) {
                 return Some(data);
             }
@@ -58,7 +62,9 @@ impl TextureProvider {
         if !is_facegen_tool_path(normalized) {
             return None;
         }
-        for archive in &self.texture_archives {
+        // #3637 — same last-listed-wins precedence as the primary lookup
+        // above.
+        for archive in self.texture_archives.iter().rev() {
             if let Some(key) = archive.find_by_basename(normalized) {
                 if let Ok(data) = archive.extract(&key) {
                     return Some(data);
@@ -78,7 +84,8 @@ impl TextureProvider {
     /// and NPCs spawned unclothed.
     pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
         let normalised = normalize_mesh_path(path);
-        for archive in &self.mesh_archives {
+        // #3637 — last-listed archive wins; see `extract`'s doc for why.
+        for archive in self.mesh_archives.iter().rev() {
             if let Ok(data) = archive.extract(normalised.as_ref()) {
                 return Some(data);
             }
@@ -123,7 +130,8 @@ impl TextureProvider {
     /// [`Self::extract_mesh`]'s exact-key counterpart. See
     /// [`Self::has_mesh_exact`] for why the `.spt` route needs it.
     pub(crate) fn extract_mesh_exact(&self, path: &str) -> Option<Vec<u8>> {
-        for archive in &self.mesh_archives {
+        // #3637 — last-listed archive wins; see `extract`'s doc for why.
+        for archive in self.mesh_archives.iter().rev() {
             if let Ok(data) = archive.extract(path) {
                 return Some(data);
             }

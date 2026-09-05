@@ -88,11 +88,7 @@ impl Archive {
     /// `extract` fast path — never as a general-purpose lookup.
     pub(crate) fn find_by_basename(&self, path: &str) -> Option<String> {
         let basename = path.rsplit(['\\', '/']).next().unwrap_or(path);
-        let files: Vec<&str> = match self {
-            Archive::Bsa(a) => a.list_files(),
-            Archive::Ba2(a) => a.list_files(),
-        };
-        files
+        self.all_paths()
             .into_iter()
             .find(|f| {
                 f.rsplit(['\\', '/'])
@@ -102,6 +98,38 @@ impl Archive {
             })
             .map(str::to_string)
     }
+
+    /// Every entry path this archive actually holds, for either backend.
+    ///
+    /// Unlike [`Self::list_files`] (deliberately blank for BSA — that
+    /// method exists only for Starfield CDB discovery, which is BA2-only),
+    /// this is honest for both variants. Factored out of
+    /// [`Self::find_by_basename`]'s own lookup; also used by the #3637
+    /// shadow-count diagnostic in [`open_with_numeric_siblings`].
+    fn all_paths(&self) -> Vec<&str> {
+        match self {
+            Archive::Bsa(a) => a.list_files(),
+            Archive::Ba2(a) => a.list_files(),
+        }
+    }
+}
+
+/// #3637 — count how many of `new_archive`'s entries also exist in any of
+/// `existing`. Both `extract`/`extract_mesh` and `open_with_numeric_siblings`
+/// treat later-opened archives as the ones that win (last-listed wins,
+/// matching Bethesda's own load-order precedence), so a nonzero count here
+/// means `new_archive` is about to silently start overriding content an
+/// earlier archive used to answer for — worth a boot-time log line instead
+/// of a silent decision.
+pub(crate) fn count_shadowed_entries(new_archive: &Archive, existing: &[Archive]) -> usize {
+    if existing.is_empty() {
+        return 0;
+    }
+    new_archive
+        .all_paths()
+        .into_iter()
+        .filter(|path| existing.iter().any(|a| a.contains(path)))
+        .count()
 }
 
 /// Whether a canonicalised texture path carries a FaceGen SDK
@@ -445,7 +473,7 @@ pub(crate) fn open_with_numeric_siblings(
     }
     match Archive::open(path) {
         Ok(a) => {
-            log::info!("Opened {} archive: '{}'", kind, path);
+            log_opened_archive(kind, path, &a, archives);
             archives.push(a);
         }
         Err(e) => {
@@ -467,13 +495,31 @@ pub(crate) fn open_with_numeric_siblings(
         }
         match Archive::open(&sibling) {
             Ok(a) => {
-                log::info!("Opened sibling {} archive: '{}'", kind, sibling);
+                log_opened_archive(kind, &sibling, &a, archives);
                 archives.push(a);
             }
             Err(e) => {
                 log::warn!("Failed to open sibling {} archive: {}", kind, e);
             }
         }
+    }
+}
+
+/// #3637 — the "Opened … archive" log line, upgraded to name how many of
+/// the newly-opened archive's entries collide with (and, since later-listed
+/// archives win, now override) content already opened earlier in `archives`.
+/// Called before the new archive is pushed, so `archives` is exactly "every
+/// archive opened before this one" — the precedence group `new` is about to
+/// join and start outranking.
+pub(crate) fn log_opened_archive(kind: &str, path: &str, new: &Archive, archives: &[Archive]) {
+    let shadow_count = count_shadowed_entries(new, archives);
+    if shadow_count > 0 {
+        log::info!(
+            "Opened {kind} archive: '{path}' — overrides {shadow_count} entries also \
+             present in an earlier-opened {kind} archive (last-listed wins, #3637)"
+        );
+    } else {
+        log::info!("Opened {kind} archive: '{path}'");
     }
 }
 

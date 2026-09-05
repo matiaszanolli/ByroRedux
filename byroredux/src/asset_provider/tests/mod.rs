@@ -4,6 +4,7 @@
 //! the seams; this mirrors the `crates/nif/src/import/tests/` precedent
 //! (#2311). Zero logic change — every test moved verbatim.
 
+mod archive_precedence;
 mod archive_siblings;
 mod bgsm_merge;
 mod facegen_texture_fallback;

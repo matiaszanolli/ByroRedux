@@ -373,7 +373,9 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
                 if let Some(path) = args.get(i + 1) {
                     match Archive::open(path) {
                         Ok(a) => {
-                            log::info!("Opened materials archive: '{}'", path);
+                            // #3637 — shadow-count diagnostic shared with
+                            // TextureProvider's --bsa/--textures-bsa opens.
+                            log_opened_archive("materials", path, &a, &provider.archives);
                             // #1289 / SF-D3-NEW-01 → #1571 / SF-D3-03 —
                             // scan the archive for every Starfield component
                             // database (base `materials\materialsbeta.cdb`
@@ -644,7 +646,11 @@ impl MaterialProvider {
         // `normalize_material_path` doc for the full transformation
         // list and per-issue evidence.
         let normalized = normalize_material_path(path);
-        for archive in &self.archives {
+        // #3637 — last-listed `--materials-ba2` wins, matching the
+        // TextureProvider mesh/texture fix (same CLI convention: repeatable,
+        // no documented "list mods first" inversion — that's `--scripts-bsa`
+        // only, see `ScriptProvider::resolve_pex`'s doc / #1743).
+        for archive in self.archives.iter().rev() {
             if let Ok(bytes) = archive.extract(&normalized) {
                 return Some(bytes);
             }
@@ -683,7 +689,9 @@ impl MaterialProvider {
         impl<'a> TemplateResolver for ArchiveReader<'a> {
             fn read(&mut self, path: &str) -> Option<Vec<u8>> {
                 let normalized = normalize_material_path(path);
-                for archive in self.archives {
+                // #3637 — same last-listed-wins precedence as
+                // `extract_from_archives`.
+                for archive in self.archives.iter().rev() {
                     if let Ok(bytes) = archive.extract(&normalized) {
                         return Some(bytes);
                     }
