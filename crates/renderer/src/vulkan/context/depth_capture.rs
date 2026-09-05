@@ -92,6 +92,10 @@ impl VulkanContext {
         }
 
         // D32_SFLOAT: one f32 per sample, tightly packed by the copy region.
+        // #3570 / D10-01 — sound only because `depth_capture_record_copy`
+        // refuses to set `depth_capture_pending_readback` (and thus reach
+        // here) unless `self.depth_format == D32_SFLOAT`. Do not lift that
+        // guard without also widening this decode.
         let samples: Vec<f32> = slice[..expected]
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -131,9 +135,29 @@ impl VulkanContext {
             return;
         }
 
+        // #3570 / D10-01 — `find_depth_format` is a fallback chain
+        // (`D32_SFLOAT` then `D16_UNORM`); Vulkan mandates `D16_UNORM`
+        // depth-attachment support but not `D32_SFLOAT`, so the D16 arm is
+        // genuinely reachable on real hardware. Everything below this
+        // point — the ×4 buffer sizing and the `f32`-per-sample readback
+        // decode in `depth_capture_finish_readback` — hardcodes the
+        // D32_SFLOAT layout. Refuse rather than silently misdecode: this
+        // tool exists to give #3308 trustworthy before/after evidence, and
+        // a wrong-but-confident capture is worse than none. (Zero impact on
+        // the dev RTX 4070 Ti, which selects D32_SFLOAT.)
+        if self.depth_format != vk::Format::D32_SFLOAT {
+            log::warn!(
+                "Depth capture unsupported on this device: selected depth \
+                 format is {:?}, not D32_SFLOAT — refusing rather than \
+                 misdecoding the readback (#3570)",
+                self.depth_format
+            );
+            return;
+        }
+
         let extent = self.frame_extents.render;
         let buffer_size =
-            extent.width as vk::DeviceSize * extent.height as vk::DeviceSize * 4 /* D32_SFLOAT */;
+            extent.width as vk::DeviceSize * extent.height as vk::DeviceSize * 4 /* D32_SFLOAT, checked above */;
         self.ensure_depth_capture_staging(buffer_size);
         let Some((staging_buffer, _, _)) = self.depth_capture_staging.as_ref() else {
             log::warn!("Depth capture staging buffer creation failed");
@@ -322,5 +346,39 @@ impl VulkanContext {
                 let _ = allocator.free(allocation);
             }
         }
+    }
+}
+
+/// Regression for #3570 / D10-01. `find_depth_format` can select
+/// `D16_UNORM` (Vulkan mandates it; `D32_SFLOAT` is not guaranteed), but
+/// the buffer sizing in `depth_capture_record_copy` and the readback
+/// decode in `depth_capture_finish_readback` both hardcode 4 bytes /
+/// f32-per-sample. A live `VulkanContext` test is impractical (needs a
+/// Vulkan device); a source-scan test pins that the format check exists
+/// and runs before the pending-readback handoff, mirroring this crate's
+/// other guard-ordering regressions.
+#[cfg(test)]
+mod depth_format_guard_tests {
+    #[test]
+    fn record_copy_refuses_non_d32_sfloat_before_arming_the_pending_readback() {
+        let src = include_str!("depth_capture.rs");
+
+        let format_check_pos = src
+            .find("if self.depth_format != vk::Format::D32_SFLOAT {")
+            .expect(
+                "depth_capture_record_copy must refuse a non-D32_SFLOAT \
+                 depth format rather than silently misdecoding it (#3570)",
+            );
+        let pending_readback_pos = src
+            .find("self.depth_capture_pending_readback = Some(extent);")
+            .expect("depth_capture_record_copy must arm the pending readback");
+
+        assert!(
+            format_check_pos < pending_readback_pos,
+            "the D32_SFLOAT format guard must run BEFORE \
+             depth_capture_pending_readback is armed, or \
+             depth_capture_finish_readback would decode a D16_UNORM \
+             buffer as f32 samples. (#3570)"
+        );
     }
 }
