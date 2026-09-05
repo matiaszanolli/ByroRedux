@@ -603,10 +603,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
-        // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300)
-        // onto the heuristic preset through the single shared boundary. The
-        // cell-loader spawn path calls the same helper, so the two load
-        // paths can't diverge.
+        // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300,
+        // BGEM effect payload #2610/#3589) onto the heuristic preset
+        // through the single shared boundary. The cell-loader spawn path
+        // calls the same helper, so the two load paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &emitter.color_curve,
@@ -617,15 +617,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             emitter.src_blend,
             emitter.dst_blend,
             emitter.max_particles,
+            emitter.effect_shader.as_ref(),
         );
-        // #2610 — pack the emitter's authored BGEM effect payload into the
-        // canonical `material_flag::EFFECT_*` word HERE, at the importer
-        // boundary, using the same helper the mesh path uses. The renderer
-        // forwards `ParticleEmitter::effect_shader_flags` verbatim and never
-        // re-derives it from the source BGEM. Mirrored in
-        // `cell_loader::spawn::spawn_particle_emitters`.
-        preset.effect_shader_flags =
-            crate::cell_loader::pack_effect_shader_flags(emitter.effect_shader.as_ref());
         // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
         // palette bits above index, the same way the mesh path resolves
         // `MaterialTextureHandles::greyscale_lut`. Gated on `Some`, not a

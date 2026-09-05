@@ -60,8 +60,14 @@ pub fn apply_emitter_params(
 /// kinematic+lifetime+size subset (`initial_color` stays unapplied — see
 /// that fn); `emitter_rate` overrides the preset density; `force_fields`
 /// are Z-up→Y-up converted (#984); `max_particles` clamps the pool to
-/// `min(authored, MAX_PARTICLES_CEILING)` (#3344). A `None`/empty input
-/// leaves the preset default in place.
+/// `min(authored, MAX_PARTICLES_CEILING)` (#3344); `effect_shader` packs
+/// the authored `BSEffectShaderProperty` payload into
+/// `preset.effect_shader_flags` via
+/// [`crate::cell_loader::pack_effect_shader_flags`] (#2610 / #3589) — this
+/// one is unconditional, not gated on `Some`, since `pack_effect_shader_
+/// flags(None) == 0` already matches every preset's zero default. A
+/// `None`/empty input on every other field leaves the preset default in
+/// place.
 ///
 /// **Why the budget is clamped rather than adopted.** nif.xml calls
 /// `BS Max Vertices` "the maximum number of particles", but FNV authors it
@@ -84,6 +90,7 @@ pub fn apply_emitter_overlays(
     src_blend: Option<u8>,
     dst_blend: Option<u8>,
     max_particles: Option<u32>,
+    effect_shader: Option<&byroredux_nif::import::BsEffectShaderData>,
 ) {
     if let Some(curve) = color_curve {
         preset.start_color = curve.start;
@@ -129,6 +136,17 @@ pub fn apply_emitter_overlays(
         }
         preset.max_particles = clamped;
     }
+    // #2610 / #3589 — pack the emitter's authored BGEM effect payload into
+    // the canonical `material_flag::EFFECT_*` word HERE, at the single
+    // overlay boundary, using the same helper the mesh path uses. This used
+    // to be hand-copied at both spawn sites (`scene/nif_loader.rs`,
+    // `cell_loader/spawn.rs`) instead of routed through this fn — exactly
+    // the divergence-risk class #1513 closed this boundary to prevent.
+    // Unconditional like `force_fields` above, not gated on `Some`: every
+    // preset initialises `effect_shader_flags` to 0, so an absent authored
+    // payload (`pack_effect_shader_flags(None) == 0`) is a no-op overwrite,
+    // not a behavioural change.
+    preset.effect_shader_flags = crate::cell_loader::pack_effect_shader_flags(effect_shader);
 }
 
 /// Convert a list of imported NIF force fields (Z-up local space) to
@@ -520,6 +538,7 @@ mod tests {
             None,
             None,
             Some(30),
+            None,
         );
         assert_eq!(
             preset.max_particles, 30,
@@ -544,6 +563,7 @@ mod tests {
             None,
             None,
             Some(10_000),
+            None,
         );
         assert_eq!(
             preset.max_particles,
@@ -570,6 +590,7 @@ mod tests {
                 None,
                 None,
                 authored,
+                None,
             );
             assert_eq!(
                 preset.max_particles, preset_max,
@@ -615,11 +636,16 @@ mod tests {
     /// fields) in one place, matching the previously-inline behaviour both
     /// load paths used. Pins that none of the four is silently dropped and
     /// that `initial_color` still does NOT win over the colour curve.
+    /// #3589: also pins the BGEM effect-shader payload, which used to be
+    /// packed by two hand-copied lines outside this boundary instead of
+    /// through it.
     #[test]
     fn apply_emitter_overlays_applies_color_rate_size_and_force_fields() {
         use byroredux_nif::import::{
-            ImportedEmitterParams, ImportedParticleForceField, ParticleColorCurve,
+            BsEffectShaderData, ImportedEmitterParams, ImportedParticleForceField,
+            ParticleColorCurve,
         };
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT;
         let mut preset = ParticleEmitter::torch_flame();
         let curve = ParticleColorCurve {
             start: [0.9, 0.4, 0.1, 1.0],
@@ -643,6 +669,10 @@ mod tests {
             strength: 9.8,
             decay: 0.0,
         }];
+        let effect_shader = BsEffectShaderData {
+            effect_soft: true,
+            ..Default::default()
+        };
 
         apply_emitter_overlays(
             &mut preset,
@@ -654,6 +684,7 @@ mod tests {
             Some(5),
             Some(6),
             Some(64),
+            Some(&effect_shader),
         );
 
         // Colour curve overrides start/end (and beats the white default).
@@ -678,6 +709,14 @@ mod tests {
         );
         assert_eq!(preset.src_blend, 5);
         assert_eq!(preset.dst_blend, 6);
+        // #3589 — the BGEM effect-shader payload must route through this
+        // boundary (via `pack_effect_shader_flags`), not a hand-copied line
+        // at each call site.
+        assert_ne!(
+            preset.effect_shader_flags & EFFECT_SOFT,
+            0,
+            "authored effect-shader payload must reach preset.effect_shader_flags"
+        );
     }
 
     /// #1513: `None`/empty inputs leave the preset untouched — the overlay
@@ -696,11 +735,15 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(preset.start_color, preset_ref.start_color);
         assert_eq!(preset.speed, preset_ref.speed);
         assert_eq!(preset.rate, preset_ref.rate);
         assert!(preset.force_fields.is_empty());
+        // #3589 — an absent effect-shader payload must leave the preset's
+        // zero default in place, not fabricate flags from nowhere.
+        assert_eq!(preset.effect_shader_flags, preset_ref.effect_shader_flags);
     }
 
     #[test]

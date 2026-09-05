@@ -1095,10 +1095,10 @@ fn spawn_particle_emitters(
         let mut preset = crate::fog::particle_preset(&host, em.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
-        // rate, force fields #984, texture/blend #2300) onto the heuristic
-        // preset through the single shared boundary. Parallel to the
-        // loose-NIF site in scene/nif_loader.rs — both call the same helper
-        // so the two load paths can't diverge.
+        // rate, force fields #984, texture/blend #2300, BGEM effect payload
+        // #2610/#3589) onto the heuristic preset through the single shared
+        // boundary. Parallel to the loose-NIF site in scene/nif_loader.rs —
+        // both call the same helper so the two load paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &em.color_curve,
@@ -1109,13 +1109,8 @@ fn spawn_particle_emitters(
             em.src_blend,
             em.dst_blend,
             em.max_particles,
+            em.effect_shader.as_ref(),
         );
-        // #2610 — see the sibling site in `scene/nif_loader.rs`: the authored
-        // BGEM effect payload is packed into the canonical
-        // `material_flag::EFFECT_*` word at this importer boundary, not
-        // re-derived in the renderer.
-        preset.effect_shader_flags =
-            crate::cell_loader::pack_effect_shader_flags(em.effect_shader.as_ref());
         // #3590 — see the sibling site in `scene/nif_loader.rs`: resolve the
         // greyscale→palette LUT the palette bits above index. Gated on
         // `Some` so an emitter with no authored LUT keeps bindless slot 0
