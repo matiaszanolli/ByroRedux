@@ -1725,6 +1725,21 @@ pub(crate) fn merge_external_material(
             // No runtime effect today; flagging so the next completeness
             // sweep can tell "not yet wired" from "overlooked".
         }
+        // #3639 — `smoothness == 1.0` lowers `roughness` to the 0.04 clamp
+        // floor above (near-mirror dielectric). `triangle.frag` only
+        // modulates that back up via the per-texel gloss map (`mat.
+        // glossMapIndex != 0u` branch: `roughness = mix(1.0, roughness,
+        // glossTexel.r)`); with no map there is nothing to modulate with,
+        // and the material is stuck at the floor with no per-pixel escape.
+        // The walk above is the full template-chain resolution (a parent
+        // can still supply the slot the leaf doesn't), so only fall back
+        // once it's had every chance to fill `smooth_spec`. `0.5` matches
+        // the neutral roughness `classify_pbr`'s keyword arms already use
+        // elsewhere (`crates/core/src/ecs/components/material.rs`) rather
+        // than inventing a second "no data" convention.
+        if leaf.smoothness >= 1.0 && material.textures.smooth_spec.is_none() {
+            material.roughness_override = Some(0.5);
+        }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
             // #3230 — sibling of the BGSM arm's fallback above.

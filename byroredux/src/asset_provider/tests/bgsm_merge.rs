@@ -996,6 +996,80 @@ fn bgsm_merge_sets_the_scalar_authored_flag_alongside_the_overrides() {
     );
 }
 
+/// #3639 — `smoothness == 1.0` lowers `roughness` to the renderer's 0.04
+/// clamp floor (near-mirror dielectric). `triangle.frag` only modulates that
+/// back up via the per-texel gloss map; with no `smooth_spec_texture`
+/// anywhere in the template chain there's nothing to modulate with, so the
+/// merge must fall back to a neutral roughness instead of leaving the
+/// material pinned at the floor with no per-pixel escape.
+#[test]
+fn bgsm_merge_falls_back_to_neutral_roughness_when_smoothness_is_one_with_no_gloss_map() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/mirror_no_gloss.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                smoothness: 1.0,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                smooth_spec_texture: String::new(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert_eq!(
+        mesh.material.roughness_override,
+        Some(0.5),
+        "no gloss map anywhere in the chain to recover the floor with — must \
+         fall back to the neutral roughness classify_pbr's keyword arms use, \
+         not stay pinned at 0.04"
+    );
+}
+
+/// Sibling of the fallback test above: when a gloss map DOES resolve (even
+/// from a template parent, not just the leaf), the shader has per-pixel
+/// information to modulate with, so the merge must NOT override the
+/// authored 0.04 floor.
+#[test]
+fn bgsm_merge_keeps_the_floor_when_smoothness_is_one_and_a_gloss_map_resolves() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/mirror_with_gloss.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                smoothness: 1.0,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                smooth_spec_texture: "textures/tests/gloss.dds".to_string(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    let roughness = mesh
+        .material
+        .roughness_override
+        .expect("BGSM arm must still author roughness");
+    assert!(
+        (roughness - 0.04).abs() < 1e-5,
+        "a resolvable gloss map means the shader CAN modulate the floor back \
+         up per-pixel — the merge must leave it at 0.04, got {roughness}"
+    );
+}
+
 /// End-to-end companion for #2607/#2608 through the real merge: an authored
 /// v<10 BGSM carrying rim, subsurface and env-mask values lands all of them on
 /// `ImportedMaterial`. The extracted-function tests above pin the gates; this
