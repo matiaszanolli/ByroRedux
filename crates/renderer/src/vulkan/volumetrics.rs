@@ -298,7 +298,9 @@ fn fog_cluster_entries_with_offsets() -> Box<[GpuFogClusterEntry; FOG_VOLUME_CLU
 /// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
 /// Bethesda units all the way through TLAS and shader reconstruction.
 pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
-pub const DEFAULT_GRID_FAR_METERS: f32 = 128.0;
+// #3611 / D16-05 — derives from `VolumetricsConfig::DEFAULT` instead of
+// repeating its own `128.0` literal, so the two can't drift independently.
+pub const DEFAULT_GRID_FAR_METERS: f32 = VolumetricsConfig::DEFAULT.grid_far_meters as f32;
 pub const DEFAULT_VOLUME_FAR: f32 = DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_METER;
 pub const LINEAR_DEPTH_METERS: f32 = 5.0;
 pub const LINEAR_DEPTH: f32 = LINEAR_DEPTH_METERS * WORLD_UNITS_PER_METER;
@@ -2943,6 +2945,34 @@ mod unit_tests {
         let world_optical_depth = sigma_per_world_unit * DEFAULT_VOLUME_FAR;
         let metre_optical_depth = sigma_per_metre * reach_metres;
         assert!((world_optical_depth - metre_optical_depth).abs() < 1.0e-6);
+    }
+
+    /// Regression for #3611 / D16-05. The volumetric far plane's default
+    /// used to have three independently-typed copies with no pin between
+    /// them: `VolumetricsConfig::default().grid_far_meters` (upscaling.rs),
+    /// `DEFAULT_GRID_FAR_METERS` (this file), and `VOLUME_FAR`
+    /// (shader_constants_data.rs — necessarily a standalone literal, since
+    /// that file is `include!`d by `build.rs`, which cannot depend on this
+    /// crate's own types to derive it). `DEFAULT_GRID_FAR_METERS` now
+    /// derives from `VolumetricsConfig::DEFAULT` directly (see its
+    /// definition above), collapsing two of the three; this test pins the
+    /// one copy that can't be derived away.
+    #[test]
+    fn volume_far_shader_constant_agrees_with_the_volumetrics_config_default() {
+        use crate::shader_constants::VOLUME_FAR;
+
+        assert_eq!(
+            DEFAULT_GRID_FAR_METERS,
+            VolumetricsConfig::DEFAULT.grid_far_meters as f32,
+            "DEFAULT_GRID_FAR_METERS must track VolumetricsConfig::DEFAULT (#3611)"
+        );
+        assert_eq!(
+            VOLUME_FAR, DEFAULT_VOLUME_FAR,
+            "shader_constants_data.rs's VOLUME_FAR literal has drifted from \
+             DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_METER — update \
+             VOLUME_FAR to {DEFAULT_VOLUME_FAR:?} and recompile every \
+             shader that includes shader_constants.glsl. (#3611)"
+        );
     }
 
     #[test]

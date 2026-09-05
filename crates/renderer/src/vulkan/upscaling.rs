@@ -111,35 +111,43 @@ pub struct VolumetricsConfig {
 
 impl Default for VolumetricsConfig {
     fn default() -> Self {
-        Self {
-            // One froxel column per 8 render pixels. Session 62 shipped `4`
-            // (`0ff7b537`) to keep compact fire from collapsing into a single
-            // blocky ray column — the right problem, the wrong lever: density
-            // is the most expensive possible fix for it, costing 4x VRAM and
-            // 4x the inject dispatch globally to serve a local effect.
-            //
-            // At six volumes and 44 B/froxel/slot across 2 frames in flight,
-            // `4` put the froxel grid at 2.92 GB on a native-4K render extent
-            // — ~65% of a 4.51 GB fixed floor, breaching the documented < 4 GB
-            // ceiling before any content loads. `8` is 730 MB and a 2.32 GB
-            // floor, leaving ~1.68 GB for vertices/textures/BLAS against a
-            // ~0.97 GB typical FNV interior.
-            //
-            // Frostbite's own grid is 8x8; `4` was 2x denser than the
-            // reference. The compact-fire case belongs in local high-density
-            // volumes attached to the effect, which is also where the
-            // combustion transport fields belong — once they move, this grid
-            // is two volumes at 24 B/froxel and its density stops being a fire
-            // question at all. Still tunable per-run via
-            // `--froxel-xy-divisor` (validated 2..=32).
-            froxel_xy_divisor: 8,
-            froxel_z_slices: 64,
-            grid_far_meters: 128,
-        }
+        Self::DEFAULT
     }
 }
 
 impl VolumetricsConfig {
+    /// The canonical default, as a `const` (rather than only reachable
+    /// through `Default::default()`) so `grid_far_meters` has exactly one
+    /// literal in the crate — `volumetrics.rs`'s `DEFAULT_GRID_FAR_METERS`
+    /// derives from this field instead of repeating `128.0` (#3611 /
+    /// D16-05: three independently-typed copies of the same default had
+    /// no pin between them).
+    pub const DEFAULT: Self = Self {
+        // One froxel column per 8 render pixels. Session 62 shipped `4`
+        // (`0ff7b537`) to keep compact fire from collapsing into a single
+        // blocky ray column — the right problem, the wrong lever: density
+        // is the most expensive possible fix for it, costing 4x VRAM and
+        // 4x the inject dispatch globally to serve a local effect.
+        //
+        // At six volumes and 44 B/froxel/slot across 2 frames in flight,
+        // `4` put the froxel grid at 2.92 GB on a native-4K render extent
+        // — ~65% of a 4.51 GB fixed floor, breaching the documented < 4 GB
+        // ceiling before any content loads. `8` is 730 MB and a 2.32 GB
+        // floor, leaving ~1.68 GB for vertices/textures/BLAS against a
+        // ~0.97 GB typical FNV interior.
+        //
+        // Frostbite's own grid is 8x8; `4` was 2x denser than the
+        // reference. The compact-fire case belongs in local high-density
+        // volumes attached to the effect, which is also where the
+        // combustion transport fields belong — once they move, this grid
+        // is two volumes at 24 B/froxel and its density stops being a fire
+        // question at all. Still tunable per-run via
+        // `--froxel-xy-divisor` (validated 2..=32).
+        froxel_xy_divisor: 8,
+        froxel_z_slices: 64,
+        grid_far_meters: 128,
+    };
+
     pub fn validate(self) -> Result<Self, VolumetricsConfigError> {
         if !(2..=32).contains(&self.froxel_xy_divisor) {
             return Err(VolumetricsConfigError::XyDivisor(self.froxel_xy_divisor));
