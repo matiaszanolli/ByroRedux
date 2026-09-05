@@ -546,14 +546,25 @@ impl VulkanContext {
         // pointer write + flush that was missing on non-coherent memory (#189).
         let ui_instance_idx =
             if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
-                let idx = gpu_instances.len() as u32;
+                let idx = gpu_instances.len();
                 let instance = GpuInstance {
                     texture_index: ui_tex,
                     ..GpuInstance::default()
                 };
                 previous_models.push(instance.model);
                 gpu_instances.push(instance);
-                Some(idx)
+                // #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps
+                // an overflowing `gpu_instances` to `instances[..MAX_
+                // INSTANCES]` (the PREFIX), and the UI instance is always
+                // pushed last, so it is exactly the entry an overflowing
+                // frame drops. Submitting its now-uploaded-nowhere index as
+                // `firstInstance` anyway would read past the SSBO's
+                // allocated capacity — an undefined read
+                // (`robust_buffer_access` is not enabled) feeding a
+                // bindless `nonuniformEXT` texture index in `ui.frag`.
+                // Skip the overlay for this frame instead; the RP-1 log
+                // below already reports the overflow that caused it.
+                (idx < super::super::scene_buffer::MAX_INSTANCES).then_some(idx as u32)
             } else {
                 None
             };
@@ -1002,6 +1013,46 @@ mod batches_scratch_reserve_tests {
              draw_commands.len() — that quantity is 13-19x too large for its \
              actual working set (one entry per merged batch), which fights the \
              end-of-frame shrink policy every frame on dense cells (#3675)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ui_instance_idx_overflow_tests {
+    /// #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps an
+    /// overflowing `gpu_instances` to the PREFIX `instances[..MAX_
+    /// INSTANCES]`, and the UI instance is always pushed last, so it is
+    /// exactly the entry an overflowing frame drops. `ui_instance_idx`
+    /// must not be captured unconditionally as `gpu_instances.len()`
+    /// before the push — it must be clamped to `None` when the just-
+    /// pushed index would land at or past `MAX_INSTANCES`, so the
+    /// existing "overlay unavailable" `None` arm in
+    /// `record_presentation_pass` skips the draw instead of submitting a
+    /// `firstInstance` that reads past the SSBO's allocated capacity. A
+    /// live test is impractical here — this needs a real `VulkanContext`,
+    /// matching this crate's own established convention (see the sibling
+    /// `batches_scratch_reserve_tests` module above) for source-scanning
+    /// that class of function.
+    #[test]
+    fn ui_instance_idx_is_clamped_to_none_past_max_instances() {
+        let full_src = include_str!("build_and_upload_instances.rs");
+        let module_start = full_src
+            .find("mod ui_instance_idx_overflow_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+
+        assert!(
+            src.contains(
+                "(idx < super::super::scene_buffer::MAX_INSTANCES).then_some(idx as u32)"
+            ),
+            "ui_instance_idx must clamp to None when the just-pushed UI instance's index \
+             would land at or past MAX_INSTANCES — an unconditional `Some(idx as u32)` \
+             regresses this to submitting an index upload_instances silently dropped"
+        );
+        assert!(
+            !src.contains("let idx = gpu_instances.len() as u32;"),
+            "the old unclamped capture (index taken as u32 before the MAX_INSTANCES check) \
+             must not come back"
         );
     }
 }
