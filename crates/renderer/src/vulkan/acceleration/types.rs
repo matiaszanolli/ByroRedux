@@ -59,6 +59,16 @@ pub struct BlasEntry {
     /// entries to decide the minimum scratch needed post-eviction. See
     /// issue #495.
     pub build_scratch_size: vk::DeviceSize,
+    /// Whether `size_bytes` was counted into `static_blas_bytes` when this
+    /// entry was created — `true` for static (mesh-keyed) BLAS, `false` for
+    /// per-entity skinned ones, which only ever reach `total_blas_bytes`.
+    ///
+    /// Provenance, not transient state: both kinds share one
+    /// `pending_destroy_blas` queue, and once an entry is moved onto it the
+    /// collection it came from is no longer available to distinguish them.
+    /// `pending_destroy_static_bytes` needs exactly that distinction to stay
+    /// balanced across push and destroy, so the entry carries it (#3840).
+    pub counted_in_static_bytes: bool,
     /// Number of [`AccelerationManager::refit_skinned_blas`] calls
     /// against this entry since the last fresh BUILD. Bumped each
     /// frame for skinned BLAS; stays at 0 for static (mesh-keyed)

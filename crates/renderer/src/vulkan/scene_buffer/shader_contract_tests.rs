@@ -1593,7 +1593,11 @@ fn hash_gpu_material_fields_covers_every_gpu_material_field() {
         stale_in_hash.is_empty(),
         "hash_gpu_material_fields hashes field(s) {stale_in_hash:?}, which {} not declared \
          on GpuMaterial — the hash walk has drifted from a renamed or removed field.",
-        if stale_in_hash.len() == 1 { "is" } else { "are" }
+        if stale_in_hash.len() == 1 {
+            "is"
+        } else {
+            "are"
+        }
     );
 }
 
@@ -2156,6 +2160,96 @@ fn gpu_instance_glsl_declarations_never_use_a_3_component_vector_type() {
             );
         }
     }
+}
+
+/// std430 size of a GLSL field list, honouring alignment. Shared by the
+/// boundary-instance stride guard below; kept deliberately small and
+/// total — an unrecognised type panics rather than silently contributing
+/// zero, which would make an over-wide struct look correctly sized.
+fn std430_struct_size(fields: &[(String, String)]) -> usize {
+    let mut offset = 0usize;
+    let mut max_align = 1usize;
+    for (ty, name) in fields {
+        let (size, align) = match ty.as_str() {
+            "float" | "uint" | "int" | "bool" => (4, 4),
+            "vec2" | "uvec2" | "uint64_t" => (8, 8),
+            "vec4" | "uvec4" => (16, 16),
+            "mat4" => (64, 16),
+            other => panic!(
+                "std430_struct_size: unhandled GLSL type `{other}` on field `{name}` — add it \
+                 here rather than letting it contribute zero bytes to a stride assertion."
+            ),
+        };
+        offset = offset.div_ceil(align) * align;
+        offset += size;
+        max_align = max_align.max(align);
+    }
+    offset.div_ceil(max_align) * max_align
+}
+
+/// #3829 — `volumetrics_inject.comp` declares `struct GpuBoundaryInstance`, a
+/// deliberate prefix-mirror of `GpuInstance` bound to the very same per-frame
+/// instance SSBO (binding 19, written by
+/// `VolumetricsPipeline::write_boundary_geometry`). Because it carries its own
+/// struct NAME, it sits outside `gpu_instance_glsl_copies_stay_in_lockstep` —
+/// whose SOURCES list is hardcoded, and whose `assert_mirror_list_is_complete`
+/// discovery half greps for the literal `struct GpuInstance` and so cannot see
+/// it either. It was a sixth, untracked mirror.
+///
+/// It went stale exactly that way: #3231 grew `GpuInstance` 128 → 160 B and
+/// this mirror kept its single 16-byte `_boundaryTail`, leaving a 128-byte
+/// stride reading the same buffer. Every boundary-geometry read past instance
+/// index 0 was misaligned by 32 bytes per index for ~13 days, with a fully
+/// green `cargo test` — silently wrong fire/smoke-vs-geometry collision
+/// normals rather than a crash, since the fields feed bounds checks and a
+/// normal lookup rather than a raw dereference.
+///
+/// The tail exists only to make the stride right, so this pins the two things
+/// that actually matter: the named prefix agrees with the Rust struct
+/// field-for-field, and the total std430 stride equals `size_of::<GpuInstance>()`.
+#[test]
+fn gpu_boundary_instance_stride_matches_gpu_instance() {
+    let glsl_src = include_str!("../../../shaders/volumetrics_inject.comp");
+    let glsl = parse_glsl_struct_fields_typed(glsl_src, "struct GpuBoundaryInstance");
+    let rust = parse_rust_struct_fields(include_str!("gpu_types.rs"), "pub struct GpuInstance");
+
+    // Leg 1: the NAMED prefix must match the Rust struct field-for-field. The
+    // shader recovers `model` / `boneOffset` / `vertexOffset` / `indexOffset` /
+    // `vertexCount` by name, so a reorder here is as corrupting as a stride
+    // mismatch and a size-only assertion cannot see it.
+    let prefix: Vec<String> = glsl
+        .iter()
+        .map(|(_, name)| name.clone())
+        .take_while(|name| !name.starts_with("_boundaryTail"))
+        .collect();
+    assert!(
+        prefix.len() >= 13,
+        "parsed only {} named GpuBoundaryInstance prefix field(s) — parser likely broke",
+        prefix.len()
+    );
+    for (i, glsl_name) in prefix.iter().enumerate() {
+        assert_eq!(
+            normalize_ident(&rust[i]),
+            normalize_ident(glsl_name),
+            "GpuBoundaryInstance prefix field #{i} diverges from `GpuInstance`: Rust `{}` vs \
+             GLSL `{glsl_name}`. Both read the same SSBO (binding 19), so the named prefix must \
+             stay field-for-field identical (#3829).",
+            rust[i],
+        );
+    }
+
+    // Leg 2: the total stride must match, or every index past 0 is misaligned.
+    let glsl_stride = std430_struct_size(&glsl);
+    assert_eq!(
+        glsl_stride,
+        std::mem::size_of::<GpuInstance>(),
+        "`GpuBoundaryInstance` (volumetrics_inject.comp) has a {glsl_stride}-byte std430 stride \
+         but `GpuInstance` is {} B. They are bound to the SAME buffer, so a mismatch misaligns \
+         every boundary-geometry read past instance index 0 by the difference, per index — \
+         silently wrong data, no validation error (#3829). Widen the `_boundaryTail*` words to \
+         cover the new fields.",
+        std::mem::size_of::<GpuInstance>(),
+    );
 }
 
 // ── CameraUBO five-way GLSL lockstep (#3684 / PERF-D4-2026-08-30-04) ──

@@ -175,3 +175,104 @@ mod blas_compaction_rollback_tests {
         );
     }
 }
+
+/// #3840 — `pending_destroy_static_bytes` only tells the truth if every site
+/// that moves static bytes onto the deferred queue credits it, and every site
+/// that frees them releases it. A live `AccelerationManager` needs a Vulkan
+/// device, so pin the balance structurally instead.
+#[cfg(test)]
+mod pending_destroy_static_bytes_stays_balanced_tests {
+    const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
+    const BLAS_SKINNED_RS: &str = include_str!("../blas_skinned.rs");
+
+    #[test]
+    fn every_static_deferred_push_credits_the_resident_counter() {
+        // Both static push sites (`drop_blas`, `evict_unused_blas`) deduct
+        // `static_blas_bytes` and must hand the bytes to the resident counter
+        // in the same breath, or admission checks under-count real residency.
+        let pushes = BLAS_STATIC_RS
+            .matches("self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);")
+            .count();
+        assert_eq!(
+            pushes, 2,
+            "blas_static.rs's static deferred-destroy push count changed — a new \
+             site must also credit `pending_destroy_static_bytes` (#3840)"
+        );
+        // Collapse whitespace first: the two sites sit at different nesting
+        // depths, so rustfmt wraps them differently.
+        let flat = BLAS_STATIC_RS
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            flat.matches(
+                "self.pending_destroy_static_bytes = self .pending_destroy_static_bytes \
+                 .saturating_add(entry.size_bytes);"
+            )
+            .count(),
+            pushes,
+            "every static push onto `pending_destroy_blas` must credit \
+             `pending_destroy_static_bytes` — an uncredited one lets a batch spend \
+             headroom whose memory the GPU still holds (#3840)"
+        );
+    }
+
+    #[test]
+    fn both_destroy_paths_release_the_resident_counter() {
+        // tick = countdown expiry, drain = shutdown sweep. A path that frees
+        // the memory without releasing the counter strands bytes forever and
+        // permanently depresses the eviction trigger.
+        assert!(
+            BLAS_STATIC_RS.contains("if entry.counted_in_static_bytes {")
+                && BLAS_STATIC_RS.contains(".saturating_sub(released_static);"),
+            "tick_deferred_destroy must release the static bytes it actually frees (#3840)"
+        );
+        assert!(
+            BLAS_STATIC_RS.contains("self.pending_destroy_static_bytes = 0;"),
+            "drain_pending_destroys empties the queue, so it must zero \
+             `pending_destroy_static_bytes` (#3840)"
+        );
+    }
+
+    #[test]
+    fn skinned_entries_are_excluded_from_the_static_counter() {
+        // Skinned BLAS never reach `static_blas_bytes`, so counting them on the
+        // way out would make the static budget respond to skinned churn — the
+        // exact thrash #920 split the counters to prevent.
+        assert!(
+            BLAS_SKINNED_RS.contains("counted_in_static_bytes: false,"),
+            "skinned BlasEntry construction must opt out of the static byte \
+             accounting (#920 / #3840)"
+        );
+        assert!(
+            BLAS_STATIC_RS.contains("counted_in_static_bytes: true,"),
+            "static BlasEntry construction must opt in (#3840)"
+        );
+    }
+
+    #[test]
+    fn mid_batch_trigger_uses_resident_bytes_but_the_evict_loop_does_not() {
+        // The asymmetry is deliberate and load-bearing. The trigger asks "is
+        // the GPU actually full?" (resident). The eviction loop asks "have I
+        // scheduled enough?" (paper) — each iteration moves the same bytes from
+        // `static_blas_bytes` into `pending_destroy_static_bytes`, so a
+        // resident-based break can never be satisfied and would evict every
+        // idle candidate on the first pressure event, guaranteeing a rebuild
+        // storm on the next frame.
+        assert!(
+            BLAS_STATIC_RS.contains("self.resident_static_blas_bytes(),"),
+            "the mid-batch eviction trigger must use resident bytes (#3840)"
+        );
+        let loop_break = BLAS_STATIC_RS
+            .find("if !blas_over_budget(\n                self.static_blas_bytes,")
+            .expect(
+                "evict_unused_blas's loop break must keep using the paper figure \
+                 `static_blas_bytes` — see the comment at its push site (#3840)",
+            );
+        assert!(
+            BLAS_STATIC_RS[loop_break..].contains("resident figure belongs"),
+            "the paper-vs-resident asymmetry must stay documented at the push site, \
+             or a future reader will 'fix' the break into a thrash (#3840)"
+        );
+    }
+}

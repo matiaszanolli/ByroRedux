@@ -987,21 +987,23 @@ fn blas_budget_derives_from_the_compatible_allocation_heap() {
     use super::super::constants::MIN_BLAS_BUDGET_BYTES;
     use crate::vulkan::device::device_local_heap_bytes_for_memory_type_bits;
 
+    // Reservation-free math is unchanged (#3839 added the second argument;
+    // zero reproduces the historical `VRAM / 3`).
     // 12 GB single-heap desktop part → 4 GB, the figure the
     // `blas_budget_bytes` field doc quotes.
     assert_eq!(
-        blas_budget_for_heap(12 * 1024 * 1024 * 1024),
+        blas_budget_for_heap(12 * 1024 * 1024 * 1024, 0),
         4 * 1024 * 1024 * 1024
     );
     // 6 GB RT-minimum target → 2 GB, likewise.
     assert_eq!(
-        blas_budget_for_heap(6 * 1024 * 1024 * 1024),
+        blas_budget_for_heap(6 * 1024 * 1024 * 1024, 0),
         2 * 1024 * 1024 * 1024
     );
     // Floor holds for tiny and degenerate (no DEVICE_LOCAL heap → 0) heaps.
-    assert_eq!(blas_budget_for_heap(0), MIN_BLAS_BUDGET_BYTES);
+    assert_eq!(blas_budget_for_heap(0, 0), MIN_BLAS_BUDGET_BYTES);
     assert_eq!(
-        blas_budget_for_heap(64 * 1024 * 1024),
+        blas_budget_for_heap(64 * 1024 * 1024, 0),
         MIN_BLAS_BUDGET_BYTES
     );
 
@@ -1143,5 +1145,67 @@ fn degenerate_recovery_inputs_do_nothing() {
     assert_eq!(
         plan_static_blas_restore(10, usize::MAX, u64::MAX, 1, u64::MAX - 1, 256),
         0
+    );
+}
+
+/// #3839 — the BLAS budget must be taken from what the resolution-scaled
+/// passes leave behind, not from the whole heap, and must move when the render
+/// extent does.
+#[test]
+fn blas_budget_subtracts_the_resolution_scaled_reservation() {
+    use super::super::constants::MIN_BLAS_BUDGET_BYTES;
+    use super::super::predicates::screen_scaled_reservation_bytes;
+    use crate::vulkan::upscaling::VolumetricsConfig;
+
+    let config = VolumetricsConfig::default();
+    let hd = vk::Extent2D {
+        width: 1920,
+        height: 1080,
+    };
+    let uhd = vk::Extent2D {
+        width: 3840,
+        height: 2160,
+    };
+
+    let reserved_hd = screen_scaled_reservation_bytes(hd, config);
+    let reserved_uhd = screen_scaled_reservation_bytes(uhd, config);
+
+    // The reservation is real and grows with resolution — the whole reason the
+    // budget cannot be a construction-time constant. 4K is 4x the pixels, and
+    // the froxel grid scales with them, so the reservation must grow markedly.
+    assert!(
+        reserved_hd > 128 * 1024 * 1024,
+        "1080p reservation implausibly small ({reserved_hd} B) — a pass's \
+         per-unit constant probably stopped being counted"
+    );
+    assert!(
+        reserved_uhd > reserved_hd * 2,
+        "reservation must scale with render extent: 1080p {reserved_hd} B vs \
+         4K {reserved_uhd} B"
+    );
+
+    // A 6 GB RT-minimum card: the reservation has to come off the top, so the
+    // budget is strictly smaller than the old whole-heap `VRAM / 3`.
+    let six_gb = 6 * 1024 * 1024 * 1024u64;
+    let old_model = blas_budget_for_heap(six_gb, 0);
+    let with_reservation = blas_budget_for_heap(six_gb, reserved_hd);
+    assert!(
+        with_reservation < old_model,
+        "reserving {reserved_hd} B must shrink the budget below the old \
+         whole-heap model ({old_model} B), or nothing was subtracted"
+    );
+
+    // A resolution change alone must move the budget — the half of #3839 that
+    // a construction-time-only derivation could never do.
+    assert!(
+        blas_budget_for_heap(six_gb, reserved_uhd) < with_reservation,
+        "4K must leave less for BLAS than 1080p on the same heap"
+    );
+
+    // The floor still wins on a small heap, even with a large reservation, so
+    // eviction can never be handed a nonsensical zero budget.
+    assert_eq!(
+        blas_budget_for_heap(1024 * 1024 * 1024, reserved_uhd),
+        MIN_BLAS_BUDGET_BYTES
     );
 }

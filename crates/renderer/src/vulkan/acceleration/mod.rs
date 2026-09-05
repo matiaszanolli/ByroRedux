@@ -53,7 +53,7 @@ use crate::deferred_destroy::DeferredDestroyQueue;
 use anyhow::Result;
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
-use predicates::compute_blas_budget;
+use predicates::{blas_budget_for_heap, probe_blas_heap_bytes};
 
 /// CPU-side accounting for the most recent TLAS instance gather.
 ///
@@ -203,11 +203,37 @@ pub struct AccelerationManager {
     /// [`compute_blas_budget`](super::predicates::compute_blas_budget)
     /// (#2928 / #3043).
     pub(super) blas_budget_bytes: vk::DeviceSize,
+    /// The probed DEVICE_LOCAL heap `blas_budget_bytes` is derived from.
+    /// Retained so [`Self::recompute_blas_budget`] can re-derive against a new
+    /// screen-scaled reservation on resize without re-probing the device
+    /// (#3839).
+    pub(super) blas_heap_bytes: vk::DeviceSize,
+    /// The `--rt-test-blas-budget` override, if the validated CLI path
+    /// supplied one. Held so a re-derivation cannot silently discard it
+    /// mid-session (#3839).
+    pub(super) blas_budget_override: Option<vk::DeviceSize>,
     /// Entries removed by [`blas_static::drop_blas`] still referenced by
     /// an in-flight TLAS build. Each entry carries a countdown measured
     /// in `MAX_FRAMES_IN_FLIGHT` frames; when it hits zero the underlying
     /// `VkAccelerationStructureKHR` + buffer are finally destroyed. See #372.
     pub(super) pending_destroy_blas: DeferredDestroyQueue<BlasEntry>,
+    /// Bytes already deducted from `static_blas_bytes` whose GPU memory is
+    /// still resident because the owning entry is waiting out its
+    /// `pending_destroy_blas` countdown (#3840).
+    ///
+    /// Eviction credits `static_blas_bytes` the instant it queues an entry,
+    /// but the allocator free happens `DEFAULT_COUNTDOWN` frames later in
+    /// `tick_deferred_destroy` — whose only caller is `sync_and_acquire_frame`,
+    /// inside `draw_frame`. `build_blas_batched` runs from the streaming path
+    /// in `about_to_wait`, *before* the next `draw_frame`, so within one batch
+    /// no tick occurs at all and every eviction's bytes stay resident for the
+    /// rest of that batch. Admission checks add this back so a batch cannot
+    /// spend headroom it has not actually reclaimed yet — see
+    /// [`Self::resident_static_blas_bytes`].
+    ///
+    /// The deferral itself is correct and load-bearing (#1449); this counter
+    /// fixes the *accounting*, not the lifetime.
+    pub(super) pending_destroy_static_bytes: vk::DeviceSize,
     /// Retired `blas_scratch_buffer` allocations awaiting a
     /// `MAX_FRAMES_IN_FLIGHT` countdown before destruction. The shared
     /// scratch buffer is grow-only-replaced (a new, larger allocation
@@ -270,7 +296,14 @@ impl AccelerationManager {
         rt_test_blas_budget_bytes: Option<vk::DeviceSize>,
     ) -> Result<Self> {
         let accel_loader = ash::khr::acceleration_structure::Device::new(instance, device);
-        let derived_budget_bytes = compute_blas_budget(instance, device, physical_device)?;
+        let blas_heap_bytes = probe_blas_heap_bytes(instance, device, physical_device)?;
+        // No render extent is available this early — the swapchain outlives
+        // this call, not the reverse — so start from the whole heap and let
+        // `recompute_blas_budget` tighten it once an extent exists. That call
+        // is made at the end of both initial setup and every swapchain
+        // recreate, so this unreserved value is never what a frame runs on
+        // (#3839).
+        let derived_budget_bytes = blas_budget_for_heap(blas_heap_bytes, 0);
         let blas_budget_bytes = match rt_test_blas_budget_bytes {
             Some(bytes) if bytes > 0 => {
                 log::warn!(
@@ -316,7 +349,10 @@ impl AccelerationManager {
             total_blas_bytes: 0,
             static_blas_bytes: 0,
             blas_budget_bytes,
+            blas_heap_bytes,
+            blas_budget_override: rt_test_blas_budget_bytes.filter(|&b| b > 0),
             pending_destroy_blas: DeferredDestroyQueue::new(),
+            pending_destroy_static_bytes: 0,
             pending_destroy_scratch: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),

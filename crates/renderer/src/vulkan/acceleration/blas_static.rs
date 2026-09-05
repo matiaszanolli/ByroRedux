@@ -57,6 +57,12 @@ impl AccelerationManager {
         };
         self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
         self.static_blas_bytes = self.static_blas_bytes.saturating_sub(entry.size_bytes);
+        // The bytes leave `static_blas_bytes` now but stay resident until the
+        // countdown expires — carry them here so admission checks still see
+        // them (#3840).
+        self.pending_destroy_static_bytes = self
+            .pending_destroy_static_bytes
+            .saturating_add(entry.size_bytes);
         self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
         // BLAS map mutated — bump generation so the next build_tlas
         // can short-circuit the per-instance zip-compare. #300.
@@ -101,7 +107,13 @@ impl AccelerationManager {
             pending_destroy_blas,
             ..
         } = self;
+        let mut released_static = 0;
         pending_destroy_blas.tick(|mut entry| {
+            // The memory is genuinely reclaimed here, so it stops counting
+            // against admission (#3840).
+            if entry.counted_in_static_bytes {
+                released_static += entry.size_bytes;
+            }
             // SAFETY: the countdown guarantees no in-flight command
             // buffer still references this acceleration structure.
             unsafe {
@@ -109,6 +121,9 @@ impl AccelerationManager {
             }
             entry.buffer.destroy(device, allocator);
         });
+        self.pending_destroy_static_bytes = self
+            .pending_destroy_static_bytes
+            .saturating_sub(released_static);
         self.pending_destroy_scratch.tick(|mut buf| {
             buf.destroy(device, allocator);
         });
@@ -150,6 +165,8 @@ impl AccelerationManager {
             }
             entry.buffer.destroy(device, allocator);
         });
+        // The queue is now empty, so nothing is pending-but-resident (#3840).
+        self.pending_destroy_static_bytes = 0;
         // SAFETY: same precondition as above — the caller's preceding
         // `device_wait_idle` covers any in-flight command buffer that
         // captured a retired scratch buffer's device address (#1782).
@@ -163,6 +180,28 @@ impl AccelerationManager {
     /// telemetry — the count must reach zero after a drain. See #732.
     pub fn pending_destroy_blas_count(&self) -> usize {
         self.pending_destroy_blas.len()
+    }
+
+    /// Static-BLAS bytes already deducted from `static_blas_bytes` but not yet
+    /// freed, because their entries are still waiting out the deferred-destroy
+    /// countdown. Companion to [`Self::pending_destroy_blas_count`] for
+    /// `ctx.scratch` telemetry — the count alone can't show how much VRAM the
+    /// queue is holding. See #3840.
+    pub fn pending_destroy_static_bytes(&self) -> vk::DeviceSize {
+        self.pending_destroy_static_bytes
+    }
+
+    /// Static-BLAS bytes actually resident on the GPU: the live entries plus
+    /// everything queued for destruction that hasn't been freed yet.
+    ///
+    /// This is the figure admission checks must use. `static_blas_bytes` alone
+    /// is the *paper* figure — eviction credits it the moment an entry is
+    /// queued, so between an eviction and the next `draw_frame` tick it
+    /// understates true residency by the whole queued amount, letting a batch
+    /// allocate against headroom that does not exist yet (#3840).
+    pub fn resident_static_blas_bytes(&self) -> vk::DeviceSize {
+        self.static_blas_bytes
+            .saturating_add(self.pending_destroy_static_bytes)
     }
 
     /// Number of retired scratch buffers currently waiting in
@@ -364,7 +403,11 @@ impl AccelerationManager {
             if idx > 0
                 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0
                 && should_evict_mid_batch(
-                    self.static_blas_bytes,
+                    // Resident, not paper: no `tick_deferred_destroy` runs
+                    // during a batch (its only caller is inside `draw_frame`),
+                    // so anything this batch already evicted is still on the
+                    // GPU and must keep counting against the trigger (#3840).
+                    self.resident_static_blas_bytes(),
                     pending_bytes,
                     self.blas_budget_bytes,
                 )
@@ -918,6 +961,8 @@ impl AccelerationManager {
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
                 build_scratch_size,
+                // Counted into `static_blas_bytes` just above (#3840).
+                counted_in_static_bytes: true,
                 // Static (mesh-keyed) BLAS never refit. See #679.
                 refit_count: 0,
                 built_vertex_count: vertex_count,
@@ -1091,6 +1136,18 @@ impl AccelerationManager {
                 // frees the entry `DEFAULT_COUNTDOWN` (= `MAX_FRAMES_IN_FLIGHT`)
                 // frames later, after the per-frame fence proves the referencing
                 // frame has retired — exactly what `drop_blas` already does.
+                //
+                // #3840: the loop's own stop condition deliberately keeps using
+                // the paper figure (`static_blas_bytes`), NOT the resident one.
+                // Each iteration moves the same byte count out of
+                // `static_blas_bytes` and into `pending_destroy_static_bytes`,
+                // so a resident-based condition would never improve and the
+                // loop would evict every candidate. The resident figure belongs
+                // on the admission side, where the batch decides whether it may
+                // allocate more — see `resident_static_blas_bytes`.
+                self.pending_destroy_static_bytes = self
+                    .pending_destroy_static_bytes
+                    .saturating_add(entry.size_bytes);
                 self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
             }
         }

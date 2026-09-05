@@ -376,6 +376,9 @@ impl AccelerationManager {
                     last_used_frame: self.frame_counter,
                     size_bytes: blas_size,
                     build_scratch_size: p.build_scratch_size,
+                    // Skinned BLAS reach `total_blas_bytes` only — never
+                    // `static_blas_bytes` (see the drop counterpart) (#3840).
+                    counted_in_static_bytes: false,
                     refit_count: 0,
                     built_vertex_count: p.vertex_count,
                     built_index_count: p.index_count,

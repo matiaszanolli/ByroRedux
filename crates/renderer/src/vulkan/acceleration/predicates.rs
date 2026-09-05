@@ -9,7 +9,12 @@ use super::constants::{
     BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_JITTER,
     SKINNED_BLAS_REFIT_THRESHOLD, TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
 };
+use crate::vulkan::caustic::CAUSTIC_BYTES_PER_PIXEL;
 use crate::vulkan::context::DrawCommand;
+use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
+use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::upscaling::VolumetricsConfig;
+use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -691,20 +696,66 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
     aligned
 }
 
-/// The static-BLAS residency budget: one third of the DEVICE_LOCAL heap,
-/// floored at [`MIN_BLAS_BUDGET_BYTES`]. Pure so the unit test can pin
-/// the math without a live Vulkan device.
-#[inline]
-pub(super) fn blas_budget_for_heap(heap_bytes: vk::DeviceSize) -> vk::DeviceSize {
-    (heap_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
+/// VRAM the resolution-scaled post-process passes hold before any BLAS is
+/// allocated, so the BLAS budget can be taken from what is actually left
+/// rather than from the whole heap (#3839).
+///
+/// Derived from each pass's own published per-unit constant and the shared
+/// [`froxel_extent`] helper — never a hand-copied figure, so a pass that
+/// re-sizes itself moves this with it. Covers the three passes that scale with
+/// render resolution and dominate the fixed floor documented in
+/// `docs/engine/memory-budget.md`; it is deliberately a floor, not a complete
+/// VRAM census (textures, geometry pools and the swapchain are not here).
+pub(super) fn screen_scaled_reservation_bytes(
+    render_extent: vk::Extent2D,
+    volumetrics: VolumetricsConfig,
+) -> vk::DeviceSize {
+    let pixels = u64::from(render_extent.width) * u64::from(render_extent.height);
+
+    // The froxel grid is per-frame-in-flight resident, and by memory-budget.md's
+    // own words "still the largest resolution-scaled allocation in the engine".
+    let grid = froxel_extent(render_extent, volumetrics);
+    let froxels = u64::from(grid.width) * u64::from(grid.height) * u64::from(grid.depth);
+    let froxel_bytes = froxels
+        .saturating_mul(FROXEL_BYTES_PER_SLOT)
+        .saturating_mul(MAX_FRAMES_IN_FLIGHT as u64);
+
+    froxel_bytes
+        .saturating_add(pixels.saturating_mul(u64::from(SVGF_BYTES_PER_PIXEL)))
+        .saturating_add(pixels.saturating_mul(u64::from(CAUSTIC_BYTES_PER_PIXEL)))
 }
 
-/// Derive `blas_budget_bytes` from the heap that will actually back a BLAS
-/// result buffer. A requirements-only probe uses the same usage flags as the
-/// real allocation, and the memory-type selection mirrors gpu-allocator's
-/// `GpuOnly` policy. This avoids both summing aliased heaps and treating an
-/// unrelated small BAR aperture as the capacity of main VRAM (#3043).
-pub(super) fn compute_blas_budget(
+/// The static-BLAS residency budget: one third of the DEVICE_LOCAL heap that
+/// is left after [`screen_scaled_reservation_bytes`], floored at
+/// [`MIN_BLAS_BUDGET_BYTES`]. Pure so the unit test can pin the math without a
+/// live Vulkan device.
+///
+/// #3839 — `reserved_bytes` used to be absent, and the `/3` was the entire
+/// model of "leave room for everything else". That model was written when
+/// everything else meant textures, geometry pools and a framebuffer; it now
+/// competes with a resolution-scaled floor that reaches ~2.3 GB at native 4K
+/// and *grows at runtime* when the window does. Subtracting first keeps the
+/// budget honest on the small-VRAM cards where eviction actually has to work —
+/// on a 6 GB card at 1080p the old math handed BLAS 2 GB while ~1.1 GB was
+/// already committed elsewhere, so nothing evicted until the allocator failed.
+#[inline]
+pub(super) fn blas_budget_for_heap(
+    heap_bytes: vk::DeviceSize,
+    reserved_bytes: vk::DeviceSize,
+) -> vk::DeviceSize {
+    (heap_bytes.saturating_sub(reserved_bytes) / 3).max(MIN_BLAS_BUDGET_BYTES)
+}
+
+/// Measure the DEVICE_LOCAL heap that will actually back a BLAS result buffer.
+/// A requirements-only probe uses the same usage flags as the real allocation,
+/// and the memory-type selection mirrors gpu-allocator's `GpuOnly` policy. This
+/// avoids both summing aliased heaps and treating an unrelated small BAR
+/// aperture as the capacity of main VRAM (#3043).
+///
+/// Returns the raw heap size; [`blas_budget_for_heap`] turns it into a budget.
+/// The split exists so a resize can re-derive the budget against a new
+/// reservation without re-probing the device (#3839).
+pub(super) fn probe_blas_heap_bytes(
     instance: &ash::Instance,
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
@@ -732,12 +783,13 @@ pub(super) fn compute_blas_budget(
     // SAFETY: `physical_device` was selected from `instance` and both handles
     // remain live for the renderer context's lifetime.
     let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-    let heap_bytes = super::super::device::device_local_heap_bytes_for_memory_type_bits(
-        &mem_props,
-        requirements.memory_type_bits,
+    Ok(
+        super::super::device::device_local_heap_bytes_for_memory_type_bits(
+            &mem_props,
+            requirements.memory_type_bits,
+        )
+        .unwrap_or(0),
     )
-    .unwrap_or(0);
-    Ok(blas_budget_for_heap(heap_bytes))
 }
 
 /// Build the 8-bit ray-query mask for one TLAS instance.

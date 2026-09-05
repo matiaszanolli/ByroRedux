@@ -863,6 +863,16 @@ impl VulkanContext {
             return Err(error).context("initialize recreated froxel layouts");
         }
         self.volumetrics = Some(new_volumetrics);
+        // #3839 — the froxel grid just resized with the render extent, so the
+        // BLAS residency budget has to move with it: the grid is the largest
+        // resolution-scaled allocation in the engine, and a budget frozen at
+        // its construction-time value would keep evicting against VRAM that
+        // this pass has since claimed. Pure arithmetic over a cached heap size
+        // (no device probe, no allocation, no Vulkan object touched), so it is
+        // safe at this point in the resize.
+        if let Some(accel) = self.accel_manager.as_mut() {
+            accel.recompute_blas_budget(self.frame_extents.render, volumetrics_config);
+        }
         Ok(())
     }
 

@@ -224,9 +224,18 @@ layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer {
 // Geometry backing the current TLAS. `instance_custom_index` is built from
 // the same compacted index as this per-frame instance SSBO, so a committed
 // ray-query hit can recover its triangle without a second scene map. Only the
-// prefix needed for rigid boundary normals is named; `_boundaryTail` occupies
-// the u64 skinned-vertex address plus reserved words and preserves the exact
-// 128-byte std430 stride of the canonical Rust `GpuInstance`.
+// prefix needed for rigid boundary normals is named; the `_boundaryTail*`
+// words cover the u64 skinned-vertex address, the two u64 morph-target
+// addresses, the morph-target count and their reserved padding, preserving
+// the exact 160-byte std430 stride of the canonical Rust `GpuInstance`.
+//
+// This is a deliberate prefix-mirror under its own name, so it sits outside
+// `gpu_instance_glsl_copies_stay_in_lockstep`'s SOURCES list (which keys on
+// the literal `struct GpuInstance`). The stride is instead pinned by
+// `gpu_boundary_instance_stride_matches_gpu_instance` — the tail exists only
+// to make the stride right, so agreeing on the total size is the whole
+// contract. Growing `GpuInstance` without growing the tail here misaligns
+// every read past instance index 0 (#3829).
 struct GpuBoundaryInstance {
     mat4 model;
     uint textureIndex;
@@ -241,7 +250,12 @@ struct GpuBoundaryInstance {
     float avgAlbedoG;
     float avgAlbedoB;
     uint surfaceId;
-    uvec4 _boundaryTail;
+    // 112..128 — u64 skinned-vertex address + two reserved words.
+    uvec4 _boundaryTail0;
+    // 128..144 — u64 morph-delta address + u64 morph-weight address.
+    uvec4 _boundaryTail1;
+    // 144..160 — morph-target count + three reserved words.
+    uvec4 _boundaryTail2;
 };
 
 layout(std430, set = 0, binding = 19) readonly buffer BoundaryInstanceBuffer {

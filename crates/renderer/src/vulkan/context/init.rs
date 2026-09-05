@@ -557,7 +557,7 @@ impl VulkanContext {
             transfer_fence,
             texture_registry,
             scene_buffers,
-            accel_manager,
+            mut accel_manager,
             pipeline_cache,
         } = swapchain;
 
@@ -969,6 +969,16 @@ impl VulkanContext {
                     };
                 }
             }
+        }
+
+        // #3839 — the BLAS budget is constructed before any render extent
+        // exists, so it starts unreserved. Now that the froxel grid (and the
+        // other resolution-scaled passes) are sized, re-derive it against what
+        // they actually hold, so the very first frame evicts on real headroom
+        // rather than on the whole heap. The resize path re-derives again at
+        // each new extent.
+        if let Some(accel) = accel_manager.as_mut() {
+            accel.recompute_blas_budget(render_extent, renderer_config.volumetrics);
         }
 
         // 14. Mesh registry (empty — meshes uploaded by the application)

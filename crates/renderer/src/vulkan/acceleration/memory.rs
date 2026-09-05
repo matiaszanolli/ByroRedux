@@ -6,8 +6,9 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::WORKING_SET_FLOOR;
 use super::predicates::{
-    scratch_alignment_padding, scratch_should_shrink, shared_blas_scratch_peak,
-    tlas_instance_should_shrink, tlas_scratch_should_shrink,
+    blas_budget_for_heap, scratch_alignment_padding, scratch_should_shrink,
+    screen_scaled_reservation_bytes, shared_blas_scratch_peak, tlas_instance_should_shrink,
+    tlas_scratch_should_shrink,
 };
 use super::AccelerationManager;
 use crate::deferred_destroy::DEFAULT_COUNTDOWN;
@@ -440,6 +441,45 @@ impl AccelerationManager {
     /// thrashes forever. See `plan_static_blas_restore`.
     pub fn blas_budget_bytes(&self) -> vk::DeviceSize {
         self.blas_budget_bytes
+    }
+
+    /// Re-derive `blas_budget_bytes` for a render extent, subtracting what the
+    /// resolution-scaled post-process passes hold (#3839).
+    ///
+    /// Call after initial setup and at the end of every swapchain recreate.
+    /// The froxel grid alone quadruples when the window doubles in each axis —
+    /// roughly 183 MB at 1080p against 730 MB at native 4K — so a budget frozen
+    /// at its construction-time value lets the eviction threshold drift a long
+    /// way from the memory actually available to BLAS. Re-deriving is pure
+    /// arithmetic over a cached heap size: no device probe, no allocation, and
+    /// nothing here touches a Vulkan object, so it is safe to call from the
+    /// resize path.
+    ///
+    /// A `--rt-test-blas-budget` override always wins and is never recomputed.
+    pub fn recompute_blas_budget(
+        &mut self,
+        render_extent: vk::Extent2D,
+        volumetrics: crate::vulkan::upscaling::VolumetricsConfig,
+    ) {
+        if self.blas_budget_override.is_some() {
+            return;
+        }
+        let reserved = screen_scaled_reservation_bytes(render_extent, volumetrics);
+        let updated = blas_budget_for_heap(self.blas_heap_bytes, reserved);
+        if updated == self.blas_budget_bytes {
+            return;
+        }
+        log::info!(
+            "BLAS memory budget re-derived for {}x{}: {:.1} MB (heap {:.1} MB less {:.1} MB \
+             reserved for resolution-scaled passes); was {:.1} MB",
+            render_extent.width,
+            render_extent.height,
+            updated as f64 / (1024.0 * 1024.0),
+            self.blas_heap_bytes as f64 / (1024.0 * 1024.0),
+            reserved as f64 / (1024.0 * 1024.0),
+            self.blas_budget_bytes as f64 / (1024.0 * 1024.0),
+        );
+        self.blas_budget_bytes = updated;
     }
 
     /// Number of *populated* static BLAS slots.
