@@ -190,7 +190,7 @@ policy row the doctrine check depends on; `crates/core/src/character/mod.rs`
   identity crept in, and that `DerivedStatFormula` is still `Copy` + 36 B
   (grew from 32 B when `clamped_below`'s `floor: f32` and the `base_reads: u8`
   bitfield landed under #2939; pinned by `formula_is_thirty_six_bytes_and_copy`,
-  `crates/core/src/character/derived.rs:340-345`).
+  `crates/core/src/character/derived.rs:353-359`).
 - **CHARAL-adjacent siblings** (CHAR-D6-05 / #2962): verify
   `crates/core/src/combat.rs`'s `modified_skill` (the `0.4` Luck coefficient),
   `oblivion_weapon_damage_multiplier` (four coefficients), and
@@ -348,9 +348,10 @@ resource lookup); `byroredux/src/commands/actor_value.rs`;
   is silent scope loss.
 - The `mod.rs` docstring enumerates the sub-module roles. Verify it matches the
   live module list (`affliction`, `attribute`, `components`, `derived`,
-  `fallout`, `leveling`, `regen`, `reputation`, `resistance`, `ruleset`, `skill`,
-  `skyrim`, `tes`) — this docstring is the entry point every future contributor
-  reads first, and it names files.
+  `fallout`, `leveling`, `profile`, `regen`, `reputation`, `resistance`,
+  `ruleset`, `skill`, `skyrim`, `tes` — 14 modules,
+  `mod_docstring_indexes_every_sub_module` pins the count) — this docstring is
+  the entry point every future contributor reads first, and it names files.
 - Cross-check `docs/feature-matrix.md` for character/progression rows; it is
   documented as lagging the code, so treat a lag as doc rot to report, not as a
   missing feature.

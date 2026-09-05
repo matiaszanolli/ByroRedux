@@ -39,16 +39,20 @@ Oblivion-only**. The v10.x stride-drift family (#1506 NiInterpController /
 NiQuatTransform, #1507 NiPSysData + emitter, #1508 NiBlendInterpolator +
 ControlledBlock, #1509 NiGeomMorpherController `bsver > 9` gate) is **resolved**
 as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced by
-`#1543`/`#1544`, regenerated baseline #1611). This audit treats that family as a
-**regression-guard set**, not open work.
+`#1543`/`#1544`, regenerated baseline #1611), then to **0** — the last file,
+`marker_radius.nif`, was fixed outright by `#2562`/`#2563`'s NiKeyframeController
+`Data`-ref fix, and the baseline was regenerated again (`#3082`, 2026-08-19) and
+widened to all eight DLC archives (`#3712`): 0 truncating across 9,612 vanilla +
+DLC NIFs. This audit treats that family as a **regression-guard set**, not open
+work.
 
 | Aspect            | Current state (verify, don't trust this table blindly)              |
 |-------------------|--------------------------------------------------------------------|
 | NIF format        | v20.0.0.4 retail (v20.0.0.5 minority) + v10.x NetImmerse tail (both sizeless) |
 | BSA format        | v103 — opens AND extracts cleanly across all vanilla archives (regression guard, #699) |
 | ESM parser        | **Live** — `crates/plugin/src/esm/` with `parse_esm_cells` walker + ~25 record types, several with Oblivion-specific decode branches. NOT a stub (the per-game *legacy/tes4.rs* stub was removed under #390). |
-| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`: 6 residual NetImmerse truncations (checked-in `oblivion_truncations.tsv` baseline, `#1611`) and **0 hard failures** — the corrupt-by-design `marker_radius.nif` now truncates instead of hard-Err'ing and is one of those 6 (`#698` closed). |
-| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior parse + load ✓ — TES4 worldspace + LAND wiring is implemented and game-agnostic (#1556); only an on-device exterior render bench is pending (same shape FO3 was — *not* BSA v103) |
+| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`/`#2562`/`#2563`: **0 residual truncations, 0 hard failures** — the checked-in `oblivion_truncations.tsv` baseline reads `truncating=0` (regenerated `#3082`, 2026-08-19; widened to all eight DLC archives by `#3712`: 9,612/9,612 clean). The corrupt-by-design `marker_radius.nif` (`#698` closed) was the last of the former six-file tail and is now fixed outright, not merely truncating. |
+| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior parse + load + render ✓ — TES4 worldspace + LAND wiring is implemented and game-agnostic (#1556); Tamriel `(0,0)` radius 1 is on-device measured at 6,043 entities / 2,355 draws (2026-08-12 EX-01/EX-05 re-run, image-health + environment-value gates both clean) — see `docs/engine/exterior-readiness-plan.md` for the live figure. The repeatable readiness matrix (not first render) is what #2377/#2368 track. |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/`           |
 
 ### Known Quirks (do NOT re-derive — verify still hold)
@@ -212,7 +216,7 @@ exist".
 **Checklist**:
 - `NiTexturingProperty` → `MaterialInfo` pipeline (base slot 0, dark slot 1,
   normal-from-bump per #131, detail, glow, gloss).
-- **`APPLY_HILIGHT2` is Oblivion's parallax flag and is now wired (#3530, `19813460`).** `NiTexturingProperty`'s Apply Mode was read and discarded at *both* of its on-disk homes; `apply_mode: u32` now stores it from each (a standalone `uint` below 20.1.0.2, `(flags >> 1) & 0x7` at and above), and `APPLY_HILIGHT2` — nif.xml's "Parallax Flag in some Oblivion meshes", **1 433 properties across 741 vanilla meshes** — routes into `parallax_map`. The height source is the **normal map's alpha**, because Oblivion ships no `_p.dds` at all; that reuses the existing `NORMAL_ALPHA_SPEC_BIT` mechanism verbatim rather than inventing a second one, and the `0.04 / 4.0` scale pair is the engine default every consumer's `unwrap_or` already used — **no constant was invented for Oblivion**, and inventing one would be the `no-fabrication` violation. The per-game rule stays at the NIFAL boundary: `Material::parallax_height_in_alpha` is canonical state, and the render side only transports it as **bit 31 of `parallaxMapIndex`**. Every shader reader must mask that bit — mandatory, not cosmetic, since `textures[0x8000000N]` is a wildly out-of-bounds bindless index — and **both** POM marchers (raster and secondary-ray) must honour the channel or reflections disagree with the raster pass. This is also what took `FORMAT_MAJOR` to 10 (`/audit-save`).
+- **`APPLY_HILIGHT2` is Oblivion's parallax flag.** `NiTexturingProperty`'s Apply Mode was read and discarded at *both* of its on-disk homes; `apply_mode: u32` now stores it from each (a standalone `uint` below 20.1.0.2, `(flags >> 1) & 0x7` at and above), and `APPLY_HILIGHT2` — nif.xml's "Parallax Flag in some Oblivion meshes", **1 433 properties across 741 vanilla meshes** — flags `parallax_height_in_alpha`. **#3530 (`19813460`) wired this but gated the binding on `info.normal_map.is_some()`, which is never true on Oblivion** — the title resolves normal maps by `_n.dds` filename convention downstream of `MaterialInfo` (#1303), so the route measured **0 of 35,322** imported meshes with the flag actually set. **#3596 fixed the reachability**: the parser now records `parallax_height_in_alpha = true` on the `APPLY_HILIGHT2` intent alone (`info.parallax_map.is_none()` is the only gate left), and the asset provider (`cell_loader::spawn::mesh_instance` + `scene::nif_loader`) binds the derived `_n.dds` into the height slot downstream, as `DerivedNormal` provenance. The height source is still the **normal map's alpha**, because Oblivion ships no `_p.dds` at all; that reuses the existing `NORMAL_ALPHA_SPEC_BIT` mechanism verbatim rather than inventing a second one, and the `0.04 / 4.0` scale pair is the engine default every consumer's `unwrap_or` already used — **no constant was invented for Oblivion**. **#3562** added the missing safety gate this route needed: `static_meshes.rs` only sets the bit when the bound normal texture's format actually carries alpha (`normal_has_alpha`) — BC1/BC4/BC5 always decode `A = 1.0`, which without the gate froze the POM marcher's depth compare and produced a full grazing-incidence UV slide on every fragment. The per-game rule stays at the NIFAL boundary: `Material::parallax_height_in_alpha` is canonical state, and the render side only transports it as **bit 31 of `parallaxMapIndex`**. Every shader reader must mask that bit — mandatory, not cosmetic, since `textures[0x8000000N]` is a wildly out-of-bounds bindless index — and **both** POM marchers (raster and secondary-ray) must honour the channel or reflections disagree with the raster pass. This is also what took `FORMAT_MAJOR` to 10 at the time (`19813460`; current value is higher — see `/audit-save`). Apply Mode values 1 (`APPLY_DECAL`) and 3 (`APPLY_HILIGHT`) remain deliberately unconsumed — their real semantics on Oblivion PC content are unverified and `#3625` documented the measured histogram rather than guessing (30,121 instances measured; 681 non-default, non-`APPLY_HILIGHT2`).
 - `NiMaterialProperty` color mapping is raw monitor-space (per 0e8efc6 — do NOT
   `srgb_to_linear` legacy colors).
 - `NiAlphaProperty` blend-factor extraction routes every Gamebryo AlphaFunction
@@ -270,16 +274,20 @@ Oblivion-specific slice.
 **Entry points**: `crates/nif/examples/nif_stats.rs`, `crates/nif/examples/recovery_trace.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/tests/per_block_baselines.rs`
 **Checklist**:
 - Run `nif_stats` (and `nif_stats --tsv` for the per-type histogram) over
-  `Oblivion - Meshes.bsa`; compare clean/recovered/truncated counts against the
-  current ROADMAP Oblivion row AND the checked-in Oblivion baseline in
+  `Oblivion - Meshes.bsa` **and the eight vanilla DLC archives** (`#3712`
+  widened `Game::optional_mesh_archives` to cover all of them — 9,612 NIFs
+  total); compare clean/recovered/truncated counts against the current
+  ROADMAP Oblivion row AND the checked-in Oblivion baseline in
   `per_block_baselines.rs`. Any `unknown` growth or `parsed` shrinkage is a
   regression.
-- Run `recovery_trace` to enumerate the residual truncated files (6 NetImmerse
-  v10.x markers — `marker_arrow`/`divine`/`map`/`radius`/`temple`/`travel` —
-  per the checked-in `oblivion_truncations.tsv` baseline, `#1611`, post-`#1543`/
-  `#1544`). Confirm they're the expected NetImmerse tail — including the
-  corrupt-by-design `marker_radius.nif`, which truncates rather than
-  hard-failing since `#698` — and not new drift.
+- Run `recovery_trace` to confirm the residual truncated-file count is
+  **0** (`oblivion_truncations.tsv` baseline, regenerated `#3082`/`#3712`).
+  The former six-file NetImmerse-marker tail (`marker_arrow`/`divine`/`map`/
+  `radius`/`temple`/`travel`) is fully resolved — including the
+  corrupt-by-design `marker_radius.nif` (`#698` closed), which was fixed
+  outright by `#2562`/`#2563`'s `NiKeyframeController` `Data`-ref fix rather
+  than merely truncating cleanly. Any truncation reappearing on this corpus
+  is new drift, not the expected tail.
 - Cross-check the block-type histogram for any new types appearing since the last
   sweep.
 - Pick 3 representative interior meshes (Anvil Heinrich Oaken Halls chandelier, a
@@ -292,11 +300,15 @@ Oblivion-specific slice.
 **Entry points**: `ROADMAP.md` (Known Issues + compat matrix), `docs/feature-matrix.md`, `byroredux/src/cell_loader/`, `docs/audits/`
 **Checklist**:
 - The exterior wiring (TES4 worldspace + LAND) is **implemented and
-  game-agnostic** — parse + load ✓ since #1556; the remaining step is an
-  on-device exterior render bench, not wiring (same shape FO3 was
-  pre-bench). It is *not* BSA v103 decompression either, which has worked
-  end-to-end since 2026-04-17 (#699). Do not regenerate the dead "v103 is
-  broken" framing, and do not re-file the wiring as missing.
+  game-agnostic** — parse + load + render ✓ since #1556; Tamriel `(0,0)`
+  radius 1 is on-device measured at 6,043 entities / 2,355 draws
+  (2026-08-12 EX-01/EX-05 re-run, image-health + environment-value gates
+  both clean — see `docs/engine/exterior-readiness-plan.md` for the live
+  figure). The remaining work is the *repeatable readiness matrix*
+  (#2377/#2368), not a first render. It is *not* BSA v103 decompression
+  either, which has worked end-to-end since 2026-04-17 (#699). Do not
+  regenerate the dead "v103 is broken" framing, the stale "render bench
+  pending" framing, or re-file the wiring as missing.
 - Does the `--bsa` CLI path open + list + extract Oblivion archives end-to-end?
 - Are there Oblivion-specific record types the cell loader
   (`byroredux/src/cell_loader/`) needs beyond the FNV-aligned set to place
@@ -331,9 +343,12 @@ Oblivion-specific slice.
    - **Blocker Chain** — Sequential list to reach "exterior cell renders".
      Interiors already work end-to-end (Anvil Heinrich Oaken Halls). TES4
      worldspace + LAND wiring is already implemented and game-agnostic
-     (#1556), so the remaining chain is: on-device exterior render bench →
-     any placement/LOD gaps it surfaces. Do NOT regenerate the stale
-     BSA-v103 framing, nor the stale "wiring missing" framing.
+     (#1556) and exterior cells already render on-device (Tamriel `(0,0)`
+     radius 1, 6,043 entities / 2,355 draws, 2026-08-12 EX-01/EX-05) — the
+     chain to first render is already closed; the remaining chain is the
+     repeatable readiness matrix (#2377/#2368) → any placement/LOD gaps it
+     surfaces. Do NOT regenerate the stale BSA-v103 framing, nor the stale
+     "wiring missing" / "render bench pending" framing.
    - **Regression Guard List** — Previously-fixed items this audit verified still
      hold: the v10.x stride-drift family (#1506/#1507/#1508/#1509),
      `NiTexturingProperty` u32 count, BSStreamHeader dual-band (#170),

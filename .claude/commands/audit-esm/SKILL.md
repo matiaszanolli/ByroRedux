@@ -5,9 +5,9 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` — the third-largest crate in the workspace (~51k LOC
-over 73 files under `src/`; ~59k over 108 counting tests and examples — behind
-`crates/nif` at ~86k and `crates/renderer` at ~78k, re-measured 2026-08-29) and,
+Audit `crates/plugin/` — the third-largest crate in the workspace (~55k LOC
+over 75 files under `src/`; ~62k over 107 counting tests and examples — behind
+`crates/nif` at ~101k and `crates/renderer` at ~84k, re-measured 2026-09-05) and,
 until this skill landed, the **largest subsystem with no owner audit**. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each sample one
 game's slice of it; nothing has ever audited the parser as a parser: the GRUP
 walker, sub-record byte accounting, per-record schema dispatch, the FormID
@@ -35,6 +35,7 @@ those here.
   (`actor/`, `items.rs`, `container.rs`, `condition.rs`, `script.rs`,
   `script_instance.rs`, `weather.rs`, `climate.rs`, `tree.rs`, `global.rs`,
   `mswp.rs`, `movs.rs`, `pkin.rs`, `scol.rs`, `outfit.rs`, `list_record.rs`,
+  `pathgrid.rs` (Oblivion `PGRD`, #3598), `soun.rs` (Loop flag, #3775),
   `grup_walker.rs`, `actor_value_derive.rs`, `common.rs`, and
   `misc/{character, dialogue, effects, equipment, imagespace, magic, pack,
   quest, scene, water, world}.rs`).
@@ -115,9 +116,14 @@ Everything downstream then decodes garbage that *looks* structurally valid.
   FNV 1.34, Skyrim SE 1.71, **FO76 266.0** — this table read `68.0` until
   #3405 corrected it on 2026-08-28; shipped FO76 masters are `00 00 85 43`,
   i.e. 266.0, and the band's floor sits deliberately far below it). This mapping was **inverted once
-  already** (#439 / FO3-3-01, FO3↔FO4) and was latent because the item DATA
-  arms bucket FO4 with FO3NV — re-verify each band end-to-end, and check
-  whether any *new* schema split has since made a mis-band non-latent.
+  already** (#439 / FO3-3-01, FO3↔FO4). **No longer latent (#3727, 2026-08-31)**:
+  three dedicated FO4 arms in `items.rs` now depend on the band being right —
+  `ARMO DATA` (swaps the value/weight/health field order vs the FO3NV/Oblivion
+  arm at the same 12-byte length), `WEAP DATA` (an empty FO4 arm — FO4 ships
+  none), and `BOOK` (its own 8-byte FO4 arm). A FO3↔FO4 mis-band today would
+  silently swap armor weight/health and zero every weapon's value/weight/
+  damage — re-verify each band end-to-end on every audit, and check whether
+  any further schema split has widened the blast radius.
 - A missing/short HEDR falls back to `GameKind::Fallout3NV` (the `Default`).
   Confirm the fallback is deliberate at every call site and that no per-game
   branch silently treats "defaulted" as "detected FO3".
@@ -254,17 +260,21 @@ width shifts every later field in the same sub-record, and the result parses
   in particular that the standalone arm has **not** been "fixed" into a clamp —
   the comment explains why clamping is strictly worse (two forms colliding on
   one global id inside `EsmIndex`).
-- **The remap sweep is finished for the `records/` tier as well (#3400/#3401, `05bdb969`).** #3314 made the remap structural for the `cell/` tier by making it a required parameter of `read_form_id`; `records/` was swept afterwards. `read_record_header` remaps every record's own FormID, so `EsmIndex`'s maps are keyed in global space — a sub-record reference left raw misses every lookup the moment the remap is non-identity, which it is for the second and later plugin of any multi-master load order (every FO4 DLC has exactly one master, so its forms are authored `0x01…` while `allocate_global_slot` keys them `0x02…`) and for every ESL by construction. The live half was `SCOL.ONAM`/`FLTR` and `PKIN.CNAM`/`VNAM`: their consumers look children up in `index.scols` / `index.packins` / `index.statics`, so on the second and later DLC every SCOL child resolved to nothing and `expand_packin_placements_with_depth` returned `None` for the whole package-in — DLC- and mod-added static collections and package-ins rendered as empty space, indistinguishable from unshipped content. Regression = a newly-added sub-record FormID read that bypasses the remap.
+- **The remap sweep for the `records/` tier is a maintained allowlist, not a structural guarantee — verify the guard's coverage, don't trust "finished."** #3314 made the remap structural for the `cell/` tier by making it a required parameter of `read_form_id` (a type-level guarantee: every caller must go through the reader). `records/` has no equivalent type-level forcing function — its free-function `remap_fid(raw, remap)` pattern lets a parser simply omit the `remap` parameter, so `record_parsers_with_embedded_form_ids_take_a_remap` (`records/tests.rs`) is a **hardcoded source-scan allowlist**: it only inspects the parser names it already knows about. #3400/#3401 (`05bdb969`, 2026-08-29) swept the first 8 parsers (`SCOL.ONAM`/`FLTR`, `PKIN.CNAM`/`VNAM`, …) after DLC-added static collections and package-ins were silently resolving to nothing on the second-and-later plugin of a load order. **#3715 (2026-09-03) found 9 more embedded FormID reads the same guard couldn't see** — `parse_ammo`/`parse_weap`/`parse_perk` had `remap` in scope for other fields but never applied it to `projectile_form`/`casing_form`/`skill_form`/`quest_form_id`/`spell_form_id`, and `parse_cobj`/`parse_mgef`/`parse_eczn` didn't take the parameter at all — because none of the six were in the original 8-parser list. The fix extended the allowlist (now ~14 parsers) rather than inverting the guard into a real static check. **Treat this as a recurring gap, not a closed one**: any decoder audited under Dimension 2/4 that reads an embedded FormID should be cross-checked against the *current* allowlist in `tests.rs`, and a parser found taking `remap` in scope but not applying it to a specific field is exactly the #3715 pattern — flag it even if the parser is already on the list.
 - Every `HashMap<u32, _>` in `EsmIndex` is keyed by the **remapped** id. Find any
   decoder that stores a raw plugin-local id into the index, or that compares a
   remapped key against a raw reference — that's a cross-plugin dangling ref.
 - Master-list order (`MAST` sub-records of TES4) defines `master_slots`. Verify
   the list is read in file order and that a missing master produces a diagnosable
   failure rather than a silently shifted slot table.
-- Multi-plugin: `parse_esm` passes `None`. Confirm which CLI paths actually wire
-  a `FormIdRemap` today (`--master` is repeatable) and whether the docstring's
-  "current CLI only wires a single plugin" claim still holds — if the CLI grew
-  multi-plugin support and the docstring didn't, that's doc rot (report it).
+- Multi-plugin: `parse_esm` (single-plugin convenience wrapper) passes `None`.
+  **Multi-plugin is live and the docstring is current (#3725, 2026-08-31)** —
+  `--master` is repeatable on the CLI and `byroredux/src/cell_loader/load_order.rs`
+  builds a real per-plugin `FormIdRemap`, routed through
+  `parse_esm_with_load_order`. Do not re-file "docstring says single-plugin
+  only" as doc rot; instead verify every embedded FormID read in a
+  newly-touched parser goes through `remap_fid` (see the allowlist-gap note
+  above) — that is where a real multi-master regression would now surface.
 **Output**: `/tmp/audit/esm/dim_3.md`
 
 ### Dimension 4: Record Schema Dispatch & Coverage
@@ -291,7 +301,15 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
 - Duplicate FormIDs across a multi-record group: last-write-wins into the
   `HashMap`. Confirm that matches the Bethesda override semantics the
   `DataStore`/`DependencyResolver` tier documents, and that `merge_from`
-  (multi-plugin) applies the same rule.
+  (multi-plugin) applies the same rule. **Regression pin (#3403, 2026-09-03)**:
+  `merge_from`'s `self.game = other.game` was unconditional last-write-wins,
+  so a load-order driver merging `EsmIndex::default()` after a failed plugin
+  parse (game defaults to `Fallout3NV`) silently re-labelled an entire
+  Skyrim/FO4/Starfield merged index as Fallout3NV. Now guarded on
+  `other.total() > 0` (mirroring the existing `character_rules` guard from
+  #3384, kept separate rather than merged — an index that sets `game` without
+  `character_rules` is a real caller shape). Verify the guard still gates on
+  `total() > 0` and hasn't been folded back into an unconditional assignment.
 - `crates/plugin/src/esm/records/actor_value_derive.rs` is the CHARAL feed —
   cross-reference `/audit-character` Dim 4 rather than re-auditing the formulas.
 **Recently settled decodes — verify they hold, do NOT re-derive** (all landed
@@ -316,6 +334,14 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
   * A `REFR` tombstone removes the placement wherever it lives (#3362).
   * FO76 `HEDR` is **266.0** (#3405) — check this against the `from_header`
     bands above; it is the one value most likely to be mis-remembered.
+  * **`ACRE` is NOT Oblivion-only** (#3755, 2026-08-30) — a stale comment
+    claimed "FO3+ folded creature placements into `ACHR`"; measured FO3
+    ships **3,349 `ACRE` against 2,154 `ACHR`**, more creature placements
+    than actor ones, split exactly as Oblivion splits them. The dispatch
+    arm is correctly ungated by game today — the premise was the hazard,
+    not the code: a future reader trusting the comment and gating `ACRE`
+    on `GameKind::Oblivion` would silently delete 3,349 FO3 placements
+    (the #1538 failure mode again). Flag any *new* per-game gate on `ACRE`.
 **Output**: `/tmp/audit/esm/dim_4.md`
 
 ### Dimension 5: CELL / WRLD Walkers & Placement Data
@@ -327,9 +353,16 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
 `crates/plugin/src/esm/cell/wrld.rs`
 **Checklist**:
 - The four CELL child sub-groups (persistent / temporary / distant / VWD, per
-  *cell_record_structure* in memory) must each be walked, and a REFR's group
-  membership must survive into `PlacedRef` — the persistent/temporary split is
-  what streaming and save-restore both key on.
+  *cell_record_structure* in memory) must each be walked. **A REFR's group
+  membership now survives into `PlacedRef` (#3728, 2026-09-02)** — `PlacedRef.group_type: u8`
+  (`crates/plugin/src/esm/cell/mod.rs`) carries the raw child-group type
+  (6=temporary/8=persistent/9=visible-distant, `0xFF` on pre-field legacy
+  fixtures), threaded fixed-across-recursion through `parse_refr_group`/
+  `parse_refr_group_inner` the same way `depth` already is, from both
+  `parse_cell_group_inner` and `parse_wrld_children_inner`. No consumer reads
+  it yet (streaming/save-restore are the intended future consumers) — verify
+  it stays populated and isn't collapsed back to a shared value, not that a
+  consumer exists.
 - GRUP nesting depth bound (#3237, cross-referenced from Dimension 1):
   `parse_cell_group` (`walkers.rs`) and `parse_wrld_children` (`wrld.rs`) both
   route their sub-group `sub_end` through

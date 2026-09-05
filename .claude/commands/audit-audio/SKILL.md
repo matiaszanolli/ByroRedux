@@ -29,10 +29,15 @@ the per-dimension entry points before launching.
 **Engine-side consumers** (Dimension 7 — outside the crate):
 `byroredux/src/systems/audio.rs` (`footstep_system` + `reverb_zone_system`),
 `byroredux/src/components.rs` (`FootstepEmitter` / `FootstepConfig` /
-`FootstepScratch`), and `byroredux/src/asset_provider/texture.rs`
-(`try_load_default_footstep` populates `FootstepConfig.default_sound`). These are
-the ONLY live callers of `play_oneshot` / `set_reverb_send_db`, so the crate-API
-audit is incomplete without them.
+`FootstepScratch`), `byroredux/src/asset_provider/texture.rs`
+(`try_load_default_footstep` populates `FootstepConfig.default_sound`), and
+**`byroredux/src/asset_provider/audio.rs`** (`dispatch_region_ambient_music`,
+`stop_region_ambient_music`, `SoundArchiveProvider`, `resolve_sound_path`,
+`sound_loops`, `sound_archive_path`, `build_sound_archive_provider` — the
+REGN ambient-music dispatch, wired from `cell_loader/load.rs` and
+`scene::apply_cell_region_ambient`). These are the ONLY live callers of
+`play_oneshot` / `play_music` / `stop_music` / `set_reverb_send_db`, so the
+crate-API audit is incomplete without them.
 
 **Ground truth — read these before auditing**:
 - The `crates/audio/src/lib.rs` module docstring enumerates Phases 1–6.
@@ -45,7 +50,10 @@ audit is incomplete without them.
 - `AudioWorld` resource — graceful-degradation `Option<AudioManager<DefaultBackend>>`;
   public API: `new` / `default`, `is_active`, `manager_mut`, `active_sound_count`,
   `pending_oneshot_count`, `play_oneshot`, `play_music`, `stop_music`,
-  `is_music_active`, `set_reverb_send_db`, `reverb_send_db`.
+  `is_music_active`, `set_reverb_send_db`, `reverb_send_db`. **`play_music`
+  gained a 4th parameter, `looping: bool` (#3775)** — signature is now
+  `play_music(streaming_sound, volume, fade_in_secs, looping)`; re-verify the
+  arity before citing it.
 - Components: `AudioListener`, `AudioEmitter` (`sound` / `attenuation` / `volume`
   / `looping` / `unload_fade_ms`), `OneShotSound`. All `SparseSetStorage`.
 - `Attenuation { min_distance, max_distance }`; `DEFAULT_UNLOAD_FADE_MS = 10.0`.
@@ -57,9 +65,17 @@ audit is incomplete without them.
 - Re-exports: `Sound` (= `StaticSoundData`), `SoundSettings`, `Frame`.
 
 **Future phases (NOT shipped — do not flag as missing unless scope says so)**:
-Phase 3.5b FOOT records → per-material sound, REGN ambient soundscapes, MUSC +
-hardcoded music routing, per-cell-acoustics reverb (current detector is binary
-interior/exterior only), raycast occlusion attenuation.
+Phase 3.5b FOOT records → per-material sound, MUSC/MUST decode + Oblivion's
+RDMD enum (#3816), per-cell-acoustics reverb (current detector is binary
+interior/exterior only), raycast occlusion attenuation. **REGN ambient
+soundscapes are a split case, not simply "not shipped"**: the dispatch
+mechanism (`dispatch_region_ambient_music`, crossfade, `looping`, stop-on-miss,
+archive resolution) is live and tested (Dim 7), but the REGN→SOUN resolution
+it depends on is confirmed structurally dead on every supported game —
+Oblivion `RDMD` is a music-category enum (not a FormID), Skyrim `RDMO` targets
+`MUSC`, FNV `RDSB`/`RDSI` target `MSET` (#3787/#3811) — so no authored REGN
+data can ever reach it until #3816's MUSC/MUST/MSET decode work lands. Audit
+the dispatch mechanism as shipped; audit the resolution gap as the open item.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -125,8 +141,15 @@ first, manager/ECS lifecycle and gameplay wiring last.
   `manager.is_none()` so the queue can't fill on headless. Re-verify the
   `VecDeque` (not `Vec::remove(0)`) and the up-front manager-`None` drop.
 - **Drain ordering (regression guard, #851)**: the manager-active gate sits
-  BEFORE `std::mem::take(&mut pending_oneshots)`. A take-then-bail reorder would
-  silently lose drained items. Confirm the gate precedes the take.
+  BEFORE the drain of `pending_oneshots`. A gate-after-drain reorder would
+  silently lose drained items. Confirm the gate precedes the drain. **The
+  drain mechanism itself changed (#3521)**: `drain_pending_oneshots` now uses
+  `VecDeque::drain(..)` in place, not the prior `std::mem::take(&mut
+  pending_oneshots)` — that swapped in a fresh zero-capacity `VecDeque` and
+  dropped the capacity-holding original at scope end, paying an allocate+free
+  pair on every tick that drained anything (same class as #932/#3059/#3257).
+  Verify the field keeps its allocated capacity across a drain — a
+  `mem::take` reappearing here is the regression.
 - `Arc<StaticSoundData>` clone semantics: same `Arc` backs many emitters without
   re-decoding. Entity path uses `Arc::clone(&emitter.sound)`; volume is applied
   via `(*sound).clone().volume(db)` which reuses the underlying `Arc<[Frame]>`.
@@ -242,15 +265,33 @@ first, manager/ECS lifecycle and gameplay wiring last.
 - `is_music_active` returns `false` once the handle reports `Stopped`. Verify it
   doesn't report active during the fade-out tail in a way that blocks a legit
   re-`play_music`.
-- **MUSC parse→play gap (re-scope — do NOT audit as a live path)**: cell-music
-  FormIDs ARE parsed — `default_music` (ZNAM, `crates/plugin/src/esm/cell/wrld.rs`
-  ~ZNAM arm; field `crates/plugin/src/esm/cell/mod.rs` `default_music: Option<u32>`)
-  and `music_type_form` (XCMO, `wrld.rs` XCMO arm; field `cell/mod.rs`
-  `music_type_form: Option<u32>`) — but NO caller invokes `play_music` (grep
-  `play_music` across `byroredux/` returns zero hits; it's defined only in
-  `crates/audio/src/lib.rs`). Treat MUSC routing as a FUTURE-phase gap. The audit
-  task is to CONFIRM the parse→play wiring is absent so the single-slot / main-track
-  invariants stay pinned for the eventual caller — not to trace a flow with no producer.
+- **CELL-level MUSC parse→play gap (re-scope — do NOT audit as a live path)**:
+  cell-music FormIDs ARE parsed — `default_music` (ZNAM,
+  `crates/plugin/src/esm/cell/wrld.rs` ~ZNAM arm; field
+  `crates/plugin/src/esm/cell/mod.rs` `default_music: Option<u32>`) and
+  `music_type_form` (XCMO, `wrld.rs` XCMO arm; field `cell/mod.rs`
+  `music_type_form: Option<u32>`) — but every construction site
+  (`scene/world_setup.rs`, `cell_loader/exterior.rs`, `cell_loader/lod_support.rs`,
+  the test fixtures) still hardcodes `music_type_form: None` and nothing reads
+  `default_music` either. Treat CELL-level MUSC routing as a FUTURE-phase gap.
+  **This is a narrower claim than "no caller invokes `play_music`" — that is
+  no longer true** (see below); the gap here is specifically the CELL
+  ZNAM/XCMO path, which stays unwired independent of the REGN one.
+- **`play_music` DOES now have a live caller — the REGN ambient path, a
+  DIFFERENT FormID than CELL's MUSC (#3775, live in Dim 7)**:
+  `dispatch_region_ambient_music` (`byroredux/src/asset_provider/audio.rs`)
+  resolves `RegionAmbientRes::music_form` (REGN's `RDAT` Sound payload,
+  RDSB/RDMO/RDMD depending on game) and calls `play_music` with the #3775
+  `looping` flag. It is wired from both `cell_loader/load.rs` load paths and
+  `scene::apply_cell_region_ambient`. Audit the dispatch mechanism itself as
+  shipped (crossfade, looping, stop-on-miss/decode-fail, once-only unsupported
+  log) — see Dim 7 — but its FormID resolution is confirmed structurally dead
+  on every supported game (#3787/#3811: Oblivion RDMD is an enum not a
+  FormID; Skyrim RDMO targets MUSC; FNV RDSB/RDSI target MSET), so it never
+  actually plays anything in production until #3816 lands the MUSC/MUST/MSET
+  decode. Do not report "no caller" for `play_music` any more — report the
+  resolution gap instead, and cite #3816, not this dimension, as the tracking
+  issue.
 - Music handle field-drop: `music` drops before `manager` (Dim 6 field-drop invariant).
 **Output**: `/tmp/audit/audio/dim_4.md`
 
@@ -260,11 +301,20 @@ creation), `set_reverb_send_db`, `reverb_send_db`, both `with_send` sites
 (`drain_pending_oneshots` + `dispatch_new_oneshots`)
 **Checklist**:
 - One global send track is created in `AudioWorld::new` via
-  `SendTrackBuilder::new().with_effect(ReverbBuilder::new().feedback(0.85)
-  .damping(0.6).stereo_width(1.0).mix(Mix::WET))`. `reverb_send:
-  Option<SendTrackHandle>` is `None` if the manager was inactive or
-  `add_send_track` failed — verify the `None` path never cascades into a later
-  `unwrap()`.
+  `SendTrackBuilder::new().with_effect(ReverbBuilder::new()
+  .feedback(REVERB_FEEDBACK).damping(REVERB_DAMPING)
+  .stereo_width(REVERB_STEREO_WIDTH).mix(Mix::WET))` — named constants
+  (0.85 / 0.6 / 1.0, `f64` to match kira's `Value<f64>` param type) as of
+  #3780, replacing the bare literals. **No recorded provenance**: the values
+  landed with the M44 Phase 6 commit (`e191d9f9`) with no rationale, and are
+  NOT kira's own `ReverbBuilder::default()` (0.9/0.1/1.0 in kira 0.10.8), so
+  this was a deliberate but undocumented choice — the constants exist so a
+  future interior-acoustics tuning pass (#847) has a greppable baseline, not
+  because they're validated against a reference. Do not invent or assume a
+  rationale for these three numbers; flag the doc gap, don't paper over it.
+  `reverb_send: Option<SendTrackHandle>` is `None` if the manager was
+  inactive or `add_send_track` failed — verify the `None` path never
+  cascades into a later `unwrap()`.
 - **Per-new-track send opt-in**: each `SpatialTrackBuilder` opts into the send
   via `.with_send(reverb.id(), reverb_send_db)` at construction time, gated on
   `reverb_send_db.is_finite() && reverb_send_db > -60.0`. kira 0.10 has no
@@ -344,27 +394,52 @@ creation), `set_reverb_send_db`, `reverb_send_db`, both `with_send` sites
 - Listener-entity despawn: `sync_listener_pose` early-returns; the handle stays
   (see Dim 2 sticky-listener guard) and drops with `AudioWorld` at shutdown — a
   despawn/respawn cycle must not leak listener handles.
-- Cross-cell music continuity is a FUTURE-phase contract (no `play_music` caller
-  today — see Dim 4). The eventual MUSC caller MUST gate on FormID equality
-  (re-loading the same `StreamingSoundHandle` re-decodes + re-streams). Audit as
-  "pin the invariant for the future caller," not a present regression surface.
+- **Cross-cell music continuity now has a live implementation to audit, not
+  just a future contract (#3775 — see Dim 4/7).**
+  `dispatch_region_ambient_music` gates on `music_form` FormID equality
+  already: both call sites (`cell_loader/load.rs`'s two load paths,
+  `scene::apply_cell_region_ambient`) compare against
+  `RegionAmbientRes`'s prior value and only redispatch on an actual change —
+  re-decoding/re-streaming the same track on every connected-cell crossing
+  sharing one tagging region would otherwise restart it audibly. Verify that
+  gate still holds. The still-open future contract is narrower: a CELL-level
+  MUSC (ZNAM/XCMO) caller, whenever one lands, must implement the same
+  equality gate independently (it targets a different FormID field than
+  REGN's `music_form`).
 **Output**: `/tmp/audit/audio/dim_6.md`
 
 ### Dimension 7: Gameplay Audio Wiring (Engine-Side Consumers)
 **Entry points**: `byroredux/src/systems/audio.rs` — `footstep_system`,
 `reverb_zone_system`; `byroredux/src/components.rs` — `FootstepEmitter`,
-`FootstepConfig`, `FootstepScratch`; `byroredux/src/scene.rs` (camera opt-in);
-`byroredux/src/asset_provider/texture.rs` — `try_load_default_footstep`
+`FootstepConfig`, `FootstepScratch`; `byroredux/src/scene.rs` (camera opt-in,
+`apply_cell_region_ambient`); `byroredux/src/asset_provider/texture.rs` —
+`try_load_default_footstep`; `byroredux/src/asset_provider/audio.rs` —
+`dispatch_region_ambient_music`, `stop_region_ambient_music`,
+`SoundArchiveProvider`, `resolve_sound_path`, `sound_loops`,
+`sound_archive_path`, `build_sound_archive_provider`; wired from
+`byroredux/src/cell_loader/load.rs`
 **Why this dimension**: the M44 CRATE (Dims 1–6) is the producer of the
-`play_oneshot` / reverb API; the consumers that DRIVE it live outside the crate.
-`footstep_system` is the ONLY live `play_oneshot` caller; `reverb_zone_system` is
-the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions.
+`play_oneshot` / `play_music` / reverb API; the consumers that DRIVE it live
+outside the crate. `footstep_system` is the ONLY live `play_oneshot` caller;
+`reverb_zone_system` is the ONLY `set_reverb_send_db` caller;
+`dispatch_region_ambient_music` is the ONLY `play_music`/`stop_music` caller
+(#3775). None is covered by the crate dimensions.
 **Checklist**:
 - **Stride accumulation**: `footstep_system` accumulates XZ-plane (horizontal
   only — Y is not a step) movement against `FootstepEmitter.stride_threshold`,
   fires one `play_oneshot` per crossing, and RESETS `accumulated_stride = 0.0` on
   fire (a subtract-remainder would multiply footsteps on a large teleport).
-  Guard: `single_large_jump_fires_one_footstep_only`.
+  Guard: `single_large_jump_fires_one_footstep_only`. **`stride_threshold` is
+  authored in Bethesda units, not metres (#3520)** — `0.75 *
+  BETHESDA_UNITS_PER_METER` (52.5), compared directly against
+  `GlobalTransform.translation` deltas (also BU); no conversion at the
+  compare site, `bu_to_audio_space` stays the subsystem's only unit seam
+  (#3178). Before the fix the field was `1.5` with a "~1.5m" docstring —
+  effectively 1.5 BU (2.1 cm), so the `if`-not-`while` fire branch fired
+  once per frame while moving (60 Hz vs. a ~1.8 Hz human cadence). Guards:
+  `stride_threshold_is_bethesda_units_not_metres`,
+  `walking_for_one_second_fires_a_walking_cadence_not_one_per_frame`. A
+  reintroduced metre-scale literal is the regression.
 - **First-tick seed (#848)**: on the first tick (`!fs.initialised`), seed
   `last_position = pos`, set `initialised = true`, and `continue` WITHOUT
   accumulating — else the cold-start origin→spawn delta fires a phantom step.
@@ -413,6 +488,25 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
   `interior_cell_sets_subtle_reverb_send`,
   `interior_to_exterior_transition_resets_send_to_dry`,
   `no_cell_lighting_resource_is_safe_noop`, `no_audio_world_is_safe_noop`.
+- **`dispatch_region_ambient_music` (#3775/#3787/#3811)** — the REGN ambient
+  track dispatch, the ONLY live `play_music`/`stop_music` caller. Only
+  redispatches when `music_form` actually CHANGED from the resource's prior
+  value (both call sites — `cell_loader/load.rs`'s two load paths and
+  `scene::apply_cell_region_ambient` — compare before calling); an
+  unconditional redispatch on every cell load/crossing would restart, with an
+  audible crossfade, the same track whenever two connected cells share a
+  tagging region. Verify it stops outstanding playback (not leaves it
+  running) on every failure layer — no `SoundArchiveProvider`, no
+  `--sounds-bsa` supplied, unresolved FormID, missing archive entry, decode
+  failure, and `music_form: None` — because whatever was audible belonged to
+  the *previous* directive. The `music_form`-authored-but-unresolved case
+  logs once via `std::sync::Once` (not per-region-transition) distinguishing
+  "no archive supplied" from "authored but this engine build can't resolve
+  its target type" — verify the log fires once per process, not once per
+  cell. `looping` threads through from `sound_loops` (SOUN's Loop bit) into
+  `play_music`'s 4th parameter. Per the Dim 4 cross-reference: this is
+  presently unreachable in production because `music_form` never resolves as
+  a SOUN on any supported game — audit the mechanism, not a live flow.
 **Output**: `/tmp/audit/audio/dim_7.md`
 
 ## Phase 3: Merge
@@ -421,16 +515,21 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
 2. Combine into `docs/audits/AUDIT_AUDIO_<TODAY>.md` with structure:
    - **Executive Summary** — Crate Phases 1–6 + engine consumers shipped
      (footstep gameplay loop via `footstep_system`, per-cell reverb via
-     `reverb_zone_system`) vs pending (3.5b FOOT, REGN, MUSC routing, occlusion).
-     Note the MUSC parse→play gap explicitly (FormIDs parsed, no `play_music`
-     caller). Findings count by severity. Headless-mode boot status (MUST be PASS).
+     `reverb_zone_system`, REGN ambient dispatch via
+     `dispatch_region_ambient_music`) vs pending (3.5b FOOT, MUSC/MUST/MSET
+     decode, occlusion). Note the REGN dispatch mechanism is shipped and
+     tested but its FormID resolution is structurally dead on every game
+     pending #3816, and that CELL-level MUSC (ZNAM/XCMO) is a separate,
+     still fully-unwired gap. Findings count by severity. Headless-mode boot
+     status (MUST be PASS).
      Delta vs the most recent prior `docs/audits/AUDIT_AUDIO_*.md` report (which of
      #843–#859 are now regression-guarded).
    - **Lifecycle Invariant Matrix** — Field-drop order × verified/drifted;
      per-handle owner; sticky-listener; despawn-truncation guards.
    - **Findings** — Grouped by severity (CRITICAL first), deduplicated.
    - **Future-Phase Readiness** — Which invariants this audit pinned for the next
-     phase (FOOT/3.5b material sounds, REGN, MUSC routing, occlusion).
+     phase (FOOT/3.5b material sounds, MUSC/MUST/MSET decode unblocking REGN
+     ambient + CELL-level music, occlusion).
 3. Remove cross-dimension duplicates: field-drop order is owned by Dim 6 (pointers
    from Dims 1/4/5); `reverb_zone_system` full audit lives in Dim 7 (pointer from
    Dim 5).

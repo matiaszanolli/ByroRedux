@@ -39,12 +39,18 @@ an entry point.)
 **Cross-cuts** (the wiring that actually invokes the crate):
 - `byroredux/src/cell_loader/references/synth_child.rs` — the production
   route (split out of `references/mod.rs` under #2409 / TD1-006). An
-  `is_spt` extension check (`model_path … eq_ignore_ascii_case("spt")`)
-  dispatches to `parse_and_import_spt` (implemented in the sibling
-  `byroredux/src/cell_loader/references/import.rs`), which looks up the matching
-  TREE record from `record_index.trees` and threads its metadata into
-  `SptImportParams`. `byroredux/src/cell_loader/refr.rs` does **not** carry a
-  `.spt` route.
+  `is_spt` extension check (`model_lower.ends_with(".spt")`) resolves the
+  archive key via `resolve_spt_model_path` (#3735 — see Dim 3; `.spt`
+  binaries live under a top-level `trees\` folder, outside `meshes\`) with
+  an exact-key probe (`TextureProvider::has_mesh_exact` /
+  `extract_mesh_exact`), then dispatches to `parse_and_import_spt`
+  (implemented in the sibling `byroredux/src/cell_loader/references/import.rs`),
+  which looks up the matching TREE record from `record_index.trees` and
+  threads its metadata into `SptImportParams`. The registry cache key is
+  suffixed with the TREE form id for the `.spt` branch only
+  (`spt_cache_key`, #3750 — see Dim 3; TREE records sharing one `.spt`
+  file previously collapsed onto whichever record was cached first).
+  `byroredux/src/cell_loader/refr.rs` does **not** carry a `.spt` route.
 - `byroredux/src/scene/nif_loader.rs` — the `--tree` / loose-file
   direct-visualiser route (`parse_import_and_merge`, `is_spt` branch).
   This is a **parallel** path: it calls `import_spt_scene` with
@@ -60,10 +66,14 @@ an entry point.)
   the spt placeholder uses) currently falls back to the world-up yaw lock
   — confirm that's still the behaviour and that the `-Z` front-face
   convention in `import/mod.rs` matches the rotation arc used here.
-- `byroredux/src/cell_loader/spawn.rs` — attaches the `Billboard`
-  component from `cached.placement_root_billboard`, and routes the
-  placeholder `ImportedMesh` through the NIFAL boundary
-  (`crate::material_translate::translate_material`).
+- `byroredux/src/cell_loader/spawn/mesh_instance.rs` — attaches the
+  `Billboard` component per spawned mesh from `mesh.billboard_mode` (set
+  by the SPT importer to `BILLBOARD_MODE_BS_ROTATE_ABOUT_UP`), and routes
+  the placeholder `ImportedMesh` through the NIFAL boundary
+  (`crate::material_translate::translate_material`). The sibling
+  `cached.placement_root_billboard` field on `spawn.rs`'s placement-root
+  path is a **dead seam**, not a live consumer, for SpeedTree today — see
+  Dim 3.
 
 **Phase 1 ("S1") acceptance** (ground truth — verify before reporting):
 - TLV walker recovered against the FNV/FO3/Oblivion `.spt` corpus
@@ -112,6 +122,19 @@ gate) — that's intentional, not a drop.
    trusting it — do not start Phase 1 orientation from a false open-item
    list. Treat closed findings as **regression guards**, not open items;
    only re-flag if a guard has actually broken.
+   Since the last full sync, several doc-rot fixes corrected SKILL-adjacent
+   claims that had drifted stale — these are also closed, not open gaps:
+   `.spt` `MODL` resolution now goes through a dedicated `trees\`-rooted
+   resolver (#3735 — pre-fix 0 of 154 vanilla TREE records resolved a
+   model at all; see Dim 3), the registry cache key is per-(model path,
+   TREE record) instead of per-path (#3750, see Dim 3), `parse_spt` has
+   **five** fatal `Err` conditions, not two (#3752, see Dim 1), CNAM is
+   8 × f32 on all three games with no Oblivion/FO3-FNV split (#3751, see
+   Dim 3), BNAM is present on 100% of vanilla records on all three games,
+   not FO3/FNV-only (#3740, already reflected below), tag.rs's 12002/12003
+   entries lost an unsupported "matrix row" gloss but keep their sizes
+   unchanged (#3535, see Dim 5), and `placement_root_billboard` doc/wording
+   was clarified as a dead seam, not a live consumer (#3533, see Dim 3).
 4. `deep` only — corpus + recon harness:
    - corpus location: `Fallout - Meshes.bsa` (FNV/FO3), `Oblivion - Meshes.bsa`.
    - acceptance run: `BYROREDUX_FNV_DATA=… cargo test -p byroredux-spt --release --test parse_real_spt -- --ignored --nocapture` (and `_FO3_DATA` / `_OBL_DATA`).
@@ -146,11 +169,16 @@ dictionary desyncs every subsequent read.
 - Pathological lengths: `read_string_lp` and `ArrayBytes` both cap at
   64 KiB and bail with `Err`, not OOM. Confirm the cap is on the *byte
   count* (count × stride), not just `count`.
-- `parse_spt` returns `Err` only on the two fatal conditions (missing
-  magic, mid-payload underflow). In-range-but-unknown tags are non-fatal
-  (recorded, walker stops) — this is the contract the placeholder relies
-  on. Any new fatal-error path is a HIGH finding (it kills the cell-loader
-  fallback).
+- `parse_spt` returns `Err` on **five** fatal conditions (its docstring
+  enumerates all five, Fix #3752 — an earlier claim of just two was
+  stale): magic-header mismatch, mid-payload stream underflow,
+  `read_string_lp`'s > 64 KiB length-prefix cap, `read_payload`'s
+  `count × stride` > 64 KiB array-size cap, and an unrecognized
+  context-sensitive-kind arm. All five discard the whole `SptScene`,
+  including every `TagEntry` already decoded. In-range-but-unknown tags
+  are non-fatal (recorded, walker stops) — this is the contract the
+  placeholder relies on. Any new fatal-error path is a HIGH finding (it
+  kills the cell-loader fallback).
 - Endian: LE-only, unconditional (no version-gated readers — every `.spt`
   is `__IdvSpt_02_`). Flag any big-endian assumption or host-endian read.
 
@@ -202,9 +230,10 @@ dictionary desyncs every subsequent read.
 ### Dimension 3: TREE → Billboard Wiring
 **Entry points**: `byroredux/src/cell_loader/references/synth_child.rs`
 (`is_spt` dispatch) + `byroredux/src/cell_loader/references/import.rs`
-(`parse_and_import_spt`),
-`byroredux/src/cell_loader/spawn.rs` (`placement_root_billboard` →
-`Billboard::new`), `crates/plugin/src/esm/records/tree.rs` (`parse_tree`,
+(`parse_and_import_spt`, `resolve_spt_model_path`),
+`byroredux/src/cell_loader/nif_import_registry.rs` (`spt_cache_key`),
+`byroredux/src/cell_loader/spawn/mesh_instance.rs` (`mesh.billboard_mode`
+→ `Billboard::new`), `crates/plugin/src/esm/records/tree.rs` (`parse_tree`,
 `TreeRecord`, `has_speedtree_binary`).
 **Checklist**:
 - The `.spt` route fires when the REFR's TREE base's MODL ends in `.spt`;
@@ -213,24 +242,67 @@ dictionary desyncs every subsequent read.
   cell must coexist.
 - `parse_and_import_spt` returns the **same** `CachedNifImport` shape as
   every other model, with synthetic defaults the generic spawn path must
-  not mis-read as NIF-rooted:
-  `placement_root_billboard = Some(BsRotateAboutUp)` (#994),
-  `bsx_flags = 0` (#1214), `root_flags = 0` (#1235),
-  `flame_attach_offset = None`. Confirm the spawn site never assumes the
-  placeholder carries a real NiAVObject root / BSXFlags / flame marker.
-- `spawn.rs` actually inserts the `Billboard` component when
-  `placement_root_billboard.is_some()` — without it the quad spawns static
-  (this was SPT-D4-01, now closed; it's the regression guard for the whole
-  dimension).
+  not mis-read as NIF-rooted: `bsx_flags = 0` (#1214), `root_flags = 0`
+  (#1235), `flame_attach_offset = None`. Confirm the spawn site never
+  assumes the placeholder carries a real NiAVObject root / BSXFlags /
+  flame marker.
+- **`placement_root_billboard` is structurally `None` for every `.spt`
+  import, not `Some(BsRotateAboutUp)`.** #3076 moved the billboard mode
+  from the placement root onto the renderable mesh itself:
+  `import_spt_scene` builds its root with
+  `placeholder_root_node(/* billboard */ false)` and instead sets
+  `mesh.billboard_mode = Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP)` on the
+  placeholder mesh. The functional insert lives in
+  `spawn/mesh_instance.rs`'s `if let Some(raw) = mesh.billboard_mode { … }`
+  — without it the quad spawns static, which is the live regression guard
+  for the whole dimension. #994/SPT-D4-01 pinned the original bug on the
+  placement-root path; that path is now a documented dead seam kept for a
+  hypothetical root-billboarding NIF producer (no such producer exists),
+  and its `spawn.rs` consumer is unreachable for SpeedTree today (doc
+  clarified by Fix #3533) — confirm any new finding here targets the
+  mesh-level insert, not the inert `spawn.rs` one.
 - `TreeRecord` field capture is lossless for the fields the importer reads
   (OBND→`bounds`, ICON→`leaf_texture`, MODB→`bound_radius`,
   BNAM→`billboard_size`). SNAM/CNAM are parsed-but-not-consumed (TD5-011) —
-  don't flag as a drop, but DO flag if they're silently *mis-parsed*
-  (e.g. CNAM length not shape-tolerant across the 5-float Oblivion vs
-  8-float FO3/FNV split).
-- `.spt` files in BSAs resolve through the same `extract_mesh` lookup chain
-  as `.nif` (sibling-BSA auto-load, AE pipeline-path strip if relevant) —
-  no parallel "spt resolver".
+  don't flag as a drop, but DO flag if they're silently *mis-parsed*. CNAM
+  is 8 × f32 on **all three games** (Oblivion, FO3, FNV — no split); an
+  earlier claim here of "5 floats on Oblivion, 8 on FO3/FNV" was wrong and
+  has been corrected (Fix #3751), including retargeting the Oblivion unit
+  test off a synthetic 5-float fixture onto the measured vanilla shape.
+- **`.spt` model paths resolve through a dedicated parallel resolver, not
+  the generic `extract_mesh` chain (regression guard, #3735).** Every
+  vanilla `.spt` TREE `MODL` is a leading-separator bare filename — 154 of
+  154 records across Oblivion (142), FO3 (9) and FNV (3) — and SpeedTree
+  binaries live under a top-level `trees\` folder, outside `meshes\`. The
+  generic `meshes\`-rooted composition (correct for every other model
+  reference) built a key no archive holds, so `extract_mesh` missed, the
+  `is_spt` dispatch downstream was never entered, and **0 of 154** vanilla
+  TREE records resolved a model — no SpeedTree placeholder had ever
+  rendered from a cell load, on any of the three `.spt` games (the loose
+  `--tree` route was unaffected, which is why the smoke path passed).
+  `resolve_spt_model_path` (`references/import.rs`) probes the authored
+  value verbatim, then the `meshes\`-rooted form, then the bare name under
+  `trees\` (`SPT_CANDIDATE_DIRS`), via a case-sensitive exact-key lookup
+  (`TextureProvider::has_mesh_exact` / `extract_mesh_exact`) that bypasses
+  the shared `normalize_mesh_path` — which would otherwise re-root a
+  correct `trees\` key back under `meshes\` — for this route only; that
+  shared normaliser is untouched for every other consumer. The streaming
+  prefetch (`byroredux/src/streaming.rs`) now skips `.spt` entirely rather
+  than writing a negative registry-cache entry that would mask the
+  sync-side fix. Guard: the corpus gate `vanilla_tree_models_all_resolve`
+  (`references/import_tests.rs`, env-gated, sibling of
+  `vanilla_tree_icons_all_resolve`), which pre-fix reported 0 of 154 MODLs
+  resolving and post-fix reports all 139 unique Oblivion, 9 FO3 and 3 FNV
+  `.spt` MODLs resolving.
+- **Registry cache key is per-(model path, TREE record), not just model
+  path (regression guard, #3750).** `parse_and_import_spt` bakes
+  per-TREE-record metadata (ICON/OBND/MODB/BNAM) into the cached
+  `CachedNifImport`, unlike NIFs where the parse depends only on the file.
+  Multiple TREE records legitimately share one `.spt` file with different
+  tint/scale params — keying the registry by model path alone collapsed
+  every such record onto whichever was imported first. `spt_cache_key()`
+  (`nif_import_registry.rs`) suffixes the canonical path key with the TREE
+  form id, scoped to the `.spt` branch only — NIF keying is unchanged.
 - Cell unload despawns the placeholder entities cleanly; no leaked BLAS
   entries for the billboard quad.
 
@@ -281,6 +353,12 @@ desync trigger, so spot-check rather than skip.
   = 52 B, 13008 = 11 B, 13013 = 7 B, 12002 = 16 B, 12003 = 20 B,
   ArrayBytes 10002 stride 1 / 10003 stride 8. A size that contradicts the
   observed histogram is a Dimension-1 desync waiting to happen → MEDIUM.
+  Exception: 12002/12003 are **not** backed by a recorded histogram like
+  the rest of this list — `format-notes.md` flags them as size-only,
+  no corpus observation (Fix #3535, which also removed an earlier
+  unsupported "4 × f32 = matrix row?" gloss on 12002); don't fault them
+  for lacking histogram evidence you'd expect elsewhere in this table, but
+  do flag if either size is ever contradicted by a real sample.
 - Confounder tags (`4096`, `5376`, string-length values that fell in the
   tag band) must stay `Unknown` so the walker bails rather than misparses
   (`unknown_for_out_of_dictionary_tags`).
@@ -295,13 +373,18 @@ any other mesh. Cross-cuts `/audit-nifal` — report single-boundary /
 no-fabrication findings *there*, not here.
 **Entry points**: the material defaults in
 `crates/spt/src/import/mod.rs` (`placeholder_billboard_mesh`),
-`byroredux/src/material_translate.rs` (`translate_material`, consumed at
-the `spawn.rs` call site), `crates/core/src/ecs/components/material.rs`
+`byroredux/src/material_translate.rs` (`translate_material`, called
+independently from both `byroredux/src/scene/nif_loader.rs` — the
+`--tree` loose route — and `byroredux/src/cell_loader/spawn/mesh_instance.rs`
+— the cell route), `crates/core/src/ecs/components/material.rs`
 (`Material::resolve_pbr`).
 **Checklist**:
 - The placeholder is canonicalised at the **single** `translate_material`
-  boundary — no parallel "spt material" path that bypasses it (the `--tree`
-  loose route and the cell route must both land here via `spawn.rs`).
+  *function* — no parallel "spt material" path that bypasses it. It has
+  two call sites (`nif_loader.rs` for the loose route,
+  `spawn/mesh_instance.rs` for the cell route), not one shared call site —
+  confirm both actually reach it rather than one drifting onto a
+  hand-rolled substitute.
 - Non-PBR defaults survive translation: `is_pbr: false`, `from_bgsm: false`
   (#1076/#1077); `metalness_override: Some(0.0)` / `roughness_override: Some(0.85)`
   — explicit foliage defaults set at import (#1819/SPT-NEW-05,

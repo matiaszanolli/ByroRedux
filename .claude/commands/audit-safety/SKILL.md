@@ -15,21 +15,25 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 
 ## Scale of the surface
 
-`unsafe` is concentrated, not scattered: **~830** occurrences live in
-`crates/renderer/src` (ash FFI + gpu-allocator; ~760 at the last count, so this
-mass grows) then a long tail — ~13 in `crates/nif` and ~11 in `crates/fsr3-sys`
+`unsafe` is concentrated, not scattered: **~865** occurrences live in
+`crates/renderer/src` (ash FFI + gpu-allocator; ~830 at the last count, so this
+mass grows) then a long tail — ~14 in `crates/nif` and ~11 in `crates/fsr3-sys`
 (the vendored FSR 3.1 FFI, Dimension 1), ~6 in `crates/core`, **1** in
 `byroredux` (`cell_loader/unload.rs`), and one each in `crates/plugin`,
-`crates/facegen`, `crates/cxx-bridge`, `crates/ui`, and `crates/pex` (the M47.2
+`crates/cxx-bridge`, and `crates/pex` (the M47.2
 decompiler — its single `unsafe` is a guarded `transmute` in `opcode.rs`, see
 Dimension 2). `crates/save` (M45), `crates/hkx` (M47.2, a deliberately safe
 packfile reader), `crates/bsa` (its untrusted-input bounds in `safety.rs` are
-entirely safe code) and `crates/mod-runtime` (the sandbox host, Dimension 11)
-have **no** `unsafe` — for the last three that absence is itself the safety
+entirely safe code), `crates/mod-runtime` (the sandbox host, Dimension 11),
+`crates/facegen` (M41 FaceGen decode — its one raw hit is a "No `unsafe`" doc
+comment, not code), `crates/ui` (the Ruffle/wgpu boundary in Dimension 1 is
+safe Rust end to end — its one raw hit is inside a log string, not code), and
+`crates/sdk` (renderer-independent tooling/mod-API surface, added 2026-08-25,
+`#![forbid(unsafe_code)]`, ~14k LOC) have **no** `unsafe` — for these the absence is itself the safety
 property, so verify it rather than skipping them.
 Counts drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather
 than trusting these figures, **but read the hits, don't just count them**: that
-recipe matches the substring inside identifiers too (it reports ~12 for
+recipe matches the substring inside identifiers too (it reports ~14 for
 `byroredux` on the strength of `serde_attr_declares_unsafe_default` alone), so
 a count that jumps without a matching `unsafe {` block is a false alarm. Renderer carries roughly nine `SAFETY` comments
 per ten `unsafe` tokens; the residual gap is where the unsafe-without-comment
@@ -152,7 +156,7 @@ guard below.
 - **`AllocatorResource` drop ordering (regression guard, #1406, `299e6a84`).**
   `AllocatorResource` (`crates/renderer/src/vulkan/allocator.rs`; the live
   remove/insert sites are in `byroredux/src/app_events.rs` — `remove_resource`
-  at ~line 59, re-insert on `resumed` at ~line 126, post-#2731; *main.rs* only
+  at ~line 68, re-insert on `resumed` at ~line 149, post-#2731; *main.rs* only
   carries the explanatory comment now) must be removed from the ECS `World` BEFORE
   `VulkanContext::drop()` runs. The allocator holds a live `Arc<Device>`; if the
   `World` outlives the context, the allocator's `Drop` calls the driver against a
@@ -213,6 +217,16 @@ guard below.
   `acceleration/tlas.rs` calls `device.device_wait_idle()` before freeing the old
   allocation (confirmed present). Verify the wait survives — without it the GPU may
   still consume the old TLAS scratch during free under a resize-under-load refactor.
+- **Depth-capture format consistency (regression guard, #3570).**
+  `depth_capture_record_copy` / `depth_capture_finish_readback`
+  (`crates/renderer/src/vulkan/context/depth_capture.rs`) must consult
+  `self.depth_format` rather than hardcoding 4 bytes / one f32 per sample —
+  `find_depth_format`'s fallback chain tries `D32_SFLOAT` then `D16_UNORM`, and
+  Vulkan mandates `D16_UNORM` depth-attachment support but not `D32_SFLOAT`, so
+  the D16 arm is reachable on real hardware even though the dev RTX 4070 Ti
+  never selects it. Confirmed fixed: the capture now refuses (with a warning)
+  on a `D16_UNORM` device rather than misdecoding pairs of adjacent u16 samples
+  as one f32. Verify the format check still gates the capture.
 - `VK_KHR_ray_query` enabled + feature-gated before any ray-query use.
 - Per-frame compute layout hygiene (TAA / caustic / water-caustic / volumetrics /
   bloom): images that coexist as storage-write + sampled-read are held in `GENERAL`;
@@ -224,7 +238,15 @@ guard below.
   (`crates/renderer/src/vulkan/volumetrics.rs`) is now `true`, so the pass is live —
   dispatch is dead only while it reads `false`. Callers MUST gate `vol.dispatch()` on
   that const either way (`context/post_passes.rs`); read the const rather than
-  assuming a state.
+  assuming a state. **Far-plane default lockstep (regression guard, #3611):**
+  three independent copies of the volumetric far plane —
+  `VolumetricsConfig::DEFAULT` (`upscaling.rs`), `DEFAULT_GRID_FAR_METERS`
+  (`volumetrics.rs`), and `VOLUME_FAR` (`shader_constants_data.rs`, pre-scaled
+  to world units and included verbatim by `build.rs`) — must agree; a drift is a
+  behavioral divergence from `--fog-grid-far-m`, not cosmetic. Two now derive
+  from one `const`; `VOLUME_FAR` stays a literal, pinned by a test asserting it
+  equals `DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_METER`. Verify that test
+  still runs and the two `const` derivations haven't been re-forked into literals.
 - SPIR-V reflection (`crates/renderer/src/vulkan/reflect.rs`): the Rust descriptor
   layout must match shader-declared bindings — this is the one binding-drift check
   that IS visible to `cargo test` (scene_descriptor_reflection_tests). Prefer it
@@ -234,7 +256,9 @@ guard below.
 
 - **`GpuMaterial` size is pinned at 432 B** by `gpu_material_size_is_432_bytes`
   (`crates/renderer/src/vulkan/material.rs`) — the test name now matches the
-  asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 296 with the
+  asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 280
+  under #1147 (+20 B, `translucency_subsurface_r/g/b` + `…_transmissive_scale`
+  + `…_turbulence`), → 284 under #1248 (+4 B, per-material `ior`), → 296 with the
   Disney sheen/subsurface lobe #1249, → 300 with `anisotropic` #1250, → 348 on
   2026-07-27 (`1d94eb24`) with the twelve common supplemental texture roles, →
   364 on 2026-08-23 (#2221) with animated shader color/float fields, → 396 with
@@ -322,6 +346,20 @@ guard below.
   `overflow_warned` flag with `overflow_attempt_count` carrying total demand; excess
   skinned entities fall back to bind pose rather than over-indexing. Guard tests:
   `byroredux/src/render/bone_palette_overflow_tests.rs`.
+- **First-sight `bind_inverses` upload failure requeue (regression guard,
+  #3569).** `skin_dispatch_ran` alone only latches whether `draw_frame` reached
+  the skin-dispatch section, not whether the `upload_pending_bind_inverses` call
+  inside it actually succeeded — a failed host-visible map/flush let the frame
+  report `skin_dispatch_ran = true` while `SkinSlotPool::drain_pending` had
+  already irrevocably removed the entries from the pool, so the caller's
+  rollback/requeue check in `app_frame.rs` never fired and those first-sight
+  entities silently lost their bone palette. Fixed with a sibling latch,
+  `bind_inverse_upload_failed` (set only in the upload's error arm, reset
+  alongside `skin_dispatch_ran` at the top of `draw_frame`), widening the
+  rollback check to `!ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed`
+  (`byroredux/src/app_frame.rs`). Verify the widened check and the reset
+  ordering survive — narrowing back to `skin_dispatch_ran` alone reintroduces
+  the loss.
 
 ### 9. NIFAL Boundary — NaN/Inf on the GPU (UB facet only)
 
@@ -373,25 +411,43 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
 ### 11. Sandboxed Mod Runtime — Trust Boundary (`crates/mod-runtime`, added 2026-08-13)
 
 `crates/mod-runtime/src/` is the engine-owned boundary between untrusted
-community code and host services. It contains **no `unsafe`** and has **no
-consumer in the engine yet** — so audit it as a *contract*, not a live path, and
-do not report "unused" as a finding. What matters is that the guarantees are
-real before the first consumer lands and makes them load-bearing.
+community code and host services. It still contains **no `unsafe`**, but it is
+**no longer contract-only**: `24df5304` (2026-08-31, "host sandboxed extensions
+natively") gave it a real, wired-in consumer — `byroredux/src/extensions.rs`
+(~10.6k LOC, itself `unsafe`-free), reached from `main.rs`
+(`load_requested_extensions`, `queue_session_event`) and `app_events.rs`
+(`shutdown_extension_host`, `extension_ui_menu_sync`). Audit this dimension as
+a live path now, not a contract — "unused" is no longer an available excuse
+for any gap found here.
 
 - **Absence, not promise.** The crate docstring claims no WASI implementation is
   linked by default, so OS access is *absent* rather than merely unused. Verify
   that against `crates/mod-runtime/Cargo.toml` — a wasi feature pulled in
   transitively (even unused) turns the claim false, and a future
   *add_to_linker_sync* would silently activate it.
-- **Capability gating.** `CapabilitySet` / `CapabilityId` / `Principal`
-  (`crates/mod-runtime/src/identity.rs`) are the authority model; `LOG_CAPABILITY`
-  is the only defined capability today. Verify every host function reachable from
-  a guest checks `contains` **before** acting, and that a missing grant is an
-  error rather than a no-op — a silently-ignored denial is indistinguishable from
-  success to the guest and to the log reader.
+- **Capability gating.** The authority model split across two crates on
+  2026-08-25 (`21a840d5`, new `crates/sdk`, "renderer-independent tools",
+  `#![forbid(unsafe_code)]`, ~14k LOC): `CapabilitySet` / `CapabilityId`
+  now live in `crates/sdk/src/identity.rs` (re-exported from
+  `crates/mod-runtime/src/lib.rs`), and only `Principal` remains in
+  `crates/mod-runtime/src/identity.rs`. `LOG_CAPABILITY` is **no longer the
+  only defined capability** — it is one alias (`byroredux_sdk::service::LOG_WRITE_CAPABILITY`)
+  among 28 named `*_CAPABILITY` constants in `crates/sdk/src/service.rs`
+  spanning components/events/input/storage/world/actor-values/animation/
+  reputation/inventory/factions/perks/packages/console/scripts/settings.
+  Verify every host function reachable from a guest still checks
+  `grants.contains(...)` **before** acting (confirmed present in
+  `extensions.rs` for `SCRIPT_FUNCTIONS_REGISTER_CAPABILITY`,
+  `CONSOLE_REGISTER_CAPABILITY`, and `EVENTS_SUBSCRIBE_CAPABILITY`, but
+  spot-check the rest of the 28 rather than assuming the pattern holds
+  uniformly), and that a missing grant is an error rather than a no-op — a
+  silently-ignored denial is indistinguishable from success to the guest and
+  to the log reader.
 - **Per-instance isolation.** Each `ModInstance` gets its own principal and
   store. Verify no shared mutable state (a `static`, a shared `Arc`, a global
-  logger buffer) lets one instance observe or affect another.
+  logger buffer) lets one instance observe or affect another — this now
+  matters for real with `extensions.rs` potentially hosting more than one
+  loaded mod side by side.
 - **Resource limits.** `SandboxConfig` (`crates/mod-runtime/src/limits.rs`) plus
   `fuel_remaining` are the DoS defenses. Verify `validate()` rejects degenerate
   configs (zero/absurd fuel, zero memory) and that fuel exhaustion produces a

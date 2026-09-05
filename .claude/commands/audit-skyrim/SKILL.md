@@ -45,7 +45,7 @@ benches refresh every `/session-close`.
 | BSA format   | v105 ✓ (LZ4 block compression) — `crates/bsa/src/archive/` |
 | ESM parser   | Unified `esm/` walker ✓ — `Skyrim.esm` cells parse (`parse_real_skyrim_esm`, finds `SolitudeWinkingSkeever`) |
 | Parse rate   | 100% clean over **33 424 NIFs across 7 archives** (`Skyrim - Meshes0/1.bsa` plus the five Creation Club / Anniversary archives, measured 2026-08-29 under #3369). Was cited as the two base archives' 32 709 — the CC/AE set varies per account, so it rides `Game::optional_mesh_archives`: swept present-only by the rate-based gate, deliberately kept out of the count-keyed baseline corpus. Cite ROADMAP compat matrix for the live ratio |
-| Rendering    | Cells + meshes ✓ — Whiterun BanneredMare is the renderer **control bench** (entity/FPS figures: ROADMAP Bench-of-record, currently R6a-stale-14) |
+| Rendering    | Cells + meshes ✓ — Whiterun BanneredMare is the renderer **control bench** (entity/FPS figures: ROADMAP Bench-of-record, currently R6a-stale-20 resolved) |
 | NPC equip    | 6 named NPCs equipped via M41 OTFT/LVLI (`byroredux/src/npc_spawn.rs`) |
 | Reference data | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/` |
 
@@ -57,16 +57,20 @@ benches refresh every `/session-close`.
   skinning (`VF_SKINNED`), optional full precision. Per-vertex tangents ship
   inline in the packed blob when `VF_TANGENTS | VF_NORMALS` are set (Skyrim
   convention; FO4+ shares the inline path — #795 / #796).
-- **`BsTriShapeKind`** disambiguates the five wire-distinct subclasses that share
-  the one `BsTriShape` Rust struct: `Plain` (BSTriShape), `LOD` (BSLODTriShape),
-  `MeshLOD` (BSMeshLODTriShape), `SubIndex` (BSSubIndexTriShape, boxed
-  segmentation payload, #404), `Dynamic` (BSDynamicTriShape — facegen heads).
+- **`BsTriShapeKind`** disambiguates the four wire-distinct subclasses that share
+  the one `BsTriShape` Rust struct: `Plain` (BSTriShape), `MeshLOD`
+  (BSMeshLODTriShape), `SubIndex` (BSSubIndexTriShape, Arc-shared segmentation
+  payload, #404 / #2600), `Dynamic` (BSDynamicTriShape — facegen heads).
+  `BSLODTriShape` is NOT one of these — #2283 removed the dead intermediate
+  `LOD` unit variant the dispatch immediately discarded; it inherits
+  `NiTriBasedGeom`, not `BSTriShape`, and always parses as the unrelated
+  `NiLodTriShape` (see the next bullet).
 - **`BSLODTriShape` is routed through `NiLodTriShape`, NOT `BsTriShape`** (#838).
   Per nif.xml, `BSLODTriShape` inherits `NiTriBasedGeom` (`#SKY##SSE#`) while
   `BSMeshLODTriShape` inherits `BSTriShape` (`#FO4#`) — they look identical at the
   block name but have different bodies. The dispatch in
   `crates/nif/src/blocks/mod.rs` sends `"BSLODTriShape"` to
-  `NiLodTriShape::parse` and `"BSMeshLODTriShape"` to `BsTriShape::parse_meshlod`.
+  `NiLodTriShape::parse` and `"BSMeshLODTriShape"` to `BsTriShape::parse_lod`.
   Pre-#838 routing of `BSLODTriShape` through BSTriShape over-read every Skyrim
   tree LOD. **Audit guard**: any proposal to "fold BSLODTriShape into BSTriShape"
   is a regression of #838.
@@ -125,7 +129,7 @@ benches refresh every `/session-close`.
 - FO76 (`BSShaderType155`, `parse_shader_type_data_fo76`) uses the *different* numeric mapping (type 4 = `Fo76SkinTint` Color4, type 5 = HairTint Color3) — guard the two enums don't cross-contaminate.
 - Flag bits 0–31 (decal / alpha-test / skinned / …) — Skyrim positions differ from FO4; verify the Skyrim decode.
 - `BSEffectShaderProperty`: `soft_falloff_depth`, `greyscale_texture`, `lighting_influence`, `env_map_min_lod`, falloff angle/opacity. Environment-map slot in the texture set; alpha mask threshold.
-- **#1241 PBR scalars surfaced at import** (`crates/nif/src/import/material/lighting_shader_pbr_tests.rs`, `crates/nif/src/import/types.rs`): smoothness / IOR / specular_strength flow into `MaterialInfo`.
+- **#1241 PBR scalars surfaced at import** (`crates/nif/src/import/material/lighting_shader_pbr_tests.rs`, `crates/nif/src/import/types.rs`): `refraction_strength`, Skyrim `lighting_effect_1`/`lighting_effect_2` (subsurface/backlight, BSVER < FO4), FO4 `subsurface_rolloff`/`rimlight_power`/`backlight_power`, and `grayscale_to_palette_scale`/`fresnel_power` (FO4+ BSVER ≥ 130) all flow into `MaterialInfo` → `ImportedMesh`.
 - **Disney/Burley lobe pin (regression guard)**: the principled BRDF in `crates/renderer/shaders/include/pbr.glsl` (`#include`d by `triangle.frag`) is gated on `MAT_FLAG_PBR_BSDF` (`#define MAT_FLAG_PBR_BSDF 32u` in `crates/renderer/shaders/include/shader_constants.glsl`; branch sites search `MAT_FLAG_PBR_BSDF` in `include/lighting.glsl` + `include/pbr.glsl`). Vanilla Skyrim LE/SSE materials don't author the BGSM PBR flag (BGSM is FO4+), so the lobe must stay **unreachable** for vanilla content — confirm vanilla parse runs set 0 instances of the flag on the Skyrim.esm material universe. Modded BGSM that explicitly opts into PBR is the one legitimate path that flips it. See `/audit-nifal` for the canonical boundary that sets the flag (Dimension 7).
 **Output**: `/tmp/audit/skyrim/dim_2.md`
 
@@ -153,7 +157,7 @@ benches refresh every `/session-close`.
 - TES5 compressed-record decompression (groups can be compressed; interiors render) stays green.
 - Minimum interior-render record set parses: CELL, REFR, STAT, LIGH, WEAP, ARMO, plus Skyrim-specific LAND (heightmap scale), LTEX, TXST, ADDN.
 - Out of scope but must parse without error: NAVM, HDPT (metadata), `BSBehaviorGraphExtraData`.
-- **Control-bench guard**: Whiterun BanneredMare entity count + FPS vs the current ROADMAP Bench-of-record (R6a-stale-14). Skyrim ships real `bhk` collision, so entity count is flat across collider-gate changes — any drop in entity count or substantial FPS regression at the same entity count is a control-bench regression.
+- **Control-bench guard**: Whiterun BanneredMare entity count + FPS vs the current ROADMAP Bench-of-record (R6a-stale-20 resolved). Skyrim ships real `bhk` collision, so entity count is flat across collider-gate changes — any drop in entity count or substantial FPS regression at the same entity count is a control-bench regression.
 **Output**: `/tmp/audit/skyrim/dim_4.md`
 
 ### Dimension 5: BSA v105 (LZ4)
@@ -174,7 +178,7 @@ benches refresh every `/session-close`.
 - `BSTreeNode` wind-bone list (SpeedTree); `BSPackedCombined[Shared]GeomDataExtra` distant-LOD batch layout; the import walker unwraps `BSFadeNode` / `BSBlastNode` / `BSMultiBoundNode`.
 - **M35 prebaked `.btr` distant-terrain LOD (`9384d4c2`, Skyrim+/FO4)** — `byroredux/src/cell_loader/terrain_lod_btr.rs` loads prebaked `.btr` distant-terrain meshes (wired from `cell_loader/terrain_lod.rs`); confirm `.btr` quads parse + render at distance and their diffuse resolves through the zero-based sibling archives (Dim 5). A regression silently drops distant terrain to no-LOD.
 - **Mesh sweep baseline**: 100% clean / 0 truncated / 0 recovered / 0 realignment WARNs — and since #3369 the sweep is not "Meshes0" but all 7 mesh-bearing archives (base pair + the present-only CC/AE set). Any audit observing realignment WARNs on a clean Skyrim mesh corpus has hit a regression. Note the corpus now also counts `.bto`/`.btr` (renamed NIFs, `NIF_ENTRY_EXTENSIONS` in `crates/nif/src/corpus.rs`, #2587) — filtering on `.nif` alone left 10 662 distant-LOD files in `Skyrim - Meshes1.bsa` invisible to every gate.
-- **`.bto` object LOD (Session 45 EXAL step 6, `byroredux/src/cell_loader/object_lod.rs`)** — the `.btr` terrain-LOD counterpart for **objects**: prebaked per-quad macro-meshes streamed for both Skyrim and FO4 (`GameKind::Skyrim | GameKind::Fallout4` gate), level-4 quads only, `OBJECT_LOD_RADIUS_CELLS = 16`. Confirm quads load/unload with the ring and free their entities on exit (mirrors `LodBlock`/`ObjectLodBlock` lifecycle).
+- **`.bto` object LOD (Session 45 EXAL step 6, `byroredux/src/cell_loader/object_lod.rs`)** — the `.btr` terrain-LOD counterpart for **objects**: prebaked per-quad macro-meshes streamed for both Skyrim and FO4 (`GameKind::Skyrim | GameKind::Fallout4` gate). Pre-#2371 this was a single hardcoded level-4 ring 16 cells deep; it's now a multi-band `LodBandLadder` descent (`LodBandLadder::for_object_game`) spanning levels 4/8/16 for Skyrim (`coarsest_level() == 16`) and 4/8/16/32 for FO4, out to the vanilla `fBlockMaximumDistance`, with per-band load/unload hysteresis (`radius_unload = radius_load + 1`, `streaming.rs`). Confirm quads load/unload with their band and free their entities on exit (mirrors `LodBlock`/`ObjectLodBlock` lifecycle).
 - **VWD full-model culling still unwired (#1731, `175ebf2c`; premise re-measured 2026-08-29 under #3307, `b0a30fd5`)** — `FLAG_VISIBLE_WHEN_DISTANT` (0x00010000) is parsed and exposed via `RecordHeader::is_visible_when_distant()`, but consuming it to cull the full-detail model where a `.bto` LOD stand-in is shown is still unbuilt (today object LOD only loads outside the full-detail ring, where no full model is resident, so no z-fight is currently possible by construction). **Two claims an earlier note made here are now falsified** — measured by `crates/nif/examples/bto_segment_census.rs` over `Skyrim - Meshes1.bsa` (1 078 `.bto` quads, 1 856 level-4 sub-meshes): a quad is NOT one merged per-quad draw (`spawn_object_lod_block` spawns 1–5 entities per quad, one per material/type group), and the finest lever is NOT "hide the whole quad" — `BSSubIndexTriShape`'s segment table caps at exactly 16 at level 4 and the non-zero segments exactly partition the sub-mesh's triangles, i.e. **one segment per cell**, the granularity this engine's streaming already works at. What survives is that there is no per-source-object identity (sub-mesh names are material/type groups, nothing carries a FormID; `BSDistantObjectLargeRefExtraData` is a single `bool` per nif.xml). The real constraint is narrower: the per-cell grid is **level-4 only** — levels 8 and 16 ship exactly one segment on every sub-mesh (384/384 and 152/152 measured), so a radius-decoupling design must keep full REFRs under level-4 quads and never under level-8/16. Not a regression — forward scope, #3307 stays open, and the remaining blocker is that drawing LOD sub-meshes as index sub-ranges is render-visible with `cargo test`-invisible failure modes (pop/seam/z-fight). Do not re-file as a new gap, and do not repeat the "effectively unbuildable" framing.
 - Real-data render trace: pick one creature (dragon skeleton / NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each `import_nif_scene` → `material_translate::translate_material` → `byroredux/src/render/static_meshes.rs` (static) / `byroredux/src/render/skinned.rs` (skinned) — verify mesh count, material extraction, texture handle resolution. Single-mesh smoke: render `meshes\clutter\ingredients\sweetroll01.nif` and confirm FPS stays in the ROADMAP-documented band.
 **Output**: `/tmp/audit/skyrim/dim_6.md`

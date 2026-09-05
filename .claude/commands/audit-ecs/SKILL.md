@@ -226,6 +226,14 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   set. `PackedStorage::remove_entities_erased`'s sort-order and dirty-marking
   invariants are pinned by #2396's tests. These run on every cell unload, so a
   regression here is a per-streaming-cycle cost, not a one-off.
+  `PackedStorage::remove_entities_erased`'s merge-compaction was rewritten by
+  #3689 from a drain-into-two-fresh-`Vec::with_capacity` shape to an in-place
+  read/write cursor (`Vec::swap` + `truncate` over the existing buffers) — zero
+  allocations per call instead of `2 × live_rows` of allocate-plus-move.
+  Non-reallocation is pinned directly by
+  `remove_entities_erased_does_not_reallocate` (same pointer + capacity across
+  a removal); reintroducing the two-buffer drain is a perf regression on every
+  streaming-boundary despawn, not just a style reversion.
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
@@ -294,17 +302,25 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `event_cleanup_system` (registered `add_exclusive(Stage::Late, …)`) — verify
   single-frame lifetime.
 - **Gameplay slice (P2, added 2026-08-15/16 — no owner audit, so it is in scope
-  here)**: three `add_exclusive(Stage::Update, …)` registrations in
+  here)**: three `add_exclusive_with_access(Stage::Update, …)` registrations in
   `byroredux/src/boot.rs`, in this order — `interaction::interaction_system`,
-  then `combat::combat_input_system`, then `combat::combat_damage_system`.
-  Ordering is load-bearing: `interaction_system` is the canonical producer of
-  the action edges (`ActionState`/`InputAction`) both combat systems consume, and
-  it must stay ahead of every `OnActivate` consumer. Check:
-  - `combat_damage_system` emits the canonical `HitEvent`
-    (`crates/scripting/src/events.rs`) and relies on the Late-stage
-    `event_cleanup_system` above for teardown — a combat-local cleanup would
-    double-free the marker, and a missed Late registration leaks it. Do not
-    report the Late-stage cleanup as combat's leak.
+  then `combat::combat_input_system`, then `combat::combat_damage_system`. #3473
+  (2026-08-30) declared each one's `Access` — they had inherited plain
+  `add_exclusive` and reported blank `sys.accesses` rows despite
+  `combat_input_system` carrying the deepest lock-hold stack in the schedule
+  (its `EquippedWeapon` → CHARAL chain, since flattened). Declaring access on an
+  exclusive still doesn't get it paired by the analyzer (dim 5b) — the point is
+  to put the disputed types on the report instead of a blank row, and to give
+  `BYRO_LOCK_ORDER_CHECK` a declaration to diff against if one is ever promoted
+  to parallel. Ordering is load-bearing: `interaction_system` is the canonical
+  producer of the action edges (`ActionState`/`InputAction`) both combat systems
+  consume, and it must stay ahead of every `OnActivate` consumer. Check:
+  - `combat_input_system` emits the canonical `HitEvent`
+    (`crates/scripting/src/events.rs`); `combat_damage_system` consumes it
+    (same-frame HitEvent → Health damage → death transition) and relies on the
+    Late-stage `event_cleanup_system` above for teardown — a combat-local
+    cleanup would double-free the marker, and a missed Late registration leaks
+    it. Do not report the Late-stage cleanup as combat's leak.
   - The alive→dead transition inserts `Dead` and tears down the AI-behavior
     component set (`SandboxBehavior`/`WanderBehavior`/`TravelBehavior`/
     `FollowBehavior`/`EscortBehavior`/`GuardBehavior`/`PatrolBehavior` + their
@@ -322,11 +338,22 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   decrements per-frame, fires `TimerExpired` on hit — verify no negative-time
   accumulation.
 - **Animation controller** (`crates/core/src/animation/controller.rs`):
-  controller vs `AnimationPlayer` lifecycle — no dangling clip refs after unload.
+  `AnimationController` drives `AnimationStack::play` (not `AnimationPlayer` —
+  the controller never touches it, it's a KFM-sequence/transition layer over
+  the stack) via `apply_pending_transition`; verify controller vs
+  `AnimationStack` lifecycle — no dangling clip refs after unload.
 - **AnimationClipRegistry** (`crates/core/src/animation/registry.rs`): #790
   dedupes by lowercased path so cell streaming doesn't grow it unboundedly —
   losing case-folding interning leaks one keyframe set per cell load (steady RAM
-  growth across exterior streaming).
+  growth across exterior streaming). Separately, `release()` (cell-loader LRU
+  eviction) clears a slot's contents but never returns the slot itself — no
+  free list, by design (#2689): a released handle can still be live on an
+  `AnimationPlayer`/`AnimationLayer` reading the empty stub, so reusing the
+  index would alias a future unrelated clip onto it. Every evict/reload cycle
+  therefore strands one empty stub header permanently; #2689 only makes this
+  observable via `stub_slot_count()`, it does not close the leak. Do not
+  propose a free list as the fix without addressing the aliasing hazard its own
+  rejection documents.
 - **DebugDrainSystem** (`crates/debug-server/src/system.rs`): registered
   `add_exclusive(Stage::Late, …)` (`crates/debug-server/src/lib.rs`) — verify no
   World mutation outside the drain (per-client TCP threads enqueue commands,
@@ -357,10 +384,17 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
 
 ### 8. Hot-Path Performance Invariants (regression guards)
 
-- **Lock-tracker held-set collection is `cfg(debug_assertions)`-gated** (#823):
-  the `held_others: Vec` built before `record_and_check` in `lock_tracker.rs`
-  (`track_read`) is gated as one block — release builds skip the alloc entirely.
-  Re-enabling for release rebuilds ~100 small allocs/frame for a no-op.
+- **Lock-tracker held-set collection is `cfg(debug_assertions)` AND
+  `global_order::is_enabled()`-gated** (#823, tightened by #3680): the
+  `held_others: Vec` built before `record_and_check` in `lock_tracker.rs`
+  (`track_read`) sits behind both checks as one block — release builds skip the
+  alloc entirely, and (post-#3680) so does a debug build with the detector off
+  (the default; the graph is opt-in via `BYRO_LOCK_ORDER_CHECK=1`). Pre-#3680
+  every debug build paid the borrow/filter/collect on every acquisition
+  regardless of `is_enabled()`, which only gated `record_and_check`'s own
+  internal use of the Vec after it was already built. Re-enabling the
+  unconditional collect (in either release or a detector-off debug build)
+  reintroduces ~100 small allocs/frame for a no-op.
 - **`NameIndex.map` in-place refill** (#824): `animation_system`
   (`byroredux/src/systems/animation.rs`, the `idx.map.clear()` block) refills the
   `HashMap` in place (`clear` + `reserve` + reinsert) instead of `new()` +
@@ -438,14 +472,32 @@ components driven by an ECS system (`byroredux/src/systems/animation.rs`), and
   looping forever. Verify `CycleType` (loop / clamp / reverse) is applied per
   clip, not globally.
 - **Blend weights**: `AnimationLayer::effective_weight` + `play` + `cleanup_finished`
-  define the crossfade. Verify weights are normalized (or documented as additive),
-  that `cleanup_finished` cannot remove a layer still contributing weight, and
-  that an unbounded layer stack cannot grow per frame — `play` on every tick with
-  a nonzero blend time is the leak shape.
+  define the crossfade, with the live per-tick ramp written by `advance_stack`
+  (`stack.rs`). Verify weights are normalized (or documented as additive), that
+  `cleanup_finished` cannot remove a layer still contributing weight, and that
+  an unbounded layer stack cannot grow per frame — `play` on every tick with a
+  nonzero blend time is the leak shape. Two related bugs were fixed here
+  2026-08-30: #3701 — `with_blend_in` used to zero `weight` itself and have
+  `effective_weight()` multiply that zero by ramp progress, so a blending-in
+  layer held zero weight for the entire window then snapped to full at
+  completion instead of cross-fading; `advance_stack` now writes
+  `weight = blend_in_target * progress` every tick. #3702 — the blend-timer
+  decrements (`blend_in_remaining`/`blend_out_remaining`) lived inside
+  `advance_stack`'s `if !layer.playing { continue; }` gate, so a *paused*
+  layer scheduled for blend-out (`play()` schedules every existing layer's
+  blend-out unconditionally of `playing`) never ticked toward zero,
+  `cleanup_finished` could never retire it, and it held full weight forever —
+  exactly the "unbounded stack" leak shape above. Both timers now tick ahead
+  of the `playing` gate. Pinned by
+  `advance_stack_ticks_blend_out_on_a_paused_layer_so_it_can_be_retired`
+  (`animation/mod.rs`).
 - **`sample_blended_transform`** is the hot path (per bone, per skinned entity,
   per frame). Verify it allocates nothing and short-circuits the single-layer
-  case; cross-reference `/audit-performance` Dim 1 for cost, report the
-  allocation here.
+  case (#3706 added the `if let [layer] = stack.layers.as_slice()` fast path,
+  resolving the registry/weight/channel gates once instead of running the
+  two-pass max-priority-then-blend walk twice; pinned bit-identical to the
+  general path by `single_layer_short_circuit_matches_two_pass_output`); cross-
+  reference `/audit-performance` Dim 1 for cost, report the allocation here.
 - **Root motion**: `split_root_motion` (`crates/core/src/animation/root_motion.rs`)
   separates the delta applied to the entity from the residual left on the bone.
   Verify the split is applied exactly once per tick and drained — an undrained

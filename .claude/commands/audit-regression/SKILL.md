@@ -43,24 +43,25 @@ For each issue, pull out:
 - **Related `#NNNN`** — phased fixes split across several issues (e.g. #1210 →
   #1255 → #1257) regress as a set; verify the whole chain, not just the head.
 
-> **Discovery window caveat.** The repo has 1600+ closed issues. The default
+> **Discovery window caveat.** The repo has 3600+ closed issues. The default
 > `--limit 50` only covers the most-recently-closed bugs, so older high-value
 > fixes get **no coverage** unless you raise `--limit` or pass them via
 > `--issues`. The unconditional **Step 4** fragile-area checks are the safety
 > net for fixes that landed as proactive refactors and were never an issue at
 > all — run them every time regardless of which issues Step 1 surfaced.
 >
-> **Fresh verification candidates (recent decompiler-safety + LC wave).**
-> Recently-closed, high-churn fixes worth an explicit `--issues` pass while
-> they're still warm: #1815 (decompiler recursion-depth cap in the boolean-collapse
-> pass), #1816 (`translate_pex` missing `catch_unwind`), #1728 (Skyrim-BE/Starfield
-> round-trip test for the `.pex` reader), #1740 (DA10 `.pex` byte-equality parity
-> test), #1731 (VWD record-header flag parse + expose), #1718 (ragdoll
-> bone/constraint-drop telemetry on bone-name miss). Note **#1651** (BGSM/BGEM
-> GL→Gamebryo blend factors) was itself a WRONG fix — its premise was disproven and
-> reverted by **#1823**; don't re-verify #1651 as if it still holds. Several of
-> these touch the import→material boundary that **Step 4** already pins —
-> cross-check there.
+> **Known-tricky verification candidates (2026-07 decompiler-safety + LC wave).**
+> These are no longer recent, but they're worth an explicit `--issues` pass
+> since the default `--limit` won't surface them: #1815 (decompiler
+> recursion-depth cap in the boolean-collapse pass), #1816 (`translate_pex`
+> missing `catch_unwind`), #1728 (Skyrim-BE/Starfield round-trip test for the
+> `.pex` reader), #1740 (DA10 `.pex` byte-equality parity test), #1731 (VWD
+> record-header flag parse + expose), #1718 (ragdoll bone/constraint-drop
+> telemetry on bone-name miss). Note **#1651** (BGSM/BGEM GL→Gamebryo blend
+> factors) was itself a WRONG fix — its premise was disproven and reverted by
+> **#1823**; don't re-verify #1651 as if it still holds. Several of these touch
+> the import→material boundary that **Step 4** already pins — cross-check
+> there.
 
 ## Step 2 — Locate each fix and its guard
 

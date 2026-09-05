@@ -98,6 +98,11 @@ landing them harder.
    still accurate rather than assuming it). Re-derive both from
    `crates/ui/src/catalog.rs` before citing either number — a quoted count that
    no longer matches the array is exactly the drift class #2730 was filed for.
+   **The 269 FO4 entries now carry a provenance split (#3773):** 138
+   `Measured` (kind read from F4CF's reconstructed AS3) + 131
+   `HeuristicNamePrefix` (kind inferred by #2966's corpus sweep), on a new
+   `ScaleformHostMethod::provenance: ScaleformKindProvenance` field. Re-derive
+   the 138/131 split the same way, not just the 269 total.
 
 ## Phase 2: Launch Dimension Agents
 
@@ -165,6 +170,17 @@ landing them harder.
   `SwfBuf`), so the floor is **two inflates and one tag walk**, not one — and
   `SwfDecodeCounts` exists to make that assertable rather than intended.
   Regression = a stage re-added that takes raw bytes instead of `PreparedMovie`.
+  **That floor was true of the crate but not of the only production caller
+  until #3771**: `scene.rs`'s `--menu` route separately pre-extracted the
+  archive entry and ran its own `ScaleformProfile::detect` purely to hand
+  `prepare_movie` a value for its own mismatch-guard cross-check against the
+  same bytes — a second archive extraction and whole-stream inflate to
+  produce a tautology (2 archive extractions + 3 inflates end-to-end).
+  `SwfPlayer::from_resource_provider`'s `profile` parameter is now
+  `Option<ScaleformProfile>`; `scene.rs` passes `None` and reads
+  `UiManager::menu_profile()` afterward. Regression = a caller re-adding a
+  pre-extract-and-detect step to supply a profile `prepare_movie` would have
+  derived itself.
 - `ScaleformValue` conversion in both directions: AS → Rust on call arguments,
   Rust → AS on `respond`. Verify number/bool/string/null round-trips and that an
   unrepresentable value becomes an explicit Null rather than a panic.
@@ -199,9 +215,12 @@ fail a test — it produces a movie that loads and misbehaves.
   `NotPresent` (movie doesn't declare `BGSCodeObj`/`onCodeObjCreate`),
   `AdapterInjected`, and `AdapterInjectedWithoutDestroyHook` — added
   2026-08-24 for movies whose lifecycle class declares `onCodeObjCreate` but
-  not the optional `onCodeObjDestruction` trait. A movie that never creates
-  `BGSCodeObj` must land in `NotPresent` and be visible to the engine — not
-  silently look identical to success.
+  not the optional `onCodeObjDestruction` trait. **A movie that never creates
+  `BGSCodeObj` now IS visible to the engine, not just required to be
+  (regression guard, #3427)**: `UiManager::host_object_state()` exists and is
+  folded into both menu-load log lines in `scene.rs`. Verify both log sites
+  still call it — before #3427 `NotPresent` had no engine consumer, so it
+  logged identically to a clean `AdapterInjected` menu.
 - Lifecycle ordering: constructor patch → object populated → `onCodeObjCreate`
   → … → destroy callback (only if declared) → `code_object_destruction_count`.
   **The destroy callback is registered only when the movie's class declares
@@ -213,19 +232,41 @@ fail a test — it produces a movie that loads and misbehaves.
   close and the counter is observable.
 - Every forwarding function must normalize `BGSCodeObj.Method` → logical method
   `Method` while retaining the transport name in `ScaleformHostCall`. Verify the
-  normalization is one shared helper, not repeated per method (212 copies of a
-  string split is exactly the drift `/audit-tech-debt` Dim 2 exists for).
+  normalization is one shared helper, not repeated per method (269 copies of a
+  string split, one per current FO4 catalog entry — re-derive the count from
+  Phase 1 step 6 rather than trusting this number — is exactly the drift
+  `/audit-tech-debt` Dim 2 exists for).
 - Failure to rewrite must degrade to "no host object", never to a corrupted SWF
   handed to Ruffle. Verify the error path returns the *original* bytes.
+  **Scope is now two named branches (#3428)**: an unparseable ABC candidate
+  tag and no instance-level trait match both degrade to
+  `ScaleformHostObjectState::NotPresent` with a `log::warn!`, matching the
+  host-call inventory scan's non-fatal policy — these are "this movie has no
+  host object", not failures. The hard `Err` is kept ONLY for
+  `patch_root_constructor`, where a partial rewrite really would hand Ruffle
+  a corrupt SWF. Verify no third branch has since been added as a silent
+  hard-Err that should instead degrade.
 **Output**: `/tmp/audit/ui/dim_3.md`
 
 ### Dimension 4: Catalog Fidelity & Drift
 **Entry points**: `crates/ui/src/catalog.rs` — `ScaleformHostCatalog::for_profile`,
-`methods`, `host_object`, `find`; `ScaleformHostMethodKind::{Command, Request}`
+`methods`, `host_object`, `find`; `ScaleformHostMethodKind::{Command, Request}`;
+`ScaleformKindProvenance::{Measured, HeuristicNamePrefix}`
 **Checklist**:
 - Re-derive both method counts from the source arrays (Phase 1 step 6) and diff
   them against every number quoted in `docs/engine/ui.md` and in this repo's
   audit reports. A mismatch is doc rot → `/audit-tech-debt` Dim 3 severity floor.
+- **Provenance marker (#3773)**: every `ScaleformHostMethod` carries
+  `provenance`; only the FO4 array's 131 `#2966`-sweep entries (added via
+  `command_heuristic`/`request_heuristic` constructors) may be
+  `HeuristicNamePrefix` — every Skyrim entry and the FO4 array's other 138
+  must be `Measured`. Guards: `fallout4_catalog_provenance_split_matches_the_2966_sweep`,
+  `skyrim_catalog_is_entirely_measured`. A `HeuristicNamePrefix` entry's
+  `kind` is a weaker claim (the name-prefix rule doesn't distinguish
+  `Command`/`Request` for every case) than a `Measured` one — treat a
+  heuristic-provenance `Command` mis-typed as `Request` (or vice versa) as
+  lower-confidence than the same mistake on a `Measured` entry, not
+  equally severe.
 - `Command` vs `Request` classification is what decides whether the menu waits
   for a response. A method mis-typed as `Command` leaves an AS callback hanging
   forever; mis-typed as `Request` produces a spurious `MissingResponse`. Spot-check
@@ -271,6 +312,17 @@ fail a test — it produces a movie that loads and misbehaves.
   than 512 distinct paths is the concrete DoS shape this closes — verify
   `resource_loads` doesn't have the same unbounded exposure to that same
   input.
+- **One bad `ImportAssets` URL must not cost its siblings (#3770).**
+  `import_asset_paths_from_tags` partitions into `(resolved paths, error
+  messages)` instead of `.collect()`-ing into a `Result` that short-circuits
+  the whole scan on the first unresolvable URL — the same non-fatal policy
+  `ScaleformNavigator::fetch` already applies at fetch time and nested-import
+  scans already applied one level down. `PreparedMovie::root_import_errors`
+  carries the root scan's failures into `resource_errors()` instead of
+  aborting construction. Verify both the root scan and any nested scan treat
+  a single bad URL as a recorded, non-fatal error — a regression here is a
+  `Result`-collecting `.collect()` reappearing on either scan, which turns
+  one malformed import back into a whole-menu load failure.
 **Output**: `/tmp/audit/ui/dim_5.md`
 
 ### Dimension 6: Render Path & Device Lifecycle
@@ -278,7 +330,8 @@ fail a test — it produces a movie that loads and misbehaves.
 adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
 `tick`, `render`, `dimensions`; `byroredux/src/app_frame.rs` (the
 `update_rgba` upload); `crates/renderer/src/vulkan/context/resources.rs`
-(`register_ui_quad`)
+(`register_ui_quad`); `record_presentation_pass` (`UiOverlayDraw`,
+`ui_instance_idx`) in the renderer's presentation-pass recording path
 **Checklist**:
 - **A second GPU device.** The UI creates its own wgpu device on the Vulkan
   backend, separate from `VulkanContext`. Quantify it: one extra logical device,
@@ -322,6 +375,18 @@ adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
   bytes uploaded as `R8G8B8A8_SRGB`, the sampler linearises, Vulkan blends in
   linear space. Regression = the quad moving back into the geometry pass, or a
   UI pipeline rebuilt anywhere but the presentation-pass recreate.
+- **Overflowing `MAX_INSTANCES` must skip the UI draw, not read past the SSBO
+  (#3601).** The UI quad's `GpuInstance` is pushed onto `gpu_instances` LAST,
+  and `ui_instance_idx` captures its index before the push; `upload_instances`
+  clamps an overflowing buffer to `instances[..MAX_INSTANCES]`, silently
+  dropping exactly that last-pushed UI instance. `ui_instance_idx` only
+  survives as `Some(idx)` when it lands under `MAX_INSTANCES`, else `None`,
+  reusing `record_presentation_pass`'s existing "overlay unavailable" `None`
+  arm. Verify the clamp happens at capture time (immediately after the push),
+  not after `UiOverlayDraw` is already built — a `None` produced too late
+  still hands `firstInstance` an out-of-range index for `ui.vert` to read
+  (`robust_buffer_access` is not enabled, so this is UB feeding a bindless
+  `nonuniformEXT` texture index in `ui.frag`, not a clean failure).
 - Teardown order: `SwfPlayer` (and its wgpu device) must drop before the Vulkan
   context tears down its allocator. Cross-reference `/audit-concurrency` Dim 6 —
   report the ordering fact here, keep the GPU-teardown finding there.

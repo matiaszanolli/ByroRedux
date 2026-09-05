@@ -133,21 +133,45 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    (mostly Vulkan/smoke gating, not debt) — do not compare against a raw
    whole-repo grep, which also matches markdown prose mentioning the literal
    string `#[ignore]` (#2262).
-   The **production**->2000-LOC set (Dim 1's actual subject, re-verified
-   2026-08-29 with *prod_loc*) is currently 5 files: `context/draw.rs`
-   (~3620 — most of its file-total length, not merely its production share:
-   only a few small scattered `#[cfg(test)]` blocks sit inside an otherwise
-   huge production body), `volumetrics.rs` (~2860), `context/mod.rs` (~2470),
-   `crates/renderer/src/mesh.rs` (~2210) and `texture_registry.rs` (~2010).
-   Membership moved since the 2026-08-19 check: `context/mod.rs` came DOWN
-   from ~4060 and `mesh.rs` came UP through the threshold — so the set is
-   genuinely churning, and re-running the recipe is not a formality.
-   `texture_registry.rs` is a standing real disagreement with #3081's own
+   The **production**>2000-LOC set (Dim 1's actual subject, re-verified
+   2026-09-05 with *prod_loc*) has more than doubled since the 2026-08-29
+   check — 5 files → **12**: `byroredux/src/extensions.rs` (~5920 — the
+   sandbox-runtime/ECS-event adapter bridging `crates/sdk`/`crates/mod-runtime`
+   into the engine; 10 652 total lines, so a large test fraction, but still
+   far over threshold on production alone), `crates/sdk/src/compatibility.rs`
+   (~3760), `crates/scripting/src/papyrus_provider.rs` (~3710),
+   `crates/mod-runtime/src/runtime.rs` (~3500), `crates/renderer/src/vulkan/volumetrics.rs`
+   (~2940, up from ~2860), `crates/renderer/src/vulkan/context/mod.rs` (~2650,
+   up from ~2470), `crates/scripting/src/fragment.rs` (~2540),
+   `byroredux/src/boot.rs` (~2230, newly crossed — see the `main.rs`-split note
+   below), `crates/renderer/src/mesh.rs` (~2230, up from ~2210),
+   `crates/nif/src/import/walk/mod.rs` (~2170, newly crossed),
+   `crates/renderer/src/texture_registry.rs` (~2060, up from ~2010) and
+   `byroredux/src/asset_provider/material.rs` (~2040, newly crossed). The four
+   newest entries — `extensions.rs`, `compatibility.rs`, `papyrus_provider.rs`,
+   `runtime.rs` — are exactly the "young crates … not yet seen a debt sweep"
+   named at the top of this skill (`crates/sdk`, `crates/scripting`,
+   `crates/mod-runtime`); this re-check is that sweep actually landing on them
+   for the first time — file real Dim 1 findings there, don't just note the
+   crate is young.
+   **`context/draw.rs` dropped OUT of the bucket entirely (~3620 → ~1760
+   production)** — #3282 (`7463204e`, 2026-09-02) split the re-grown
+   ~2500-LOC `draw_frame` into phase helpers, and `crates/renderer/src/vulkan/context/`
+   now holds 19 files, not the handful the Session-34/35/36 split left behind:
+   alongside `draw.rs`/`mod.rs` there's `dispatch_skin_and_cluster.rs`,
+   `assemble_camera_and_lights.rs`, `geometry_pass.rs`,
+   `build_and_upload_instances.rs`, `skinned_blas_refit.rs`, `post_passes.rs`,
+   `begin_frame_recording.rs`, `sync_and_acquire_frame.rs`, `depth_capture.rs`,
+   `screenshot.rs`, `render_debug.rs`, `teardown.rs`, `resources.rs`,
+   `helpers.rs`, `resize.rs`, `init.rs`. Do not re-propose splitting
+   `draw.rs` — it is done; `context/mod.rs` (still ~2650 production) is the
+   live candidate left in that directory.
+   `texture_registry.rs` remains a standing real disagreement with #3081's own
    filed evidence table (which reported its production at 838 —
    majority-test): re-checking the file directly finds only 3 `#[cfg(test)]`
    markers total, all within the last ~100 lines, two of which are
    `#[path = "..."] mod tests;` declarations pointing at separate files — the
-   file's own content is genuinely ~2010 lines of production texture-registry
+   file's own content is genuinely ~2060 lines of production texture-registry
    logic (samplers, path normalisation, bindless acquire/release). File that
    as a real Dim 1 finding rather than silently adopting a figure this check
    disproves. `crates/renderer/src/vulkan/material.rs` (#2257, ~1440
@@ -155,14 +179,18 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    only via an external `#[cfg(test)] mod` declaration in its parent) both
    confirm as false positives under the OLD total-LOC recipe. The separate
    total-LOC->2000 bucket (test-heavy files, lower priority — report but do
-   not auto-file as Dim 1) had 30 members at the 2026-08-29 re-check, up from
-   8; naming them here would rot within a session, so re-run the command and
-   check each hit with *prod_loc* before filing — only a production count
+   not auto-file as Dim 1) had **40** members at the 2026-09-05 re-check, up
+   from 30; naming them here would rot within a session, so re-run the command
+   and check each hit with *prod_loc* before filing — only a production count
    over 2000 belongs in Dim 1. Note #2258/#2259 (2026-08-03,
-   `record_post_passes` / `build_tlas` decomposition) extracted helpers
-   *within* `post_passes.rs` / `tlas.rs`, which stayed well under 2000 LOC
-   before and after — file-level crossings and function-level splits are
-   independent signals; don't assume one moves the other.
+   `record_post_passes` / `build_tlas` decomposition) and, in this same window,
+   #3739 (`build_scheduler` → five `register_*_systems` functions inside
+   `boot.rs`) and #3738 (`recreate_screen_passes` → five phase methods inside
+   `resize.rs`) all extracted helpers *within* a file rather than splitting the
+   file itself — none of the three moved their host file across the 2000-LOC
+   line (in `boot.rs`'s case the file crossed threshold anyway, from unrelated
+   growth) — file-level crossings and function-level splits are independent
+   signals; don't assume one moves the other.
 
 ## Phase 2: Dimension Agents
 
@@ -207,13 +235,15 @@ previously-split module can grow back over threshold).
   composite / overlay) or struct+new() vs Drop vs accessors. Vulkan-recording
   splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
   before proposing barrier/order changes.
-- `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
-- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1053 LOC; the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — but note main.rs has grown 834 → 1053 since the split, so it is drifting back, not settled. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1493 LOC, and it mixes UI input routing with the canonical player-action/activation producer — a real seam), `byroredux/src/app_events.rs` (1146 LOC) and `byroredux/src/boot.rs` (2048 total / ~1800 production, the single scheduler-registration wall).
+- `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction — already split this way (`archive.rs`/`texture.rs`/`material.rs`/`script.rs` per the module map), but **`material.rs` itself has now grown past the 2000-production threshold** (~2040 LOC, newly crossed as of 2026-09-05) — the next split axis is within this one file (e.g. per-game material-path resolution vs the Starfield `materialsbeta.cdb` path it also owns).
+- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1267 LOC (re-measured 2026-09-05, up from 1053, up from 834 at the split); the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — it keeps drifting back up, not settling, so re-measure rather than trust either prior number. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1626 total / 1140 production, and it mixes UI input routing with the canonical player-action/activation producer — a real seam), `byroredux/src/app_events.rs` (1310 total / 1289 production) and `byroredux/src/boot.rs` — **now over the primary 2000-production threshold** (2670 total / 2232 production, up from 2048/~1800; #3739, `d03f7a35`, 2026-09-03 split `build_scheduler` into five per-stage `register_*_systems` functions, a **function-level** split that left `build_scheduler` a thin 5-call orchestrator but *added* 26 net lines to the file — it does not reduce `boot.rs` below the file-level threshold; the two signals are independent, per the #2258/#2259 note below). `boot.rs` is now a real Dim 1 finding: propose a file-level split (e.g. one file per registration stage) rather than re-deriving the function-level history as evidence it's handled.
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
+- `crates/nif/src/import/walk/mod.rs` → newly crossed the 2000-production threshold (~2170 LOC, first seen 2026-09-05) — already documented as holding both hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) and several satellite walkers (lights, particle emitters, emitter-param/rate extraction); split the satellite walkers out per the module doc's own category list rather than by traversal-order.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
 - Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
+- **New candidates from the young-crate sweep (first crossed 2026-09-05, no prior split proposal exists — read before proposing an axis, this is a first pass, not a re-derivation)**: `byroredux/src/extensions.rs` (~5920 production — the engine-side SDK/mod-runtime ECS-event adapter; per its own module doc it already separates "assigns opaque SDK handles" / "delivers canonical events" / "applies the returned principal-attributed command batch," which is a plausible split axis); `crates/sdk/src/compatibility.rs` (~3760 — per-extender-ecosystem compat shims, already namespaced by `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}`, a natural one-module-per-family split); `crates/scripting/src/papyrus_provider.rs` (~3710 — Papyrus `Provider.Function(...)` lowering to SDK routes); `crates/mod-runtime/src/runtime.rs` (~3500 — the WIT/WASM binding surface, plausibly splittable per binding category: actor_values/animation/console/content_catalog/events/factions/inventory/world_state/…); `crates/scripting/src/fragment.rs` (~2540). Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
 (want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /
@@ -402,6 +432,15 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
 # to the triage rule below. Do not re-tighten it.
 grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux
 ```
+**Every `#[ignore]` site now carries a reason string (#3749, `8b9a8572`, 2026-09-03)**
+— 138 bare sites across 27 files were converted to `#[ignore = "<reason>"]`
+(verifying each against its own function body, not a line-window guess); a
+fresh `grep -RInE '^[[:space:]]*#\[ignore\]'` (bare form only) should return
+**zero** hits. The regex above must still match both forms — a bare
+`#[ignore]` reappearing is itself a TD9 finding (a new test skipping the
+now-universal convention) — but the practical payoff is that the triage rule
+below can now run off the grep output's reason text directly, no need to open
+each function body to learn why a test is gated.
 Most `#[ignore]`s gate Vulkan/smoke tests that need a GPU or on-disk game data —
 those are **not** debt. Triage the rest:
 - Each `#[ignore]` test: referenced issue still open? If it guards a closed CRITICAL/HIGH fix → MEDIUM (severity table).

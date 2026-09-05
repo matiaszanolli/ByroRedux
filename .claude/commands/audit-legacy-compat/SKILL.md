@@ -123,10 +123,13 @@ buoyancy — is owned by `/audit-physics` as of 2026-08-13; keep this dimension 
 cross-reference rather than duplicating the solver checks.
 
 - **The per-game seam is ONLY the constraint CInfo decode** — everything else is game-agnostic
-  by construction. Audit that the seam stays that narrow: the two typed decoders
-  (`crates/nif/src/blocks/collision/constraints.rs::RagdollCInfo` / `LimitedHingeCInfo`, with
-  `parse_oblivion` / `parse_fo3` arms) read only the **common subset** (era-only fields like
-  FO3+ motors / `Perp Axis In B1` are decoded-or-zeroed, never reaching canonical). Byte
+  by construction. Audit that the seam stays that narrow: the three typed decoders
+  (`crates/nif/src/blocks/collision/constraints.rs::RagdollCInfo` / `LimitedHingeCInfo` /
+  `PrismaticCInfo` — the third added by `#3792`, 2026-09-02, closing `BhkBreakableConstraint`'s
+  wrapped-geometry gap alongside it — each with `parse_oblivion` / `parse_fo3` arms) read only the **common subset** (era-only fields like
+  FO3+ motors / `Perp Axis In B1` are decoded-or-zeroed, never reaching canonical). `BallAndSocket`/
+  `StiffSpring` have no canonical joint kind yet and stay `Other` — a documented deferral, not a
+  gap in this seam. Byte
   advancement is asserted per era in `crates/nif/src/blocks/collision/bhk_constraint_tests.rs`.
 - **Extract is already game-agnostic**: `crates/nif/src/import/collision/ragdoll.rs::extract_ragdoll`
   switches on `BhkConstraintData`, never on game; emits `ImportedRagdoll` in Y-up,
@@ -173,7 +176,20 @@ table, §5 LOD, §7 rollout status).
   `None` on FNV/FO3/Oblivion, `default_water_height` = `None`, encode real game distinctions.
 - **LOD — status**: distant **object** LOD has a first cut (Skyrim/FO4 baked
   `.bto` quads via `byroredux/src/cell_loader/object_lod.rs::stream_object_lod_blocks`,
-  spawned as `IsLodTerrain`, live-verified on Tamriel). Distant **terrain** now prefers the
+  spawned as `IsLodTerrain`, live-verified on Tamriel). **Regression pin (#3502,
+  2026-08-30)**: `select_lod_quads`'s only escape for a quad with no baked asset
+  at the requested level used to be "descend a level" — correct for terrain
+  (heightmap synthesis covers any footprint at the finest level unconditionally)
+  but wrong for objects, whose fallback is the `ObjectLodBlock::empty()`
+  sentinel. FNV never exposed the gap (every worldspace bakes `blocks\` at level
+  4, the finest, which always emits), but FO3 bakes 93 of its 422 object quads
+  at level 8 with **no level-4 sibling** (`WashMonTop`'s 65, `ParadiseFalls`,
+  five `DCworld*`) — those worldspaces lost every distant building from ~8 cells
+  out to the 16-cell floor whenever the streaming radius put `exclude_within`
+  below `refine_threshold(8)`, an accidental coupling to the `--radius 12`
+  default. Fixed via `LodBandSelection::coarsen_to_available`: a quad that can
+  draw and whose entire subtree cannot now emits itself (object-only; terrain's
+  always-available predicate is untouched). Distant **terrain** now prefers the
   prebaked `.btr` mesh on Skyrim+/FO4 (M35, #1685 — `byroredux/src/cell_loader/terrain_lod_btr.rs::spawn_btr_block`,
   dispatched from `cell_loader/terrain_lod.rs`), falling back to heightmap synthesis for older
   games and missing `.btr` blocks. The **Oblivion-only** `DistantLOD\*.lod` → `_far.nif`

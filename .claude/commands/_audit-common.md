@@ -108,7 +108,7 @@ Sandbox AI:      byroredux/src/systems/{sandbox,wander,travel,follow,escort,guar
 World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
 SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)
 Golden Frames:   byroredux/tests/golden_frames.rs     (cube-demo frame-60 regression PNG; opts into --ignored)
-Tools:           tools/byro-dbg/ (TCP debug REPL, port 9876 — src/main.rs client + src/display.rs pretty-print), tools/texture-upscale/ (workspace member added Session 61), tools/nifskope/ (vendored reference viewer, NOT a workspace member — do not audit as first-party code)
+Tools:           tools/byro-dbg/ (TCP debug REPL, port 9876 — src/main.rs client + src/display.rs pretty-print), tools/byro-detect/ (Steam install-detection CLI, added 2026-08-30 — crates/game-detect consumer), tools/byro-launcher/ (eframe/glow launcher UI: Library/Play/Details/Settings screens, supervises the engine process, added 2026-08-30 — crates/boot-request + crates/settings-io consumer), tools/texture-upscale/ (workspace member added Session 61), tools/nifskope/ (vendored reference viewer, NOT a workspace member — do not audit as first-party code)
 Bench Harness:   scripts/fsr-bench-matrix.sh + scripts/fsr_bench_report.py (the 5-scene × 5-config × 3-run upscaler matrix; byte-stability of BOTH files is what makes cross-commit bench comparisons valid — flag any edit that isn't itself benched)
 Legacy Ref:      docs/legacy/
 ```
@@ -169,15 +169,18 @@ Crate → owner audit map (refreshed 2026-08-16):
 
 ### Un-owned subsystems (coverage gaps — read before claiming a sweep is complete)
 
-Seven subsystems still have **no owner audit skill** (refreshed 2026-08-26 — the
-list grew with the renderer-independent SDK surface). An audit that touches them
-does so incidentally, so nothing guarantees they are ever examined. Do not
-report "full coverage" without saying which of these you skipped:
+Eight subsystems still have **no owner audit skill** (refreshed 2026-09-05 — the
+list grew with the launcher: `crates/boot-request`, `crates/game-detect`,
+`crates/settings-io`, `tools/byro-launcher`, `tools/byro-detect`, all added
+2026-08-30). An audit that touches them does so incidentally, so nothing
+guarantees they are ever examined. Do not report "full coverage" without saying
+which of these you skipped:
 
 | Subsystem | Code | Nearest owner today | Why it matters now |
 |---|---|---|---|
 | **Gameplay slice (P2)** | `byroredux/src/combat.rs`, `byroredux/src/inventory.rs`, `byroredux/src/settings_io.rs`, the action half of `byroredux/src/interaction.rs` | `/audit-ecs` (system/resource shape) + `/audit-runtime` (the p0/p1/p2 smoke gates) | **The project's active execution focus.** ~3.8k LOC landed from 2026-08-15 on, with three Stage::Update exclusives and two Resources, and nothing owns its damage/equip/activation invariants. Highest-value gap on this list |
 | ByroRedux SDK | `crates/sdk/src/` | Per-domain owner + `/audit-ecs` for shared world contracts | Public renderer/UI-independent document, snapshot, selection, and typed-command contracts are the first tooling API surface; an executable-only audit can miss breaking host-facing changes |
+| Launcher (boot/settings/detect) | `crates/boot-request/src/`, `crates/game-detect/src/`, `crates/settings-io/src/`, `tools/byro-launcher/`, `tools/byro-detect/` | No owner | The launcher↔engine boot-request/settings handoff and Steam install-detection landed 2026-08-30 (~5.8k LOC across the two crates + two tool binaries); it is the only path a non-developer reaches the engine through, and nothing audits its file-format (`boot.toml`, settings persistence) or trust boundary (parsing `libraryfolders.vdf`) |
 | FaceGen | `crates/facegen/src/` | `/audit-skyrim` (incidental, via the NPC head path) | `.tri`/`.egt` morph + texture blend on untrusted archive input, with no parser-discipline dimension of its own |
 | Mod Runtime (sandboxed mods) | `crates/mod-runtime/src/` | `/audit-safety` Dimension 11 (added 2026-08-13) | A trust boundary between untrusted WASM guest code and the host. Still has **no consumer in the engine** — audit it as a contract, not as a live path |
 | FSR3 upscaler + FFI | `crates/fsr3-sys/`, `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` | `/audit-renderer` Dim 23 + `/audit-safety` Dim 1 | Engine-default render path since phase 7; the only live FFI crossing in the workspace |

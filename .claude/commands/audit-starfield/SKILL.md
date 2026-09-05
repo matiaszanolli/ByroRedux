@@ -56,6 +56,14 @@ read those at audit time. Snapshot of the shape, not the numbers:
 - **BA2 v3 compression** — header has a 12-byte extension (vs 8 for v2). GNRL +
   DX10 both dispatch through a unified decompress path selected by archive-level
   `compression_method` (`Ba2Compression` in `crates/bsa/src/ba2.rs`).
+- **Live full-engine blocker (#3540, OPEN, filed from `docs/audits/AUDIT_RUNTIME_2026-08-30.md`
+  RT-1, not yet fixed)** — a real `cargo run` on `citycydoniamainlevel` loads the
+  cell (95,095 fixed colliders, `grounded=true`) then stalls dead at `M28.5
+  frame 0`: single-core-pinned, RSS oscillating 12→20.6 GB over a 10-minute
+  window. This dimension suite's own methodology deliberately avoids a full
+  engine launch (bounded examples + `--ignored`-gated tests only) and is
+  unaffected, but do not assume `--bench-hold` against Cydonia currently
+  produces a bench line — it doesn't.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -83,8 +91,11 @@ enum: `0` → zlib, `3` → LZ4 block, others → error (confirm the unsupported
 branch is a hard error, not a silent fall-through). `lz4_flex` block decompress —
 does it need an explicit `max_size`, and does BA2 supply it from the chunk's
 uncompressed size? Per the module doc, v3 DX10 mips can **mix raw and
-LZ4-compressed chunks within one texture** — verify the per-chunk
-compressed/uncompressed-size comparison selects raw-vs-decompress correctly.
+LZ4-compressed chunks within one texture** — the selector is a `packed_size == 0`
+marker per chunk (not a compressed/uncompressed-size comparison); verify it picks
+raw vs. LZ4-decompress correctly (measured 2026-08-30: 3.66% of v3 textures
+genuinely mix both within one texture, and zero chunks carry a nonzero
+`packed_size` equal to `unpacked_size`, so the sentinel is unambiguous).
 GNRL + DX10 must both reach the unified decompress path. Regression guard:
 DX10 chunk layout is unchanged from FO4 v1 — the v3 issue was the
 `compression_method` offset, not a per-chunk-layout difference. Parse-rate sweep
@@ -113,13 +124,34 @@ sentinel (empty `vertices`/`triangles`) even when it parses `Ok`/matches
 `Internal` first — accepting a sentinel-first slot silently drops the whole
 BSGeometry. A regression re-accepting the first `Internal` match or first
 `Ok(...)` parse without the emptiness check reintroduces this.
-**#1203** — skin chain resolved via `BSSkin::Instance` + `BSSkin::BoneData`.
+**#1203** — skin chain resolved via `BSSkin::Instance` + `BSSkin::BoneData` +
+`mesh_data.skin_weights`. **#3549** — `BSSkin::Instance.bone_refs` are NULL on
+73% of Starfield skin refs (all-null on 3,738/5,896 skins), so resolving by
+in-file node name alone leaves every affected NPC/apparel piece in bind pose;
+`crates/nif/src/import/mesh/skeleton.rs::solve_bone_names` recovers names by
+fitting each skin's bind-pose offsets against an externally-resolved skeleton
+(via the same `MeshResolver` precedent as Stage B's `.mesh` lookup), declining
+rather than guessing on an ambiguous or non-unique fit. Confirm a decline still
+falls back to the prior `Bone{i}` placeholder (never worse) and that a unique
+fit is still required before any name is accepted — measured recovery is ~21%
+of clothes skins / ~3,900 of ~19,500 bones, the remainder correctly declining.
+**#3777** — `BSGeometryMeshData::parse` (`crates/nif/src/blocks/bs_geometry.rs`)
+must treat EOF at the post-LOD meshlet/cull-data trailer as "no trailer
+present" (Starfield facegen `.mesh` bodies end exactly at the LOD array and
+ship none), not a hard parse error — pre-fix this silently zeroed all geometry
+in `Starfield - FaceMeshes.ba2` (1,282/1,282 NIFs, every Starfield NPC head)
+because Stage B's per-slot `Err` arm only `debug!`-logs and `continue`s. A
+regression here is invisible to `.nif`-block parse-rate gates (the `.nif`
+files themselves still parse at 100%) — confirm `NifStream::remaining() == 0`
+gates the trailer read and a body truncated *mid*-trailer still errors.
 **#1232** — empty/zero-length tangent blobs route through
 `synthesize_tangents_yup` (Mikkelsen); verify the fallback is reached and
-produces unit-length tangents. PBR scalars `metalness_override` /
-`roughness_override` are forwarded from the BGSM-resolved `legacy_pbr`. Watch for
-new vertex-attribute bits beyond FO4's set and Starfield's far-higher vertex
-counts.
+produces unit-length tangents (vanilla Starfield never actually exercises this
+path — 0 of 675,407 `.mesh` bodies lack authored tangents — so don't expect a
+live repro; confirm the fallback stays correct on a synthetic fixture instead).
+PBR scalars `metalness_override` / `roughness_override` are forwarded from the
+BGSM-resolved `legacy_pbr`. Watch for new vertex-attribute bits beyond FO4's
+set and Starfield's far-higher vertex counts.
 **Output**: `/tmp/audit/starfield/dim_2.md`
 
 ### Dimension 3: CDB Material Database Correctness
@@ -168,9 +200,13 @@ recorded in `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md`:
     `"MATERIAL_LAYER_0"`) — each needs an explicit arm plus a documented
     default. The old "schema and counts only" framing was wrong.
   * **The real Phase-2 blocker is memory, not vocabulary**: `parse` peaks at
-    **9.19 GB on a 105 MB CDB**, and `ParseLimits` is a pre-walk reject, not a
-    streaming budget. An indexed reader is the project, and there are **13
-    CDBs** to index, not one.
+    **9.19 GB on the single 105 MB base CDB**, and `ParseLimits` is a pre-walk
+    reject, not a streaming budget. That sizing is per-CDB, not corpus-wide —
+    there are **13 CDBs totalling 3,077,172 chunks / ~232 MB** (re-measured
+    2026-08-30, SF-D3-01), and **two** of them are full-size (~105 MB /
+    ~1.46 M chunks each, not one), so a Phase-2 reader reusing today's `parse`
+    across the discovered set would peak north of **~18 GB**, not 9.19 GB. An
+    indexed reader is the project.
   * **Live defect, still open (#3398, `93095413`)**: `read_user_class` reads
     field values in *declaration* order and never consults `Field::offset`. For
     96 of 97 CDB classes the two orders agree; *XMCOLOR* is the exception —
@@ -185,10 +221,18 @@ corpus resolve to real CDB materials. Neither "always CDB" nor "always BGSM" is
 correct — #3230 (`e3dd71e8`) made it **try-then-fall-through**: `.bgsm`/`.bgem`
 fall through to `resolve_bgsm` / `resolve_bgem` first and reach the CDB PBR flip
 (`apply_cdb_pbr_fallback`, `byroredux/src/asset_provider/material.rs`) only on a
-resolver miss, while `.mat` keeps its early return (Starfield ships no `.mat`
-sidecar files at all, so there is no resolver for that path to miss). A re-added
-early `PresenceOnly` return above the resolvers is the regression — it discarded
-every authored texture role, `glass_enabled` flag and PBR scalar.
+resolver miss, while `.mat` keeps its early return. The short-circuit's premise
+is narrower than the comment used to claim (#3782): **vanilla** Starfield ships
+no `.mat`/`.bgsm`/`.bgem` sidecars, but an installed Creation/mod archive can (20
+JSON `.mat` exports measured across 129 installed archives, 2026-08-30) — the
+short-circuit is retained because no JSON `.mat` resolver exists yet, not because
+the files structurally cannot exist. Separately, zero `.bgsm`/`.bgem` **files**
+exist in any vanilla Starfield archive either (SF-D9-01), so every `.bgsm`/`.bgem`-
+*named* reference is a guaranteed resolver miss that falls through to the CDB
+flip — the CDB is Starfield's only real material source today, not one of
+several. A re-added early `PresenceOnly` return above the resolvers is the
+regression — it discarded every authored texture role, `glass_enabled` flag and
+PBR scalar.
 **Output**: `/tmp/audit/starfield/dim_3.md`
 
 ### Dimension 4: Starfield ESM Resolve-Rate Baseline
@@ -268,13 +312,15 @@ power on `BSEffectShaderProperty` (FO76-style), and the new BSEffectShaderProper
 textures (Reflectance / Lighting / Emittance / Emit Gradient) — verify byte
 consumption against nif.xml.
 **#1606 undocumented BSLightingShaderProperty tail (`497700e7`)** — the empty-name
-full-body Starfield `BSLightingShaderProperty` carries a 38-byte trailing field
-(9× f32 + 2 B) that nif.xml does NOT document; the dispatcher passes the declared
-`block_size` to `BSLightingShaderProperty::parse_with_size`, which captures
+full-body Starfield `BSLightingShaderProperty` carries a 30-byte trailing field
+(7× f32 + 2 B) that nif.xml does NOT document (re-measured 2026-08-31 via #3474 —
+an earlier 38-byte / 9× f32 recording was 8 bytes stale after #2622 moved a
+leading float pair into the Starfield decode path proper); the dispatcher passes
+the declared `block_size` to `BSLightingShaderProperty::parse_with_size`, which captures
 `block_size - consumed` trailing bytes **opaquely** into `starfield_tail: Vec<u8>`
 (gated `bsver >= STARFIELD`). The legacy `parse` (None size) path is unchanged and
 yields an empty tail. Verify the tail is captured to-block_size (not a hardcoded
-38, no over-read) and that LODMeshes drift stays at 0 — do NOT fabricate field
+length, no over-read) and that LODMeshes drift stays at 0 — do NOT fabricate field
 names/semantics. Tests: `parse_bs_lighting_starfield_captures_trailing_tail` +
 `..._tail_empty_without_size_or_drift` in `crates/nif/src/blocks/shader_tests/starfield.rs` (split by era, #2056).
 The sibling BSEffectShaderProperty +32 B under-read on the same archive is a known
@@ -287,7 +333,8 @@ follow-up (left scoped out) — note frequency, don't re-file as new.
 **Checklist**: Parse rate holds at the compat-matrix figure (see ROADMAP
 Starfield row + `docs/engine/game-compatibility.md`) via
 `BYROREDUX_*_DATA=... cargo test -p byroredux-nif --test parse_real_nifs parse_rate_starfield_all_meshes -- --ignored`
-(walks all 5 vanilla mesh archives; `parse_rate_starfield` covers Meshes01 only).
+(walks all 13 mesh-bearing archives since the #3466 corpus widening;
+`parse_rate_starfield` covers Meshes01 only).
 The residual truncation tail in Meshes01/MeshesPatch is tracked at #2105/#3524
 (`BSWeakReferenceNode`'s residual, characterised at 19 files at the
 2026-08-30 measurement) — **not #746/#747**, both CLOSED and unrelated
@@ -317,13 +364,16 @@ resolved Starfield meshes land with `Material.metalness` / `Material.roughness` 
 resolve-once fill). Confirm `Material::resolve_pbr` and the `EmissiveSource`
 discriminator (#1280, tagged in `crates/nif/src/import/material/dedicated_shader.rs`
 and `legacy_properties.rs` since the #2059 `walker.rs` split) behave
-for SF content. NIFAL particle slice reaching SF NIFs: typed `NiPSysEmitter` /
-`NiPSysEmitterCtlr` (`crates/nif/src/blocks/particle.rs`) →
-`extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs`)
-→ `apply_emitter_params` (`byroredux/src/systems/particle.rs`). NIFAL collision
-slice (Cydonia's synthesized + bhk colliders): `BhkMultiSphereShape` +
-`BhkConvexListShape` translate to `CollisionShape` in
-`crates/nif/src/import/collision/shape.rs`.
+for SF content. **NIFAL particle slice (`NiPSysEmitter`/`NiPSysEmitterCtlr`) and
+the per-shape collision slice (`BhkMultiSphereShape`/`BhkConvexListShape`) are
+types vanilla Starfield ships ZERO of** (confirmed 2026-08-30 over the full
+block histogram across all six mesh archives, 24 distinct block types
+observed) — do not audit them here; a regression test against either would be
+vacuous. Starfield collision is entirely the `bhkNPCollisionObject` (59,761) /
+`bhkPhysicsSystem` (40,724) / `bhkRagdollSystem` (571) `BhkSystemBinary` blob
+path, not a per-shape translate path — Cydonia's colliders come from the
+synthesized fallback in `byroredux/src/cell_loader/spawn.rs` (see Dimension 5),
+not from `crates/nif/src/import/collision/shape.rs`.
 **Output**: `/tmp/audit/starfield/dim_8.md`
 
 ### Dimension 9: BGSM/BGEM External Material Flow
@@ -368,8 +418,12 @@ the classification feeding it happens at the single `translate_material` boundar
      extraction (#1289/#3398 Phase 2 follow-up — `.mat`-resolved materials
      currently reach the Disney lobe with NIF defaults; the lookup key and field
      vocabulary are **solved** as of 2026-08-29, so what is left is the indexed
-     reader that avoids the 9.19 GB parse peak, plus the *XMCOLOR* field-offset
-     fix), exterior worldspace tiles,
+     reader that avoids the corpus-wide ~18 GB parse peak (13 CDBs, two
+     full-size — not the single-CDB 9.19 GB figure), plus the *XMCOLOR*
+     field-offset fix), **PDCL ahead of GBFM** (SF-D4-01, 2026-08-30: the
+     baseline doc's promote/defer rule fires "defer" for GBFM at 0.081% of
+     unresolved Cydonia REFRs, while PDCL sits unranked at 74.9% — ~900×
+     more impactful by the same metric), exterior worldspace tiles,
      space-cell / planet / GBFM records, and the #2105/#3524 NIF truncation tail.
      Do NOT frame this as a "BGSM parser first / ESM very far" chain — both have
      shipped.

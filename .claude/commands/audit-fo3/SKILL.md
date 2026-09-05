@@ -28,10 +28,10 @@ for the severity scale (including the NIFAL canonical-translation rows).
 | BSA format      | v104 ✓                                                                       |
 | ESM parser      | Shared with FNV (`crates/plugin/src/esm/`); no FO3-specific arm             |
 | NIF parse rate  | 100.00% (17 172 across 6 archives — base + 5 DLC; re-measured 2026-08-28 under #3041, which moved the gate off the single `Fallout - Meshes.bsa` onto `open_all_mesh_archives`. The old 10 989 figure was one archive's worth) |
-| ESM records     | 44 657 = 37 459 structured + 7 198 NAVMs (re-verified 2026-05-26)           |
+| ESM records     | `index.total()` = 44 718 — an index-sum over ~95 typed category maps that double-counts by design, NOT a file record count (floor 44 000, #3756, re-measured 2026-08-30). The file itself holds 718 952 records vs `HEDR.numrec` 808 699. Do NOT cite the old "44 657 = 37 459 structured + 7 198 NAVMs" framing — 44 657 was this same index-sum metric measured in May, not a distinct file baseline |
 | Interior        | ✓ — Megaton, **929 REFRs** (parse-side baseline; NOT the stale 1609 figure) |
 | Exterior        | Wired (Capital Wasteland WRLD); **fresh GPU bench pending (R6a-stale-15)**   |
-| Scripting       | 1 257 SCPT records parse; no runtime executes them (M47.0; tail M47.2)      |
+| Scripting       | 1 257 SCPT records parse; real FO3 script logic still has no executing runtime (M47.0; tail M47.2). Narrow Sept-2026 exception (`obscript_runtime.rs`) doesn't reach FO3's real corpus — see Dimension 7 |
 | Reference data  | `/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/`              |
 
 ### FO3-vs-FNV divergence map (the actual audit surface)
@@ -88,7 +88,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Checklist**:
 - `BSShaderPPLightingProperty` field completeness (refraction strength/period, parallax passes/scale, bump-map tiling) and `BSShaderNoLightingProperty` decode.
 - Stream-position audit: any block type that passes on FNV but trips on FO3-era authoring. The dispatch arm count is in `crates/nif/src/blocks/mod.rs` — a histogram shift from `nif_stats` flags a mis-dispatched block.
-- **Typed particle emitters (NIFAL particle slice, `5708b5b9` / `9db60714` / `8f856d35`)**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are TYPED blocks (`crates/nif/src/blocks/particle.rs` — `parse_box_emitter` / `parse_sphere_emitter` / `parse_grow_fade_modifier`), not the old opaque controller stack. `extract_emitter_params` / `extract_emitter_rate` decode authored base kinematics + birth rate + GrowFade `base_scale` into `apply_emitter_params`. Dispatch is version-agnostic so FO3 smoke/fire/dust emitters hit this path — **but the NIFAL decode doc-comments verify only against FNV + Oblivion, so FO3 is an UNVERIFIED gap**: confirm FO3 authored emitter params + rate + GrowFade scale extract correctly. See also `/audit-nifal`.
+- **Typed particle emitters (NIFAL particle slice, `5708b5b9` / `9db60714` / `8f856d35`)**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are TYPED blocks (`crates/nif/src/blocks/particle.rs` — `parse_box_emitter` / `parse_sphere_emitter` / `parse_grow_fade_modifier`), not the old opaque controller stack. `extract_emitter_params` / `extract_emitter_rate` decode authored base kinematics + birth rate + GrowFade `base_scale` into `apply_emitter_params`. Dispatch is version-agnostic so FO3 smoke/fire/dust emitters hit this path — **now directly measured against FO3 data (#3754, 2026-08-30)**, closing what was an unverified gap: `float_interpolator_rate` was discarding whole authored ramp-up/spike rate curves (first key `0.0`, sentinel `value` of `-FLT_MAX`) and falling back to `fog.rs::particle_preset`'s 35/s name-guess, hitting real FO3 meshes (Tenpenny Tower's `tenpengate01`, `fxfallingrocks01`, `fxbubblestall01`); fixed via the curve's time-weighted mean, raising FO3 rate-bearing base meshes from 114 to 124. `real_archive_torch_meshes_surface_particle_emitters` now carries a per-game rate floor instead of one corpus-wide total, so a future FO3-only regression here is caught. See also `/audit-nifal`.
 **Output**: `/tmp/audit/fo3/dim_2.md`
 
 ### Dimension 3: ESM Record Coverage (Fallout3.esm)
@@ -96,7 +96,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-Session-34 split — `walkers.rs` / helpers / support / `wrld.rs`). NOT `byroredux/src/cell_loader/refr_texture_overlay_tests.rs` — those fixtures are FO4-shaped and FO3 authors zero overlays (#3511).
 **Checklist**:
-- Parse `Fallout3.esm` through the shared parser. Reconcile against the live baseline: **44 657 records = 37 459 structured + 7 198 NAVMs** (re-verified 2026-05-26). A drop here is the regression signal — do NOT use any older "13 684 structured" figure.
+- Parse `Fallout3.esm` through the shared parser. Reconcile against the live baseline (#3756, re-measured 2026-08-30): `index.total()` = **44 718** (an index-sum over ~95 typed category maps that double-counts by design — NOT a file record count; floor 44 000). The file itself holds **718 952** records, validated against `HEDR.numrec` **808 699** (records + GRUPs = 808 700, delta 1 = the TES4 header). Also confirm the cell-tier floors `index.total()` cannot see: placed refs ≥ 573 000 (REFR 568 107 + ACHR 2 154 + ACRE 3 349 + PGRE 350) and exterior cells ≥ 41 900. A drop here is the regression signal — do NOT use any older "13 684 structured" or "44 657 = 37 459 structured + 7 198 NAVMs" figure (the latter was this same index-sum metric measured in May, not a distinct file baseline).
 - FO3-unique authoring vs FNV: pre-FNV subforms for NPC_, DIAL, INFO. The parser deliberately keeps the soft/strict truncation read semantics (`crates/plugin/src/esm/sub_reader.rs` migration, R2 Phase B).
 - **SCPT SCHR flags are a u16 (#1654, `590351c1`)**: shared with Oblivion/FNV — the SCHR is exactly 20 bytes with a `u16` flags tail (cursor @18). `crates/plugin/src/esm/records/script.rs` reads it via `u16_or_default`; the old "u32 tail on FO3+" comment was itself wrong. A regression to a `u32` read fails on every real FO3 script and pins `ScriptRecord.flags` to 0.
 - CELL XCLL / RCLR layout identity vs FNV (FO3 interior lighting uses the same `CellLightingRes` path — confirm, don't assume).
@@ -121,6 +121,19 @@ for the severity scale (including the NIFAL canonical-translation rows).
   confirm the baked `landscape\lod\<world>\` asset tree (see #3100, closed)
   is consumed where it exists; entry points `cell_loader/object_lod.rs`,
   `cell_loader/placement_lod.rs`.
+- **The object-LOD ring is not a flat single-level ring (#3502, closed,
+  2026-08-30)**: it rides `LodBandLadder::for_object_game`, and 7 of FO3's
+  15 worldspaces bake object quads at level 8 with NO level-4 sibling — 93
+  of 422 object quads (`dcworld01` 8:3, `dcworld03` 8:4, `dcworld06` 8:6,
+  `dcworld12` 8:8, `dcworld17` 8:6, `paradisefalls` 8:1, `washmontop` 8:65).
+  Pre-fix, `select_lod_quads` always subdivided into a missing quad, which
+  for objects (fallback `ObjectLodBlock::empty()`) hollowed out the
+  8..15-cell band on those worldspaces whenever `--radius` put
+  `exclude_within` below `refine_threshold(8)` = 12. `lod_bands.rs`'s
+  `LodBandSelection::coarsen_to_available` now lets a quad that can draw,
+  and whose whole subtree can't, emit itself instead of descending — confirm
+  this stays object-only (terrain must keep subdividing) and that the 7
+  named worldspaces render their distant buildings inside 16 cells.
 **Output**: `/tmp/audit/fo3/dim_4.md`
 
 ### Dimension 5: FO3 Collision Import (Havok → CollisionShape)
@@ -152,7 +165,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 - B-spline pose-fallback (#772, `3c32a5e`): gated on the `FLT_MAX` sentinel. B-splines are reachable on FO3 (`feedback_bspline_not_skyrim_only.md`) — don't rule them out by era.
 - `AnimationClipRegistry` dedup (#790, `da99d15`): case-insensitive interning by lowercased path; without it one keyframe set leaks per cell load (RAM growth on FO3 exterior streaming).
 - NPC hand-mesh load (#793 / M41-HANDS, `da8d7e2`): `lefthand.nif` + `righthand.nif` loaded alongside `upperbody.nif` on kf-era NPCs (`byroredux/src/npc_spawn.rs`). Megaton dwellers depend on this — bodies with no hands = #793 regression. FO3 kf-era spawn works because its `skeleton.nif` resolves (unlike FO4).
-- **Scripting gap (FO3-distinctive)**: 1 257 FO3 SCPT records parse but **no runtime executes them** (M47.0 event-hook + M47.1 condition-eval landed; the M47.2 compiled-Papyrus recognizer slice is in progress). This is the largest FO3-specific functional gap — note it as a known blocker for FO3 quest/world interactivity, not a bug to file. The scripting runtime itself is owned by `/audit-scripting` (crates/scripting, crates/pex, crates/papyrus) — do not deep-audit it here.
+- **Scripting gap (FO3-distinctive)**: 1 257 FO3 SCPT records parse; real FO3 authored gameplay logic still has **no runtime that executes it** (M47.0 event-hook + M47.1 condition-eval landed; the M47.2 compiled-Papyrus recognizer slice is in progress). One narrow exception landed since (Sept 2026 SDK work, `crates/scripting/src/obscript_runtime.rs`, wired live via `attach_scpt_script` + `legacy_obscript_load_order_system`): a conservative interpreter for the exact script-extender load-order idiom (`IsModLoaded`/`GetModIndex`/`GetNumLoadedMods`/`GetNumLoadedPlugins`/`GetNthModName` plus `ext.`-qualified SDK calls). It doesn't reach FO3's real corpus in practice — it only compiles from a script's preserved `SCTX` source text, and `attach_scpt_script`'s dialect match gives FO3 (`CharacterRulesProfile::FALLOUT3`) no compiled-bytecode `ObscriptDialect` at all (only Oblivion gets `Obse`, only FNV's `FALLOUT_NEW_VEGAS` profile gets `Xnvse`) — and vanilla FO3 content doesn't author the mod-compatibility idiom this targets anyway. This remains the largest FO3-specific functional gap — note it as a known blocker for FO3 quest/world interactivity, not a bug to file. The scripting runtime itself is owned by `/audit-scripting` (crates/scripting, crates/pex, crates/papyrus) — do not deep-audit it here.
 **Output**: `/tmp/audit/fo3/dim_7.md`
 
 ## Phase 3: Merge

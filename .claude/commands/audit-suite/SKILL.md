@@ -108,14 +108,19 @@ catches what static audits structurally can't see:
 25. `/audit-runtime --game all`
 
 With the four 2026-08-13 additions this preset covers every crate in the
-`_audit-common.md` crate→owner map. It does **not** cover the six un-owned
-subsystems in that file's "Un-owned subsystems" table (refreshed 2026-08-16) —
+`_audit-common.md` crate→owner map. It does **not** cover the eight un-owned
+subsystems in that file's "Un-owned subsystems" table (refreshed 2026-09-05) —
 name them in the summary rather than claiming full coverage:
 
 - **the P2 gameplay slice** (`byroredux/src/{combat,inventory,settings_io}.rs` +
   the action half of `interaction.rs`) — no owner, and the project's active
   execution focus. If this preset is run to bless a release, run `/audit-ecs`
   and `/audit-runtime` with these files explicitly in scope first.
+- `crates/sdk` (ByroRedux SDK) — per-domain owner + `/audit-ecs` for shared
+  world contracts
+- the launcher (`crates/boot-request`, `crates/game-detect`,
+  `crates/settings-io`, `tools/byro-launcher`, `tools/byro-detect`) — no
+  owner; the boot-request/settings handoff + Steam install detection
 - `crates/facegen` (incidental to `/audit-skyrim` only)
 - `crates/mod-runtime` (folded into `/audit-safety` Dim 11)
 - `crates/hkx` (folded into `/audit-scripting` Dim 8)

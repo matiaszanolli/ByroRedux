@@ -45,14 +45,14 @@ no longer spell out archives per game.
 
 Five runtime baselines are committed today (the original fnv/fo4 pair plus the
 fo3/oblivion/skyrim_se trio created in the 2026-06-14 `--game all` sweep).
-**Every figure below moved between 2026-08-09 and 2026-08-28** — read the TSVs,
+**Every figure below moved between 2026-08-09 and 2026-09-03** — read the TSVs,
 not this table, before calling a delta a regression; the table is oriented at
-the last sync (2026-08-29) and will drift again:
+the last sync (2026-09-05) and will drift again:
 
 | Baseline TSV | Cell | Notes |
 |--------------|------|-------|
-| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. **7 174 entities** as of the 2026-08-27 re-baseline (`104189a5`) — down 22.6% from ~9 250, traced to an armor fix, i.e. a deliberate correction, not a loss. `mesh_cache_failed_count=0`. Post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
-| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. **18 256 entities** as of the 2026-08-22 regen (was 9 167 → 11 279 at the 2026-06-19 RT-4 / #1621 regen). `mesh_cache_failed_count=0`. Profile `sample_cells` lists this EDID. |
+| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. **7 342 entities** as of the 2026-09-02 `#3554` (RT-8) regen — up from 7 174 (+2.34%, benign body-count creep re-verified against an unchanged `bench_draws_cmds`), which was itself the 2026-08-27 re-baseline (`104189a5`) down 22.6% from ~9 250 on a deliberate armor fix. `mesh_cache_failed_count=0`. Post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
+| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. **19 399 entities** as of the 2026-09-02 `#3554` (RT-8) regen — up from 18 256 (+6.26%, re-verified benign: `bench_draws_cmds` moved only +1.3% over the same window), which was itself the 2026-08-22 regen (was 9 167 → 11 279 at the 2026-06-19 RT-4 / #1621 regen). `mesh_cache_failed_count=0`. Profile `sample_cells` lists this EDID. |
 | `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Created 2026-06-14; re-baselined 2026-08-28 (#3407 corrected the draw count). **3 493 entities**, `mesh_cache_failed_count=3`. |
 | `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | Created 2026-06-14; refreshed 2026-08-26 (#3288, which held the other three). **705 entities**, `mesh_cache_failed_count=0` — still the cleanest path. |
 | `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Created 2026-06-14, last regenerated 2026-08-09. **8 126 entities** (was ~6 044); `mesh_cache_failed_count=9` (was 11), still including the 2 corrupted control-char paths (see AUDIT_RUNTIME_2026-06-14 RT-3). |
@@ -79,7 +79,7 @@ probe-verified `sample_cells` entry, prefer it.
 | `fo3` | `MegatonPlayerHouse` | ✓ | Committed guard (2026-06-14); exterior-style architecture in an interior shell. |
 | `skyrim_se` | `WhiterunDragonsreach` | ✓ | Committed guard (2026-06-14); per-entity hot-path stress. |
 | `fo4` | `InstituteBioScience` | ✓ | Committed guard; BGSM-heavy + precombine CSG (M49). |
-| `starfield` | — | — | Starfield profile ships empty archives + no `sample_cells`; runtime cell render not yet a stable guard. Use `--sf-smoke` for SF coverage until a cell baseline lands. |
+| `starfield` | `citycydoniamainlevel` | — | Profile now ships real `default_bsas`/`default_materials_bsas` + this `sample_cells` entry (`6236b130`, 2026-09-03) — no more hand-supplying archives. Still not a stable guard: the 2026-08-30 sweep hit a CRITICAL hard stall on this exact cell (frame 0 never advances, single-core-pinned, RSS oscillating 12→20.6 GB over a 10-minute run — RT-1, `docs/audits/AUDIT_RUNTIME_2026-08-30.md`), unresolved as of this sync. Use `--sf-smoke` for SF coverage until that stall is fixed and a cell baseline lands. |
 
 `--game all` runs every game whose profile data dir resolves (existence-checked
 per `expand_game_profile_args`); games whose install is absent are skipped.
@@ -118,9 +118,11 @@ For each selected `(game, cell)`:
        > "/tmp/audit/runtime/<game>-<cell>.engine.log" 2>&1 &
    ```
 
-   Capture the PID for cleanup. (Starfield needs its `--materials-ba2`
-   archives, which the empty SF profile does not supply — pass them explicitly
-   if you ever baseline an SF cell.)
+   Capture the PID for cleanup. (As of the 2026-09-03 `default_bsas` /
+   `default_materials_bsas` / `sample_cells` addition, `--game starfield`
+   now expands to real archives including a `--materials-ba2` — you no
+   longer need to pass them explicitly. See the Starfield row below before
+   spending a run on it, though.)
 
 3. Poll `byro-dbg` for ping success (up to 90 s):
 
@@ -158,7 +160,7 @@ offset, do not run them concurrently.
 
 > **Where each metric lives.** The bench scalars (`wall_fps`, `draws=N/Mb/Kc`,
 > `entities=`) are on the single `bench:` line printed at `--bench-frames` exit
-> (`byroredux/src/app_events.rs` ~line 833, the `"bench: mode=…"` block — moved
+> (`byroredux/src/app_events.rs` ~line 1074, the `"bench: mode=…"` block — moved
 > out of *main.rs* by the #2731 split) — they land in the
 > `.engine.log`, NOT the `byro-dbg` stream. The `skin=L/M+S` line is emitted to
 > the `engine::stats` log target once per wall-second
@@ -199,8 +201,8 @@ Quirks of these scalars (don't fabricate around them):
   seconds) — `bench_fps_p50` and `bench_fps_avg` both map from that same
   number (re-run and average if you want a true cross-run mean). But a real
   per-frame CPU distribution now exists alongside it: `bench_frame_distribution`
-  (the helper stays in `byroredux/src/main.rs` ~line 81; its caller is
-  `byroredux/src/app_events.rs` ~line 768) nearest-rank-percentiles the per-frame
+  (the helper stays in `byroredux/src/main.rs` ~line 86; its caller is
+  `byroredux/src/app_events.rs` ~line 954) nearest-rank-percentiles the per-frame
   `bench_cpu_frame_ms` samples (one push per rendered frame, `about_to_wait`
   wall-clock) into `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms` on the same
   `bench:` line, unconditionally — not gated behind `--bench-camera` or

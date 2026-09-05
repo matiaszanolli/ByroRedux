@@ -62,8 +62,11 @@ those here.
   submerged damping, bounded current drag); character swimming, bounded drowning
   damage, splash/ripple markers and underwater audio went live after it. The
   genuinely open items are **water-walking, freezing, the exact Skyrim DNAM tail
-  decode, and the cross-game visual smoke matrix** (`docs/engine/watal.md:415-425`).
-  Re-read that list rather than trusting this one — it is a snapshot and rots.
+  decode, and the cross-game visual smoke matrix** (`docs/engine/watal.md:224-225`
+  for the DNAM-tail/smoke-matrix pair, `:438` for water-walking/freezing — the
+  doc's since-added sections mean these are no longer contiguous, re-check the
+  line numbers each cycle). Re-read that list rather than trusting this one —
+  it is a snapshot and rots.
 
 **Known-open, do NOT re-litigate**:
 - *tes_grounding_zero_mass_dynamic_fix* — Skyrim architecture ships mass=0
@@ -221,6 +224,17 @@ phase 2.5 call into `crate::water::apply_buoyancy`, the pull-dynamic phase;
 - Bone→body mapping: every ragdoll body must resolve to a skeleton bone, and the
   writeback must target the same bone. An off-by-one in the constraint's
   parent/child indices produces a ragdoll that explodes on activation.
+- **Constraint kind coverage (#3792).** `bhkPrismaticConstraint` now has a
+  canonical joint (`ImportedJointKind::Prismatic` / `RagdollJointSpec::Prismatic`
+  — 3 rotation axes + 2 linear axes locked, `LinX` free-but-limited to
+  `[min_distance, max_distance]`), and `BhkBreakableConstraint`'s wrapped
+  payload decodes for all four kinds a canonical joint exists for
+  (Hinge/LimitedHinge/Prismatic/Ragdoll) instead of a byte-count skip.
+  `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint` remain the only
+  undecoded kinds — both bare and breakable-wrapped forms still fall into
+  `Other` — deliberately deferred, not a gap this dimension should re-file
+  without a fresh occupancy census. Verify the coverage list narrows further
+  only if a subsequent fix actually lands one of those two.
 - Constraint limits (cone/twist/hinge ranges) come from authored Havok data.
   Verify unit handling (degrees vs radians) and that a missing/degenerate limit
   falls back to a documented default rather than an unconstrained joint.
@@ -292,8 +306,27 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
   actually changed, and that the `n_new > 0` escape hatch (a body that streams in
   already submerged, spawned asleep) is still present — removing it leaves
   streamed-in bodies sunk on the bottom.
+- **The target scan has two sources (#3492).** `apply_buoyancy_with_scratch`
+  first walks `RapierHandles` + `RigidBodyData{motion_type: Dynamic}`, then a
+  second `Ragdoll`-keyed pass over `ragdoll.bodies`/`ragdoll.buoyancy` — a
+  ragdoll body carries neither of the first pass's components
+  (`build_ragdoll` records handles only on `Ragdoll`; `activate_ragdoll`'s
+  #1772 teardown deletes the bone entities' `RapierHandles`/`RigidBodyData`
+  rows). `RagdollBuoyancy` (`crates/physics/src/components.rs`) caches each
+  body's first collider and *effective* damping (authored +
+  `ragdoll_extra_angular_damping`) at `build_ragdoll` time because neither is
+  otherwise recoverable post-#1772. Verify both scans feed the same
+  `targets`/`writes` pipeline and that `clear_stale_water_contacts` carries
+  the matching `Ragdoll` arm — without it a corpse that leaves the water
+  keeps a latched `WaterContact` and submerged damping forever. A ragdoll arm
+  missing from either the scan or the clear is the regression.
 - Current drag must be **bounded**; an unbounded drag term at high flow is a
-  body launched out of the water. Verify the clamp and its constant.
+  body launched out of the water. Verify the clamp and its constant. The
+  current-volume containment test reads the **collider AABB centre**, not the
+  rigid-body origin (#3490, aligned with the surface test's #2887 fix) — both
+  branches now share one `compute_aabb()` call. A regression here is either
+  branch reverting to `pos.y`/the raw body origin, which disagrees with a
+  bhk-imported compound part's own local isometry and with ragdoll bones.
 - `WaterContact` is the ECS-visible result (`submerged_fraction`, `material`) and
   is documented to emit one transition frame at zero. Verify the transition
   contract holds so downstream FX/audio consumers see the edge.

@@ -15,13 +15,49 @@ the ECS scripting runtime (events / timers / conditions / triggers / quest
 stages), and the cell-loader REFR-attach path that resolves a scripted REFR's
 VMAD-named `.pex` and runs the recognizer chain.
 
-This domain (~16k LOC) has six prior audit passes in `docs/audits/AUDIT_SCRIPTING_*.md`
-— read the most recent one first (Phase 1 below). The
+This domain (`pex`+`papyrus`+`scripting` alone are ~52k LOC combined as of
+this sync — up from ~16k pre-2026-08-31; see the SDK/extender coverage-gap
+note below for where almost all of that growth went) has a growing set of
+prior audit passes in `docs/audits/AUDIT_SCRIPTING_*.md` (16 as of this sync
+— don't hardcode a count here, it rots every cycle like the filename) — read
+the most recent one first (Phase 1 below). The
 decompiler is the **highest bug-density area**: it parses untrusted bytecode
 and runs five tree-rewriting passes, so dimensions are weighted toward it
-(three of seven). Its correctness story rests on a corpus-decompile
+(three of seven, though **this weighting predates the 2026-08-31→09-02
+SDK/extender-compatibility growth and no longer reflects where most of the
+domain's LOC or newest untested surface actually is** — see the coverage-gap
+note below). Its correctness story rests on a corpus-decompile
 smoke harness and the `.psc`-vs-`.pex` fidelity gate — point findings there,
 not at speculation.
+
+**Coverage gap — SDK / extender-compatibility subsystem is NOT covered by any
+dimension below (flag, don't silently skip)**: between 2026-08-31 and
+2026-09-02 (commits `316fb202`..`fed3e550`, ~100 commits, all after this
+skill's last full sync at `64f64480`/2026-08-30) a large SKSE/JContainers/
+StorageUtil/ObScript compatibility layer landed —
+`crates/scripting/src/papyrus_provider.rs` (6.2k LOC, new — typed provider
+call lowering/dispatch), `crates/scripting/src/obscript.rs` +
+`crates/scripting/src/obscript_runtime.rs` (686 + 1.6k LOC, new — legacy
+Oblivion/FO3/FNV `SCTX`/bytecode-derived branch execution; note this
+predates and is **distinct** from the not-yet-built `.psc`-side Obscript/SCTX
+*frontend* the "Future-phase gaps" section below still correctly calls out),
+`crates/scripting/src/compatibility.rs` (984 LOC, new — extender-call
+preflight/aggregation), plus a new `crates/sdk` crate (~14k LOC) exposing
+canonical engine state (actor values, equipment, plugin/load-order metadata,
+faction relationships, form lookups, UI/menu state, input mappings) to
+provider calls. None of this is in the **Crates** or **Engine-side wiring**
+lists below, no dimension's entry-points/checklist mentions it, and the most
+recent report (`docs/audits/AUDIT_SCRIPTING_2026-08-30.md`) predates all of
+it. This is a real, large, currently-unaudited surface — untrusted-input
+handling (does the ObScript bytecode-derived path apply the same
+bounds-checked-read discipline Dim 1 requires of `.pex`?), the
+decline-on-unmodeled invariant (does a provider call that can't be typed
+decline cleanly?), and lock ordering (does `crates/sdk`'s state exposure
+introduce a new resource-lock nesting order against `QuestStageState`/
+`Inventory`/etc.?) are all open questions. Treat it as a scoping gap to
+report, not as something to audit ad hoc under an existing dimension's
+checklist — it needs its own pass designed with the same rigor as Dimension 8
+was for `hkx`, not squeezed into Dims 5/6/7 in passing.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
@@ -121,17 +157,24 @@ those here.
   `crates/pex/src/decompile/mod.rs`, `crates/scripting/src/translate/mod.rs`,
   `crates/scripting/src/fragment.rs`.
 
-**Doc-rot check**: `docs/feature-matrix.md:139` was already corrected (independent
-of this skill) to reflect the shipped `.pex` recognizer slice; only line ~175
-("What Doesn't Work Yet") still lists the *full* transpiler as deferred, which
-remains accurate (the recognizer chain is a targeted slice, not a general
-transpiler). Do not re-flag that "shipped recognizer slice" framing on line 139
-as stale. **Do** flag its embedded phase-order parenthetical, though —
-`"CFG→lift→control-flow→lower→short-circuit"` (booleans LAST) contradicts the
-actual pipeline (Dim 3: the short-circuit boolean pass runs BEFORE control-flow
-reconstruction, confirmed in `decompile_body`/`lower.rs`) — that parenthetical
-was apparently never updated when the phase order was pinned down, independent
-of the "shipped slice" fix around it.
+**Doc-rot check (re-verify the line numbers each cycle — this doc has grown and
+they drift)**: `docs/feature-matrix.md`'s Scripting-section status row (line
+174 as of this sync, was 139) correctly reflects the shipped `.pex` recognizer
+slice, AND its phase-order parenthetical is now also correct —
+`` `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower) `` —
+the boolean short-circuit pass is listed BEFORE control-flow reconstruction,
+matching the actual pipeline (Dim 3, confirmed in `decompile_body`/`lower.rs`).
+**Both the "shipped slice" framing and the phase-order parenthetical are fixed;
+do not re-flag either.** (The parenthetical fix landed 2026-08-19, `f6555b7b`
+— stale mentions of the wrong order only survive in historical
+`docs/audits/AUDIT_SCRIPTING_2026-08-{07,12}.md` snapshots, which is expected
+and not itself a finding.) The "What Doesn't Work Yet" gaps table is now much
+further down (line 308 header, the `Full Papyrus transpiler (M47.2)` row
+itself at line 322 as of this sync — don't hardcode either number, re-find
+them) and still lists the full transpiler as a Tier 3 gap with the recognizer
+slice noted inline — this remains accurate (the recognizer chain is a
+targeted slice, not a general transpiler); do not re-flag that framing as
+stale either.
 
 **Corpus / fidelity instruments (point findings here, do not re-derive)**:
 - `crates/pex/examples/pex_corpus_smoke.rs` — runs `byroredux_pex::parse` +
@@ -178,29 +221,42 @@ of the "shipped slice" fix around it.
   `--scripts-bsa`, or the quest's VMAD carried no scripts section) is correct.
 - **Object-targeting fragment effects (`AddItem`/`MoveTo`, 2026-07-21)** — see
   Dim 5/6 for the mechanism. Real, tested, dispatch-wired. The original
-  *live-corpus measured at ~0% real yield* finding (`fragment_coverage`
-  found zero hits in both `Skyrim - Misc.bsa` and `Fallout4 - Misc.ba2`,
-  documented in `docs/engine/m47-2-recognizer-scaling.md` §"Shipped
-  (2026-07-21)") predates the M47.3 alias-fill runtime landing
-  (`a844c26b`, 2026-08-07) and is now **stale, not re-verified** — treat it
-  as an open question, not a settled 0%. What changed: an object receiver
-  bound to a bare, alias-bound `ObjectReference Property` now resolves live
-  through `SceneActorBindings` (Dim 5's `ObjectRef` hole-binding bullet)
-  instead of declining, so some of the previously-dormant fragments may now
-  dispatch. **This is also stale**: `object_expr_ref` (`effects.rs`) resolves
-  `alias.GetRef()`/`alias.GetActorRef()` method-call locals through
-  `Binding::Object` into `scope.object_locals` too (the same map §Dim 5's
-  `receiver_object` bullet above describes), so
+  *live-corpus measured at ~0% real yield* finding predates the M47.3
+  alias-fill runtime landing (`a844c26b`, 2026-08-07). What changed: an
+  object receiver bound to a bare, alias-bound `ObjectReference Property`
+  now resolves live through `SceneActorBindings` (Dim 5's `ObjectRef`
+  hole-binding bullet) instead of declining, and `object_expr_ref`
+  (`effects.rs`) resolves `alias.GetRef()`/`alias.GetActorRef()` method-call
+  locals through `Binding::Object` into `scope.object_locals` too (the same
+  map §Dim 5's `receiver_object` bullet above describes), so
   `ObjectReference k = SomeAlias.GetActorRef(); k.AddItem(...)` now resolves
   live rather than declining. Verify against the current three-map
-  (`quest_locals`/`object_locals`/`decl_locals`) behavior, not the
-  "method-call-derived locals still decline" claim this bullet used to make.
-  `docs/engine/m47-3-quest-alias-design.md`'s
-  own Phase 2 checklist still marks "live-corpus re-measurement of
-  `fragment_coverage`'s `AddItem`/`MoveTo` yield shows a real (non-zero) hit
-  rate" **unchecked** — a fresh `fragment_coverage` run belongs in this
-  audit's findings if not already re-run; do not assume the yield is either
-  still 0% or now non-zero without re-running the harness.
+  (`quest_locals`/`object_locals`/`decl_locals`) behavior, not any
+  "method-call-derived locals still decline" framing.
+  **The re-measurement itself is DONE — a settled, asymmetric result, not an
+  open question — re-run `fragment_coverage` only if verifying it, don't
+  re-litigate it from first principles**: the 2026-08-27 pass re-ran the
+  harness over real Skyrim SE + FO4 + Starfield `Misc` archives.
+  `AddItem` is now genuinely non-zero (12 emissions Skyrim + 42 FO4/Starfield
+  = 54 total). `MoveTo` is **still exactly 0** across all three games — but
+  this pass established the zero is *structural*, not incidental: 3,253 of
+  3,334 real `.pex` `MoveTo` calls (97.6%) carry the compiler-materialized
+  4-arg form `(0.0, 0.0, 0.0, matchRotation)`, which the "conservative-shape
+  decline" bullet below correctly rejects (it accepts *only* the literal
+  2-arg receiver+destination shape) — every real author's `MoveTo` call hits
+  that decline, 100% of the time, because the `.pex` frontend (the only
+  production input path) always materializes the omitted default arguments
+  that hand-authored `.psc` never writes out. This is tracked as **open**
+  issue #3487 ("three effect primitives guard on hand-authored `.psc` arity,
+  but the `.pex` frontend materializes every default argument — `MoveTo`
+  declines 100% of 3,334 real calls"), with a suggested fix already scoped
+  (accept the 4/5/6-arg form when the offset args are literal `0` and the
+  rotation flags are literals; the *actual* non-zero offset case, ~2.4% of
+  real calls, should still decline). Cite #3487 rather than re-deriving this
+  from scratch; `docs/engine/m47-3-quest-alias-design.md`'s own Phase 2
+  checklist item for this re-measurement can be treated as answered (with
+  this qualification) even though the checkbox itself may still render
+  unticked in that doc.
 - **QUST alias decode + fill-and-apply runtime (M47.3, Phases 0–3 shipped
   2026-08-07, `a844c26b`)** — `QustRecord.aliases: Vec<QuestAlias>`
   (`ALST`/`ALLS`/fill-types/`FNAM`/injected data/`ALFI` "Force Into Alias")
@@ -713,7 +769,19 @@ refresh; not otherwise covered by this dimension's checklist below).
      allowance, a disjunction let through `classify_guard_atom`, or a latent
      effect surviving inside a branch would each be a decline-invariant
      regression. Any other `If`/valued-`Return` still hits `_ => return None`.
-     Guards: `lowers_get_stage_done_conditional`, `declines_unmodeled_conditional_guard`
+     **`lower_statements`'s own recursion is capped (Fix #3279,
+     `ae9d4194`, 2026-09-03)**: `MAX_CONDITIONAL_DEPTH = 256` — the smaller
+     of the two upstream caps that transitively bound it (`.psc`'s
+     `MAX_STMT_DEPTH` / the `.pex` decompiler's `MAX_REBUILD_DEPTH`) — is
+     threaded through as an explicit `depth: u32` parameter and declines
+     (`None`) at or past it rather than recursing further; this was a
+     defense-in-depth gap closure (both reachable input paths were already
+     bounded upstream), not a live-exploitable unbounded recursion. Verify
+     the cap is still there and still the smaller of the two upstream
+     values. Guards: `lowers_get_stage_done_conditional`,
+     `declines_unmodeled_conditional_guard`,
+     `conditional_depth_cap_declines_pathological_nested_if`,
+     `conditional_depth_cap_accepts_legitimate_nesting`
      (`crates/scripting/src/translate/effects.rs`).
   `effects.rs` has grown substantially since this dimension was last refreshed
   (many more `Effect`/`EFFECT_PRIMITIVES` variants beyond `AddItem`/`MoveTo` —
@@ -722,7 +790,9 @@ refresh; not otherwise covered by this dimension's checklist below).
   does not enumerate them individually, so treat the decline invariant above
   as the load-bearing thing to re-verify rather than assuming the older,
   smaller primitive table.
-- **`Effect::Conditional` dispatch (`fragment.rs::apply_effects`, 2026-08-24)**:
+- **`Effect::Conditional` dispatch (`fragment.rs::apply_effects`, 2026-08-24;
+  guard-resolution behavior fixed 2026-09-02, Fix #3785, `46cb7515` — the
+  framing below is the POST-fix behavior, don't re-flag it)**:
   handled as a special case at the *top* of the per-effect loop, not inside
   `apply_effect` (`apply_effect`'s own `Effect::Conditional { .. } =>
   unreachable!(...)` arm is a defense-in-depth assertion that the special case
@@ -730,17 +800,33 @@ refresh; not otherwise covered by this dimension's checklist below).
   `StageDoneGuard` resolves its `QuestRef` via `resolve_quest_logged` and
   compares `stages.get_stage_done(quest, guard.stage) == guard.done`; ALL
   guards must pass (`.all(...)`) to take `then_effects`, otherwise
-  `else_effects` runs. The chosen branch recurses into `apply_effects` reusing
-  the *same* `&mut stages`/`&mut objectives`/`world`/`deferred` — no new
-  resource or component lock is acquired for the recursion. Verify (a) an
-  unresolvable guard quest (`resolve_quest_logged` returns `None`) makes that
-  guard fail closed (the `then` branch is skipped, not defaulted to true) —
-  a wrong default here would silently run the wrong branch on a data problem;
-  (b) the recursion has no depth/cycle hazard distinct from the outer
-  `MAX_CASCADE` cascade guard (a `Conditional` itself never emits a `SetStage`
-  loop back into the dispatch queue — only a `SetStage`/quest-lifecycle effect
-  inside a branch does, and that re-enters the *outer* cascade queue, not this
-  recursion).
+  `else_effects` runs — **unless any guard's `QuestRef` fails to resolve at
+  all**, in which case the whole `Conditional` declines (neither branch runs;
+  the loop `continue`s to the next sibling effect in the same fragment body,
+  it does not abort the fragment). Fix #3785 closed a real bug here: the prior
+  `is_some_and` collapsed "guard evaluated false" and "guard's quest ref
+  couldn't be resolved" into the same `false`, which — because `Conditional`
+  (unlike every other `resolve_quest_logged` caller, which just skips the one
+  effect via `?`) has an `else` arm — silently ran `else_effects` on an
+  unresolvable guard instead of running neither. Verify (a) a `resolved: bool`
+  (or equivalent) tracks resolution separately from the boolean guard value,
+  and an unresolved guard short-circuits to declining the *whole* Conditional,
+  not to selecting `else_effects`; (b) `log::warn!` fires on the decline path
+  (`resolve_quest_logged`'s own `debug!` stays silent for its many inert
+  callers, so this needed its own louder diagnostic); (c) the chosen branch
+  recurses into `apply_effects` reusing the *same*
+  `&mut stages`/`&mut objectives`/`world`/`deferred` — no new resource or
+  component lock is acquired for the recursion; (d) the recursion has no
+  depth/cycle hazard distinct from the outer `MAX_CASCADE` cascade guard (a
+  `Conditional` itself never emits a `SetStage` loop back into the dispatch
+  queue — only a `SetStage`/quest-lifecycle effect inside a branch does, and
+  that re-enters the *outer* cascade queue, not this recursion) — note this
+  runtime recursion is a *different* recursion from `lower_statements`'s
+  lowering-time one (Dim 5 above, now capped by `MAX_CONDITIONAL_DEPTH`), but
+  is transitively bounded by it since a dispatched `Conditional`'s nesting can
+  never exceed what lowering allowed. Guard:
+  `apply_effects_declines_conditional_with_unresolvable_guard`
+  (`crates/scripting/src/fragment/tests.rs`).
 - **`Effect::Disable` / `ReferenceEnableState` — BOTH 2026-08-24 gaps are now
   CLOSED (#3278, `26f8738d` + `265f0c9b`). This bullet is a regression guard,
   not an open finding; do not re-file either half.**
@@ -1440,27 +1526,51 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
   `mod tests` block in `byroredux/src/systems/cinematic.rs` (search
   `scene_trigger_actor_approach_system` — no single canonical test name is
   documented here, confirm current coverage directly).
-- **`cinematic_retained_entities` (`byroredux/src/cell_loader/unload.rs`, new,
-  2026-08-24)**: called from `unload_cell_inner` before computing unload
-  victims. Collects every entity reachable from a live `HorseTetherState`
-  (`cart`, `tether.horse`) or `ActorCinematicState.vehicle` (`actor`,
-  `vehicle`), then transitively walks `Children` from that seed set so a
-  retained root's whole render/bone hierarchy survives too. Retained entities
-  are excluded from `victims` AND have their `CellRoot` component stripped
-  (`roots.remove(entity)`) so a moving cart/horse that has crossed its source
-  cell's boundary is not despawned by exterior streaming unloading that cell
-  out from under it. Verify (a) the walk is genuinely transitive (a
+- **`cinematic_retained_entities` (`byroredux/src/cell_loader/unload.rs`,
+  2026-08-24; reshaped by two 2026-09-03 fixes, #3690 `3f213038` and #3254
+  `90f81e8e` — the single-function framing this bullet used to carry is
+  stale, it's now split across two functions with a fixed scope bug)**:
+  `cinematic_retained_entities` (the SCAN half — unchanged in spirit)
+  collects every entity reachable from a live `HorseTetherState` (`cart`,
+  `tether.horse`) or `ActorCinematicState.vehicle` (`actor`, `vehicle`),
+  then transitively walks `Children` from that seed set so a retained
+  root's whole render/bone hierarchy survives too; `unload_cells` (the
+  whole-batch caller) now computes it exactly **once** for the whole unload
+  batch (#3690 — it was previously recomputed once per victim cell, a
+  whole-world scan repeated up to 121× for a `DEFAULT_TRANSITION_RADIUS=5`
+  door transition) and passes the result down. The `CellRoot`-strip half is
+  now a separate function, `strip_retained_cell_root(world, victims,
+  retained)` (renamed from the #3690-extracted *release_cinematic_retention*),
+  called from `unload_cell_inner` **per cell**, scoped to `retained ∩
+  victims` — **fixing a real bug** (#3254): the strip used to run against
+  every retained entity in the WHOLE WORLD from wherever it was called, so
+  since `HorseTetherState` is never cleared anywhere in production code (see
+  below), the very first unload anywhere after a cart was tethered
+  permanently orphaned it (its `CellRoot` never came back, rendered forever,
+  GPU handles held forever) — don't re-flag this specific mechanism as a
+  new finding, it's fixed. Verify (a) the walk is genuinely transitive (a
   grandchild two `Children` hops from the horse root must be retained, not
   just direct children — guard: `active_tether_retains_horse_cart_rider_and_hierarchy`);
-  (b) stripping `CellRoot` doesn't orphan the entity from some OTHER index
-  that still expects every live entity to carry a `CellRoot` (a partial
-  ownership-model exception like this is exactly the kind of thing that grows
-  a second, undocumented "un-owned entity" class over time — check whether
-  anything else in cell-loader/streaming assumes `CellRoot` presence is
-  universal); (c) the retention set has a bounded lifetime — confirm
-  `HorseTetherState`/`ActorCinematicState.vehicle` are themselves cleared at
-  the end of a cart sequence (cross-reference the completion-event bullet
-  above), so a finished cinematic's actors return to normal cell-scoped
+  (b) `strip_retained_cell_root` only strips `CellRoot` from entities that
+  are BOTH currently retained AND victims of the specific cell unloading
+  right now (guard:
+  `strip_leaves_a_retained_entity_untouched_when_it_is_not_a_victim_of_this_cell`,
+  `byroredux/src/cell_loader/unload.rs`); (c) stripping
+  `CellRoot` doesn't orphan the entity from some OTHER index that still
+  expects every live entity to carry a `CellRoot`; (d) **the retention set's
+  lifetime is a KNOWN, currently-open gap, not a hypothesis to
+  re-discover**: `HorseTetherState`/`ActorCinematicState.vehicle` are never
+  cleared anywhere in production code today, so once tethered, an entity is
+  retained (and, post-#3254, correctly re-adopts `CellRoot` on return to its
+  origin cell rather than being globally orphaned) but never returns to
+  ordinary cell-scoped lifetime — tracked as **open** issue #3817 ("ECS
+  followup: HorseTetherState/ActorCinematicState never terminate, so
+  cinematic-retained entities have no re-adoption path"), explicitly
+  deferred by #3254's own commit message pending research into the vanilla
+  cart script. Cite #3817 rather than re-filing a duplicate; do verify it's
+  still open before citing it as settled going forward. Cross-reference the
+  completion-event bullet above, so a finished cinematic's actors return to
+  normal cell-scoped
   unload rather than being retained forever as a leak.
 **Output**: `/tmp/audit/scripting/dim_8.md`
 
@@ -1488,23 +1598,36 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
      (multi-triggerer `OnTriggerEnterEvent`, `TriggerVolume::intersects_sphere`,
      the scene-phase/between-scenes `actor_quest_trigger_is_in_sequence` gate,
      and its Dim-8 navigation counterpart `scene_trigger_actor_approach_system`);
-     `ReferenceEnableState` + the `Disable` fragment effect (write side shipped,
-     **no production consumer yet** — flag if a finding assumes `Disable`
-     already hides a reference); `Effect::SetGlobalValue` (`Globals`,
-     save-registered); `Effect::Conditional` (a narrow `GetStageDone`-guarded
-     `If`/`Else` now lowers, where previously ALL `If` declined); the
+     `ReferenceEnableState` + the `Disable` fragment effect (BOTH the
+     alias-aware-receiver half and the runtime-consumer half are now CLOSED,
+     #3278, `26f8738d`+`265f0c9b` — see Dim 5's own bullet for the mechanism;
+     **do not describe this as "no production consumer yet", that framing is
+     stale**); `Effect::Enable` (added 2026-09-02, Fix #3489, `prim_enable`
+     — the counterpart `Disable` shipped without, mirroring its receiver
+     treatment and optional-literal-bool-argument shape); `Effect::SetGlobalValue`
+     (`Globals`, save-registered); `Effect::Conditional` (a narrow
+     `GetStageDone`-guarded `If`/`Else` now lowers, where previously ALL `If`
+     declined; its guard-unresolvable-quest edge case was itself a bug fixed
+     2026-09-02, Fix #3785, and its lowering recursion gained its own
+     `MAX_CONDITIONAL_DEPTH` cap 2026-09-03, Fix #3279 — see Dim 5); the
      cascade-queue FIFO + ingress-vs-cascade rework (`MAX_CASCADE` now bounds
      only fragment-emitted `SetStage`s, not authored ingress); the
      multi-`Fragment_N`-per-stage merge fix (previously last-write-wins); and
      `QuestAliasReadinessGate` (an engine-authored alias-readiness-driven
-     `SetStage`)) vs. deferred (Obscript/SCTX Phase 5; the M47.1 condition
-     resolvers' live-cell re-verification; M47.3 Phase 4+ — Created Object
-     alias spawn, Story Manager event fills, true `LCTN` alias traversal,
-     reference-collection aliases, unloaded-world Find-Matching search, and
-     the injected packages/spells/keywords overlay families staying
-     parsed-not-applied; the `AddItem`/`MoveTo` real-corpus yield
-     re-measurement post-alias-runtime; `ReferenceEnableState`/`Disable`
-     still lacking a runtime consumer).
+     `SetStage`)) vs. deferred (Obscript/SCTX Phase 5 — the `.psc`-side
+     frontend specifically, now distinct from the unrelated
+     `crates/scripting/src/obscript.rs` compiled-bytecode reader that landed
+     2026-09-01, see the SDK/extender coverage-gap note near the top of this
+     file; the M47.1 condition resolvers' live-cell re-verification; M47.3
+     Phase 4+ — Created Object alias spawn, Story Manager event fills, true
+     `LCTN` alias traversal, reference-collection aliases, unloaded-world
+     Find-Matching search, and the injected packages/spells/keywords overlay
+     families staying parsed-not-applied). **Settled, not deferred**: the
+     `AddItem`/`MoveTo` real-corpus yield re-measurement — done 2026-08-27,
+     `AddItem` non-zero (54 emissions), `MoveTo` structurally zero and
+     tracked as open issue #3487 (see the Future-phase-gaps bullet above);
+     `ReferenceEnableState`/`Disable` no longer lacks a runtime consumer
+     (see above).
      Findings count by severity. **Untrusted-input
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim
