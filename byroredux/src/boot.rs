@@ -1390,42 +1390,49 @@ fn register_post_update_systems(scheduler: &mut Scheduler) {
         log::info!("BYRO_PATROL set — enabling NPC patrol locomotion (M42.8 v0, aliases Wander's algorithm)");
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_patrol_system());
     }
-    // PostUpdate ordering contract (#1375 invariant pin):
+    // PostUpdate ordering contract (#1375 invariant pin, revised by #3652):
     //   1. transform_propagation — BFS GlobalTransform composition
-    //   2. make_billboard_system  — overwrites billboard GT rotations
-    //                              (camera-motion gated; see #1374)
-    //   3. make_world_bound_propagation_system — drains GT dirty set,
-    //      folds WorldBounds from the final per-frame transforms
+    //   2. make_world_bound_propagation_system — drains GT dirty set,
+    //      folds WorldBounds from the per-frame transforms available so far
+    //
+    // #3652 — `make_billboard_system` used to run here as step 2 (between
+    // the two above), but its entire input is the active camera's
+    // GlobalTransform, which `camera_follow_system` authors in `Stage::Late`
+    // in player/third-person mode. `Stage::Late` runs strictly after
+    // `Stage::PostUpdate`, so billboard was reading last frame's camera pose
+    // every frame — visible as shearing/sliver billboard quads on a fast
+    // camera turn, resolving the instant the camera stopped (see
+    // `register_late_systems` for why `camera_follow_system` itself cannot
+    // move the other direction, to PostUpdate: it needs `Stage::Physics`'s
+    // post-step body position). Moved to `Stage::Late`, immediately after
+    // `camera_follow_system`, below.
     //
     // INVARIANT: no Stage::Late system may write GlobalTransform on
     // a LocalBound-bearing entity. If it does, that entity's
     // WorldBound will silently lag one frame because bound
-    // propagation's GT drain fires before the Late write. Today
-    // camera_follow_system + audio emitters write GT in Late but
-    // carry no LocalBound — the lag is benign. Any future Late
-    // system that writes GT on a bounded entity must either be
-    // promoted to PostUpdate (before bounds) or accept one-frame
-    // stale WorldBounds for that entity.
+    // propagation's GT drain fires before the Late write. `camera_follow_
+    // system` + audio emitters write GT in Late but carry no LocalBound —
+    // the lag is benign for them. `make_billboard_system` is the first
+    // exception: billboard meshes DO carry a LocalBound. The resulting
+    // one-frame-stale WorldBound is accepted (not proven zero-cost) — a
+    // billboard quad's local bounding-sphere center sits at its own pivot
+    // for essentially every vanilla asset, and rotation about a sphere's own
+    // center doesn't move it, so the practical drift is at most the
+    // radius-scale term (rotation-invariant) recomputed from a pose one
+    // frame stale, versus the shearing defect being visibly wrong on every
+    // fast turn. Any future Late system that writes GT on a bounded entity
+    // must make the same call, or be promoted to PostUpdate (before bounds).
     //
-    // #2391 — the three systems of this PostUpdate chain declare their
-    // access (`add_exclusive_with_access`) even though the analyzer
-    // doesn't pair exclusives: the ordering contract above is entirely
-    // about who touches `GlobalTransform` when, and a blank
-    // `sys.accesses` row is exactly the wrong place for that to be
-    // invisible.
-    scheduler.add_exclusive_with_access(
-        Stage::PostUpdate,
-        make_billboard_system(),
-        Access::new()
-            .reads_resource::<ActiveCamera>()
-            .reads_resource::<TotalTime>()
-            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
-            .reads::<byroredux_core::ecs::Billboard>()
-            .reads::<byroredux_core::ecs::SpeedTreeWind>()
-            .writes::<byroredux_core::ecs::GlobalTransform>(),
-    );
+    // #2391 — the two systems of this PostUpdate chain declare their access
+    // (`add_exclusive_with_access`) even though the analyzer doesn't pair
+    // exclusives: the ordering contract above is entirely about who touches
+    // `GlobalTransform` when, and a blank `sys.accesses` row is exactly the
+    // wrong place for that to be invisible.
     // Bound propagation runs last in PostUpdate so it sees final
-    // world transforms (including billboard rotations). See #217.
+    // world transforms for everything PostUpdate itself writes. See #217.
+    // #3652 — billboard rotations moved to Stage::Late (below), so this no
+    // longer sees the CURRENT frame's billboard pose; see this function's
+    // INVARIANT comment above for why that's accepted.
     //
     // The `GlobalTransform` entry is a **write**: the system takes a
     // write guard on that storage to drain its change-tracking dirty set
@@ -1506,6 +1513,15 @@ fn register_late_systems(scheduler: &mut Scheduler) {
     // The character system writes both Transform and
     // GlobalTransform on the camera to bypass the missing
     // late-stage propagation pass.
+    //
+    // #3652 — `make_billboard_system` joined that list of Late consumers
+    // just below, for the same reason `submersion_system` did (#3180): it
+    // used to sit in `Stage::PostUpdate`, an earlier stage, so it read this
+    // pose one frame stale in player/third-person mode. This system cannot
+    // move the other direction (to PostUpdate) to fix that instead — its
+    // whole reason for being in `Stage::Late` is the post-Physics body
+    // position in the paragraph above, which PostUpdate runs before Physics
+    // even has a chance to produce.
     scheduler.add_to_with_access(
         Stage::Late,
         crate::systems::camera_follow_system,
@@ -1531,6 +1547,26 @@ fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::GlobalTransform>()
             .reads::<Transform>()
             .writes::<Transform>(),
+    );
+    // #3652 (CONC-D4-2026-08-30-01) — moved here from `Stage::PostUpdate`.
+    // Registered exclusive (not in the Late parallel batch above) so it
+    // sequences AFTER `camera_follow_system`'s write — exclusives run after
+    // the whole parallel batch completes, same structural guarantee
+    // `submersion_system` below relies on for the same pose. Entity-disjoint
+    // from every other Late exclusive (billboard meshes vs. ragdoll bones /
+    // the camera / water volumes), so its position among them is otherwise
+    // free; placed first since it's the most direct consumer of what the
+    // parallel batch just wrote.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        make_billboard_system(),
+        Access::new()
+            .reads_resource::<ActiveCamera>()
+            .reads_resource::<TotalTime>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
+            .reads::<byroredux_core::ecs::Billboard>()
+            .reads::<byroredux_core::ecs::SpeedTreeWind>()
+            .writes::<byroredux_core::ecs::GlobalTransform>(),
     );
     // M41.x — ragdoll writeback. Stage::Late guarantees it runs after
     // `physics_sync_system` (Stage::Physics) has stepped the multibody

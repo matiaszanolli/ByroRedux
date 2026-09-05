@@ -580,6 +580,81 @@ fn submersion_runs_after_camera_follow_and_before_water_audio() {
     }
 }
 
+/// #3652 (CONC-D4-2026-08-30-01) — `make_billboard_system`'s entire input is
+/// the active camera's `GlobalTransform`, which `camera_follow_system`
+/// authors in `Stage::Late` in player/third-person mode. Billboard used to
+/// be registered in `Stage::PostUpdate`, an earlier stage entirely, so it
+/// read the previous frame's camera pose on every fast turn — visible as
+/// shearing/sliver billboard quads, exactly the class of defect #3180 fixed
+/// for `submersion_system`. `analyze_pair` is intra-stage and cannot see a
+/// cross-stage read-after-write like this, so this pins it on the real
+/// schedule instead.
+#[test]
+fn billboard_runs_after_camera_follow_in_late() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let late = report
+        .stages
+        .iter()
+        .find(|s| s.stage == Stage::Late)
+        .expect("Stage::Late must exist in the schedule");
+
+    let index_of = |needle: &str| -> usize {
+        late.systems
+            .iter()
+            .position(|row| row.name.contains(needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no Stage::Late system matching `{needle}` — the \
+                     registration moved stage or was renamed (#3652). \
+                     Late systems: {:?}",
+                    late.systems.iter().map(|r| &r.name).collect::<Vec<_>>()
+                )
+            })
+    };
+
+    let camera_follow = index_of("systems::character::camera_follow_system");
+    let billboard = index_of("make_billboard_system");
+
+    assert!(
+        !late.systems[camera_follow].is_exclusive,
+        "camera_follow_system must stay in the Late parallel batch — the \
+         'parallel batch completes before exclusives' argument that makes \
+         this ordering structural depends on it (#3652)"
+    );
+    assert!(
+        late.systems[billboard].is_exclusive,
+        "make_billboard_system must be a Late exclusive so it sequences \
+         after the parallel batch that authors the camera pose (#3652)"
+    );
+    assert!(
+        camera_follow < billboard,
+        "make_billboard_system ({billboard}) must run AFTER \
+         camera_follow_system ({camera_follow}) — otherwise it reads a stale \
+         camera pose in player mode and billboard rotation shears on a fast \
+         turn (#3652)"
+    );
+
+    // The regression itself: an earlier-stage registration would silently
+    // restore the one-frame lag while the assertions above still passed.
+    for stage in &report.stages {
+        if stage.stage == Stage::Late {
+            continue;
+        }
+        assert!(
+            !stage
+                .systems
+                .iter()
+                .any(|r| r.name.contains("make_billboard_system")),
+            "make_billboard_system is registered in {:?} as well as \
+             Stage::Late — an earlier-stage copy reads the previous frame's \
+             camera pose (#3652)",
+            stage.stage,
+        );
+    }
+}
+
 /// #3473 — the three P2 gameplay exclusives (`interaction_system`,
 /// `combat_input_system`, `combat_damage_system`) were registered after
 /// #2391 with a plain `add_exclusive`, so `sys.accesses` showed a blank row
