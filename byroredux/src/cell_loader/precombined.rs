@@ -756,14 +756,10 @@ pub(super) fn build_precombine_meshes(
         // The 3 LODs are alternative triangulations of the SAME surface
         // (nif.xml: "switch a geometry at a specified distance"), stored
         // back-to-back as `[LOD0][LOD1][LOD2]` in one index buffer.
-        // Rendering more than one z-fights — pick the finest (highest
-        // triangle count); LOD index is NOT a reliable detail order (some
-        // objects ship lod0 ≫ lod2, others lod0 ≪ lod2). The chosen LOD's
-        // triangles start at its index-unit offset / 3.
-        let (lod_count, lod_off_idx) = (0..3)
-            .map(|i| (geom.lod_counts[i], geom.lod_offsets[i]))
-            .max_by_key(|&(c, _)| c)
-            .unwrap();
+        // Rendering more than one z-fights — pick the finest, via
+        // `select_finest_lod` (#3641). The chosen LOD's triangles start at
+        // its index-unit offset / 3.
+        let (lod_count, lod_off_idx) = select_finest_lod(geom.lod_counts, geom.lod_offsets);
         let lod_count = lod_count as usize;
         if lod_count == 0 {
             continue;
@@ -854,6 +850,38 @@ mod tests {
     use super::*;
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
+
+    /// #3641 — on a tie, the highest LOD index must win, matching the
+    /// behaviour `Iterator::max_by_key`'s incidental last-wins rule produced
+    /// before the selection was pulled into its own explicit function.
+    #[test]
+    fn select_finest_lod_prefers_the_highest_index_on_a_tie() {
+        assert_eq!(
+            select_finest_lod([100, 100, 50], [0, 300, 600]),
+            (100, 300),
+            "LOD0 and LOD1 tie at 100 triangles — LOD1 (the higher index) must win"
+        );
+        assert_eq!(
+            select_finest_lod([100, 50, 100], [0, 300, 600]),
+            (100, 600),
+            "LOD0 and LOD2 tie at 100 triangles — LOD2 (the higher index) must win"
+        );
+        assert_eq!(
+            select_finest_lod([100, 100, 100], [0, 300, 600]),
+            (100, 600),
+            "a three-way tie must still resolve to the highest index, LOD2"
+        );
+    }
+
+    /// The ordinary (non-tied) case: the single highest triangle count wins
+    /// regardless of which LOD index it lives at — LOD index is not a
+    /// reliable detail order (some objects ship lod0 ≫ lod2, others the
+    /// reverse).
+    #[test]
+    fn select_finest_lod_picks_the_highest_triangle_count() {
+        assert_eq!(select_finest_lod([10, 500, 20], [0, 30, 1530]), (500, 30));
+        assert_eq!(select_finest_lod([500, 20, 10], [0, 1500, 1560]), (500, 0));
+    }
 
     /// #1590 (b) — the baked `_oc.nif` path drops the form-id mod-index byte
     /// and namespaces DLC bakes under a `<plugin>.esm\` subdir. Verified
@@ -1189,10 +1217,7 @@ mod tests {
                 if geom.num_verts == 0 {
                     continue;
                 }
-                let (lod_count, lod_off_idx) = (0..3)
-                    .map(|i| (geom.lod_counts[i], geom.lod_offsets[i]))
-                    .max_by_key(|&(count, _)| count)
-                    .unwrap();
+                let (lod_count, lod_off_idx) = select_finest_lod(geom.lod_counts, geom.lod_offsets);
                 if lod_count == 0 {
                     continue;
                 }
