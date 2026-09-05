@@ -809,6 +809,18 @@ impl VulkanContext {
                         if let Some(ref mut composite) = self.composite {
                             composite.fall_back_to_raw_hdr(&self.device);
                         }
+                        // #3605 (REN-2026-08-30-D13-02) — this frame's geometry
+                        // pass already rendered with the Halton jitter offset
+                        // (chosen at the top of draw_frame, before this dispatch
+                        // failed), and the raw-HDR fallback above blits that
+                        // image through with nothing to resolve it. Mirrors the
+                        // FSR sibling at #2519: flush temporal history so the
+                        // NEXT frame does not reproject against a half-pixel-
+                        // shifted image — later frames are chosen unjittered by
+                        // the `!taa_failed` gate (#1932), so one frame covers it.
+                        self.signal_temporal_discontinuity(
+                            super::super::frame_upscaler::TAA_DISPATCH_FAILURE_RECOVERY_FRAMES,
+                        );
                     }
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_taa_end(&self.device, cmd, frame);
@@ -1299,6 +1311,47 @@ mod tests {
             "record_neutral_frame must be called from exactly one place — \
              the latch-gated `if should_clear` — not unconditionally at \
              each skip site"
+        );
+    }
+
+    /// #3605 (REN-2026-08-30-D13-02) — a TAA dispatch failure must signal a
+    /// temporal discontinuity the same way the FSR sibling does at #2519:
+    /// the failing frame's geometry pass already rendered with the Halton
+    /// jitter offset before the failure is discovered here, and without
+    /// this call SVGF/volumetrics would reproject the NEXT frame against
+    /// that jittered-but-unresolved image with no history flush to protect
+    /// it. `record_taa_pass` needs a live `VulkanContext`, so — matching
+    /// this file's own `record_volumetrics_pass_routes_skip_clears_
+    /// through_the_shared_latch` convention just above — pin the wiring
+    /// with a static source-scan instead of a live test.
+    #[test]
+    fn record_taa_pass_signals_temporal_discontinuity_on_dispatch_failure() {
+        let full_src = include_str!("post_passes.rs");
+        let test_mod_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        let src = &full_src[..test_mod_start];
+
+        let fn_start = src
+            .find("fn record_taa_pass(")
+            .expect("record_taa_pass must still exist");
+        let fn_end = src[fn_start..]
+            .find("\n    fn record_ssao_pass(")
+            .map(|rel| fn_start + rel)
+            .expect("record_ssao_pass must still follow record_taa_pass");
+        let body = &src[fn_start..fn_end];
+
+        assert!(
+            body.contains("self.taa_failed = true;"),
+            "record_taa_pass must still latch taa_failed on dispatch failure — \
+             the needle this test scopes its check around has moved or been renamed"
+        );
+        assert!(
+            body.contains("self.signal_temporal_discontinuity(")
+                && body.contains("TAA_DISPATCH_FAILURE_RECOVERY_FRAMES"),
+            "a TAA dispatch failure must call signal_temporal_discontinuity, mirroring the \
+             FSR dispatch-failure path (#2519) — its own doc names this exact hazard on the \
+             TAA side but nothing closed it before #3605"
         );
     }
 

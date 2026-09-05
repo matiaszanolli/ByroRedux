@@ -68,6 +68,21 @@ const FSR_VIEW_SPACE_TO_METERS_FACTOR: f32 =
 /// hold SVGF at its elevated α for frames that carry no offset at all.
 pub const FSR_DISPATCH_FAILURE_RECOVERY_FRAMES: u32 = 1;
 
+/// Temporal-recovery window for the one frame a TAA dispatch failure blits
+/// through jittered-but-unresolved (#3605 / REN-2026-08-30-D13-02).
+///
+/// Same class of hazard as [`FSR_DISPATCH_FAILURE_RECOVERY_FRAMES`] above,
+/// and the same reasoning: `taa_jitter`'s `!taa_failed` gate (#1932) already
+/// keeps every frame AFTER the latch unjittered, but the failing frame's
+/// geometry pass rendered with the Halton offset before `record_taa_pass`
+/// discovered the failure in the post-pass tail. Composite then falls back
+/// to raw HDR with nothing to resolve that jitter, and the very next frame's
+/// SVGF / volumetrics reprojection would otherwise accumulate against a
+/// half-pixel-shifted image. One frame is the whole exposure — kept as its
+/// own named constant (not a re-use of the FSR one) so a change to either
+/// recovery window doesn't silently retune the other.
+pub const TAA_DISPATCH_FAILURE_RECOVERY_FRAMES: u32 = 1;
+
 /// Camera and temporal values that change for every FSR dispatch.
 #[derive(Debug, Clone, Copy)]
 pub struct FsrFrameParameters {
