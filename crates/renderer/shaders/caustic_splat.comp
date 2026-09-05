@@ -172,7 +172,11 @@ layout(push_constant) uniform CausticPush {
     float decayFactor;
 } pc;
 
-// Octahedral decode (mirror triangle.frag's implementation).
+// Octahedral decode — inverse of `octEncode` in `include/math_common.glsl`
+// (the encoder every `outNormal` write in triangle.frag goes through).
+// Must stay bit-identical to the `octDecode` copies in `svgf_atrous.comp`,
+// `svgf_temporal.comp`, and `taa.comp` (#3607 — this file's own copy was
+// previously undocumented as a sibling of those three).
 vec3 octDecode(vec2 e) {
     vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
     if (n.z < 0.0) {

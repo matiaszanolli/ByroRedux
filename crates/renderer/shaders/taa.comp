@@ -33,7 +33,20 @@ layout(set = 0, binding = 6) uniform TaaParams {
 layout(set = 0, binding = 7) uniform sampler2D uCurrNormal;
 layout(set = 0, binding = 8) uniform sampler2D uPrevNormal;
 
-vec3 oct_decode(vec2 e) {
+// #3607 (REN-2026-08-30-D13-04) — renamed from the old snake_case spelling
+// to match the sibling copies' naming (this one used to be the odd one
+// out, invisible to a `grep octDecode` and absent from their maintenance
+// comments).
+// Octahedral decode — inverse of `octEncode` in `include/math_common.glsl`
+// (the encoder every `outNormal` write in triangle.frag goes through).
+// Must stay bit-identical to the `octDecode` copies in `svgf_atrous.comp`,
+// `svgf_temporal.comp`, and `caustic_splat.comp` — this one feeds the
+// surface-consistency disocclusion test below
+// (`taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces`), so a
+// divergence here is a silent, per-pixel difference in a history-rejection
+// predicate, invisible to every existing test since all of them are
+// source-scan pins.
+vec3 octDecode(vec2 e) {
     vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
     if (n.z < 0.0) {
         n.xy = (1.0 - abs(n.yx)) * vec2(
@@ -172,8 +185,8 @@ void main() {
     // the reprojected G-buffer normal at a formerly-sky pixel is clear-value
     // garbage, not a real surface, so comparing against it would just
     // reintroduce the same hard reject through this second reject term.
-    vec3 currNormal = oct_decode(texelFetch(uCurrNormal, pix, 0).rg);
-    vec3 prevNormal = oct_decode(texelFetch(uPrevNormal, prevPix, 0).rg);
+    vec3 currNormal = octDecode(texelFetch(uCurrNormal, pix, 0).rg);
+    vec3 prevNormal = octDecode(texelFetch(uPrevNormal, prevPix, 0).rg);
     bool surfaceMismatch = !disocclusionFromSky && dot(currNormal, prevNormal) < 0.85;
 
     // Alpha-blend opt-out: bit 31 of the mesh_id is set on transparent

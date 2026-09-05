@@ -1054,6 +1054,34 @@ mod tests {
         );
     }
 
+    /// #3607 (REN-2026-08-30-D13-04) — `taa.comp`'s octahedral decoder used
+    /// to be spelled `oct_decode` (snake_case, unlike every sibling copy in
+    /// `svgf_atrous.comp` / `svgf_temporal.comp` / `caustic_splat.comp`) and
+    /// was absent from their maintenance-comment enumerations, so neither a
+    /// `grep octDecode` nor the comment would lead a maintainer here. Renamed
+    /// to match; this pins the rename against the surface-consistency
+    /// disocclusion test it feeds
+    /// (`taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces` above).
+    #[test]
+    fn taa_comp_octahedral_decoder_is_named_octdecode() {
+        let src = include_str!("../../shaders/taa.comp");
+        assert!(
+            src.contains("vec3 octDecode(vec2 e)"),
+            "taa.comp's octahedral decoder must be named octDecode, matching its \
+             siblings in svgf_atrous.comp / svgf_temporal.comp / caustic_splat.comp"
+        );
+        assert!(
+            !src.contains("oct_decode"),
+            "the old snake_case name must not come back — it was invisible to a \
+             `grep octDecode` and to the sibling copies' maintenance comments"
+        );
+        assert_eq!(
+            src.matches("octDecode(").count(),
+            3,
+            "expected exactly one definition plus two call sites (currNormal, prevNormal)"
+        );
+    }
+
     /// Regression for #2760 (REN-D13-02) — a geometry pixel that reprojects
     /// to a formerly-sky (mesh_id 0) location must NOT hard-reject through
     /// the ordinary `disocclusion`/`surfaceMismatch` terms (that path
