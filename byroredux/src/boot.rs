@@ -1241,19 +1241,6 @@ fn register_post_update_systems(scheduler: &mut Scheduler) {
             .writes::<Transform>()
             .writes::<byroredux_core::ecs::GlobalTransform>(),
     );
-    // M44 Phase 3.5: footstep dispatch. Reads `GlobalTransform`
-    // for the world-space spawn position, so it MUST run after
-    // `make_transform_propagation_system()` — otherwise the
-    // footstep lands at last-frame's pose. Pre-#848 this was
-    // registered in `Stage::Update`, ahead of propagation; the
-    // commit comment claimed "~3 cm of motion" stale but that
-    // underestimated by ~100× for fly-cam boost (~3 game units
-    // / frame at 60 FPS, audible spatial-pan offset on a
-    // ~50-200-unit interior cell). Registered as exclusive so
-    // it sequences AFTER the PostUpdate parallel batch — same
-    // pattern as `particle_system` / `billboard_system` /
-    // `world_bound_propagation_system` below. See #848.
-    scheduler.add_exclusive(Stage::PostUpdate, footstep_system);
     // Particle simulation runs after transform propagation so emitter
     // entities have their final world-space spawn origin (#401).
     //
@@ -1567,6 +1554,32 @@ fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::Billboard>()
             .reads::<byroredux_core::ecs::SpeedTreeWind>()
             .writes::<byroredux_core::ecs::GlobalTransform>(),
+    );
+    // M44 Phase 3.5 / #3652 — footstep dispatch. Reads `GlobalTransform` for
+    // the world-space spawn position; the only entity that ever carries a
+    // `FootstepEmitter` is the active camera (`scene.rs`'s player-spawn
+    // path), so in player/third-person mode this is the SAME cross-stage
+    // hazard `make_billboard_system` just above was moved here to fix —
+    // `camera_follow_system`'s pose, not last frame's. Pre-#848 this was in
+    // `Stage::Update`, ahead of PostUpdate propagation, for the same class
+    // of staleness one stage earlier; #848 moved it to a PostUpdate
+    // exclusive, which fixed the fly-cam case (there `Transform` is written
+    // in `Stage::Update` and PostUpdate propagation resolves it same-frame)
+    // but left the player-mode case exactly as stale as billboard's, just
+    // quieter (a spatial-audio trigger position a few cm off, versus a
+    // visibly wrong facing) — an oversight, never an accepted trade-off
+    // like `particle_system`'s #3653 comment above documents. Also gains a
+    // declared Access here for the first time (previously a bare
+    // `add_exclusive`, unlike every neighboring exclusive in this file).
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        footstep_system,
+        Access::new()
+            .reads_resource::<FootstepConfig>()
+            .writes_resource::<crate::components::FootstepScratch>()
+            .writes_resource::<byroredux_audio::AudioWorld>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<crate::components::FootstepEmitter>(),
     );
     // M41.x — ragdoll writeback. Stage::Late guarantees it runs after
     // `physics_sync_system` (Stage::Physics) has stepped the multibody
