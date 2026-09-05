@@ -97,6 +97,15 @@ impl VulkanContext {
                 .upload_pending_bind_inverses(&self.device, bind_inverse_pending_uploads)
                 .unwrap_or_else(|e| {
                     log::warn!("Failed to upload pending bind_inverses: {e}");
+                    // #3569 / D9-01 — `bind_inverse_pending_uploads` was
+                    // already irrevocably drained from `SkinSlotPool` before
+                    // this call. `record_skinned_blas_refit` (later this
+                    // same frame) sets `skin_dispatch_ran = true`
+                    // unconditionally, so without this latch the caller's
+                    // `!skin_dispatch_ran` requeue check never fires and
+                    // these entries are lost for good. Reset alongside
+                    // `skin_dispatch_ran` at the top of `draw_frame`.
+                    self.bind_inverse_upload_failed = true;
                     0
                 })
         } else {
@@ -395,5 +404,48 @@ impl VulkanContext {
                 );
             }
         }
+    }
+}
+
+/// Regression for #3569 / D9-01. A failed first-sight `bind_inverses`
+/// upload must latch `bind_inverse_upload_failed = true` in the same
+/// `unwrap_or_else` arm that logs the warning — otherwise the caller's
+/// `!skin_dispatch_ran || bind_inverse_upload_failed` rollback check in
+/// `app_frame.rs` never sees the failure (`record_skinned_blas_refit`,
+/// later this same frame, unconditionally sets `skin_dispatch_ran =
+/// true`), and the entries `SkinSlotPool::drain_pending` already removed
+/// are lost for good.
+#[cfg(test)]
+mod bind_inverse_upload_failure_latch_tests {
+    #[test]
+    fn upload_pending_bind_inverses_failure_arm_sets_the_latch() {
+        let src = include_str!("dispatch_skin_and_cluster.rs");
+
+        let warn_pos = src
+            .find("Failed to upload pending bind_inverses: {e}")
+            .expect(
+                "dispatch_skin_and_cluster must warn on upload_pending_bind_inverses failure (#3569)",
+            );
+        let latch_pos = src
+            .find("self.bind_inverse_upload_failed = true;")
+            .expect(
+                "the upload_pending_bind_inverses failure arm must set \
+                 bind_inverse_upload_failed = true, or the requeue signal \
+                 is silently lost (#3569)",
+            );
+
+        assert!(
+            warn_pos < latch_pos,
+            "the latch must be set in the same error arm as the warning \
+             log, not somewhere unrelated. (#3569)"
+        );
+        // Loose textual proximity check (source-scan, not AST) that the
+        // latch sits in the same `unwrap_or_else` closure as the warning
+        // rather than somewhere unrelated in the file.
+        assert!(
+            latch_pos - warn_pos < 1000,
+            "the latch should be set immediately alongside the warning, \
+             inside the same unwrap_or_else closure. (#3569)"
+        );
     }
 }

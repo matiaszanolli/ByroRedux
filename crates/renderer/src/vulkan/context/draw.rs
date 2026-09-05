@@ -1651,6 +1651,10 @@ impl VulkanContext {
         // #1796 / D6-02 — reset before either early-return guard below so
         // a bailed frame reads `false`; see the field doc on `skin_dispatch_ran`.
         self.skin_dispatch_ran = false;
+        // #3569 / D9-01 — reset alongside `skin_dispatch_ran`: this frame's
+        // upload hasn't happened yet, so any stale `true` from a previous
+        // frame's failure must not leak into this frame's rollback check.
+        self.bind_inverse_upload_failed = false;
         // #2112 / D6-01 — same reasoning as `skin_dispatch_ran` above: reset
         // before the early-return guard so a bailed frame reads zero
         // instead of retaining the previous frame's counters. Frame without
@@ -2836,6 +2840,44 @@ mod skin_dispatch_ran_ordering_tests {
             "record_skinned_blas_refit (which sets skin_dispatch_ran true) \
              must be called AFTER both early-return guards — calling it any \
              earlier would defeat the rollback signal entirely. (#1796)"
+        );
+    }
+}
+
+/// Regression for #3569 / D9-01. `bind_inverse_upload_failed` must be
+/// reset `false` in lockstep with `skin_dispatch_ran` — both guard the
+/// same rollback check in `app_frame.rs`, and a stale `true` surviving
+/// from a previous frame's failure would force an unnecessary requeue
+/// every frame after.
+#[cfg(test)]
+mod bind_inverse_upload_failed_reset_tests {
+    #[test]
+    fn bind_inverse_upload_failed_is_reset_alongside_skin_dispatch_ran() {
+        let src = include_str!("draw.rs");
+
+        let skin_reset_pos = src
+            .find("self.skin_dispatch_ran = false;")
+            .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
+        let upload_failed_reset_pos = src
+            .find("self.bind_inverse_upload_failed = false;")
+            .expect(
+                "draw_frame must reset bind_inverse_upload_failed to false (#3569)",
+            );
+        let fb_guard_pos = src
+            .find("if self.framebuffers.is_empty() {")
+            .expect("draw_frame must guard on empty framebuffers (#1211)");
+
+        assert!(
+            skin_reset_pos < upload_failed_reset_pos,
+            "bind_inverse_upload_failed reset must come right after the \
+             skin_dispatch_ran reset it mirrors. (#3569)"
+        );
+        assert!(
+            upload_failed_reset_pos < fb_guard_pos,
+            "bind_inverse_upload_failed reset must come BEFORE the \
+             empty-framebuffers guard — same reasoning as \
+             skin_dispatch_ran: an early return must not leak the \
+             previous frame's failure into this frame's check. (#3569)"
         );
     }
 }

@@ -619,7 +619,13 @@ impl App {
             // all execute before `record_skinned_blas_refit`, i.e. while
             // `skin_dispatch_ran` is still `false`), so this check must run
             // unconditionally on the `Result`, not only inside the `Ok` arm.
-            if !ctx.skin_dispatch_ran {
+            //
+            // #3569 / D9-01 — `skin_dispatch_ran` alone misses the case
+            // where `draw_frame` reaches the first-sight `bind_inverses`
+            // upload and the upload itself fails: `record_skinned_blas_refit`
+            // still runs afterward and flips `skin_dispatch_ran` true, so
+            // the rollback below must also fire on `bind_inverse_upload_failed`.
+            if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {
                 self.skin_slot_pool.rollback_pending_pose_commits();
                 self.skin_slot_pool
                     .requeue_pending(std::mem::take(&mut pending_for_requeue));
@@ -813,7 +819,7 @@ mod skin_dispatch_ran_rollback_scope_tests {
             .find("let draw_result = ctx.draw_frame(FrameInputs {")
             .expect("render_one_frame must call draw_frame and capture its Result (#2522)");
         let rollback_check_pos = src
-            .find("if !ctx.skin_dispatch_ran {")
+            .find("if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {")
             .expect("render_one_frame must check skin_dispatch_ran for rollback (#1791/#1796)");
         let match_pos = src
             .find("match draw_result {")
@@ -839,6 +845,27 @@ mod skin_dispatch_ran_rollback_scope_tests {
             match_pos < ok_arm_pos,
             "sanity: the Ok(needs_recreate) arm must be part of the \
              draw_result match this test is reasoning about."
+        );
+    }
+}
+
+/// Regression for #3569 / D9-01. `skin_dispatch_ran` alone misses the case
+/// where `draw_frame` reaches the first-sight `bind_inverses` upload and
+/// the upload itself fails: `record_skinned_blas_refit` still runs
+/// afterward and flips `skin_dispatch_ran` true, so the rollback check
+/// must also widen to `bind_inverse_upload_failed`, or those drained
+/// pool entries are lost for good.
+#[cfg(test)]
+mod bind_inverse_upload_failed_rollback_tests {
+    #[test]
+    fn rollback_check_also_fires_on_bind_inverse_upload_failed() {
+        let src = include_str!("app_frame.rs");
+
+        assert!(
+            src.contains("if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {"),
+            "the rollback check must widen to bind_inverse_upload_failed \
+             alongside skin_dispatch_ran, or a failed first-sight \
+             bind_inverses upload is never requeued. (#3569)"
         );
     }
 }

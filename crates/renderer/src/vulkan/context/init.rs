@@ -1499,6 +1499,7 @@ impl VulkanContext {
             last_skin_coverage_frame: super::super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
             skin_dispatch_ran: false,
+            bind_inverse_upload_failed: false,
             clean_skin_frames: 0,
             ssao,
             placeholder_ao,

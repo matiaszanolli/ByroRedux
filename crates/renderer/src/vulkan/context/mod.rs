@@ -1705,6 +1705,20 @@ pub struct VulkanContext {
     /// rollback_pending_pose_commits` when it reads `false`, undoing the
     /// premature commit so the next frame's comparison stays honest.
     pub skin_dispatch_ran: bool,
+    /// #3569 / D9-01 — sibling latch to `skin_dispatch_ran` above, for the
+    /// gap that flag doesn't cover: `draw_frame` *reaching* the first-sight
+    /// `bind_inverses` upload but the upload itself failing
+    /// (`upload_pending_bind_inverses` returns `Err` — host-visible map or
+    /// flush failure). `record_skinned_blas_refit` still runs afterward and
+    /// sets `skin_dispatch_ran = true`, so without this flag the caller's
+    /// `!ctx.skin_dispatch_ran` requeue check never fires and the entries
+    /// `SkinSlotPool::drain_pending` already removed from the pool are lost
+    /// for good — the entity's palette source stays undefined for its
+    /// remaining residency. Reset to `false` alongside `skin_dispatch_ran`
+    /// at the top of `draw_frame`; set `true` only in the
+    /// `upload_pending_bind_inverses` error arm. The caller widens its
+    /// rollback check to `!ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed`.
+    pub bind_inverse_upload_failed: bool,
     /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
     /// changed and no `bind_inverses` upload was pending. Reset to `0` on
     /// any dirty frame; once it exceeds `MAX_FRAMES_IN_FLIGHT`, every
