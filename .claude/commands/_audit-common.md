@@ -88,7 +88,7 @@ Gameplay Slice:  byroredux/src/{combat,inventory,settings_io}.rs + the action ha
                  · Gates: docs/smoke-tests/{p0-door-interaction,p1-character-traversal,p2-melee-core}.sh, specs docs/engine/playable-vertical-slice.md + docs/engine/p2-combat-fixture.md (P2 combat core landed 2026-08-16; its default `skyrim_se` gate arm was RED from #3039's fixture parameterisation until #3417 re-derived the weapon-family assertion — do not read "landed" as "gate green", run the gate; corpse loot / authored response anim / save-reload continuity still open).
 Systems:         byroredux/src/systems.rs (module index) → systems/{animation, audio, billboard, bounds, camera, character, cinematic, debug, escort, follow, guard, light_anim, locomotion, metrics, particle, patrol, sandbox, travel, wander, water, weather}.rs (character.rs is the PLAYER/character controller — physics, not CHARAL; cinematic.rs drives the M47.2 scripted-camera slice) (particle.rs carries apply_emitter_params, fed by the typed NIF emitter pipeline; sandbox/wander/travel/follow/escort/guard/patrol.rs are the M42 AI-package procedure runtimes — see "Sandbox AI" row below; locomotion.rs is their shared `step_toward` walk-to-point primitive)
 Scene Setup:     byroredux/src/scene.rs (1706 LOC total, but only ~23 before the first `#[cfg(test)]` — a thin re-export head with a large in-file test tail; size-based triage should read it as a test file, not a 1.7k module) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings: climate_tod_hours, cloud_tile_scale, procedural_fallback, radius_parse)
-Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, fog_volumes, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings). **`fire_lights.rs` was deleted 2026-08-17 (`2325c1de`)** — an audit finding written against *derive_fire_light* / *fire_lights_enabled* / *BYRO_FIRE_LIGHTS* is stale. Fire no longer derives a light from the analytic primitive; surface illumination is reduced from the transported combustion field by `Volumetrics::append_combustion_surface_lights` (crates/renderer/src/vulkan/volumetrics.rs), called unconditionally from context/draw.rs. `render/lights.rs` owns the single `gpu_light_from_emitter` encoder every authored-LIGH light goes through.
+Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, fog_volumes, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings). ***fire_lights.rs* was deleted 2026-08-17 (`2325c1de`)** — an audit finding written against *derive_fire_light* / *fire_lights_enabled* / *BYRO_FIRE_LIGHTS* is stale. Fire no longer derives a light from the analytic primitive; surface illumination is reduced from the transported combustion field by `Volumetrics::append_combustion_surface_lights` (crates/renderer/src/vulkan/volumetrics.rs), called unconditionally from context/draw.rs. `render/lights.rs` owns the single `gpu_light_from_emitter` encoder every authored-LIGH light goes through.
 Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch; also owns `pack_imported_material_flags`, the ImportedMaterial → GPU flag-bit packer) → cell_loader/{load, unload, exterior, spawn.rs + spawn/, partial, euler, refr, terrain, terrain_lod, terrain_lod_btr, object_lod, lod_bands, lod_support, placement_lod, water, work_budget, load_order, index, precombined, transition, nif_import_registry}.rs + cell_loader/references/ (a directory, not references.rs: attach, complete, import, synth_child + *_tests.rs) (+ *_tests.rs siblings)
 Commands:        byroredux/src/commands/ (per-domain split #1323/TD9-NEW-03: mod.rs registry + world_info (help/stats/entities/systems/sys.accesses/mem.frag/ctx.scratch) + assets (tex.*/mesh.*/skin.*) + view (prid/cam.*/near/pick) + scene (light.*/door.teleport/script.activate/mat.*/ragdoll) + actor_value (setav/modav, CHARAL consumer) + condition (cond — live CTDA eval, M47.1 consumer) + time (time.show/time.set/time.scale/time.pause/time.resume/time.advance — GameTimeRes live console control, added 2026-08-07) + water (WATAL submersion/contact inspection) + quest (M47.3 quest/alias state) + env_health (+ env_health_tests.rs) + physics (phys.stats/phys.census — PHYSAL solver + collider inspection; #3495) + depth (depth.stats — the #3308 depth-precision capture; arms a GPU depth copy on one call and reports it on the next, paired with crates/renderer/src/vulkan/context/depth_capture.rs) + gameplay (inventory.status/settings.status — the P2 slice's console surface) + shared helpers) + byroredux/src/commands_tests.rs
 SDK / Studio:    crates/sdk/src/ (lib.rs + studio.rs, 292 LOC, `21a840d5` 2026-08-25) — renderer-independent tooling surface; `StudioSession` is a Resource. Its engine-side adapter is byroredux/src/studio_host.rs (Binary modules row). **No owner audit skill** — see the un-owned-subsystems table below; `/audit-ecs` and `/audit-concurrency` have both reached it incidentally (#3445).
@@ -307,6 +307,26 @@ Before reporting ANY finding:
 4. If OPEN: note as "Existing: #NNN" and skip
 5. If CLOSED: verify fix is in place. If regressed, report as "Regression of #NNN"
 6. If no match: report as NEW
+
+> **Step 6 is unsafe for reports dated before 2026-06-07.** Those predate
+> `/audit-publish`, so their findings were never filed and **absence of a
+> GitHub issue is not evidence the finding is still open**. Measured
+> 2026-09-05 (#3875): of 131 ID'd CRITICAL/HIGH findings in the pre-cutoff
+> cohort, **26 have no issue title match at all**, clustered in 12 reports
+> (`AUDIT_NIF_2026-04-11.md` 6/6, `AUDIT_NIF_2026-04-04.md` 3/4,
+> `AUDIT_SAFETY_2026-04-05.md` 3/3, …). A 3-of-3 spot check found every one
+> already fixed, silently — `SAFE-01` (`write_mapped` truncation now logs),
+> `PD-02` (`APP_CULLED` now filtered import-side, #3640), `NIF-04-11-H1`
+> (parent-`NiNode` property inheritance now threaded as `inherited:
+> &[BlockRef]`, #1201).
+>
+> For a finding sourced from a pre-cutoff report, **verify against the code,
+> not against GitHub**, and say which you checked. Reporting it as NEW on the
+> strength of a missing issue re-files fixed work, or worse, derives a
+> "regression" against code that never regressed. `RL-01` is the standing
+> example — it is recorded in user memory that *audits claiming RL-01 is
+> unfixed have a bad premise*, which is a person having already absorbed this
+> exact loop.
 
 ## Base Per-Finding Format
 
