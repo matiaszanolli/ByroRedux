@@ -307,14 +307,38 @@ impl MeshArchive {
 
 /// Resolve the data directory for a game, falling back to the default Steam
 /// path. Returns `None` and prints a skip notice if neither resolves.
+
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+pub fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
+        );
+    }
+}
+
 pub fn game_data_dir(game: Game) -> Option<PathBuf> {
-    if let Ok(val) = std::env::var(game.env_var()) {
-        let path = PathBuf::from(val);
+    if let Some(val) = std::env::var(game.env_var()).ok().filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(&val);
         if path.is_dir() {
             return Some(path);
         }
-        eprintln!(
-            "[{}] {} points to {:?} which is not a directory; falling back to default",
+        // #3850: an explicitly-set override is BINDING — falling back to the
+        // hardcoded dev-machine path would silently report results from a
+        // different install than the operator named.
+        panic!(
+            "[{}] {} points to {:?}, which is not a directory",
             game.label(),
             game.env_var(),
             path
@@ -324,6 +348,7 @@ pub fn game_data_dir(game: Game) -> Option<PathBuf> {
     if default.is_dir() {
         return Some(default);
     }
+    require_game_data(game.env_var(), &default);
     eprintln!(
         "[{}] skipping: no data dir (set {} or install to {:?})",
         game.label(),

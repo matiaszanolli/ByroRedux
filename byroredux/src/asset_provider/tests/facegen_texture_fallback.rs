@@ -14,11 +14,18 @@
 use super::super::*;
 
 fn oblivion_data_dir() -> std::path::PathBuf {
-    std::env::var_os("BYROREDUX_OBLIVION_DATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
-        })
+    // #3850: an explicitly-set override is BINDING. Returning it unchecked
+    // meant a typo'd or DLC-stripped path surfaced much later as a failure
+    // against a directory the operator never named.
+    if let Some(v) = std::env::var_os("BYROREDUX_OBLIVION_DATA").filter(|s| !s.is_empty()) {
+        let p = std::path::PathBuf::from(v);
+        assert!(
+            p.is_dir(),
+            "BYROREDUX_OBLIVION_DATA points to {p:?}, which is not a directory"
+        );
+        return p;
+    }
+    std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
 }
 
 /// The exact defect: `earshuman.nif` (and its `highelf`/`woodelf` siblings)

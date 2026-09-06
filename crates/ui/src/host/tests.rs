@@ -81,9 +81,18 @@ fn run_movie(
 }
 
 fn data_dir(environment: &str, fallback: &str) -> PathBuf {
-    std::env::var(environment)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(fallback))
+    // #3850: an explicitly-set override is BINDING. Returning it unchecked
+    // meant a typo'd or DLC-stripped path surfaced much later as a failure
+    // against a directory the operator never named.
+    if let Some(v) = std::env::var(environment).ok().filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(v);
+        assert!(
+            p.is_dir(),
+            "{environment} points to {p:?}, which is not a directory"
+        );
+        return p;
+    }
+    PathBuf::from(fallback)
 }
 
 fn assert_external_interface_round_trip(

@@ -49,18 +49,45 @@ const FNV_MESH_BSA: &str = "Fallout - Meshes.bsa";
 const FNV_SKELETON_NIF: &str = "meshes\\characters\\_male\\skeleton.nif";
 const FNV_UPPERBODY_NIF: &str = "meshes\\characters\\_male\\upperbody.nif";
 
-fn fnv_data_dir() -> Option<PathBuf> {
-    let from_env = std::env::var("BYROREDUX_FNV_DATA").ok().map(PathBuf::from);
-    let candidate = from_env.unwrap_or_else(|| PathBuf::from(FNV_DEFAULT_DATA));
-    if candidate.is_dir() {
-        Some(candidate)
-    } else {
-        eprintln!(
-            "skipping: BYROREDUX_FNV_DATA not set and {} not a directory",
-            candidate.display()
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
         );
-        None
     }
+}
+
+fn fnv_data_dir() -> Option<PathBuf> {
+    if let Some(v) = std::env::var("BYROREDUX_FNV_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(&v);
+        if p.is_dir() {
+            return Some(p);
+        }
+        // #3850: an explicitly-set override is BINDING — never silently
+        // substitute the hardcoded dev-machine path.
+        panic!("BYROREDUX_FNV_DATA points to {v:?}, which is not a directory");
+    }
+    let p = PathBuf::from(FNV_DEFAULT_DATA);
+    if p.is_dir() {
+        return Some(p);
+    }
+    require_game_data("BYROREDUX_FNV_DATA", &p);
+    None
 }
 
 /// Compose a node's local transform into a single column-major Mat4

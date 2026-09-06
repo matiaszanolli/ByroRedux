@@ -29,20 +29,44 @@ use std::path::PathBuf;
 /// canonical Steam install path on the dev machine. Mirrors the
 /// `crates/nif/tests/common/mod.rs::game_data_dir` pattern so all
 /// real-data tests gate the same way.
+
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
+        );
+    }
+}
+
 fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
-    if let Ok(v) = std::env::var(env_var) {
+    if let Some(v) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(&v);
         if p.is_dir() {
             return Some(p);
         }
-        eprintln!("{env_var} points to {v:?} which is not a directory; falling back to default");
+        // #3850: an explicitly-set override is BINDING. Silently reading the
+        // hardcoded dev-machine path instead would report results from a
+        // different install than the operator named.
+        panic!("{env_var} points to {v:?}, which is not a directory");
     }
     let p = PathBuf::from(fallback);
     if p.is_dir() {
-        Some(p)
-    } else {
-        None
+        return Some(p);
     }
+    require_game_data(env_var, &p);
+    None
 }
 
 fn fo4_data_dir() -> Option<PathBuf> {

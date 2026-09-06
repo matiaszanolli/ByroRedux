@@ -58,19 +58,40 @@ const FNV_DEFAULT_DATA: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout 
 const FNV_MESH_BSA: &str = "Fallout - Meshes.bsa";
 const FNV_FIXTURE_NIF: &str = "meshes\\characters\\_male\\upperbody.nif";
 
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
+        );
+    }
+}
+
 fn data_dir(env_var: &str, default: &str) -> Option<PathBuf> {
-    if let Ok(val) = std::env::var(env_var) {
-        let path = PathBuf::from(val);
+    if let Some(val) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(&val);
         if path.is_dir() {
             return Some(path);
         }
+        panic!("{env_var} points to {val:?}, which is not a directory");
     }
     let default_path = PathBuf::from(default);
     if default_path.is_dir() {
-        Some(default_path)
-    } else {
-        None
+        return Some(default_path);
     }
+    require_game_data(env_var, &default_path);
+    None
 }
 
 /// Captured node-name set + the largest skinned mesh's `ImportedSkin`.

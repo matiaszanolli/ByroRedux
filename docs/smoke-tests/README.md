@@ -196,3 +196,42 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_QUEST_STAGE`     | `37` (stage assigned by the M43.1 runtime smoke)                                           |
 | `BYROREDUX_DAY_NIGHT_GRID`  | `2,-4` (Skyrim Tamriel exterior used by `m34-day-night.sh`)                                |
 | `BYROREDUX_BENCH_FRAMES`    | `300` (bench frames — used by `r6a_stale_15_bench.sh`; override to e.g. `10` for validation) |
+| `BYROREDUX_REQUIRE_GAME_DATA` | unset (set to `1` to make the Rust real-data tests fail instead of skip — see below) |
+
+## Strict mode for the Rust real-data tests (#3850)
+
+The shell gates above already refuse to report a pass they did not earn: a
+missing corpus is `SKIP` with exit code 77, and `playable-smoke.yml` promotes
+that 77 into `::error::… skipped because $GAME data is unavailable`.
+
+The Rust half of the tree had no equivalent. The universal idiom for a
+data-gated Rust test is `#[ignore = "needs <GAME> game data on disk"]` plus an
+in-body early `return`, and `#[ignore]` handles the default lane correctly —
+but the `--ignored` lane, the *only* lane these tests ever execute in, has no
+skip result. libtest records `test … ok`, and without `--nocapture` it swallows
+the accompanying `eprintln!`. So on any machine lacking one title's data (that
+is, every machine, for at least some titles) an operator reads N passes and
+learns nothing about which of them touched a byte of real data.
+
+`BYROREDUX_REQUIRE_GAME_DATA=1` closes that gap. Every game-data resolver in
+the workspace calls a local `require_game_data()` before returning "no data";
+with the switch set, that call panics instead:
+
+```bash
+# ordinary developer lane — absent corpora skip quietly, as before
+cargo test -p byroredux-plugin -- --ignored
+
+# authoritative lane — a missing corpus is a failure, not a green tick
+BYROREDUX_REQUIRE_GAME_DATA=1 cargo test -p byroredux-plugin -- --ignored
+```
+
+Set it in whatever lane is meant to be evidence, exactly as the workflow
+promotes exit 77 to an error for the shell gates.
+
+Independently, **an explicitly-set `BYROREDUX_<GAME>_DATA` is now binding**.
+It previously behaved as advisory: a resolver that found the named path was
+not a directory printed "falling back to default" and then read the hardcoded
+`/mnt/data/SteamLibrary/...` path anyway, so an operator who pointed the
+variable at a modded or DLC-stripped install silently got results from a
+different install than the one they named. Naming a non-directory now fails
+loudly; leaving the variable unset still falls back to the documented default.

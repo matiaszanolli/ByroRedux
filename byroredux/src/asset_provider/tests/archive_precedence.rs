@@ -13,11 +13,18 @@
 use super::super::*;
 
 fn fo4_data_dir() -> std::path::PathBuf {
-    std::env::var_os("BYROREDUX_FO4_DATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data")
-        })
+    // #3850: an explicitly-set override is BINDING. Returning it unchecked
+    // meant a typo'd or DLC-stripped path surfaced much later as a failure
+    // against a directory the operator never named.
+    if let Some(v) = std::env::var_os("BYROREDUX_FO4_DATA").filter(|s| !s.is_empty()) {
+        let p = std::path::PathBuf::from(v);
+        assert!(
+            p.is_dir(),
+            "BYROREDUX_FO4_DATA points to {p:?}, which is not a directory"
+        );
+        return p;
+    }
+    std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data")
 }
 
 /// The exact real-world shape #3637 measured: `Fallout4 - MeshesExtra.ba2`

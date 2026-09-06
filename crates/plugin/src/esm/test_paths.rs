@@ -45,9 +45,21 @@ use std::path::PathBuf;
 /// path is NOT validated for existence — callers should check
 /// `.is_dir()` / `.is_file()` and skip the test on miss.
 fn data_dir(env_var: &str, default: &str) -> PathBuf {
-    std::env::var(env_var)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(default))
+    // #3850: an explicitly-set override is BINDING. Pre-fix this returned the
+    // env var's value unchecked, so a typo'd path surfaced much later as a
+    // confusing "file not found" against a path the caller never named. An
+    // empty value is treated as unset, matching the usual shell convention.
+    match std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
+        Some(v) => {
+            let p = PathBuf::from(&v);
+            assert!(
+                p.is_dir(),
+                "{env_var} points to {v:?}, which is not a directory"
+            );
+            p
+        }
+        None => PathBuf::from(default),
+    }
 }
 
 pub const OBLIVION_ENV: &str = "BYROREDUX_OBLIVION_DATA";
@@ -194,5 +206,31 @@ mod tests {
             }
             assert_eq!(accessor(), PathBuf::from(default));
         }
+    }
+
+    /// #3850 — an explicitly-set override is BINDING.
+    ///
+    /// Pre-fix `data_dir` returned the env var's value unchecked, so an
+    /// operator who pointed `BYROREDUX_FNV_DATA` at a modded or
+    /// DLC-stripped install — or simply typed the path wrong — got a
+    /// confusing downstream failure against a directory they never named,
+    /// or (in the `Option`-returning siblings) a silent fall back to the
+    /// hardcoded dev-machine Steam path and results from a *different*
+    /// install entirely.
+    ///
+    /// The strict switch's other half (`BYROREDUX_REQUIRE_GAME_DATA`) is
+    /// deliberately not unit-tested: it is read process-globally by every
+    /// resolver in the workspace, so setting it here would turn every
+    /// concurrently-running real-data test in this binary into a panic.
+    #[test]
+    #[should_panic(expected = "is not a directory")]
+    fn an_explicitly_set_override_that_is_not_a_directory_fails_loudly() {
+        const PROBE: &str = "BYROREDUX_TEST_PATHS_BINDING_PROBE_DATA";
+        // SAFETY: as above — process-global, but this probe-only name is
+        // read by no other test, so no concurrent reader can observe it.
+        unsafe {
+            std::env::set_var(PROBE, "/nonexistent/byroredux/binding-probe");
+        }
+        let _ = data_dir(PROBE, "/also/nonexistent");
     }
 }

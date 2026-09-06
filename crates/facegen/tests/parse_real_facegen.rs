@@ -55,6 +55,26 @@ struct Expected {
     tri_triangles: u32,
 }
 
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
+        );
+    }
+}
+
 impl Game {
     const ALL: &'static [Game] = &[Game::FalloutNV, Game::Fallout3];
 
@@ -107,18 +127,23 @@ impl Game {
     }
 
     fn data_dir(self) -> Option<PathBuf> {
-        if let Ok(val) = std::env::var(self.env_var()) {
-            let p = PathBuf::from(val);
+        if let Some(val) = std::env::var(self.env_var()).ok().filter(|s| !s.is_empty()) {
+            let p = PathBuf::from(&val);
             if p.is_dir() {
                 return Some(p);
             }
+            panic!(
+                "{} points to {:?}, which is not a directory",
+                self.env_var(),
+                p
+            );
         }
         let p = PathBuf::from(self.default_path());
         if p.is_dir() {
-            Some(p)
-        } else {
-            None
+            return Some(p);
         }
+        require_game_data(self.env_var(), &p);
+        None
     }
 
     fn extract(self, inner: &str) -> Option<Vec<u8>> {

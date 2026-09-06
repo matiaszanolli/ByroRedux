@@ -19,16 +19,45 @@
 use byroredux_bsa::{CsgArchive, CSG_CHUNK_SIZE};
 use std::path::PathBuf;
 
+/// #3850 — the strict lane for real-data tests.
+///
+/// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
+/// failure instead of a silent libtest `ok`. Without it the `--ignored`
+/// lane — the only lane these `#[ignore]`d tests ever execute in —
+/// records a pass for a test that never touched a byte of game data, so
+/// a green run is not evidence of anything. This is the Rust-side
+/// counterpart of the shell gates' "explicit SKIP with exit code 77,
+/// never a pass" rule (`docs/smoke-tests/README.md`, #3003).
+#[track_caller]
+fn require_game_data(env_var: &str, tried: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!(
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but no game data was found: \
+             {env_var} is unset (or names a non-directory) and the default \
+             {tried:?} is not a directory"
+        );
+    }
+}
+
 fn fo4_data_dir() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("BYROREDUX_FO4_DATA") {
+    if let Some(v) = std::env::var("BYROREDUX_FO4_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
         let p = PathBuf::from(&v);
         if p.is_dir() {
             return Some(p);
         }
-        eprintln!("BYROREDUX_FO4_DATA points to {v:?} which is not a directory; using default");
+        // #3850: an explicitly-set override is BINDING — never silently
+        // substitute the hardcoded dev-machine path.
+        panic!("BYROREDUX_FO4_DATA points to {v:?}, which is not a directory");
     }
     let p = PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data");
-    p.is_dir().then_some(p)
+    if p.is_dir() {
+        return Some(p);
+    }
+    require_game_data("BYROREDUX_FO4_DATA", &p);
+    None
 }
 
 #[test]

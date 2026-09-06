@@ -17,23 +17,39 @@ use std::sync::Mutex;
 /// Each test still guards via `skip_if_*_missing` so absent data
 /// produces a clean skip rather than a panic.
 fn fnv_data_dir() -> std::path::PathBuf {
-    std::env::var("BYROREDUX_FNV_DATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(
-                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
-            )
-        })
+    // #3850: an explicitly-set override is BINDING. Returning it unchecked
+    // meant a typo'd or DLC-stripped path surfaced much later as a failure
+    // against a directory the operator never named.
+    if let Some(v) = std::env::var("BYROREDUX_FNV_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let p = std::path::PathBuf::from(v);
+        assert!(
+            p.is_dir(),
+            "BYROREDUX_FNV_DATA points to {p:?}, which is not a directory"
+        );
+        return p;
+    }
+    std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data")
 }
 
 fn skyrim_se_data_dir() -> std::path::PathBuf {
-    std::env::var("BYROREDUX_SKYRIMSE_DATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(
-                "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-            )
-        })
+    // #3850: an explicitly-set override is BINDING. Returning it unchecked
+    // meant a typo'd or DLC-stripped path surfaced much later as a failure
+    // against a directory the operator never named.
+    if let Some(v) = std::env::var("BYROREDUX_SKYRIMSE_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let p = std::path::PathBuf::from(v);
+        assert!(
+            p.is_dir(),
+            "BYROREDUX_SKYRIMSE_DATA points to {p:?}, which is not a directory"
+        );
+        return p;
+    }
+    std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data")
 }
 
 fn fnv_meshes_bsa() -> std::path::PathBuf {
