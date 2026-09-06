@@ -912,6 +912,23 @@ pub struct VolumetricsPipeline {
     combustion_light_moment_buffers: Vec<GpuBuffer>,
     combustion_light_grid_centers: [[f32; 3]; MAX_FRAMES_IN_FLIGHT],
     combustion_light_grid_valid: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// #3835 — "this frame slot's moment buffer may hold non-zero data".
+    ///
+    /// `volumetrics_inject.comp` ACCUMULATES into the moment buffer with
+    /// `atomicAdd`, so it must be zero before every dispatch, and the drain's
+    /// `fill(0)` is what re-zeroes it. That fill was unconditional, which made
+    /// it quietly load-bearing twice over: it also zeroed the buffer before the
+    /// FIRST dispatch (`create_host_readback` does not zero its allocation),
+    /// and it self-healed after a reset path cleared `combustion_light_grid_valid`
+    /// while accumulated data was still in the buffer.
+    ///
+    /// Hoisting the `had_grid` early-out above the fill — the obvious reading of
+    /// the finding — would have regressed both. This flag carries the real
+    /// invariant instead: set when a dispatch accumulates, cleared only by a
+    /// drain that actually zeroes, and seeded `true` so the first drain zeroes
+    /// the never-initialised allocation exactly as before. The reset paths
+    /// deliberately do NOT clear it: after a reset the buffer is still dirty.
+    combustion_moment_dirty: [bool; MAX_FRAMES_IN_FLIGHT],
     combustion_light_candidates: Vec<(f32, GpuLight)>,
     /// Last reduction counters emitted at debug level. Logging only changes
     /// keeps the GPU-readback diagnostic useful without producing one line
@@ -1031,6 +1048,9 @@ impl VolumetricsPipeline {
             combustion_light_moment_buffers: Vec::new(),
             combustion_light_grid_centers: [[0.0; 3]; MAX_FRAMES_IN_FLIGHT],
             combustion_light_grid_valid: [false; MAX_FRAMES_IN_FLIGHT],
+            // `true`: the allocation is not zeroed, so the first drain must
+            // still run its `fill(0)` to prime it for the first `atomicAdd`.
+            combustion_moment_dirty: [true; MAX_FRAMES_IN_FLIGHT],
             combustion_light_candidates: Vec::new(),
             last_combustion_light_topology: None,
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
@@ -2223,6 +2243,9 @@ impl VolumetricsPipeline {
         ];
         self.combustion_light_grid_centers[frame] = camera_position;
         self.combustion_light_grid_valid[frame] = true;
+        // #3835 — this dispatch's inject pass will `atomicAdd` into the moment
+        // buffer, so it is dirty until a drain zeroes it again.
+        self.combustion_moment_dirty[frame] = true;
         let fog_far = self.far_distance_world().max(1.0);
         // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
         // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
@@ -2544,6 +2567,18 @@ impl VolumetricsPipeline {
     ) -> Result<usize> {
         let camera_world = self.combustion_light_grid_centers[frame];
         let had_grid = std::mem::take(&mut self.combustion_light_grid_valid[frame]);
+        // #3835 — skip the invalidate + 256-bin decode + 8 KB fill + flush when
+        // the buffer is already known to be all zeros: no dispatch has
+        // accumulated into this slot since the last drain zeroed it. That is
+        // every frame of every fog-free scene, which is most frames in most
+        // cells.
+        //
+        // Gated on `combustion_moment_dirty`, NOT on `had_grid`: a reset path
+        // can clear `had_grid` after a dispatch already accumulated, and the
+        // buffer would still need zeroing. See the field's doc.
+        if !std::mem::take(&mut self.combustion_moment_dirty[frame]) {
+            return Ok(0);
+        }
         let buffer = &mut self.combustion_light_moment_buffers[frame];
         buffer.invalidate_if_needed(device)?;
         let mut moments = [GpuCombustionLightMoment::default(); COMBUSTION_LIGHT_GRID_COUNT];
