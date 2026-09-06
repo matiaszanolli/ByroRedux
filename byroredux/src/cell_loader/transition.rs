@@ -376,9 +376,13 @@ pub fn take_pending_transition(
 /// an interior to drop. Always clears `CurrentCellRoot` to `None` so
 /// the orchestrator can re-stamp on the next load.
 ///
-/// Used by [`load_interior_cell`] and the App-level Interior→Exterior
-/// path (which needs to drop the interior before spinning up the
-/// streaming state).
+/// Used by [`InteriorCellApply`] (the resumable interior-load job
+/// `app_step.rs` drives), the App-level Interior→Exterior path (which
+/// needs to drop the interior before spinning up the streaming state),
+/// the `cell.load` debug command, and the M45.1 live-load apply in
+/// `save_io.rs` — six call sites in all. #3885: this previously named
+/// the synchronous `load_interior_cell`, which had already been
+/// superseded and is now deleted.
 pub fn unload_current_interior(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -426,7 +430,8 @@ pub fn reposition_camera(world: &mut byroredux_core::ecs::World, dest_pos: Vec3,
 /// Source + destination descriptor for an interior transition: which cell to
 /// load (`editor_id` resolved against `masters` / `esm_path`) and where to
 /// drop the camera afterwards (Z-up position + rotation, converted to Y-up
-/// inside [`load_interior_cell`]). Grouped to keep the argument count down.
+/// inside [`finish_interior_cell_load`], which [`InteriorCellApply`]
+/// calls on the last step). Grouped to keep the argument count down.
 pub struct InteriorCellRequest<'a> {
     pub editor_id: &'a str,
     pub masters: &'a [String],
@@ -553,37 +558,6 @@ pub(crate) fn finish_interior_cell_load(
     reposition_camera(world, dest_pos, dest_rot);
     crate::systems::ground_character_body_at(world, dest_pos);
     dest_pos
-}
-
-#[allow(dead_code)]
-pub fn load_interior_cell(
-    world: &mut byroredux_core::ecs::World,
-    ctx: &mut byroredux_renderer::VulkanContext,
-    tex_provider: &crate::asset_provider::TextureProvider,
-    mat_provider: Option<&mut crate::asset_provider::MaterialProvider>,
-    request: InteriorCellRequest,
-) -> Result<Vec3, String> {
-    let InteriorCellRequest {
-        editor_id,
-        masters,
-        esm_path,
-        dest_pos_zup,
-        dest_rot_zup,
-    } = request;
-    unload_current_interior(world, ctx);
-    let result = super::load_cell_with_masters(
-        masters,
-        esm_path,
-        editor_id,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-    )
-    .map_err(|e| format!("{e:#}"))?;
-    let dest_pos = position_zup_to_yup(dest_pos_zup);
-    let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);
-    Ok(finish_interior_cell_load(world, result, dest_pos, dest_rot))
 }
 
 /// Log header used by both interior and exterior orchestrator entries.

@@ -160,7 +160,8 @@ fn engine_default_interior_lighting() -> CellLightingRes {
 /// [`CellLighting`](esm::cell::CellLighting) — or the engine default when
 /// `resolve_cell_lighting` found none — to the renderer's `CellLightingRes`.
 /// Shared by *every* interior-load entry point — the startup `--cell` path
-/// (`scene.rs`), the M40 door-walk transition ([`super::load_interior_cell`]),
+/// (`scene.rs`), the M40 door-walk transition
+/// ([`super::transition::InteriorCellApply`]),
 /// the `cell.load` debug command (`debug_load.rs`), and the M45.1 live-load
 /// apply (`save_io.rs`) — so they cannot drift.
 ///

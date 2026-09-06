@@ -1483,125 +1483,6 @@ impl NameIndex {
     }
 }
 
-/// FormId (raw, global load-order `u32` space — the same key space
-/// `resolve_entity_by_global_form_id` resolves through) → `Entity` index,
-/// scoped to the active worldspace's *persistent* CELL rather than every
-/// entity in the world. Build/query logic lives in
-/// `cell_loader::persistent_ref_index` (mirrors `CellRootIndex`: the
-/// resource is a plain data holder here, populated by a free function
-/// in the module that owns the concept it indexes).
-///
-/// # EX-09 (#2370) — why persistent refs only, not a general FormId index
-/// `World::find_by_form_id` / `resolve_entity_by_global_form_id` already
-/// cover the general case (an O(n) scan over every `FormIdComponent`,
-/// "fine for the rare condition-eval path" per the latter's own doc) —
-/// reused for this index's rebuild, not duplicated. A cache over *every*
-/// `FormIdComponent` entity would need invalidating on every ordinary
-/// cell-streaming tick, since ordinary REFRs churn constantly as cells
-/// load/unload; a persistent CELL's contents are stable for as long as
-/// its root entity is resident, so scoping to it keeps invalidation rare
-/// and tied to something that actually changes infrequently: a
-/// worldspace crossing (which always allocates a fresh persistent-cell
-/// root entity — see `built_for` below).
-///
-/// This is the foundational identity mechanism EX-14/15's cross-worldspace
-/// persistent-ref continuity and EX-16's actor/package migration both
-/// need before they can be built — see
-/// `docs/engine/exterior-readiness-plan.md`.
-///
-/// Landed ahead of its consumer, same posture as `groundcover_translate`'s
-/// Phase 0 constants: fully exercised by `cell_loader::persistent_ref_index`'s
-/// test suite, a *pending* production consumer rather than unused code —
-/// hence the field-level `#[allow(dead_code)]` below.
-///
-/// #3455 — the one remaining gate is **EX-16 (#2372)**. EX-14/15 (#2369)
-/// closed 2026-08-26 without wiring the index, so it is no longer a pending
-/// consumer and must not be cited as one. If EX-16 lands and reaches
-/// persistent refs by some other route, delete this resource, the
-/// `cell_loader::persistent_ref_index` module and the `boot.rs` insertion
-/// together — the shared lookup underneath (`form_id_root_index::resolve`)
-/// stays live via `CellRootRefIndex` and is unaffected.
-pub(crate) struct PersistentRefIndex {
-    #[allow(dead_code)] // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
-    pub(crate) map: HashMap<u32, EntityId>,
-    /// The persistent-cell root entity this index was last built against.
-    /// `None` before the first build. A worldspace crossing always
-    /// allocates a fresh root entity for the destination's persistent
-    /// CELL, so comparing this to the caller's current `persistent_root`
-    /// is a precise (not merely probable) invalidation signal — unlike
-    /// `NameIndex`/`SubtreeCache`'s component-count heuristic, which is
-    /// the right tool when nothing more specific is available but isn't
-    /// needed here.
-    #[allow(dead_code)]
-    // see the struct doc — EX-16 (#2372) is the one pending consumer (#3455)
-    pub(crate) built_for: Option<EntityId>,
-}
-impl Resource for PersistentRefIndex {}
-impl PersistentRefIndex {
-    pub(crate) fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            built_for: None,
-        }
-    }
-}
-
-/// FormId → `Entity` index scoped to whichever **ordinary** `CellRoot` a
-/// caller names — the sibling [`PersistentRefIndex`] doesn't cover, since
-/// that one is deliberately scoped to only the worldspace's persistent
-/// CELL (see its own doc for why). Build/query logic lives in
-/// `cell_loader::cell_root_ref_index`, which (like
-/// `cell_loader::persistent_ref_index`) is a thin wrapper over the shared
-/// single-root build/rebuild walk in `cell_loader::form_id_root_index`.
-///
-/// # Why a separate resource, not a generalized `PersistentRefIndex`
-/// Both are single-slot caches (`map` + `built_for: Option<EntityId>`
-/// naming the one root they're currently built for) — reusing one slot for
-/// both scopes would thrash the moment a caller needs a persistent-CELL
-/// lookup and an ordinary-cell-root lookup in the same tick (each build
-/// would invalidate the other's cached root). Keeping two independent
-/// resource instances, sharing only the build logic underneath, avoids
-/// that without adding real complexity — same precedent as
-/// `CellRootIndex` and `PersistentRefIndex` already being separate
-/// indices over overlapping `CellRoot` data.
-///
-/// # Why "ordinary," not "every" `CellRoot`
-/// An ordinary cell's contents churn constantly as the streaming grid
-/// loads/unloads tiles — unlike a persistent CELL, which is stable for as
-/// long as its root is resident. A cache proactively maintained for every
-/// resident ordinary root would need invalidating on essentially every
-/// streaming tick. This index is designed to be built **lazily, for one
-/// root at a time, at the moment a caller actually needs to resolve a
-/// reference within it** — e.g. a stream-boundary state-continuity
-/// snapshot restore resolving a FormID-keyed reference (like
-/// `Seated::furniture`) back to a live entity the instant that entity's
-/// owning `CellRoot` respawns. See
-/// `docs/engine/stream-boundary-state-continuity.md` §3 for the design
-/// this index was built to unblock (EX-14/15 item C2's reconcile half,
-/// EX-16 item 4's snapshot/restore).
-///
-/// Landed ahead of its consumer, same posture as `PersistentRefIndex`
-/// itself: fully exercised by `cell_loader::cell_root_ref_index`'s test
-/// suite, a *pending* production consumer rather than unused code.
-pub(crate) struct CellRootRefIndex {
-    #[allow(dead_code)] // see the struct doc — pending stream-boundary-state-continuity consumer
-    pub(crate) map: HashMap<u32, EntityId>,
-    /// The `CellRoot` entity this index was last built against. `None`
-    /// before the first build.
-    #[allow(dead_code)]
-    // see the struct doc — pending stream-boundary-state-continuity consumer
-    pub(crate) built_for: Option<EntityId>,
-}
-impl Resource for CellRootRefIndex {}
-impl CellRootRefIndex {
-    pub(crate) fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            built_for: None,
-        }
-    }
-}
-
 /// Tracks keyboard and mouse input state for the fly camera.
 pub(crate) const DEFAULT_LOOK_SENSITIVITY: f32 = 0.002;
 
@@ -1931,8 +1812,10 @@ impl Resource for HavokIdleCatalog {}
 /// owning interior cell / exterior grid tile, so a future pathfinder (item
 /// 3, deliberately scoped as its own follow-up issue — "pathfinding needs
 /// resident tiles first") has something to query. Today this is pure
-/// residency plumbing with zero consumers, same posture as
-/// `PersistentRefIndex` landing ahead of its EX-14/15/EX-16 callers.
+/// residency plumbing with zero consumers — but unlike the
+/// `PersistentRefIndex` family (deleted in #3884 once EX-16 closed
+/// without wiring it), this one's consumer is a named, still-open
+/// follow-up rather than a gate that has already shut.
 ///
 /// Spawned as a plain entity within the same `first_entity..last_entity`
 /// range every other cell-owned entity is spawned in

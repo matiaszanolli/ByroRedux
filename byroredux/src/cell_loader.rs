@@ -57,10 +57,8 @@ use crate::components::{
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
-mod cell_root_ref_index;
 mod euler;
 mod exterior;
-mod form_id_root_index;
 mod index;
 mod load;
 pub(crate) mod load_order;
@@ -70,7 +68,6 @@ mod lod_support;
 mod nif_import_registry;
 mod object_lod;
 mod partial;
-mod persistent_ref_index;
 mod placement_lod;
 pub(crate) mod precombined;
 pub(crate) mod references;
@@ -88,10 +85,10 @@ mod work_budget;
 pub use index::LoadedCellIndex;
 #[allow(unused_imports)]
 pub use transition::{
-    load_interior_cell, log_transition_header, position_zup_to_yup, queue_door_transition,
-    reposition_camera, rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior,
-    CurrentCellContext, CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest,
-    LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
+    log_transition_header, position_zup_to_yup, queue_door_transition, reposition_camera,
+    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellContext,
+    CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
+    PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
     QueuedDoorTransition, TransitionDestination,
 };
 pub(crate) use transition::{InteriorCellApply, InteriorCellApplyProgress};
