@@ -137,7 +137,7 @@ pub(crate) fn forward_bgsm_env_map_scale(
 /// `MaterialProvider` wouldn't help here: the same CDB would still get
 /// `archive.extract()`'d — a full zlib inflate of a multi-hundred-MB blob
 /// for the vanilla `materialsbeta.cdb` (105 MB measured) — on every single
-/// rebuild, even though `register_starfield_cdb` only reads the file's
+/// rebuild, even though `probe_starfield_cdb` only reads the file's
 /// 16-byte header and on-disk content never changes mid-session. Living at
 /// module scope (outside `MaterialProvider`) lets this survive across
 /// provider rebuilds instead of being discarded with the provider — the
@@ -208,7 +208,7 @@ pub(crate) fn discover_starfield_cdbs(
                         "Discovered Starfield CDB '{path}' in '{source}' ({} bytes, extracted)",
                         raw.len()
                     );
-                    let probe = ComponentDatabaseFile::probe_header(&raw).ok();
+                    let probe = probe_starfield_cdb(&raw, &path);
                     sf_cdb_cache_insert(cache_key, probe);
                     probe
                 }
@@ -220,6 +220,53 @@ pub(crate) fn discover_starfield_cdbs(
         };
         if let Some(info) = probe {
             provider.register_starfield_cdb_probe(info);
+        }
+    }
+}
+
+/// Header-only validity probe for a Starfield `materialsbeta.cdb` payload.
+///
+/// Does a 4-byte `BETH` magic reject first (SF-D3-AUDIT-03 / #2102) — the
+/// cheapest way to skip header/chunk-index work for a mis-named non-CDB file
+/// — then a [`ComponentDatabaseFile::probe_header`] validity check
+/// (SF-D3-AUDIT-01 / #2100). Does NOT walk or retain the ~1.44M-entry
+/// instance tree (see the `sf_cdb_count` field doc). A malformed payload is
+/// warned and dropped.
+///
+/// #3889 — this is the single registration path. It used to exist twice: an
+/// unreachable `MaterialProvider::register_starfield_cdb` that the eight
+/// `starfield_mat.rs` tests called, and the inline `probe_header(&raw).ok()`
+/// in `discover_starfield_cdbs` that production actually ran. The tests
+/// therefore validated a parallel copy, and the `peek_magic` fast reject
+/// lived only in the copy production never executed.
+pub(crate) fn probe_starfield_cdb(bytes: &[u8], source: &str) -> Option<CdbHeaderInfo> {
+    if !ComponentDatabaseFile::peek_magic(bytes) {
+        log::warn!(
+            "Starfield CDB '{source}' rejected ({} bytes): not a BETH-signature file. \
+             Starfield content will fall back to legacy Lambert shading.",
+            bytes.len(),
+        );
+        return None;
+    }
+    match ComponentDatabaseFile::probe_header(bytes) {
+        Ok(info) => {
+            log::info!(
+                "Starfield CDB '{source}' present: {} chunks ({} bytes, header-only probe). \
+                 `.mat` material paths on NIFs will route through Disney BSDF \
+                 (Phase 1 — full parse + per-field extraction is the deferred \
+                 Phase 2 follow-up).",
+                info.chunk_count,
+                bytes.len(),
+            );
+            Some(info)
+        }
+        Err(e) => {
+            log::warn!(
+                "Starfield CDB '{source}' header invalid ({} bytes): {e}. \
+                 Starfield content will fall back to legacy Lambert shading.",
+                bytes.len(),
+            );
+            None
         }
     }
 }
@@ -586,51 +633,7 @@ impl MaterialProvider {
         self.sf_cdb_count > 0
     }
 
-    /// Validate + register a Starfield `materialsbeta.cdb` payload for the
-    /// presence gate — `discover_starfield_cdbs` calls this once per CDB
-    /// found across the loaded archives (#1571). Runs a `peek_magic` cheap
-    /// reject (SF-D3-AUDIT-03 / #2102) then a header-only
-    /// [`ComponentDatabaseFile::probe_header`] validity check
-    /// (SF-D3-AUDIT-01 / #2100) and bumps `sf_cdb_count` on success — it
-    /// does NOT walk or retain the ~1.44M-entry instance tree (see the
-    /// `sf_cdb_count` field doc). A malformed payload is warned and
-    /// dropped, leaving the count intact. #1289 / SF-D3-NEW-01.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn register_starfield_cdb(&mut self, bytes: &[u8]) {
-        // Cheapest reject first: 4-byte magic. Skips the header/chunk-index
-        // work for a mis-named non-CDB file. SF-D3-AUDIT-03 / #2102.
-        if !ComponentDatabaseFile::peek_magic(bytes) {
-            log::warn!(
-                "Starfield CDB rejected ({} bytes): not a BETH-signature file. \
-                 Starfield content will fall back to legacy Lambert shading.",
-                bytes.len(),
-            );
-            return;
-        }
-        match ComponentDatabaseFile::probe_header(bytes) {
-            Ok(info) => {
-                log::info!(
-                    "Starfield CDB present: {} chunks ({} bytes, header-only probe). \
-                     `.mat` material paths on NIFs will route through Disney BSDF \
-                     (Phase 1 — full parse + per-field extraction is the deferred \
-                     Phase 2 follow-up).",
-                    info.chunk_count,
-                    bytes.len(),
-                );
-                self.register_starfield_cdb_probe(info);
-            }
-            Err(e) => {
-                log::warn!(
-                    "Starfield CDB header invalid ({} bytes): {}. \
-                     Starfield content will fall back to legacy Lambert shading.",
-                    bytes.len(),
-                    e,
-                );
-            }
-        }
-    }
-
-    fn register_starfield_cdb_probe(&mut self, _info: CdbHeaderInfo) {
+    pub(crate) fn register_starfield_cdb_probe(&mut self, _info: CdbHeaderInfo) {
         self.sf_cdb_count += 1;
     }
 
@@ -1158,7 +1161,8 @@ pub(crate) fn merge_external_material(
     // shader.rs::is_material_path`) end in `.mat`. The actual material
     // data lives in the binary Component Database at
     // `materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`,
-    // loaded once at provider init via [`register_starfield_cdb`].
+    // discovered once at provider init by `discover_starfield_cdbs`, which
+    // header-probes each payload through `probe_starfield_cdb`.
     //
     // Phase 1 (this commit): flip `material.is_pbr = true` so
     // `pack_imported_material_flags` packs `MAT_FLAG_PBR_BSDF` and
@@ -2028,7 +2032,7 @@ pub(crate) fn merge_external_material(
         // loaded — that's a real degradation (e.g. a future patch bumps
         // CDB fileVersion past the #1569 pins, or `--materials-ba2` was
         // omitted) already logged once, far earlier, in
-        // `register_starfield_cdb`. SF3-02 / #1831 — name that cause
+        // `probe_starfield_cdb`. SF3-02 / #1831 — name that cause
         // explicitly instead of the generic "unsupported format" message,
         // so an operator sees one clear degradation line rather than
         // per-mesh spam disconnected from the upstream CDB failure.

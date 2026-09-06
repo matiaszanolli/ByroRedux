@@ -12,8 +12,21 @@ use super::imported_mesh_with_material_path;
 //   Starfield-shaped mesh (`.mat` material path) flips `is_pbr`
 //   when (and only when) the Component Database is loaded.
 
+/// #3889 — register a CDB payload through the *production* path.
+///
+/// These tests used to call `MaterialProvider::register_starfield_cdb`, an
+/// unreachable duplicate of the registration logic; `discover_starfield_cdbs`
+/// never called it. This mirrors exactly what production does — probe, then
+/// count on success — so a regression in `probe_starfield_cdb` now fails
+/// these tests instead of passing them.
+fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
+    if let Some(info) = crate::asset_provider::material::probe_starfield_cdb(bytes, "test") {
+        provider.register_starfield_cdb_probe(info);
+    }
+}
+
 /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE
-/// chunk declaring zero types. Sufficient for `register_starfield_cdb`
+/// chunk declaring zero types. Sufficient for `probe_starfield_cdb`
 /// to mark `has_starfield_cdb() == true` without needing 105 MB of
 /// real Starfield data.
 ///
@@ -78,8 +91,8 @@ fn discovered_cdbs_accumulate_in_load_order() {
 
     // Base CDB, then a DLC CDB — both pass the header-only probe
     // (#2100), both counted.
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
     assert!(provider.has_starfield_cdb());
     assert_eq!(
         provider.sf_cdb_count, 2,
@@ -89,7 +102,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
 
     // A malformed CDB is rejected (peek_magic, #2102) + warned, leaving
     // the count intact.
-    provider.register_starfield_cdb(b"not a cdb");
+    register_probed(&mut provider, b"not a cdb");
     assert_eq!(
         provider.sf_cdb_count, 2,
         "a rejected CDB must not change the already-counted CDBs"
@@ -104,7 +117,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
 fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
     assert!(
         provider.has_starfield_cdb(),
         "minimal CDB payload must mark the provider as Starfield-loaded"
@@ -147,7 +160,7 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
 
 /// Regression / checklist-invariant pin for #2359 (SF-D9-2026-08-03-03).
 ///
-/// The `.mat` arm is a documented Phase 1 stub — `register_starfield_cdb`
+/// The `.mat` arm is a documented Phase 1 stub — `probe_starfield_cdb`
 /// only probes the header (`ComponentDatabaseFile::probe_header`), the
 /// ~1.44M-instance class/object tree is never walked, and there is
 /// currently NO code path from CDB contents to `ImportedMaterial`. This
@@ -167,7 +180,7 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
 fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
     assert!(provider.has_starfield_cdb());
 
     let mut mesh =
@@ -196,7 +209,7 @@ fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
 fn merge_skips_mat_path_when_cdb_absent() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    // No `register_starfield_cdb` call.
+    // No CDB registered.
     assert!(!provider.has_starfield_cdb());
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
@@ -255,7 +268,7 @@ fn unresolved_material_warning_generic_for_non_mat_path() {
 /// `discover_starfield_cdbs` skip the ~105 MB zlib inflate on the second and
 /// later provider rebuild for the same (archive source, CDB path) pair, while
 /// retaining only the tiny header probe result. Exercises the cache primitive directly,
-/// in the same spirit as this file's other `register_starfield_cdb`-direct
+/// in the same spirit as this file's other `register_probed` tests
 /// tests that bypass `Archive` entirely (the `bsa` crate has no synthetic
 /// in-memory BA2 fixture builder to drive `discover_starfield_cdbs`'s own
 /// `archive.list_files()` / `archive.extract()` calls end-to-end).
@@ -311,7 +324,7 @@ fn sf_cdb_cache_returns_the_same_probe_and_stays_bounded() {
 fn mat_arm_does_not_steal_bgsm_dispatch() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");
@@ -327,7 +340,7 @@ fn mat_arm_does_not_steal_bgsm_dispatch() {
 fn starfield_bgem_named_reference_gets_pbr_fallback() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/common/glowwhite.bgem");
     let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
     assert_eq!(outcome, MergeOutcome::PresenceOnly);
@@ -355,7 +368,7 @@ fn registered_cdb_does_not_shadow_a_resolvable_bgsm() {
     let path = "materials/setdressing/realpayload.bgsm";
     let mut provider = MaterialProvider::new();
     // A Starfield session: CDB registered, capability gate live.
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
     assert!(provider.has_starfield_cdb());
     // ...but this particular path has a genuine sidecar behind it.
     provider.insert_bgsm_for_test(
@@ -411,7 +424,7 @@ fn registered_cdb_does_not_shadow_a_resolvable_bgsm() {
 fn unresolvable_bgsm_still_falls_back_to_cdb_pbr() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    register_probed(&mut provider, &minimal_cdb_bytes());
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/nopayload.bgsm");
