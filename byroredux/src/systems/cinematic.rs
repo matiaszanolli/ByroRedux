@@ -406,29 +406,70 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
 /// completion explicitly waits on an actor-specific trigger stage. Creation
 /// can drive a mounted actor outside ordinary cell AI; choose the nearest
 /// loaded actor with the trigger's required base and approach the volume.
-pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
+/// Per-frame scratch for [`scene_trigger_actor_approach_system_inner`], owned
+/// by the closure [`make_scene_trigger_actor_approach_system`] returns.
+///
+/// #3838 — the system used to build a fresh `Vec<ScenePlayer>` (a deep clone of
+/// every player) plus two `HashSet`s every frame and drop them at tick end, on
+/// any cell where a SCEN has ever played. Same shape, same fix as the AI-package
+/// systems under #2033 / #3269 / #3353 and `make_animation_system` (#1372).
+///
+/// The clone itself stays: it exists to release the `ScenePlayer` storage read
+/// lock before taking `SceneRegistry`, which is a lock-ordering requirement, not
+/// an allocation one. Only the per-frame *allocation* is amortised away.
+#[derive(Default)]
+pub(crate) struct SceneTriggerApproachScratch {
+    players: Vec<byroredux_scripting::ScenePlayer>,
+    active_quests: std::collections::HashSet<u32>,
+    awaited: std::collections::HashSet<(u32, u16)>,
+    between_scenes: std::collections::HashSet<u32>,
+}
+
+/// Build the scene-trigger approach system with persistent scratch.
+pub(crate) fn make_scene_trigger_actor_approach_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = SceneTriggerApproachScratch::default();
+    move |world: &World, dt: f32| {
+        scene_trigger_actor_approach_system_inner(world, dt, &mut scratch);
+    }
+}
+
+fn scene_trigger_actor_approach_system_inner(
+    world: &World,
+    dt: f32,
+    scratch: &mut SceneTriggerApproachScratch,
+) {
     use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
     use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 
-    let (awaited, between_scenes): (
-        std::collections::HashSet<(u32, u16)>,
-        std::collections::HashSet<u32>,
-    ) = {
-        let players: Vec<byroredux_scripting::ScenePlayer> = {
-            let Some(players) = world.query::<byroredux_scripting::ScenePlayer>() else {
-                return;
-            };
-            players.iter().map(|(_, player)| player.clone()).collect()
-        };
-        let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
+    // Destructured up front so the four buffers are disjoint borrows: the
+    // `extend` calls below read one field while writing another.
+    let SceneTriggerApproachScratch {
+        players,
+        active_quests,
+        awaited,
+        between_scenes,
+    } = scratch;
+
+    players.clear();
+    {
+        let Some(query) = world.query::<byroredux_scripting::ScenePlayer>() else {
             return;
         };
-        let active_quests: std::collections::HashSet<u32> = players
+        players.extend(query.iter().map(|(_, player)| player.clone()));
+    }
+    let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
+        return;
+    };
+    active_quests.clear();
+    active_quests.extend(
+        players
             .iter()
             .filter(|player| player.is_running())
-            .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id)
-            .collect();
-        let awaited = players
+            .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id),
+    );
+    awaited.clear();
+    awaited.extend(
+        players
             .iter()
             .filter(|player| player.is_running())
             .filter_map(|player| {
@@ -441,16 +482,16 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
                     && condition.comparator == ComparisonOp::Eq
                     && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON))
                 .then_some((condition.param_1, condition.param_2 as u16))
-            })
-            .collect();
-        let between_scenes = players
+            }),
+    );
+    between_scenes.clear();
+    between_scenes.extend(
+        players
             .iter()
             .filter(|player| player.state == byroredux_scripting::ScenePlaybackState::Finished)
             .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id)
-            .filter(|quest| !active_quests.contains(quest))
-            .collect();
-        (awaited, between_scenes)
-    };
+            .filter(|quest| !active_quests.contains(quest)),
+    );
     if awaited.is_empty() && between_scenes.is_empty() {
         return;
     }
@@ -1333,7 +1374,8 @@ mod tests {
             },
         );
 
-        scene_trigger_actor_approach_system(&world, 0.1);
+        let mut system = make_scene_trigger_actor_approach_system();
+        system(&world, 0.1);
 
         assert_eq!(
             world.get::<Transform>(loaded).unwrap().translation,
@@ -1359,7 +1401,8 @@ mod tests {
             .unwrap()
             .state = ScenePlaybackState::Finished;
 
-        scene_trigger_actor_approach_system(&world, 0.1);
+        let mut system = make_scene_trigger_actor_approach_system();
+        system(&world, 0.1);
 
         assert_eq!(
             world.get::<Transform>(loaded).unwrap().translation,
@@ -1370,6 +1413,39 @@ mod tests {
             world.get::<Transform>(next_actor).unwrap().translation,
             Vec3::new(50.0, 0.0, 0.0),
             "a running quest must approach only its globally next ready trigger between scenes"
+        );
+
+        // #3838 — the players Vec and the two HashSets are now persistent
+        // scratch reused across frames instead of freshly allocated each tick.
+        // The failure mode of that refactor is a missing `clear()`: last
+        // frame's `awaited` / `between_scenes` surviving into a frame that
+        // should see none. Drive the SAME closure again with every scene
+        // player despawned — the sets must come up empty and nothing may move.
+        let players: Vec<_> = {
+            let q = world
+                .query::<byroredux_scripting::ScenePlayer>()
+                .expect("scene players were installed above");
+            q.iter().map(|(entity, _)| entity).collect()
+        };
+        for entity in players {
+            world.remove::<byroredux_scripting::ScenePlayer>(entity);
+        }
+        let before_loaded = world.get::<Transform>(loaded).unwrap().translation;
+        let before_next = world.get::<Transform>(next_actor).unwrap().translation;
+
+        system(&world, 0.1);
+
+        assert_eq!(
+            world.get::<Transform>(loaded).unwrap().translation,
+            before_loaded,
+            "no ScenePlayer remains, so a reused scratch must not replay last \
+             frame's awaited set (#3838)"
+        );
+        assert_eq!(
+            world.get::<Transform>(next_actor).unwrap().translation,
+            before_next,
+            "no ScenePlayer remains, so a reused scratch must not replay last \
+             frame's between_scenes set (#3838)"
         );
     }
 
