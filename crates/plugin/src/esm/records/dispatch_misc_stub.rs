@@ -4,8 +4,9 @@
 //! (EDID + optional FULL only), typed IMAD image-space curves, and five
 //! Oblivion-unique base records (BSGN/CLOT/APPA/SGST/SLGM — the last four
 //! dual-target for `cells.statics`). SOUN graduated to a dedicated
-//! `parse_soun` (FNAM sound-path decode, EX-16 item 1 / #2372); the other
-//! 30 stay on the minimal-stub path.
+//! `parse_soun` (FNAM sound-path decode, EX-16 item 1 / #2372) and GRAS to
+//! `parse_gras` (EXAL ground-cover Phase 5 / #3807); the other 29 stay on
+//! the minimal-stub path.
 
 use super::*;
 
@@ -116,9 +117,7 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"GRAS" => extract_records(reader, end, b"GRAS", &mut |fid, subs| {
-            index
-                .grasses
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.grasses.insert(fid, parse_gras(fid, subs));
         })?,
         b"IMAD" => extract_records(reader, end, b"IMAD", &mut |fid, subs| {
             index

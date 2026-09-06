@@ -5,7 +5,8 @@ the `charal-*-ruleset.md` files are to [`charal.md`](charal.md). EXAL owns the
 outdoors environment; **ground cover** is the vegetation stratum that sits on
 the terrain surface — grass, ferns, moss, low scrub.
 
-**Status**: Phase 0 IMPLEMENTED (2026-08-12); Phases 1–5 proposed. Rolls out per §9.
+**Status**: Phase 0 IMPLEMENTED (2026-08-12); Phase 5 palette resolution
+IMPLEMENTED (2026-09-06, #3807); Phases 1–4 proposed. Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -378,6 +379,39 @@ Each phase is independently useful and independently reviewable.
   handling, refit on density change.
 - **Phase 5 — per-game palette.** `GRAS` → species, `grass_dimmer`, and the
   per-worldspace palette resolution.
+
+  **Palette resolution done (2026-09-06, #3807)** — `GRAS` decodes in full
+  ([`records/gras.rs`](../../crates/plugin/src/esm/records/gras.rs), replacing
+  the `MinimalEsmRecord` stub), translates to species at the EXAL boundary
+  (`species_from_gras` / `authored_species` in
+  [`groundcover_translate.rs`](../../byroredux/src/groundcover_translate.rs)),
+  and `install_ground_cover` resolves the worldspace palette from the load
+  order's records. 138 of the 168 vanilla records across Oblivion / FO3 / FNV
+  / Skyrim SE carry usable dimensions and become real species; the rest fall
+  through to the built-in default, as does content with no `GRAS` at all.
+
+  Two pieces of this phase are **not** done, both for want of a consumer
+  rather than for want of data:
+
+  1. **Colour gradient from the model texture.** §7 sources it from the
+     `GRAS` model's texture, which needs the archive-backed asset provider,
+     not the record — `colour_range` is a per-instance jitter *amount*, not a
+     colour, so there is nothing in the record to approximate it from.
+     Species keep the climate default's gradient until then.
+  2. **`grass_dimmer`.** It is a *per-weather* multiplier, and the palette is
+     resolved once at worldspace entry. Folding it in here would freeze it at
+     whichever weather happened to be active on entry and never update it
+     across a transition, so it belongs at shade time, alongside the Phase 2
+     blade shader that will read it.
+
+  The corpus census behind the decode is recorded in
+  [`records/gras.rs`](../../crates/plugin/src/esm/records/gras.rs)'s module
+  doc. The one finding that changes this document: **`wave_period` is not a
+  usable stiffness signal.** Its scale is not comparable across games
+  (Oblivion 0.0001–30, Skyrim 50–600 for the same authored intent) and it
+  does not correlate with plant height in any corpus (Spearman +0.11 on
+  Oblivion's n=99, −0.05 on Skyrim's n=21), so `bend_stiffness` stays a
+  palette-level constant rather than a per-species translation.
 
 ---
 

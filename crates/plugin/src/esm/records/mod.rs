@@ -19,6 +19,7 @@ pub mod common;
 pub mod condition;
 pub mod container;
 pub mod global;
+pub mod gras;
 pub mod items;
 pub mod list_record;
 pub mod misc;
@@ -55,6 +56,10 @@ pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };
 pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue};
+pub use gras::{
+    parse_gras, GrasRecord, GRAS_DATA_LEN, GRAS_FLAG_FIT_TO_SLOPE, GRAS_FLAG_UNIFORM_SCALING,
+    GRAS_FLAG_VERTEX_LIGHTING,
+};
 pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
     parse_omod_loose_item, parse_weap, ItemKind, ItemRecord,

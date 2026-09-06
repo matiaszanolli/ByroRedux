@@ -3649,3 +3649,239 @@ fn skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
         );
     }
 }
+
+/// `GRAS` decode against every installed master (#3807, EXAL ground-cover
+/// Phase 5).
+///
+/// Before this, `GRAS` dispatched through the `parse_minimal_esm_record`
+/// stub — `EDID` + `FULL` only — so nothing here could have failed because
+/// nothing was decoded.
+///
+/// The per-record range assertions are **offset-integrity checks**, not
+/// taste: `DATA` is a packed 32-byte struct with four uninitialised padding
+/// holes, so a one-byte offset slip anywhere in it reads a neighbouring
+/// field's bytes and lands `height_range` or `flags` far outside the ranges
+/// the corpus actually spans. `min_slope` is the sharpest of them — it is
+/// zero on all 168 vanilla records, so any drift at all makes it non-zero.
+#[test]
+#[ignore = "needs installed game data (checks every available master)"]
+fn installed_masters_decode_gras_dimensions_and_placement_fields() {
+    // (env, fallback, filename, label, total records, records with a
+    // usable height). Both counts measured over the shipped masters on
+    // 2026-09-06; they are the whole corpus this decode was built from.
+    let masters = [
+        (
+            test_paths::OBLIVION_ENV,
+            test_paths::OBLIVION_DEFAULT,
+            "Oblivion.esm",
+            "Oblivion",
+            108usize,
+            99usize,
+        ),
+        (
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
+            "Fallout3.esm",
+            "FO3",
+            9,
+            9,
+        ),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+            "FNV",
+            24,
+            9,
+        ),
+        (
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
+            "Skyrim.esm",
+            "Skyrim SE",
+            27,
+            21,
+        ),
+    ];
+
+    let mut checked_games = 0;
+    for (env_var, fallback, filename, label, want_total, want_dimensioned) in masters {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label} GRAS] skipping: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read installed master");
+        let index = parse_esm(&bytes).expect("parse installed master");
+
+        assert_eq!(
+            index.grasses.len(),
+            want_total,
+            "[{label}] GRAS record count changed"
+        );
+
+        let mut dimensioned = 0;
+        for grass in index.grasses.values() {
+            let id = &grass.editor_id;
+            assert!(
+                grass.has_data,
+                "[{label}] {id}: DATA must be exactly 32 bytes on every vanilla record"
+            );
+            assert_eq!(
+                grass.min_slope, 0,
+                "[{label}] {id}: min_slope is 0 on all 168 vanilla records; \
+                 a non-zero value means the DATA offsets have drifted"
+            );
+            assert!(
+                (1..=90).contains(&grass.max_slope),
+                "[{label}] {id}: max_slope {} outside the authored 28-90 band",
+                grass.max_slope
+            );
+            assert_eq!(
+                grass.flags & !0x07,
+                0,
+                "[{label}] {id}: flags 0x{:02X} has bits outside the documented three",
+                grass.flags
+            );
+            assert!(
+                grass.height_range.is_finite() && (0.0..=1.0).contains(&grass.height_range),
+                "[{label}] {id}: height_range {} is not a fraction",
+                grass.height_range
+            );
+            assert!(
+                grass.colour_range.is_finite() && (0.0..=1.0).contains(&grass.colour_range),
+                "[{label}] {id}: colour_range {} is not a fraction",
+                grass.colour_range
+            );
+            assert!(
+                grass.wave_period.is_finite() && grass.wave_period >= 0.0,
+                "[{label}] {id}: wave_period {} is not a usable duration",
+                grass.wave_period
+            );
+            assert!(
+                !grass.model_path.is_empty(),
+                "[{label}] {id}: every vanilla GRAS carries a MODL"
+            );
+            if let Some(height) = grass.nominal_height() {
+                assert!(
+                    (10.0..=300.0).contains(&height),
+                    "[{label}] {id}: nominal height {height} outside the corpus's 13-279 band"
+                );
+                dimensioned += 1;
+            }
+        }
+
+        eprintln!(
+            "[{label}/GRAS] {} records, {dimensioned} with usable dimensions",
+            index.grasses.len()
+        );
+        assert_eq!(
+            dimensioned, want_dimensioned,
+            "[{label}] count of GRAS records with a usable height changed"
+        );
+        checked_games += 1;
+    }
+
+    assert!(
+        checked_games > 0,
+        "no installed master was available to check"
+    );
+}
+
+/// Byte-exact pins for one `GRAS` per era, covering both dimension shapes:
+/// Oblivion's `MODB` bounding radius (no `OBND` at all) and FO3+'s `OBND`
+/// box (no `MODB` at all).
+#[test]
+#[ignore = "needs installed game data (Oblivion + FO3/FNV + Skyrim SE)"]
+fn installed_masters_gras_spot_records_decode_field_for_field() {
+    use byroredux_plugin::esm::records::tree::ObjectBounds;
+
+    let mut checked = 0;
+
+    if let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) {
+        let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+        let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+        let g = index
+            .grasses
+            .get(&0x0009_84C8)
+            .expect("Oblivion BWCattail01");
+        assert_eq!(g.editor_id, "BWCattail01");
+        assert_eq!(g.model_path, r"Plants\BWCattail01.NIF");
+        assert_eq!(g.density, 50);
+        assert_eq!((g.min_slope, g.max_slope), (0, 45));
+        assert_eq!(g.distance_from_water, 0);
+        assert_eq!(g.water_distance_application, 0);
+        assert_eq!(g.position_range, 32.0);
+        assert_eq!(g.height_range, 0.2);
+        assert_eq!(g.colour_range, 0.5);
+        assert_eq!(g.wave_period, 10.0);
+        assert!(g.scales_uniformly() && !g.fits_to_slope());
+        // Oblivion sizes GRAS with MODB and never ships OBND.
+        assert!(g.bounds.is_none(), "Oblivion GRAS carries no OBND");
+        assert!((g.bound_radius - 127.964_78).abs() < 1e-3);
+        assert_eq!(g.nominal_height(), Some(g.bound_radius));
+        checked += 1;
+    }
+
+    for (env, fallback, filename, label) in [
+        (
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
+            "Fallout3.esm",
+            "FO3",
+        ),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+            "FNV",
+        ),
+    ] {
+        let Some(data) = data_dir(env, fallback) else {
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        // FNV inherits this record from FO3 unchanged, so the same bytes
+        // must decode identically through both games' readers.
+        let g = index
+            .grasses
+            .get(&0x0006_1EB1)
+            .unwrap_or_else(|| panic!("[{label}] GrassWasteland06"));
+        assert_eq!(g.editor_id, "GrassWasteland06");
+        assert_eq!(g.density, 30);
+        assert_eq!((g.min_slope, g.max_slope), (0, 40));
+        assert_eq!(g.position_range, 22.0);
+        assert_eq!(g.height_range, 0.375);
+        assert_eq!(g.wave_period, 15.0);
+        assert!(g.scales_uniformly() && g.fits_to_slope());
+        // FO3+ sizes GRAS with OBND and never ships MODB.
+        assert_eq!(g.bound_radius, 0.0, "[{label}] FO3+ GRAS carries no MODB");
+        assert_eq!(
+            g.bounds,
+            Some(ObjectBounds {
+                min: [-34, -31, 0],
+                max: [32, 36, 70],
+            })
+        );
+        assert_eq!(g.nominal_height(), Some(70.0), "[{label}] OBND z extent");
+        checked += 1;
+    }
+
+    if let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) {
+        let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+        let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+        let g = index.grasses.get(&0x0001_CC70).expect("Skyrim SnowGrass01");
+        assert_eq!(g.editor_id, "SnowGrass01");
+        assert_eq!(g.density, 36);
+        assert_eq!((g.min_slope, g.max_slope), (0, 48));
+        assert_eq!(g.height_range, 0.33);
+        // Skyrim's wave periods run an order of magnitude above Oblivion's
+        // for the same authored intent — the reason nothing derives a
+        // canonical value from this field.
+        assert_eq!(g.wave_period, 240.0);
+        assert_eq!(g.nominal_height(), Some(63.0));
+        checked += 1;
+    }
+
+    assert!(checked > 0, "no installed master was available to check");
+}

@@ -592,13 +592,15 @@ fn sanitize_wind(wind: WindField) -> WindField {
 /// saved; both are re-resolved on load, which is why they sit in the save
 /// guard's `NOT_SAVED_BY_DESIGN` list rather than the registry.
 ///
-/// `authored` is empty for every game today. That is the designed steady state
-/// for content with no vegetation data, not a stub — `GroundCoverPalette::
-/// resolve` substitutes the built-in species so the scatter pass never sees an
-/// empty palette. Phase 5 fills it from `GRAS`.
+/// The authored species come from the load order's `GRAS` records (Phase 5,
+/// #3807) — their *dimensions* and their editor IDs' climate signal only;
+/// `GRAS` placement authority is discarded by design (§1). Content with no
+/// vegetation data, and records with no usable bounds, fall through to
+/// `GroundCoverPalette::resolve`'s built-in species, so the scatter pass
+/// never sees an empty palette.
 fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
     use crate::groundcover_translate::{
-        resolve_palette_for_chain, resolve_wind, resolve_wind_with_direction,
+        resolve_palette_from_grasses, resolve_wind, resolve_wind_with_direction,
     };
 
     let (wind_speed, wind_direction) = world
@@ -619,7 +621,7 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         &wctx.record_index.cells.worldspaces,
         &wctx.worldspace_key,
     );
-    let palette = resolve_palette_for_chain(&chain, Vec::new());
+    let palette = resolve_palette_from_grasses(&chain, &wctx.record_index.grasses);
     let wind = sanitize_wind(match wind_direction {
         Some(direction) => {
             resolve_wind_with_direction(&wctx.worldspace_key, wind_speed, Some(direction))
@@ -628,12 +630,13 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
     });
     log::info!(
         target: "engine::groundcover",
-        "Ground cover for '{}' (chain {:?}): climate {:?}, {} species, \
-         wind {:.1} u/s along [{:.2}, {:.2}]",
+        "Ground cover for '{}' (chain {:?}): climate {:?}, {} species \
+         from {} GRAS records, wind {:.1} u/s along [{:.2}, {:.2}]",
         wctx.worldspace_key,
         chain,
         palette.climate,
         palette.species.len(),
+        wctx.record_index.grasses.len(),
         wind.speed,
         wind.direction[0],
         wind.direction[1],

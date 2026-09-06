@@ -12,7 +12,8 @@ use super::super::reader::GameKind;
 use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ClassRecord, ClimateRecord, CobjRecord,
     ContainerRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord,
-    EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, HairRecord, HdptRecord,
+    EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
+    HdptRecord,
     IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
@@ -346,8 +347,11 @@ pub struct EsmIndex {
     pub ammo_effects: HashMap<u32, MinimalEsmRecord>,
     /// `DEBR` debris.
     pub debris: HashMap<u32, MinimalEsmRecord>,
-    /// `GRAS` grass.
-    pub grasses: HashMap<u32, MinimalEsmRecord>,
+    /// `GRAS` ground cover. Decoded in full since #3807 (EXAL ground-cover
+    /// Phase 5) — the *dimension* fields feed the canonical species
+    /// palette; the density/slope/water placement fields are decoded but
+    /// deliberately unused, see [`super::gras`]'s module doc.
+    pub grasses: HashMap<u32, GrasRecord>,
     /// `IMAD` image-space modifier — timed lens/color curves applied by
     /// Papyrus cinematics and CELL.XCIM transitions.
     pub imagespace_modifiers: HashMap<u32, ImadRecord>,

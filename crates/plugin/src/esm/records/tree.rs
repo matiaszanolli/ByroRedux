@@ -52,6 +52,47 @@ pub struct ObjectBounds {
     pub max: [i16; 3],
 }
 
+impl ObjectBounds {
+    /// Wire size of an `OBND` payload: six little-endian `i16`.
+    pub const WIRE_SIZE: usize = 12;
+
+    /// Decode the `OBND` sub-record from a record's sub-record list, or
+    /// `None` when the record omits it or the payload is truncated.
+    ///
+    /// Shared with `GRAS` (#3807) rather than re-rolled there — `OBND` is a
+    /// universal FO3+ sub-record with one layout, and a second copy of this
+    /// walk is a second place for a field-order mistake to hide.
+    pub fn from_subs(subs: &[SubRecord]) -> Option<Self> {
+        let data = find_sub(subs, b"OBND")?;
+        if data.len() < Self::WIRE_SIZE {
+            return None;
+        }
+        let mut r = SubReader::new(data);
+        Some(Self {
+            min: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
+            max: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
+        })
+    }
+
+    /// Extent along `axis` (0 = x, 1 = y, 2 = z), in raw record units.
+    ///
+    /// Negative when the record's bounds are inverted (authored, not
+    /// impossible), so callers that need a magnitude must clamp.
+    pub fn extent(&self, axis: usize) -> i32 {
+        i32::from(self.max[axis]) - i32::from(self.min[axis])
+    }
+
+    /// True when every component is zero — the "bounds were never computed"
+    /// state, which is how the Creation Kit ships a record whose model was
+    /// never re-bounded. Distinct from a genuinely degenerate model, and the
+    /// distinction matters: a consumer must fall back rather than believe a
+    /// zero size. 15 of FNV's 24 `GRAS` records and 6 of Skyrim's 27 are in
+    /// this state (#3807 census).
+    pub fn is_unset(&self) -> bool {
+        self.min == [0; 3] && self.max == [0; 3]
+    }
+}
+
 /// A parsed TREE base record. Every field defaults to its zero-value /
 /// `None` when the corresponding sub-record is absent — the SpeedTree
 /// importer falls back to a textured billboard placeholder when the
@@ -130,16 +171,7 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // #3401 — `PFIG` names the INGR/ALCH this tree yields.
     let harvest_form = read_u32_sub(subs, b"PFIG").map(|f| remap_fid(f, remap));
 
-    let bounds = find_sub(subs, b"OBND").and_then(|data| {
-        if data.len() < 12 {
-            return None;
-        }
-        let mut r = SubReader::new(data);
-        Some(ObjectBounds {
-            min: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
-            max: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
-        })
-    });
+    let bounds = ObjectBounds::from_subs(subs);
 
     // MILESTONE: SpeedTree Phase 2 (real leaf animation + canopy wind) — see #1057.
     // SNAM (leaf-index list) + CNAM (canopy/wind params) both decoded
