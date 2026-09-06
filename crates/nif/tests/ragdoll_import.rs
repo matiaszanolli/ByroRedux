@@ -1,7 +1,8 @@
 //! Real-data validation for PHYSAL ingestion (the physics abstraction
 //! layer — see `docs/engine/physal.md`). A humanoid skeleton's Havok
 //! ragdoll must thread end-to-end into `ImportedScene.ragdoll` through the
-//! *same* code path on every classic-chain game (Oblivion / FNV / Skyrim)
+//! *same* code path on every classic-chain game (Oblivion / FO3 / FNV /
+//! Skyrim)
 //! — only the on-disk constraint byte order differs, and that is resolved
 //! at parse. This is the "single consistent ragdoll logic" the layer
 //! exists to provide, exercised on real content.
@@ -165,6 +166,36 @@ fn fnv_humanoid_skeleton_threads_ragdoll() {
             .any(|n| n.contains("Bip01") || n.contains("Spine")),
         "expected a Bip01/Spine bone among {names:?}",
     );
+}
+
+/// #3921 (FO3-2026-09-05-D5-01) — FO3 is a classic-chain game (converged
+/// in `docs/engine/physal.md` alongside Oblivion / FNV / Skyrim) and was the
+/// one member with no arm here, so an FO3-only ragdoll regression, or an
+/// FO3 DLC skeleton divergence, had nothing to trip. Measured 2026-09-06:
+/// `_male\skeleton.nif` threads 17 authored → 17 surfaced constraints,
+/// 18 bodies, 1 connected component — the same shape as the FNV reference
+/// above. That agreement is exactly what this pins; nothing checked it.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_humanoid_skeleton_threads_ragdoll() {
+    let Some(ragdoll) =
+        thread_skeleton_ragdoll(Game::Fallout3, r"meshes\characters\_male\skeleton.nif")
+    else {
+        return;
+    };
+    assert_structural(Game::Fallout3, &ragdoll);
+    assert_reference_counts(Game::Fallout3, &ragdoll, 18, 17);
+    assert_eq!(
+        connected_components(&ragdoll),
+        1,
+        "FO3 _male skeleton must thread as one connected ragdoll, not fragments"
+    );
+    let hinges = ragdoll
+        .constraints
+        .iter()
+        .filter(|c| matches!(c.kind, ImportedJointKind::LimitedHinge { .. }))
+        .count();
+    assert!(hinges > 0, "FO3 elbows/knees should decode as LimitedHinge");
 }
 
 #[test]
