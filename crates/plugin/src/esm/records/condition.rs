@@ -250,7 +250,19 @@ pub type ConditionList = Vec<Condition>;
 /// (FO3 / FNV), and 32-byte (Skyrim+) layouts. Anything shorter than 20
 /// (truncated CTDA, malformed plugin) returns `None`.
 pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
-    if sub.sub_type != *b"CTDA" {
+    // #3614 — `CTDT` is the legacy fixed-layout condition sub-record a
+    // handful of Oblivion INFO/PACK/IDLE records still carry. UESP's field
+    // table (`Tes4Mod:Mod_File_Format/INFO`) calls it "the same structure
+    // as the CTDA except missing the last 4 bytes" — i.e. exactly the
+    // 20-byte prefix this function already accepts as the FNV short form.
+    // Confirmed against real data, not just the doc: a census of all 72
+    // `Oblivion.esm` CTDT payloads finds every one exactly 20 bytes, and
+    // decoding them against this prefix yields sane, in-catalog function
+    // indices (58 = GetStage, 72 = GetIsID, …) with plausible FormID/literal
+    // params — not noise. `CTDA` and `CTDT` never coexist as different
+    // conditions on the same real record, so accepting both here carries
+    // no ambiguity.
+    if sub.sub_type != *b"CTDA" && sub.sub_type != *b"CTDT" {
         return None;
     }
     let data = &sub.data;
@@ -384,7 +396,13 @@ pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
 /// preserved, which the OR-precedence evaluator requires.
 pub fn push_ctda(sub: &SubRecord, remap: &Option<FormIdRemap>, out: &mut ConditionList) {
     match &sub.sub_type {
-        b"CTDA" => {
+        // #3614 — `CTDT` decodes through the same `parse_ctda` prefix path
+        // as `CTDA`; see that function's doc for the evidence. Every
+        // caller that matches on `b"CTDA" | b"CIS1" | b"CIS2"` before
+        // calling this needs `CTDT` added to its own guard too — this
+        // dispatch only fires for sub-record types the caller already let
+        // through.
+        b"CTDA" | b"CTDT" => {
             if let Some(mut cond) = parse_ctda(sub) {
                 remap_condition_form_ids(&mut cond, remap);
                 out.push(cond);

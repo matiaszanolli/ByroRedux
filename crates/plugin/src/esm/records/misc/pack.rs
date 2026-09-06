@@ -817,7 +817,16 @@ pub fn parse_pack(
             // CTDA list (no per-block nesting like QUST stages), combined
             // with the standard OR-precedence rule. FormID params are
             // remapped to global load-order space here, same as PLDT above.
-            b"CTDA" | b"CIS1" | b"CIS2" if pkcu_index.is_none_or(|pkcu| sub_index < pkcu) => {
+            //
+            // #3614 (SIBLING) — `CTDT`, the legacy fixed-layout encoding
+            // `push_ctda` now also accepts, is not INFO-only: a census of
+            // `Oblivion.esm` finds 18 CTDT occurrences across 17 PACK
+            // records (alongside 72/45 on INFO and 3/1 on IDLE, which has
+            // no condition consumer to fix). Without this arm those 17
+            // packages parsed as unconditionally eligible.
+            b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2"
+                if pkcu_index.is_none_or(|pkcu| sub_index < pkcu) =>
+            {
                 push_ctda(sub, remap, &mut out.conditions)
             }
             _ => {}

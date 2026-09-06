@@ -1,6 +1,6 @@
 //! `DIAL` / `INFO` / `MESG` dialogue and message records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
+use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
@@ -58,42 +58,96 @@ pub enum ConversationTreeError {
 /// when Y` choice tree, owned by the parent `DIAL` topic via the
 /// nested Topic Children GRUP. Stub captures the response text +
 /// type byte + sibling links so quest / dialogue systems can
-/// enumerate branches without re-parsing. Conditions (CTDA),
+/// enumerate branches without re-parsing. Conditions (CTDA/CTDT),
 /// scripts (SCHR/SCDA), and edits (NAM3) are deferred until the
 /// condition runtime lands. See #631.
 #[derive(Debug, Clone, Default)]
 pub struct InfoRecord {
     pub form_id: u32,
-    /// Response text shown / spoken to the player (NAM1).
+    /// Response text shown / spoken to the player: every authored
+    /// [`Self::responses`] segment's `text`, joined in order with `"\n"`.
+    /// #3616 — pre-fix this was `NAM1`'s bare assignment, so a
+    /// multi-segment INFO (19.3% of Oblivion's, per the per-record vs.
+    /// per-occurrence census below) silently kept only its last segment.
+    /// A consumer that wants the segments unjoined (per-clip playback,
+    /// per-segment emotion) should read `responses` directly.
     pub response_text: String,
-    /// Designer notes — usually direction for the voice actor (NAM2).
+    /// Designer notes: every authored [`Self::responses`] segment's
+    /// `designer_notes`, joined in order with `"\n"`. Same #3616 fix —
+    /// `NAM2` is authored per-response-segment (`wbRStruct('Response',
+    /// [TRDT, NAM1, NAM2])` in xEdit's TES4 definitions), not once per
+    /// INFO, and shares NAM1/TRDT's exact 23,877-occurrence /
+    /// 19,260-record count on `Oblivion.esm` — the identical
+    /// assign-not-push shape the SIBLING check asked for.
     pub designer_notes: String,
-    /// `TRDT` Emotion Type — the low byte of the `EmotionType` `u32` at
-    /// TRDT offset 0: 0=Neutral, 1=Anger, 2=Disgust, 3=Fear, 4=Sad,
-    /// 5=Happy, 6=Surprise (Oblivion / FO3 / FNV; Skyrim keeps the
-    /// EmotionType-u32 @0 layout). The byte-0 histogram across all
-    /// 23,877 `Oblivion.esm` TRDT subrecords is exactly this 0–6
-    /// distribution — it is the emotion, NOT a response number (the
-    /// real response index is [`Self::response_number`]). 0 when TRDT is
-    /// absent. See #1304 (was mislabeled `response_type`).
+    /// `TRDT` Emotion Type of the *first* authored response segment —
+    /// the low byte of the `EmotionType` `u32` at TRDT offset 0:
+    /// 0=Neutral, 1=Anger, 2=Disgust, 3=Fear, 4=Sad, 5=Happy, 6=Surprise
+    /// (Oblivion / FO3 / FNV; Skyrim keeps the EmotionType-u32 @0
+    /// layout). 0 when there are no responses. See #1304 (was mislabeled
+    /// `response_type`) and #3616 (was the *last* segment's value, an
+    /// accident of assign-not-push rather than a deliberate choice).
     pub emotion_type: u8,
-    /// `TRDT` Response number — byte 12, after `EmotionType` (u32 @0),
-    /// `Emotion Value` (i32 @4), and 4 unused bytes @8. The actual
-    /// dialogue-response index within the branch. 0 when TRDT is shorter
-    /// than 13 bytes. See #1304.
+    /// `TRDT` Response number of the *first* authored response segment —
+    /// byte 12, after `EmotionType` (u32 @0), `Emotion Value` (i32 @4),
+    /// and 4 unused bytes @8. 0 when there are no responses, or when
+    /// that segment's TRDT is shorter than 13 bytes. See #1304 / #3616.
     pub response_number: u8,
+    /// Every authored TRDT+NAM1+NAM2 response segment, in authored
+    /// order (#3616). `Oblivion.esm` authors up to 8 segments on one
+    /// INFO; [`Self::response_text`] / [`Self::designer_notes`] /
+    /// [`Self::emotion_type`] / [`Self::response_number`] above are
+    /// derived from this for callers that don't need per-segment detail.
+    pub responses: Vec<ResponseSegment>,
     /// `TCLT` topic-link ref — IDs of other DIAL topics that this
     /// branch routes the conversation to. Multiple TCLTs are
     /// concatenated.
     pub topic_links: Vec<u32>,
+    /// `NAME` "Add topics" ref (#3614) — DIAL topics this response
+    /// unlocks, distinct from [`Self::topic_links`]'s immediate choices:
+    /// per xEdit's TES4 definitions (`wbRArray('Add topics', ...)`) NAME
+    /// sits before the response array, TCLT after it, and UESP's field
+    /// table separately calls TCLT "choice" vs. NAME "add topic". Was
+    /// dropped entirely pre-fix — 1,044 `Oblivion.esm` INFOs (5.4%)
+    /// author at least one and could not unlock the topic they intended.
+    pub added_topics: Vec<u32>,
+    /// `TCLF` "Link From" ref (#3614) — DIAL topics that this INFO's own
+    /// topic is reached from, the inverse direction of
+    /// [`Self::topic_links`]. Per xEdit's TES4 definitions:
+    /// `wbRArray('Link From', wbFormIDCk(TCLF, 'Topic', [DIAL]))`, the
+    /// same target class (`DIAL`) as `TCLT`'s "Choices", just the other
+    /// edge direction — so it is kept as its own field rather than
+    /// merged into `topic_links`, which would silently invert its
+    /// meaning. Was dropped entirely pre-fix — 3,792 `Oblivion.esm`
+    /// INFOs (19.7%), the other half of the title's topic-graph edges.
+    pub linked_from_topics: Vec<u32>,
     /// `PNAM` previous-info ref — the prior INFO in this branch. 0
     /// means "this is the first response in the chain".
     pub previous_info: u32,
     /// `ANAM` actor form ID — restricts this response to a specific NPC.
     /// 0 means the response works for any actor.
     pub actor_form_id: u32,
-    /// Conditions attached to this response (CTDA sub-records).
+    /// Conditions attached to this response (`CTDA`/`CTDT` sub-records,
+    /// #3614 — see [`push_ctda`]'s doc for why `CTDT` decodes through the
+    /// same path).
     pub conditions: ConditionList,
+}
+
+/// One `TRDT`+`NAM1`+`NAM2` response segment (#3616). xEdit's TES4
+/// definitions author these as a repeated struct
+/// (`wbRArray('Responses', wbRStruct('Response', [TRDT, NAM1, NAM2]))`),
+/// so a fresh `TRDT` sub-record starts a new segment and the `NAM1`/`NAM2`
+/// immediately following it belong to that segment — never assigned onto
+/// a shared field the way the pre-fix parser did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResponseSegment {
+    /// See [`InfoRecord::emotion_type`]'s doc for the enum values.
+    pub emotion_type: u8,
+    pub response_number: u8,
+    /// `NAM1` — response text shown / spoken to the player.
+    pub text: String,
+    /// `NAM2` — designer notes / voice-actor direction.
+    pub designer_notes: String,
 }
 
 pub fn parse_dial(
@@ -138,24 +192,64 @@ pub fn parse_info(
         form_id,
         ..Default::default()
     };
+    // #3616 — the response segment currently being built. A `TRDT`
+    // starts a new one (xEdit's TES4 layout repeats the whole
+    // TRDT+NAM1+NAM2 struct per response); `NAM1`/`NAM2` fill in
+    // whichever segment is open, lazily starting one if a malformed
+    // record's text arrives before its TRDT.
+    let mut current_response: Option<ResponseSegment> = None;
     for sub in subs {
         match &sub.sub_type {
-            b"NAM1" => out.response_text = read_lstring_or_zstring(&sub.data),
-            b"NAM2" => out.designer_notes = read_zstring(&sub.data),
+            b"NAM1" => {
+                current_response.get_or_insert_with(Default::default).text =
+                    read_lstring_or_zstring(&sub.data);
+            }
+            b"NAM2" => {
+                current_response
+                    .get_or_insert_with(Default::default)
+                    .designer_notes = read_zstring(&sub.data);
+            }
             b"TRDT" if !sub.data.is_empty() => {
                 // TES4 TRDT layout: EmotionType(u32 @0) + EmotionValue
                 // (i32 @4) + unused[4] @8 + Response number(u8 @12) +
                 // unused[3]. Byte 0 is the emotion (0–6), not a response
                 // number; the response index lives at offset 12. #1304.
-                out.emotion_type = sub.data[0];
-                if sub.data.len() >= 13 {
-                    out.response_number = sub.data[12];
+                //
+                // #3616 — finalize whatever segment is open before
+                // starting this one: a bare NAM1/NAM2 with no TRDT at
+                // all (malformed data) still gets pushed rather than
+                // silently merged into the next real segment.
+                if let Some(finished) = current_response.take() {
+                    out.responses.push(finished);
                 }
+                let mut segment = ResponseSegment {
+                    emotion_type: sub.data[0],
+                    ..Default::default()
+                };
+                if sub.data.len() >= 13 {
+                    segment.response_number = sub.data[12];
+                }
+                current_response = Some(segment);
             }
             b"TCLT" if sub.data.len() >= 4 => {
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(t, |r| r.remap(t));
                     out.topic_links.push(remapped);
+                }
+            }
+            // #3614 — "Add topics": DIAL topics this response unlocks.
+            // See `InfoRecord::added_topics`'s doc for why this is a
+            // separate field from `topic_links`.
+            b"NAME" if sub.data.len() >= 4 => {
+                if let Ok(t) = SubReader::new(&sub.data).u32() {
+                    out.added_topics.push(remap_fid(t, remap));
+                }
+            }
+            // #3614 — "Link From": the inverse edge direction of TCLT.
+            // See `InfoRecord::linked_from_topics`'s doc.
+            b"TCLF" if sub.data.len() >= 4 => {
+                if let Ok(t) = SubReader::new(&sub.data).u32() {
+                    out.linked_from_topics.push(remap_fid(t, remap));
                 }
             }
             b"PNAM" if sub.data.len() >= 4 => {
@@ -168,9 +262,35 @@ pub fn parse_info(
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.actor_form_id = remapped;
             }
-            b"CTDA" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
+            // #3614 — `CTDT` is the legacy fixed-layout encoding of the
+            // same condition; see `push_ctda`'s doc.
+            b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
             _ => {}
         }
+    }
+    if let Some(finished) = current_response.take() {
+        out.responses.push(finished);
+    }
+    // #3616 — derive the flat convenience fields from the full sequence
+    // rather than dropping everything but the last segment. `join("\n")`
+    // rather than concatenation so a multi-segment response reads as
+    // separate lines, not one run-on sentence; a consumer that wants the
+    // segments unmerged reads `responses` directly.
+    out.response_text = out
+        .responses
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    out.designer_notes = out
+        .responses
+        .iter()
+        .map(|r| r.designer_notes.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(first) = out.responses.first() {
+        out.emotion_type = first.emotion_type;
+        out.response_number = first.response_number;
     }
     if out.actor_form_id == 0 {
         out.actor_form_id = speaker_from_conditions(&out.conditions);
@@ -509,6 +629,113 @@ mod tests {
         let info = parse_info(0x5678, &subs, &None);
         assert_eq!(info.conditions.len(), 1);
         assert_eq!(info.conditions[0].function_index, 36);
+    }
+
+    /// #3614 — `CTDT` is the legacy fixed-layout encoding of the same
+    /// condition `CTDA` carries; this exact 20-byte payload is a real
+    /// `Oblivion.esm` INFO CTDT (`probe_substring`-style extraction,
+    /// 2026-09-06): `type_byte=0x60, comparand=1.0, function=0x003A (58,
+    /// GetStage), param_1=0x00027815` (a quest form id). Pre-fix, none of
+    /// the 45 Oblivion INFOs whose only conditions are CTDT-encoded
+    /// reached `push_ctda` at all, so they parsed as unconditional.
+    #[test]
+    fn parse_info_ctdt_condition_decodes_as_conditional() {
+        let ctdt: [u8; 20] = [
+            0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x3a, 0x00, 0x00, 0x00, 0x15, 0x78,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDT", &ctdt)];
+        let info = parse_info(0x5678, &subs, &None);
+        assert_eq!(
+            info.conditions.len(),
+            1,
+            "a CTDT-only INFO must not parse as unconditional (#3614)"
+        );
+        assert_eq!(info.conditions[0].function_index, 58, "GetStage");
+        assert_eq!(info.conditions[0].comparand, ConditionValue::Literal(1.0));
+        assert_eq!(info.conditions[0].param_1, 0x0002_7815);
+    }
+
+    /// #3614 — TCLF ("Link From") and NAME ("Add topics") were both
+    /// dropped entirely pre-fix (3,792 and 1,044 `Oblivion.esm` INFOs
+    /// respectively). Both are FormID-array sub-records like TCLT, so
+    /// the parse+push shape mirrors `parse_info_remaps_formids_with_remap`
+    /// below, but pins the two new fields specifically rather than
+    /// TCLT/PNAM/ANAM again.
+    #[test]
+    fn parse_info_tclf_and_name_are_not_dropped() {
+        let subs = vec![
+            sub(b"TCLF", &0x0001_1111u32.to_le_bytes()),
+            sub(b"TCLF", &0x0001_2222u32.to_le_bytes()),
+            sub(b"NAME", &0x0001_3333u32.to_le_bytes()),
+        ];
+        let info = parse_info(0x9999, &subs, &None);
+        assert_eq!(info.linked_from_topics, vec![0x0001_1111, 0x0001_2222]);
+        assert_eq!(info.added_topics, vec![0x0001_3333]);
+    }
+
+    /// #3614 — TCLF/NAME FormIDs are plugin-local like TCLT/PNAM/ANAM and
+    /// must be remapped the same way.
+    #[test]
+    fn parse_info_remaps_tclf_and_name_with_remap() {
+        use crate::esm::reader::FormIdRemap;
+        let remap = FormIdRemap::regular(1, vec![0]);
+        let subs = vec![
+            sub(b"TCLF", &0x01_040000u32.to_le_bytes()),
+            sub(b"NAME", &0x01_050000u32.to_le_bytes()),
+        ];
+        let info = parse_info(0x5678, &subs, &Some(remap));
+        assert_eq!(info.linked_from_topics, vec![0x01_040000]);
+        assert_eq!(info.added_topics, vec![0x01_050000]);
+    }
+
+    /// #3616 — a real multi-response Oblivion.esm shape: TRDT+NAM1+NAM2
+    /// repeated per segment (xEdit's TES4 `wbRStruct('Response', [TRDT,
+    /// NAM1, NAM2])`). Pre-fix, NAM1/TRDT/NAM2 each assigned rather than
+    /// pushed, so only the third segment's text/emotion/notes survived —
+    /// exactly the shape that dropped 4,617 response segments title-wide.
+    #[test]
+    fn parse_info_multi_response_preserves_every_segment_in_order() {
+        fn trdt(emotion: u32, response_number: u8) -> Vec<u8> {
+            let mut d = emotion.to_le_bytes().to_vec(); // EmotionType @0
+            d.extend_from_slice(&0i32.to_le_bytes()); // EmotionValue @4
+            d.extend_from_slice(&[0u8; 4]); // unused @8
+            d.push(response_number); // @12
+            d.extend_from_slice(&[0u8; 3]); // unused @13
+            d
+        }
+        let subs = vec![
+            sub(b"TRDT", &trdt(5, 0)), // Happy
+            sub(b"NAM1", b"First line.\0"),
+            sub(b"NAM2", b"cheerfully\0"),
+            sub(b"TRDT", &trdt(1, 1)), // Anger
+            sub(b"NAM1", b"Second line.\0"),
+            sub(b"NAM2", b"then annoyed\0"),
+            sub(b"TRDT", &trdt(4, 2)), // Sad
+            sub(b"NAM1", b"Third line.\0"),
+            // No NAM2 on the last segment — must not leak the prior one.
+        ];
+        let info = parse_info(0x1234, &subs, &None);
+        assert_eq!(info.responses.len(), 3, "all three segments must survive");
+        assert_eq!(info.responses[0].text, "First line.");
+        assert_eq!(info.responses[1].text, "Second line.");
+        assert_eq!(info.responses[2].text, "Third line.");
+        assert_eq!(
+            info.responses[2].designer_notes, "",
+            "no leakage across segments"
+        );
+        // Flat convenience fields: full join, first-segment emotion/number
+        // (pre-fix these silently held only the LAST segment's values).
+        assert_eq!(info.response_text, "First line.\nSecond line.\nThird line.");
+        assert_eq!(info.designer_notes, "cheerfully\nthen annoyed\n");
+        assert_eq!(
+            info.emotion_type, 5,
+            "first segment's emotion, not the last"
+        );
+        assert_eq!(
+            info.response_number, 0,
+            "first segment's number, not the last"
+        );
     }
 
     #[test]

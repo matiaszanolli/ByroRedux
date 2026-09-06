@@ -1805,6 +1805,60 @@ fn parse_rate_oblivion_esm() {
         index.trees.len(),
     );
 
+    // #3614 — three INFO sub-records (`TCLF`, `NAME`, `CTDT`) had no arm
+    // in `parse_info` and were dropped. Pinned against real form ids
+    // (2026-09-06 census): a CTDT-only INFO (no CTDA at all) must now
+    // parse as conditional rather than unconditional — the one
+    // behavioural consequence in the finding, not just a structural one.
+    let all_infos: Vec<_> = index.dialogues.values().flat_map(|d| &d.infos).collect();
+    assert!(
+        all_infos.len() > 15_000,
+        "OBL INFO count via dialogues = {} — expected > 15,000 (19,278 \
+         authored; some tail loss from unresolved DIAL parents is normal)",
+        all_infos.len(),
+    );
+    let ctdt_only = all_infos
+        .iter()
+        .find(|i| i.form_id == 0x0002_415B)
+        .unwrap_or_else(|| panic!("OBL INFO 0x02415B (CTDT-only) must parse (#3614)"));
+    assert_eq!(
+        ctdt_only.conditions.len(),
+        2,
+        "OBL INFO 0x02415B authors exactly 2 CTDT (0 CTDA) — must not parse \
+         as unconditional (#3614)"
+    );
+    let tclf_info = all_infos
+        .iter()
+        .find(|i| i.form_id == 0x0004_52EB)
+        .unwrap_or_else(|| panic!("OBL INFO 0x0452EB (TCLF) must parse (#3614)"));
+    assert_eq!(
+        tclf_info.linked_from_topics,
+        vec![0x0004_52DE],
+        "OBL INFO 0x0452EB's TCLF edge must survive (#3614)"
+    );
+    let name_info = all_infos
+        .iter()
+        .find(|i| i.form_id == 0x0008_1F17)
+        .unwrap_or_else(|| panic!("OBL INFO 0x081F17 (NAME) must parse (#3614)"));
+    assert_eq!(
+        name_info.added_topics,
+        vec![0x0008_1DBB],
+        "OBL INFO 0x081F17's NAME add-topic must survive (#3614)"
+    );
+
+    // #3614 (SIBLING) — CTDT also appears on 17 PACK records; the flat
+    // eligibility-conditions arm in `parse_pack` must accept it too.
+    let ctdt_pack = index
+        .packages
+        .get(&0x0002_930D)
+        .unwrap_or_else(|| panic!("OBL PACK 0x02930D (CTDT) must parse (#3614)"));
+    assert_eq!(
+        ctdt_pack.conditions.len(),
+        2,
+        "OBL PACK 0x02930D authors exactly 2 CTDT (0 CTDA) — must not \
+         parse as unconditionally eligible (#3614)"
+    );
+
     // #2909 — nested temporary CELL records without XCLC must not replace
     // the type-1 world's structurally persistent CELL.
     let market_persistent = index

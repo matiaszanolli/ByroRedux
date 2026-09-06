@@ -335,7 +335,11 @@ fn dial_topic_children_walked_into_dialogue_infos() {
         b"INFO",
         0x1001,
         &[
-            (b"NAM1", b"Welcome\0".to_vec()),
+            // TES4 authors TRDT before NAM1 within a response segment
+            // (xEdit's `wbRStruct('Response', [TRDT, NAM1, NAM2])`) —
+            // #3616 makes a fresh TRDT start a new segment, so this
+            // fixture's sub-record order now matters and is corrected to
+            // match real data, not just this record's own field values.
             // TES4 TRDT (16 B): EmotionType(u32)=3 (EMO_Fear) +
             // EmotionValue(i32) + unused[4] + Response number(u8)=5 @12
             // + unused[3]. Byte 0 is the emotion, NOT a response number
@@ -344,6 +348,7 @@ fn dial_topic_children_walked_into_dialogue_infos() {
                 b"TRDT",
                 vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0],
             ),
+            (b"NAM1", b"Welcome\0".to_vec()),
             (b"PNAM", 0u32.to_le_bytes().to_vec()),
         ],
     );
