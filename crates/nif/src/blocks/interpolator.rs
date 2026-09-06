@@ -919,7 +919,12 @@ impl NiBlendInterpolator {
             // #1885 sibling — same allocate_vec byte-budget guard as the
             // legacy path below; `items` is empty here (manager-controlled
             // blends carry no array), so reassigning the guarded Vec is exact.
-            items = stream.allocate_vec_sized::<InterpBlendItem>(array_size as u32)?;
+            // #3918 sibling — `size_of::<InterpBlendItem>()` is 20 (u8
+            // `priority` padded to 4), but this path reads 4 + 4 + 4 + 1 + 4
+            // = 17 bytes per item. The guard's minimum must be a floor, never
+            // an upper bound, or it rejects valid files whose array ends
+            // within 18% of the stream end.
+            items = stream.allocate_vec_min_bytes::<InterpBlendItem>(array_size as u32, 17)?;
             for _ in 0..array_size {
                 let interpolator_ref = stream.read_block_ref()?;
                 let weight = stream.read_f32_le()?;
@@ -968,7 +973,10 @@ impl NiBlendInterpolator {
         // bytes actually remaining in the stream. `array_size` is u8/u16 here,
         // so the cap is modest, but this keeps the crate's one allocation
         // idiom consistent (mirrors `read_block_ref_list` / `parse_modern`).
-        let mut items = stream.allocate_vec_sized::<InterpBlendItem>(array_size as u32)?;
+        // #3918 sibling — 17 is the *minimum* on-disk item: this path reads
+        // `priority` as i32 (20 bytes total) only when `int_priority`, and as
+        // u8 (17) otherwise. The guard has to assume the smaller encoding.
+        let mut items = stream.allocate_vec_min_bytes::<InterpBlendItem>(array_size as u32, 17)?;
         for _ in 0..array_size {
             let interpolator_ref = stream.read_block_ref()?;
             let weight = stream.read_f32_le()?;

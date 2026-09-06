@@ -303,8 +303,23 @@ impl NiSkinPartition {
                     // strip payload. Reserve the de-strip output up front so
                     // large skin partitions do not repeatedly grow while
                     // flattening their strips (#3691).
+                    //
+                    // #3918 — the floor is 2 bytes per triangle, NOT
+                    // `size_of::<[u16; 3]>()` (6). These triangles are never
+                    // read from the stream: they are *generated* by `destrip`
+                    // from the u16 strip arrays. A strip of `L` indices
+                    // occupies `2L` bytes and yields at most `L - 2`
+                    // triangles, so the strip payload always costs strictly
+                    // more than 2 bytes per emitted triangle — 2 is an honest
+                    // floor, 6 over-demands by ~3x and rejects valid files
+                    // whose strip payload sits near the end of the stream.
+                    // That cost 296 FO3 blocks (every humanoid hand mesh),
+                    // >=741 FNV and 4,693 Oblivion blocks, and
+                    // `allocate_vec_min_bytes`'s own doc states the rule
+                    // verbatim: the caller-supplied minimum must never exceed
+                    // the actual smallest legitimate on-disk encoding.
                     triangles =
-                        stream.allocate_vec_sized::<[u16; 3]>(num_triangles as u32)?;
+                        stream.allocate_vec_min_bytes::<[u16; 3]>(num_triangles as u32, 2)?;
                     // #1549 — de-strip the jagged strip arrays into a triangle
                     // list. LE / converted skinned meshes author strips, not
                     // indexed tris; pre-fix these were skipped, leaving
@@ -642,6 +657,74 @@ mod tests {
         assert!(
             p.triangles.capacity() >= num_tris as usize,
             "strip de-triangulation should reserve the authored triangle count"
+        );
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// #3918 — a strip partition whose payload sits near the end of the
+    /// stream must still parse.
+    ///
+    /// The de-strip output is *generated*, never read, so bounding it at
+    /// `size_of::<[u16; 3]>()` = 6 bytes/triangle over-demanded ~3x against
+    /// the bytes remaining and rejected valid files with `UnexpectedEof`.
+    /// On vanilla FO3 that cost 296 `NiSkinPartition` blocks — including
+    /// `characters\_male\lefthand.nif` and `righthand.nif`, the two meshes
+    /// `humanoid_body_paths` loads for every kf-era NPC — plus >=741 FNV and
+    /// 4,693 Oblivion blocks.
+    ///
+    /// The #1549 test above cannot catch this: its single strip of length 4
+    /// clears the buggy bound by exactly one byte. This fixture uses a strip
+    /// of 8, so the buggy demand (6 triangles x 6 = 36) exceeds the 25 bytes
+    /// left at the allocation point while the honest floor (6 x 2 = 12) fits.
+    #[test]
+    fn parse_skin_partition_accepts_strips_ending_near_the_stream_end() {
+        let header = make_fnv_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_partitions
+        let num_verts: u16 = 8;
+        let strip_len: u16 = 8;
+        let num_tris: u16 = strip_len - 2; // 6 — what destrip actually yields
+        let num_bones: u16 = 1;
+        let num_strips: u16 = 1;
+        let num_wpv: u16 = 1;
+        data.extend_from_slice(&num_verts.to_le_bytes());
+        data.extend_from_slice(&num_tris.to_le_bytes());
+        data.extend_from_slice(&num_bones.to_le_bytes());
+        data.extend_from_slice(&num_strips.to_le_bytes());
+        data.extend_from_slice(&num_wpv.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // bones: [0]
+        data.push(1u8); // has vertex map
+        for i in 0..num_verts {
+            data.extend_from_slice(&i.to_le_bytes());
+        }
+        data.push(1u8); // has vertex weights
+        for _ in 0..num_verts {
+            data.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        data.extend_from_slice(&strip_len.to_le_bytes()); // strip_lengths: [8]
+        data.push(1u8); // has faces
+                        // ── allocation happens here: 8*2 + 1 + 8 = 25 bytes remain ──
+        for i in 0..strip_len {
+            data.extend_from_slice(&i.to_le_bytes()); // strip [0..8)
+        }
+        data.push(1u8); // has bone indices
+        data.extend_from_slice(&[0u8; 8]); // 8 verts x 1 wpv
+
+        let mut stream = NifStream::new(&data, &header);
+        let part = NiSkinPartition::parse(&mut stream)
+            .expect("a strip payload near the stream end is valid, not truncated");
+        let p = &part.partitions[0];
+        assert_eq!(
+            p.triangles,
+            vec![
+                [0, 1, 2],
+                [1, 3, 2],
+                [2, 3, 4],
+                [3, 5, 4],
+                [4, 5, 6],
+                [5, 7, 6],
+            ],
+            "strip [0..8) must de-strip to 6 alternating-winding triangles"
         );
         assert_eq!(stream.position() as usize, data.len());
     }

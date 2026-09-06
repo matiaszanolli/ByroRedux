@@ -184,10 +184,14 @@ impl NiAdditionalGeometryData {
     fn parse_with_kind(stream: &mut NifStream, kind: NiAgdKind) -> io::Result<Self> {
         let num_vertices = stream.read_u16_le()?;
         let num_block_infos = stream.read_u32_le()?;
-        // #2523 — NiAgdDataStream is all scalar fields, no heap
-        // indirection; size_of (28 B) safely upper-bounds its 25-byte
-        // on-disk encoding.
-        let mut block_infos = stream.allocate_vec_sized::<NiAgdDataStream>(num_block_infos)?;
+        // #3918 — the #2523 note here had the rule backwards. It read
+        // "size_of (28 B) safely upper-bounds its 25-byte on-disk encoding",
+        // but `allocate_vec_min_bytes` needs a *floor*: an upper bound is
+        // precisely what rejects valid files, because the guard compares
+        // `count * min` against the bytes actually remaining. 25 is the
+        // honest per-element minimum (6 u32 + 1 u8, unpadded on disk).
+        let mut block_infos =
+            stream.allocate_vec_min_bytes::<NiAgdDataStream>(num_block_infos, 25)?;
         for _ in 0..num_block_infos {
             block_infos.push(NiAgdDataStream::parse(stream)?);
         }
