@@ -1859,6 +1859,34 @@ fn parse_rate_oblivion_esm() {
          parse as unconditionally eligible (#3614)"
     );
 
+    // #3617 — `RecordType::LVSP` had a constant but no dispatch arm; 306
+    // vanilla leveled-spell lists produced nothing. Measured 2026-09-06.
+    assert_eq!(
+        index.leveled_spells.len(),
+        306,
+        "OBL LVSP={} — expected 306 (#3617)",
+        index.leveled_spells.len(),
+    );
+    let lvsp = index.leveled_spells.get(&0x0007_FDC7).unwrap_or_else(|| {
+        panic!("OBL LVSP 0x07FDC7 (SELL0SummonAtronachFlesh100) must parse (#3617)")
+    });
+    assert_eq!(lvsp.editor_id, "SELL0SummonAtronachFlesh100");
+    assert_eq!(lvsp.chance_none, 0);
+    assert_eq!(lvsp.flags, 1);
+    assert_eq!(
+        lvsp.entries
+            .iter()
+            .map(|e| (e.level, e.form_id, e.count))
+            .collect::<Vec<_>>(),
+        vec![
+            (25, 0x0007_FDBE, 1),
+            (50, 0x0007_FDBC, 1),
+            (75, 0x0007_FDBD, 1),
+            (100, 0x0007_FDBF, 1),
+        ],
+        "OBL LVSP 0x07FDC7's LVLO entries must decode via parse_leveled_list (#3617)"
+    );
+
     // #2909 — nested temporary CELL records without XCLC must not replace
     // the type-1 world's structurally persistent CELL.
     let market_persistent = index

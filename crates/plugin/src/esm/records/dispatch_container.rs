@@ -1,6 +1,6 @@
 //! Container / leveled-list dispatch — split out of
 //! `parse_esm_with_load_order` (#2060). CONT is dual-target (typed +
-//! `cells.statics`); LVLI/LVLN/LVLC are typed-only. Embedded FormIDs
+//! `cells.statics`); LVLI/LVLN/LVLC/LVSP are typed-only. Embedded FormIDs
 //! (CNTO/SNAM/QNAM/SCRI, LVLO) are plugin-local — each arm remaps to
 //! global via `reader.get_form_id_remap()` before parsing (#2079).
 
@@ -54,6 +54,17 @@ pub(super) fn dispatch_container_group(
                 index
                     .leveled_creatures
                     .insert(fid, parse_leveled_list(fid, subs, &lvlc_remap));
+            })?
+        }
+        // Leveled spell lists (NPC_/CREA SPLO targets) — byte-identical
+        // to LVLI/LVLN/LVLC. #3617: `RecordType::LVSP` existed with no
+        // dispatch arm; 306 vanilla Oblivion records produced nothing.
+        b"LVSP" => {
+            let lvsp_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"LVSP", &mut |fid, subs| {
+                index
+                    .leveled_spells
+                    .insert(fid, parse_leveled_list(fid, subs, &lvsp_remap));
             })?
         }
         _ => unreachable!("dispatch_container_group: unexpected label {label:?}"),

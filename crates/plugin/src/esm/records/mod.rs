@@ -437,7 +437,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     game,
                 )?;
             }
-            b"CONT" | b"LVLI" | b"LVLN" | b"LVLC" => {
+            b"CONT" | b"LVLI" | b"LVLN" | b"LVLC" | b"LVSP" => {
                 dispatch_container::dispatch_container_group(
                     &label,
                     &mut reader,

@@ -1507,8 +1507,12 @@ fn categories_table_row_count_pinned() {
     //   one entry per parsed OMOD record, merged by hand and absent from
     //   `categories()`, so `total()` and the census under-reported by 2,409
     //   on Fallout4.esm and OMOD never appeared in the breakdown at all).
+    // Bumped 99 → 100 in #3617 (OBL-D3-05: leveled_spells — `RecordType::LVSP`
+    //   had a constant but no dispatch arm at all, so 306 vanilla Oblivion
+    //   leveled-spell lists produced nothing and had no category row to
+    //   regress against).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 99);
+    assert_eq!(EsmIndex::categories().len(), 100);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

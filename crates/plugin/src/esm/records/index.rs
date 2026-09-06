@@ -94,6 +94,15 @@ pub struct EsmIndex {
     /// uses LVLC for most enemy encounters; FNV migrated the bulk to
     /// LVLN but still ships some legacy LVLC entries. See #448.
     pub leveled_creatures: HashMap<u32, LeveledList>,
+    /// Leveled spell lists (NPC_/CREA `SPLO` targets). Byte-identical
+    /// LVLD/LVLF/LVLO layout to LVLI/LVLN/LVLC, so the same
+    /// `parse_leveled_list` handles this too (#3617). `RecordType::LVSP`
+    /// existed with no dispatch arm at all — 306 `Oblivion.esm` records
+    /// silently produced nothing; a resolver that receives a leveled
+    /// spell FormID (via a future `SPLO` decoder — not parsed anywhere
+    /// in this crate yet, a separate gap) still has nowhere to look it
+    /// up without this map.
+    pub leveled_spells: HashMap<u32, LeveledList>,
     pub npcs: HashMap<u32, NpcRecord>,
     /// Creature base records (FO3 bestiary: super mutants, deathclaws,
     /// radroaches, robots, brahmin, etc.). CREA shares EDID / FULL /
@@ -520,6 +529,7 @@ impl EsmIndex {
             map_category!("LVLI", leveled_items),
             map_category!("LVLN", leveled_npcs),
             map_category!("LVLC", leveled_creatures),
+            map_category!("LVSP", leveled_spells),
             map_category!("NPCs", npcs),
             map_category!("creatures", creatures),
             map_category!("races", races),
