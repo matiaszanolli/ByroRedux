@@ -1497,8 +1497,10 @@ impl MaterialInfo {
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],
-            glass_refraction_scale: 0.05,
-            glass_blur_scale: 0.4,
+            // #3912 — same named canonical default as `MaterialInfo::default`.
+            glass_refraction_scale:
+                byroredux_core::ecs::components::material::DEFAULT_GLASS_REFRACTION_SCALE,
+            glass_blur_scale: byroredux_core::ecs::components::material::DEFAULT_GLASS_BLUR_SCALE,
             glass_blur_scale_factor: 1.0,
             // #2609 — the NIF importer never reads an external material file,
             // so the overrides below are the keyword classifier's guess, not

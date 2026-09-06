@@ -25,6 +25,9 @@ use byroredux_core::ecs::{
     AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform, Material, MeshHandle,
     RenderLayer, TextureHandle, World, WorldBound,
 };
+use byroredux_core::ecs::components::material::{
+    DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+};
 use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
@@ -770,8 +773,15 @@ pub(super) fn collect_static_mesh_draws(
                     // Texture handles above remain source-authored overlays.
                     ior,
                     glass_fresnel_color: mat.map(|m| m.glass_fresnel_color).unwrap_or([1.0; 3]),
-                    glass_refraction_scale: mat.map(|m| m.glass_refraction_scale).unwrap_or(0.05),
-                    glass_blur_scale: mat.map(|m| m.glass_blur_scale).unwrap_or(0.4),
+                    // #3912 — same doctrine as the parallax pair above:
+                    // the no-`Material` fallback shares the canonical
+                    // named default rather than a bare literal copy.
+                    glass_refraction_scale: mat
+                        .map(|m| m.glass_refraction_scale)
+                        .unwrap_or(DEFAULT_GLASS_REFRACTION_SCALE),
+                    glass_blur_scale: mat
+                        .map(|m| m.glass_blur_scale)
+                        .unwrap_or(DEFAULT_GLASS_BLUR_SCALE),
                     glass_blur_scale_factor: mat.map(|m| m.glass_blur_scale_factor).unwrap_or(1.0),
                     lighting_effect_1: mat.map(|m| m.lighting_effect_1).unwrap_or(0.0),
                     lighting_effect_2: mat.map(|m| m.lighting_effect_2).unwrap_or(0.0),

@@ -2628,8 +2628,9 @@ mod is_caustic_source_tests {
             metalness: 0.0,
             ior: 1.5, // #1248
             glass_fresnel_color: [1.0; 3],
-            glass_refraction_scale: 0.05,
-            glass_blur_scale: 0.4,
+            glass_refraction_scale:
+                byroredux_core::ecs::components::material::DEFAULT_GLASS_REFRACTION_SCALE,
+            glass_blur_scale: byroredux_core::ecs::components::material::DEFAULT_GLASS_BLUR_SCALE,
             glass_blur_scale_factor: 1.0,
             lighting_effect_1: 0.0,
             lighting_effect_2: 0.0,

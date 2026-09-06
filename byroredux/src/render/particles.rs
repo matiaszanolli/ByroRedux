@@ -20,6 +20,9 @@
 //! (src=SRC_ALPHA=6, dst=ONE=0) per ParticleEmitter defaults; per-emitter
 //! overrides ride through the existing pipeline cache from #392.
 
+use byroredux_core::ecs::components::material::{
+    DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+};
 use byroredux_core::ecs::{ParticleEmitter, RenderLayer, TextureHandle, World};
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -281,8 +284,10 @@ pub(super) fn emit_particles(
                 shader_color: [0.0; 3],
                 shader_float: 0.0,
                 glass_fresnel_color: [1.0; 3],
-                glass_refraction_scale: 0.05,
-                glass_blur_scale: 0.4,
+                // #3912 — particles carry no `Material`; the neutral glass
+                // scalars are the canonical named defaults, not copies.
+                glass_refraction_scale: DEFAULT_GLASS_REFRACTION_SCALE,
+                glass_blur_scale: DEFAULT_GLASS_BLUR_SCALE,
                 glass_blur_scale_factor: 1.0,
                 lighting_effect_1: 0.0,
                 lighting_effect_2: 0.0,

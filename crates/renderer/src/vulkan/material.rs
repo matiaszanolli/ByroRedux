@@ -27,7 +27,10 @@
 //! until #1583/#1590 lifted it into the shared include).
 
 use super::scene_buffer::MAX_MATERIALS;
-use byroredux_core::ecs::components::material::{DEFAULT_DIELECTRIC_IOR, GLASS_SURFACE_BEHAVIOR};
+use byroredux_core::ecs::components::material::{
+    DEFAULT_DIELECTRIC_IOR, DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+    GLASS_SURFACE_BEHAVIOR,
+};
 use rustc_hash::FxHashMap;
 use std::sync::Once;
 
@@ -502,8 +505,11 @@ impl Default for GpuMaterial {
             glass_fresnel_r: 1.0,
             glass_fresnel_g: 1.0,
             glass_fresnel_b: 1.0,
-            glass_refraction_scale: 0.05,
-            glass_blur_scale: 0.4,
+            // #3912 — the GPU-side neutral default is the same named
+            // constant `Material::default()` uses, so a canonical retune
+            // can't leave the no-material fallback on the old number.
+            glass_refraction_scale: DEFAULT_GLASS_REFRACTION_SCALE,
+            glass_blur_scale: DEFAULT_GLASS_BLUR_SCALE,
             glass_blur_scale_factor: 1.0,
             glass_roughness_scratch_map_index: 0,
             glass_dirt_overlay_map_index: 0,
