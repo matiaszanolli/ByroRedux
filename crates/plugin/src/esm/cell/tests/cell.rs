@@ -1357,3 +1357,68 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
     assert_eq!(cell.water_height, None);
     assert!(!cell.water_height_is_explicit);
 }
+
+#[test]
+fn parse_cell_xclw_sentinel_is_explicit_no_water() {
+    // #3827 / ESM-D5-01 — walker-level regression for the XCLW tri-state.
+    // `xclw_water_height` is already unit-tested at the helper boundary for
+    // all four cases (normal height, #INT_MIN#, Skyrim FLT_MAX, too-short),
+    // but nothing drove a full `parse_cell_group` call with an authored
+    // sentinel payload and asserted the composed result: an explicit XCLW
+    // that decodes to "no water" (author drained a reservoir / dry
+    // basement) must NOT collapse to the same CellData shape as "XCLW
+    // absent" (see `parse_cell_without_xclw_leaves_water_height_none`
+    // above) — the two differ only in `water_height_is_explicit`, and a
+    // future length-guarded match arm (`b"XCLW" if sub.data.len() >= 4`)
+    // could silently reintroduce that collapse for this exact payload
+    // without any test at the walker level catching it.
+    let sentinel_bytes = f32::MAX.to_le_bytes();
+
+    let mut sub_data = Vec::new();
+    let edid = "DrainedReservoir\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+
+    sub_data.extend_from_slice(b"XCLW");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&sentinel_bytes);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0x02u32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Skyrim,
+    )
+    .unwrap();
+
+    let cell = cells
+        .get("drainedreservoir")
+        .expect("interior CELL present");
+    assert_eq!(
+        cell.water_height, None,
+        "an authored sentinel decodes to no water, same as absent"
+    );
+    assert!(
+        cell.water_height_is_explicit,
+        "but the tri-state must still record that XCLW was present and explicit"
+    );
+}

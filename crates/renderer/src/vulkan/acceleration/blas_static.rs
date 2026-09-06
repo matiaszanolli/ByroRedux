@@ -359,12 +359,14 @@ impl AccelerationManager {
         // (`evict_unused_blas` early-returns under budget); helps cell
         // transitions where the outgoing cell's BLAS still holds live
         // memory that the incoming cell's batch is about to need. #510.
-        // #2692 — as at the single-shot site above: eviction is deferred
-        // through `pending_destroy_blas` + `DEFAULT_COUNTDOWN`, which is the
-        // real cross-frame guarantee; the idle threshold this comment used to
-        // cite is LRU policy only (#1449). The prepared buffers for this batch
-        // are additionally not yet in `blas_entries`, so they cannot be
-        // candidates at all.
+        // #2692 — eviction is deferred through `pending_destroy_blas` +
+        // `DEFAULT_COUNTDOWN`, which is the real cross-frame guarantee; the
+        // idle threshold this comment used to cite is LRU policy only
+        // (#1449). The prepared buffers for this batch are additionally not
+        // yet in `blas_entries`, so they cannot be candidates at all. (The
+        // "single-shot site" this comment used to point at — `build_blas` —
+        // was deleted by #2914; this batched build is the only static-BLAS
+        // BUILD site left.)
         //
         // #1792 — `pending_bytes = 0`: nothing in this batch has been
         // sized yet at this point (the loop below hasn't run).
@@ -550,7 +552,9 @@ impl AccelerationManager {
         );
 
         if need_new_scratch {
-            // #1782 — see the matching comment in `build_blas` above.
+            // #1782 — see the matching comment in `memory::shrink_blas_scratch_to_fit`
+            // (the other grow-only-replace site; the single-shot `build_blas`
+            // this comment used to also point at was deleted by #2914).
             // This is the M40 streaming hot path (called from
             // `step_streaming` in `about_to_wait`), the exact window
             // where the previously-submitted frame's skinned-BLAS
@@ -946,10 +950,12 @@ impl AccelerationManager {
             while self.blas_entries.len() <= handle {
                 self.blas_entries.push(None);
             }
-            // #2481 / AS-D1-NEW-02 — see the matching guard in `build_blas`
-            // above: release any BLAS already occupying this handle through
-            // the deferred-destroy queue before overwriting it, instead of
-            // dropping a live `BlasEntry` (and leaking its raw
+            // #2481 / AS-D1-NEW-02 — see the matching guard in
+            // `blas_skinned.rs` (the single-shot `build_blas` this comment
+            // used to also point at was deleted by #2914): release any BLAS
+            // already occupying this handle through the deferred-destroy
+            // queue before overwriting it, instead of dropping a live
+            // `BlasEntry` (and leaking its raw
             // `vk::AccelerationStructureKHR`) as plain memory.
             self.drop_blas(mesh_handle);
             self.total_blas_bytes += blas_size;
@@ -1063,7 +1069,9 @@ impl AccelerationManager {
         // The GPU free is deferred (see the loop body), so this function never
         // touches `device`/`allocator` directly — `tick_deferred_destroy` does.
         // The params are retained so the call sites
-        // (`build_blas`/`build_blas_batched`/`draw.rs`) keep a stable signature.
+        // (`build_blas_batched`'s three internal call sites plus
+        // `dispatch_skin_and_cluster.rs`) keep a stable signature. The
+        // deleted single-shot `build_blas` (#2914) used to be a fourth.
         // The vestigial `unsafe` marker this comment used to promise a follow-up
         // for was dropped in #2692.
         let _ = (device, allocator);

@@ -1,9 +1,4 @@
-# Issue #3828: DOC-ROT-1: mod-runtime 'no consumer' premise is stale — extensions.rs (10,652 LOC) is now a live consumer
-
-**Labels**: low,safety,documentation,doc-rot
-**Filed**: 2026-09-04, via /audit-publish from the water-deep audit suite
-
----
+# DOC-ROT-1: mod-runtime 'no consumer' premise is stale — extensions.rs (10,652 LOC) is now a live consumer
 
 **Severity**: LOW
 **Dimension**: 11 — Sandboxed Mod Runtime Trust Boundary
@@ -40,5 +35,14 @@ An auditor following the skill's current "audit as a contract, not a live path" 
 Update `audit-safety/SKILL.md` Dimension 11 to name `byroredux/src/extensions.rs` as the live consumer and drop the "contract, not a live path" framing; add a layout-map row for it in `_audit-common.md`. Separately (a process suggestion, not a code fix): given its size and freshness, `extensions.rs` is a strong candidate for a dedicated, deeper safety/security pass beyond what a single `/audit-safety` dimension budget covers.
 
 ## Completeness Checks
-- [ ] N/A — documentation-only edit to `.claude/commands/audit-safety/SKILL.md` and `.claude/commands/_audit-common.md`
-- [ ] **Follow-up flagged, not filed here**: a dedicated deep-dive audit of `extensions.rs` itself (10,652 LOC, untrusted-guest-facing) is recommended as separate future work
+- [x] N/A — documentation-only edit to `.claude/commands/audit-safety/SKILL.md` and `.claude/commands/_audit-common.md`
+- [x] **Follow-up flagged, not filed here**: a dedicated deep-dive audit of `extensions.rs` itself (10,652 LOC, untrusted-guest-facing) is recommended as separate future work
+
+## Resolution
+`audit-safety/SKILL.md` Dimension 11 was already rewritten in the 2026-09-05 audit-skill sync (a session earlier than this issue's own filing) to name `byroredux/src/extensions.rs` as the live consumer, drop the "contract, not a live path" framing, and cite the 28-capability catalog — verified still in place, no further edit needed there.
+
+The remaining half — the missing `_audit-common.md` layout-map row — was genuinely absent. Added a row for `extensions.rs` next to the other Binary-modules entries (10,652 LOC, `24df5304`, wiring points in `main.rs`/`app_events.rs`, capability-gating summary, pointer to `/audit-safety` Dimension 11 as owner) so it's no longer invisible to audit-suite routing.
+
+The deeper-audit follow-up suggestion is not filed as a separate issue per this pipeline's scope (documentation-only fix); flagging it again here for visibility.
+
+`.claude/commands/_audit-validate.sh` re-run clean after the edit (all paths valid, crate count unchanged).

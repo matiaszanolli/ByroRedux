@@ -252,7 +252,7 @@ pub struct AccelerationManager {
     /// [`blas_static::drain_pending_destroys`].
     pub(super) pending_destroy_scratch: DeferredDestroyQueue<GpuBuffer>,
     /// Monotonic counter bumped whenever the `blas_entries` map mutates
-    /// (add via `build_blas` / `build_blas_batched`, remove via
+    /// (add via `build_blas_batched`, remove via
     /// `drop_blas` / `evict_unused_blas`). Each [`TlasState`] caches
     /// the value seen at its last BUILD; when the counters disagree the
     /// next `build_tlas` knows the per-instance BLAS device addresses

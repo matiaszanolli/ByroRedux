@@ -427,6 +427,71 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
 }
 
 #[test]
+fn parse_wrld_exterior_cell_xclw_sentinel_is_explicit_no_water() {
+    // #3827 / ESM-D5-01 — the exterior-walker counterpart to
+    // `parse_cell_xclw_sentinel_is_explicit_no_water` (interior walker,
+    // `tests/cell.rs`). `xclw_water_height` is already unit-tested at the
+    // helper boundary; this drives a full `parse_wrld_group` call with an
+    // authored `#INT_MIN#` sentinel and asserts the resulting `CellData`
+    // keeps the tri-state distinct: `water_height == None` (the author
+    // suppressed water) but `water_height_is_explicit == true` (XCLW WAS
+    // present), not the "XCLW absent" shape a future length-guarded match
+    // arm could silently collapse it into.
+    let wrld_fid: u32 = 0x0000_003D;
+    let cell_fid: u32 = 0x0001_2346;
+    let sentinel_bytes = (-2_147_483_648.0_f32).to_le_bytes(); // #INT_MIN#
+
+    let xclc = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&1i32.to_le_bytes());
+        v.extend_from_slice(&1i32.to_le_bytes());
+        v
+    };
+
+    let cell = build_cell_record(
+        cell_fid,
+        &[
+            (b"EDID", b"DrainedQuarry00\0".to_vec()),
+            (b"XCLC", xclc),
+            (b"XCLW", sentinel_bytes.to_vec()),
+        ],
+    );
+    let sub_block = build_cell_children_group(0, 5, &cell);
+    let block = build_cell_children_group(0, 4, &sub_block);
+    let children = build_world_children_group(wrld_fid, &block);
+
+    let wrld = build_wrld_record(wrld_fid, &[(b"EDID", b"CapitalWasteland\0".to_vec())]);
+
+    let mut wrld_grup_payload = Vec::new();
+    wrld_grup_payload.extend_from_slice(&wrld);
+    wrld_grup_payload.extend_from_slice(&children);
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"GRUP");
+    buf.extend_from_slice(&((24 + wrld_grup_payload.len()) as u32).to_le_bytes());
+    buf.extend_from_slice(b"WRLD");
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&wrld_grup_payload);
+
+    let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
+    let capital_wasteland = exterior
+        .get("capitalwasteland")
+        .expect("Capital Wasteland WRLD's children must be indexed");
+    let cell = capital_wasteland
+        .get(&(1, 1))
+        .expect("DrainedQuarry (1,1) exterior CELL must be decoded");
+
+    assert_eq!(
+        cell.water_height, None,
+        "an authored #INT_MIN# sentinel decodes to no water"
+    );
+    assert!(
+        cell.water_height_is_explicit,
+        "but the tri-state must still record that XCLW was present and explicit"
+    );
+}
+
+#[test]
 fn parse_wrld_truncated_payloads_default_safely() {
     // Defensive: a 1-byte PNAM (pre-Skyrim variant), an empty DATA,
     // and a NAM0 short by 1 byte must not panic. The walker should

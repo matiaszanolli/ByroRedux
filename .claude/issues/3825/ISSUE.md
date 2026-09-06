@@ -1,9 +1,4 @@
-# Issue #3825: REN-WD-D2-02: audit-renderer/SKILL.md Dim 2 still describes the removed shader-side GLASS_RAY_BUDGET admission gate
-
-**Labels**: low,renderer,documentation,doc-rot
-**Filed**: 2026-09-04, via /audit-publish from the water-deep audit suite
-
----
+# REN-WD-D2-02: audit-renderer/SKILL.md Dim 2 still describes the removed shader-side GLASS_RAY_BUDGET admission gate
 
 **Severity**: LOW
 **Dimension**: SSBO/Indexing (audit-skill doc-rot)
@@ -26,4 +21,7 @@ Audit-methodology only. An auditor following the checklist looks for a gate that
 Reword the bullet to: "the glass ray budget is `qualityTier`-gated; `GLASS_RAY_BUDGET` only derives the per-tier `glass_ray_limit` telemetry value — verify the negative pin in `shader_constants.rs` still holds".
 
 ## Completeness Checks
-- [ ] N/A — documentation-only edit to `.claude/commands/audit-renderer/SKILL.md`
+- [x] N/A — documentation-only edit to `.claude/commands/audit-renderer/SKILL.md`
+
+## Resolution
+Re-verified the premise (`grep -rln GLASS_RAY_BUDGET crates/renderer/shaders/` returns only `include/shader_constants.glsl`, confirmed the negative pin `!src.contains("old + glassRayCost <= rayBudget.glassRayLimit")` in `shader_constants.rs:1791`) and reworded the Dimension 2 bullet exactly per the suggested fix.

@@ -1,9 +1,4 @@
-# Issue #3827: ESM-D5-01: no walker-level regression test for the XCLW no-water sentinel
-
-**Labels**: low,esm-plugin,water,bug,test-gap
-**Filed**: 2026-09-04, via /audit-publish from the water-deep audit suite
-
----
+# ESM-D5-01: no walker-level regression test for the XCLW no-water sentinel
 
 **Severity**: LOW
 **Dimension**: CELL / WRLD Walkers
@@ -27,4 +22,13 @@ None today. If it regresses: a cell whose author explicitly suppressed water (dr
 Add one test per walker: encode an `XCLW` payload of `f32::MAX.to_le_bytes()` (or `#INT_MIN#`) through the full `parse_cell_group` / `parse_wrld_children` call and assert `water_height_is_explicit == true` and `water_height == None` on the resulting `CellData`.
 
 ## Completeness Checks
-- [ ] **TESTS**: This finding IS the test-gap — the suggested fix adds the missing coverage
+- [x] **TESTS**: This finding IS the test-gap — the suggested fix adds the missing coverage
+
+## Resolution
+Added both walker-level regression tests exactly as suggested:
+- `crates/plugin/src/esm/cell/tests/cell.rs::parse_cell_xclw_sentinel_is_explicit_no_water` — interior walker (`parse_cell_group`), Skyrim `f32::MAX` sentinel.
+- `crates/plugin/src/esm/cell/tests/wrld.rs::parse_wrld_exterior_cell_xclw_sentinel_is_explicit_no_water` — exterior walker (`parse_wrld_group`, via the `build_wrld_record`/`build_cell_children_group`/`build_world_children_group` fixture helpers already in that file), `#INT_MIN#` sentinel.
+
+Both assert `water_height == None` (the sentinel decodes to "no water") together with `water_height_is_explicit == true` (XCLW WAS present) — the exact combination a future length-guarded match arm could silently collapse into the "XCLW absent" shape without any existing test catching it.
+
+`cargo test -q -p byroredux-plugin xclw` → 8 passed (up from 6), 0 failed. Full crate suite: 918 passed (up from 916), 0 failed.
