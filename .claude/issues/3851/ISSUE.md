@@ -1,8 +1,6 @@
-# #3851: TD1-2026-09-05-02: `compatibility.rs` is 3759 production LOC and 55 % StorageUtil — and the SKILL's proposed `ExtenderFamily` split axis does not exist in the code
+# TD1-2026-09-05-02: `compatibility.rs` is 3759 production LOC and 55 % StorageUtil — and the SKILL's proposed `ExtenderFamily` split axis does not exist in the code
 
-Filed from `docs/audits/AUDIT_TECH_DEBT_2026-09-05.md` (TD1-2026-09-05-02) via `/audit-publish`, 2026-09-05. Labels: `low,tech-debt,bug`.
-
-Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3851 --json state`.
+Labels: bug, low, tech-debt
 
 ---
 
@@ -69,3 +67,4 @@ Immutable snapshot of the issue as filed. GitHub is authoritative for current st
 - [ ] **TESTS**: A regression test (or gate) pins this specific fix
 - [ ] **DROP**: If Vulkan objects change, the Drop impl stays reverse-order correct
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
+

@@ -1,8 +1,6 @@
-# #3850: TD9-2026-09-05-02: At least 101 of 182 `#[ignore]`d real-data tests report a green `ok` when their data is absent — the Rust half of the tree has no skip signal, while the shell half already does
+# TD9-2026-09-05-02: At least 101 of 182 `#[ignore]`d real-data tests report a green `ok` when their data is absent — the Rust half of the tree has no skip signal, while the shell half already does
 
-Filed from `docs/audits/AUDIT_TECH_DEBT_2026-09-05.md` (TD9-2026-09-05-02) via `/audit-publish`, 2026-09-05. Labels: `medium,test-gap,bug`.
-
-Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3850 --json state`.
+Labels: bug, medium, test-gap
 
 ---
 
@@ -41,3 +39,4 @@ Immutable snapshot of the issue as filed. GitHub is authoritative for current st
 - [ ] **TESTS**: A regression test (or gate) pins this specific fix
 - [ ] **DROP**: If Vulkan objects change, the Drop impl stays reverse-order correct
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
+

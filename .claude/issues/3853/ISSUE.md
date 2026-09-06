@@ -1,8 +1,6 @@
-# #3853: TD1-2026-09-05-04: `mod-runtime/runtime.rs` holds 19 separate `impl <wit>::Host for HostState` blocks in one 3495-LOC file (the SKILL's per-binding axis is CORRECT — verified)
+# TD1-2026-09-05-04: `mod-runtime/runtime.rs` holds 19 separate `impl <wit>::Host for HostState` blocks in one 3495-LOC file (the SKILL's per-binding axis is CORRECT — verified)
 
-Filed from `docs/audits/AUDIT_TECH_DEBT_2026-09-05.md` (TD1-2026-09-05-04) via `/audit-publish`, 2026-09-05. Labels: `low,tech-debt,bug`.
-
-Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3853 --json state`.
+Labels: bug, low, tech-debt
 
 ---
 
@@ -60,3 +58,4 @@ Immutable snapshot of the issue as filed. GitHub is authoritative for current st
 - [ ] **TESTS**: A regression test (or gate) pins this specific fix
 - [ ] **DROP**: If Vulkan objects change, the Drop impl stays reverse-order correct
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
+

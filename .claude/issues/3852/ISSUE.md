@@ -1,8 +1,6 @@
-# #3852: TD1-2026-09-05-03: `papyrus_provider.rs` is a compiler front-end, an IR, and an interpreter in one 3711-LOC file
+# TD1-2026-09-05-03: `papyrus_provider.rs` is a compiler front-end, an IR, and an interpreter in one 3711-LOC file
 
-Filed from `docs/audits/AUDIT_TECH_DEBT_2026-09-05.md` (TD1-2026-09-05-03) via `/audit-publish`, 2026-09-05. Labels: `low,scripting,tech-debt,bug`.
-
-Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3852 --json state`.
+Labels: bug, low, tech-debt, scripting
 
 ---
 
@@ -52,3 +50,4 @@ Immutable snapshot of the issue as filed. GitHub is authoritative for current st
 - [ ] **TESTS**: A regression test (or gate) pins this specific fix
 - [ ] **DROP**: If Vulkan objects change, the Drop impl stays reverse-order correct
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
+
