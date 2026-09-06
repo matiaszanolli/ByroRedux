@@ -166,7 +166,7 @@ impl MeshResolver for TextureProvider {
 ///   - No `--sounds-bsa` archive opened successfully (flag absent, or
 ///     every occurrence failed to open — already logged by
 ///     [`build_sound_archive_provider`]).
-///   - The canonical path is missing from every opened archive.
+///   - No [`FOOTSTEP_CANDIDATES`] key is present in any opened archive.
 ///   - The decode fails through `byroredux_audio::load_sound_from_bytes`.
 ///
 /// Each failure logs at WARN; engine boot continues regardless.
@@ -182,33 +182,113 @@ pub(crate) fn try_load_default_footstep(
         log::info!("M44 Phase 3.5: no --sounds-bsa archive supplied — footstep sound skipped");
         return;
     }
-    // Vanilla FNV ships dirt-walk footsteps with left/right
-    // alternation. Pick one canonical entry as the default until
-    // FOOT records land. Path verified by `probe_substring` against
-    // `Fallout - Sound.bsa`, 2026-05-05.
-    const CANONICAL: &str = r"sound\fx\fst\dirt\walk\left\fst_dirt_walk_01.wav";
-    let Some(bytes) = sounds.extract(CANONICAL) else {
+    // Vanilla dirt-walk footsteps ship with left/right alternation; pick
+    // one entry per game as the default until FOOT records land.
+    let Some((chosen, bytes)) = first_default_sound_hit(sounds, FOOTSTEP_CANDIDATES) else {
         log::warn!(
-            "M44 Phase 3.5: no --sounds-bsa archive carries canonical footstep '{CANONICAL}'"
+            "M44 Phase 3.5: no --sounds-bsa archive carries any default footstep candidate"
         );
         return;
     };
     let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("M44 Phase 3.5: decode '{CANONICAL}': {e}");
+            log::warn!("M44 Phase 3.5: decode '{chosen}': {e}");
             return;
         }
     };
     let mut config = world.resource_mut::<crate::components::FootstepConfig>();
     config.default_sound = Some(std::sync::Arc::new(sound));
-    log::info!("M44 Phase 3.5: footstep sound loaded from --sounds-bsa ('{CANONICAL}')");
+    log::info!("M44 Phase 3.5: footstep sound loaded from --sounds-bsa ('{chosen}')");
+}
+
+/// One boot-time default-sound candidate: an archive key plus the vanilla
+/// games whose sound archive was verified — by exact key, against the real
+/// file listing — to carry it.
+///
+/// #3913 — the pre-fix splash list documented itself as covering "the
+/// Skyrim and Fallout naming variants" while none of its three keys existed
+/// in any Fallout archive (each was one path segment off: FNV nests the
+/// medium splash under `splash_m\`, FO3 under `medium\`, and Skyrim's
+/// footstep folders are `l\`/`r\` where Fallout's are `left\`/`right\`).
+/// A source-only test cannot catch a mistyped archive key, so every row
+/// here carries its game tag and
+/// `default_sound_candidates_hit_their_tagged_game_archive` (`#[ignore]`,
+/// needs game data) re-asserts each row against the archive on disk.
+/// Verified 2026-09-06 against `Fallout - Sound.bsa` (FNV 6,465 entries /
+/// FO3 2,709), `Skyrim - Sounds.bsa` (6,198) and `Oblivion - Sounds.bsa`
+/// (1,533). FO4's `Fallout4 - Sounds.ba2` ships its splashes as `.xwm`,
+/// which `byroredux_audio` doesn't decode, so it has no row.
+pub(crate) struct DefaultSoundCandidate {
+    /// Game tags (the `debug_profiles.toml` profile names) whose vanilla
+    /// sound archive carries `key`.
+    pub(crate) games: &'static [&'static str],
+    /// Archive-relative key, exactly as [`SoundArchiveProvider::extract`]
+    /// expects it.
+    pub(crate) key: &'static str,
+}
+
+/// Default footstep one-shot per game — see [`DefaultSoundCandidate`].
+pub(crate) const FOOTSTEP_CANDIDATES: &[DefaultSoundCandidate] = &[
+    DefaultSoundCandidate {
+        games: &["fnv", "fo3"],
+        key: r"sound\fx\fst\dirt\walk\left\fst_dirt_walk_01.wav",
+    },
+    DefaultSoundCandidate {
+        games: &["skyrimse"],
+        key: r"sound\fx\fst\dirt\walk\l\fst_dirt_walk_01.wav",
+    },
+    // Oblivion calls dirt "earth" and has no walk/sneak split at this
+    // level (sneak variants live one folder down, `earth\sneak\`).
+    DefaultSoundCandidate {
+        games: &["oblivion"],
+        key: r"sound\fx\fst\earth\fst_earth_01.wav",
+    },
+];
+
+/// Default medium water-splash one-shot per game — see
+/// [`DefaultSoundCandidate`]. Siblings not used here: FNV's `splash_l\` /
+/// `splash_h\` and `human\npc_human_splash_0{1,2,3}.wav`; FO3's `light\` /
+/// `heavy\`; Skyrim's `phy_water_{l,h}_0N.wav`.
+pub(crate) const WATER_SPLASH_CANDIDATES: &[DefaultSoundCandidate] = &[
+    DefaultSoundCandidate {
+        games: &["fnv"],
+        key: r"sound\fx\phy\water\splash_m\phy_water_m_01.wav",
+    },
+    DefaultSoundCandidate {
+        games: &["fo3"],
+        key: r"sound\fx\phy\water\medium\phy_water_m_01.wav",
+    },
+    DefaultSoundCandidate {
+        games: &["skyrimse"],
+        key: r"sound\fx\phy\water\phy_water_m_01.wav",
+    },
+    DefaultSoundCandidate {
+        games: &["oblivion"],
+        key: r"sound\fx\phy\genericcollisions\water\medium\phy_water_m_01.wav",
+    },
+];
+
+/// First candidate (in table order) that extracts from any opened
+/// `--sounds-bsa` archive, as `"<key> (<game tags>)"` for the log line
+/// plus its bytes. Only one game's archives are ever open in a session,
+/// so table order only matters within a game; the tag in the label says
+/// which game's naming the opened archive turned out to follow.
+fn first_default_sound_hit(
+    sounds: &SoundArchiveProvider,
+    candidates: &[DefaultSoundCandidate],
+) -> Option<(String, Vec<u8>)> {
+    candidates.iter().find_map(|candidate| {
+        sounds
+            .extract(candidate.key)
+            .map(|bytes| (format!("{} ({})", candidate.key, candidate.games.join("/")), bytes))
+    })
 }
 
 /// M44 water acoustics — load a physical splash one-shot from the
-/// `--sounds-bsa` archive(s) (if any were provided). Candidate paths cover
-/// the Skyrim and Fallout naming variants; the first archive/candidate hit
-/// wins, while missing audio remains a silent no-op.
+/// `--sounds-bsa` archive(s) (if any were provided). The candidate keys in
+/// [`WATER_SPLASH_CANDIDATES`] are verified per game (#3913); the first
+/// archive/candidate hit wins, while missing audio remains a silent no-op.
 ///
 /// #3776 — same fix and rationale as [`try_load_default_footstep`]: takes
 /// the shared, already-multi-archive [`SoundArchiveProvider`]
@@ -222,15 +302,7 @@ pub(crate) fn try_load_default_water_splash(
         log::info!("water acoustics: no --sounds-bsa archive supplied — splash sound skipped");
         return;
     }
-    const CANDIDATES: &[&str] = &[
-        r"sound\fx\phy\water\phy_water_m_01.wav",
-        r"sound\fx\phy\phy_water_m_01.wav",
-        r"sound\fx\fst\water\walk\l\fst_water_walk_03.wav",
-    ];
-    let Some((chosen, bytes)) = CANDIDATES
-        .iter()
-        .find_map(|candidate| sounds.extract(candidate).map(|bytes| (*candidate, bytes)))
-    else {
+    let Some((chosen, bytes)) = first_default_sound_hit(sounds, WATER_SPLASH_CANDIDATES) else {
         log::warn!("water acoustics: no splash candidate found in any --sounds-bsa archive");
         return;
     };
@@ -649,9 +721,98 @@ fn map_secondary_texture_handles(
 
 #[cfg(test)]
 mod tests {
-    use super::{map_secondary_texture_handles, missing_archive_errors};
+    use super::{
+        map_secondary_texture_handles, missing_archive_errors, FOOTSTEP_CANDIDATES,
+        WATER_SPLASH_CANDIDATES,
+    };
     use byroredux_nif::import::MaterialTextureSet;
     use byroredux_renderer::TextureColorSpace;
+
+    /// #3913 — every default-sound candidate must exist, by exact key, in
+    /// the vanilla sound archive of each game it is tagged with, and every
+    /// game with a row must get at least one hit. This is the test that
+    /// would have caught the original defect: the pre-fix splash list's
+    /// three keys were all Skyrim-shaped or mistyped, so the M44 water
+    /// acoustics subsystem was a guaranteed silent no-op on FNV and FO3.
+    /// A source-only test cannot know whether an archive key is real.
+    ///
+    /// Gated on game data; each game is skipped independently when its
+    /// archive isn't on disk. Run with:
+    /// ```sh
+    /// BYROREDUX_FNV_DATA=<path> BYROREDUX_FO3_DATA=<path> \
+    /// BYROREDUX_SKYRIMSE_DATA=<path> BYROREDUX_OBLIVION_DATA=<path> \
+    ///     cargo test -p byroredux --bin byroredux \
+    ///     default_sound_candidates_hit_their_tagged_game_archive -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs vanilla game sound archives on disk"]
+    fn default_sound_candidates_hit_their_tagged_game_archive() {
+        use super::super::audio::build_sound_archive_provider;
+        use std::path::PathBuf;
+
+        const STEAM: &str = "/mnt/data/SteamLibrary/steamapps/common";
+        let games: [(&str, &str, String, &str); 4] = [
+            (
+                "fnv",
+                "BYROREDUX_FNV_DATA",
+                format!("{STEAM}/Fallout New Vegas/Data"),
+                "Fallout - Sound.bsa",
+            ),
+            (
+                "fo3",
+                "BYROREDUX_FO3_DATA",
+                format!("{STEAM}/Fallout 3 goty/Data"),
+                "Fallout - Sound.bsa",
+            ),
+            (
+                "skyrimse",
+                "BYROREDUX_SKYRIMSE_DATA",
+                format!("{STEAM}/Skyrim Special Edition/Data"),
+                "Skyrim - Sounds.bsa",
+            ),
+            (
+                "oblivion",
+                "BYROREDUX_OBLIVION_DATA",
+                format!("{STEAM}/Oblivion/Data"),
+                "Oblivion - Sounds.bsa",
+            ),
+        ];
+        let tables = [
+            ("FOOTSTEP_CANDIDATES", FOOTSTEP_CANDIDATES),
+            ("WATER_SPLASH_CANDIDATES", WATER_SPLASH_CANDIDATES),
+        ];
+
+        let mut checked = 0usize;
+        for (game, env_var, default_dir, archive_name) in games {
+            let dir = std::env::var(env_var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(default_dir));
+            let archive = dir.join(archive_name);
+            if !archive.is_file() {
+                eprintln!("skipping {game}: {} not found", archive.display());
+                continue;
+            }
+            let provider = build_sound_archive_provider(&[
+                "--sounds-bsa".to_string(),
+                archive.to_string_lossy().into_owned(),
+            ]);
+            assert!(!provider.is_empty(), "{game}: failed to open {}", archive.display());
+            for (table_name, table) in tables {
+                let tagged: Vec<_> = table.iter().filter(|c| c.games.contains(&game)).collect();
+                assert!(!tagged.is_empty(), "{table_name} has no candidate tagged for {game}");
+                for candidate in tagged {
+                    assert!(
+                        provider.extract(candidate.key).is_some(),
+                        "{table_name}: key '{}' is tagged {game} but is not in {}",
+                        candidate.key,
+                        archive.display()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        eprintln!("verified {checked} default-sound candidate keys against real archives");
+    }
 
     /// #1776 — the aggregate guard must fire exactly for a kind that was
     /// requested on the CLI yet opened zero archives (the wrong-CWD / mistyped

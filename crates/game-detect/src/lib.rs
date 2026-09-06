@@ -267,8 +267,8 @@ mod tests {
         assert!(
             default_sounds_bsas.contains(&"Fallout - Sound.bsa"),
             "fnv.default_sounds_bsas {default_sounds_bsas:?} must list Fallout - Sound.bsa \
-             (84.7% of FNV SOUN.FNAM paths resolve inside it, incl. the canonical \
-             footstep/splash paths byte-for-byte)",
+             (the vanilla FNV sound archive; the default footstep and water-splash keys \
+             resolve inside it byte-for-byte — #3913)",
         );
     }
 
