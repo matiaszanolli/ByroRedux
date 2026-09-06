@@ -421,8 +421,24 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #2573 (OBL-D5-03) — v21 adds `Material::specular_authored` as a
     // required field on the registered `Material` column (see
     // `FORMAT_MAJOR`'s own doc). Genuine save-shape change, bump taken.
+    // #3852 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, deliberately,
+    // and this is a FOURTH case beyond #3332/#3762/#3489 above: nothing about
+    // any saved type changed at all. `papyrus_provider.rs` was split into
+    // `papyrus_provider/{mod,runtime,catalog,ir,lower_call,lower_program,
+    // execute}.rs`, and this guard is file-scoped: `save_type_sources()`
+    // returns a `sort()`ed path list, so relocating a saved type to a
+    // different file re-orders the hashed shape stream even though every
+    // shape is byte-identical. The split also raised cross-module items to
+    // `pub(crate)`, which lands inside the captured span (`pub(crate)
+    // qualified_name: String`) without meaning anything to serde — field
+    // visibility has never affected serialization.
+    //
+    // Verified rather than assumed: dumping `normalized_serialized_shapes()`
+    // either side of the split gives 149 shapes both times, and the two
+    // sorted lists are identical once the path prefix and the visibility
+    // keyword are normalized away. No saved data shape changed, so no bump.
     const BASELINE_MAJOR: u16 = 21;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3a52_4c5a_94bc_ddc5;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3388_b6ee_7133_b9ca;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
