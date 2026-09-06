@@ -232,6 +232,13 @@ impl VulkanContext {
                     self.frame_sync
                         .recreate_image_available_for_frame(&self.device, frame)
                 };
+                // #3837 — this function vacated `frame_lights_scratch` with
+                // `mem::take` above and normally hands it back via
+                // `CameraAssemblyOutput`. On this early return that never
+                // happens, so give the field its capacity back explicitly
+                // rather than dropping it and regrowing 0 -> MAX_LIGHTS next
+                // frame.
+                self.frame_lights_scratch = frame_lights;
                 return Err(e);
             }
         };

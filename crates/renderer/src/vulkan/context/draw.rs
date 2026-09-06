@@ -1798,6 +1798,30 @@ impl VulkanContext {
             &mut t,
         );
 
+        // #3837 — hand the lights Vec back to its field as soon as the borrow
+        // above (`lights`) is dead, rather than ~400 lines later at the tail.
+        // `assemble_camera_and_lights` vacated the field with `mem::take`, and
+        // three `return Err` sites (`end_command_buffer`, `reset_fences`,
+        // submit — the same recovery paths #910 hardened, so reachable in
+        // practice on swapchain churn) sat between there and the old restore
+        // point. On any of them the taken Vec dropped and next frame regrew
+        // from zero. Restoring here removes the window structurally instead of
+        // adding a restore to each site, so a future early return added below
+        // cannot reintroduce it.
+        //
+        // The tail still owns the shrink policy; it now reads the length from
+        // the field.
+        //
+        // SIBLING (#3837): `gpu_instances_scratch` and `previous_models_scratch`
+        // are taken by `build_and_upload_instances` and restored at the same
+        // tail, so they had the identical window. Neither is read between the
+        // destructure above and that tail, so both come back here too.
+        // `batches_scratch` is the same case but has one more use
+        // (`record_geometry_pass`), so it is restored just after it.
+        self.frame_lights_scratch = frame_lights;
+        self.gpu_instances_scratch = gpu_instances;
+        self.previous_models_scratch = previous_models;
+
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(
             cmd,
@@ -1807,6 +1831,9 @@ impl VulkanContext {
             draw_commands,
             water_commands,
         );
+        // #3837 — last use of `batches`; hand it back before the three
+        // `return Err` sites below (see the sibling note above).
+        self.batches_scratch = batches;
         // SAFETY: tail of the per-frame command buffer — depth-history
         // snapshot, post/denoise/composite chain, egui overlay, screenshot
         // copy, and `end_command_buffer`. Each call documents its own
@@ -2146,14 +2173,14 @@ impl VulkanContext {
         // "grow fast, shrink on pressure": working-set × 2 keeps a
         // slack band against frame-to-frame variance, and the 512
         // floor avoids reallocations on common-case small scenes.
-        let working_instances = gpu_instances.len();
-        let working_lights = frame_lights.len();
-        let working_previous = previous_models.len();
-        let working_batches = batches.len();
-        self.gpu_instances_scratch = gpu_instances;
-        self.frame_lights_scratch = frame_lights;
-        self.previous_models_scratch = previous_models;
-        self.batches_scratch = batches;
+        // #3837 — all four scratch Vecs are restored above, each right after
+        // its last use, so none of them is vacated across the error paths
+        // between here and there. The shrink policy below is unchanged; it
+        // just reads its working-set lengths from the fields now.
+        let working_instances = self.gpu_instances_scratch.len();
+        let working_lights = self.frame_lights_scratch.len();
+        let working_previous = self.previous_models_scratch.len();
+        let working_batches = self.batches_scratch.len();
         super::super::acceleration::shrink_scratch_if_oversized(
             &mut self.gpu_instances_scratch,
             working_instances,
