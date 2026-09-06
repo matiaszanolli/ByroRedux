@@ -118,7 +118,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
 6. Snapshot totals so the next audit can diff:
    ```bash
    {
-     echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux tools --exclude-dir=nifskope | wc -l)"
+     echo "markers (TODO/FIXME/HACK/XXX/TBD/WIP/KLUDGE): $(grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools --exclude-dir=nifskope | wc -l)"
@@ -126,7 +126,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Orientation only (will drift — re-run, never quote): the marker total runs ~20,
+   Orientation only (will drift — re-run, never quote): the marker total runs ~21 on the #3877 vocabulary (~20 on the older TODO/FIXME/HACK/XXX-only one),
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
    runs in the low hundreds when scoped to `.rs` sources under `crates`/`byroredux`
@@ -341,9 +341,24 @@ ls .claude/commands/_audit-*.md .claude/commands/audit-*/SKILL.md docs/audits/
 ### Dimension 5: Stale Markers (TODO / FIXME / HACK / XXX)
 **Discovery**:
 ```bash
-grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux tools --exclude-dir=nifskope
-grep -RInE '(TODO|HACK)' crates/renderer/shaders/
+grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates byroredux tools --exclude-dir=nifskope
+grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates/renderer/shaders/
 ```
+**One vocabulary, both commands (#3877).** The two lines used to disagree: the
+shader scan was `(TODO|HACK)` — no `FIXME`, no `XXX`, and no `\b` anchor — so a
+`// FIXME` in any of the 22 shaders or 15 GLSL includes was invisible to the
+dimension that exists to find it. Keep the token list identical in both; if you
+add a token, add it to both or the asymmetry returns.
+
+`TBD` is in the list because the codebase actually uses it and four consecutive
+Dim 5 runs never saw it. The one live site —
+`crates/plugin/src/esm/records/items.rs` (the FNV `WEAP` `b"DNAM"` arm) — is
+**not** debt on triage: it records an unresolved format semantic *and* its own
+resolution in place ("Not stored; NAM6 remains the authoritative spread
+source"), which is the documented-unknown class, not a stale marker. Report it
+as such if it surfaces. It is worth seeing anyway: it sits in the same comment
+block as #3324, a false-premise comment that *"sent two audits searching this
+blob"* before it was closed.
 `tools` is in scope (#3876): `tools/byro-dbg`, `byro-launcher`, `byro-detect`
 and `texture-upscale` are all first-party `[workspace] members` — 17 `.rs`
 files, ~4 700 LOC — and the launcher/detect cluster has **no owner audit
