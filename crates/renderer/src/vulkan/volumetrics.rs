@@ -287,6 +287,20 @@ unsafe impl crate::vulkan::buffer::NoUninit for GpuFogClusterEntry {}
 /// only `count`, which is the one field a full-rebuild architecture (see the
 /// doc comment on `build_fog_volume_clusters`) actually needs touched every
 /// frame.
+/// #3834 — bytes of `GpuFogVolumeUpload` that are meaningful when `count`
+/// volumes are populated: the 16-byte `count` header plus the leading
+/// `count` entries of the trailing `volumes` array.
+///
+/// A free function, not an inline expression, so the arithmetic is pinned by
+/// `fog_volume_upload_bytes_*` below rather than only by a GPU no one runs in
+/// CI. Clamped to `MAX_GPU_FOG_VOLUMES` because `write_mapped_prefix` treats
+/// an over-large request as "write it all" — the clamp keeps that path
+/// unreachable from a corrupt count.
+fn fog_volume_upload_bytes(volume_count: usize) -> usize {
+    std::mem::size_of::<[u32; 4]>()
+        + volume_count.min(MAX_GPU_FOG_VOLUMES) * std::mem::size_of::<GpuFogVolume>()
+}
+
 fn fog_cluster_entries_with_offsets() -> Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]> {
     let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
     for (cluster_index, entry) in entries.iter_mut().enumerate() {
@@ -460,7 +474,7 @@ fn build_fog_volume_clusters(
     upload: &mut GpuFogVolumeUpload,
     entries: &mut [GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT],
     indices: &mut [u32; FOG_VOLUME_INDEX_COUNT],
-) -> [f32; 4] {
+) -> ([f32; 4], usize) {
     let far = far_distance.max(1.0);
     let cell_size = (2.0 * far) / FOG_VOLUME_CLUSTER_DIM as f32;
     let grid_min = [
@@ -483,6 +497,13 @@ fn build_fog_volume_clusters(
     for entry in entries.iter_mut() {
         entry.count = 0;
     }
+
+    // #3834 — highest touched cluster index + 1, i.e. the length of the
+    // `entries` prefix this frame can leave non-zero. `dispatch` uploads only
+    // that prefix instead of all 4096 entries / 32768 indices. Reported rather
+    // than rediscovered by a post-hoc scan because the clustering loop below
+    // already visits exactly the touched set.
+    let mut cluster_hi = 0usize;
 
     let volume_count = volumes.len().min(MAX_GPU_FOG_VOLUMES);
     upload.count = [volume_count as u32, 0, 0, 0];
@@ -536,12 +557,16 @@ fn build_fog_volume_clusters(
                     }
                     indices[entry.offset as usize + entry.count as usize] = volume_index as u32;
                     entry.count += 1;
+                    cluster_hi = cluster_hi.max(cluster_index + 1);
                 }
             }
         }
     }
 
-    [grid_min[0], grid_min[1], grid_min[2], cell_size.recip()]
+    (
+        [grid_min[0], grid_min[1], grid_min[2], cell_size.recip()],
+        cluster_hi,
+    )
 }
 
 /// Single source of truth for whether the composite shader actually
@@ -899,6 +924,22 @@ pub struct VolumetricsPipeline {
     fog_volume_upload: Box<GpuFogVolumeUpload>,
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
     fog_cluster_indices: Box<[u32; FOG_VOLUME_INDEX_COUNT]>,
+    /// #3834 — per-frame-in-flight high-water mark: the `entries` prefix
+    /// length that the LAST write to `fog_cluster_buffers[frame]` may have
+    /// left with a non-zero `count` on the GPU.
+    ///
+    /// Each buffer is written independently every N frames, so a short frame
+    /// cannot simply upload its own touched prefix: clusters above it may
+    /// still hold a non-zero count from the last time *this* buffer was
+    /// written, and the shader would read them as live. Uploading
+    /// `0..max(this_frame, stored)` overwrites those with the CPU array's
+    /// zeros, after which everything above is known-zero again and the mark
+    /// can drop to this frame's own extent.
+    ///
+    /// Seeded to the full count so the FIRST write to each buffer is
+    /// complete: `create_host_visible` does not zero the allocation, so
+    /// before that first write the whole range is indeterminate.
+    fog_cluster_dirty_hi: [usize; MAX_FRAMES_IN_FLIGHT],
 
     // ── Integration pass (Phase 3) ───────────────────────────────────
     integration_pipeline: vk::Pipeline,
@@ -995,6 +1036,9 @@ impl VolumetricsPipeline {
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
             fog_cluster_entries: fog_cluster_entries_with_offsets(),
             fog_cluster_indices: Box::new([0; FOG_VOLUME_INDEX_COUNT]),
+            // Full extent: forces the first write to each buffer to cover the
+            // whole range, since the allocation is not zero-initialised.
+            fog_cluster_dirty_hi: [FOG_VOLUME_CLUSTER_COUNT; MAX_FRAMES_IN_FLIGHT],
             integration_pipeline: vk::Pipeline::null(),
             integration_pipeline_layout: vk::PipelineLayout::null(),
             integration_descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -2189,6 +2233,7 @@ impl VolumetricsPipeline {
         // gates the exact case where the cluster/index buffers weren't
         // touched this frame, so their contents (which could be a
         // previous frame's, or a previous cell's) are never read.
+        let mut cluster_hi = 0usize;
         frame_params.local_volume_grid = if fog_volumes.is_empty() {
             self.fog_volume_upload.count = [0; 4];
             let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
@@ -2199,29 +2244,45 @@ impl VolumetricsPipeline {
                 cell_size.recip(),
             ]
         } else {
-            build_fog_volume_clusters(
+            let (grid, hi) = build_fog_volume_clusters(
                 fog_volumes,
                 camera_position,
                 fog_far,
                 &mut self.fog_volume_upload,
                 &mut self.fog_cluster_entries,
                 &mut self.fog_cluster_indices,
-            )
+            );
+            cluster_hi = hi;
+            grid
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
-        self.fog_volume_buffers[frame].write_mapped(
+        // #3834 — bound to the header plus the volumes actually populated.
+        // The shader early-outs on `fogVolumeCount == 0u` and otherwise reads
+        // `volumes[i]` only for `i < count`, and `count` is rewritten in BOTH
+        // branches above (#2242), so the untouched tail is never read. This is
+        // the one write that must stay unconditional: the empty branch still
+        // has to publish `count = 0`.
+        self.fog_volume_buffers[frame].write_mapped_prefix(
             device,
             std::slice::from_ref(self.fog_volume_upload.as_ref()),
+            fog_volume_upload_bytes(self.fog_volume_upload.count[0] as usize),
         )?;
         if !fog_volumes.is_empty() {
-            self.fog_cluster_buffers[frame].write_mapped(
-                device,
-                std::slice::from_ref(self.fog_cluster_entries.as_ref()),
-            )?;
+            // #3834 — upload the touched cluster prefix, not all 4096 entries
+            // / 32768 indices. Union with this buffer's own high-water mark so
+            // a short frame still clears counts a longer earlier frame left on
+            // the GPU; see `fog_cluster_dirty_hi`. Indices ride the same
+            // prefix: `offset` is `cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER`
+            // (`fog_cluster_entries_with_offsets`), so a cluster prefix maps to
+            // a contiguous index prefix.
+            let write_hi = cluster_hi.max(self.fog_cluster_dirty_hi[frame]);
+            self.fog_cluster_buffers[frame]
+                .write_mapped(device, &self.fog_cluster_entries[..write_hi])?;
             self.fog_cluster_index_buffers[frame].write_mapped(
                 device,
-                std::slice::from_ref(self.fog_cluster_indices.as_ref()),
+                &self.fog_cluster_indices[..write_hi * MAX_FOG_VOLUMES_PER_CLUSTER],
             )?;
+            self.fog_cluster_dirty_hi[frame] = cluster_hi;
         }
         // HOST → COMPUTE_SHADER (UBO flush; execution dependency required even
         // for HOST_COHERENT memory to make UBO/SSBO writes visible to compute).
@@ -3640,6 +3701,121 @@ mod unit_tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // #3834 — bounded per-frame fog uploads. `dispatch` uploads only the
+    // touched cluster prefix instead of the full 176 KB staging set, which is
+    // sound only while the two invariants below hold. Neither is observable
+    // from `cargo test` on the GPU side, so pin them on the CPU side here.
+    // -----------------------------------------------------------------
+
+    /// The `count` header is 16 B and each volume 96 B, so an N-volume frame
+    /// is `16 + 96N` — 112 B for one volume, not the full 12,304 B struct.
+    #[test]
+    fn fog_volume_upload_bytes_covers_header_plus_populated_volumes() {
+        assert_eq!(
+            fog_volume_upload_bytes(0),
+            16,
+            "empty frame writes only the count header"
+        );
+        assert_eq!(fog_volume_upload_bytes(1), 16 + 96);
+        assert_eq!(
+            fog_volume_upload_bytes(MAX_GPU_FOG_VOLUMES),
+            std::mem::size_of::<GpuFogVolumeUpload>(),
+            "a full frame must still write the whole struct"
+        );
+    }
+
+    /// A count past the array bound clamps instead of asking for more bytes
+    /// than the struct has.
+    #[test]
+    fn fog_volume_upload_bytes_clamps_an_impossible_count() {
+        assert_eq!(
+            fog_volume_upload_bytes(MAX_GPU_FOG_VOLUMES + 1_000),
+            std::mem::size_of::<GpuFogVolumeUpload>()
+        );
+    }
+
+    /// THE invariant the prefix upload rests on: the returned `cluster_hi`
+    /// bounds every cluster this frame gave a non-zero `count`. If a touched
+    /// cluster could sit at or above it, `dispatch` would skip uploading that
+    /// entry and the shader would read a stale count.
+    #[test]
+    fn build_fog_volume_clusters_reports_a_hi_that_bounds_every_touched_cluster() {
+        let volume = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 1.0],
+            half_extents_extinction: [10.0, 20.0, 10.0, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
+            profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries_with_offsets();
+        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let (_, cluster_hi) = build_fog_volume_clusters(
+            &[volume],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+
+        assert!(
+            cluster_hi > 0,
+            "a volume inside the grid must touch a cluster"
+        );
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.count > 0 {
+                assert!(
+                    index < cluster_hi,
+                    "cluster {index} has count {} but sits at or above cluster_hi {cluster_hi} — \
+                     dispatch would not upload it (#3834)",
+                    entry.count
+                );
+                // The index prefix rides the same cluster prefix, so every
+                // written index slot must fall inside it too.
+                assert!(
+                    entry.offset as usize + entry.count as usize
+                        <= cluster_hi * MAX_FOG_VOLUMES_PER_CLUSTER,
+                    "cluster {index} writes indices past the uploaded index prefix (#3834)"
+                );
+            }
+        }
+        assert!(
+            entries[cluster_hi..].iter().all(|e| e.count == 0),
+            "every entry at or above cluster_hi must be zero, or the prefix upload \
+             would leave a live count unwritten (#3834)"
+        );
+    }
+
+    /// An empty frame touches nothing, so the prefix is empty — and
+    /// `dispatch` skips the cluster writes entirely on that branch (#2242).
+    #[test]
+    fn build_fog_volume_clusters_reports_zero_hi_when_nothing_intersects() {
+        let far_away = GpuFogVolume {
+            center_shape: [100_000.0, 100_000.0, 100_000.0, 1.0],
+            half_extents_extinction: [1.0, 1.0, 1.0, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
+            profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries_with_offsets();
+        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let (_, cluster_hi) = build_fog_volume_clusters(
+            &[far_away],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(cluster_hi, 0);
+        assert!(entries.iter().all(|e| e.count == 0));
+    }
+
     #[test]
     fn local_volume_cluster_grid_references_center_primitive() {
         let volume = GpuFogVolume {
@@ -3663,7 +3839,7 @@ mod unit_tests {
         );
 
         assert_eq!(upload.count[0], 1);
-        assert_eq!(grid, [-160.0, -160.0, -160.0, 0.05]);
+        assert_eq!(grid.0, [-160.0, -160.0, -160.0, 0.05]);
         let center = FOG_VOLUME_CLUSTER_DIM / 2;
         let center_cluster = center
             + center * FOG_VOLUME_CLUSTER_DIM

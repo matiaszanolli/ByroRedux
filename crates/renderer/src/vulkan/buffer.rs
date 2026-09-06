@@ -39,6 +39,20 @@ use gpu_allocator::MemoryLocation;
 // less-visible trait — see `private_bounds` below if this regresses.
 pub unsafe trait NoUninit: Copy {}
 
+/// Byte view of a `NoUninit` slice — the single place `write_mapped` and
+/// `write_mapped_prefix` obtain their `&[u8]`, so the safety argument lives
+/// once rather than once per entry point.
+#[inline]
+fn byte_view<T: NoUninit>(data: &[T]) -> &[u8] {
+    // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised (no
+    // implicit `#[repr(C)]` padding), so the byte view contains no
+    // uninitialised bytes — the class of UB `T: Copy` alone does NOT rule out
+    // (#3761 / SAFE-2026-08-30-D4-01). The pointer is valid and aligned (from
+    // a live slice), `size_of_val` gives the exact byte length, and the
+    // returned slice borrows `data` so it cannot outlive it.
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
+}
+
 macro_rules! impl_no_uninit {
     ($($t:ty),+ $(,)?) => {
         $(
@@ -1254,15 +1268,35 @@ impl GpuBuffer {
     /// If the allocation is not HOST_COHERENT, an explicit flush is
     /// performed to make the write visible to the GPU.
     pub fn write_mapped<T: NoUninit>(&mut self, device: &ash::Device, data: &[T]) -> Result<()> {
-        // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised
-        // (no implicit `#[repr(C)]` padding), so the byte view below
-        // contains no uninitialised bytes — the class of UB `T: Copy` alone
-        // does NOT rule out (#3761 / SAFE-2026-08-30-D4-01). The pointer is
-        // valid and aligned (from a live slice), and size_of_val gives the
-        // exact byte length.
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
-        };
+        self.write_mapped_bytes(device, byte_view(data))
+    }
+
+    /// Write only the first `prefix_bytes` of `data` to the buffer, starting
+    /// at offset 0. Caps at the true byte length, so an over-large request
+    /// degrades to a full `write_mapped` rather than reading out of bounds.
+    ///
+    /// For a slice, prefer `write_mapped(device, &slice[..n])` — subslicing is
+    /// clearer and needs no byte arithmetic. This exists for the case a
+    /// subslice cannot express: a prefix that ends *inside* a `#[repr(C)]`
+    /// struct, e.g. a header plus the populated leading elements of its
+    /// trailing fixed-size array (`GpuFogVolumeUpload`, #3834).
+    ///
+    /// The caller owns the argument that the bytes past `prefix_bytes` are
+    /// never read by the shader; this method only bounds the write. The
+    /// non-coherent flush range narrows to match, as it already did for a
+    /// short `write_mapped` (#301).
+    pub fn write_mapped_prefix<T: NoUninit>(
+        &mut self,
+        device: &ash::Device,
+        data: &[T],
+        prefix_bytes: usize,
+    ) -> Result<()> {
+        let bytes = byte_view(data);
+        let prefix = prefix_bytes.min(bytes.len());
+        self.write_mapped_bytes(device, &bytes[..prefix])
+    }
+
+    fn write_mapped_bytes(&mut self, device: &ash::Device, bytes: &[u8]) -> Result<()> {
         let is_coherent = self.is_coherent;
         let alloc = self
             .allocation
