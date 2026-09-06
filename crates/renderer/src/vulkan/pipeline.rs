@@ -614,7 +614,8 @@ fn blend_gbuffer_attachments(
             // this one through is SAFE for the original "denoiser
             // smears" concern the `no_write` mask was added for: bit 31
             // is exactly the signal `svgf_temporal.comp`'s history gate
-            // (`(currID & 0x80000000u) != 0u`) already uses to bypass
+            // (`(currID & MESH_ID_NO_HISTORY_BIT) != 0u`, see
+            // [`crate::shader_constants::MESH_ID_NO_HISTORY_BIT`]) already uses to bypass
             // temporal reprojection for alpha-blended pixels, so a
             // glass fragment's mesh_id is never mistaken for a stable
             // opaque surface identity.

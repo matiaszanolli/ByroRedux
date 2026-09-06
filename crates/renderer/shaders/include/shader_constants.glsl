@@ -7,6 +7,9 @@
 // have a decimal point. Workgroup-size #defines omit the suffix so they
 // work in layout(local_size_x = WORKGROUP_X) qualifiers.
 
+#ifndef BYRO_SHADER_CONSTANTS_GLSL
+#define BYRO_SHADER_CONSTANTS_GLSL
+
 // Cluster grid
 #define CLUSTER_TILES_X 16u
 #define CLUSTER_TILES_Y 9u
@@ -119,6 +122,10 @@
 // Glass / IOR ray budget
 #define GLASS_RAY_BUDGET 2097152u
 #define GI_VISIBLE_LIGHT_CAP 2u
+// Mesh-ID attachment (R32_UINT): bit 31 is the ALPHA_BLEND_NO_HISTORY
+// flag; set, the low 31 bits are an alpha draw index, not a stable ID.
+#define MESH_ID_NO_HISTORY_BIT 2147483648u
+#define MESH_ID_STABLE_MASK 2147483647u
 // #3879 — GpuRayBudget shader-side ceilings. Each must be >= the
 // matching tier-3 value in AdaptiveRayBudget::settings_for_tier,
 // which now reads these same constants. Unsuffixed - cast at use.
@@ -282,3 +289,5 @@
 // triangle.frag entirely. 1: restores the pre-fix always-compiled
 // behavior for A/B against ReSTIR (requires a shader recompile).
 #define ENABLE_LEGACY_WRS 0
+
+#endif // BYRO_SHADER_CONSTANTS_GLSL

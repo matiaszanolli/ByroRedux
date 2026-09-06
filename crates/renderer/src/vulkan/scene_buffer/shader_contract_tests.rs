@@ -273,11 +273,31 @@ fn restir_history_uses_stable_surface_id_not_instance_order() {
 
 #[test]
 fn gbuffer_history_uses_stable_surface_id_but_caustics_keep_draw_lookup() {
+    use crate::shader_constants::{MESH_ID_NO_HISTORY_BIT, MESH_ID_STABLE_MASK};
+
     let src = include_str!("../../../shaders/triangle.frag");
     assert!(
-        src.contains("uint stableSurfaceId = inst.surfaceId & 0x7FFFFFFFu;")
+        src.contains("uint stableSurfaceId = inst.surfaceId & MESH_ID_STABLE_MASK;")
             && src.contains("alphaBlendFrag ? sortedInstanceId : stableSurfaceId"),
         "opaque TAA/SVGF history must use stable identity while alpha caustics keep the current draw index"
+    );
+
+    // #3881 — the two halves of the attachment ABI must stay complementary.
+    // Previously the mask was the literal `0x7FFFFFFFu` at three sites and
+    // was never expressed as the complement of the flag bit, so the two
+    // could drift apart while every string assertion still matched.
+    assert_eq!(
+        MESH_ID_STABLE_MASK, !MESH_ID_NO_HISTORY_BIT,
+        "the stable-ID lane must be exactly the complement of the no-history bit"
+    );
+    assert_eq!(
+        MESH_ID_NO_HISTORY_BIT.count_ones(),
+        1,
+        "the no-history flag must be a single bit — the rest of the word is the ID"
+    );
+    assert!(
+        src.contains("alphaBlendFrag ? MESH_ID_NO_HISTORY_BIT : 0u"),
+        "the writer must set the flag by name, not by a hand-typed literal"
     );
 }
 

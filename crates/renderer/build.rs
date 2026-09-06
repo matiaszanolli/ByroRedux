@@ -53,6 +53,12 @@ fn main() {
     )
     .unwrap();
     writeln!(out).unwrap();
+    // #3881 — an include guard so this header can be pulled in by another
+    // include (`include/mesh_id.glsl` needs MESH_ID_NO_HISTORY_BIT) without
+    // the redefinition every consumer would otherwise hit.
+    writeln!(out, "#ifndef BYRO_SHADER_CONSTANTS_GLSL").unwrap();
+    writeln!(out, "#define BYRO_SHADER_CONSTANTS_GLSL").unwrap();
+    writeln!(out).unwrap();
 
     writeln!(out, "// Cluster grid").unwrap();
     writeln!(out, "#define CLUSTER_TILES_X {CLUSTER_TILES_X}u").unwrap();
@@ -458,6 +464,23 @@ fn main() {
     writeln!(out, "// Glass / IOR ray budget").unwrap();
     writeln!(out, "#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u").unwrap();
     writeln!(out, "#define GI_VISIBLE_LIGHT_CAP {GI_VISIBLE_LIGHT_CAP}u").unwrap();
+    // #3881 — the mesh-ID G-buffer attachment ABI.
+    writeln!(
+        out,
+        "// Mesh-ID attachment (R32_UINT): bit 31 is the ALPHA_BLEND_NO_HISTORY"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// flag; set, the low 31 bits are an alpha draw index, not a stable ID."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MESH_ID_NO_HISTORY_BIT {MESH_ID_NO_HISTORY_BIT}u"
+    )
+    .unwrap();
+    writeln!(out, "#define MESH_ID_STABLE_MASK {MESH_ID_STABLE_MASK}u").unwrap();
     // #3879 — the rest of the GpuRayBudget ceilings. Unsuffixed: each use
     // site casts to the type it needs, since these appear in both `int`
     // loop bounds and `uint` clamps.
@@ -861,6 +884,9 @@ fn main() {
     )
     .unwrap();
     writeln!(out, "#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}").unwrap();
+
+    writeln!(out).unwrap();
+    writeln!(out, "#endif // BYRO_SHADER_CONSTANTS_GLSL").unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

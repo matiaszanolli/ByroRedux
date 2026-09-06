@@ -252,10 +252,6 @@ mod tests {
         ("volumetrics_inject.comp", "ISOTROPIC_PHASE"),
         ("taa.comp", "OFFSETS"),
         ("taa.comp", "N"),
-        // `MESH_ID_NO_HISTORY_BIT` is tracked separately as
-        // TD7-2026-09-05-03; exempted here so this gate's widening does not
-        // pre-empt that issue's own decision about where the bit belongs.
-        ("include/mesh_id.glsl", "MESH_ID_NO_HISTORY_BIT"),
         // Stage-local sampling / quality tuning, consumed nowhere else.
         ("include/pbr.glsl", "SPECULAR_AA_VARIANCE"),
         ("include/pbr.glsl", "SPECULAR_AA_THRESHOLD"),
@@ -624,6 +620,10 @@ mod tests {
 
     #[test]
     fn max_bones_per_mesh_matches_core() {
+        // #3882 — now trivially true, which is the desired end state: the
+        // constant is a re-export, so divergence is a compile error rather
+        // than something this assertion has to catch at test time. Kept so
+        // the identity is still stated where a reader looks for it.
         assert_eq!(
             MAX_BONES_PER_MESH as usize,
             byroredux_core::ecs::components::MAX_BONES_PER_MESH,

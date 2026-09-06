@@ -11,6 +11,7 @@
 // src/shader_constants_data.rs. Compile with:
 //   glslangValidator -V -I crates/renderer/shaders triangle.frag -o triangle.frag.spv
 #include "include/shader_constants.glsl"
+#include "include/mesh_id.glsl"
 
 // ─────────────────────────────────────────────────────────────────────
 // Third-party attribution — PBR / Disney-BSDF lobe
@@ -609,10 +610,10 @@ void main() {
     // no temporal consumer is allowed to reuse an alpha-blended pixel.
     // `R32_UINT` leaves bits 0..30 for either representation.
     bool alphaBlendFrag = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
-    uint sortedInstanceId = (uint(fragInstanceIndex) + 1u) & 0x7FFFFFFFu;
-    uint stableSurfaceId = inst.surfaceId & 0x7FFFFFFFu;
+    uint sortedInstanceId = (uint(fragInstanceIndex) + 1u) & MESH_ID_STABLE_MASK;
+    uint stableSurfaceId = inst.surfaceId & MESH_ID_STABLE_MASK;
     uint meshIdBase = alphaBlendFrag ? sortedInstanceId : stableSurfaceId;
-    outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u);
+    outMeshID = meshIdBase | (alphaBlendFrag ? MESH_ID_NO_HISTORY_BIT : 0u);
 
     // A corrupted/unrecognised structured mode is a contract failure. Keep it
     // visually unmistakable while still publishing valid G-buffer outputs.

@@ -110,9 +110,14 @@ pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
 pub const VERTEX_TANGENT_OFFSET_FLOATS: u32 = 22;
 
-// Skinning — see `byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH`
-// for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).
-pub const MAX_BONES_PER_MESH: u32 = 144;
+// Skinning. #3882 — re-exported rather than restated: this file's whole
+// purpose is that a shared constant has one definition, and ~40 of its
+// entries already resolve through `byroredux_core::`. The survey that fixes
+// the ceiling at 144 (FO76 prewardress = 133) lives with the declaration in
+// `byroredux_core::ecs::components::skinned_mesh`. Editing core's value used
+// to leave the generated shader header stale until the renderer's own test
+// suite ran; now it cannot compile out of step.
+pub const MAX_BONES_PER_MESH: u32 = byroredux_core::ecs::components::MAX_BONES_PER_MESH as u32;
 
 // Skin-compute workgroup width. Both `skin_vertices.comp` (1 invocation per
 // vertex) and `skin_palette.comp` (1 invocation per bone slot) run a 1D
@@ -364,6 +369,25 @@ pub const GI_HIT_LIGHT_CAP: u32 = 8;
 // files were never scanned. Editing one and not the other changed what the
 // pool means without changing what it does.
 pub const GI_VISIBLE_LIGHT_CAP: u32 = 2;
+
+// Mesh-ID G-buffer attachment (`R32_UINT`) ABI. Bit 31 is the
+// ALPHA_BLEND_NO_HISTORY flag: when set, the low 31 bits switch into the
+// alpha draw-index namespace and TAA/SVGF must treat the pixel as having no
+// stable temporal history. Masking the bit off before comparing can alias
+// unrelated surfaces, which is why `stableMeshIdsMatch` rejects rather than
+// masks.
+//
+// #3881 — this is a genuine cross-CPU/GPU attachment contract, and it had no
+// Rust-side definition at all: `scene_buffer/constants.rs`,
+// `vulkan/context/helpers.rs` and `vulkan/pipeline.rs` each described the bit
+// in prose, three independent restatements of a value with no code to point
+// at. On the GLSL side it was declared once in `include/mesh_id.glsl` and
+// hand-typed at five more sites, including the shader that *writes* it.
+pub const MESH_ID_NO_HISTORY_BIT: u32 = 0x8000_0000;
+
+// The complement — the stable-ID lane. Was `0x7FFFFFFFu` written out three
+// times and never expressed as the complement of the bit above.
+pub const MESH_ID_STABLE_MASK: u32 = !MESH_ID_NO_HISTORY_BIT;
 
 // Chroma-preserving luminance ceiling for the complete one-pixel bounded-path
 // sample before it enters SVGF. A single secondary GGX hit can line up with a

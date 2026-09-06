@@ -154,14 +154,17 @@ pub(super) fn create_render_pass(
     //   2 — motion       (R16G16_SFLOAT)  — screen-space motion vector
     //   3 — mesh_id      (R32_UINT)       — stable opaque surface ID, or
     //                                       alpha draw index + 1 for caustics.
-    //                                       Bit 31
-    //                                       (0x80000000) is the ALPHA_BLEND_NO_HISTORY
-    //                                       flag, written by `triangle.frag`'s
-    //                                       `outMeshID` assignment (search
-    //                                       `0x80000000u` there — a raw line
-    //                                       number drifts, #2757), so the
-    //                                       encoding ceiling is 0x7FFFFFFF
-    //                                       distinct IDs — `MAX_INSTANCES`
+    //                                       Bit 31 is the ALPHA_BLEND_NO_HISTORY
+    //                                       flag, defined once as
+    //                                       `shader_constants::MESH_ID_NO_HISTORY_BIT`
+    //                                       and written by `triangle.frag`'s
+    //                                       `outMeshID` assignment (search that
+    //                                       name — a raw line number drifts,
+    //                                       #2757; #3881 replaced the literal
+    //                                       this used to say to search for), so
+    //                                       the encoding ceiling is
+    //                                       `MESH_ID_STABLE_MASK` distinct IDs
+    //                                       — `MAX_INSTANCES`
     //                                       sits well below that to bound the
     //                                       persistent SSBO allocation. Overflow
     //                                       is handled by the warn-once

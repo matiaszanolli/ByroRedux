@@ -102,7 +102,8 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 /// `triangle.frag` writes the stable ECS-derived surface ID for opaque
 /// history and `(instance_index + 1)` for alpha-blended caustic lookups
 /// into the low 31 bits of the mesh_id attachment, reserving bit 31
-/// (`0x80000000`) for the `ALPHA_BLEND_NO_HISTORY` flag consumed by TAA
+/// ([`crate::shader_constants::MESH_ID_NO_HISTORY_BIT`]) for the
+/// `ALPHA_BLEND_NO_HISTORY` flag consumed by TAA
 /// and SVGF disocclusion. The encoding ceiling is therefore
 /// `0x7FFFFFFF` (~2.1G) — `MAX_INSTANCES` is set well below that
 /// to bound the persistent SSBO allocation, not the encoding.
