@@ -190,9 +190,13 @@ handful of indirect draws.
 
 ## 5. Ray-tracing boundary
 
-Decided: **receive-only first, coarse proxy second.**
+Decided: **receive-only, and the shadow it owes back is analytic rather
+than traced** (revised 2026-09-06 — see Stage 2).
 
-### Phase 1 — receive-only
+The two stages below are internal to this section. They are *not* §9's
+phase numbers, which now run 0–7.
+
+### Stage 1 — receive-only
 
 Grass rasterizes in the main geometry pass and traces the existing shadow ray
 and GI sample like any other fragment, so it is correctly lit, shadowed by the
@@ -203,23 +207,42 @@ This needs a TLAS-exclusion marker. `IsLodTerrain` already does exactly this job
 for distant terrain, so rather than adding a second special case the renderer's
 TLAS query should generalise to a marker component (working name
 `ExcludedFromTlas`) that both `IsLodTerrain` and ground cover carry. That
-refactor is small and belongs in Phase 1 rather than being deferred — a third
-ad-hoc exclusion is how this becomes a per-feature `if` chain.
+refactor is small and belongs in §9's Phase 1 rather than being deferred — a
+third ad-hoc exclusion is how this becomes a per-feature `if` chain.
 
-### Phase 2 — the proxy shell
+### Stage 2 — the shadow grass owes back
 
 Receive-only grass casts no shadow, and grass that casts no shadow reads as
 pasted onto the terrain — which is the exact failure this whole document exists
-to avoid. The fix is not to put blades in the TLAS but to put a *shell* there:
-per chunk, a low-poly sheet following the terrain surface displaced upward by
-the local mean blade height, carrying the chunk's mean density.
+to avoid. That premise stands. **The conclusion drawn from it here did not.**
 
-In the ray hit path the shell is treated as a stochastically transparent
-medium: a ray hitting it is absorbed with probability proportional to the local
-density, otherwise it passes through. That yields soft, correctly-shaped grass
-shadows and a plausible GI contribution at the cost of one coarse BLAS per
-chunk — a rounding error against the blade count it stands in for, and the
-shell can be refit rather than rebuilt as density changes.
+This section used to answer it with a ray-traced proxy shell: per chunk, a
+low-poly sheet following the terrain surface displaced upward by the local mean
+blade height, entered into the TLAS and treated in the hit path as a
+stochastically transparent medium. It buys correctly-shaped soft shadows and a
+plausible GI contribution, and it costs acceleration-structure memory, a
+per-chunk build and refit, TLAS instances and a hit-path branch — across a
+stratum that is ankle-high and covers the entire visible world.
+
+**A ray is not needed for the shadow that matters.** Almost all of the visual
+work a grass shadow does is contact darkening: ground under and beside a clump
+is darker, and darker still as the sward thickens. That is a function of the
+density field and the light direction, and the shader already has both. §12.5
+computes it in closed form for a handful of instructions, no BLAS, no TLAS
+entry, no ray budget.
+
+So the shell is **demoted from the answer to an optional upgrade**, and Phase 4
+is gated on something demonstrating it is needed rather than assumed. What it
+would still buy, and the analytic term cannot:
+
+- grass shadowing something that is neither terrain nor another blade — a
+  dropped item, a prone actor, a wheel rut;
+- grass appearing in RT reflections and GI *as geometry* rather than as the
+  terrain's colour (§12.6 argues that substitution is close enough at this
+  scale, which is most of why the shell is no longer load-bearing).
+
+The description above is kept rather than deleted so the shell can be picked up
+as specified if either case turns out to matter.
 
 ### Not viable, for the record
 
@@ -377,7 +400,10 @@ Each phase is independently useful and independently reviewable.
   always-on terrain detail layer. The tier-3 layer should land *first* within
   this phase, so every later tier is authored against a correct backdrop.
 - **Phase 4 — RT proxy shell.** Per-chunk shell, stochastic-absorption hit
-  handling, refit on density change.
+  handling, refit on density change. **Gated, not scheduled** (revised
+  2026-09-06): §12.5 supplies the shadow this phase existed to provide, at a
+  fraction of the cost, so Phase 4 waits on a demonstrated need — see §5
+  Stage 2 for the two cases that would constitute one.
 - **Phase 5 — per-game palette.** `GRAS` → species, `grass_dimmer`, and the
   per-worldspace palette resolution.
 
@@ -413,8 +439,9 @@ Each phase is independently useful and independently reviewable.
   does not correlate with plant height in any corpus (Spearman +0.11 on
   Oblivion's n=99, −0.05 on Skyrim's n=21), so `bend_stiffness` stays a
   palette-level constant rather than a per-species translation.
-- **Phase 6 — the organic terms.** Contact occlusion, translucency and
-  ground-colour coupling (§12.1–12.3). Needs blades to exist (Phase 2) but
+- **Phase 6 — the organic terms.** Contact occlusion, translucency,
+  ground-colour coupling, canopy shadowing and sheen (§12.1–12.3, §12.5–12.6).
+  Every one of them is analytic and rayless. Needs blades to exist (Phase 2) but
   is independent of both the LOD chain and the RT shell, so it can land
   beside either. **Do not defer this behind Phases 3–4**: those make ground
   cover cheaper and push it further away, while this is what makes it read
@@ -467,7 +494,9 @@ real worldspaces before the phase that depends on it.
    scaling.
 5. **Proxy shell opacity.** Whether mean chunk density is a good enough stand-in
    for the true blade distribution in the shadow term, or whether the shell needs
-   a per-texel density map. Only answerable once Phase 4 renders.
+   a per-texel density map. Only answerable once Phase 4 renders — and Phase 4 is
+   now gated behind a demonstrated need (§5 Stage 2), so this question may never
+   have to be answered at all.
 6. **Occlusion strength vs. density.** How hard the §12.1 base darkening should
    track `d`, and over what fraction of blade height it falls off. Too weak and
    the stratum stays a field of separate cards; too strong and a sparse verge
@@ -483,25 +512,45 @@ real worldspaces before the phase that depends on it.
    surfaces; at one, every species is the colour of its dirt and the palette
    stops meaning anything. Calibrate on the §11.3 telemetry run, which already
    samples both terms.
+9. **Canopy extinction coefficient.** The `k` in §12.5's Beer–Lambert
+   transmittance, which sets how fast light dies through the sward. It is the
+   one number standing between "grass tints the ground" and "grass paints a
+   black hole under itself", and it interacts with blade height, so it cannot
+   be picked independently of the §11.3 calibration run.
+10. **Sheen granularity.** Whether one sheen scalar per species (§12.6) is
+   enough, or whether it needs to vary with wetness — the same blade is a very
+   different surface in rain, and §12.3's weather coupling would be the natural
+   driver if so. Deliberately not designed for until the dry case renders.
 
 ---
 
-## 12. Reading as organic — the four terms beyond placement
+## 12. Reading as organic — the terms beyond placement
 
 Sections 1–11 answer *where* ground cover is. That is necessary and not
 sufficient: a perfect distribution of individually-lit cards still reads as
-cards. The four terms below are what separate that from a living surface, and
+cards. The six terms below are what separate that from a living surface, and
 not one of them is a placement question — which is why none appears in §1,
 whose comparison is the Creation Engine.
+
+They divide cleanly: §12.1–12.4 are what the stratum *is* (occlusion,
+translucency, ground coupling, interaction); §12.5–12.6 are how it answers
+light (canopy shadowing, sheen and reflection). Every one is analytic — no
+ray, no probe, no bake step — which is not a compromise but the point: at
+ankle height across a whole worldspace, a closed form that is nearly right
+beats a traced one that cannot be afforded per blade.
 
 That comparison is the limit of §1. Its three counters get us to *not
 Bethesda*; they do not get us to organic. The reference for the stated goal is
 modern AAA vegetation — RDR2, Ghost of Tsushima, Horizon — and against that
 reference these four are the visible difference.
 
-Two of them require canonical type changes (`GroundCoverSpecies` gains
-fields), which makes them a `crates/core` and translate-boundary concern, not
-a renderer-local one. Called out per term.
+Three of them require canonical type changes (`GroundCoverSpecies` gains a
+transmission colour, a ground-coupling weight and a sheen amount), which makes
+them a `crates/core` and translate-boundary concern, not a renderer-local one.
+Called out per term. They are deliberately **not** added ahead of their
+consumers: their defaults have to be calibrated against a render, and landing
+three invented scalars in a canonical type is how a placeholder becomes the
+value nobody revisits.
 
 ### 12.1 Contact occlusion
 
@@ -609,3 +658,90 @@ nothing from it. See §10's revised entry.
 **Out of scope within this term.** Physical simulation of blades, collision
 response, and any feedback from grass back onto the entity. The field is
 one-directional.
+
+### 12.5 Canopy shadowing — the cheap one
+
+**The premise, restated.** Grass that casts no shadow reads as pasted onto the
+terrain. §5 Stage 2 used to answer that with a ray-traced proxy shell; this
+section is the reason it no longer has to.
+
+**The observation.** Almost all of the visual work a grass shadow does is
+*contact darkening* — ground under and beside a clump is darker, and darker
+still as the sward thickens. That is not a shape that needs a ray. It is a
+function of the density field and the light direction, and every shader
+involved already has both.
+
+**Approach — extinction through a canopy slab.** Treat ground cover as a
+participating slab of thickness equal to the local blade height, with optical
+density proportional to `d`. Transmittance along the light direction is
+Beer–Lambert:
+
+```
+T = exp(−k · d · h / max(cos θ, ε))
+```
+
+with θ the light's angle from vertical. A low sun therefore traverses more
+canopy and the shadow deepens and lengthens on its own — the behaviour that
+reads as a real shadow — out of a closed form, with no BLAS, no TLAS entry and
+no ray budget. `k` is a calibration parameter (§11.9), owned by Rust and
+emitted into `shader_constants.glsl` like every other §3 number.
+
+**Two receivers, one term.**
+
+- *Terrain* — multiply direct sun by `T` at the terrain fragment. This is grass
+  shadowing the ground, which is the shadow anyone actually notices.
+- *Blades* — evaluate `T` at the blade's own height within the slab, so a blade
+  deep in the sward is shadowed by the canopy above it while one at the edge is
+  not. This is what gives a patch interior depth instead of uniform brightness.
+
+**Distinct from §12.1, and both are needed.** §12.1 is ambient occlusion — how
+much of the *sky* reaches a point. This is directional — how much of the *sun*
+does. They share the density input and nothing else. Implementing one and
+expecting it to cover the other is a standard mistake with a recognisable
+symptom: grass that is either flat under overcast or shadowless in direct sun,
+depending on which half was built.
+
+**On "baked".** There is nothing to bake a blade shadow into. §4 generates blade
+geometry in the vertex shader from a seed, so there is no per-blade mesh, no UV
+space and no atlas; "baked" for ground cover means *closed-form and
+precomputed-parameter*, not a bake step. The one genuine exception is §6's tier-2
+clump-card atlas, which is the only ground cover with real texture space — those
+cards should be authored with this term already applied, and that is a reason to
+generate them after Phase 6 rather than during Phase 3.
+
+### 12.6 Sheen and reflection
+
+**The problem.** Grass is not Lambertian, and treating it as such is why cheap
+vegetation reads as painted cardboard however good the distribution is. A meadow
+with the sun low and ahead of you goes silver; the same meadow with the sun
+behind goes deep green. Diffuse-only misses both.
+
+**Approach — a grazing sheen lobe.** Blades carry a waxy cuticle: near-dielectric
+and strongly reflective at grazing angles. One Fresnel-weighted sheen lobe over
+the diffuse response captures the silvering for a few instructions and no rays.
+
+It pairs with §12.2 exactly as §12.5 pairs with §12.1 — sheen is the front-lit
+half, transmission the back-lit half, and either one alone leaves the meadow flat
+from one direction. Build them together.
+
+**Ambient reflection without a ray.** A blade's environment is the sky, and the
+sky parameters are already a resource. A Fresnel-weighted sky tint at grazing
+angles is the whole of it. Grass is not a mirror; nothing is legible in its
+reflection, so there is no probe, no cubemap and no reflection ray to justify.
+
+**Grass in *other* surfaces' reflections — already solved, for free.** Ground
+cover has no TLAS presence, so a reflection or GI ray cannot hit a blade. It can
+and does hit the terrain, and §6's tier-3 detail layer means the terrain already
+carries the grass's colour and density *at every distance including zero*. A
+reflection ray sampling a lake shore gets ground that is correctly
+grass-coloured, and at ankle height that substitution is very nearly right.
+
+This is worth stating plainly because it changes what §6's tier 3 is worth. It is
+not only the LOD floor: it is simultaneously the cheap **reflection**
+representation and the cheap **GI** representation of ground cover, and it is
+most of why §5's proxy shell stopped being load-bearing. Three jobs, one
+mechanism — which is a third independent reason to build it first within Phase 3,
+alongside the one §6 already gives.
+
+**Type change.** `GroundCoverSpecies` gains a sheen amount. A dry summer grass
+and a wet reed do not silver equally.
