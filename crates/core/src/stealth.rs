@@ -19,17 +19,28 @@
 //!
 //! ## Status: greenfield, math-only, by design
 //!
-//! Nothing in the engine feeds this yet: there's no AI-package evaluator, no
-//! line-of-sight/vision system, no alert-state component, no sneak/crouch
-//! flag (see the survey behind this module — ROADMAP.md's M42 "AI packages"
-//! milestone, which this formula will eventually plug into, is Tier 7 and
-//! blocked on `PACK` record parsing, #446). Building the detection math now,
-//! decoupled from that unbuilt behavior layer, mirrors how the CHARAL
-//! affliction mechanism ([`crate::character::affliction`]) was built ahead
-//! of its threshold data: the reusable, testable piece lands now; the ECS
-//! wiring (a `Sneaking` marker, an `AlertState` component, a tick system
-//! iterating detector/target pairs) waits until M42 gives it something to
-//! drive.
+//! Nothing in the engine feeds this yet: there's no line-of-sight/vision
+//! system, no alert-state component, and no sneak/crouch flag. Building the
+//! detection math now, decoupled from that unbuilt behavior layer, mirrors
+//! how the CHARAL affliction mechanism ([`crate::character::affliction`])
+//! was built ahead of its threshold data: the reusable, testable piece
+//! lands now; the ECS wiring (a `Sneaking` marker, an `AlertState`
+//! component, a tick system iterating detector/target pairs) is what
+//! remains.
+//!
+//! Second correction (#3878): this section used to justify the wait with
+//! "M42 'AI packages' … is Tier 7 and blocked on `PACK` record parsing,
+//! #446", closing "waits until M42 gives it something to drive". All three
+//! claims have since expired. #446 is CLOSED (`90e6b068`) and
+//! `crates/plugin/src/esm/records/misc/pack.rs` is ~1,800 lines of shipped
+//! PACK parsing; an AI-package evaluator exists
+//! (`package_conditions_pass` / `ambient_ai_package_system`, registered
+//! unconditionally as a `Stage::Update` exclusive in `byroredux/src/boot.rs`);
+//! and M42 has delivered seven procedure runtimes (Sandbox / Wander /
+//! Travel / Follow / Escort / Guard / Patrol, M42.1–M42.9). The conclusion
+//! is unchanged — this module still has no consumer — but it is *unscheduled*
+//! now, not *blocked*, and a contributor reading this to pick up work should
+//! not be sent to wait on things that are done.
 //!
 //! One correction to "nothing feeds this yet" (#2979): a melee-combat
 //! consumer shipped 2026-08-15/16 (`byroredux/src/combat.rs`), and the
