@@ -4,15 +4,34 @@
 //! `parse_minimal_esm_record` (EDID + optional FULL only, #810), so there
 //! was no path from that FormID to an actual archive audio file.
 //!
-//! **Sub-record decoded**: `FNAM` — the sound's file path, relative to
-//! `Data\Sound\` (e.g. `fx\explosion.wav`). This codebase's own MUSC test
-//! fixture already documents the same FNAM-as-filename convention for the
-//! sibling `MUSC` record
+//! **Sub-record decoded**: `FNAM` — the sound's path relative to
+//! `Data\Sound\`, which is **either a file or a folder** (#3914):
+//!
+//! - file form, e.g. `fx\explosion.wav` — one archive entry;
+//! - folder form, e.g. `fx\amb\ceilingcrumble\` (trailing separator) — a
+//!   directory of variant `.wav`s the retail engine picks from at random
+//!   on each play.
+//!
+//! The folder form is the *majority* convention on the reference title,
+//! not a data typo: an ESM census of `FalloutNV.esm` (2026-09-06) found
+//! 1,620 of the 3,189 FNAM-bearing `SOUN` records (50.8 %) end in `\`,
+//! 103 of them footstep sets (`FSTConcSolidJump` →
+//! `fx\fst\conc_broken\jump\`); `Fallout3.esm` is 573 of 1,556 (36.8 %).
+//! Every folder-form value ends in a backslash — none use `/`, and no
+//! extension-less value names a folder without the trailing separator.
+//! [`SounRecord::is_folder`] carries the distinction so a consumer never
+//! hands a folder to an archive `extract` as if it were an entry key
+//! (a guaranteed miss indistinguishable from genuine missing content).
+//! Picking a variant needs a policy decision (deterministic-per-emitter
+//! vs. per-play) that no consumer has made yet, so this crate exposes the
+//! distinction and nothing more.
+//!
+//! The sibling `MUSC` record's `FNAM` is file-form only
 //! (`crates/plugin/src/esm/records/misc/equipment.rs`,
-//! `parse_minimal_record_picks_edid_full`: `FNAM = "music\base\maintitle.mp3"`),
-//! and it is a load-bearing convention throughout this crate — `MODL`,
-//! `ICON`, and every other authored-path sub-record already decode via the
-//! same `read_zstring` z-string reader (`common.rs`).
+//! `parse_minimal_record_picks_edid_full`: `FNAM = "music\base\maintitle.mp3"`);
+//! `MODL`/`ICON` are always files. All decode via the same `read_zstring`
+//! z-string reader (`common.rs`) — only the *meaning* of `SOUN.FNAM`
+//! differs.
 //!
 //! **`SNDD`/`SNDX`**: only the `Loop` playback flag is decoded (#3775 /
 //! AUD-2026-08-30-D4-01) — see [`SounRecord::looping`]'s doc for the exact
@@ -42,14 +61,17 @@ const SNDD_SNDX_FLAGS_OFFSET: usize = 4;
 const SNDD_SNDX_LOOP_BIT: u8 = 0x10;
 
 /// Parsed `SOUN` record — just enough to resolve a sound FormID to an
-/// archive-relative file path, plus whether the engine should loop it.
+/// archive-relative path (file or folder — see [`Self::is_folder`]), plus
+/// whether the engine should loop it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SounRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// `FNAM` — file path relative to `Data\Sound\` (e.g.
-    /// `fx\explosion.wav`). Empty when the record omits the sub-record
-    /// (rare; only seen on placeholder/dev records).
+    /// `FNAM` — path relative to `Data\Sound\`, verbatim. Either a file
+    /// (`fx\explosion.wav`) or, when it ends in a path separator, a folder
+    /// of variant files (`fx\amb\ceilingcrumble\`) — see the module doc
+    /// and [`Self::is_folder`] (#3914). Empty when the record omits the
+    /// sub-record (rare; only seen on placeholder/dev records).
     pub sound_path: String,
     /// `SNDD`/`SNDX` `Flags` bit `0x0010` ("Loop") — Oblivion/FO3/FNV
     /// only (see [`SNDD_SNDX_FLAGS_OFFSET`]'s doc for why no era branch
@@ -64,6 +86,19 @@ pub struct SounRecord {
     /// Skyrim content; decoding `SNDR` is tracked separately (#3816-
     /// adjacent scope, not attempted here).
     pub looping: bool,
+}
+
+impl SounRecord {
+    /// `true` when `FNAM` names a folder of variant files rather than one
+    /// file — the value ends in a path separator (#3914). A folder is not
+    /// an archive entry key: passing it to an archive `extract` is a
+    /// guaranteed miss, so consumers must branch on this before resolving.
+    /// Vanilla data only ever uses `\`, but `/` is accepted too, matching
+    /// the separator normalisation every path consumer already applies.
+    /// `false` for the empty (no-`FNAM`) path.
+    pub fn is_folder(&self) -> bool {
+        self.sound_path.ends_with('\\') || self.sound_path.ends_with('/')
+    }
 }
 
 /// Parse a SOUN record from its sub-record list. Unknown sub-records are
@@ -124,6 +159,41 @@ mod tests {
         let s = parse_soun(0xDEAD_BEEF, &subs);
         assert_eq!(s.editor_id, "PlaceholderSound");
         assert_eq!(s.sound_path, "");
+        assert!(!s.is_folder(), "an absent FNAM is neither file nor folder");
+    }
+
+    /// #3914 — the folder form (`FNAM` ending in `\`) is how 50.8 % of
+    /// FNV's `SOUN` records are authored (`EMTCeilingCrumble` →
+    /// `fx\amb\ceilingcrumble\`). The path is kept verbatim and the
+    /// record reports it as a folder so no consumer hands it to an
+    /// archive `extract` as if it were an entry key.
+    #[test]
+    fn parse_soun_folder_form_fnam_is_flagged_as_folder() {
+        let subs = vec![
+            edid("EMTCeilingCrumble"),
+            zstring_sub(b"FNAM", "fx\\amb\\ceilingcrumble\\"),
+        ];
+        let s = parse_soun(0x000A_0000, &subs);
+        assert_eq!(s.sound_path, "fx\\amb\\ceilingcrumble\\");
+        assert!(s.is_folder());
+    }
+
+    /// #3914 sibling — a forward-slash trailing separator (non-vanilla
+    /// authoring; every vanilla folder-form value uses `\`) is a folder
+    /// too, consistent with the `/`→`\` normalisation consumers apply.
+    #[test]
+    fn parse_soun_forward_slash_folder_form_is_flagged_as_folder() {
+        let subs = vec![zstring_sub(b"FNAM", "fx/amb/ceilingcrumble/")];
+        assert!(parse_soun(0x000A_0001, &subs).is_folder());
+    }
+
+    /// #3914 — the file form (an extension, no trailing separator) is not
+    /// a folder, even when its parent directory is one that other records
+    /// reference in folder form.
+    #[test]
+    fn parse_soun_file_form_fnam_is_not_a_folder() {
+        let subs = vec![zstring_sub(b"FNAM", "fx\\amb\\ceilingcrumble\\amb_ceilingcrumble_01.wav")];
+        assert!(!parse_soun(0x000A_0002, &subs).is_folder());
     }
 
     #[test]

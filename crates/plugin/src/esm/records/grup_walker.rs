@@ -466,7 +466,7 @@ mod tests {
         let cell = nest(2); // parse_cell_group: interior block
         let wrld = nest(4); // parse_wrld_children: exterior block
 
-        let mut check =
+        let check =
             |name: &str,
              bytes: &[u8],
              walk: &mut dyn FnMut(&mut EsmReader, usize) -> Result<()>| {

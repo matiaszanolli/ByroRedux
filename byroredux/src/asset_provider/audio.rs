@@ -25,14 +25,29 @@ use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::SounRecord;
 use std::collections::HashMap;
 
-/// Look up a `SOUN` FormID's decoded file path. Returns `None` when the
-/// FormID isn't a known SOUN (bad data) or the record omitted `FNAM`
-/// (rare placeholder records — see `soun::parse_soun`'s doc).
+/// Look up a `SOUN` FormID's decoded `FNAM` path, verbatim. Returns `None`
+/// when the FormID isn't a known SOUN (bad data) or the record omitted
+/// `FNAM` (rare placeholder records — see `soun::parse_soun`'s doc).
+///
+/// #3914 — the path is a **file or a folder** (`SounRecord::is_folder`;
+/// 50.8 % of FNV's `SOUN` records author a folder of variants). Callers
+/// must check [`sound_is_folder`] before handing the result to
+/// [`sound_archive_path`] + [`SoundArchiveProvider::extract`]: a folder is
+/// never an archive entry, so extracting it is a guaranteed miss that
+/// looks exactly like missing content.
 pub(crate) fn resolve_sound_path(sounds: &HashMap<u32, SounRecord>, form_id: u32) -> Option<&str> {
     sounds
         .get(&form_id)
         .map(|s| s.sound_path.as_str())
         .filter(|p| !p.is_empty())
+}
+
+/// Whether a `SOUN` FormID's `FNAM` names a folder of variant files rather
+/// than one file (#3914; see [`SounRecord::is_folder`]). `false` for an
+/// unresolved FormID, same fail-closed posture as [`resolve_sound_path`] —
+/// kept as its own pure lookup, mirroring [`sound_loops`].
+pub(crate) fn sound_is_folder(sounds: &HashMap<u32, SounRecord>, form_id: u32) -> bool {
+    sounds.get(&form_id).is_some_and(|s| s.is_folder())
 }
 
 /// Look up a `SOUN` FormID's [`SounRecord::looping`] flag. `false` for an
@@ -44,12 +59,17 @@ pub(crate) fn sound_loops(sounds: &HashMap<u32, SounRecord>, form_id: u32) -> bo
     sounds.get(&form_id).is_some_and(|s| s.looping)
 }
 
-/// Normalise a `SOUN.FNAM` value to its archive key: lowercase,
+/// Normalise a `SOUN.FNAM` value to its archive form: lowercase,
 /// backslash-separated, under the `sound\` folder. `FNAM` is authored
-/// relative to `Data\Sound\` without that prefix (the same convention as
-/// `MODL` being relative to `Meshes\` and `ICON` to `Textures\`); a path
-/// that already carries the folder, or uses forward slashes, is accepted
-/// unchanged in meaning. Mirrors `script::pex_archive_path`.
+/// relative to `Data\Sound\` without that prefix, the way `MODL` is
+/// relative to `Meshes\` and `ICON` to `Textures\` — but unlike those,
+/// `FNAM` is not always a file (#3914): a folder-form value keeps its
+/// trailing separator here (`fx\amb\ceilingcrumble\` →
+/// `sound\fx\amb\ceilingcrumble\`), which is an entry *prefix*, never an
+/// entry key — only a file-form result is valid input to
+/// [`SoundArchiveProvider::extract`]. A path that already carries the
+/// folder, or uses forward slashes, is accepted unchanged in meaning.
+/// Mirrors `script::pex_archive_path`.
 pub(crate) fn sound_archive_path(sound_path: &str) -> String {
     let mut path = sound_path.replace('/', "\\").to_ascii_lowercase();
     if !path.starts_with("sound\\") {
@@ -90,8 +110,14 @@ impl SoundArchiveProvider {
         self.archives.is_empty()
     }
 
-    /// Extract raw bytes for an archive-relative path (as produced by
-    /// [`sound_archive_path`]). First-listed archive wins on a collision.
+    /// Extract raw bytes for an archive-relative **file** path (as produced
+    /// by [`sound_archive_path`] from a file-form `FNAM`). First-listed
+    /// archive wins on a collision. A folder-form path (#3914) is never an
+    /// entry key — it always misses here, so callers gate on
+    /// [`sound_is_folder`] first rather than reading that miss as missing
+    /// content. Variant selection inside a folder is a policy decision no
+    /// consumer has made yet, so there is deliberately no
+    /// `extract_any_in(folder)` sibling.
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
         for archive in &self.archives {
             if let Ok(data) = archive.extract(archive_path) {
@@ -202,6 +228,19 @@ pub(crate) fn dispatch_region_ambient_music(
         stop_region_ambient_music(world);
         return;
     };
+    // #3914 — a folder-form `FNAM` (half of FNV's SOUN library) names a
+    // set of variants to pick from, not an entry; extracting it would be
+    // a guaranteed miss logged as "not found in any archive", which is a
+    // different diagnosis (missing content) from the truth (a selection
+    // policy this engine hasn't implemented). Fail closed, say so.
+    if music_form.is_some_and(|form_id| sound_is_folder(sounds, form_id)) {
+        log::warn!(
+            "REGN ambient: '{archive_path}' is a folder of variants (SOUN.FNAM folder \
+             form) — variant selection is not implemented, track skipped (#3914)"
+        );
+        stop_region_ambient_music(world);
+        return;
+    }
 
     // Scoped so the `SoundArchiveProvider` read guard drops before any
     // `&mut World` use below — the guard's `Drop` impl otherwise keeps the
@@ -316,6 +355,43 @@ mod tests {
         assert!(!sound_loops(&sounds, 0xDEAD_BEEF));
     }
 
+    /// #3914 — the folder form is carried through the FormID lookup
+    /// unchanged, and the sibling predicate reports it, so a consumer can
+    /// branch before it ever reaches `extract`.
+    #[test]
+    fn sound_is_folder_true_for_a_folder_form_record() {
+        let mut sounds = HashMap::new();
+        sounds.insert(0x77, soun(0x77, "fx\\amb\\ceilingcrumble\\"));
+        assert!(sound_is_folder(&sounds, 0x77));
+        assert_eq!(
+            resolve_sound_path(&sounds, 0x77),
+            Some("fx\\amb\\ceilingcrumble\\"),
+            "the folder path itself still resolves — only its kind differs"
+        );
+    }
+
+    #[test]
+    fn sound_is_folder_false_for_a_file_form_record_and_unknown_form_id() {
+        let mut sounds = HashMap::new();
+        sounds.insert(0x1234, soun(0x1234, "fx\\explosion01.wav"));
+        assert!(!sound_is_folder(&sounds, 0x1234));
+        assert!(!sound_is_folder(&sounds, 0xDEAD_BEEF));
+    }
+
+    /// #3914 — a folder-form value keeps its trailing separator through
+    /// normalisation: the result is an entry prefix, never an entry key.
+    #[test]
+    fn sound_archive_path_keeps_folder_form_trailing_separator() {
+        assert_eq!(
+            sound_archive_path("FX\\Amb\\CeilingCrumble\\"),
+            "sound\\fx\\amb\\ceilingcrumble\\"
+        );
+        assert_eq!(
+            sound_archive_path("fx/amb/ceilingcrumble/"),
+            "sound\\fx\\amb\\ceilingcrumble\\"
+        );
+    }
+
     #[test]
     fn sound_archive_path_prepends_folder_and_lowercases() {
         assert_eq!(
@@ -398,6 +474,24 @@ mod tests {
         world.insert_resource(byroredux_audio::AudioWorld::default());
         let sounds = HashMap::new();
         dispatch_region_ambient_music(&mut world, &sounds, None);
+        assert!(!world
+            .resource::<byroredux_audio::AudioWorld>()
+            .is_music_active());
+    }
+
+    /// #3914 — a `music_form` whose SOUN is folder-form must fail closed
+    /// (stop playback) *before* any archive lookup, so the folder is never
+    /// mistaken for a missing file. Exercised with a real (headless)
+    /// `AudioWorld` and a registered-but-empty provider so every layer the
+    /// folder branch precedes is actually present.
+    #[test]
+    fn dispatch_with_folder_form_soun_stops_playback_without_archive_lookup() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(SoundArchiveProvider::new());
+        let mut sounds = HashMap::new();
+        sounds.insert(0x77, soun(0x77, "fx\\amb\\ceilingcrumble\\"));
+        dispatch_region_ambient_music(&mut world, &sounds, Some(0x77));
         assert!(!world
             .resource::<byroredux_audio::AudioWorld>()
             .is_music_active());
