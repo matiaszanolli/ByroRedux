@@ -614,6 +614,38 @@ real worldspaces before the phase that depends on it.
    doubling the record) actually turns on. A bench that measures only the
    scatter answers the smaller question and will make the SSBO path look
    cheaper than it is.
+
+   **Plumbing correction (2026-09-06): the locator this describes is on the
+   wrong record.** `GpuTerrainTile` is 24 texture indices and nothing else —
+   96 bytes of `uint[8] × 3`, pinned by `gpu_terrain_tile_is_96_bytes` and by
+   `ArrayStride 96` in the shipped `triangle.frag.spv`. It carries no
+   base-vertex offset, no cell origin and no vertex count, so "via a
+   base-vertex offset carried on the terrain-tile record" names a field that
+   does not exist.
+
+   The locator does exist, one record over: `GpuInstance` already carries
+   `vertex_offset`, `index_offset` and `vertex_count`
+   ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)),
+   which is exactly what finds a terrain cell's vertices in the global vertex
+   SSBO. So path A is really:
+
+   ```
+   chunk → the terrain instance covering it → GpuInstance.vertex_offset
+         → global vertex SSBO
+   ```
+
+   and the missing piece is the **chunk-to-instance association**, not a field
+   on the tile record. Smaller than growing a 96-byte record whose stride is
+   baked into shipped SPIR-V, but real — and the extra indirection is part of
+   what the bench has to price.
+
+   Worth recording *why* neither path has anything to extend: splat weights
+   reach the fragment shader as interpolated vertex attributes
+   ([`triangle.vert:21`](../../crates/renderer/shaders/triangle.vert#L21)), not
+   as a lookup. Terrain attributes have never been sampled at an arbitrary
+   point anywhere in this renderer. Both candidates are new code, which is why
+   this measurement needs a purpose-built harness rather than instrumentation
+   of something that already runs.
 2. **Chunk size.** 512 units (8×8 per cell) is a starting guess balancing
    dispatch count against per-chunk culling granularity. Wants a sweep.
 3. **Density-field calibration.** The affinity table and the noise frequencies
