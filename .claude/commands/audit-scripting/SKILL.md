@@ -35,8 +35,8 @@ dimension below (flag, don't silently skip)**: between 2026-08-31 and
 2026-09-02 (commits `316fb202`..`fed3e550`, ~100 commits, all after this
 skill's last full sync at `64f64480`/2026-08-30) a large SKSE/JContainers/
 StorageUtil/ObScript compatibility layer landed —
-`crates/scripting/src/papyrus_provider.rs` (6.2k LOC, new — typed provider
-call lowering/dispatch), `crates/scripting/src/obscript.rs` +
+`crates/scripting/src/papyrus_provider/` (6.2k LOC, new — typed provider
+call lowering/dispatch; split out of a single file by #3852), `crates/scripting/src/obscript.rs` +
 `crates/scripting/src/obscript_runtime.rs` (686 + 1.6k LOC, new — legacy
 Oblivion/FO3/FNV `SCTX`/bytecode-derived branch execution; note this
 predates and is **distinct** from the not-yet-built `.psc`-side Obscript/SCTX

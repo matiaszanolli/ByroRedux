@@ -138,21 +138,20 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    check — 5 files → **12**: `byroredux/src/extensions.rs` (~5920 — the
    sandbox-runtime/ECS-event adapter bridging `crates/sdk`/`crates/mod-runtime`
    into the engine; 10 652 total lines, so a large test fraction, but still
-   far over threshold on production alone), `crates/sdk/src/compatibility.rs`
-   (~3760), `crates/scripting/src/papyrus_provider.rs` (~3710),
-   `crates/mod-runtime/src/runtime.rs` (~3500), `crates/renderer/src/vulkan/volumetrics.rs`
+   far over threshold on production alone), `crates/renderer/src/vulkan/volumetrics.rs`
    (~2940, up from ~2860), `crates/renderer/src/vulkan/context/mod.rs` (~2650,
    up from ~2470), `crates/scripting/src/fragment.rs` (~2540),
    `byroredux/src/boot.rs` (~2230, newly crossed — see the `main.rs`-split note
    below), `crates/renderer/src/mesh.rs` (~2230, up from ~2210),
    `crates/nif/src/import/walk/mod.rs` (~2170, newly crossed),
    `crates/renderer/src/texture_registry.rs` (~2060, up from ~2010) and
-   `byroredux/src/asset_provider/material.rs` (~2040, newly crossed). The four
-   newest entries — `extensions.rs`, `compatibility.rs`, `papyrus_provider.rs`,
-   `runtime.rs` — are exactly the "young crates … not yet seen a debt sweep"
-   named at the top of this skill (`crates/sdk`, `crates/scripting`,
-   `crates/mod-runtime`); this re-check is that sweep actually landing on them
-   for the first time — file real Dim 1 findings there, don't just note the
+   `byroredux/src/asset_provider/material.rs` (~2040, newly crossed).
+   `compatibility.rs`, `papyrus_provider.rs` and `runtime.rs` were split in
+   2026-09 (#3851 / #3852 / #3853) and are no longer single files — see the
+   young-crate note below. `extensions.rs` is the one that remains, and it is
+   still the "young crates … not yet seen a debt sweep" case named at the top
+   of this skill (`crates/sdk`, `crates/scripting`, `crates/mod-runtime`) —
+   file real Dim 1 findings there, don't just note the
    crate is young.
    **`context/draw.rs` dropped OUT of the bucket entirely (~3620 → ~1760
    production)** — #3282 (`7463204e`, 2026-09-02) split the re-grown
@@ -243,7 +242,9 @@ previously-split module can grow back over threshold).
 - `crates/nif/src/import/walk/mod.rs` → newly crossed the 2000-production threshold (~2170 LOC, first seen 2026-09-05) — already documented as holding both hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) and several satellite walkers (lights, particle emitters, emitter-param/rate extraction); split the satellite walkers out per the module doc's own category list rather than by traversal-order.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
 - Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
-- **New candidates from the young-crate sweep (first crossed 2026-09-05, no prior split proposal exists — read before proposing an axis, this is a first pass, not a re-derivation)**: `byroredux/src/extensions.rs` (~5920 production — the engine-side SDK/mod-runtime ECS-event adapter; per its own module doc it already separates "assigns opaque SDK handles" / "delivers canonical events" / "applies the returned principal-attributed command batch," which is a plausible split axis); `crates/sdk/src/compatibility.rs` (~3760 — per-extender-ecosystem compat shims, already namespaced by `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}`, a natural one-module-per-family split); `crates/scripting/src/papyrus_provider.rs` (~3710 — Papyrus `Provider.Function(...)` lowering to SDK routes); `crates/mod-runtime/src/runtime.rs` (~3500 — the WIT/WASM binding surface, plausibly splittable per binding category: actor_values/animation/console/content_catalog/events/factions/inventory/world_state/…); `crates/scripting/src/fragment.rs` (~2540). Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
+- **New candidates from the young-crate sweep (first crossed 2026-09-05, no prior split proposal exists — read before proposing an axis, this is a first pass, not a re-derivation)**: `byroredux/src/extensions.rs` (~5920 production — the engine-side SDK/mod-runtime ECS-event adapter; per its own module doc it already separates "assigns opaque SDK handles" / "delivers canonical events" / "applies the returned principal-attributed command batch," which is a plausible split axis); `crates/scripting/src/fragment.rs` (~2540).
+
+  **Three of the original candidates were split in 2026-09; their axes are now settled fact, not guesses — do not re-derive them.** *crates/sdk/src/compatibility.rs* -> `compatibility/` (#3851): the axis this skill proposed — one module per `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}` — was **wrong**, and is recorded here because it is the exact failure this bullet's own caveat warns about. `ExtenderFamily` is a metadata tag on `SourceAlias`/`CompatibilityMatch`, present on 30 of 3759 production lines, 23 of them inside two classifier functions; splitting on it would have produced one ~160-line module and six near-empty ones while leaving the real mass untouched. The real axis was **service surface**, each service repeating a four-layer stack (routes -> declarations -> source aliases -> runtime adapters), and PapyrusUtil's StorageUtil alone was ~2050 of the 3759 lines. *crates/scripting/src/papyrus_provider.rs* -> `papyrus_provider/` (#3852), split on the IR its front end produces and its interpreter consumes. *crates/mod-runtime/src/runtime.rs* -> `runtime/` (#3853): here the guessed per-binding axis **did** hold — 19 `impl <wit>::Host for HostState` blocks relocated one per file. Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
 (want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /
