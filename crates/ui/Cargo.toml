@@ -22,7 +22,6 @@ futures = "0.3"
 url = "2"
 
 # Image types (RgbaImage from capture_frame)
-image = { version = "0.25", default-features = false }
 
 # Error handling
 anyhow.workspace = true

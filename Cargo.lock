@@ -628,9 +628,7 @@ dependencies = [
 name = "byro-detect"
 version = "0.1.0"
 dependencies = [
- "byroredux-core",
  "byroredux-game-detect",
- "toml",
 ]
 
 [[package]]
@@ -711,7 +709,6 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
- "toml",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",
@@ -1030,7 +1027,6 @@ dependencies = [
  "async-channel",
  "byroredux-bsa",
  "futures",
- "image 0.25.10",
  "log",
  "ruffle_core",
  "ruffle_render_wgpu",

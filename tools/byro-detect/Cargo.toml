@@ -9,5 +9,3 @@ edition.workspace = true
 # the launcher will not start still has a way to find out why.
 [dependencies]
 byroredux-game-detect = { workspace = true }
-byroredux-core = { workspace = true }
-toml = { workspace = true }

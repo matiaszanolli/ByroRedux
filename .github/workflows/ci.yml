@@ -32,6 +32,26 @@ jobs:
       - name: Reject grep-blinding NUL bytes
         run: scripts/check-text-source-integrity.sh
 
+  unused-dependencies:
+    name: Unused dependencies
+    runs-on: ubuntu-latest
+    # #3890 — this defect class has now been swept five times (#2075,
+    # #2426-#2431, and #3890) and re-accrued between every audit, so it gets
+    # a gate rather than a sixth manual sweep. `cargo machete` reads the
+    # manifests and sources only — no build, so it runs in seconds and needs
+    # none of the native headers the test job installs.
+    #
+    # It has known blind spots (macro-only and re-export-only usage), which
+    # is why a finding is a prompt to verify by hand before deleting, not an
+    # automatic delete. It does not produce false negatives for the plain
+    # declared-but-never-referenced case this gate exists to catch.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+      - name: Reject declared-but-unreferenced dependencies
+        run: cargo machete
+
   playable-smoke-contracts:
     name: Playable smoke gate contracts
     runs-on: ubuntu-latest
