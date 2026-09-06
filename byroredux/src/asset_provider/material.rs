@@ -1629,10 +1629,11 @@ pub(crate) fn merge_external_material(
             if !set_glossiness {
                 // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
                 // convention); `Material::glossiness` is on the 0–100 NIF
-                // scale (`classify_pbr` divides by 100). Multiply by 100
-                // to normalize — without this, BGSM-driven FO4 materials
-                // that don't keyword-match the metal/wood/glass arms in
-                // `classify_pbr` fell through to the glossiness fallback
+                // scale (`classify_pbr_keyword` divides by 100). Multiply
+                // by 100 to normalize — without this, BGSM-driven FO4
+                // materials that don't keyword-match the metal/wood/glass
+                // arms in `classify_pbr_keyword` fall through to the
+                // glossiness fallback
                 // with `roughness=0.95`, killing direct specular and the
                 // RT-reflection metalness/roughness gate (Med-Tek floors).
                 material.glossiness = bgsm.smoothness * 100.0;
@@ -1773,7 +1774,7 @@ pub(crate) fn merge_external_material(
         // The walk above is the full template-chain resolution (a parent
         // can still supply the slot the leaf doesn't), so only fall back
         // once it's had every chance to fill `smooth_spec`. `0.5` matches
-        // the neutral roughness `classify_pbr`'s keyword arms already use
+        // the neutral roughness `classify_pbr_keyword`'s arms already use
         // elsewhere (`crates/core/src/ecs/components/material.rs`) rather
         // than inventing a second "no data" convention.
         if leaf.smoothness >= 1.0 && material.textures.smooth_spec.is_none() {

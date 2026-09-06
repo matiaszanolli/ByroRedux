@@ -4,10 +4,16 @@
 //! Oblivion / FO3 / FNV / pre-Skyrim mesh leaves the parser with
 //! explicit `metalness_override` / `roughness_override` populated.
 //!
-//! The classifier itself is shared with `Material::classify_pbr` via
+//! The classifier itself is the free function
 //! `byroredux_core::ecs::components::material::classify_pbr_keyword`,
-//! so the heavy keyword-arm coverage lives next to that function in
-//! the core crate. The tests here pin the parser-side adapter — that
+//! shared by the parser-side and canonical-translation paths, so the
+//! heavy keyword-arm coverage lives next to that function in the core
+//! crate. The render-time `Material::classify_pbr` it once mirrored was
+//! removed in the NIFAL refactor — PBR resolves once at the parse-time
+//! `translate_material` boundary and there is no per-draw fallback
+//! (#3869; `docs/engine/nifal.md`'s no-render-time-fallback rule).
+//!
+//! The tests here pin the parser-side adapter — that
 //! MaterialInfo's three relevant fields (`texture_path`, `glossiness`,
 //! `env_map_scale`, `normal_map.is_some()`) reach the classifier in
 //! the right shape, and that the StringPool resolution round-trip
