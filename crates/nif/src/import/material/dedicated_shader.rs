@@ -183,6 +183,26 @@ fn apply_bs_lighting_shader(
         info.soft_lighting |= soft_lighting;
         info.rim_lighting |= rim_lighting;
         info.back_lighting |= back_lighting;
+        // #3897 — capture the greyscale→palette enable bits on the LIT path.
+        // These reuse the exact helpers the `BSEffectShaderProperty` arm calls
+        // (`shader_data.rs`), which was previously their only caller: the typed
+        // SLSF1 word OR the CRC32 lists, so FO76/Starfield content that writes
+        // the typed word as zero and rides on the CRC arrays is captured too.
+        //
+        // No `slsf1_bit` layout dispatch is needed here, unlike
+        // `MODEL_SPACE_NORMALS` above: `skyrim_slsf1` and `fo4_slsf1` agree on
+        // both palette bits (0x10 / 0x20), and `shader_flags.rs` already pins
+        // that agreement with a test.
+        info.palette_color |= super::is_palette_color_from_modern_shader_flags(
+            shader.shader_flags_1,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        );
+        info.palette_alpha |= super::is_palette_alpha_from_modern_shader_flags(
+            shader.shader_flags_1,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        );
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #2695 — slot→role resolution now goes through the single

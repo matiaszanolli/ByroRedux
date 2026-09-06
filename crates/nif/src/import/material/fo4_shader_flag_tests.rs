@@ -217,3 +217,94 @@ fn fo76_crc_model_space_normals_sets_field() {
         "FO76+ MODELSPACENORMALS CRC must OR model_space_normals (#1592)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #3897 — greyscale→palette enable capture on the LIT path.
+//
+// `slot_to_role` routed FO4 `BSShaderTextureSet` slot 3 into the
+// `greyscale_lut` role (#2997) and the LUT reached `GpuMaterial`, but nothing
+// ever set the palette ENABLE bit for a `BSLightingShaderProperty`: the only
+// caller of `is_palette_color_from_modern_shader_flags` was the
+// `BSEffectShaderProperty` arm, and `into_imported_material` hardcoded the
+// enable triple to `false`. `MAT_FLAG_EFFECT_PALETTE_COLOR` was therefore
+// never set on a lit FO4 material and the shader's palette branch was dead
+// code — on 30,166 measured FO4 properties (30,155 with a populated slot 3).
+// ---------------------------------------------------------------------------
+
+/// FO4 typed SLSF1 word: `Greyscale_To_PaletteColor` must reach
+/// `MaterialInfo::palette_color` from a `BSLightingShaderProperty`.
+#[test]
+fn fo4_lit_shader_captures_greyscale_to_palette_color() {
+    let info = extract(
+        make_bslsp(fo4_slsf1::GREYSCALE_TO_PALETTE_COLOR, 0, Vec::new()),
+        bsver::FALLOUT4,
+    );
+    assert!(
+        info.palette_color,
+        "SLSF1::Greyscale_To_PaletteColor on a lit property must set \
+         palette_color — this is the producer whose absence made the FO4 \
+         palette remap unreachable (#3897)"
+    );
+    assert!(!info.palette_alpha, "the alpha variant was not authored");
+}
+
+/// The alpha variant is captured independently of the colour one — the
+/// format permits either, or both.
+#[test]
+fn fo4_lit_shader_captures_greyscale_to_palette_alpha() {
+    let info = extract(
+        make_bslsp(fo4_slsf1::GREYSCALE_TO_PALETTE_ALPHA, 0, Vec::new()),
+        bsver::FALLOUT4,
+    );
+    assert!(info.palette_alpha);
+    assert!(!info.palette_color);
+}
+
+/// FO76 / Starfield write the typed words as zero and carry the identifier in
+/// the CRC arrays. The capture rides the same union helper the effect path
+/// uses, so the CRC route must work too.
+#[test]
+fn fo76_crc_greyscale_to_palette_color_sets_field() {
+    let shader = make_bslsp(0, 0, vec![bs_shader_crc32::GRAYSCALE_TO_PALETTE_COLOR]);
+    let info = extract(shader, bsver::FO76);
+    assert!(
+        info.palette_color,
+        "FO76+ GRAYSCALE_TO_PALETTE_COLOR CRC must set palette_color (#3897)"
+    );
+}
+
+/// Additive, never fabricated: no authored bit → no enable.
+#[test]
+fn lit_shader_without_palette_flags_leaves_palette_fields_clear() {
+    let info = extract(make_bslsp(0, 0, Vec::new()), bsver::FALLOUT4);
+    assert!(!info.palette_color);
+    assert!(!info.palette_alpha);
+}
+
+/// The captured bits must survive the `MaterialInfo` → `ImportedMaterial`
+/// conversion onto the enable triple `pack_imported_material_flags` reads.
+/// This is the half that was hardcoded `false`, so a capture that stopped
+/// here would still leave the remap dead.
+#[test]
+fn lit_palette_capture_forwards_onto_the_imported_material_enable_triple() {
+    let mut pool = StringPool::new();
+    let imported = extract(
+        make_bslsp(fo4_slsf1::GREYSCALE_TO_PALETTE_COLOR, 0, Vec::new()),
+        bsver::FALLOUT4,
+    )
+    .into_imported_material(&mut pool, None);
+    assert!(
+        imported.bgsm_greyscale_lut_enabled,
+        "the enable bit must forward — it was hardcoded false pre-#3897"
+    );
+    assert!(imported.bgsm_greyscale_lut_color);
+    assert!(!imported.bgsm_greyscale_lut_is_alpha);
+
+    // And the negative: an unflagged lit property must not enable the remap,
+    // or every FO4 material with a slot-3 texture would remap.
+    let mut pool = StringPool::new();
+    let unflagged = extract(make_bslsp(0, 0, Vec::new()), bsver::FALLOUT4)
+        .into_imported_material(&mut pool, None);
+    assert!(!unflagged.bgsm_greyscale_lut_enabled);
+    assert!(!unflagged.bgsm_greyscale_lut_color);
+}

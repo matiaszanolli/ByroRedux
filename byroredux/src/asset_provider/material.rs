@@ -1433,6 +1433,15 @@ pub(crate) fn merge_external_material(
             material.diffuse_color =
                 conductor_diffuse_tint(material.diffuse_color, leaf.specular_color);
         }
+        // #3898 — whether the NIF itself supplied the greyscale LUT before any
+        // BGSM in this chain got a turn. `fill` is first-non-empty-wins, so a
+        // NIF-supplied slot 3 (#2997) means every BGSM's own greyscale texture
+        // LOSES the role — but the BGSM's palette *enable* bit is a statement
+        // about the material, not about which texture resource is sampled, and
+        // dropping it silently is what left the remap off. Captured before the
+        // walk so a closer BGSM winning the slot mid-walk is distinguishable
+        // from the NIF having won it outright.
+        let nif_supplied_greyscale_lut = material.textures.greyscale_lut.is_some();
         for step in resolved.walk() {
             let bgsm = &step.file;
             fill(
@@ -1477,11 +1486,33 @@ pub(crate) fn merge_external_material(
             // chain) at the exact step that supplies the texture — an
             // ancestor's own enable bit is irrelevant once a closer BGSM
             // already won the texture slot.
-            if material.textures.greyscale_lut.is_none() && !bgsm.greyscale_texture.is_empty() {
-                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
-                // #2643 — BGSM has no alpha-variant field, so the color
-                // bit is the only one this format can author.
-                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
+            //
+            // #3898 — the `is_none()` half above is precedence among BGSMs and
+            // stays exactly as #2108 wrote it. What it silently also did was
+            // drop the enable bit whenever the NIF's own slot 3 had already
+            // filled the role (#2997 made that the common case on FO4), so a
+            // BGSM asking for the remap was ignored. Split the two situations:
+            //
+            //   - this BGSM wins the slot  -> it is authoritative for both the
+            //     texture and the enable bit (assignment, unchanged)
+            //   - the NIF won the slot     -> the LUT sampled is the NIF's, but
+            //     the BGSM still describes this material, so OR its enable bit
+            //     in. OR, not assignment: neither source may silently disable
+            //     the remap the other asked for, and the NIF's own SLSF1 bit
+            //     (#3897) has already been forwarded onto these same fields.
+            //   - a closer BGSM won the slot -> unchanged: an ancestor's bit is
+            //     irrelevant, which is why this keys on `nif_supplied_greyscale_lut`
+            //     rather than on `is_some()`.
+            if !bgsm.greyscale_texture.is_empty() {
+                if material.textures.greyscale_lut.is_none() {
+                    material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+                    // #2643 — BGSM has no alpha-variant field, so the color
+                    // bit is the only one this format can author.
+                    material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
+                } else if nif_supplied_greyscale_lut {
+                    material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
+                    material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
+                }
             }
             fill(
                 &mut material.textures.greyscale_lut,

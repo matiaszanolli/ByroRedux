@@ -695,6 +695,21 @@ pub(super) struct MaterialInfo {
     pub soft_lighting: bool,
     pub rim_lighting: bool,
     pub back_lighting: bool,
+    /// `SLSF1::Greyscale_To_PaletteColor` / `_PaletteAlpha` as authored on a
+    /// **`BSLightingShaderProperty`** (the lit path), captured via the same
+    /// typed-word + CRC32-list union the `BSEffectShaderProperty` arm uses.
+    ///
+    /// #3897 — before this, the palette-remap enable bit had exactly one
+    /// producer: an external BGSM/BGEM merged later by
+    /// `asset_provider::merge_external_material`. The lit path routed the LUT
+    /// *texture* into the `greyscale_lut` role (#2997) but had no way to say
+    /// the remap was enabled, so `MAT_FLAG_EFFECT_PALETTE_COLOR` was never set
+    /// for a lit FO4 material and the shader's palette branch was dead code —
+    /// on 30,166 measured FO4 properties. These two fields are that missing
+    /// producer; they are forwarded onto the `ImportedMaterial` enable triple
+    /// in [`MaterialInfo::into_imported_material`].
+    pub palette_color: bool,
+    pub palette_alpha: bool,
     /// `BSLightingShaderProperty.grayscale_to_palette_scale` — FO4+
     /// BSVER >= 130. Modulator on the greyscale→palette LUT remap
     /// (NPC face tints, gradient-driven palette swaps). Default 1.0
@@ -1209,6 +1224,8 @@ impl Default for MaterialInfo {
             soft_lighting: false,
             rim_lighting: false,
             back_lighting: false,
+            palette_color: false,
+            palette_alpha: false,
             grayscale_to_palette_scale: 1.0,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],
@@ -1527,12 +1544,22 @@ impl MaterialInfo {
             rim_lighting: self.rim_lighting,
             back_lighting: self.back_lighting,
             grayscale_to_palette_scale: self.grayscale_to_palette_scale,
-            bgsm_greyscale_lut_is_alpha: false,
             // #2108 — no BGSM/BGEM has merged yet at this NIF-import stage
-            // (that happens later, in `asset_provider::merge_external_material`),
-            // so there is no palette-remap enable signal to forward here.
-            bgsm_greyscale_lut_color: false,
-            bgsm_greyscale_lut_enabled: false,
+            // (that happens later, in `asset_provider::merge_external_material`).
+            //
+            // #3897 — but the NIF is not silent about the palette remap: a
+            // `BSLightingShaderProperty` authors the enable bit directly as
+            // `SLSF1::Greyscale_To_PaletteColor`/`_PaletteAlpha`, and that
+            // signal IS available here. Treating BGSM/BGEM as the only
+            // producer is what left the lit-path remap unreachable. The
+            // `bgsm_`-prefixed names predate this second producer and are now
+            // source-agnostic: the triple means "the palette remap is enabled,
+            // and in which channel", whoever authored it. `merge_external_material`
+            // may still set them later from a BGSM/BGEM — it ORs onto whatever
+            // the NIF already established rather than replacing it.
+            bgsm_greyscale_lut_is_alpha: self.palette_alpha,
+            bgsm_greyscale_lut_color: self.palette_color,
+            bgsm_greyscale_lut_enabled: self.palette_color || self.palette_alpha,
             fresnel_power: self.fresnel_power,
             uv_offset: self.uv_offset,
             uv_scale: self.uv_scale,

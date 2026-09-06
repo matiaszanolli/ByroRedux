@@ -2076,3 +2076,129 @@ fn distance_field_alpha_texture_deferral_is_documented_at_both_sites() {
          not just the field declaration"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #3898 — the BGSM palette-enable bit when the NIF already filled the role.
+//
+// #2108 captured the enable bit only at the chain step that WON the
+// `greyscale_lut` slot, gating on `greyscale_lut.is_none()`. #2997 then made
+// the NIF's own slot 3 fill that role on FO4, so on exactly the meshes that
+// matter the gate was permanently false and the BGSM's authored
+// `grayscale_to_palette_color` was discarded — a second, independent gate on
+// the same dead remap as #3897. 239 of the 246 BGSMs referenced by slot-3
+// meshes author that bit.
+// ---------------------------------------------------------------------------
+
+/// A NIF-supplied greyscale LUT (slot 3, #2997) must not swallow the BGSM's
+/// palette-enable bit. The LUT sampled stays the NIF's — `fill` is
+/// first-non-empty-wins and is unchanged — but the enable bit is a statement
+/// about the material, not about which texture resource won.
+#[test]
+fn bgsm_palette_enable_survives_a_nif_supplied_greyscale_lut() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/nif_lut_plus_bgsm_enable.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\bgsm_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    // The NIF got there first, exactly as #2997 makes it on FO4 slot 3.
+    let nif_lut = pool.intern("textures\\nif_slot3_palette.dds");
+    mesh.material.textures.greyscale_lut = Some(nif_lut);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled,
+        "the BGSM authored grayscale_to_palette_color; a NIF-filled role slot \
+         must not discard the enable bit (#3898)"
+    );
+    assert!(mesh.material.bgsm_greyscale_lut_color);
+    assert_eq!(
+        mesh.material.textures.greyscale_lut,
+        Some(nif_lut),
+        "texture precedence is unchanged — the NIF's LUT still wins the role"
+    );
+}
+
+/// The OR is one-way: a BGSM that does NOT ask for the remap must not turn off
+/// one the NIF's own SLSF1 bit already enabled (#3897). Neither source may
+/// silently disable the other.
+#[test]
+fn bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/nif_enabled_bgsm_silent.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\bgsm_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.textures.greyscale_lut = Some(pool.intern("textures\\nif_slot3_palette.dds"));
+    // As forwarded by `into_imported_material` from SLSF1 (#3897).
+    mesh.material.bgsm_greyscale_lut_enabled = true;
+    mesh.material.bgsm_greyscale_lut_color = true;
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled,
+        "a silent BGSM must not clear the NIF's own SLSF1 palette enable (#3898)"
+    );
+    assert!(mesh.material.bgsm_greyscale_lut_color);
+}
+
+/// #2108 precedence among BGSMs is unchanged: when a BGSM wins the slot it is
+/// authoritative for the enable bit, including authoring it OFF. The #3898
+/// OR-path keys on the NIF having supplied the LUT, not on `is_some()`, so it
+/// must not resurrect this case.
+#[test]
+fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/bgsm_wins_disabled.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\bgsm_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    // No NIF-supplied LUT this time — the BGSM wins the role outright.
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_enabled,
+        "a BGSM that wins the slot and authors the bit OFF keeps the remap off (#2108)"
+    );
+}
