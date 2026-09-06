@@ -1467,6 +1467,28 @@ fn parse_rate_fnv_esm() {
         clear.classification,
     );
 
+    // #3920 sibling — FNV's terrain splat reaches TXST through the same
+    // `LTEX.TNAM → TXST` join as FO3, and nothing asserted it here either.
+    // Measured 2026-09-06: `texture_sets` = 492, `landscape_texture_sets`
+    // = 88, every entry with a diffuse. Same "measured minus a little"
+    // floor rule as the category counts above.
+    eprintln!(
+        "[FNV] texture_sets={} landscape_texture_sets={}",
+        index.cells.texture_sets.len(),
+        index.cells.landscape_texture_sets.len(),
+    );
+    assert!(
+        index.cells.landscape_texture_sets.len() >= 85,
+        "landscape_texture_sets={} — the FNV LTEX→TXST join regressed (#3920)",
+        index.cells.landscape_texture_sets.len(),
+    );
+    for (form_id, set) in &index.cells.landscape_texture_sets {
+        assert!(
+            set.diffuse.as_deref().is_some_and(|d| !d.is_empty()),
+            "landscape TXST {form_id:#010X} has no diffuse (#3920)"
+        );
+    }
+
     // #1538 regression guard: SCOL (static collections) must parse for FNV.
     // The `is_fo4_plus` gate wrongly treated SCOL as FO4-only and skipped
     // the whole GRUP, dropping all 98 FalloutNV.esm SCOL bases — 1084 REFRs
@@ -1600,6 +1622,52 @@ fn parse_rate_fo3_esm() {
         assert!(
             !proj.model_path.is_empty(),
             "ProjRecord {form_id:#08X} dropped its MODL (#3753)"
+        );
+    }
+
+    // #3920 — FO3 reaches TXST *only* through the `LTEX.TNAM → TXST → TX00`
+    // join (`landscape_texture_sets`): it authors zero REFR texture overlays
+    // (#3511), so this is the one live TXST consumer on the title, and
+    // nothing asserted it — a regression emptying the map would blank every
+    // FO3 exterior's terrain splat diffuse + normal with this suite green.
+    // Measured 2026-09-06 on the GOTY master: `texture_sets` = 243,
+    // `landscape_texture_sets` = 51, all 51 with a diffuse. Pinned by form
+    // id the way the PROJ chain above is.
+    eprintln!(
+        "[FO3] texture_sets={} landscape_texture_sets={}",
+        index.cells.texture_sets.len(),
+        index.cells.landscape_texture_sets.len(),
+    );
+    assert!(
+        index.cells.landscape_texture_sets.len() >= 50,
+        "landscape_texture_sets={} — the FO3 LTEX→TXST join regressed (#3920)",
+        index.cells.landscape_texture_sets.len(),
+    );
+    for (form_id, set) in &index.cells.landscape_texture_sets {
+        assert!(
+            set.diffuse.as_deref().is_some_and(|d| !d.is_empty()),
+            "landscape TXST {form_id:#010X} has no diffuse (#3920)"
+        );
+    }
+    for (form_id, diffuse) in [
+        (0x0003_57BCu32, "landscape\\chemicalwastes01.dds"),
+        (0x0000_09CA, "landscape\\asphalt02.dds"),
+    ] {
+        let set = index
+            .cells
+            .landscape_texture_sets
+            .get(&form_id)
+            .unwrap_or_else(|| panic!("landscape TXST {form_id:#010X} missing (#3920)"));
+        assert!(
+            set.diffuse
+                .as_deref()
+                .is_some_and(|d| d.eq_ignore_ascii_case(diffuse)),
+            "landscape TXST {form_id:#010X} diffuse {:?} != {diffuse:?} (#3920)",
+            set.diffuse,
+        );
+        assert!(
+            set.normal.as_deref().is_some_and(|n| !n.is_empty()),
+            "landscape TXST {form_id:#010X} lost its normal map (#3920)"
         );
     }
 
@@ -1951,6 +2019,31 @@ fn parse_rate_oblivion_esm() {
             s.current_soul,
         );
     }
+
+    // #3920 sibling — Oblivion LTEX is ICON-authored and has no sibling
+    // TXST, so `landscape_texture_sets` is empty *by design* here
+    // (`EsmCellIndex::landscape_texture_sets`'s doc) while the ICON-keyed
+    // `landscape_textures` map carries the terrain. Measured 2026-09-06:
+    // texture_sets = 0, landscape_texture_sets = 0, landscape_textures = 229.
+    // Pinned both ways: an entry appearing here would mean the join started
+    // fabricating TXSTs for a title that authors none; the LTEX floor is
+    // what a real Oblivion terrain regression would trip.
+    eprintln!(
+        "[OBL] texture_sets={} landscape_texture_sets={} landscape_textures={}",
+        index.cells.texture_sets.len(),
+        index.cells.landscape_texture_sets.len(),
+        index.cells.landscape_textures.len(),
+    );
+    assert!(
+        index.cells.landscape_texture_sets.is_empty(),
+        "Oblivion authors no TXST, yet landscape_texture_sets has {} entries (#3920)",
+        index.cells.landscape_texture_sets.len(),
+    );
+    assert!(
+        index.cells.landscape_textures.len() >= 220,
+        "landscape_textures={} — Oblivion ICON-authored LTEX regressed (#3920)",
+        index.cells.landscape_textures.len(),
+    );
 }
 
 /// FO4: vanilla `Fallout4.esm` parse-rate harness. Mirrors the FNV /
