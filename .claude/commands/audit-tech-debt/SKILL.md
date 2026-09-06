@@ -118,10 +118,10 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
 6. Snapshot totals so the next audit can diff:
    ```bash
    {
-     echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
-     echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
-     echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux | wc -l)"
-     echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux | wc -l)"
+     echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux tools --exclude-dir=nifskope | wc -l)"
+     echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
+     echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
+     echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "files >2000 production LOC: $(for f in $(find crates byroredux -name '*.rs'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
@@ -341,9 +341,17 @@ ls .claude/commands/_audit-*.md .claude/commands/audit-*/SKILL.md docs/audits/
 ### Dimension 5: Stale Markers (TODO / FIXME / HACK / XXX)
 **Discovery**:
 ```bash
-grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux
+grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '(TODO|HACK)' crates/renderer/shaders/
 ```
+`tools` is in scope (#3876): `tools/byro-dbg`, `byro-launcher`, `byro-detect`
+and `texture-upscale` are all first-party `[workspace] members` — 17 `.rs`
+files, ~4 700 LOC — and the launcher/detect cluster has **no owner audit
+skill**, so this dimension is one of the few generic sweeps that reaches it.
+`tools/nifskope` is excluded deliberately: it is vendored reference code and is
+*not* a workspace member. Before #3876 the recipe covered only `crates` +
+`byroredux`, which is why the 2026-08-30 report's *"zero live markers in the
+entire codebase"* was true but unmeasured over `tools/`.
 **Triage each** (skip markers <30 days old unless they name a closed issue):
 - `git blame` for age — anything >6 months gets reported.
 - Does it name an issue number? Is that issue still open? Closed issue + live marker → "marker outlived its driver" (delete or reopen).
