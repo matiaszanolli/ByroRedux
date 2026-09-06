@@ -7,7 +7,7 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p byroredux-core    # Run ECS/core tests (162 tests)
+cargo test -p byroredux-core    # Run ECS/core tests
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
