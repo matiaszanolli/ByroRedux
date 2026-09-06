@@ -373,7 +373,7 @@ rebuilds — with:
 
 ### Texture upload — `register_rgba` / `update_rgba`
 
-There is no bespoke `update_ui_texture` entry point; the UI texture is an
+There is no bespoke *update_ui_texture* entry point; the UI texture is an
 ordinary entry in the renderer's `TextureRegistry`:
 
 - On `--swf` load (`byroredux/src/scene.rs`) a transparent-black RGBA

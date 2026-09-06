@@ -564,7 +564,7 @@ sentinel = reuse above-water fog).
 ### 5.2 Distant water — live, without a parallel material type
 
 Distant worldspace water reuses canonical `WaterPlane` / `WaterMaterial`; it
-does not introduce a second `WaterLod` material representation. The render-only
+does not introduce a second *WaterLod* material representation. The render-only
 `WaterLodInfo { height, water_form }` component retains provenance for
 diagnostics and streaming teardown, while worldspace bounds size the distant
 plane. Older games naturally use the same path with their translated sentinel

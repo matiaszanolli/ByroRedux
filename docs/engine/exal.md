@@ -219,7 +219,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes;
 The caller (`scene::world_setup::apply_worldspace_weather`) keeps only
 orchestration: pre-resolving cloud/sun textures (`resolve_cloud_layer`,
 `resolve_sun_sprite`), world insertion, the bindless-handle release lifecycle,
-and the WTHR cross-fade-vs-insert decision. A future `translate_sun` (step 4)
+and the WTHR cross-fade-vs-insert decision. A future *translate_sun* (step 4)
 will fold the sun-arc model in the same shape; `translate_cell_lighting` for the
 *interior* XCLL path is deferred (its decode already lives correctly in the
 parser tier).
@@ -237,7 +237,7 @@ parser tier).
    canonical sentinels, not "fill it in later".
 
 The per-frame `weather_system` stays where it is — it is a *consumer* that samples
-the canonical `WeatherDataRes` + `SunModel`, not a translate site.
+the canonical `WeatherDataRes`, not a translate site. (There is no *SunModel* — see the EXAL-vs-current-code note below; sun state rides `WeatherDataRes`.)
 
 ---
 
@@ -611,7 +611,7 @@ render-pass / pipeline.
    authored latitude exists; engine-defined). The arbitrary `[-0.4, 0.8, -0.45]`
    bootstrap seed is replaced: `apply_worldspace_weather` now seeds the initial
    resources from `compute_sun_arc(bootstrap_hour, tod_hours)` — the same model
-   `weather_system` runs each frame. No separate `translate_sun`/`SunModel`
+   `weather_system` runs each frame. No separate *translate_sun* / *SunModel*
    resource was added — that would be ceremony (same call as step 2): the sun
    model is `compute_sun_arc` (consumer) + `tod_hours` (canonical input) + the
    tilt constant. 410 tests green.

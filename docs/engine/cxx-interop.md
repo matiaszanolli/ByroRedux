@@ -9,7 +9,7 @@ Source: `crates/cxx-bridge/`
 > **Status (verified 2026-08-25):** Still a proof-of-concept. No production C++ has
 > been bridged yet. The current renderer/physics/audio stack is pure Rust
 > (Vulkan via `ash`, audio via `kira`); no native library is wrapped through
-> this crate today. The unused Rust→C++ `EngineInfo` export was removed by
+> this crate today. The unused Rust→C++ *EngineInfo* export was removed by
 > #2426; a smoke test now pins the remaining C++→Rust greeting call.
 
 ## Structure

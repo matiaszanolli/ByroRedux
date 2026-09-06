@@ -225,7 +225,7 @@ The live node data is canonical: `name`, `flags` (→ `SceneFlags`), `collision`
 `ImportedNode` → ECS step is **not** a duplicated literal to dedupe: the two load
 paths handle nodes structurally differently (the loose-NIF loader spawns the full
 NiNode hierarchy as entities; the cell loader uses a flattened placement-root), so
-there is no single `translate_node` boundary to collapse them into.
+there is no single *translate_node* boundary to collapse them into.
 
 Was **half-stale 2026-05-28 → 2026-08-03** (NIFAL-D4-02 / #2206) for
 `billboard_mode` specifically: that claim held for the loose-NIF path
@@ -483,7 +483,7 @@ there is no NIF-local mirror or `to_core()` copy to keep synchronized.
 the boundary explicitly through `mesh.material`, while external BGSM/BGEM/`.mat`
 resolution and canonical ECS translation accept `ImportedMaterial` directly.
 FO4 precombined CSG geometry also carries this full payload; the former
-`PrecombineMaterial` subset and field-by-field patch operation were removed.
+*PrecombineMaterial* subset and field-by-field patch operation were removed.
 
 Texture paths cross the NIF boundary in one generic semantic contract:
 `MaterialTextureSet<T>`. Its 22 named roles plus four ordered decal layers cover

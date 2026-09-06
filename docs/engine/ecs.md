@@ -207,7 +207,7 @@ let (mut q_a, mut q_b) = world.query_2_mut_mut::<A, B>().unwrap();
 ```
 
 These are the two multi-component helpers in `world.rs` today
-(`query_2_mut`, `query_2_mut_mut`). There is no `query_3_mut`/`query_4_mut`;
+(`query_2_mut`, `query_2_mut_mut`). There is no *query_3_mut* / *query_4_mut*;
 systems that need a third storage take it with a separate `query`/`query_mut`
 call — the `lock_tracker` (below) catches any ordering hazard that creates.
 

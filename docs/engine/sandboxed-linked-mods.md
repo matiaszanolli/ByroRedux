@@ -289,7 +289,7 @@ how many a component may create.
 ## 8. Package manifest requirements
 
 The eventual schema name is deliberately left open. It represents a
-`ModManifest`, not the existing record-oriented `PluginManifest`.
+*ModManifest* (not yet built), not the existing record-oriented `PluginManifest`.
 
 - **PKG-001.** The manifest MUST declare `ModId`, human-readable name, SemVer
   version, and manifest-schema version.

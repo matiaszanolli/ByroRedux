@@ -170,7 +170,7 @@ full FNV interior — it isn't customised per entry point. Systems whose
 work is scene-dependent (animation with no clips, streaming, footsteps
 with no emitters) early-return cheaply.
 
-There is **no standalone `input_system`**: raw input is captured directly
+There is **no standalone *input_system***: raw input is captured directly
 in `window_event` / `device_event` into the `InputState` resource, which
 `fly_camera_system` (inside `player_controller_system`) consumes the next
 frame.
