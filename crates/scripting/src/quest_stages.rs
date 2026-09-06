@@ -328,36 +328,12 @@ impl QuestStageState {
         self.quests.get(&quest)
     }
 
-    /// Create an independent event subscription beginning after all events
-    /// currently committed. Satellite systems keep this ID and poll whenever
-    /// their own scheduler runs; no 60 Hz coupling is required.
-    pub fn subscribe_to_quest_events(&mut self) -> QuestEventSubscriberId {
-        self.events.subscribe(false)
-    }
-
-    /// Create a subscription that replays all retained events before
-    /// following new transitions.
-    pub fn subscribe_to_retained_quest_events(&mut self) -> QuestEventSubscriberId {
-        self.events.subscribe(true)
-    }
-
     /// Atomically claim every retained event not yet observed by `subscriber`.
     /// Concurrent polls using the same ID cannot receive the same event twice.
     /// A positive `missed_events` means the subscriber fell behind bounded
     /// retention and must resynchronise from canonical quest state.
     pub fn poll_quest_events(&mut self, subscriber: QuestEventSubscriberId) -> QuestEventRead {
         self.events.poll(subscriber)
-    }
-
-    /// Advance a subscriber past every event currently committed. Fragment
-    /// dispatch uses this after synchronously cascading its own SetStage calls
-    /// so those same transitions are not dispatched again on its next cadence.
-    pub fn acknowledge_quest_events(&mut self, subscriber: QuestEventSubscriberId) {
-        self.events.acknowledge(subscriber);
-    }
-
-    pub fn unsubscribe_from_quest_events(&mut self, subscriber: QuestEventSubscriberId) {
-        self.events.subscribers.remove(&subscriber);
     }
 }
 
@@ -520,9 +496,21 @@ pub struct QuestStageAdvanced {
 /// consumers. State remains authoritative when a slow consumer reports a gap.
 pub const QUEST_EVENT_RETENTION: usize = 16_384;
 
-/// Stable identity for one journal consumer. IDs are allocated under the same
-/// `QuestStageState` write lock as cursor updates, so registration and polling
-/// are race-free. Values 1 and 2 are reserved for built-in consumers.
+/// Stable identity for one journal consumer.
+///
+/// #3892 — subscriber IDs are compile-time constants, not allocated. The
+/// three below are the complete set; each satellite system holds one and
+/// polls on its own cadence, with no registration step. An ID's cursor is
+/// recorded by its first [`QuestStageState::poll_quest_events`] under the
+/// same write lock as the cursor update, so polling stays race-free.
+///
+/// This type previously carried a second, dynamic model —
+/// `subscribe`/`acknowledge`/`unsubscribe` with a `next_subscriber_id`
+/// counter seeded at 4 to clear these constants. It had no production
+/// caller and survived only on its own unit tests, so a reader adding a
+/// fourth consumer had to work out which model was canonical. It is gone;
+/// add a constant here. (This doc also said "values 1 and 2 are reserved"
+/// while three constants existed.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QuestEventSubscriberId(pub u64);
 
@@ -552,7 +540,6 @@ pub struct QuestEventRead {
 #[derive(Debug)]
 struct QuestEventRuntime {
     next_sequence: u64,
-    next_subscriber_id: u64,
     events: VecDeque<SequencedQuestStageAdvanced>,
     subscribers: HashMap<QuestEventSubscriberId, u64>,
 }
@@ -561,7 +548,6 @@ impl Default for QuestEventRuntime {
     fn default() -> Self {
         Self {
             next_sequence: 1,
-            next_subscriber_id: 4,
             events: VecDeque::new(),
             subscribers: HashMap::new(),
         }
@@ -589,21 +575,6 @@ impl QuestEventRuntime {
             .push_back(SequencedQuestStageAdvanced { sequence, event });
     }
 
-    fn subscribe(&mut self, replay_retained: bool) -> QuestEventSubscriberId {
-        let subscriber = QuestEventSubscriberId(self.next_subscriber_id);
-        self.next_subscriber_id = self
-            .next_subscriber_id
-            .checked_add(1)
-            .expect("quest event subscriber id exhausted");
-        let cursor = if replay_retained {
-            self.oldest_sequence()
-        } else {
-            self.next_sequence
-        };
-        self.subscribers.insert(subscriber, cursor);
-        subscriber
-    }
-
     fn poll(&mut self, subscriber: QuestEventSubscriberId) -> QuestEventRead {
         let oldest = self.oldest_sequence();
         let requested = self.subscribers.get(&subscriber).copied().unwrap_or(oldest);
@@ -622,10 +593,6 @@ impl QuestEventRuntime {
             missed_events,
             next_sequence,
         }
-    }
-
-    fn acknowledge(&mut self, subscriber: QuestEventSubscriberId) {
-        self.subscribers.insert(subscriber, self.next_sequence);
     }
 }
 
@@ -1494,8 +1461,14 @@ mod tests {
     #[test]
     fn independent_subscribers_consume_at_different_cadences() {
         let mut state = QuestStageState::default();
-        let fast = state.subscribe_to_quest_events();
-        let slow = state.subscribe_to_quest_events();
+        // #3892 — the production model: satellite systems each hold one of
+        // the three compile-time subscriber IDs and poll on their own
+        // cadence. On a fresh log an unregistered ID's cursor resolves to
+        // `oldest_sequence()`, which equals `next_sequence` while the queue
+        // is empty, so this is the same starting point the deleted
+        // `subscribe()` produced.
+        let fast = SCENE_QUEST_EVENT_SUBSCRIBER;
+        let slow = FRAGMENT_QUEST_EVENT_SUBSCRIBER;
         let quest = QuestFormId(0x1000);
 
         state.set_stage(quest, 10);
@@ -1530,9 +1503,7 @@ mod tests {
         const WORKERS: usize = 16;
         let mut world = World::new();
         world.insert_resource(QuestStageState::default());
-        let subscriber = world
-            .resource_mut::<QuestStageState>()
-            .subscribe_to_quest_events();
+        let subscriber = SCENE_QUEST_EVENT_SUBSCRIBER;
         let barrier = Barrier::new(WORKERS);
         let winners = AtomicUsize::new(0);
 
@@ -1567,9 +1538,7 @@ mod tests {
         const WORKERS: usize = 32;
         let mut world = World::new();
         world.insert_resource(QuestStageState::default());
-        let subscriber = world
-            .resource_mut::<QuestStageState>()
-            .subscribe_to_quest_events();
+        let subscriber = SCENE_QUEST_EVENT_SUBSCRIBER;
         let barrier = Barrier::new(WORKERS);
 
         std::thread::scope(|scope| {
@@ -1601,7 +1570,13 @@ mod tests {
     #[test]
     fn lagging_subscriber_gets_explicit_retention_gap() {
         let mut state = QuestStageState::default();
-        let subscriber = state.subscribe_to_quest_events();
+        let subscriber = SCENE_QUEST_EVENT_SUBSCRIBER;
+        // #3892 — a constant subscriber's cursor is only recorded once it
+        // has polled; an unregistered ID resolves to `oldest_sequence()` and
+        // so can never observe a gap on its very first read. Poll once to
+        // register at the head, which is exactly what a production
+        // subscriber does on its first tick, then overflow retention.
+        let _ = state.poll_quest_events(subscriber);
         const OVERFLOW: usize = 5;
         for stage in 0..(QUEST_EVENT_RETENTION + OVERFLOW) {
             state.set_stage(QuestFormId(0x1000), stage as u16);
