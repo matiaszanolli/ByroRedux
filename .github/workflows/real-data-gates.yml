@@ -1,0 +1,117 @@
+name: Real-data corpus gates
+
+# #3919 — `ci.yml` runs `cargo test --workspace`, which never executes an
+# `#[ignore]`d test, and the three NIF corpus harnesses that catch a vanilla-
+# content parse regression (`parse_real_nifs`, `per_block_baselines`,
+# `block_coverage_baselines`) are all `#[ignore]`d because they need game data.
+# #3918 dropped 296 `NiSkinPartition` blocks across two shipped titles and sat
+# on `main` for two days with CI green; the gate that would have named the
+# exact block and delta was never invoked. This lane runs those harnesses
+# nightly on the self-hosted runner that carries game data, one job per title
+# so a red result names the game, with `BYROREDUX_REQUIRE_GAME_DATA=1` (#3850)
+# so an absent corpus is a failed job rather than a silent `ok`, and a post-run
+# check that the title's filter matched at least one test.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Title to gate (all, or one)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - oblivion
+          - fo3
+          - fnv
+          - skyrim_se
+          - fo4
+          - fo76
+          - starfield
+
+jobs:
+  corpus:
+    name: ${{ matrix.game }} corpus gates
+    if: github.event_name == 'schedule' || inputs.game == 'all' || inputs.game == matrix.game
+    runs-on: [self-hosted, linux, x64, byroredux-game-data]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # `env_var` / `data_dir` follow `crates/nif/tests/common/mod.rs`
+        # (`Game::env_var` / `Game::default_path`); `filter` is the libtest
+        # substring shared by that title's `parse_rate_*`,
+        # `per_block_baseline_*` and `unknown_ceiling_*` tests.
+        include:
+          - game: oblivion
+            env_var: BYROREDUX_OBLIVION_DATA
+            data_dir: Oblivion/Data
+            filter: oblivion
+          - game: fo3
+            env_var: BYROREDUX_FO3_DATA
+            data_dir: Fallout 3 goty/Data
+            filter: fallout_3
+          - game: fnv
+            env_var: BYROREDUX_FNV_DATA
+            data_dir: Fallout New Vegas/Data
+            filter: fallout_nv
+          - game: skyrim_se
+            env_var: BYROREDUX_SKYRIMSE_DATA
+            data_dir: Skyrim Special Edition/Data
+            filter: skyrim_se
+          - game: fo4
+            env_var: BYROREDUX_FO4_DATA
+            data_dir: Fallout 4/Data
+            filter: fallout_4
+          - game: fo76
+            env_var: BYROREDUX_FO76_DATA
+            data_dir: Fallout76/Data
+            filter: fallout_76
+          - game: starfield
+            env_var: BYROREDUX_STARFIELD_DATA
+            data_dir: Starfield/Data
+            filter: starfield
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the ${{ matrix.game }} corpus gates
+        env:
+          GAME: ${{ matrix.game }}
+          ENV_VAR: ${{ matrix.env_var }}
+          DATA_DIR: ${{ vars.BYROREDUX_GAMES_ROOT }}/${{ matrix.data_dir }}
+          FILTER: ${{ matrix.filter }}
+          # #3850 — an absent corpus panics the resolver instead of skipping.
+          BYROREDUX_REQUIRE_GAME_DATA: "1"
+        run: |
+          set -euo pipefail
+          # Env keys cannot be expressions, so the per-title data-dir variable
+          # is exported here from the matrix row.
+          export "${ENV_VAR}=${DATA_DIR}"
+          echo "${ENV_VAR}=${DATA_DIR}"
+          mkdir -p target/real-data-gates
+          log="target/real-data-gates/${GAME}.log"
+          cargo test --release -p byroredux-nif \
+            --test parse_real_nifs \
+            --test per_block_baselines \
+            --test block_coverage_baselines \
+            -- --ignored --test-threads=1 --nocapture "${FILTER}" 2>&1 | tee "${log}"
+          # libtest treats a filter that matches nothing as a green no-op —
+          # refuse that the same way #3850 refuses a data-less green.
+          ran=$(grep -c '^test .* \.\.\. ok$' "${log}" || true)
+          if [ "${ran}" -eq 0 ]; then
+            echo "::error::no corpus gate matched filter '${FILTER}' for ${GAME}"
+            exit 1
+          fi
+          echo "${ran} corpus gate(s) ran for ${GAME}"
+      - name: Publish gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-data-gates-${{ matrix.game }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/real-data-gates
+          if-no-files-found: error
+          retention-days: 30

@@ -228,6 +228,19 @@ BYROREDUX_REQUIRE_GAME_DATA=1 cargo test -p byroredux-plugin -- --ignored
 Set it in whatever lane is meant to be evidence, exactly as the workflow
 promotes exit 77 to an error for the shell gates.
 
+`.github/workflows/real-data-gates.yml` (#3919) is that lane for the NIF
+corpus harnesses: nightly, and on `workflow_dispatch` per title or all, on the
+`byroredux-game-data` self-hosted runner, one job per title, with
+`BYROREDUX_REQUIRE_GAME_DATA=1` set and a post-run check that the title's
+test-name filter matched at least one gate. `ci.yml`'s
+`cargo test --workspace` never runs an `#[ignore]`d test, so before this
+lane `parse_rate_*`, `per_block_baseline_*` and `unknown_ceiling_*` ran only
+when someone invoked them by hand — which is how #3918's 296 dropped
+`NiSkinPartition` blocks sat on `main` for two days. The same change made
+the headline gate's *clean* rate an assertion (`MIN_CLEAN_RATE`, 99.5 %)
+rather than a printed aside; the recoverable-rate floor alone counts a
+truncated scene as a pass.
+
 Independently, **an explicitly-set `BYROREDUX_<GAME>_DATA` is now binding**.
 It previously behaved as advisory: a resolver that found the named path was
 not a directory printed "falling back to default" and then read the hardcoded

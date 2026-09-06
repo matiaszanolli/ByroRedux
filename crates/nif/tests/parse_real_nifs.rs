@@ -44,6 +44,39 @@ use common::{
 /// loosening the vanilla gate. See issue #487.
 const MIN_RECOVERABLE_RATE: f64 = 1.0;
 
+/// Minimum **clean** parse rate for the headline per-game gate (#3919).
+///
+/// [`MIN_RECOVERABLE_RATE`] counts a truncated scene as recovered, so it is
+/// blind to the failure shape that actually happens: a parser change that
+/// stops one block early and drops every block after it. #3918 did exactly
+/// that — 294 FO3, ≥ 741 FNV and 730 Oblivion vanilla NIFs truncated at
+/// `NiSkinPartition`, a 100 % → 98.29 % clean collapse on FO3 — and this
+/// gate stayed green for two days because the clean rate was a printed
+/// aside, never an assertion. It is one now.
+///
+/// Seeded by the convention the all-meshes gates already use
+/// ([`ArchiveSpec::min_clean`]: "measured minus ~0.5 %, rounded down to the
+/// nearest 0.5 %"), so a single new drift file does not trip it but a real
+/// regression does. One shared floor rather than a per-game table because
+/// every title measures identically; if one ever legitimately diverges, give
+/// it its own row here and thread `Game` through. Measured 2026-09-06 at
+/// `f1abb334`, release build, every archive `open_all_mesh_archives` +
+/// `open_optional_mesh_archives` enumerate on this install:
+///
+/// | Game        | NIFs   | clean  | truncated | floor  |
+/// |-------------|-------:|-------:|----------:|-------:|
+/// | Oblivion    |  9 612 | 100.00 % |      0  | 99.5 % |
+/// | Fallout 3   | 17 172 | 100.00 % |      0  | 99.5 % |
+/// | Fallout NV  | 20 746 | 100.00 % |      0  | 99.5 % |
+/// | Skyrim SE   | 33 468 | 100.00 % |      0  | 99.5 % |
+/// | Fallout 4   | 41 697 | 100.00 % |      0  | 99.5 % |
+/// | Fallout 76  | 58 469 | 100.00 % |      0  | 99.5 % |
+/// | Starfield   | 31 058 | 100.00 % |      0  | 99.5 % |
+///
+/// At this floor the #3918 shape (FO3 98.29 %, Oblivion 92.41 %) is red on
+/// every affected title.
+const MIN_CLEAN_RATE: f64 = 0.995;
+
 /// Walk **every** mesh-bearing archive for `game`, not just the primary one.
 ///
 /// #3041 — this gate used to open `game.mesh_archive()` alone. On FNV that is
@@ -82,6 +115,9 @@ fn run_game(game: Game, limit: Option<usize>) {
 
     let mut totals = ParseStats::default();
     let mut worst: Option<(&str, f64, usize)> = None;
+    // #3919 — tracked separately from `worst`: the archive with the most
+    // truncation is not necessarily the one with the most hard failures.
+    let mut worst_clean: Option<(&str, f64, usize)> = None;
 
     for (name, archive) in &archives {
         eprintln!(
@@ -106,11 +142,15 @@ fn run_game(game: Game, limit: Option<usize>) {
             stats.recoverable_rate() * 100.0,
         );
 
-        // Track the worst archive so the assertion below can name it.
+        // Track the worst archive so the assertions below can name it.
         if stats.total > 0 {
             let rate = stats.recoverable_rate();
             if worst.is_none_or(|(_, worst_rate, _)| rate < worst_rate) {
                 worst = Some((name, rate, stats.failures.len()));
+            }
+            let clean = stats.success_rate();
+            if worst_clean.is_none_or(|(_, worst_rate, _)| clean < worst_rate) {
+                worst_clean = Some((name, clean, stats.truncated.len()));
             }
         }
 
@@ -140,6 +180,27 @@ fn run_game(game: Game, limit: Option<usize>) {
         match worst {
             Some((name, rate, fails)) =>
                 format!("{name} at {:.2}% ({fails} hard failures)", rate * 100.0),
+            None => "none".to_string(),
+        },
+    );
+    // #3919 — the clean floor. Truncation is "recoverable" to the assertion
+    // above, so this is the only one of the two that a dropped-blocks
+    // regression can turn red.
+    assert!(
+        totals.success_rate() >= MIN_CLEAN_RATE,
+        "[{}] parse clean rate {:.2}% across {} archive(s) is below the {:.1}% floor \
+         ({} truncated — a parser regression dropping blocks, see #3918 / #3919); \
+         worst archive: {}",
+        game.label(),
+        totals.success_rate() * 100.0,
+        archives.len(),
+        MIN_CLEAN_RATE * 100.0,
+        totals.truncated.len(),
+        match worst_clean {
+            Some((name, rate, truncated)) => format!(
+                "{name} at {:.2}% clean ({truncated} truncated)",
+                rate * 100.0
+            ),
             None => "none".to_string(),
         },
     );
