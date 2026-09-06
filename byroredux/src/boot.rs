@@ -1059,9 +1059,14 @@ fn register_update_systems(scheduler: &mut Scheduler) {
     // and queue Done completions for scene playback's next tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_package_system);
     // Package Activate leaves emit the same canonical OnActivate marker as
-    // player interaction. Consume it immediately so GetVMScriptVariable
-    // phase gates observe the updated two-state activator on the next scene
-    // tick, before end-of-frame event cleanup.
+    // player interaction — but they QUEUE it through
+    // `PendingFragmentActivations` rather than inserting it here (#3936),
+    // because `scene_package_system` above runs after
+    // `rumble_on_activate_dispatch` and `quest_advance_dispatch`. The
+    // head-of-frame `fragment_activation_flush_system` delivers it to all
+    // four consumers next frame. This registration consumes the flushed
+    // marker so GetVMScriptVariable phase gates observe the updated
+    // two-state activator, before end-of-frame event cleanup.
     scheduler.add_exclusive(
         Stage::Update,
         byroredux_scripting::two_state_activator_system,

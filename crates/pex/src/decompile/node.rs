@@ -32,6 +32,22 @@ pub struct Node {
     /// parenthesization. Retained for fidelity; the structured-AST
     /// lowering (a later commit) doesn't need it (parens are implicit).
     pub precedence: u8,
+    /// Memoised nesting depth of this subtree: `1 + max(child depth)`, `1`
+    /// for a leaf (#3933).
+    ///
+    /// This is a property of the *tree*, maintained by every constructor
+    /// (all of which funnel through [`Node::new`]) and by the one in-place
+    /// mutation that can change it (`lift::replace_constant_id`, via
+    /// [`Node::recompute_depth`]). #3783 originally tracked the same
+    /// quantity in a `vec![1; len]` ledger local to one
+    /// `rebuild_expression` call, which under-counted the moment a later
+    /// pass re-folded an already-folded scope — `control_flow`'s
+    /// whole-body re-fold and `boolean`'s merged-scope re-fold both do
+    /// exactly that, so a well-formed `.pex` could still build a
+    /// 40 000-deep tree and abort the process in `lower_expr`. Keeping the
+    /// depth on the node makes the bound un-bypassable by construction:
+    /// there is no call boundary for it to reset at.
+    depth: usize,
 }
 
 /// The shape of a [`Node`] and its children.
@@ -105,13 +121,38 @@ pub enum NodeKind {
 
 impl Node {
     fn new(kind: NodeKind, result: Option<String>, ip: usize, precedence: u8) -> Node {
-        Node {
+        let mut node = Node {
             kind,
             result,
             begin: ip,
             end: ip,
             precedence,
-        }
+            depth: 1,
+        };
+        node.recompute_depth();
+        node
+    }
+
+    /// This subtree's nesting depth (`1` for a leaf) — see [`Node::depth`].
+    pub(crate) fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Recompute this node's memoised depth from its current children.
+    ///
+    /// Call after mutating a child in place. Walks one level only (the
+    /// children's own depths are already memoised), so maintaining the
+    /// invariant up a path costs one call per level, not a re-walk of the
+    /// subtree. Uses the same [`Node::child_nodes`] traversal
+    /// `count_constant_id` does, so the parity test covers it too.
+    pub(crate) fn recompute_depth(&mut self) {
+        let deepest = self
+            .child_nodes()
+            .iter()
+            .map(|child| child.depth)
+            .max()
+            .unwrap_or(0);
+        self.depth = deepest + 1;
     }
 
     pub(crate) fn constant(ip: usize, value: Value) -> Node {
@@ -487,17 +528,11 @@ mod child_traversal_parity_tests {
         vec![
             leaf("bare"),
             Node::identifier_string(0, "Parent"),
-            Node {
-                kind: NodeKind::BinaryOp {
-                    left: Box::new(leaf("l")),
-                    op: "+".to_string(),
-                    right: Box::new(leaf("r")),
-                },
-                result: None,
-                begin: 0,
-                end: 0,
-                precedence: 0,
-            },
+            wrap(NodeKind::BinaryOp {
+                left: Box::new(leaf("l")),
+                op: "+".to_string(),
+                right: Box::new(leaf("r")),
+            }),
             wrap(NodeKind::UnaryOp {
                 op: "!".to_string(),
                 operand: Box::new(leaf("o")),
@@ -557,13 +592,9 @@ mod child_traversal_parity_tests {
     }
 
     fn wrap(kind: NodeKind) -> Node {
-        Node {
-            kind,
-            result: None,
-            begin: 0,
-            end: 0,
-            precedence: 0,
-        }
+        // Through the constructor, so the memoised depth (#3933) stays
+        // derived rather than hand-written.
+        Node::new(kind, None, 0, 0)
     }
 
     #[test]

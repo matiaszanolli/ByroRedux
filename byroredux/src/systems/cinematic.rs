@@ -492,6 +492,21 @@ fn scene_trigger_actor_approach_system_inner(
             .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id)
             .filter(|quest| !active_quests.contains(quest)),
     );
+    // #3937 — the registry guard ends HERE, before anything else is
+    // acquired. `docs/engine/ecs.md`'s canonical order is
+    // `QuestAdvanceOnActivate -> ScenePlayer -> QuestStageState ->
+    // SceneRegistry`, so holding the registry across the
+    // `QuestAdvanceOnActivate` / `QuestStageState` / `Transform` /
+    // `PhysicsWorld` / `OnTriggerEnterEvent` acquisitions below records
+    // edges *out* of the order's sink. `actor_quest_trigger_is_in_sequence`
+    // (`crates/scripting/src/trigger.rs`) takes the canonical direction on
+    // every BaseForm-gated trigger entry, so a guard that lived to the end
+    // of this function closed a two-edge cycle — latent only because both
+    // systems are `add_exclusive`, and an abort under
+    // `BYRO_LOCK_ORDER_CHECK=1`. #3838 flattened the block that used to end
+    // the guard here; this restores that boundary without giving up the
+    // scratch reuse. Same pair #3580 fixed on the `trigger.rs` side.
+    drop(registry);
     if awaited.is_empty() && between_scenes.is_empty() {
         return;
     }
@@ -1476,6 +1491,43 @@ mod tests {
             "cinematic_animation_event_system acquires StringPool before its \
              AnimationTextKeyEvents query — that records an edge out of the \
              canonical order's sink (#3446); see docs/engine/ecs.md",
+        );
+    }
+
+    /// #3937 — `SceneRegistry` is the sink of `docs/engine/ecs.md`'s
+    /// canonical acquisition order, and this system reads it only to
+    /// resolve scene definitions into the scratch buffers. #3838's scratch
+    /// rework replaced the block that scoped the guard with straight-line
+    /// code, so the guard lived to the end of the function and recorded
+    /// edges out of the sink into `QuestAdvanceOnActivate`,
+    /// `QuestStageState`, `Transform` and `PhysicsWorld` — the reverse of
+    /// the order `actor_quest_trigger_is_in_sequence` takes, i.e. a cycle.
+    /// Only visible in source (both sides are reads until a `Transform`
+    /// write appears beneath), so pin it here.
+    #[test]
+    fn the_scene_registry_guard_is_released_before_the_quest_acquisitions() {
+        const CINEMATIC_RS: &str = include_str!("cinematic.rs");
+
+        let body = CINEMATIC_RS
+            .split_once("fn scene_trigger_actor_approach_system_inner")
+            .expect("scene_trigger_actor_approach_system_inner definition")
+            .1;
+        let acquire = body
+            .find("world.try_resource::<byroredux_scripting::SceneRegistry>()")
+            .expect("the SceneRegistry acquisition");
+        let release = body
+            .find("drop(registry);")
+            .expect("the SceneRegistry guard must be released explicitly");
+        let advances = body
+            .find("world.query::<QuestAdvanceOnActivate>()")
+            .expect("the QuestAdvanceOnActivate query acquisition");
+        assert!(
+            acquire < release && release < advances,
+            "scene_trigger_actor_approach_system_inner must release its \
+             SceneRegistry guard before acquiring QuestAdvanceOnActivate — \
+             holding it across the quest/transform acquisitions records an \
+             edge out of the canonical order's sink and cycles against \
+             actor_quest_trigger_is_in_sequence (#3937); see docs/engine/ecs.md",
         );
     }
 }

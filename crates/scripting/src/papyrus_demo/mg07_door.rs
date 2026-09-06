@@ -494,15 +494,23 @@ pub fn mg07_tick_system(world: &World, dt: f32) {
 
     // Fire the cross-reference activation on each my_door. This is
     // the R5 load-bearing line: a Papyrus `myDoor.activate(actronaut)`
-    // collapses to inserting an ActivateEvent on the target entity.
-    // The target's own OnActivate handler — whether a Papyrus
-    // translation, a built-in door-open system, or anything else
-    // wired to ActivateEvent — picks it up on its next system pass.
-    let Some(mut events) = world.query_mut::<ActivateEvent>() else {
+    // collapses to an ActivateEvent on the target entity, which the
+    // target's own OnActivate handler picks up.
+    //
+    // #3936 — queued, not inserted inline. `mg07_tick_system` is
+    // registered after every ActivateEvent consumer (`boot.rs`), and
+    // `event_cleanup_system` drains the marker at `Stage::Late`, so a
+    // marker written here reached nothing and vanished the same frame —
+    // the sibling of the scene-package `Activate` defect, found by that
+    // fix's SIBLING check. The queue delivers it at the head of the next
+    // frame, ahead of all four consumers.
+    let Some(mut queue) = world.try_resource_mut::<crate::fragment::PendingFragmentActivations>()
+    else {
+        log::debug!("mg07 cross-reference activate dropped: PendingFragmentActivations unavailable");
         return;
     };
     for (_self_entity, target_door) in to_fire_door_activate {
-        events.insert(target_door, ActivateEvent { activator: player });
+        queue.push(target_door, player);
     }
 }
 

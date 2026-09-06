@@ -298,6 +298,18 @@ pub struct PendingFragmentActivations(Vec<(EntityId, EntityId)>);
 impl Resource for PendingFragmentActivations {}
 
 impl PendingFragmentActivations {
+    /// Queue one activation for delivery at the head of the next frame.
+    ///
+    /// The supported way for any producer that runs *after* an
+    /// `ActivateEvent` consumer to reach every consumer exactly once. A
+    /// direct `ActivateEvent` insert from such a producer is delivered to
+    /// whichever consumers happen to be scheduled later and drained by
+    /// `event_cleanup_system` the same frame (#2654 for quest fragments,
+    /// #3936 for scene-package `Activate` procedures).
+    pub fn push(&mut self, target: EntityId, activator: EntityId) {
+        self.0.push((target, activator));
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -1501,120 +1513,157 @@ pub fn apply_effects(
     deferred: &mut DeferredFragmentEffects,
 ) -> Vec<QuestStageAdvanced> {
     let mut advances = Vec::new();
-    for (index, effect) in effects.iter().enumerate() {
-        if let Effect::ProviderCall(call) = effect {
-            deferred.provider_steps.push(DeferredProviderFragmentStep {
-                call: call.clone(),
-                context,
-                vmad: vmad.cloned(),
-                tail: effects[index + 1..].to_vec(),
-            });
-            break;
-        }
-        if let Effect::Conditional {
-            guards,
-            then_effects,
-            else_effects,
-        } = effect
-        {
-            // #3785 — `is_some_and` collapsed "the guard evaluated false" and
-            // "the guard's quest ref could not be resolved at all" into the
-            // same `false`, and unlike every sibling `resolve_quest_logged`
-            // caller (which simply skips the one effect via `?`), `false`
-            // here is NOT inert — it selects `else_effects` and runs them.
-            // An unresolvable guard must decline the WHOLE Conditional
-            // (neither branch), matching the decline-on-unmodeled-reference
-            // invariant every other site already follows.
-            let mut resolved = true;
-            let passes = guards.iter().all(|guard| {
-                match resolve_quest_logged(&guard.quest, context, vmad) {
-                    Some(quest) => stages.get_stage_done(quest, guard.stage) == guard.done,
-                    None => {
-                        resolved = false;
-                        false
+    // #3935 — an explicit cursor stack, not recursion. `Effect::Conditional`
+    // used to build `branch ++ effects[index + 1..]` and call `apply_effects`
+    // on it, so a fragment with N *sequential* conditionals cost N stack
+    // frames and cloned the whole remaining program at each one — O(N^2)
+    // live `Effect` clones. `MAX_CONDITIONAL_DEPTH` bounds conditional
+    // *nesting* at lowering, not the sequential count, and a `.pex` function
+    // may carry 65 535 instructions, so N was bounded only by the wire
+    // format. Descending now pushes two borrowed slices (the branch and the
+    // rest of the current program) and loops; nothing is cloned, and the
+    // stack holds slices, not frames.
+    let mut pending: Vec<&[Effect]> = Vec::new();
+    let mut current: &[Effect] = effects;
+    loop {
+        let mut halted = false;
+        for (index, effect) in current.iter().enumerate() {
+            if let Effect::ProviderCall(call) = effect {
+                deferred.provider_steps.push(DeferredProviderFragmentStep {
+                    call: call.clone(),
+                    context,
+                    vmad: vmad.cloned(),
+                    tail: remaining_program(current, index, &pending),
+                });
+                halted = true;
+                break;
+            }
+            if let Effect::Conditional {
+                guards,
+                then_effects,
+                else_effects,
+            } = effect
+            {
+                // #3785 — `is_some_and` collapsed "the guard evaluated false" and
+                // "the guard's quest ref could not be resolved at all" into the
+                // same `false`, and unlike every sibling `resolve_quest_logged`
+                // caller (which simply skips the one effect via `?`), `false`
+                // here is NOT inert — it selects `else_effects` and runs them.
+                // An unresolvable guard must decline the WHOLE Conditional
+                // (neither branch), matching the decline-on-unmodeled-reference
+                // invariant every other site already follows.
+                let mut resolved = true;
+                let passes = guards.iter().all(|guard| {
+                    match resolve_quest_logged(&guard.quest, context, vmad) {
+                        Some(quest) => stages.get_stage_done(quest, guard.stage) == guard.done,
+                        None => {
+                            resolved = false;
+                            false
+                        }
+                    }
+                });
+                if !resolved {
+                    // `resolve_quest_logged` already emitted a debug line per
+                    // unresolved guard (correct for its inert callers); this is
+                    // the one site where the consequence is a chosen branch, so
+                    // it gets its own louder diagnostic.
+                    log::warn!(
+                        "fragment effect: Conditional guard's quest ref could not be resolved — \
+                     declining the whole Conditional (neither then_effects nor else_effects run)"
+                    );
+                    continue;
+                }
+                let branch = if passes { then_effects } else { else_effects };
+                // Push the continuation first, then the branch: the stack pops
+                // the branch next, so the visible order is still
+                // `branch ++ rest-of-program`, exactly as the flattened
+                // recursion produced.
+                pending.push(&current[index + 1..]);
+                pending.push(branch.as_slice());
+                break;
+            }
+            let suspension = match effect {
+                Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),
+                Effect::WaitForActors3DLoaded {
+                    actors,
+                    poll_seconds,
+                } if !actors_3d_loaded(
+                    vmad,
+                    world,
+                    context,
+                    actors,
+                    &deferred.scene_actor_bindings,
+                ) =>
+                {
+                    Some((
+                        *poll_seconds,
+                        FragmentResumeCondition::Actors3DLoaded {
+                            actors: actors.clone(),
+                            poll_seconds: *poll_seconds,
+                            elapsed_seconds: 0.0,
+                        },
+                    ))
+                }
+                Effect::WaitForActors3DLoaded { .. } => None,
+                _ => None,
+            };
+            if let Some((remaining_seconds, resume_when)) = suspension {
+                let tail = remaining_program(current, index, &pending);
+                if !tail.is_empty() {
+                    if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+                        queue.pending.push(PendingFragmentExecution {
+                            context,
+                            vmad: vmad.cloned(),
+                            effects: tail,
+                            remaining_seconds,
+                            resume_when,
+                        });
+                    } else {
+                        log::debug!(
+                            "fragment continuation dropped: FragmentExecutionQueue is unavailable"
+                        );
                     }
                 }
-            });
-            if !resolved {
-                // `resolve_quest_logged` already emitted a debug line per
-                // unresolved guard (correct for its inert callers); this is
-                // the one site where the consequence is a chosen branch, so
-                // it gets its own louder diagnostic.
-                log::warn!(
-                    "fragment effect: Conditional guard's quest ref could not be resolved — \
-                     declining the whole Conditional (neither then_effects nor else_effects run)"
-                );
+                halted = true;
+                break;
+            }
+            if matches!(effect, Effect::WaitForActors3DLoaded { .. }) {
                 continue;
             }
-            let branch = if passes { then_effects } else { else_effects };
-            let mut ordered_tail = Vec::with_capacity(branch.len() + effects.len() - index - 1);
-            ordered_tail.extend_from_slice(branch);
-            ordered_tail.extend_from_slice(&effects[index + 1..]);
-            advances.extend(apply_effects(
-                &ordered_tail,
-                context,
-                vmad,
-                world,
-                stages,
-                objectives,
-                deferred,
-            ));
-            break;
-        }
-        let suspension = match effect {
-            Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),
-            Effect::WaitForActors3DLoaded {
-                actors,
-                poll_seconds,
-            } if !actors_3d_loaded(
-                vmad,
-                world,
-                context,
-                actors,
-                &deferred.scene_actor_bindings,
-            ) =>
+            if let Some(advance) =
+                apply_effect(effect, context, vmad, world, stages, objectives, deferred)
             {
-                Some((
-                    *poll_seconds,
-                    FragmentResumeCondition::Actors3DLoaded {
-                        actors: actors.clone(),
-                        poll_seconds: *poll_seconds,
-                        elapsed_seconds: 0.0,
-                    },
-                ))
+                advances.push(advance);
             }
-            Effect::WaitForActors3DLoaded { .. } => None,
-            _ => None,
-        };
-        if let Some((remaining_seconds, resume_when)) = suspension {
-            let tail = &effects[index + 1..];
-            if !tail.is_empty() {
-                if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
-                    queue.pending.push(PendingFragmentExecution {
-                        context,
-                        vmad: vmad.cloned(),
-                        effects: tail.to_vec(),
-                        remaining_seconds,
-                        resume_when,
-                    });
-                } else {
-                    log::debug!(
-                        "fragment continuation dropped: FragmentExecutionQueue is unavailable"
-                    );
-                }
-            }
+        }
+        if halted {
             break;
         }
-        if matches!(effect, Effect::WaitForActors3DLoaded { .. }) {
-            continue;
-        }
-        if let Some(advance) =
-            apply_effect(effect, context, vmad, world, stages, objectives, deferred)
-        {
-            advances.push(advance);
+        // Either the current slice ran to its end, or a Conditional just
+        // pushed its branch — both continue at the top of the stack.
+        match pending.pop() {
+            Some(next) => current = next,
+            None => break,
         }
     }
     advances
+}
+
+/// The program still to run after `current[index]`: the rest of the current
+/// slice followed by everything still on the cursor stack, in execution
+/// order (#3935).
+///
+/// A suspension or provider barrier hands its continuation to another frame
+/// (`FragmentExecutionQueue` / `DeferredFragmentEffects`), which outlives
+/// the borrowed slices, so this is the one place the remainder is cloned —
+/// once, at the point it actually has to be owned. `pending` is a stack, so
+/// its execution order is back-to-front.
+fn remaining_program(current: &[Effect], index: usize, pending: &[&[Effect]]) -> Vec<Effect> {
+    let mut tail = current[index + 1..].to_vec();
+    for slice in pending.iter().rev() {
+        tail.extend_from_slice(slice);
+    }
+    tail
 }
 
 /// Tick latent fragment continuations and execute every tail whose

@@ -722,4 +722,101 @@ mod tests {
         assert_eq!(p.ty.node, Type::Object(past::Identifier::new("Quest")));
         assert!(p.flags.contains(PropertyFlags::AUTO));
     }
+
+    /// #3933 — the two shapes #3783's per-call depth ledger could not see.
+    ///
+    /// Both are well-formed `.pex` inside every wire-format ceiling, and
+    /// both used to decompile to `Ok` with a tree tens of thousands of
+    /// levels deep (measured 40 001), which `Node`'s derived `Clone`, its
+    /// drop glue and `lower_expr` then walk one frame per level — a stack
+    /// overflow, i.e. a `SIGABRT` that `translate_pex`'s `catch_unwind`
+    /// cannot intercept. The ledger reset to `vec![1; len]` on every
+    /// `rebuild_expression` call, so re-folding an already-folded scope
+    /// restarted the count from 1; the depth now lives on the node.
+    ///
+    /// Sized to fire the cap with a wide margin while staying far below the
+    /// depth that would abort the test process if the cap were missing —
+    /// the point is that the cap fires first, in *release and debug alike*.
+    #[test]
+    fn a_temp_chain_split_across_blocks_is_declined_not_aborted() {
+        // `::temp{k} = ::temp{k-1} + a` with an unconditional `jmp +1`
+        // every `SPLIT` producers. The jump lifts to no statement, so the
+        // chain is unbroken — but each block boundary ends one
+        // `rebuild_expression` call and starts another, which is exactly
+        // what reset the old ledger. `control_flow`'s whole-body re-fold
+        // then splices the per-block scopes back together.
+        const SPLIT: usize = 250;
+        const PRODUCERS: usize = 4_000;
+
+        let mut instructions = Vec::new();
+        for k in 0..PRODUCERS {
+            let left = if k == 0 {
+                id("a")
+            } else {
+                id(&format!("::temp{}", k - 1))
+            };
+            instructions.push(ins(
+                OpCode::IAdd,
+                vec![id(&format!("::temp{k}")), left, id("a")],
+            ));
+            if k % SPLIT == SPLIT - 1 {
+                instructions.push(ins(OpCode::Jmp, vec![Value::Integer(1)]));
+            }
+        }
+        instructions.push(ins(
+            OpCode::Assign,
+            vec![id("x"), id(&format!("::temp{}", PRODUCERS - 1))],
+        ));
+        instructions.push(ins(OpCode::Return, vec![id("::NoneVar")]));
+
+        let func = PexFunction {
+            name: "Deep".into(),
+            return_type_name: "None".into(),
+            instructions,
+            ..PexFunction::default()
+        };
+        let err = decompile_script(&pex_with_function(func))
+            .expect_err("a cross-block temp chain past the cap must be declined");
+        assert!(
+            matches!(err, DecompileError::ExpressionTooDeep { .. }),
+            "expected ExpressionTooDeep, got {err:?}"
+        );
+    }
+
+    /// The short-circuit sibling of the test above: the left-associative
+    /// `&&` chain a compiler emits for `if x0 && x1 && … && xN`. Each link
+    /// is merged by `boolean::combine`, which nests two whole trees under
+    /// one new `BinaryOp` — and `rebuild_expression`'s fold loop never runs
+    /// on the resulting one-statement scope, so the cap has to be checked
+    /// in `combine` itself.
+    #[test]
+    fn a_short_circuit_chain_is_declined_not_aborted() {
+        const LINKS: usize = 4_000;
+
+        let mut instructions = Vec::new();
+        for k in 0..LINKS {
+            instructions.push(ins(
+                OpCode::Assign,
+                vec![id("::temp0"), id(&format!("x{k}"))],
+            ));
+            instructions.push(ins(
+                OpCode::JmpF,
+                vec![id("::temp0"), Value::Integer(2)],
+            ));
+        }
+        instructions.push(ins(OpCode::Return, vec![id("::NoneVar")]));
+
+        let func = PexFunction {
+            name: "Deep".into(),
+            return_type_name: "None".into(),
+            instructions,
+            ..PexFunction::default()
+        };
+        let err = decompile_script(&pex_with_function(func))
+            .expect_err("a short-circuit chain past the cap must be declined");
+        assert!(
+            matches!(err, DecompileError::ExpressionTooDeep { .. }),
+            "expected ExpressionTooDeep, got {err:?}"
+        );
+    }
 }

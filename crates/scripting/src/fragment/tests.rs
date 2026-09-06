@@ -3013,3 +3013,61 @@ fn nested_lock_contract_documents_apply_effect_itself() {
             .unwrap_or("<unknown>"),
     );
 }
+
+/// #3935 — a long run of *sequential* `Effect::Conditional`s must dispatch
+/// iteratively.
+///
+/// `MAX_CONDITIONAL_DEPTH` (#3279) bounds conditional *nesting* at lowering,
+/// not how many siblings a fragment body may hold, and a `.pex` function may
+/// carry 65 535 instructions — an empty `If Self.GetStageDone(n)` costs two.
+/// The old dispatch recursed once per sibling and cloned the whole remaining
+/// program at each one (`branch ++ effects[index + 1..]`), so N siblings cost
+/// N stack frames and ~N^2/2 live `Effect` clones. Sized well past any
+/// plausible authored fragment but far below what would abort the test
+/// process, so this pins the shape rather than merely the survival: with the
+/// recursion restored it is a debug-build stack overflow.
+#[test]
+fn apply_effects_dispatches_thousands_of_sequential_conditionals() {
+    const SIBLINGS: u16 = 4_000;
+
+    let world = World::new();
+    let effects: Vec<Effect> = (0..SIBLINGS)
+        .map(|k| Effect::Conditional {
+            // `SelfRef` always resolves, and stage 0 is not done, so every
+            // sibling takes its `else` branch — the arm that used to build
+            // the flattened tail.
+            guards: vec![StageDoneGuard {
+                quest: QuestRef::SelfRef,
+                stage: 0,
+                done: true,
+            }],
+            then_effects: Vec::new(),
+            else_effects: vec![Effect::SetObjectiveDisplayed {
+                quest: QuestRef::SelfRef,
+                objective: k as i32,
+                displayed: true,
+            }],
+        })
+        .collect();
+
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+
+    // Every sibling ran, in order, exactly once.
+    for k in 0..SIBLINGS {
+        assert!(
+            objectives.get(Q, k as i32).displayed,
+            "sibling {k}'s else branch must have run"
+        );
+    }
+}

@@ -613,15 +613,27 @@ fn tick_command(world: &World, action: &mut ActiveScenePackageAction, dt: f32) -
         } => {
             if !*dispatched {
                 if procedure_type == "Activate" {
-                    if let (Some(target), Some(mut events)) =
-                        (*target, world.query_mut::<crate::events::ActivateEvent>())
-                    {
-                        events.insert(
-                            target,
-                            crate::events::ActivateEvent {
-                                activator: action.actor,
-                            },
-                        );
+                    // #3936 — queue, never insert the marker inline.
+                    // `scene_package_system` is scheduled after
+                    // `rumble_on_activate_dispatch` and
+                    // `quest_advance_dispatch`, so a marker written here is
+                    // invisible to both and is drained by
+                    // `event_cleanup_system` at `Stage::Late` the same
+                    // frame: a package `Activate` on a quest-advance REFR
+                    // silently never advanced the quest. The queue delivers
+                    // it to every consumer at the head of the next frame,
+                    // exactly once — the same fix #2654 made for quest
+                    // fragments.
+                    if let Some(target) = *target {
+                        match world
+                            .try_resource_mut::<crate::fragment::PendingFragmentActivations>()
+                        {
+                            Some(mut queue) => queue.push(target, action.actor),
+                            None => log::debug!(
+                                "scene package Activate dropped: \
+                                 PendingFragmentActivations is unavailable"
+                            ),
+                        }
                     }
                 }
                 *dispatched = true;
@@ -697,7 +709,9 @@ pub fn scene_package_system(world: &World, dt: f32) {
         .try_resource::<PackageTargetRegistry>()
         .map(|registry| registry.clone())
         .unwrap_or_default();
-    let player_entity = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0);
+    let player_entity = world
+        .try_resource::<PapyrusPlayerEntity>()
+        .map(|player| player.0);
 
     let mut entities: HashSet<EntityId> = playbacks.keys().copied().collect();
     entities.extend(scene_events.keys().copied());
@@ -1211,6 +1225,26 @@ mod tests {
         );
 
         scene_package_system(&world, 0.0);
+        // #3936 — the Activate is queued, not written inline, so a consumer
+        // running later in the SAME frame still sees nothing. This is the
+        // deferral that makes the marker reach `rumble_on_activate_dispatch`
+        // and `quest_advance_dispatch` too, which are scheduled ahead of
+        // `scene_package_system` and used to miss it entirely.
+        crate::two_state_activator_system(&world, 0.0);
+        assert!(
+            !world.get::<crate::TwoStateActivator>(gate).unwrap().is_open,
+            "the package Activate must not be delivered inline (#3936)"
+        );
+        assert_eq!(
+            world
+                .resource::<crate::fragment::PendingFragmentActivations>()
+                .len(),
+            1,
+            "the package Activate must be queued for the next frame's flush"
+        );
+
+        // Next frame: the head-of-frame flush delivers it to every consumer.
+        crate::fragment_activation_flush_system(&world, 0.0);
         crate::two_state_activator_system(&world, 0.0);
 
         assert!(world.get::<crate::TwoStateActivator>(gate).unwrap().is_open);

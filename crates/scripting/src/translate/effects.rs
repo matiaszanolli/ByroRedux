@@ -557,20 +557,36 @@ fn classify_effect_with_providers(
     scope: &Scope,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Effect> {
-    if let Some(providers) = providers {
-        match lower_provider_call(expression, providers) {
-            Ok(Some(call)) => {
-                return Some(Effect::ProviderCall(FragmentProviderCall {
-                    route: call.route.qualified_name().to_owned(),
-                    arguments: call.arguments,
-                    principal: None,
-                }));
-            }
-            Ok(None) => {}
-            Err(_) => return None,
-        }
+    // #3934 — the canonical effect table is consulted FIRST, and a manifest
+    // provider alias only ever gets a statement no primitive claimed.
+    //
+    // The reverse order let one installed extension change how vanilla
+    // content lowers, two ways. `PapyrusProviderCatalog::insert` records the
+    // *provider identifier* of every strictly-inserted alias, and
+    // `lower_provider_call` hard-errors (`UnknownFunction`) on a miss whose
+    // identifier is any known provider — so a single alias published under
+    // the reserved `Self` receiver (which the SDK prescribes for instance
+    // methods), or under `Game`/`Utility`, made every `Self.SetStage(..)`,
+    // `Game.*` or `Utility.Wait(..)` in the corpus decline its whole
+    // fragment. And an alias spelled exactly like a modeled effect silently
+    // *replaced* it with a deferred host barrier — for `Utility.Wait` that
+    // also slipped past `has_latent`, which only matches `Effect::Wait`.
+    // Primitives-first makes both impossible: canonical semantics win, and
+    // an alias can only ever add a spelling the engine does not model.
+    if let Some(effect) = classify_effect(expression, scope) {
+        return Some(effect);
     }
-    classify_effect(expression, scope)
+    let providers = providers?;
+    match lower_provider_call(expression, providers) {
+        Ok(Some(call)) => Some(Effect::ProviderCall(FragmentProviderCall {
+            route: call.route.qualified_name().to_owned(),
+            arguments: call.arguments,
+            principal: None,
+        })),
+        // Unclaimed by both tables, or a bound-but-unresolvable extender
+        // call: decline the fragment, same as any unmodeled statement.
+        Ok(None) | Err(_) => None,
+    }
 }
 
 /// An effect primitive: matches one effect-call shape and binds its
@@ -2774,5 +2790,59 @@ mod tests {
                 "{method} must decline an i32-overflowing index"
             );
         }
+    }
+
+    /// #3934 — one installed extension must not change how vanilla content
+    /// lowers. `Self` is the SDK's reserved provider for instance-method
+    /// aliases, so any extension that publishes one makes
+    /// `catalog.contains_provider("self")` true; with the catalog consulted
+    /// first, `Self.SetStage(10)` then missed the route, hard-errored as an
+    /// unbound extender call, and declined the whole fragment — across the
+    /// entire quest-fragment population, on every game.
+    #[test]
+    fn a_self_provider_alias_does_not_shadow_the_canonical_effect_table() {
+        use byroredux_sdk::identity::{ComponentId, ExtensionId, ScriptFunctionId};
+        use byroredux_sdk::script_function::{PapyrusFunctionAlias, ScriptFunctionDeclaration};
+
+        let extension = ExtensionId::new("audit.fixture").expect("valid extension id");
+        let mut providers = PapyrusProviderCatalog::engine_compatibility();
+        providers
+            .insert(
+                &extension,
+                &ScriptFunctionDeclaration {
+                    id: ScriptFunctionId::new("touch").expect("valid function id"),
+                    component: ComponentId::new("runtime").expect("valid component id"),
+                    parameters: Vec::new(),
+                    result: None,
+                    // Reserved instance-method spelling: `Self.Touch()`.
+                    papyrus: Some(PapyrusFunctionAlias {
+                        provider: "Self".to_owned(),
+                        function: "Touch".to_owned(),
+                    }),
+                    description: "fixture instance method".to_owned(),
+                },
+            )
+            .expect("the alias must install");
+
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Self.SetStage(10)\n\
+             EndFunction\n",
+        );
+        let effects = lower_fragment_with_quest_properties_and_providers(
+            &body,
+            &HashSet::new(),
+            Some(&providers),
+        )
+        .expect("a canonical SetStage must still lower with a Self alias installed");
+        assert_eq!(
+            effects,
+            vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 10,
+            }],
+            "the canonical effect table must win over a manifest alias"
+        );
     }
 }

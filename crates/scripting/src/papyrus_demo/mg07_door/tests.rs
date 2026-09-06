@@ -309,9 +309,16 @@ fn success_path_fires_cross_reference_activate_on_my_door() {
     mg07_on_activate_system(&world);
     crate::event_cleanup_system(&world, 0.0);
 
-    // Wait elapses → tick fires the cross-ref ActivateEvent on
-    // `secret_door`.
+    // Wait elapses → tick queues the cross-ref activation for
+    // `secret_door`, and the next frame's head flush delivers it (#3936 —
+    // `mg07_tick_system` runs after every ActivateEvent consumer, so an
+    // inline insert reached none of them).
     mg07_tick_system(&world, DELAY);
+    assert!(
+        !world.has::<ActivateEvent>(secret_door),
+        "the cross-reference activate must be queued, not delivered inline"
+    );
+    crate::fragment_activation_flush_system(&world, 0.0);
 
     // Extract `.activator` and drop the ActivateEvent guard before the
     // door read below: holding both component locks would form a

@@ -360,6 +360,20 @@ const NO_LINK: usize = usize::MAX;
 /// inside the wire format's `u16` instruction ceiling. That abort is a
 /// `SIGABRT` `catch_unwind` cannot intercept, so it bypasses
 /// `translate_pex`'s panic guard.
+///
+/// #3933 — this bounds the **whole node tree**, measured by
+/// [`Node::depth`], not the growth of one `rebuild_expression` call. The
+/// original ledger was local to a call and seeded at 1, so re-folding an
+/// already-folded scope (`control_flow`'s whole-body re-fold at the end of
+/// `Reconstructor::rebuild`, `boolean`'s merged-scope re-fold after
+/// `combine`) restarted the count and let the true depth grow without
+/// limit: a `jmp +1` every 250 instructions, or the left-associative
+/// `&&` chain a compiler emits for a long conjunction, reached depth
+/// 40 001 while every per-call count stayed under 256. Because statement
+/// nesting (`IfElse`/`While` bodies) lives in the same tree the recursive
+/// walks traverse, it counts toward this bound too — which is the right
+/// quantity for stack safety, and is separately bounded by
+/// `MAX_REBUILD_DEPTH`. Real Papyrus is nowhere near either.
 pub(super) const MAX_EXPR_DEPTH: usize = 256;
 
 pub(super) fn rebuild_expression(
@@ -393,12 +407,6 @@ pub(super) fn rebuild_expression(
         .map(|i| if i == 0 { NO_LINK } else { i - 1 })
         .collect();
     let mut removed = vec![false; len];
-    // #3783 — per-slot expression-tree depth. Every freshly-lifted node is a
-    // single instruction's shape (a few levels at most), so 1 is the right
-    // starting rank: what this ledger has to bound is the *folding*, which is
-    // the only thing that can grow a tree without limit. Folding `i` into `j`
-    // nests `i`'s whole tree one level inside `j`'s.
-    let mut depth: Vec<usize> = vec![1; len];
 
     let mut i = 0usize;
     while i != NO_LINK {
@@ -447,20 +455,21 @@ pub(super) fn rebuild_expression(
                     });
                 }
 
-                // #3783 — the fold just nested `i`'s tree inside `j`'s, so
-                // `j` is now one level deeper than the deeper of the two.
-                // Refuse past the cap instead of handing a tree to `Node`'s
-                // unbounded derived `Clone` (and its drop glue), which
-                // aborts the process rather than unwinding.
-                let folded_depth = depth[j].max(depth[i] + 1);
-                if folded_depth > MAX_EXPR_DEPTH {
+                // #3933 — the fold just nested `i`'s tree inside `j`'s;
+                // `replace_constant_id` maintained the memoised depth on the
+                // way back up, so ask the tree rather than a per-call ledger
+                // (#3783's ledger reset on every call, which is exactly how a
+                // re-folded scope escaped the bound). Refuse past the cap
+                // instead of handing the tree to `Node`'s unbounded derived
+                // `Clone`, its drop glue, and `lower_expr` — all of which
+                // recurse once per level and abort rather than unwind.
+                if scope[j].depth() > MAX_EXPR_DEPTH {
                     return Err(DecompileError::ExpressionTooDeep {
                         function: func_name.to_string(),
                         ip: scope[j].begin,
                         limit: MAX_EXPR_DEPTH,
                     });
                 }
-                depth[j] = folded_depth;
 
                 // Unlink `i` from the live chain.
                 removed[i] = true;
@@ -526,6 +535,11 @@ fn replace_constant_id(node: &mut Node, name: &str, slot: &mut Option<Node>) {
             break;
         }
     }
+    // #3933 — a substitution anywhere below just changed this subtree's
+    // shape, so the memoised depth on the way back up is stale. Only the
+    // path from the substitution point to the root is walked (one level
+    // per frame), which is what keeps the invariant O(depth), not O(tree).
+    node.recompute_depth();
 }
 
 #[cfg(test)]
@@ -828,10 +842,15 @@ mod tests {
     /// orders of magnitude of headroom.
     #[test]
     fn a_temp_chain_inside_the_depth_cap_still_folds() {
-        // The producer chain contributes one level per fold on top of the
-        // first node's own rank of 1, so `MAX_EXPR_DEPTH - 1` producers plus
-        // the trailing assign lands exactly on the cap.
-        let mut scope = chained_temp_scope(MAX_EXPR_DEPTH - 1);
+        // The producer chain contributes one level per fold on top of a
+        // lifted `BinaryOp`'s own true depth of 2 (the node plus its two
+        // `Constant` leaves), and the trailing `Assign` adds the last one:
+        // `n` producers fold to depth `n + 2`. #3783's per-call ledger
+        // seeded every statement at 1 and so under-counted this by one even
+        // in the single-call case it was written for; #3933 measures the
+        // tree itself, so `MAX_EXPR_DEPTH - 2` producers is what now lands
+        // exactly on the cap.
+        let mut scope = chained_temp_scope(MAX_EXPR_DEPTH - 2);
         rebuild_expression(&mut scope, "DeepButLegalFn")
             .expect("a chain at exactly the cap must still fold");
         assert_eq!(scope.len(), 1, "the whole chain collapses to one Assign");

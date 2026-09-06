@@ -42,7 +42,7 @@
 use std::collections::BTreeMap;
 
 use super::cfg::{Cfg, END};
-use super::lift::rebuild_expression;
+use super::lift::{rebuild_expression, MAX_EXPR_DEPTH};
 use super::node::{Node, NodeKind, SYNTH_IP};
 use super::DecompileError;
 use crate::model::Value;
@@ -278,7 +278,22 @@ impl BoolPass<'_> {
             self.scopes.insert(current, src_scope);
             return Ok(false);
         };
-        src_scope.push(combine(left, op.as_str(), right, cond));
+        let combined = combine(left, op.as_str(), right, cond);
+        // #3933 — `combine` nests two whole trees under one new `BinaryOp`
+        // with no fold to catch it, and `rebuild_expression`'s loop never
+        // runs on a one-statement scope (it needs a live successor to fold
+        // into), so this is the only bound on an iterative `&&`/`||` chain's
+        // growth. The chain is built one link per `collapse`, so each link
+        // is checked as it is added rather than after the whole chain
+        // exists.
+        if combined.depth() > MAX_EXPR_DEPTH {
+            return Err(DecompileError::ExpressionTooDeep {
+                function: self.func_name.to_string(),
+                ip: combined.begin,
+                limit: MAX_EXPR_DEPTH,
+            });
+        }
+        src_scope.push(combined);
 
         // The operand block is now folded into the expression — drop it.
         self.cfg.blocks.remove(&operand_key);
