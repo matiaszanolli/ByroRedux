@@ -185,9 +185,7 @@ pub(crate) fn try_load_default_footstep(
     // Vanilla dirt-walk footsteps ship with left/right alternation; pick
     // one entry per game as the default until FOOT records land.
     let Some((chosen, bytes)) = first_default_sound_hit(sounds, FOOTSTEP_CANDIDATES) else {
-        log::warn!(
-            "M44 Phase 3.5: no --sounds-bsa archive carries any default footstep candidate"
-        );
+        log::warn!("M44 Phase 3.5: no --sounds-bsa archive carries any default footstep candidate");
         return;
     };
     let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
@@ -279,9 +277,12 @@ fn first_default_sound_hit(
     candidates: &[DefaultSoundCandidate],
 ) -> Option<(String, Vec<u8>)> {
     candidates.iter().find_map(|candidate| {
-        sounds
-            .extract(candidate.key)
-            .map(|bytes| (format!("{} ({})", candidate.key, candidate.games.join("/")), bytes))
+        sounds.extract(candidate.key).map(|bytes| {
+            (
+                format!("{} ({})", candidate.key, candidate.games.join("/")),
+                bytes,
+            )
+        })
     })
 }
 
@@ -796,10 +797,17 @@ mod tests {
                 "--sounds-bsa".to_string(),
                 archive.to_string_lossy().into_owned(),
             ]);
-            assert!(!provider.is_empty(), "{game}: failed to open {}", archive.display());
+            assert!(
+                !provider.is_empty(),
+                "{game}: failed to open {}",
+                archive.display()
+            );
             for (table_name, table) in tables {
                 let tagged: Vec<_> = table.iter().filter(|c| c.games.contains(&game)).collect();
-                assert!(!tagged.is_empty(), "{table_name} has no candidate tagged for {game}");
+                assert!(
+                    !tagged.is_empty(),
+                    "{table_name} has no candidate tagged for {game}"
+                );
                 for candidate in tagged {
                     assert!(
                         provider.extract(candidate.key).is_some(),

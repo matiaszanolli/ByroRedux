@@ -19,14 +19,14 @@
 
 use rustc_hash::FxHashMap;
 
+use byroredux_core::ecs::components::material::{
+    DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+};
 use byroredux_core::ecs::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor, AnimatedTextureFlip,
     AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform, Material, MeshHandle,
     RenderLayer, TextureHandle, World, WorldBound,
-};
-use byroredux_core::ecs::components::material::{
-    DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
 };
 use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::vulkan::context::DrawCommand;
