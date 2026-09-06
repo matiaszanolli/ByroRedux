@@ -61,6 +61,72 @@ impl VulkanContext {
         // before the `Some`/`Some` gate below, since the absence of RT /
         // skin_compute means there's no dispatch to protect either way.
         self.skin_dispatch_ran = true;
+
+        // #3976 / D9-01 — the BLAS half of the `bind_inverses` upload-failure
+        // path. `dispatch_skin_and_cluster` drains the pending first-sight
+        // uploads *before* this function runs; when
+        // `upload_pending_bind_inverses` fails it latches
+        // `bind_inverse_upload_failed`, returns `pending_capped = 0`, and the
+        // `if pending_capped > 0` guard skips
+        // `record_pending_bind_inverse_copies` — so those slots of
+        // `bind_inverses_persistent` are never written. `skin_palette.comp`
+        // still dispatches over the dense slot range, so their palettes are
+        // `boneWorld × UNDEFINED`, and `skin_vertices.comp` skins from those
+        // palettes.
+        //
+        // `709de0e6` (#3569) fixed the *bookkeeping* half — the drained
+        // entries are requeued instead of lost — but nothing stopped this
+        // frame from consuming the memory. Building or refitting an
+        // acceleration structure out of undefined device memory is the
+        // CRITICAL case in `_audit-severity.md`'s AS row: the vertex
+        // positions can be NaN/Inf, and a first-sight BUILD then persists
+        // through every subsequent UPDATE-mode refit until the rebuild
+        // threshold, so a single failed upload poisons that entity's BVH for
+        // hundreds of frames.
+        //
+        // The skip is deliberately whole-frame rather than per-entity. The
+        // failure is wholesale (`upload_pending_bind_inverses` returns `Err`
+        // for the entire batch, not per slot), and the affected
+        // `bind_inverses` slots come from `SkinSlotPool` while the gate below
+        // keys on skin-compute slots — the two are distinct, so there is no
+        // cheap entity-level mapping from "this upload failed" to "this
+        // entity's palette is garbage". Skipping the whole skinned-BLAS pass
+        // costs one frame of stale-but-valid RT geometry (every BLAS keeps
+        // the contents it was built from last frame, when the palette was
+        // sound) — the same degrade the idle-pose skip path at
+        // `has_populated_output` already accepts, and strictly better than
+        // building from undefined memory.
+        //
+        // Correctness of the retry depends on NOT onboarding the entity
+        // here: returning before `create_slot` means no skin-compute slot is
+        // created, no dispatch writes garbage into it, and
+        // `has_populated_output` stays false. Gating only the BUILD would
+        // create the slot, dispatch garbage into it, mark it populated, and
+        // then next frame's pose-dirty skip would leave that garbage in place
+        // for the build to consume — the bug would survive the fix.
+        //
+        // `skin_dispatch_ran` is already set above, and `app_frame.rs`'s
+        // rollback is `!skin_dispatch_ran || bind_inverse_upload_failed`, so
+        // the second limb still fires and #3569's requeue still runs.
+        if self.bind_inverse_upload_failed {
+            // `Once`-gated, matching this subsystem's `failed_skin_slots` /
+            // `overflow_warned` convention: the requeue retries every frame,
+            // so an un-gated warn here would spam once per frame for as long
+            // as the allocation pressure lasts (the shape #4049 reports on the
+            // sibling path). The upload-failure site itself already logs each
+            // occurrence, so nothing is lost by reporting the skip once.
+            static SKIP_WARNED: std::sync::Once = std::sync::Once::new();
+            SKIP_WARNED.call_once(|| {
+                log::warn!(
+                    "skipping the skinned-BLAS pass — a pending bind_inverses \
+                     upload failed, so at least one palette slot is unwritten; \
+                     entities retry next frame via the #3569 requeue. This \
+                     warning fires once per process (#3976)"
+                );
+            });
+            return;
+        }
+
         let skin_t0 = Instant::now();
         if let (Some(skin_pipeline), Some(ref mut accel)) =
             (self.skin_compute.as_ref(), self.accel_manager.as_mut())
@@ -1202,6 +1268,88 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
             "the eviction drain/sweep must still run before the function \
              returns, inside the outer (skin_pipeline, accel, alloc) guards \
              it actually depends on"
+        );
+    }
+}
+
+// #3976 / REN-2026-09-06-D9-01 — a failed `bind_inverses` upload leaves palette
+// slots unwritten, so no acceleration structure may be built or refit from the
+// vertices skinned against them that frame. Source-position pinning like the
+// sibling modules above: the guard sits in `draw_frame`'s live-Vulkan-device
+// path, so structural position is what is checkable without a GPU.
+#[cfg(test)]
+mod bind_inverse_upload_failure_blas_gate_tests {
+    /// The production half of this file — everything before the first
+    /// `#[cfg(test)]`. See the note in the first test.
+    fn production_source() -> &'static str {
+        let src = include_str!("skinned_blas_refit.rs");
+        let cut = src
+            .find("#[cfg(test)]")
+            .expect("this file has test modules");
+        &src[..cut]
+    }
+
+    #[test]
+    fn a_failed_bind_inverses_upload_skips_the_whole_skinned_blas_pass() {
+        // Truncate at the first `#[cfg(test)]`, like the sibling modules in
+        // this file: `include_str!` pulls in the test bodies too, and every
+        // literal searched for below also appears inside this module. Without
+        // the cut a removed guard still "matches" its own search string.
+        let src = production_source();
+
+        let gate_pos = src.find("if self.bind_inverse_upload_failed {").expect(
+            "record_skinned_blas_refit must skip the skinned-BLAS pass when a pending \
+                 bind_inverses upload failed — `skin_palette.comp` computes those slots as \
+                 `boneWorld × UNDEFINED`, and building an acceleration structure from the \
+                 vertices skinned against them is the CRITICAL AS case (#3976)",
+        );
+
+        // The gate must sit AFTER `skin_dispatch_ran = true`, or the early
+        // return would leave the flag false and `app_frame.rs`'s rollback
+        // (`!skin_dispatch_ran || bind_inverse_upload_failed`) would fire on
+        // the wrong limb — harmless today, but it would make the requeue
+        // depend on which limb tripped rather than on the failure itself.
+        let dispatch_ran_pos = src
+            .find("self.skin_dispatch_ran = true;")
+            .expect("record_skinned_blas_refit must still set skin_dispatch_ran (#1796)");
+        assert!(
+            dispatch_ran_pos < gate_pos,
+            "the bind_inverses gate must come after `skin_dispatch_ran = true`, so #3569's \
+             requeue still runs on the frame the pass is skipped (#3976)"
+        );
+
+        // The gate must precede BOTH the slot creation and the first-sight
+        // BUILD push. Gating only the build would create the slot, dispatch
+        // garbage into its output, set `has_populated_output`, and then next
+        // frame's pose-dirty skip would leave that garbage in place for the
+        // build to consume — the defect would survive the fix.
+        let create_slot_pos = src
+            .find("match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {")
+            .expect("the first-sight path must still create skin-compute slots");
+        let build_push_pos = src
+            .find("first_sight_builds.push((")
+            .expect("the first-sight path must still queue BUILD entries");
+        assert!(
+            gate_pos < create_slot_pos && gate_pos < build_push_pos,
+            "the bind_inverses gate must precede both `create_slot` and the first-sight BUILD \
+             push: onboarding the entity and only skipping the build would mark a garbage \
+             output buffer populated, and the pose-dirty skip would then hand that garbage to \
+             the next frame's build (#3976)"
+        );
+    }
+
+    #[test]
+    fn the_skip_warning_is_once_gated() {
+        let src = production_source();
+        let gate_pos = src.find("if self.bind_inverse_upload_failed {").unwrap();
+        let tail = &src[gate_pos..];
+        let body_end = tail.find("\n        }").unwrap_or(tail.len());
+        let body = &tail[..body_end];
+        assert!(
+            body.contains("std::sync::Once"),
+            "the skip warning must be Once-gated — the #3569 requeue retries every frame, so \
+             an un-gated warn spams once per frame for as long as the allocation pressure \
+             lasts (the shape #4049 reports on the sibling path) (#3976)"
         );
     }
 }
