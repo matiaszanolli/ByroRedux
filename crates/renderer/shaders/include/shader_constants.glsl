@@ -118,6 +118,16 @@
 
 // Glass / IOR ray budget
 #define GLASS_RAY_BUDGET 2097152u
+#define GI_VISIBLE_LIGHT_CAP 2u
+// #3879 — GpuRayBudget shader-side ceilings. Each must be >= the
+// matching tier-3 value in AdaptiveRayBudget::settings_for_tier,
+// which now reads these same constants. Unsuffixed - cast at use.
+#define MAX_DIRECT_SHADOW_SAMPLES 8
+#define MAX_PATH_SEGMENTS 6
+#define MAX_SHADED_HITS 2
+#define MAX_FROXEL_LIGHTS 8
+#define MAX_RAY_QUALITY_TIER 3
+#define MAX_REFRACT_PASSTHRUS 8
 #define GLASS_RAY_COST 4u
 
 // One-bounce GI light cap (shadow ray per light at a bounce hit)

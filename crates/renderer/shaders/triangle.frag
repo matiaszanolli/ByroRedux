@@ -1863,7 +1863,7 @@ void main() {
         && reflectionGlassRayEnabled && !isWindow;
     int refractPassthruBudget = 2;
     if (glassIORAllowed) {
-        uint budgetTier = min(rayBudget.qualityTier, 3u);
+        uint budgetTier = min(rayBudget.qualityTier, uint(MAX_RAY_QUALITY_TIER));
         refractPassthruBudget = 2 + int(budgetTier) * 2;
         uint glassRayCost = GLASS_RAY_COST + budgetTier * 2u;
         // Count estimated query work for diagnostics. Admission is deliberately
@@ -2019,7 +2019,6 @@ void main() {
             // The adaptive interface allowance is 2/4/6/8 at quality tiers
             // 0/1/2/3. Keep a compile-time maximum on the loop so SPIR-V has
             // an explicit upper bound even though the active limit is dynamic.
-            const int MAX_REFRACT_PASSTHRUS = 8;
             // Total world-space reach of the refraction ray, shared across
             // every passthru segment (#2482). Previously each iteration
             // re-issued the query with a fresh hard-coded 2000.0 tMax while
@@ -2066,7 +2065,7 @@ void main() {
             int diagPassthru = 0;
             bool diagSelfTerminus = false;
 
-            for (int passthru = 0; passthru <= MAX_REFRACT_PASSTHRUS; ++passthru) {
+            for (int passthru = 0; passthru <= int(MAX_REFRACT_PASSTHRUS); ++passthru) {
                 if (passthru > refractPassthruBudget) {
                     break;
                 }
@@ -3407,10 +3406,9 @@ void main() {
                     // penumbra converges K× faster — the cheap way to fix "a bit
                     // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
                     // below still refines further over parked frames via 1/N.)
-                    const int MAX_SHADOW_RAYS = 8;
-                    int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, 8u));
+                    int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, uint(MAX_DIRECT_SHADOW_SAMPLES)));
                     vec3 transmissionSum = vec3(0.0);
-                    for (int sr = 0; sr < MAX_SHADOW_RAYS; sr++) {
+                    for (int sr = 0; sr < int(MAX_DIRECT_SHADOW_SAMPLES); sr++) {
                         if (sr >= shadowRayCount) break;
                         vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                             (uint(frameCount) * uint(shadowRayCount) + uint(sr)) * 9u + i);
@@ -3771,11 +3769,9 @@ void main() {
             // budget, so illumination can cross polished metal or a closed
             // bottle/pane before reaching a diffuse receiver. Segment and
             // locally-lit-hit caps keep worst-case ray-query work unchanged.
-            const int MAX_PATH_SEGMENTS = 6;
             const int MAX_DIFFUSE_BOUNCES = 2;
-            const int MAX_SHADED_HITS = 2;
-            int pathSegmentLimit = int(clamp(rayBudget.maxPathSegments, 1u, 6u));
-            int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, 2u));
+            int pathSegmentLimit = int(clamp(rayBudget.maxPathSegments, 1u, uint(MAX_PATH_SEGMENTS)));
+            int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, uint(MAX_SHADED_HITS)));
             vec3 pathOrigin = giOrigin;
             vec3 pathDir = giDir;
             vec3 throughput = primaryDiffuseWeight;
@@ -3783,7 +3779,7 @@ void main() {
             int diffuseBounces = 0;
             int shadedHits = 0;
 
-            for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment) {
+            for (int segment = 0; segment < int(MAX_PATH_SEGMENTS); ++segment) {
                 if (segment >= pathSegmentLimit) break;
                 rayQueryEXT giRQ;
                 rayQueryInitializeEXT(
@@ -3858,7 +3854,7 @@ void main() {
                 // lights. Later specular hits still carry environment and
                 // emission, but cannot expand the accepted shadow-query cap.
                 vec3 hitDirect = vec3(0.0);
-                if (shadedHits < min(MAX_SHADED_HITS, shadedHitLimit)) {
+                if (shadedHits < min(int(MAX_SHADED_HITS), shadedHitLimit)) {
                     uint visibleLightLimit = shadedHits == 0 ? 2u : 1u;
                     hitDirect = pathHitRadiance(
                         hitPos, hitN, viewDir,

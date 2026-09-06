@@ -229,6 +229,64 @@ mod tests {
             "volumetrics_inject.comp",
             "COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS",
         ),
+        // ── #3880 ────────────────────────────────────────────────────
+        // Everything below became visible when the gate was widened to walk
+        // `shaders/` recursively, read `.glsl`, recognise `#define`, and stop
+        // requiring brace depth 0. None of these is a CPU/GPU contract value:
+        // each is consumed only by the stage that declares it, with no Rust
+        // counterpart that could drift out of step. They are listed rather
+        // than filtered so that promoting one later is a deliberate edit
+        // here, not an invisible bypass — which is the whole point of the
+        // gate. `GI_VISIBLE_LIGHT_CAP` was the one genuine duplicate the
+        // widening exposed and has been promoted to shader_constants_data.rs
+        // instead of exempted.
+
+        // Pure math / format constants — no tuning meaning.
+        ("include/math_common.glsl", "PI"),
+        ("include/ray_origin.glsl", "ORIGIN"),
+        ("include/ray_origin.glsl", "FLOAT_SCALE"),
+        ("include/ray_origin.glsl", "INT_SCALE"),
+        ("include/caustic_kernel.glsl", "CAUSTIC_GAUSS5"),
+        ("include/blue_noise.glsl", "BLUE_NOISE_RANKS"),
+        ("volumetrics_inject.comp", "LUMA_REC709"),
+        ("volumetrics_inject.comp", "ISOTROPIC_PHASE"),
+        ("taa.comp", "OFFSETS"),
+        ("taa.comp", "N"),
+        // `MESH_ID_NO_HISTORY_BIT` is tracked separately as
+        // TD7-2026-09-05-03; exempted here so this gate's widening does not
+        // pre-empt that issue's own decision about where the bit belongs.
+        ("include/mesh_id.glsl", "MESH_ID_NO_HISTORY_BIT"),
+        // Stage-local sampling / quality tuning, consumed nowhere else.
+        ("include/pbr.glsl", "SPECULAR_AA_VARIANCE"),
+        ("include/pbr.glsl", "SPECULAR_AA_THRESHOLD"),
+        ("include/lighting.glsl", "REFLECTION_LIGHT_CANDIDATES"),
+        ("include/shadow_transport.glsl", "MAX_GLASS_INTERFACES"),
+        ("triangle.frag", "RT_LOD_SCALE"),
+        ("triangle.frag", "RT_LOD_REFLECT"),
+        ("triangle.frag", "RT_LOD_GI"),
+        ("triangle.frag", "REFRACT_MAX_REACH"),
+        ("triangle.frag", "AMBIENT_FILL"),
+        ("triangle.frag", "AMBIENT_AO_FLOOR"),
+        ("triangle.frag", "MAX_DIFFUSE_BOUNCES"),
+        // ReSTIR reservoir tuning — one stage, no CPU mirror.
+        ("triangle.frag", "RESERVOIR_W_CLAMP"),
+        ("triangle.frag", "NUM_RESERVOIRS"),
+        ("triangle.frag", "RESTIR_LUMA_X"),
+        ("triangle.frag", "RESTIR_LUMA_Y"),
+        ("triangle.frag", "RESTIR_LUMA_Z"),
+        ("triangle.frag", "RESTIR_M_CAP"),
+        ("triangle.frag", "TEMPORAL_NORMAL_COS"),
+        ("triangle.frag", "SPATIAL_SAMPLES"),
+        ("triangle.frag", "SPATIAL_RADIUS"),
+        ("triangle.frag", "SPATIAL_M_CAP"),
+        ("triangle.frag", "SPATIAL_NORMAL_COS"),
+        // Water + caustics.
+        ("caustic_splat.comp", "TINT_CHANNEL_FLOOR"),
+        ("caustic_splat.comp", "CAUSTIC_TEMPORAL_JITTER_PX"),
+        ("composite.frag", "CAUSTIC_FIREFLY_MAX"),
+        ("water.frag", "NORMAL_PLANE_EPS"),
+        ("water.vert", "DEFAULT_SCROLL_A"),
+        ("water.vert", "DEFAULT_SCROLL_B"),
     ];
 
     fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {
@@ -313,17 +371,40 @@ mod tests {
 
         let mut declarations = Vec::new();
         for window in tokens.windows(4) {
-            let [(qualifier, position, qualifier_depth), (ty, _, ty_depth), (name, _, name_depth), (equals, _, equals_depth)] =
-                window
+            // Brace depth is still tracked by the tokenizer, but no longer
+            // filters: see the #3880 note below.
+            let [(qualifier, position, _), (ty, _, _), (name, _, _), (equals, _, _)] = window
             else {
                 continue;
             };
-            if *qualifier_depth == 0
-                && *ty_depth == 0
-                && *name_depth == 0
-                && *equals_depth == 0
-                && qualifier == "const"
-                && matches!(ty.as_str(), "float" | "uint" | "int")
+            // #3880 — the #3815 version additionally required
+            // `*_depth == 0` on all four tokens, which made every
+            // function-local `const` invisible by construction. That is
+            // where this codebase actually puts its ray/loop budgets
+            // (`triangle.frag`'s MAX_SHADOW_RAYS, MAX_PATH_SEGMENTS,
+            // RESTIR_M_CAP, SPATIAL_SAMPLES, ...), so the gate reached only
+            // a minority of declarations and every constant that bypassed
+            // `shader_constants_data.rs` sat in the blind spot. Depth is
+            // still recorded, so a caller can treat function-local
+            // declarations as a softer class if it wants; the exemption
+            // list is what makes each one a recorded decision.
+            if qualifier == "const"
+                && matches!(
+                    ty.as_str(),
+                    "float"
+                        | "uint"
+                        | "int"
+                        | "bool"
+                        | "vec2"
+                        | "vec3"
+                        | "vec4"
+                        | "ivec2"
+                        | "ivec3"
+                        | "ivec4"
+                        | "uvec2"
+                        | "uvec3"
+                        | "uvec4"
+                )
                 && is_screaming_shader_name(name)
                 && equals == "="
             {
@@ -335,39 +416,88 @@ mod tests {
                 declarations.push((line, name.clone()));
             }
         }
+
+        // #3880 — `#define NAME <literal>` was entirely unreachable, which
+        // mattered doubly: it is the form the generated header itself emits,
+        // so the shared-name redeclaration branch could only ever fire
+        // against the `const` spelling. Only object-like macros expanding to
+        // a numeric literal count; function-like macros (`NAME(x)`) and
+        // expression macros are not constants in the sense this gate means.
+        for (line_index, text) in src.lines().enumerate() {
+            let trimmed = text.trim_start();
+            let Some(rest) = trimmed.strip_prefix("#define") else {
+                continue;
+            };
+            let mut parts = rest.split_whitespace();
+            let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if name.contains('(') || !is_screaming_shader_name(name) {
+                continue;
+            }
+            let literal = value
+                .trim_start_matches('-')
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || c == '.');
+            if literal {
+                declarations.push((line_index + 1, name.to_owned()));
+            }
+        }
+        declarations.sort();
+        declarations.dedup();
         declarations
+    }
+
+    /// #3880 — recursively collect every GLSL source under `shaders/`.
+    ///
+    /// The #3815 version called `read_dir` once and kept only
+    /// `frag`/`vert`/`comp`, so `shaders/include/` was never opened and
+    /// `.glsl` was not in the list — meaning no include file was scanned at
+    /// all, `include/shader_constants.glsl` itself included. Names are
+    /// returned relative to `shaders/` so an include file is addressable
+    /// (`include/pbr.glsl`) and top-level names keep their old spelling.
+    fn collect_shader_files(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String)>) {
+        let entries = std::fs::read_dir(dir).expect("renderer shader directory must be readable");
+        for entry in entries {
+            let path = entry
+                .expect("renderer shader directory entry must be readable")
+                .path();
+            let file_name = path
+                .file_name()
+                .expect("renderer shader path must have a filename")
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                let nested = format!("{prefix}{file_name}/");
+                collect_shader_files(&path, &nested, out);
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("frag") | Some("vert") | Some("comp") | Some("glsl")
+            ) {
+                continue;
+            }
+            // The generated header is the source of truth this gate checks
+            // *against* — every `#define` in it is by definition a shared
+            // constant with correct provenance, so scanning it would report
+            // the entire contract as a redeclaration of itself.
+            if file_name == "shader_constants.glsl" {
+                continue;
+            }
+            let source =
+                std::fs::read_to_string(&path).expect("renderer shader source must be readable");
+            out.push((format!("{prefix}{file_name}"), source));
+        }
     }
 
     fn renderer_shader_sources() -> Vec<(String, String)> {
         let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let mut paths = std::fs::read_dir(shader_dir)
-            .expect("renderer shader directory must be readable")
-            .map(|entry| {
-                entry
-                    .expect("renderer shader directory entry must be readable")
-                    .path()
-            })
-            .filter(|path| {
-                matches!(
-                    path.extension().and_then(|extension| extension.to_str()),
-                    Some("frag") | Some("vert") | Some("comp")
-                )
-            })
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths
-            .into_iter()
-            .map(|path| {
-                let name = path
-                    .file_name()
-                    .expect("renderer shader path must have a filename")
-                    .to_string_lossy()
-                    .into_owned();
-                let source = std::fs::read_to_string(&path)
-                    .expect("renderer shader source must be readable");
-                (name, source)
-            })
-            .collect()
+        let mut found = Vec::new();
+        collect_shader_files(&shader_dir, "", &mut found);
+        found.sort();
+        found.into_iter().collect()
     }
 
     fn shader_constant_provenance_violations(
@@ -435,6 +565,61 @@ mod tests {
             &shared_names,
         )
         .is_empty());
+    }
+
+    /// #3880 — the three narrowings that made #3815's gate reach only a
+    /// minority of declarations.
+    ///
+    /// Its doc comment promised to "scan the complete shader directory
+    /// rather than maintaining a growing per-name allowlist", but the
+    /// implementation (a) called `read_dir` once and excluded `.glsl`, so
+    /// `shaders/include/` was never opened at all; (b) required brace depth
+    /// 0, making every function-local `const` invisible — which is where
+    /// this codebase actually puts its ray and loop budgets; and (c) matched
+    /// only `const float|uint|int`, so `#define` was unreachable even though
+    /// that is the form the generated header itself emits.
+    ///
+    /// Each assertion below fails on the pre-#3880 scanner.
+    #[test]
+    fn the_provenance_gate_reaches_includes_locals_and_defines() {
+        // (b) function-local `const` — depth no longer disqualifies.
+        let local =
+            top_level_shader_constants("void main() {\n    const int MAX_PATH_SEGMENTS = 6;\n}\n");
+        assert!(
+            local.iter().any(|(_, name)| name == "MAX_PATH_SEGMENTS"),
+            "function-local constants must be visible: {local:?}"
+        );
+
+        // (c) object-like `#define` with a literal value.
+        let defined = top_level_shader_constants("#define SPECULAR_AA_VARIANCE 0.25\n");
+        assert!(
+            defined
+                .iter()
+                .any(|(_, name)| name == "SPECULAR_AA_VARIANCE"),
+            "#define constants must be visible: {defined:?}"
+        );
+        // A function-like macro is not a constant in the sense this gate means.
+        assert!(
+            top_level_shader_constants("#define SATURATE(x) clamp(x, 0.0, 1.0)\n").is_empty(),
+            "function-like macros are not constants"
+        );
+
+        // (a) the include tree is scanned, and the generated header is not
+        // (it is the source of truth this gate checks against).
+        let names: Vec<String> = renderer_shader_sources()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("include/") && n.ends_with(".glsl")),
+            "shaders/include/*.glsl must be scanned: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("shader_constants.glsl")),
+            "the generated header must be excluded, not reported as redeclaring itself"
+        );
     }
 
     #[test]
@@ -1784,7 +1969,17 @@ mod tests {
 
         assert!(src.contains("refractPassthruBudget = 2 + int(budgetTier) * 2;"));
         assert!(src.contains("glassRayCost = GLASS_RAY_COST + budgetTier * 2u;"));
-        assert!(src.contains("const int MAX_REFRACT_PASSTHRUS = 8;"));
+        // #3879 — this was a third hand-typed literal with the tier count
+        // baked into it (`8` == `2 + 3 * 2`), so raising MAX_RAY_QUALITY_TIER
+        // would have left the loop ceiling behind while every test stayed
+        // green. Assert the derivation instead of the digit.
+        assert!(src.contains("passthru <= int(MAX_REFRACT_PASSTHRUS)"));
+        assert_eq!(
+            MAX_REFRACT_PASSTHRUS,
+            2 + 2 * MAX_RAY_QUALITY_TIER,
+            "the glass interface allowance grows by two per quality tier from \
+             2 at tier 0, so its ceiling must track the top tier"
+        );
         assert!(src.contains("passthru < refractPassthruBudget"));
         assert!(src.contains("atomicAdd(rayBudget.rayBudgetCount, glassRayCost)"));
         assert!(

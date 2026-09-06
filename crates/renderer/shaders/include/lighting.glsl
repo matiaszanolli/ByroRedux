@@ -564,7 +564,6 @@ vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
     }
 
     vec3 e = vec3(0.0);
-    const uint GI_VISIBLE_LIGHT_CAP = 2u;
     uint visibleCount = 0u;
     for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
         uint i = selected[k];

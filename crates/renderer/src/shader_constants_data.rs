@@ -318,11 +318,52 @@ const _: () = {
 pub const GLASS_RAY_BUDGET: u32 = 2_097_152;
 pub const GLASS_RAY_COST: u32 = 4;
 
+// #3879 / TD7-2026-09-05-01 — the rest of the `GpuRayBudget` quality
+// contract, on the same footing `GLASS_RAY_BUDGET` got in #2686.
+//
+// `AdaptiveRayBudget::settings_for_tier`'s tier-3 arm picks the values the
+// CPU uploads; each consuming shader needs a *compile-time* ceiling for its
+// bounded loop that is >= that tier-3 value. Before this, every one of these
+// was an independently hand-typed GLSL literal — and the runtime clamp
+// repeated it a second time on the next line (`clamp(rayBudget
+// .directShadowSamples, 1u, 8u)` sat directly under `const int
+// MAX_SHADOW_RAYS = 8;`). Raising a tier-3 value in ray_budget.rs was a
+// silent no-op: the shader clamped the uploaded value back down to its own
+// literal and the suite stayed green, because the guards asserted shader
+// *source text* rather than the CPU/GPU relationship.
+//
+// These are emitted unsuffixed so a site can spell the type it needs
+// (`int(MAX_PATH_SEGMENTS)` / `uint(MAX_PATH_SEGMENTS)`); GLSL treats a bare
+// integer literal as `int`, so the uint clamps must cast explicitly.
+pub const MAX_DIRECT_SHADOW_SAMPLES: u32 = 8;
+pub const MAX_PATH_SEGMENTS: u32 = 6;
+pub const MAX_SHADED_HITS: u32 = 2;
+pub const MAX_FROXEL_LIGHTS: u32 = 8;
+
+// The top adaptive quality tier. `settings_for_tier`'s `_ =>` arm is this
+// tier, and `observe`'s escalation stops at `self.tier < MAX_RAY_QUALITY_TIER`.
+pub const MAX_RAY_QUALITY_TIER: u32 = 3;
+
+// The glass interface allowance grows by two estimated queries per quality
+// tier, from 2 at tier 0 — so the tier-3 ceiling is `2 + 2 * 3`. This was a
+// second independent literal (`const int MAX_REFRACT_PASSTHRUS = 8;`) with
+// the tier count baked into it, which is why raising MAX_RAY_QUALITY_TIER
+// alone would not have widened it.
+pub const MAX_REFRACT_PASSTHRUS: u32 = 2 + 2 * MAX_RAY_QUALITY_TIER;
+
 // First-bounce GI candidate pool. The shader ranks these locally, then stops
 // after the first two VISIBLE contributors. Keeping eight candidates avoids a
 // black bounce when the strongest one or two lamps are behind a wall without
 // paying eight shadow rays on the common path.
 pub const GI_HIT_LIGHT_CAP: u32 = 8;
+
+// The "first two VISIBLE contributors" the comment above describes. #3880 —
+// this was prose here and a separate hardcoded `const uint
+// GI_VISIBLE_LIGHT_CAP = 2u;` in `include/lighting.glsl`, with no mechanical
+// link between them; the provenance gate could not see it because include
+// files were never scanned. Editing one and not the other changed what the
+// pool means without changing what it does.
+pub const GI_VISIBLE_LIGHT_CAP: u32 = 2;
 
 // Chroma-preserving luminance ceiling for the complete one-pixel bounded-path
 // sample before it enters SVGF. A single secondary GGX hit can line up with a

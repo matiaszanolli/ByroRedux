@@ -193,7 +193,10 @@ impl AdaptiveRayBudget {
         // nothing. Tiers 0-2 are power-of-two fractions of the tier-3
         // ceiling; pinned exactly by `glass_ray_limit_tiers_derive_from_
         // glass_ray_budget` below.
-        use crate::shader_constants::GLASS_RAY_BUDGET;
+        use crate::shader_constants::{
+            GLASS_RAY_BUDGET, MAX_DIRECT_SHADOW_SAMPLES, MAX_FROXEL_LIGHTS, MAX_PATH_SEGMENTS,
+            MAX_RAY_QUALITY_TIER, MAX_SHADED_HITS,
+        };
         match tier {
             0 => GpuRayBudget::settings(
                 GLASS_RAY_BUDGET / 8,
@@ -209,7 +212,18 @@ impl AdaptiveRayBudget {
             ),
             1 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 4, 2, 3, 1, 4, 1),
             2 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 2, 4, 4, 2, 6, 2),
-            _ => GpuRayBudget::settings(GLASS_RAY_BUDGET, 8, 6, 2, 8, 3),
+            // #3879 — the tier-3 arm is the shader-side ceiling. Every
+            // field now reads the same constant the GLSL `#define` is
+            // generated from, so raising one actually widens the loop
+            // instead of being clamped straight back down.
+            _ => GpuRayBudget::settings(
+                GLASS_RAY_BUDGET,
+                MAX_DIRECT_SHADOW_SAMPLES,
+                MAX_PATH_SEGMENTS,
+                MAX_SHADED_HITS,
+                MAX_FROXEL_LIGHTS,
+                MAX_RAY_QUALITY_TIER,
+            ),
         }
     }
 }

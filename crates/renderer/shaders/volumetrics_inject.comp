@@ -2655,7 +2655,6 @@ void main() {
             tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
 
         const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
-        const uint MAX_FROXEL_LIGHTS = 8u;
         ClusterEntry cluster = clusters[clusterIdx];
         uint adaptiveLightCap = uint(clamp(
             floor(params.fog_reference.z + 0.5), 1.0, float(MAX_FROXEL_LIGHTS)));

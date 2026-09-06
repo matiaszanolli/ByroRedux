@@ -597,10 +597,24 @@ fn gi_zero_budget_is_a_true_no_ray_floor() {
         "the outer GI gate must consume the tier-zero sentinels before the \
          path loop clamps active tiers"
     );
+    // #3879 — the clamp ceilings now come from the generated header rather
+    // than being retyped as literals, so match that spelling and pin the
+    // relationship separately: tier 0 must be a true zero and every active
+    // tier must sit at or under the shader ceiling.
     assert!(
-        triangle.contains("clamp(rayBudget.maxPathSegments, 1u, 6u)")
-            && triangle.contains("clamp(rayBudget.maxShadedHits, 1u, 2u)"),
+        triangle.contains("clamp(rayBudget.maxPathSegments, 1u, uint(MAX_PATH_SEGMENTS))")
+            && triangle.contains("clamp(rayBudget.maxShadedHits, 1u, uint(MAX_SHADED_HITS))"),
         "active GI tiers still require bounded non-zero loop limits"
+    );
+
+    use crate::vulkan::scene_buffer::ray_budget::AdaptiveRayBudget;
+    let floor = AdaptiveRayBudget::settings_for_tier(0);
+    assert_eq!(
+        (floor.max_path_segments, floor.max_shaded_hits),
+        (0, 0),
+        "tier zero must upload true zeros — the outer gate is what makes it a \
+         no-ray floor, since the inner clamps would turn any non-zero value \
+         back into a one-segment workload"
     );
 }
 
@@ -3142,26 +3156,51 @@ fn triangle_frag_has_no_unshadowed_xcll_directional_fill() {
 /// worst-case ray-query budget.
 #[test]
 fn bounded_path_preserves_the_accepted_segment_and_diffuse_budgets() {
-    let frag = include_str!("../../../shaders/triangle.frag");
-    assert!(
-        frag.contains("const int MAX_PATH_SEGMENTS = 6;"),
-        "bounded path segment ceiling drifted from the accepted #2161 cost point"
+    use crate::shader_constants::{MAX_PATH_SEGMENTS, MAX_SHADED_HITS};
+    use crate::vulkan::scene_buffer::ray_budget::AdaptiveRayBudget;
+
+    // #3879 — assert the CPU/GPU *relationship*, not the shader's source
+    // text. The old form (`frag.contains("const int MAX_PATH_SEGMENTS = 6;")`)
+    // never named `settings_for_tier`, so raising a tier-3 value was a
+    // silent no-op: the shader clamped the upload back down to its own
+    // literal and this test stayed green because the shader had not changed.
+    let top = AdaptiveRayBudget::settings_for_tier(3);
+    assert_eq!(
+        top.max_path_segments, MAX_PATH_SEGMENTS,
+        "the tier-3 segment budget must equal the shader-side ceiling it is \
+         clamped against, or raising one silently does nothing"
     );
+    assert_eq!(
+        top.max_shaded_hits, MAX_SHADED_HITS,
+        "the tier-3 shaded-hit budget must equal the shader-side ceiling"
+    );
+
+    // The structural shape of the bounded loop still matters: both the hard
+    // compile-time ceiling and the adaptive runtime limit must be enforced,
+    // and no uploaded value may exceed the ceiling.
+    let frag = include_str!("../../../shaders/triangle.frag");
     assert!(
         frag.contains("const int MAX_DIFFUSE_BOUNCES = 2;"),
         "the accepted two-diffuse-event color-bleed path must remain enabled"
     );
     assert!(
-        frag.contains("const int MAX_SHADED_HITS = 2;")
-            && frag.contains("int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, 2u));")
-            && frag.contains("if (shadedHits < min(MAX_SHADED_HITS, shadedHitLimit))"),
-        "glossy chains must not expand the accepted local-light shadow-query ceiling"
-    );
-    assert!(
-        frag.contains("for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment)")
+        frag.contains("for (int segment = 0; segment < int(MAX_PATH_SEGMENTS); ++segment)")
             && frag.contains("if (segment >= pathSegmentLimit) break;"),
         "bounded path must enforce both the hard and adaptive segment ceilings"
     );
+    assert!(
+        frag.contains("if (shadedHits < min(int(MAX_SHADED_HITS), shadedHitLimit))"),
+        "glossy chains must not expand the accepted local-light shadow-query ceiling"
+    );
+
+    // Every tier must fit under the ceiling, not just tier 3.
+    for tier in 0..=3 {
+        let s = AdaptiveRayBudget::settings_for_tier(tier);
+        assert!(
+            s.max_path_segments <= MAX_PATH_SEGMENTS && s.max_shaded_hits <= MAX_SHADED_HITS,
+            "tier {tier} exceeds a shader-side ceiling and would be clamped"
+        );
+    }
 }
 
 /// #2810 (REN-D17-08) — the #1250 isotropic-degeneracy contract, checked

@@ -457,6 +457,35 @@ fn main() {
 
     writeln!(out, "// Glass / IOR ray budget").unwrap();
     writeln!(out, "#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u").unwrap();
+    writeln!(out, "#define GI_VISIBLE_LIGHT_CAP {GI_VISIBLE_LIGHT_CAP}u").unwrap();
+    // #3879 — the rest of the GpuRayBudget ceilings. Unsuffixed: each use
+    // site casts to the type it needs, since these appear in both `int`
+    // loop bounds and `uint` clamps.
+    writeln!(
+        out,
+        "// #3879 — GpuRayBudget shader-side ceilings. Each must be >= the"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// matching tier-3 value in AdaptiveRayBudget::settings_for_tier,"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// which now reads these same constants. Unsuffixed - cast at use."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MAX_DIRECT_SHADOW_SAMPLES {MAX_DIRECT_SHADOW_SAMPLES}"
+    )
+    .unwrap();
+    writeln!(out, "#define MAX_PATH_SEGMENTS {MAX_PATH_SEGMENTS}").unwrap();
+    writeln!(out, "#define MAX_SHADED_HITS {MAX_SHADED_HITS}").unwrap();
+    writeln!(out, "#define MAX_FROXEL_LIGHTS {MAX_FROXEL_LIGHTS}").unwrap();
+    writeln!(out, "#define MAX_RAY_QUALITY_TIER {MAX_RAY_QUALITY_TIER}").unwrap();
+    writeln!(out, "#define MAX_REFRACT_PASSTHRUS {MAX_REFRACT_PASSTHRUS}").unwrap();
     writeln!(out, "#define GLASS_RAY_COST {GLASS_RAY_COST}u").unwrap();
     writeln!(out).unwrap();
 
