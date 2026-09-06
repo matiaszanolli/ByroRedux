@@ -405,6 +405,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         ..Default::default()
     });
     world.insert_resource(DebugStats::default());
+    // #3836 — caches the scene-wide EFFECT_SOFT answer so `build_render_data`
+    // stops rescanning every Material and ParticleEmitter each frame. Absent
+    // resource degrades to the old per-frame scan, so this is an optimisation,
+    // not a requirement.
+    world.insert_resource(crate::render::SceneEffectSoftCache::default());
     // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig` (per-game,
     // inserted when a live `CharacterRuleset` lands) and this accumulator.
     // `try_resource_mut` does not default-insert, so leaving the accumulator to
@@ -1017,7 +1022,7 @@ fn register_update_systems(scheduler: &mut Scheduler) {
     // quest_advance consumes it in the same frame.
     scheduler.add_exclusive(
         Stage::Update,
-        crate::systems::scene_trigger_actor_approach_system,
+        crate::systems::make_scene_trigger_actor_approach_system(),
     );
     scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
     // ESM data is installed before the player/event sink exists. Bootstrap

@@ -923,6 +923,20 @@ impl ConsoleCommand for MatSetCommand {
             other => Err(format!("unknown field `{other}`")),
         };
 
+        // #3836 — `build_render_data` caches the scene-wide EFFECT_SOFT answer
+        // against the Material/ParticleEmitter structural generations, and an
+        // in-place field write like the `material_flags` arm above moves
+        // neither. Drop the storage write lock first, then invalidate: the
+        // cache is a resource, and taking a resource lock while holding a
+        // storage lock is the ordering this codebase avoids.
+        drop(q);
+        if result.is_ok() {
+            if let Some(mut cache) = world.try_resource_mut::<crate::render::SceneEffectSoftCache>()
+            {
+                cache.invalidate();
+            }
+        }
+
         match result {
             Ok(shown) => CommandOutput::line(format!("mat.set: entity {id} {field} = {shown}")),
             Err(e) => CommandOutput::line(format!("mat.set: {e}\n{USAGE}")),

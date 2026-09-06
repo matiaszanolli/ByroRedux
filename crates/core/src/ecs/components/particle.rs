@@ -568,6 +568,9 @@ impl ParticleEmitter {
 
 impl Component for ParticleEmitter {
     type Storage = SparseSetStorage<Self>;
+    /// #3836 — second half of the `scene_has_effect_soft_material` cache key;
+    /// see `Material`'s identical opt-in for the cost and the caveat.
+    const TRACK_CHANGES: bool = true;
 }
 
 #[cfg(test)]

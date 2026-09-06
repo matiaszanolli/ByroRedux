@@ -22,6 +22,36 @@ static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// two rays serve unrelated purposes (foot-placement vs. fog altitude).
 const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
 
+/// Cached answer for [`scene_has_effect_soft_material`], keyed on the
+/// structural generations of the two storages it scans.
+///
+/// #3836 — the scan is O(all `Material`) + O(all `ParticleEmitter`) and
+/// `.any()` short-circuits on the first match, so the *common* case (a scene
+/// with none) is the expensive one: it walks the full set every frame to
+/// conclude `false`. The answer only changes when content loads or unloads.
+///
+/// **The generation key alone is not sufficient**, which is why this is a
+/// resource with an explicit [`Self::invalidate`] rather than a private local.
+/// `structural_generation()` moves on add/remove, not on in-place mutation, and
+/// the `mat.set <id> material_flags <u32>` console command writes
+/// `Material::effect_shader_flags` directly (`commands/scene.rs`). That site
+/// calls `invalidate()`; any future in-place writer of this field must too.
+#[derive(Default)]
+pub struct SceneEffectSoftCache {
+    key: Option<(u64, u64)>,
+    value: bool,
+}
+
+impl byroredux_core::ecs::Resource for SceneEffectSoftCache {}
+
+impl SceneEffectSoftCache {
+    /// Drop the cached answer. Call after mutating `effect_shader_flags` (or
+    /// a `ParticleEmitter`'s) without adding or removing a component.
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+}
+
 /// Scene-level feature bit for the soft-particle depth-history copy.
 ///
 /// This intentionally inspects loaded ECS material sources rather than the
@@ -31,7 +61,42 @@ const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
 /// post-geometry call site rediscover features from draw commands. Particle
 /// emitters are included because their authored BGEM flags are the material
 /// source for particle `DrawCommand`s.
+///
+/// Answered from [`SceneEffectSoftCache`] when the scene is structurally
+/// unchanged (#3836); [`scene_has_effect_soft_material_uncached`] is the scan.
 fn scene_has_effect_soft_material(world: &World) -> bool {
+    // Each storage/resource lock is taken and released in its own scope so
+    // this never holds a storage read lock while acquiring the resource.
+    let key = {
+        let materials = world
+            .query::<Material>()
+            .map(|q| q.storage().structural_generation())
+            .unwrap_or(0);
+        let emitters = world
+            .query::<ParticleEmitter>()
+            .map(|q| q.storage().structural_generation())
+            .unwrap_or(0);
+        (materials, emitters)
+    };
+
+    if let Some(cache) = world.try_resource::<SceneEffectSoftCache>() {
+        if cache.key == Some(key) {
+            return cache.value;
+        }
+    }
+
+    let value = scene_has_effect_soft_material_uncached(world);
+
+    // Absent resource (tests, `--cmd` worlds) simply means no caching — the
+    // recomputed value above is still correct.
+    if let Some(mut cache) = world.try_resource_mut::<SceneEffectSoftCache>() {
+        cache.key = Some(key);
+        cache.value = value;
+    }
+    value
+}
+
+fn scene_has_effect_soft_material_uncached(world: &World) -> bool {
     let mesh_materials_have_soft_effect = world.query::<Material>().is_some_and(|materials| {
         materials.iter().any(|(_, material)| {
             material.effect_shader_flags
@@ -57,6 +122,90 @@ mod scene_effect_feature_tests {
     use super::scene_has_effect_soft_material;
     use byroredux_core::ecs::{Material, ParticleEmitter, World};
     use byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT;
+
+    // #3836 — the cached path must agree with the uncached one, and must
+    // notice an in-place flag write that no structural generation observes.
+
+    /// With the cache resource present, a scene that gains a soft material by
+    /// SPAWN is picked up: the structural generation moves.
+    #[test]
+    fn cache_follows_a_structural_change() {
+        let mut world = World::new();
+        world.insert_resource(super::SceneEffectSoftCache::default());
+        assert!(!scene_has_effect_soft_material(&world));
+
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Material {
+                effect_shader_flags: EFFECT_SOFT,
+                ..Default::default()
+            },
+        );
+        assert!(
+            scene_has_effect_soft_material(&world),
+            "adding a soft Material moves the structural generation, so the \
+             cached answer must be recomputed (#3836)"
+        );
+    }
+
+    /// The trap this cache had to be designed around: `mat.set material_flags`
+    /// writes the field IN PLACE, which leaves both structural generations
+    /// unchanged. Without an explicit `invalidate()` the cache would keep
+    /// answering with the pre-edit value.
+    #[test]
+    fn cache_is_stale_after_an_in_place_flag_write_until_invalidated() {
+        let mut world = World::new();
+        world.insert_resource(super::SceneEffectSoftCache::default());
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Material {
+                effect_shader_flags: 0,
+                ..Default::default()
+            },
+        );
+        // Prime the cache with `false`.
+        assert!(!scene_has_effect_soft_material(&world));
+
+        // Mutate in place, exactly as the console command does.
+        {
+            let mut q = world.query_mut::<Material>().unwrap();
+            q.get_mut(entity).unwrap().effect_shader_flags = EFFECT_SOFT;
+        }
+
+        assert!(
+            !scene_has_effect_soft_material(&world),
+            "documents WHY invalidate() exists: an in-place write moves no \
+             structural generation, so the cache legitimately cannot see it"
+        );
+
+        world
+            .try_resource_mut::<super::SceneEffectSoftCache>()
+            .unwrap()
+            .invalidate();
+        assert!(
+            scene_has_effect_soft_material(&world),
+            "after invalidate() the next call must recompute and see the flag \
+             — this is the call `mat.set` makes (#3836)"
+        );
+    }
+
+    /// No cache resource (tests, `--cmd` worlds) must still be correct, just
+    /// uncached.
+    #[test]
+    fn absent_cache_resource_still_answers_correctly() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Material {
+                effect_shader_flags: EFFECT_SOFT,
+                ..Default::default()
+            },
+        );
+        assert!(scene_has_effect_soft_material(&world));
+    }
 
     #[test]
     fn scene_feature_is_false_without_soft_material_sources() {

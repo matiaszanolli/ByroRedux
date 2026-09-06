@@ -694,6 +694,17 @@ impl Default for Material {
 
 impl Component for Material {
     type Storage = SparseSetStorage<Self>;
+    /// #3836 — lets `scene_has_effect_soft_material` answer the scene-wide
+    /// EFFECT_SOFT question from a cached value keyed on this generation,
+    /// instead of rescanning every `Material` each frame. On
+    /// `SparseSetStorage` this costs exactly one `u64` increment per
+    /// insert/remove and nothing else — there is no dirty set for sparse
+    /// components.
+    ///
+    /// It tracks STRUCTURE only. An in-place write to a field (the
+    /// `mat.set` console command) does not move it, which is why that cache
+    /// also carries an explicit `invalidate()`.
+    const TRACK_CHANGES: bool = true;
 }
 
 /// Physically-based material properties inferred from legacy NIF data.
