@@ -1,0 +1,25 @@
+# PHYS-D7-2026-09-06-01: the census's re-sweep hard-codes `excluded_body: None`, so `phys.census` casts through the player's own capsule — #2869 fixed exactly this at the sibling probe and #2876 shipped the console arm without carrying it over
+
+Issue: #3965 · Filed from `docs/audits/AUDIT_PHYSICS_2026-09-06.md` (base `229306ce`)
+
+Reported by `/audit-physics` (full 7-dimension pass) — `docs/audits/AUDIT_PHYSICS_2026-09-06.md`, base `229306ce`.
+
+Every claim below was independently re-derived from the code by the audit orchestrator before filing, not accepted from the dimension agent.
+
+
+- **Severity**: MEDIUM
+- **Dimension**: Queries & Diagnostics
+- **Location**: `crates/physics/src/sync.rs:621-627` (the hard-coded `None`); contract at `crates/physics/src/world.rs:749-762`; live caller `byroredux/src/commands/physics.rs:117-141`; sibling that does exclude: `byroredux/src/scene.rs:227-253`
+- **Status**: NEW — partial propagation of #2859 / #2869 (both CLOSED)
+- **Trigger Conditions**: `PlayerMode::Character` (so the player capsule exists as a real non-sensor `KinematicPositionBased` collider), and `phys.census` run in its default no-argument form or with an XZ within ~36 BU of the player — i.e. precisely the situation the command exists for.
+- **Description**: `cast_capsule_down_surface_and_normal`'s own doc makes the exclusion mandatory *by design*: *"`excluded_body` must be passed whenever the origin can lie inside a body … The parameter is deliberately mandatory (rather than a defaulted sibling method) so every call site has to decide — a silent self-hit is invisible (#2859)."* `spawn_collider_census_report` does not decide; it passes a literal `None`, with no field on `SpawnCensusProbe` through which a caller could supply one. That was correct when the only caller ran before the capsule was spawned. It stopped being correct on 2026-08-21.
+- **Evidence**: geometry from the constants — `HUMAN` is `half_height = 46`, `radius = 18`; `floor_probe_lift = 80`. With the player centre at `py`, the player capsule spans `[py−64, py+64]` and the probe capsule at t=0 spans `[py+16, py+144]` — segments overlapping on `[py+34, py+46]` at the same XZ. `solid_probe_filter()` does not mask it: `exclude_dynamic()` skips only Dynamic, `ground_probe_groups()` masks only `ACTOR_BONE_GROUP` (the player registers with `InteractionGroups::all()`), and the collider is not a sensor. The sibling probe was given the parameter for exactly this reason and both live-world call sites pass `Some(player)`; the census re-sweep is **the only live-world downward probe in the workspace that passes `None`**. Timeline: `264f44fd` (#2869, sibling fixed) → `d8dc7608` (#2874, re-sweep added, `None` correct because boot-only) → `fa5f75f7` (#2876, exposed as `phys.census` whose default reference point *is* the player body; the `None` was not revisited).
+- **Impact**: a surviving self-hit returns `time_of_impact = 0`, beating every real floor, and maps to a phantom `surface_y` 16 BU **above the player's own centre**. Both `SpawnProbeVerdict` arms are then wrong and both print **first**, on the strength of the census's own rationale that the verdict *"comes FIRST because when it fires, the column tallies below are a red herring"* — `RejectedNonWalkable` actively tells the operator to ignore the real evidence. **Honest bound**: in the exactly-coaxial default case the outcome sits on a floating-point knife-edge (two coaxial capsules have a horizontal MTD normal, and parry drops a t=0 hit only when `normal1.dot(vel12) >= 0.0`, which is `±ε` here), so it is discarded or kept on rounding alone; any horizontal offset tilts the normal and keeps it deterministically. An intermittent lie in a diagnostic is worse than a consistent one, and the knife-edge is why nothing caught it — no test runs the census on a world containing a player capsule.
+- **Related**: #2859, #2869, #2874, #2876; PHYS-D7-2026-09-06-02 is a second defect on the same call — fix both in one edit.
+- **Suggested Fix**: add `excluded_body: Option<RigidBodyHandle>` to `SpawnCensusProbe` and thread it into the cast; the boot caller keeps `None`, and `PhysCensusCommand` resolves the player's `RapierHandles.body` exactly as `probe_walkable_floor_near` already does (resolve the handle, drop the component guard, then take the `PhysicsWorld` lock). Pin it with a test that puts a kinematic capsule at the probe origin and asserts `NoHit`.
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files — this audit's headline result is that *every* recent physics fix closed on fewer sites than its own evidence named; enumerate the full defect class before closing
+- [ ] **LOCK_ORDER**: If a `RwLock` scope changes, the canonical acquisition order (`docs/engine/ecs.md`) is preserved and `PhysicsWorld` stays a sink
+- [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the parser→canonical boundary; the solver side carries no `GameKind`/`bsver` branch (PHYSAL doctrine, `docs/engine/physal.md` §1)
+- [ ] **TESTS**: A regression test pins this specific fix
