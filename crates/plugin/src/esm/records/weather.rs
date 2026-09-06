@@ -658,6 +658,29 @@ const FO4_FNAM_SIZE: usize = 72;
 /// directional wind. All fields are retained for the weather simulation.
 const SKYRIM_DATA_SIZE: usize = 19;
 
+/// Byte offsets into the shared WTHR `DATA` payload (Oblivion/FO3/FNV ship
+/// 15 bytes; Skyrim extends it to [`SKYRIM_DATA_SIZE`]). One named offset
+/// per field instead of the bare literal scattered through both the guard
+/// and the index in [`parse_weather_data`]'s ladder — this record has
+/// already had one layout correction (see that function's doc comment),
+/// which is exactly the kind of change that used to require touching ten
+/// independent, ungreppable sites (#3883 / TD7-2026-09-05-05).
+const WTHR_TRANSITION_DELTA_OFFSET: usize = 3;
+const WTHR_SUN_GLARE_OFFSET: usize = 4;
+const WTHR_SUN_DAMAGE_OFFSET: usize = 5;
+/// 2 bytes: `[6..8)`.
+const WTHR_PRECIPITATION_FADE_OFFSET: usize = 6;
+/// 2 bytes: `[8..10)`.
+const WTHR_THUNDER_FADE_OFFSET: usize = 8;
+const WTHR_THUNDER_FREQUENCY_OFFSET: usize = 10;
+const WTHR_CLASSIFICATION_OFFSET: usize = 11;
+/// 3 bytes: `[12..15)`.
+const WTHR_LIGHTNING_COLOR_OFFSET: usize = 12;
+/// 2 bytes: `[15..17)`.
+const WTHR_VISUAL_EFFECT_WINDOW_OFFSET: usize = 15;
+const WTHR_WIND_DIRECTION_OFFSET: usize = 17;
+const WTHR_WIND_DIRECTION_RANGE_OFFSET: usize = 18;
+
 /// Decode the shared WTHR DATA payload. The byte layout is the same for the
 /// legacy records and Skyrim's 19-byte extension; shorter legacy records are
 /// decoded defensively. In particular, byte 10 is thunder/lightning
@@ -666,36 +689,49 @@ fn parse_weather_data(record: &mut WeatherRecord, data: &[u8]) {
     if let Some(&value) = data.first() {
         record.wind_speed = value;
     }
-    if data.len() > 3 {
-        record.transition_delta = data[3];
+    if data.len() > WTHR_TRANSITION_DELTA_OFFSET {
+        record.transition_delta = data[WTHR_TRANSITION_DELTA_OFFSET];
     }
-    if data.len() > 4 {
-        record.sun_glare = data[4];
+    if data.len() > WTHR_SUN_GLARE_OFFSET {
+        record.sun_glare = data[WTHR_SUN_GLARE_OFFSET];
     }
-    if data.len() > 5 {
-        record.sun_damage = data[5];
+    if data.len() > WTHR_SUN_DAMAGE_OFFSET {
+        record.sun_damage = data[WTHR_SUN_DAMAGE_OFFSET];
     }
-    if data.len() > 7 {
-        record.precipitation_fade = [data[6], data[7]];
+    if data.len() > WTHR_PRECIPITATION_FADE_OFFSET + 1 {
+        record.precipitation_fade = [
+            data[WTHR_PRECIPITATION_FADE_OFFSET],
+            data[WTHR_PRECIPITATION_FADE_OFFSET + 1],
+        ];
     }
-    if data.len() > 9 {
-        record.thunder_fade = [data[8], data[9]];
+    if data.len() > WTHR_THUNDER_FADE_OFFSET + 1 {
+        record.thunder_fade = [
+            data[WTHR_THUNDER_FADE_OFFSET],
+            data[WTHR_THUNDER_FADE_OFFSET + 1],
+        ];
     }
-    if data.len() > 10 {
-        record.thunder_frequency = data[10];
+    if data.len() > WTHR_THUNDER_FREQUENCY_OFFSET {
+        record.thunder_frequency = data[WTHR_THUNDER_FREQUENCY_OFFSET];
     }
-    if data.len() > 11 {
-        record.classification = data[11];
+    if data.len() > WTHR_CLASSIFICATION_OFFSET {
+        record.classification = data[WTHR_CLASSIFICATION_OFFSET];
     }
-    if data.len() >= 15 {
-        record.lightning_color = [data[12], data[13], data[14]];
+    if data.len() > WTHR_LIGHTNING_COLOR_OFFSET + 2 {
+        record.lightning_color = [
+            data[WTHR_LIGHTNING_COLOR_OFFSET],
+            data[WTHR_LIGHTNING_COLOR_OFFSET + 1],
+            data[WTHR_LIGHTNING_COLOR_OFFSET + 2],
+        ];
     }
-    if data.len() > 16 {
-        record.visual_effect_window = [data[15], data[16]];
+    if data.len() > WTHR_VISUAL_EFFECT_WINDOW_OFFSET + 1 {
+        record.visual_effect_window = [
+            data[WTHR_VISUAL_EFFECT_WINDOW_OFFSET],
+            data[WTHR_VISUAL_EFFECT_WINDOW_OFFSET + 1],
+        ];
     }
-    if data.len() > 18 {
-        record.wind_direction = data[17];
-        record.wind_direction_range = data[18];
+    if data.len() >= SKYRIM_DATA_SIZE {
+        record.wind_direction = data[WTHR_WIND_DIRECTION_OFFSET];
+        record.wind_direction_range = data[WTHR_WIND_DIRECTION_RANGE_OFFSET];
     }
 }
 
