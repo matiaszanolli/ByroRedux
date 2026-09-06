@@ -57,7 +57,7 @@ pub(super) const WORKING_SET_FLOOR: u32 = MIN_TLAS_INSTANCE_RESERVE;
 /// capped no lower than this — keeps the 90% eviction trigger
 /// meaningful even on small-VRAM devices where `total / 3` would be
 /// a small absolute number. 256 MB matches the typical cell BLAS
-/// footprint. See `compute_blas_budget`.
+/// footprint. See `blas_budget_for_heap`.
 pub(super) const MIN_BLAS_BUDGET_BYTES: vk::DeviceSize = 256 * 1024 * 1024;
 
 /// REFIT-count threshold beyond which a skinned BLAS is dropped and

@@ -1256,7 +1256,7 @@ Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_
   a finished scene is found for the quest, the gate is a no-op (`return
   true`). This duplicates — as a SEPARATE implementation — the "which
   trigger is next" logic `byroredux/src/systems/cinematic.rs`'s
-  `scene_trigger_actor_approach_system` (Dim 8) uses to pick where to
+  `scene_trigger_actor_approach_system_inner` (Dim 8) uses to pick where to
   *route* a tethered horse; verify the two never disagree (a horse routed
   toward a trigger this gate would then refuse to fire is a real, silently-
   broken cart sequence — cross-reference Dim 8). Guard:
@@ -1316,7 +1316,7 @@ re-exports them and keeps their call sites); `crates/plugin/src/esm/records/inde
 (2026-08-24), `QuestTriggerApproachRegistry`/`QuestTriggerApproach`/
 `install_quest_trigger_approach` — the process-lifetime catalog of
 actor-gated triggers whose cells may not be resident, consumed by
-`byroredux/src/systems/cinematic.rs`'s `scene_trigger_actor_approach_system`,
+`byroredux/src/systems/cinematic.rs`'s `scene_trigger_actor_approach_system_inner`,
 Dim 8); `byroredux/src/cell_loader/references/mod.rs`
 (`stamp_quest_reference`, `spawn_logical_quest_reference`,
 `attach_quest_reference_script` — added 2026-08-07, `a844c26b`, "integrate
@@ -1454,7 +1454,7 @@ the crate's **only** consumer; `crates/scripting/src/cinematic.rs`
 `byroredux/src/systems/cinematic.rs` (`havok_idle_playback_system`,
 `cinematic_root_motion_system`, `cinematic_animation_event_system`,
 `scripted_motion_type_system`, `vehicle_attachment_system`, and — added
-2026-08-24, `7473a387`/`5f38402e` — `scene_trigger_actor_approach_system`,
+2026-08-24, `7473a387`/`5f38402e` — `scene_trigger_actor_approach_system_inner`,
 new in this range, not a pre-existing function this dimension previously
 covered); `byroredux/src/cell_loader/unload.rs` (`cinematic_retained_entities`,
 also added 2026-08-24).
@@ -1502,7 +1502,9 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
   the same `Keyframed` discipline `byroredux/src/npc_spawn.rs` uses for live
   ragdoll bones — cross-reference `/audit-physics` Dims 3–4 and report the
   physics half there.
-- **`scene_trigger_actor_approach_system` (new, 2026-08-24)**: routes an
+- **`scene_trigger_actor_approach_system_inner` (new, 2026-08-24; body of the
+  closure `make_scene_trigger_actor_approach_system` returns, which is what
+  `boot.rs` registers — renamed by #3838 when it gained persistent scratch)**: routes an
   offscreen actor-gated trigger's approach target for cataloged (not
   necessarily cell-resident) triggers registered via
   `QuestTriggerApproachRegistry` (Dim 7). Computes, per quest with a live
@@ -1524,7 +1526,7 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
   trigger the OTHER function would then refuse to fire, silently breaking the
   cart sequence with no panic or error to surface it. Guards: the
   `mod tests` block in `byroredux/src/systems/cinematic.rs` (search
-  `scene_trigger_actor_approach_system` — no single canonical test name is
+  `scene_trigger_actor_approach_system_inner` — no single canonical test name is
   documented here, confirm current coverage directly).
 - **`cinematic_retained_entities` (`byroredux/src/cell_loader/unload.rs`,
   2026-08-24; reshaped by two 2026-09-03 fixes, #3690 `3f213038` and #3254
@@ -1597,7 +1599,7 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
      `QuestTriggerApproachRegistry`) and tethered-horse trigger detection
      (multi-triggerer `OnTriggerEnterEvent`, `TriggerVolume::intersects_sphere`,
      the scene-phase/between-scenes `actor_quest_trigger_is_in_sequence` gate,
-     and its Dim-8 navigation counterpart `scene_trigger_actor_approach_system`);
+     and its Dim-8 navigation counterpart `scene_trigger_actor_approach_system_inner`);
      `ReferenceEnableState` + the `Disable` fragment effect (BOTH the
      alias-aware-receiver half and the runtime-consumer half are now CLOSED,
      #3278, `26f8738d`+`265f0c9b` — see Dim 5's own bullet for the mechanism;

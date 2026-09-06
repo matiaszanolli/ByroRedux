@@ -200,7 +200,7 @@ pub struct AccelerationManager {
     /// fires before OOM). "Heap size" is the DEVICE_LOCAL heap selected by
     /// the memory requirements of a BLAS result buffer, matching the real
     /// `GpuOnly` allocation rather than a min/max heuristic — see
-    /// [`compute_blas_budget`](super::predicates::compute_blas_budget)
+    /// [`blas_budget_for_heap`](super::predicates::blas_budget_for_heap)
     /// (#2928 / #3043).
     pub(super) blas_budget_bytes: vk::DeviceSize,
     /// The probed DEVICE_LOCAL heap `blas_budget_bytes` is derived from.

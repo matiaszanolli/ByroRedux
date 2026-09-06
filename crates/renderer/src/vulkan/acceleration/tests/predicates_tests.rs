@@ -250,7 +250,7 @@ fn should_evict_mid_batch_fires_at_ninety_percent() {
     let _ = should_evict_mid_batch(u64::MAX / 2, u64::MAX / 2, budget);
 
     // Zero budget — eviction always fires (degenerate
-    // configuration; `compute_blas_budget` floors at 256 MB so
+    // configuration; `blas_budget_for_heap` floors at 256 MB so
     // this path can't hit in practice, but the predicate must
     // not panic or treat zero budget as "under").
     assert!(should_evict_mid_batch(1, 0, 0));
