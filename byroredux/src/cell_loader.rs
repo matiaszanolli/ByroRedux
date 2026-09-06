@@ -83,34 +83,53 @@ mod water;
 mod work_budget;
 
 pub use index::LoadedCellIndex;
-#[allow(unused_imports)]
 pub use transition::{
     log_transition_header, position_zup_to_yup, queue_door_transition, reposition_camera,
     rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellContext,
     CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
-    PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
-    QueuedDoorTransition, TransitionDestination,
+    PendingCellTransitionSlot, TransitionDestination,
 };
+// #3891 — these three have no call site by name, but each is load-bearing
+// and the compiler cannot see why, so the allow is scoped to exactly them
+// with the reason attached:
+//   * `QueuedDoorTransition` / `QueueDoorTransitionError` are the Ok and Err
+//     halves of the re-exported `queue_door_transition`'s return type —
+//     dropping them would make a live function's signature unnameable
+//     through `cell_loader::`.
+//   * `PendingCellTransition` is the target of intra-doc links in
+//     `app_step.rs` and `commands/scene.rs`; `transition` is a private
+//     module, so this re-export is the only path those links can resolve.
 pub(crate) use transition::{InteriorCellApply, InteriorCellApplyProgress};
+#[allow(unused_imports)]
+pub use transition::{PendingCellTransition, QueueDoorTransitionError, QueuedDoorTransition};
 // `clear_current_exterior_identity` is an internal teardown helper (only
 // `streaming_helpers::drain_streaming_state` calls it) — `pub(crate)`, not
 // part of the crate's external `pub` surface the block above re-exports.
 pub(crate) use transition::clear_current_exterior_identity;
 
-// Public re-exports — keep the existing `crate::cell_loader::FOO`
-// call sites in main.rs / streaming.rs / commands.rs working without
-// further changes. `#[allow(unused_imports)]` because not every
-// re-exported item is consumed by this crate's own binary — several
-// only show up in external crates (tests, other workspace members)
-// or as the public API surface.
-#[allow(unused_imports)]
+// Re-exports — keep the existing `crate::cell_loader::FOO` call sites in
+// main.rs / streaming.rs / commands.rs working without further changes.
+//
+// #3891 — these used to carry a blanket `#[allow(unused_imports)]`
+// justified by "several only show up in external crates (tests, other
+// workspace members) or as the public API surface". `byroredux` is a
+// BINARY crate: it has no external consumers and no public API surface, so
+// that justification could not hold, and the blanket switched off the one
+// lint that detects a dead re-export. It had been hiding three
+// (`load_interior_cell`, `CellLoadPhaseTimings`, `OneCellLoadInfo`) — the
+// first for over three months. Any allow below is now per-block with the
+// specific reason it is needed.
+// #3891 — `cfg_attr(not(test), ...)`, not a blanket allow: these names are
+// consumed only by child `#[cfg(test)]` modules through `use super::*`, so
+// the lint stays ACTIVE for the test build (where a genuinely dead
+// re-export would still be caught) and is silenced only in the non-test
+// build where the consumer is compiled out.
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use nif_import_registry::{
     canonical_model_path_key, CachedNifImport, NifImportRegistry,
 };
-#[allow(unused_imports)]
-pub(crate) use refr::{
-    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
-};
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
 
 pub(crate) use euler::euler_zup_to_quat_yup_refr;
 pub use euler::set_refr_rotation_mode_diag;
@@ -119,17 +138,19 @@ pub(crate) use exterior::{
     begin_worldspace_persistent_cell, persistent_root_survives_crossing, ExteriorCellApplyJob,
     ExteriorCellApplyProgress, PersistentCellApplyJob, PersistentCellApplyProgress,
 };
-#[allow(unused_imports)]
-pub use exterior::{
-    build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
-};
+pub use exterior::{build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext};
 pub(crate) use load::apply_interior_cell_lighting;
-#[allow(unused_imports)]
+// Load-bearing for `cell_loader/lgtm_fallback_tests.rs`, which reaches it
+// through `use super::*`.
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use load::resolve_cell_lighting;
+pub use load::{load_cell_with_masters, validate_cell_loadable};
+// #3891 — `CellLoadResult` is the `Ok` type of the re-exported
+// `load_cell_with_masters`; no caller names it today, but removing the
+// re-export would make that function's return type unnameable through
+// `cell_loader::`.
 #[allow(unused_imports)]
-pub use load::{
-    load_cell_with_masters, validate_cell_loadable, CellLoadPhaseTimings, CellLoadResult,
-};
+pub use load::CellLoadResult;
 // Re-exported for the headless `--list-cells` catalogue, which needs the
 // same masters-first merged index the cell loader builds but stops after
 // the parse phase.
@@ -138,7 +159,6 @@ pub(crate) use lod_coverage::{
     find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps, ChurnTracker,
 };
 pub(crate) use lod_support::{worldspace_lod_grid_origin, LodReconcileInput, LodWorkBudget};
-#[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};
 pub(crate) use partial::finish_partial_import;
 pub(crate) use placement_lod::{
