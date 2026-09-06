@@ -569,14 +569,16 @@ pub(crate) struct RegionAmbientRes {
     /// and FNV's `RDSB` targets `MSET` (Media Set) — see
     /// `RegionDataPayload::Sound`'s doc in
     /// `crates/plugin/src/esm/records/misc/world.rs` for the full
-    /// per-era census (#3787 FNV, #3811 Oblivion + Skyrim).
+    /// per-era census (#3787 FNV, #3811 Oblivion + Skyrim — both closed
+    /// doc-only; the runtime for all three target types is tracked by
+    /// #3816, FNV's `MSET` included since #3915).
     /// `dispatch_region_ambient_music` (`asset_provider::audio`) currently
     /// resolves this against the `SounRecord` map regardless, which is why
     /// region ambient music is a structural no-op on every tested game via
     /// this path.
     pub music_form: Option<u32>,
     /// `RDSI` — FNV-only incidental FormID. Same caveat: census-confirmed
-    /// `MSET`, not `SOUN` (#3787).
+    /// `MSET`, not `SOUN` (#3787; runtime tracked by #3816).
     pub incidental_form: Option<u32>,
 }
 

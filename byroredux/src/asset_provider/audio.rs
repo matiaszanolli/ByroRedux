@@ -203,7 +203,10 @@ pub(crate) fn dispatch_region_ambient_music(
     // `SOUN` on any game: Oblivion's `RDMD` is a music-category enum, not
     // a FormID at all; Skyrim's `RDMO` targets `MUSC`; FNV's `RDSB`/`RDSI`
     // target `MSET` (Media Set). No `MUSC`/`MUST` or `MSET` runtime exists
-    // yet, so this path is structurally unsupported on every game rather
+    // yet (#3816 tracks all three — #3787 and #3811 closed doc-only, and
+    // #3915 folded FNV's `MSET` into #3816; `MSET` is already parsed into
+    // `EsmIndex::media_sets`, nothing reads it), so this path is
+    // structurally unsupported on every game rather
     // than a content gap; log it once so "no archive supplied" (silent,
     // the common case per the doc above) is distinguishable from "an
     // ambient directive was authored but this engine build can't resolve
@@ -219,7 +222,7 @@ pub(crate) fn dispatch_region_ambient_music(
                  FormID), Skyrim's RDMO targets MUSC, and FNV's RDSB/RDSI target MSET \
                  (Media Set); none of those target types are decoded by this engine \
                  yet, so region ambient music is unsupported pending that work \
-                 (#3787 / #3811), not a missing-archive content gap"
+                 (#3816), not a missing-archive content gap"
             );
         });
     }
