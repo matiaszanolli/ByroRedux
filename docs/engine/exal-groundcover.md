@@ -6,7 +6,8 @@ outdoors environment; **ground cover** is the vegetation stratum that sits on
 the terrain surface — grass, ferns, moss, low scrub.
 
 **Status**: Phase 0 IMPLEMENTED (2026-08-12); Phase 5 palette resolution
-IMPLEMENTED (2026-09-06, #3807); Phases 1–4 proposed. Rolls out per §9.
+IMPLEMENTED (2026-09-06, #3807); Phases 1–4 and 6–7 proposed. Rolls out
+per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -412,6 +413,13 @@ Each phase is independently useful and independently reviewable.
   does not correlate with plant height in any corpus (Spearman +0.11 on
   Oblivion's n=99, −0.05 on Skyrim's n=21), so `bend_stiffness` stays a
   palette-level constant rather than a per-species translation.
+- **Phase 6 — the organic terms.** Contact occlusion, translucency and
+  ground-colour coupling (§12.1–12.3). Needs blades to exist (Phase 2) but
+  is independent of both the LOD chain and the RT shell, so it can land
+  beside either. **Do not defer this behind Phases 3–4**: those make ground
+  cover cheaper and push it further away, while this is what makes it read
+  as a living surface at all, which is the stated goal.
+- **Phase 7 — interaction.** The displacement field (§12.4).
 
 ---
 
@@ -422,9 +430,12 @@ Each phase is independently useful and independently reviewable.
   at low scrub.
 - **Harvestable flora.** `FLOR` records are gameplay entities with inventories
   and activation, not ground cover. They stay ordinary placed references.
-- **Grass interaction.** Blades reacting to the player, NPCs, or physics bodies.
-  Wants a displacement texture rendered from nearby dynamic entities; deferrable
-  without changing anything above, and worth doing only once Phase 4 lands.
+- ~~**Grass interaction.**~~ **Moved into scope (2026-09-06)** as §12.4 /
+  Phase 7. The claim it carried here — "worth doing only once Phase 4 lands"
+  — was wrong twice over: it shares no data with the RT proxy shell and
+  needs nothing from it, and it contributes more to the organic read than
+  the shell does. Deferring it behind Phase 4 sequenced it by
+  implementation convenience rather than by what the feature is for.
 - **Seasonal / snow variation.** The palette has the room for it
   (`climate_weight`), but driving it needs a canonical season concept EXAL does
   not currently have.
@@ -457,3 +468,144 @@ real worldspaces before the phase that depends on it.
 5. **Proxy shell opacity.** Whether mean chunk density is a good enough stand-in
    for the true blade distribution in the shadow term, or whether the shell needs
    a per-texel density map. Only answerable once Phase 4 renders.
+6. **Occlusion strength vs. density.** How hard the §12.1 base darkening should
+   track `d`, and over what fraction of blade height it falls off. Too weak and
+   the stratum stays a field of separate cards; too strong and a sparse verge
+   reads as a hole. Wants a side-by-side over real cells at several densities,
+   not a number picked here.
+7. **Transmission colour granularity.** Whether one transmission colour per
+   species (§12.2) suffices, or whether it has to vary along blade height — real
+   leaves are more translucent near the tip, where they are thinner. The cheap
+   version is one colour scaled by the existing width taper; only a render says
+   whether that is enough.
+8. **Ground-coupling weight.** How far the species gradient should be pulled
+   toward terrain albedo (§12.3). At zero, vegetation and ground stay two
+   surfaces; at one, every species is the colour of its dirt and the palette
+   stops meaning anything. Calibrate on the §11.3 telemetry run, which already
+   samples both terms.
+
+---
+
+## 12. Reading as organic — the four terms beyond placement
+
+Sections 1–11 answer *where* ground cover is. That is necessary and not
+sufficient: a perfect distribution of individually-lit cards still reads as
+cards. The four terms below are what separate that from a living surface, and
+not one of them is a placement question — which is why none appears in §1,
+whose comparison is the Creation Engine.
+
+That comparison is the limit of §1. Its three counters get us to *not
+Bethesda*; they do not get us to organic. The reference for the stated goal is
+modern AAA vegetation — RDR2, Ghost of Tsushima, Horizon — and against that
+reference these four are the visible difference.
+
+Two of them require canonical type changes (`GroundCoverSpecies` gains
+fields), which makes them a `crates/core` and translate-boundary concern, not
+a renderer-local one. Called out per term.
+
+### 12.1 Contact occlusion
+
+**The problem.** Light does not reach the base of a dense sward. Blades lit
+evenly along their whole length read as a collection of separate objects
+standing near each other, because that is exactly what the shading says they
+are.
+
+**What the design does today, and why it is not enough.** §7's
+`colour_gradient` bakes a darker base into the species — the field's own doc
+gives the reason ("the base is self-shadowed by the canopy above it"). But a
+baked gradient is a *constant*: the sparse edge of a patch is shaded as dark
+at the base as the middle of a meadow, when the whole point is that the middle
+is dark *because* it is the middle.
+
+**Approach.** Derive the term from the density field that already exists. `d`
+is evaluated per candidate point at scatter time and §4 already keeps it in the
+blade record for width compensation and proxy opacity, so the blade shader has
+it for free — no new buffer, no second evaluation. Occlusion runs from full at
+the base to none at the tip, scaled by `d`. A blade standing alone is lit along
+its length; the same blade in a thicket is not.
+
+**Consequence for §7.** Once this is computed the species gradient must stop
+baking it, or the two compound and the base goes black. The gradient then
+becomes what it should always have been — the plant's own colour variation,
+not a stand-in for a lighting term.
+
+### 12.2 Translucency
+
+**The problem.** Grass blades are thin enough to transmit. Backlit vegetation
+glows; a shader without transmission renders the same scene as silhouettes. At
+low sun angles — which is most of the time anyone stops to look at a landscape
+— this single term is most of the read.
+
+**Approach.** A transmission lobe driven by the light direction *through* the
+blade, modulated by thickness. Thickness is derivable from data already
+present: species width, tapered by the blade's parametric height, so tips
+transmit more than bases without storing anything per blade.
+
+**The ordering subtlety.** The main pass traces a shadow ray per fragment.
+Transmission must not simply be multiplied by that result: a blade shadowed by
+a distant rock genuinely receives nothing and must not glow, but a blade
+shadowing *itself* — the near face of a lit blade — is precisely the case that
+should. The two need separating rather than folding transmission into the
+existing shadow multiply, which is the shape a first implementation reaches
+for and the reason backlit grass so often comes out flat.
+
+**Type change.** `GroundCoverSpecies` gains a transmission colour. A leaf does
+not transmit its own reflected colour — it transmits warmer and more saturated
+— so this cannot be derived from `colour_gradient`.
+
+### 12.3 Ground-colour coupling
+
+**The problem.** §7 sources species colour from the `GRAS` model's texture:
+per-species, and constant across the whole world. Real vegetation takes its
+colour from what it grows in. A meadow on red clay is not the green of one on
+peat, and when grass and ground disagree the grass reads as a layer resting on
+the terrain rather than as part of it.
+
+**Approach.** Blend the species gradient toward the terrain albedo sampled at
+the blade base, by a per-species coupling weight. The input is already there:
+the scatter pass samples splat weights at exactly that point for §3's affinity
+term, and the terrain-tile SSBO carries the layer texture indices.
+
+**Why this pairs with §6's tier 3.** The always-on terrain detail layer and
+this term are the same idea from opposite ends — one makes the ground look
+like the grass, the other makes the grass look like the ground. They share an
+input and should be authored together; done separately they will disagree, and
+the disagreement will be visible at exactly the distance where geometry hands
+off to the detail layer.
+
+**It also partly answers a Phase 5 question.** The colour gradient from the
+`GRAS` model texture is still unimplemented (see Phase 5's note), and this term
+reduces how much that matters: if colour is substantially coupled to the
+ground, a per-species base gradient is a smaller input than §7 assumed. Worth
+measuring before building the texture-sampling path, not after.
+
+**Type change.** `GroundCoverSpecies` gains a coupling weight.
+
+### 12.4 Interaction
+
+**The problem.** Grass that does not move when something walks through it is
+static scenery, whatever else is right about it. This is the term with the
+largest gap between "cheap" and "sells the whole feature".
+
+**Approach.** A displacement field, structurally the same object as §8's wind:
+a small world-space texture centred on the camera, rendered each frame from the
+dynamic entities near it, sampled by the blade vertex shader at the blade base
+and applied as a bend away from the disturbance. Because neighbouring blades
+sample a continuous field at nearby points they part *together* — a channel
+through the grass, not a ring of individually-tilted blades.
+
+**Recovery is the part that is easy to get wrong.** Blades snapping upright the
+instant an entity passes reads worse than no interaction at all, because it
+draws the eye straight to the boundary. The field has to decay rather than
+clear, so a trail persists behind a runner and fades. That makes the texture
+stateful — accumulated and decayed per frame rather than re-rendered from
+scratch — which is a different and slightly larger thing than the naive
+version, and the reason to say so here rather than discover it in
+implementation.
+
+**Independent of Phase 4.** It shares no data with the RT proxy shell and needs
+nothing from it. See §10's revised entry.
+
+**Out of scope within this term.** Physical simulation of blades, collision
+response, and any feedback from grass back onto the entity. The field is
+one-directional.

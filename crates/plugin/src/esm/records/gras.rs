@@ -165,7 +165,10 @@ impl GrasRecord {
     /// downstream of the parser.
     ///
     /// - `OBND` present and not [`ObjectBounds::is_unset`] → the z extent,
-    ///   which is the model's true height.
+    ///   which is the model's true height. Note that the model is a *clump*
+    ///   of blades, not one blade (`GrassWasteland06` is 66 × 67 × 70
+    ///   units), so this is the height of a cluster — a consumer building
+    ///   per-blade geometry must read it as a ceiling, not a measurement.
     /// - else `MODB` non-zero → the bounding-sphere radius. A sphere
     ///   enclosing the whole clump has `radius >= height/2`, so this
     ///   over-estimates a wide low clump; it is the only size signal

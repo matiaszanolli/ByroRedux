@@ -386,9 +386,11 @@ fn wasteland06() -> GrasRecord {
 #[test]
 fn gras_dimensions_become_the_species_height_range() {
     let species = species_from_gras(&wasteland06(), Climate::Arid).expect("dimensioned record");
-    // 70 units ± 37.5%.
+    // The 70-unit clump height is the ceiling, not the centre: no blade is
+    // taller than the cluster it was measured from. The authored 0.375 sets
+    // how far below it the range reaches.
     assert!((species.height_range.0 - 43.75).abs() < 1e-3);
-    assert!((species.height_range.1 - 96.25).abs() < 1e-3);
+    assert!((species.height_range.1 - 70.0).abs() < 1e-3);
     assert!(species.is_well_formed());
 }
 
@@ -399,7 +401,7 @@ fn gras_dimensions_become_the_species_height_range() {
 fn oblivion_bound_radius_feeds_the_same_height_range_path() {
     let species = species_from_gras(&cattail(), Climate::Temperate).expect("dimensioned record");
     assert!((species.height_range.0 - 127.964_78 * 0.8).abs() < 1e-2);
-    assert!((species.height_range.1 - 127.964_78 * 1.2).abs() < 1e-2);
+    assert!((species.height_range.1 - 127.964_78).abs() < 1e-2);
 }
 
 /// The whole point of design §1: placement authority does not cross the
@@ -574,4 +576,57 @@ fn palette_from_grasses_uses_authored_species_and_still_falls_back() {
     // A worldspace whose plugin has no GRAS at all keeps the built-in.
     let empty = resolve_palette_from_grasses(&["WastelandNV".to_string()], &HashMap::new());
     assert_eq!(empty.species, vec![GroundCoverSpecies::DEFAULT_ARID]);
+}
+
+/// The clump-height reading, pinned as its own invariant: a species' blades
+/// never exceed the height of the `GRAS` model they were derived from.
+///
+/// Centring the range on the clump height instead would make the typical
+/// blade as tall as a whole vanilla grass cluster, which is the look design
+/// §1 exists to avoid — and it would arrive silently, as a plausible-looking
+/// number.
+#[test]
+fn no_species_blade_exceeds_the_clump_it_came_from() {
+    for record in [cattail(), wasteland06()] {
+        let clump = record.nominal_height().expect("dimensioned");
+        for climate in [
+            Climate::Temperate,
+            Climate::Arid,
+            Climate::Alpine,
+            Climate::Wetland,
+        ] {
+            let species = species_from_gras(&record, climate).expect("dimensioned");
+            assert!(
+                species.height_range.1 <= clump + 1e-3,
+                "{} at {climate:?}: blade ceiling {} exceeds its {clump}-unit clump",
+                record.editor_id,
+                species.height_range.1
+            );
+            assert!(species.height_range.0 > 0.0 && species.is_well_formed());
+        }
+    }
+}
+
+/// The authored variation still has to *do* something: a record with a wide
+/// authored spread must produce a wider range than a narrow one, or the
+/// height signal has collapsed to "clump height" for every species.
+#[test]
+fn authored_height_variation_still_widens_the_range() {
+    let narrow = GrasRecord {
+        height_range: 0.1,
+        ..wasteland06()
+    };
+    let wide = GrasRecord {
+        height_range: 0.6,
+        ..wasteland06()
+    };
+    let (n, w) = (
+        species_from_gras(&narrow, Climate::Arid).expect("dimensioned"),
+        species_from_gras(&wide, Climate::Arid).expect("dimensioned"),
+    );
+    assert_eq!(n.height_range.1, w.height_range.1, "same clump, same ceiling");
+    assert!(
+        w.height_range.0 < n.height_range.0,
+        "a wider authored variation must reach further below the ceiling"
+    );
 }

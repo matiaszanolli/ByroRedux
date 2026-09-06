@@ -368,7 +368,10 @@ fn climate_weights_for(climate: Climate) -> ClimateWeights {
 ///
 /// # What crosses the boundary, and what does not
 ///
-/// Only the record's **dimensions** and its editor ID's climate signal.
+/// Only the record's **dimensions** and its editor ID's climate signal —
+/// and the dimensions are a *clump's*, read as a ceiling on blade height
+/// rather than as a blade measurement; see the height derivation in the
+/// body.
 /// `density`, `min_slope`/`max_slope`, `distance_from_water` and
 /// `position_range` are placement authority, and placement is entirely
 /// engine-authored here (§1) — the density field derives its own slope
@@ -402,9 +405,11 @@ pub fn species_from_gras(record: &GrasRecord, climate: Climate) -> Option<Ground
     if !(height.is_finite() && height > 0.0 && height <= MAX_SPECIES_HEIGHT) {
         return None;
     }
-    // `GRAS.height_range` is a ± fraction of the model's own height, so a
-    // record at 0.3 spans 0.7×–1.3× — which is what gives a patch natural
-    // height variance instead of a uniform lawn.
+    // `GRAS.height_range` is a ± fraction applied to the *whole model* per
+    // placed instance, and the model is a clump. It sets the width of the
+    // canonical range — a record at 0.375 spreads wider than one at 0.2,
+    // which is what gives a patch natural height variance instead of a
+    // uniform lawn — but not its centre; see the height derivation below.
     //
     // Finiteness is checked *before* the clamp, not left to it: `clamp`
     // maps `+inf` to the ceiling, so a corrupt record would come out as
@@ -420,8 +425,23 @@ pub fn species_from_gras(record: &GrasRecord, climate: Climate) -> Option<Ground
         Climate::Arid => GroundCoverSpecies::DEFAULT_ARID,
         _ => GroundCoverSpecies::DEFAULT_TEMPERATE,
     };
+    // The clump height is the range's **ceiling**, not its centre.
+    //
+    // A vanilla `GRAS` model is a cluster of blades, not one blade:
+    // `GrassWasteland06`'s bounds are 66 × 67 × 70 units, a roughly cubic
+    // volume that no single blade occupies. So the record's height is
+    // approximately its *tallest* blade, and centring a per-blade range on
+    // it would make the typical blade as tall as the whole clump it came
+    // from — Bethesda-sized grass arriving through the back door of a
+    // design whose entire premise (§1) is not to reproduce that look.
+    //
+    // Taking it as the ceiling states only what the record actually
+    // supports: nothing grows taller than the clump it was measured from.
+    // The intra-clump distribution — how short the shortest blade in a
+    // cluster is — is not in the record, so the authored variation stands
+    // in for it rather than being invented alongside it.
     let species = GroundCoverSpecies {
-        height_range: (height * (1.0 - variation), height * (1.0 + variation)),
+        height_range: (height * (1.0 - variation), height),
         climate_weight: classify_species_name(&record.editor_id)
             .map_or(ClimateWeights::UNIFORM, climate_weights_for),
         ..base
