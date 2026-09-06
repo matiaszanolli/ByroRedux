@@ -72,9 +72,23 @@ pipeline already builds:
   `vkCmdDrawIndexedIndirect` with `drawCount > 1` is enabled
   ([`device.rs:616`](../../crates/renderer/src/vulkan/device.rs#L616)).
 - **TLAS exclusion precedent** — distant LOD terrain builds no BLAS and spawns
-  with `IsLodTerrain` so the renderer keeps it out of the TLAS
+  with `IsLodTerrain`
   ([`terrain_lod.rs:10-12`](../../byroredux/src/cell_loader/terrain_lod.rs#L10-L12)).
   Ground cover needs the same exclusion (§5).
+
+  **Correction (2026-09-06):** this bullet used to say `IsLodTerrain` "keeps it
+  out of the TLAS", and that has not been true for some time. The predicate is
+  now `(!is_lod || lod_shadow_caster)`
+  ([`static_meshes.rs:251`](../../byroredux/src/render/static_meshes.rs#L251)):
+  a camera-local subset of LOD blocks *does* enter the TLAS as structure shadow
+  casters. So `IsLodTerrain` is a distance-gated policy, not a boolean
+  exclusion, and §5's proposed `ExcludedFromTlas` generalisation cannot simply
+  subsume it — collapsing the two would silently change LOD shadowing. The
+  predicate is also already a three-term chain (`is_lod`, `is_decal_mesh`,
+  `MATERIAL_KIND_FIRE_REFRACTION`), so the cleanup §5 asks for is still worth
+  doing; it is just a larger and riskier change than "add a marker component",
+  and its failure mode — something quietly entering or leaving the TLAS — is
+  invisible to the test suite.
 - **Wind** — WTHR's `wind_speed` byte is already parsed and currently drives
   only cloud scroll (`WeatherDataRes::wind_speed`,
   [`components.rs:914`](../../byroredux/src/components.rs#L914)).
@@ -100,13 +114,29 @@ point**, on the GPU, inside the scatter pass — never precomputed per cell,
 never stored per blade.
 
 ```
-d = affinity(splat)                   // what the ground is made of
-  × slope_gate(normal)                // grass does not grow on cliffs
-  × moisture(height_above_water)      // shoreline lush, ridgeline sparse
-  × shelter(curvature)                // clumps settle into concavities
-  × clump(noise)                      // the organic term
-  × distance_fade(view)               // LOD, §6
+d_ground = affinity(splat)            // what the ground is made of
+         × slope_gate(normal)         // grass does not grow on cliffs
+         × moisture(height_above_water)  // shoreline lush, ridgeline sparse
+         × shelter(curvature)         // clumps settle into concavities
+         × clump(noise)               // the organic term
+
+d_draw   = d_ground × distance_fade(view)   // LOD only, §6
 ```
+
+**These are two different quantities and conflating them is a bug** (split
+2026-09-06; this was one `d` with `distance_fade` as a sixth factor).
+
+`d_ground` is *intrinsic* — a property of the place, identical whether the
+camera is standing on it or a kilometre away. `d_draw` is how much of that
+ground cover we are choosing to rasterize this frame.
+
+Only the scatter's accept/reject test may use `d_draw`. **Everything else must
+read `d_ground`**: the value stored in the blade record (§4), the ambient
+occlusion (§12.1), the ground-colour coupling (§12.3) and the canopy shadow
+(§12.5). Feeding the faded value to those instead makes the shadow under a
+meadow lighten as you walk away from it and the ground-tint fade with view
+distance — a slow, whole-screen brightness change keyed to camera position,
+which is both very visible and very hard to attribute once it ships.
 
 Each factor and where it comes from:
 
@@ -116,6 +146,17 @@ Each factor and where it comes from:
   grass, it *weights* it. A dirt layer at 0.15 and a grass layer at 0.9 blend
   into a continuous gradient wherever the painter feathered them, and the
   vegetation boundary stops coinciding with the texture boundary.
+
+  Worth being explicit about what this term is *not*: the splat authority is a
+  17×17 alpha grid per 2048-unit quadrant
+  ([`terrain.rs`](../../byroredux/src/cell_loader/terrain.rs), `per_quadrant_alpha`)
+  — **precisely the resolution §1 names as cause #2**. Bilinear sampling makes
+  it continuous rather than stepped, which fixes the *hard step*, but it cannot
+  manufacture detail finer than ~128 units. That is why `clump(noise)` is
+  load-bearing rather than decorative: it is the only term in the product with
+  authority above that frequency. A build that stubs the noise to 1.0 "for
+  now" will reproduce the vanilla patch look exactly, and will look like the
+  design failed.
 - **`slope_gate(normal)`** — smoothstep on the terrain normal's Y component.
   Ground cover thins out and then stops on steep faces. This alone removes the
   single most artificial thing about vanilla grass, which happily carpets
@@ -124,6 +165,13 @@ Each factor and where it comes from:
   falling off with altitude above it. Produces lush shorelines and sparse high
   ground for free, and reads as a reason for the distribution rather than a
   rule.
+
+  **A cell with no water plane must resolve this term to 1.0, not to 0.0 or to
+  an undefined distance.** In a pure product a single undefined factor takes
+  the whole field with it, and "this worldspace has no water" is common — the
+  failure would be an entire interior-adjacent or high-desert worldspace with
+  no ground cover at all and nothing in the log to say why. The term expresses
+  *extra* moisture near water; its absence is neutral, not hostile.
 - **`shelter(curvature)`** — discrete Laplacian of the heightfield over the
   terrain grid. Concave ground accumulates; convex ground sheds. Gives the
   distribution a relationship with the landform.
@@ -160,15 +208,46 @@ Per frame, for terrain chunks inside the ground-cover radius:
    chunks. The chunk is the unit of dispatch, culling and LOD selection.
 2. **Compute scatter** (`groundcover_scatter.comp`) — one workgroup per visible
    chunk, mirroring `cluster_cull.comp`'s shape. Each thread draws candidate
-   points from a scrambled blue-noise tile (chunk hash as the scramble seed, so
-   placement is stable frame to frame and across sessions — a blade does not
-   move when the camera does), evaluates `d` at each, and stochastically accepts.
-   Accepted points atomically append to a per-chunk slice of the blade buffer
-   and bump the chunk's `VkDrawIndexedIndirectCommand` instance count.
+   points from a scrambled low-discrepancy sequence (chunk hash as the scramble
+   seed, so placement is stable frame to frame and across sessions — a blade
+   does not move when the camera does), evaluates `d_draw` at each, and
+   stochastically accepts. Accepted points atomically append to a per-chunk
+   slice of the blade buffer and bump the chunk's
+   `VkDrawIndexedIndirectCommand` instance count.
+
+   **The per-chunk slice is fixed capacity, so it can overflow, and the
+   overflow policy is part of the design rather than an implementation
+   detail.** A chunk on rich flat ground at full density will hit the cap;
+   the atomic append must saturate rather than wrap, and the frame must not
+   depend on which threads happened to win the race.
+
+   That constrains the sequence. This said "blue-noise tile" until 2026-09-06,
+   and a tile consumed in order is **not progressive**: truncating it leaves
+   whatever the first N entries happen to be, which is not a well-distributed
+   set and shows up as directional clumping in exactly the densest chunks. A
+   progressive low-discrepancy sequence — one whose every prefix is
+   well-distributed — degrades into a uniformly sparser chunk instead, which is
+   the same failure mode the distance fade already produces and therefore reads
+   as nothing at all.
 3. **Blade record.** ~16 bytes: packed chunk-relative position, a seed word, a
-   species index, and the evaluated density (reused downstream for width
-   compensation and RT proxy opacity). Not a `GpuInstance` — a separate, much
+   species index, and the evaluated `d_ground` (reused downstream for width
+   compensation, §12.1 occlusion, §12.3 coupling and §12.5 shadowing — note
+   `d_ground`, not `d_draw`; see §3). Not a `GpuInstance` — a separate, much
    smaller SSBO that no other pass reads.
+
+   **What is deliberately absent, and the question it raises.** The record
+   carries no terrain normal and no terrain albedo, yet the blade vertex shader
+   needs the normal to orient the blade to the ground, and §12.3 needs the
+   albedo to tint toward it. Both must therefore be re-sampled in the *raster*
+   pass, which samples far more often than the scatter does — once per vertex
+   per blade rather than once per candidate point. §11.1 was written as a
+   question about the scatter pass, and on this reading it measures the cheaper
+   half of the problem; see its revised text.
+
+   Storing them instead is the obvious alternative and is not free: it roughly
+   doubles the record, and the blade buffer is the one structure in this design
+   whose size scales with the visible blade population. That trade is exactly
+   what §11.1 has to settle, and it cannot be settled by reasoning.
 4. **Draw.** One `vkCmdDrawIndexedIndirect` over the chunk's draw list, with a
    shared static index buffer describing one blade topology.
 
@@ -272,6 +351,18 @@ boundary; the acceptance threshold in the scatter rises smoothly with distance
 while accepted blades grow slightly wider, holding total coverage roughly
 constant. The population thins without the silhouette thinning.
 
+**Drive the widening from projected pixel size, not from distance**
+(2026-09-06). The two are not interchangeable, and the difference is a bug
+that only appears on some machines. A blade narrower than a pixel does not
+antialias — it flickers as the sub-pixel coverage changes from frame to frame,
+and thin high-contrast geometry is the canonical case TAA handles worst, so
+the existing resolve will not save it. Widening to hold a floor of roughly one
+pixel makes the fade an antialiasing measure as well as a coverage one. Keyed
+to distance instead, the floor is only correct at whatever resolution it was
+tuned at: the same scene shimmers at 4K and is stable at 1080p, which reads as
+a hardware problem rather than a shader one and is correspondingly hard to
+track down.
+
 **The terrain detail layer is always on.** The terrain fragment shader modulates
 its albedo and normal with a ground-cover detail texture whose strength is *the
 same density field*, at every distance including zero. Grass geometry is drawn
@@ -348,8 +439,23 @@ rather than per-blade jitter, which is most of what sells grass as a living
 surface. A per-blade phase offset from the seed keeps the response from being
 perfectly lockstep.
 
-Wind is deliberately not simulated and not collided in this design; §9 records
-interaction as out of scope for now.
+**The per-weather path already exists, and only wind uses it.**
+`weather_system` writes `WindField` on every weather change
+([`systems/weather.rs:988`](../../byroredux/src/systems/weather.rs#L988)), so
+wind tracks a storm rolling in without ground cover doing anything. Nothing
+does the equivalent for the palette: `GroundCoverPalette` is installed once at
+worldspace entry and never touched again.
+
+That asymmetry is where Oblivion's `grass_dimmer` belongs, and it resolves the
+question Phase 5 left open. Folding the dimmer into the palette's colour
+gradient at resolve time would freeze it at whichever weather happened to be
+active on entry; riding the slot `weather_system` already writes each frame
+makes it per-weather for free, on a path that is proven and has a live
+consumer. The colour multiplier is a small per-weather resource, not a palette
+field.
+
+Wind is deliberately not simulated and not collided here; the blades-react-to-
+things half is §12.4 / Phase 7.
 
 ---
 
@@ -466,9 +572,24 @@ Each phase is independently useful and independently reviewable.
 - **Seasonal / snow variation.** The palette has the room for it
   (`climate_weight`), but driving it needs a canonical season concept EXAL does
   not currently have.
-- **Authored placement.** No mechanism for hand-placing or hand-suppressing
-  grass in a region. If it turns out to be needed, it belongs as an extra
-  multiplicative term in §3, not as an escape hatch around the field.
+- **Authored placement.** ~~No mechanism for hand-placing or hand-suppressing
+  grass in a region.~~ **Revised 2026-09-06 — the mechanism exists in the
+  source data and this repo already parses the record type.** `REGN` carries a
+  `RegionDataKind::Grass` (`RDGS`) entry alongside `Objects` (`RDOT`)
+  ([`records/misc/world.rs:664`](../../crates/plugin/src/esm/records/misc/world.rs#L664)),
+  which is precisely per-region authored grass placement — level designers
+  used it to put grass where the texture-keyed scheme would not, and to keep
+  it out of places it would.
+
+  The payload is not decoded and no consumer exists, so nothing is being
+  unwound; but "no mechanism" was wrong, and it matters because the shape of
+  the eventual fix was already stated correctly here: an extra multiplicative
+  term in §3, never an escape hatch around the field. A region that suppresses
+  ground cover multiplies toward zero over its polygon with a soft edge; it
+  does not switch the field off.
+
+  Coordinates with issue 3301, which owns `REGN`'s `RDAT` decode. This
+  document should not grow a second `REGN` reader.
 
 ---
 
@@ -483,6 +604,16 @@ real worldspaces before the phase that depends on it.
    baking anything and stays automatically in lockstep with the terrain — but the
    indirection cost per candidate point is unmeasured. Fallback is a baked
    per-cell attribute texture. **Measure before Phase 1.**
+
+   **Scope correction (2026-09-06): measure both consumers, not just the
+   scatter.** The blade *vertex* shader needs the terrain normal to orient each
+   blade and, for §12.3, the terrain albedo to tint toward — and it samples
+   once per vertex per blade, where the scatter samples once per candidate
+   point. The raster side is therefore the larger consumer by a wide margin,
+   and it is the one the §4 blade-record trade (re-sample vs. store, roughly
+   doubling the record) actually turns on. A bench that measures only the
+   scatter answers the smaller question and will make the SSBO path look
+   cheaper than it is.
 2. **Chunk size.** 512 units (8×8 per cell) is a starting guess balancing
    dispatch count against per-chunk culling granularity. Wants a sweep.
 3. **Density-field calibration.** The affinity table and the noise frequencies
@@ -498,7 +629,7 @@ real worldspaces before the phase that depends on it.
    now gated behind a demonstrated need (§5 Stage 2), so this question may never
    have to be answered at all.
 6. **Occlusion strength vs. density.** How hard the §12.1 base darkening should
-   track `d`, and over what fraction of blade height it falls off. Too weak and
+   track `d_ground`, and over what fraction of blade height it falls off. Too weak and
    the stratum stays a field of separate cards; too strong and a sparse verge
    reads as a hole. Wants a side-by-side over real cells at several densities,
    not a number picked here.
@@ -566,12 +697,15 @@ baked gradient is a *constant*: the sparse edge of a patch is shaded as dark
 at the base as the middle of a meadow, when the whole point is that the middle
 is dark *because* it is the middle.
 
-**Approach.** Derive the term from the density field that already exists. `d`
-is evaluated per candidate point at scatter time and §4 already keeps it in the
-blade record for width compensation and proxy opacity, so the blade shader has
-it for free — no new buffer, no second evaluation. Occlusion runs from full at
-the base to none at the tip, scaled by `d`. A blade standing alone is lit along
-its length; the same blade in a thicket is not.
+**Approach.** Derive the term from the density field that already exists.
+`d_ground` is evaluated per candidate point at scatter time and §4 already keeps
+it in the blade record for width compensation, so the blade shader has it for
+free — no new buffer, no second evaluation. Occlusion runs from full at the base
+to none at the tip, scaled by `d_ground`. A blade standing alone is lit along its
+length; the same blade in a thicket is not.
+
+**`d_ground`, never `d_draw`** (§3). Scaling occlusion by the view-faded density
+would make a meadow's interior brighten as the camera retreats from it.
 
 **Consequence for §7.** Once this is computed the species gradient must stop
 baking it, or the two compound and the base goes black. The gradient then
@@ -673,11 +807,12 @@ involved already has both.
 
 **Approach — extinction through a canopy slab.** Treat ground cover as a
 participating slab of thickness equal to the local blade height, with optical
-density proportional to `d`. Transmittance along the light direction is
-Beer–Lambert:
+density proportional to `d_ground` — the intrinsic value, never the view-faded
+`d_draw` (§3), or the shadow under a meadow lightens as you walk away from it.
+Transmittance along the light direction is Beer–Lambert:
 
 ```
-T = exp(−k · d · h / max(cos θ, ε))
+T = exp(−k · d_ground · h / max(cos θ, ε))
 ```
 
 with θ the light's angle from vertical. A low sun therefore traverses more
