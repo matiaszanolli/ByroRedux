@@ -40,6 +40,15 @@
 #define VERTEX_COLOR_OFFSET_FLOATS 3u
 #define VERTEX_NORMAL_OFFSET_FLOATS 7u
 #define VERTEX_UV_OFFSET_FLOATS 10u
+// Splat lanes are packed 4x u8 unorm, not floats — recover with
+// unpackUnorm4x8(floatBitsToUint(vertexData[base + N])).
+#define VERTEX_SPLAT0_OFFSET_FLOATS 20u
+#define VERTEX_SPLAT1_OFFSET_FLOATS 21u
+
+// Exterior LAND terrain grid (#4052)
+#define LAND_GRID_VERTS 33u
+#define LAND_VERTEX_SPACING 128.0
+#define EXTERIOR_CELL_UNITS 4096.0
 #define VERTEX_TANGENT_OFFSET_FLOATS 22u
 
 // Skinning

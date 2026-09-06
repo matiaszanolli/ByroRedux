@@ -1167,6 +1167,14 @@ fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
             "ray_hit.glsl",
             include_str!("../../../shaders/include/ray_hit.glsl"),
         ),
+        // #4052 — the ground-cover terrain sampler is the first non-RT
+        // consumer of `vertexData`, and the first to read the splat lanes
+        // at all. It belongs under this guard for the same reason the RT
+        // hit path does.
+        (
+            "terrain_sample.glsl",
+            include_str!("../../../shaders/include/terrain_sample.glsl"),
+        ),
     ];
 
     // Strip safe-recovery wrappers so a forbidden raw read
@@ -3784,4 +3792,164 @@ fn blue_noise_ranks_is_declared_exactly_once() {
             "{name} must #include \"include/blue_noise.glsl\" to reach BLUE_NOISE_RANKS"
         );
     }
+}
+
+// ── EXAL ground-cover terrain sampling (#4052) ──────────────────────
+
+/// The literal-offset guard above has a blind spot, and this closes it.
+///
+/// `rt_hit_shaders_have_no_unsafe_vertex_data_reads` scans for the *literal*
+/// offsets `+ 20]` / `+ 21]`. `terrain_sample.glsl` reads those lanes through
+/// the generated named constants instead, which is better style and completely
+/// invisible to that scan — so a future edit could drop the
+/// `unpackUnorm4x8(floatBitsToUint(...))` recovery and the guard would pass.
+///
+/// Splat lanes are 4× u8 unorm. Read as floats they are NaN or denormal
+/// garbage, which reaches the density field as a silently wrong affinity term
+/// rather than as a crash.
+#[test]
+fn named_splat_offset_reads_keep_their_unorm_recovery() {
+    let sources = [
+        (
+            "terrain_sample.glsl",
+            include_str!("../../../shaders/include/terrain_sample.glsl"),
+        ),
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+        ),
+    ];
+    for (name, src) in sources {
+        for (lineno, line) in src.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                continue;
+            }
+            let reads_named_splat = line.contains("VERTEX_SPLAT0_OFFSET_FLOATS")
+                || line.contains("VERTEX_SPLAT1_OFFSET_FLOATS");
+            if reads_named_splat && line.contains("vertexData[") {
+                assert!(
+                    line.contains("unpackUnorm4x8") && line.contains("floatBitsToUint"),
+                    "{name}:{}: reads a splat lane by named offset without the \
+                     unorm recovery. Splat lanes are 4x u8 unorm, not floats — \
+                     `unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))`. \
+                     See #575 / SH-1 and #4052.\nLine: {}",
+                    lineno + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
+/// The terrain grid reaches GLSL from `byroredux_core::math::coord` through
+/// `build.rs`. This pins that the checked-in generated header actually carries
+/// the current Rust values — the file is committed, so a stale copy survives
+/// until something rebuilds, and a stale `LAND_GRID_VERTS` would make the
+/// sampler index a different row.
+#[test]
+fn terrain_grid_constants_reach_glsl_unchanged() {
+    let header = include_str!("../../../shaders/include/shader_constants.glsl");
+    assert!(
+        header.contains(&format!(
+            "#define LAND_GRID_VERTS {}u",
+            byroredux_core::math::coord::LAND_GRID_VERTS
+        )),
+        "LAND_GRID_VERTS drifted between core and the generated GLSL header"
+    );
+    assert!(
+        header.contains(&format!(
+            "#define LAND_VERTEX_SPACING {:?}",
+            byroredux_core::math::coord::LAND_VERTEX_SPACING
+        )),
+        "LAND_VERTEX_SPACING drifted between core and the generated GLSL header"
+    );
+    assert!(
+        header.contains(&format!(
+            "#define EXTERIOR_CELL_UNITS {:?}",
+            byroredux_core::math::coord::EXTERIOR_CELL_UNITS
+        )),
+        "EXTERIOR_CELL_UNITS drifted between core and the generated GLSL header"
+    );
+}
+
+/// `byroSampleTerrain` inverts the mapping `cell_loader/terrain.rs` used to
+/// build the vertices. Getting the **row sign** wrong samples a mirrored row
+/// and produces terrain that looks plausible and is wrong, so it is worth a
+/// real round-trip rather than only a source scan.
+///
+/// The forward mapping below is a deliberate test-local transcription of
+/// `terrain.rs`'s documented formula:
+///
+/// ```text
+/// bx = origin_x + col * SPACING   -> world X
+/// by = origin_y + row * SPACING   -> world -Z   (Z-up -> Y-up flip)
+/// ```
+///
+/// It exists only to validate the inverse, and is not a second production
+/// definition of anything.
+#[test]
+fn terrain_sample_grid_mapping_inverts_the_terrain_builder() {
+    use byroredux_core::math::coord::{LAND_GRID_VERTS, LAND_VERTEX_SPACING};
+
+    // Forward: (grid cell, row, col) -> Y-up world XZ, per terrain.rs.
+    let forward = |gx: i32, gy: i32, row: usize, col: usize| -> (f32, f32) {
+        let origin_x = gx as f32 * byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        let origin_y = gy as f32 * byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        let bx = origin_x + col as f32 * LAND_VERTEX_SPACING;
+        let by = origin_y + row as f32 * LAND_VERTEX_SPACING;
+        (bx, -by) // zup_to_yup: x stays x, y becomes -z
+    };
+    // Inverse: exactly the two expressions in terrain_sample.glsl.
+    let inverse = |origin_xz: (f32, f32), world_xz: (f32, f32)| -> (f32, f32) {
+        let fc = (world_xz.0 - origin_xz.0) / LAND_VERTEX_SPACING;
+        let fr = (origin_xz.1 - world_xz.1) / LAND_VERTEX_SPACING;
+        (fr, fc)
+    };
+
+    for (gx, gy) in [(0, 0), (3, 7), (-2, 5), (-11, -4)] {
+        let origin_xz = forward(gx, gy, 0, 0);
+        for row in [0usize, 1, 16, LAND_GRID_VERTS - 1] {
+            for col in [0usize, 1, 16, LAND_GRID_VERTS - 1] {
+                let world_xz = forward(gx, gy, row, col);
+                let (fr, fc) = inverse(origin_xz, world_xz);
+                assert!(
+                    (fr - row as f32).abs() < 1e-3,
+                    "cell ({gx},{gy}) vertex (row {row}, col {col}): inverse \
+                     recovered row {fr}, not {row}. A sign error here samples a \
+                     mirrored row."
+                );
+                assert!(
+                    (fc - col as f32).abs() < 1e-3,
+                    "cell ({gx},{gy}) vertex (row {row}, col {col}): inverse \
+                     recovered col {fc}, not {col}"
+                );
+            }
+        }
+    }
+}
+
+/// The GLSL must keep using the expressions the round-trip above validated.
+/// The sign on the row term is the whole point — `worldXZ.y - cellOriginXZ.y`
+/// would compile, run, and mirror the terrain.
+#[test]
+fn terrain_sampler_keeps_the_validated_grid_expressions() {
+    let src = include_str!("../../../shaders/include/terrain_sample.glsl");
+    assert!(
+        src.contains("float fc = (worldXZ.x - cellOriginXZ.x) / LAND_VERTEX_SPACING;"),
+        "column expression changed — re-validate against \
+         terrain_sample_grid_mapping_inverts_the_terrain_builder"
+    );
+    assert!(
+        src.contains("float fr = (cellOriginXZ.y - worldXZ.y) / LAND_VERTEX_SPACING;"),
+        "row expression changed. The subtraction order is load-bearing: the \
+         Z-up -> Y-up flip negates the row axis, so `worldXZ.y - cellOriginXZ.y` \
+         silently mirrors every sampled row."
+    );
+    // Out-of-cell queries must be rejected, not clamped onto the boundary row.
+    assert!(
+        src.contains("return s;") && src.contains("s.valid = false;"),
+        "the out-of-cell early-out disappeared; a clamped sample returns a \
+         confident wrong answer for a point in the neighbouring cell"
+    );
 }

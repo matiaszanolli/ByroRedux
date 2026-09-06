@@ -16,7 +16,9 @@
 use std::collections::HashMap;
 
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World};
-use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
+use byroredux_core::math::coord::{
+    zup_to_yup_pos, EXTERIOR_CELL_UNITS, LAND_GRID_VERTS, LAND_VERTEX_SPACING,
+};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::TextureSet;
@@ -411,8 +413,11 @@ pub(super) fn spawn_terrain_mesh(
         landscape_texture_sets,
         blas_specs,
     } = spawn;
-    const GRID: usize = 33;
-    const SPACING: f32 = EXTERIOR_CELL_UNITS / 32.0; // 128.0
+    // #4052 — both promoted to `byroredux_core::math::coord` so the
+    // ground-cover scatter shader reads the same numbers through
+    // `shader_constants.glsl` instead of a second hand-typed copy.
+    const GRID: usize = LAND_GRID_VERTS;
+    const SPACING: f32 = LAND_VERTEX_SPACING; // 128.0
 
     let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;

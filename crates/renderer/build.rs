@@ -144,6 +144,31 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "// Splat lanes are packed 4x u8 unorm, not floats — recover with"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define VERTEX_SPLAT0_OFFSET_FLOATS {VERTEX_SPLAT0_OFFSET_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define VERTEX_SPLAT1_OFFSET_FLOATS {VERTEX_SPLAT1_OFFSET_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "// Exterior LAND terrain grid (#4052)").unwrap();
+    writeln!(out, "#define LAND_GRID_VERTS {LAND_GRID_VERTS}u").unwrap();
+    writeln!(out, "#define LAND_VERTEX_SPACING {LAND_VERTEX_SPACING:?}").unwrap();
+    writeln!(out, "#define EXTERIOR_CELL_UNITS {EXTERIOR_CELL_UNITS:?}").unwrap();
+    writeln!(
+        out,
         "#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u"
     )
     .unwrap();

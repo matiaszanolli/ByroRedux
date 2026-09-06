@@ -109,6 +109,22 @@ pub const VERTEX_COLOR_OFFSET_FLOATS: u32 = 3;
 pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
 pub const VERTEX_TANGENT_OFFSET_FLOATS: u32 = 22;
+// Splat lanes are packed 4×u8 unorm, NOT floats — see the WARNING block above
+// `GlobalVertices` in include/bindings.glsl. Recover with
+// `unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))`; reading them as
+// floats yields NaN/denormal garbage.
+pub const VERTEX_SPLAT0_OFFSET_FLOATS: u32 = 20;
+pub const VERTEX_SPLAT1_OFFSET_FLOATS: u32 = 21;
+
+// Exterior LAND terrain grid (#4052). Re-exported from
+// `byroredux_core::math::coord` rather than retyped: the ground-cover scatter
+// pass locates a cell's terrain vertices in the global vertex SSBO by
+// inverting the same mapping `cell_loader/terrain.rs` used to build them, and
+// a GLSL copy that drifted from the Rust one would not fail any test — it
+// would silently sample a neighbouring vertex.
+pub const LAND_GRID_VERTS: u32 = byroredux_core::math::coord::LAND_GRID_VERTS as u32;
+pub const LAND_VERTEX_SPACING: f32 = byroredux_core::math::coord::LAND_VERTEX_SPACING;
+pub const EXTERIOR_CELL_UNITS: f32 = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
 // Skinning. #3882 — re-exported rather than restated: this file's whole
 // purpose is that a shared constant has one definition, and ~40 of its

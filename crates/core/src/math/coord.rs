@@ -40,6 +40,24 @@ use glam::{Quat, Vec3};
 /// bug-fix history (TD3-110 Z-flip sign disagreement).
 pub const EXTERIOR_CELL_UNITS: f32 = 4096.0;
 
+/// Vertices per side of an exterior cell's `LAND` heightmap grid: 33,
+/// spanning 32 quads at [`LAND_VERTEX_SPACING`] units each.
+///
+/// Promoted out of `cell_loader/terrain.rs`'s function-local `const GRID`
+/// (#4052) because it stopped being one consumer's private detail: the
+/// ground-cover scatter pass has to locate a cell's terrain vertices in the
+/// renderer's global vertex SSBO, which means the *shader* needs this number
+/// too. It reaches GLSL through `shader_constants_data.rs` →
+/// `include/shader_constants.glsl`, so there is one definition rather than a
+/// Rust one and a GLSL one drifting apart — a drift that would not fail any
+/// test, it would silently read a neighbouring vertex.
+pub const LAND_GRID_VERTS: usize = 33;
+
+/// Spacing between adjacent `LAND` grid vertices, in world units (128.0).
+///
+/// Derived rather than typed: `EXTERIOR_CELL_UNITS / (LAND_GRID_VERTS - 1)`.
+pub const LAND_VERTEX_SPACING: f32 = EXTERIOR_CELL_UNITS / (LAND_GRID_VERTS as f32 - 1.0);
+
 /// Cell-grid `(gx, gy)` → Y-up world-space origin of that cell's
 /// south-west corner. Composes the cell-size scale with the Z-up→Y-up
 /// flip in one step:
