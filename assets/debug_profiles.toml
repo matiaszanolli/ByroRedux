@@ -48,12 +48,18 @@ esm = "FalloutNV.esm"
 # higher priority than `Fallout - Meshes.bsa` in the retail engine; it is
 # not a `<stem>N.bsa` sibling of anything, so the auto-load rule in
 # `asset_provider/archive.rs` never picks it up on its own. `--bsa`
-# resolution here is first-listed-wins (`TextureProvider::extract_mesh`
-# walks `mesh_archives` in push order and returns the first hit), so
-# `Update.bsa` must be listed FIRST for its 21 base-game MODL paths
+# resolution here is LAST-listed-wins (`TextureProvider::extract_mesh`
+# walks `mesh_archives` in reverse push order and returns the first hit),
+# so `Update.bsa` must be listed LAST for its 21 base-game MODL paths
 # (including the NCR guard towers) — and any future asset it patches — to
 # resolve/override the same way retail's archive priority does.
-default_bsas = ["Update.bsa", "Fallout - Meshes.bsa"]
+#
+# #3896 — this list was written when resolution was first-listed-wins and
+# was NOT updated by #3637 (`3562401b`), which inverted it. Under the new
+# order the old `["Update.bsa", "Fallout - Meshes.bsa"]` silently shadowed
+# every patched asset with its base-game namesake — the exact opposite of
+# what the #3790 comment above intends. Patch archives go LAST.
+default_bsas = ["Fallout - Meshes.bsa", "Update.bsa"]
 # #3788 — footstep audio, water-splash acoustics, and REGN ambient (M44)
 # all early-return silently with no --sounds-bsa supplied at all; this was
 # never a design decision, just an omission (the profile parser's own unit
@@ -180,20 +186,25 @@ name = "Starfield"
 subdir = "Starfield/Data"
 root = ""
 esm = "Starfield.esm"
-# R5.5 material-provider matrix baseline. MeshesPatch must precede the base
-# archives because archive lookup is first-listed-wins. LOD/face archives are
+# R5.5 material-provider matrix baseline. MeshesPatch must FOLLOW the base
+# archives because archive lookup is last-listed-wins. LOD/face archives are
 # included for the same complete Cydonia path documented by game-compatibility.
+#
+# #3896 — these lists were written when resolution was first-listed-wins and
+# were NOT updated by #3637 (`3562401b`), which inverted it. Under the new
+# order every patch archive listed first was fully shadowed by the base
+# archive that followed it, so `MeshesPatch`, `LODMeshesPatch` and both
+# `TexturesPatch` archives were inert on the default `--game starfield`
+# launch. Patch archives go LAST.
 default_bsas = [
-    "Starfield - MeshesPatch.ba2",
     "Starfield - Meshes01.ba2",
     "Starfield - Meshes02.ba2",
-    "Starfield - LODMeshesPatch.ba2",
     "Starfield - LODMeshes.ba2",
     "Starfield - FaceMeshes.ba2",
+    "Starfield - LODMeshesPatch.ba2",
+    "Starfield - MeshesPatch.ba2",
 ]
 default_textures_bsas = [
-    "Starfield - TexturesPatch01.ba2",
-    "Starfield - TexturesPatch02.ba2",
     "Starfield - GeneratedTextures.ba2",
     "Starfield - Textures01.ba2",
     "Starfield - Textures02.ba2",
@@ -206,6 +217,8 @@ default_textures_bsas = [
     "Starfield - Textures09.ba2",
     "Starfield - Textures10.ba2",
     "Starfield - Textures11.ba2",
+    "Starfield - TexturesPatch01.ba2",
+    "Starfield - TexturesPatch02.ba2",
 ]
 default_materials_bsas = ["Starfield - Materials.ba2"]
 sample_cells = ["citycydoniamainlevel"]

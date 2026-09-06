@@ -160,48 +160,82 @@ mod tests {
         }
     }
 
-    /// #3790 — `Update.bsa` (FNV's own base-game patch archive) must be
-    /// listed BEFORE `Fallout - Meshes.bsa` in the shipped `fnv` profile's
-    /// `default_bsas`: archive resolution is first-listed-wins
-    /// (`TextureProvider::extract_mesh` / `extract`/`extract_via_facegen_
-    /// tool_path_fallback` in `byroredux/src/asset_provider/texture.rs`
-    /// all walk their archive list in push order and return the first
-    /// hit), so listing the patch archive second would make it lose
-    /// priority to the base archive it's meant to override — the opposite
-    /// of retail's own archive priority. Reads the real shipped file, and
-    /// is skipped when run from outside the repo, same as
-    /// `catalog_matches_shipped_profiles` above.
+    /// #3790 / #3896 — a patch archive must be listed AFTER the base archive
+    /// it overrides, in every shipped profile that has such a pair: archive
+    /// resolution is last-listed-wins (`TextureProvider::extract_mesh` /
+    /// `extract` / `extract_via_facegen_tool_path_fallback` in
+    /// `byroredux/src/asset_provider/texture.rs` all walk their archive list
+    /// in REVERSE push order and return the first hit), so listing the patch
+    /// archive first makes it lose priority to the base archive it's meant to
+    /// override — the opposite of retail's own archive priority.
+    ///
+    /// #3896 — this test previously asserted the exact opposite, and passed,
+    /// because #3637 (`3562401b`) inverted resolution to last-wins without
+    /// updating either the profiles or this test. It was pinning the broken
+    /// order with the falsified premise stated in its own assertion message.
+    /// It now covers all three profiles that ship a patch/base pair, so one
+    /// being accidentally right (fo4 was) can no longer hide the others.
+    ///
+    /// Reads the real shipped file, and is skipped when run from outside the
+    /// repo, same as `catalog_matches_shipped_profiles` above.
     #[test]
-    fn fnv_profile_lists_update_bsa_before_the_base_meshes_archive() {
+    fn profiles_list_patch_archives_after_the_base_archives_they_override() {
         let path = std::path::Path::new("../../assets/debug_profiles.toml");
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
         let document: toml::Table = toml::from_str(&text).unwrap();
-        let fnv = document["profiles"]["fnv"]
-            .as_table()
-            .expect("shipped profiles have no `fnv` block");
-        let default_bsas = fnv["default_bsas"]
-            .as_array()
-            .expect("fnv.default_bsas must be an array")
-            .iter()
-            .map(|v| v.as_str().expect("default_bsas entries must be strings"))
-            .collect::<Vec<_>>();
 
-        let update_pos = default_bsas
-            .iter()
-            .position(|&b| b == "Update.bsa")
-            .expect("fnv.default_bsas must list Update.bsa (#3790)");
-        let base_pos = default_bsas
-            .iter()
-            .position(|&b| b == "Fallout - Meshes.bsa")
-            .expect("fnv.default_bsas must list Fallout - Meshes.bsa");
-        assert!(
-            update_pos < base_pos,
-            "Update.bsa must precede Fallout - Meshes.bsa in fnv.default_bsas \
-             {default_bsas:?} — archive resolution is first-listed-wins, so this \
-             order is what makes the patch archive actually win",
-        );
+        // (profile, list key, patch archive, base archive it must override).
+        // fo4 is included because it was the one profile that happened to be
+        // ordered correctly under last-wins — pinning it stops a future edit
+        // from "fixing" it into consistency with the broken ones (#3896).
+        for (profile, key, patch, base) in [
+            ("fnv", "default_bsas", "Update.bsa", "Fallout - Meshes.bsa"),
+            (
+                "starfield",
+                "default_bsas",
+                "Starfield - MeshesPatch.ba2",
+                "Starfield - Meshes01.ba2",
+            ),
+            (
+                "starfield",
+                "default_textures_bsas",
+                "Starfield - TexturesPatch01.ba2",
+                "Starfield - Textures01.ba2",
+            ),
+            (
+                "fo4",
+                "default_textures_bsas",
+                "Fallout4 - TexturesPatch.ba2",
+                "Fallout4 - Textures1.ba2",
+            ),
+        ] {
+            let block = document["profiles"][profile]
+                .as_table()
+                .unwrap_or_else(|| panic!("shipped profiles have no `{profile}` block"));
+            let archives = block[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("{profile}.{key} must be an array"))
+                .iter()
+                .map(|v| v.as_str().expect("archive entries must be strings"))
+                .collect::<Vec<_>>();
+
+            let patch_pos = archives
+                .iter()
+                .position(|&b| b == patch)
+                .unwrap_or_else(|| panic!("{profile}.{key} must list {patch}"));
+            let base_pos = archives
+                .iter()
+                .position(|&b| b == base)
+                .unwrap_or_else(|| panic!("{profile}.{key} must list {base}"));
+            assert!(
+                base_pos < patch_pos,
+                "{patch} must FOLLOW {base} in {profile}.{key} {archives:?} — \
+                 archive resolution is last-listed-wins (#3637), so this order \
+                 is what makes the patch archive actually win",
+            );
+        }
     }
 
     /// #3788 — `--game fnv` must supply a `--sounds-bsa`, or the three M44
