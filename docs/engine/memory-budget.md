@@ -127,9 +127,13 @@ final visibility ray re-validates every shaded sample.
 
 Like the ReSTIR reservoirs above, every one of these scales with
 resolution, not a fixed constant, and every one of them
-had **no ledger entry here** until this sweep (#1872 — sibling finding
-from #1814's ReSTIR audit: grep confirmed zero mentions of SVGF, Bloom,
-SSAO, TAA, Volumetrics, Water, or Caustic anywhere on this page).
+had **no ledger entry here** before #1872 (a sibling finding from #1814's
+ReSTIR audit, which found no mention of SVGF, Bloom, SSAO, TAA,
+Volumetrics, Water or Caustic anywhere on this page at that time). Those
+entries exist now — several have since grown their own subsections below,
+including `Volumetrics (M55)` and `Glass + Water Caustics` — so read this
+paragraph as the history of the section, not a description of its current
+contents. (#3832)
 
 The resolution that matters is `frame_extents.render`, **not** the output /
 swapchain extent: `context/mod.rs` and the resize path both pass

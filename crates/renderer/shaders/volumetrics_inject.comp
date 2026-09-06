@@ -51,7 +51,12 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // consumer in the renderer, #1937), w = HG phase function asymmetry
     // parameter g in (-1, 1).
     vec4 sun_dir;
-    // rgb = sun radiance (already multiplied by intensity), a = unused
+    // rgb = sun radiance (already multiplied by intensity), a = the cell's
+    // XCLL fog-far distance. NOT unused: the local-light loop below reads
+    // `.a` as the `clusterFar` basis so this pass computes the same cluster
+    // index `cluster_cull.comp` did from its own `screen.w` — see the
+    // `clusterFar` computation and the Rust-side `VolumetricsParams::sun_color`
+    // doc, which is the authority on this field. (#3831)
     vec4 sun_color;
     // x = volume far plane, y = 5 m linear floor, z = fraction of slices
     // assigned to that floor, w = frame index. Distances are world units.
