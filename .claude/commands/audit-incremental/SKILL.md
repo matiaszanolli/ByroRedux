@@ -93,13 +93,17 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `**/tests/**`, `**/*_tests.rs`, `byroredux/tests/golden_frames.rs` | `/audit-regression` | LOW |
 | `*.md`, `docs/**` | `/audit-tech-debt` (doc rot) | LOW |
 
-> Layout shifts that often surprise a delta audit: `render.rs`,
-> `systems.rs`, `scene.rs`, and `cell_loader.rs` are all directories
-> now (`byroredux/src/render/`, `systems/`, `scene/`, `cell_loader/`),
-> each with a thin `mod.rs` dispatch + topic submodules + `*_tests.rs`
-> siblings. `crates/renderer/src/vulkan/acceleration/`, `scene_buffer/`
-> and `volumetrics/` are likewise split, and `crates/scripting/src/scene.rs`
-> is now thin over `crates/scripting/src/scene/`. The authoritative tree is
+> Layout shifts that often surprise a delta audit. Only
+> *byroredux/src/render.rs* is fully gone — `byroredux/src/render/` replaced
+> it. The other three still exist as files **beside** their directories, so a
+> delta audit must check both: `systems.rs` (54 LOC) + `systems/`,
+> `cell_loader.rs` (580 LOC) + `cell_loader/`, and `scene.rs` (1706 LOC, but
+> only ~23 before its first `#[cfg(test)]` — a thin head with a large in-file
+> test tail) + `scene/`. `crates/renderer/src/vulkan/acceleration/` and
+> `scene_buffer/` are genuine splits with a thin `mod.rs` dispatch;
+> `volumetrics/` is **not** — it holds only `noise.rs`, while
+> `volumetrics.rs` remains ~3 000 production lines. `crates/scripting/src/scene.rs`
+> (188 LOC) is thin over `crates/scripting/src/scene/`. The authoritative tree is
 > in `_audit-common.md` § Project Layout — route against it, not against
 > memory.
 >

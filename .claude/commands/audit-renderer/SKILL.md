@@ -31,7 +31,7 @@ itself a finding (or the doc is stale — note which).
   (`fn`/`struct`/`const`/test name), not `file:NN` — line anchors rot on every
   refactor. Confirm by `grep`; if a claim is unconfirmable, drop it.
 - **Backticked `.ext` paths must resolve now** (the `_audit-validate.sh` gate).
-  note that `byroredux/src/render/` is a **directory**, not a `render.rs` file
+  note that `byroredux/src/render/` is a **directory**, not a *render.rs* file
   (it split out post-#1115); `scene.rs` / `systems.rs` / `cell_loader.rs` are
   likewise thin dispatchers over sibling dirs.
 - **Recast resolved issues as regression guards** — phrase as "verify X still
@@ -206,7 +206,7 @@ leaks compound; denoiser/shader correctness is mostly visual.
 - **Two conventions, never mixed.** Raster runs render-origin-**relative** (`viewProj × worldPos_rel` keeps full f32 at large offsets); RT stays **absolute** (TLAS transforms, skinned BLAS, ray origins/lighting/fog reconstructed as `worldPos_rel + render_origin`).
 - Rigid `GpuInstance.model` translation rebased on CPU; skinned path rebases blended bone-palette translation by `−render_origin` in `triangle.vert` (#1486).
 - `triangle.vert` emits `fragWorldPosRel` (location 3) **relative**; `triangle.frag` reconstructs absolute at top of `main()` (#1496) so `dFdx/dFdy` consumers (flat-shading normal, `perturbNormal` TBN, `parallaxDisplaceUV`, rtLOD footprint) see small magnitudes. Verify no derivative consumer was moved back to the absolute varying.
-- `RT_ABSOLUTE_PRECISION_CEILING = 2^20 = 1_048_576` — `references.rs` `debug_assert!`s loaded-cell max `|coord|` stays under it via `worldspace_extent_over_rt_ceiling` (unit-tested). Any new absolute-space shader consumer inherits this ceiling.
+- `RT_ABSOLUTE_PRECISION_CEILING = 2^20 = 1_048_576` — `cell_loader/references/` `debug_assert!`s loaded-cell max `|coord|` stays under it via `worldspace_extent_over_rt_ceiling` (unit-tested). Any new absolute-space shader consumer inherits this ceiling.
 - DoF: degenerate `focus_dist` guarded (#1525); `GpuCamera` doc accuracy (#1526).
 - **Content-scale near plane (#3308, `08fb1d5a`).** Depth precision is the other half of this dimension and it is now *measured*, not asserted: `Camera::depth_resolution_at` / `depth_resolution_at_reversed` / `analyze_depth_field` (`crates/core/src/ecs/components/camera.rs`) are the analytic side and the `depth.stats` console command is the live side (Dim 20). `NEAR_PLANE_BU_SCALE = 5.0` (matching `fNearDistance` in `Fallout_default.ini`) is selected per scene by `Camera::for_content_scale`, whose single production call site in `byroredux/src/scene.rs` passes `has_nif_content && harness_cam.is_none()` — BU-scale game content gets the raised near plane; the unit-scale procedural demo and every harness scene that declares its own camera pose keep 0.1. Pinned by `for_content_scale_selects_the_right_near_plane` and `reversed_z_is_near_plane_insensitive_unlike_the_conventional_mapping`. **Reversed-Z is deliberately NOT done** — #3308 enumerated its blast radius (projection, depth clear, static AND dynamic pipeline compare state including all 8 authored-Gamebryo compare-op mappings, ≥6 shaders' hardcoded clear-convention checks, and FSR3's vendored shim needing its own depth-inverted context flag) and none of those failure modes are `cargo test`-visible. Do not re-file "should use reversed-Z" as a new finding; the measured ~130 000× still on the table is recorded, not overlooked.
 **Output**: `/tmp/audit/renderer/dim_10.md`
