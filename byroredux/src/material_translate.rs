@@ -1867,6 +1867,19 @@ mod tests {
                 ".claude/commands/audit-nifal/SKILL.md",
                 include_str!("../../.claude/commands/audit-nifal/SKILL.md"),
             ),
+            // #3904 — the original #3465 scan covered only the two copies
+            // above, so these two drifted anyway and still said "18" once the
+            // struct reached 22. `_audit-common.md` is the worse of the pair:
+            // it is the layout authority every audit skill loads first, so a
+            // wrong count there propagates into every future audit.
+            (
+                ".claude/commands/_audit-common.md",
+                include_str!("../../.claude/commands/_audit-common.md"),
+            ),
+            (
+                ".claude/commands/audit-fo4/SKILL.md",
+                include_str!("../../.claude/commands/audit-fo4/SKILL.md"),
+            ),
         ] {
             assert!(
                 src.contains(&format!("{named_roles} named roles")),
