@@ -285,6 +285,47 @@ pub fn slot_to_colocated_role(context: TextureSlotContext, slot: u32) -> Option<
     }
 }
 
+/// #3900 (SF-2026-09-05-D8-01) — **Starfield shares FO76's slot vocabulary
+/// here, matching [`canonical_shader_type`].**
+///
+/// This file used to give two different answers for the same game:
+/// `canonical_shader_type` grouped Starfield with FO76, while the arms below
+/// grouped it with Skyrim on slots 2, 3, 6 and 7. Neither grouping cited any
+/// Starfield evidence. One canonical translation boundary holding two rival
+/// vocabularies for one game is the exact condition #2695's single-table rule
+/// exists to prevent.
+///
+/// Settled by census, not by argument (the no-guessing rule), and the census
+/// answer is stronger than "the disputed slots are empty": **shipped Starfield
+/// carries no `BSShaderTextureSet` blocks at all.** Measured over the four
+/// installed mesh archives — `Meshes01`, `Meshes02`, `MeshesPatch`,
+/// `FaceMeshes` — 69,741 NIFs parsed, **0** texture-set blocks, therefore 0
+/// bindings on every slot. Starfield binds its textures through `.mat` /
+/// `materialsbeta.cdb` paths on `BSGeometry` instead. The same census run
+/// against `Skyrim - Meshes0.bsa` reports 57,414 texture sets with the
+/// distributions the arms below already document (slot 2 `_sk.dds`×7,334;
+/// slot 7 `_s.dds`×3,599), so the zero is a real absence, not a broken probe.
+/// Reproduce with `cargo run --release -p byroredux-nif --example
+/// sf_slot_census -- <archive>...`.
+///
+/// So no Starfield corpus data can decide this, and the arms below are
+/// unreachable on shipped content — they are a **defensive default for
+/// mod-authored or future content**, chosen on the two arguments that do
+/// exist and that agree with each other:
+///
+/// 1. **The parser boundary.** `BSLightingShaderProperty::parse_with_size`
+///    dispatches `bsver >= FO76 (155)` to `parse_fo76_plus`; Starfield is
+///    bsver 172, so it is literally read by the FO76 parser. Grouping it with
+///    Skyrim in the role table meant the byte layout and the slot vocabulary
+///    disagreed about which game this is.
+/// 2. **The measured FO76 readings** are the ones the Skyrim grouping
+///    implicitly rejected: slot 3 is a greyscale LUT rather than POM height,
+///    and slot 6 is specular (1,616 of 1,664 occupants `_s.dds`, #3085). A
+///    guess that contradicts measurement is worse than one that follows it.
+///
+/// If Starfield content occupying these slots ever appears, re-run the census
+/// and let the data override this default — that is the point of recording the
+/// n here.
 pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRole> {
     let shader_type = context.shader_type;
     let tint_family = is_tint_family(shader_type);
@@ -303,7 +344,7 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         // `emissive_color` is black, one authored value away from glowing
         // faces. HairTint (6) is included on the same evidence (`_sk` on all 16
         // of the 10 815 HairTint properties that populate the slot).
-        (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 2) => {
+        (TextureSlotLayout::Skyrim, 2) => {
             if tint_family {
                 Some(TextureRole::Tint)
             } else if context.glow_map {
@@ -324,7 +365,7 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
                 Some(TextureRole::Emissive)
             }
         }
-        (TextureSlotLayout::Fallout76, 2) => {
+        (TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield, 2) => {
             if tint_family {
                 Some(TextureRole::Tint)
             } else if context.glow_map {
@@ -340,15 +381,18 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         // role made `triangle.frag` ray-march POM over a face complexion map —
         // its POM branch gates only on `parallaxMapIndex != 0u`, with no
         // material-kind check.
-        (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 3) => match shader_type {
+        (TextureSlotLayout::Skyrim, 3) => match shader_type {
             bs_lighting::FACE_TINT => Some(TextureRole::Detail),
             _ => Some(TextureRole::Height),
         },
         // FO4/FO76 slot 3 is the greyscale-to-palette gradient, not a POM
         // height field. FO4 ships it on 31,303 properties (#2997).
-        (TextureSlotLayout::Fallout4 | TextureSlotLayout::Fallout76, 3) => {
-            Some(TextureRole::GreyscaleLut)
-        }
+        (
+            TextureSlotLayout::Fallout4
+            | TextureSlotLayout::Fallout76
+            | TextureSlotLayout::Starfield,
+            3,
+        ) => Some(TextureRole::GreyscaleLut),
 
         // #1350 — types 4/5/6 declare no TS slot 4/5 on Skyrim; skip
         // explicitly so a stray authored string cannot bind an env cube.
@@ -394,22 +438,23 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         //
         // FaceTint slot 6 is the baked FaceGen tint — see this fn's doc for why
         // it is deliberately unrouted.
-        (
-            TextureSlotLayout::Skyrim | TextureSlotLayout::Fallout4 | TextureSlotLayout::Starfield,
-            6,
-        ) => match shader_type {
+        (TextureSlotLayout::Skyrim | TextureSlotLayout::Fallout4, 6) => match shader_type {
             bs_lighting::MULTI_LAYER_PARALLAX => Some(TextureRole::InnerLayer),
             _ => None,
         },
         // Measured over 95,041 FO76 NIFs from the five installed mesh BA2s:
         // 1,664 bindings, 1,616 `_s.dds`; slot 6 is specular, not Skyrim's
-        // multilayer inner texture (#3085).
-        (TextureSlotLayout::Fallout76, 6) => Some(TextureRole::Specular),
+        // multilayer inner texture (#3085). Starfield rides this arm rather
+        // than the Skyrim one above — see this fn's doc (#3900); it has no
+        // shipped occupancy of its own to measure.
+        (TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield, 6) => {
+            Some(TextureRole::Specular)
+        }
 
         // Slot 7 is an authored back-lighting map when that feature flag is
         // set; otherwise it is the alternate specular on model-space-normal
         // materials, independent of shader type (#2742).
-        (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 7) => {
+        (TextureSlotLayout::Skyrim, 7) => {
             if context.back_lighting {
                 Some(TextureRole::BackLighting)
             } else {
@@ -423,7 +468,7 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         // FO4 slot 7 is authored specular whether or not the almost-never-set
         // Model_Space_Normals flag is present (#2998).
         (TextureSlotLayout::Fallout4, 7) => Some(TextureRole::Specular),
-        (TextureSlotLayout::Fallout76, 7) => None,
+        (TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield, 7) => None,
 
         (_, _) => None,
     }
@@ -809,9 +854,21 @@ mod tests {
 
     /// The concrete misroute #3364 describes: an untranslated Starfield
     /// FaceTint (155 type 3) is read as Skyrim Parallax and binds slot 3 as a
-    /// POM height field instead of the tint detail map.
+    /// POM height field instead of a face map.
+    ///
+    /// #3900 changed the *destination* but not the hazard. Starfield now rides
+    /// FO76's slot vocabulary (see `slot_to_role`'s doc for the census), where
+    /// slot 3 is the greyscale-to-palette gradient rather than Skyrim's
+    /// FaceTint-detail special case. Both readings prevent the thing #3364 was
+    /// written to prevent — `triangle.frag` ray-marching POM over a face — and
+    /// the FO76 one is the measured reading: over `SeventySix - Meshes.ba2` +
+    /// `MeshesExtra.ba2` (113,205 texture sets), slot 3 carries 4,474 bindings
+    /// of which just **3** are `_p` height maps. What this test still pins,
+    /// unchanged, is the translation that makes any of it reachable:
+    /// `canonical_shader_type` must turn Starfield's raw 3 into `FACE_TINT`
+    /// rather than leaving it to be read as Skyrim's `Parallax`.
     #[test]
-    fn starfield_face_tint_reaches_the_detail_role_not_height() {
+    fn starfield_face_tint_is_translated_and_never_binds_slot_three_as_height() {
         let context = TextureSlotContext {
             layout: TextureSlotLayout::Starfield,
             shader_type: canonical_shader_type(TextureSlotLayout::Starfield, 3),
@@ -821,12 +878,104 @@ mod tests {
             rim_lighting: false,
             back_lighting: false,
         };
-        assert_eq!(context.shader_type, bs_lighting::FACE_TINT);
         assert_eq!(
-            slot_to_role(context, 3),
-            Some(TextureRole::Detail),
-            "a Starfield FaceTint head must bind slot 3 as the tint detail map; \
-             untranslated it lands on Height (the #2694 failure mode)"
+            context.shader_type,
+            bs_lighting::FACE_TINT,
+            "the #3364 translation is the load-bearing half: untranslated, raw 3 \
+             reads as Skyrim's Parallax type"
+        );
+        let role = slot_to_role(context, 3);
+        assert_ne!(
+            role,
+            Some(TextureRole::Height),
+            "a Starfield FaceTint head must never bind slot 3 as a POM height \
+             field — that is the #2694 / #3364 failure mode (POM ray-marched \
+             over a face complexion map)"
+        );
+        assert_eq!(
+            role,
+            Some(TextureRole::GreyscaleLut),
+            "Starfield shares FO76's slot vocabulary as of #3900, where slot 3 \
+             is the greyscale-to-palette gradient"
+        );
+    }
+
+    /// #3900 (SF-2026-09-05-D8-01) — the SIBLING invariant: this file must give
+    /// exactly ONE answer per game about which slot vocabulary it uses.
+    ///
+    /// `canonical_shader_type` groups Starfield with FO76 (both go through
+    /// `BSLightingShaderProperty::parse_fo76_plus`, `bsver >= 155`). Before
+    /// this, `slot_to_role` groups Starfield with Skyrim on slots 2, 3, 6 and
+    /// 7 — one canonical translation boundary holding two rival vocabularies
+    /// for one game, the exact condition #2695's single-table rule exists to
+    /// prevent. Pin the two halves together: for every slot and every context
+    /// shape the arms branch on, Starfield must resolve identically to FO76.
+    #[test]
+    fn starfield_resolves_every_slot_identically_to_fo76() {
+        let shader_types = [
+            bs_lighting::FACE_TINT,
+            bs_lighting::SKIN_TINT,
+            bs_lighting::HAIR_TINT,
+            bs_lighting::MULTI_LAYER_PARALLAX,
+            0,
+            1,
+        ];
+        for &shader_type in &shader_types {
+            for flags in 0..32u8 {
+                let ctx = |layout| TextureSlotContext {
+                    layout,
+                    shader_type,
+                    glow_map: flags & 1 != 0,
+                    model_space_normals: flags & 2 != 0,
+                    soft_lighting: flags & 4 != 0,
+                    rim_lighting: flags & 8 != 0,
+                    back_lighting: flags & 16 != 0,
+                };
+                for slot in 0..8u32 {
+                    assert_eq!(
+                        slot_to_role(ctx(TextureSlotLayout::Starfield), slot),
+                        slot_to_role(ctx(TextureSlotLayout::Fallout76), slot),
+                        "slot {slot} (shader_type {shader_type}, flags {flags:#07b}): \
+                         Starfield and FO76 must share one slot vocabulary — they \
+                         share one parser (`parse_fo76_plus`) and \
+                         `canonical_shader_type` already groups them (#3900)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The other half of the same invariant: the grouping must not have been
+    /// achieved by flattening every game into one table. Skyrim and FO4 keep
+    /// their own measured readings, so a change that "fixes" #3900 by making
+    /// all four layouts identical fails here.
+    #[test]
+    fn the_pre_fo76_layouts_keep_their_own_vocabulary() {
+        let ctx = |layout| TextureSlotContext {
+            layout,
+            shader_type: 0,
+            glow_map: false,
+            model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
+        };
+        // Skyrim slot 6 is the multilayer inner texture (None for non-MLP),
+        // FO76/Starfield slot 6 is measured specular (#3085).
+        assert_eq!(slot_to_role(ctx(TextureSlotLayout::Skyrim), 6), None);
+        assert_eq!(
+            slot_to_role(ctx(TextureSlotLayout::Starfield), 6),
+            Some(TextureRole::Specular),
+        );
+        // Skyrim slot 3 is Height for non-FaceTint; FO4/FO76/Starfield is the
+        // greyscale-to-palette gradient.
+        assert_eq!(
+            slot_to_role(ctx(TextureSlotLayout::Skyrim), 3),
+            Some(TextureRole::Height),
+        );
+        assert_eq!(
+            slot_to_role(ctx(TextureSlotLayout::Fallout4), 3),
+            Some(TextureRole::GreyscaleLut),
         );
     }
 
