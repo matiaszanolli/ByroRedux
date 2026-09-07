@@ -26,6 +26,60 @@ commit_cites_issue() {
         "(^|[^[:alnum:]_])(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)[[:space:]]+#${issue}([^0-9]|$)"
 }
 
+# Any `#NNNN` at all, closing keyword or not — the reverse-direction signal
+# (#3504). A commit that fixes something and merely mentions its issue is
+# still findable by `/audit-regression`'s `git log --grep`; one that names no
+# issue anywhere is not findable by any means. Same here-string contract as
+# `commit_cites_issue` above.
+commit_mentions_issue() {
+    rg --quiet '(^|[^[:alnum:]_])#[0-9]+([^0-9]|$)'
+}
+
+# The base of a pushed range. `github.event.before` is 40 zeros when the
+# branch is created, and is a commit that no longer exists after a
+# force-push; both would make `git log base..head` fail the job for a reason
+# that has nothing to do with traceability. Fall back to the single tip
+# commit in that case.
+push_base() {
+    local before="$1" head="$2"
+    if [[ -z "${before}" ]] ||
+        [[ "${before}" =~ ^0+$ ]] ||
+        ! git rev-parse --verify --quiet "${before}^{commit}" >/dev/null; then
+        echo "${head}~1"
+    else
+        echo "${before}"
+    fi
+}
+
+# Does this commit touch Rust source? `--name-only --format=` prints just the
+# paths; a merge commit prints nothing, which is the right answer for it.
+commit_touches_rust() {
+    git show --name-only --format= "$1" | rg --quiet '\.rs$'
+}
+
+# Every issue closed on or after <since-date>, one number per line. Needs
+# `gh`. `gh`'s `closed:` qualifier has DAY granularity, which is why callers
+# must widen the citation range they pair this with rather than assuming the
+# closed set lines up with a commit range.
+closed_issues_since() {
+    gh issue list --state closed --limit 500 \
+        --search "closed:>=$1" --json number --jq '.[].number' | sort -n
+}
+
+# Of the issue numbers passed as arguments, print those that the haystack on
+# stdin does NOT cite with a closing keyword. Shared by `--window` and
+# `--push`. Same here-string contract as `commit_cites_issue` — and the
+# haystack is slurped up front so the per-issue `rg --quiet` calls below
+# cannot take SIGPIPE from a writer that is still going.
+uncited_among() {
+    local messages issue
+    messages="$(cat)"
+    for issue in "$@"; do
+        commit_cites_issue "${issue}" <<<"${messages}" && continue
+        printf '%s\n' "${issue}"
+    done
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
     sample_body=$'Fixes #12\nResolved #34\nmentions #56'
     mapfile -t sample_issues < <(printf '%s\n' "${sample_body}" | closing_issue_numbers)
@@ -45,6 +99,69 @@ if [[ "${1:-}" == "--self-test" ]]; then
 (SIGPIPE/pipefail regression)" >&2
         exit 1
     fi
+    # --- push mode (#3504) ---
+    if ! commit_mentions_issue <<<'refactor(core): bounded walk (#12)'; then
+        echo "check-issue-traceability: self-test missed a bare #N mention" >&2
+        exit 1
+    fi
+    if commit_mentions_issue <<<'refactor(core): bounded walk'; then
+        echo "check-issue-traceability: self-test invented a citation" >&2
+        exit 1
+    fi
+    # A commit message may legitimately contain a `#` that is not an issue
+    # reference (a Markdown heading, a shell comment in a quoted block).
+    if commit_mentions_issue <<<'docs: document the # sigil'; then
+        echo "check-issue-traceability: self-test read a bare # as an issue" >&2
+        exit 1
+    fi
+    mapfile -t sample_uncited < <(
+        uncited_among 12 34 56 <<<$'Fix #12\nrefactor: touches #34 without a keyword'
+    )
+    if [[ "${sample_uncited[*]}" != "34 56" ]]; then
+        echo "check-issue-traceability: self-test mis-split the uncited set \
+(got '${sample_uncited[*]}')" >&2
+        exit 1
+    fi
+    zero_sha='0000000000000000000000000000000000000000'
+    if [[ "$(push_base "${zero_sha}" HEAD)" != 'HEAD~1' ]]; then
+        echo "check-issue-traceability: self-test did not fall back on a created branch" >&2
+        exit 1
+    fi
+    if [[ "$(push_base '' HEAD)" != 'HEAD~1' ]]; then
+        echo "check-issue-traceability: self-test did not fall back on an empty before-SHA" >&2
+        exit 1
+    fi
+    if [[ "$(push_base 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' HEAD)" != 'HEAD~1' ]]; then
+        echo "check-issue-traceability: self-test did not fall back on a force-pushed-away SHA" >&2
+        exit 1
+    fi
+    real_base="$(git rev-parse HEAD~1)"
+    if [[ "$(push_base "${real_base}" HEAD)" != "${real_base}" ]]; then
+        echo "check-issue-traceability: self-test rewrote a usable before-SHA" >&2
+        exit 1
+    fi
+    # `commit_touches_rust` against a scratch repo rather than this one's
+    # tip: whether the last commit here happens to touch Rust is not a
+    # property the self-test should depend on.
+    scratch="$(mktemp -d)"
+    (
+        cd "${scratch}"
+        git init -q .
+        : >notes.md && git add notes.md
+        git -c user.email=t@t -c user.name=t commit -qm 'docs: notes'
+        : >lib.rs && git add lib.rs
+        git -c user.email=t@t -c user.name=t commit -qm 'feat: lib'
+        commit_touches_rust HEAD || {
+            echo "check-issue-traceability: self-test missed a .rs commit" >&2
+            exit 1
+        }
+        if commit_touches_rust HEAD~1; then
+            echo "check-issue-traceability: self-test called a docs commit Rust" >&2
+            exit 1
+        fi
+    )
+    rm -rf "${scratch}"
+
     echo "check-issue-traceability: self-test passed"
     exit 0
 fi
@@ -77,22 +194,14 @@ if [[ "${1:-}" == "--window" ]]; then
     }
 
     since="$(git log -1 --format=%cI "${base}")"
-    commit_messages="$(git log --format='%B' "${base}..${head}")"
-
-    mapfile -t closed < <(
-        gh issue list --state closed --limit 500 \
-            --search "closed:>=${since%T*}" --json number --jq '.[].number' | sort -n
-    )
+    mapfile -t closed < <(closed_issues_since "${since%T*}")
     if [[ "${#closed[@]}" -eq 0 ]]; then
         echo "check-issue-traceability: no issues closed in this window"
         exit 0
     fi
-
-    uncited=()
-    for issue in "${closed[@]}"; do
-        commit_cites_issue "${issue}" <<<"${commit_messages}" && continue
-        uncited+=("${issue}")
-    done
+    mapfile -t uncited < <(
+        uncited_among "${closed[@]}" <<<"$(git log --format='%B' "${base}..${head}")"
+    )
 
     echo "check-issue-traceability: ${#closed[@]} issue(s) closed in ${base}..${head}"
     if [[ "${#uncited[@]}" -eq 0 ]]; then
@@ -114,6 +223,104 @@ if [[ "${1:-}" == "--window" ]]; then
     done
     # Advisory: this reports history that is already written and cannot be
     # fixed by failing a build.
+    exit 0
+fi
+
+# Push mode (#3504). #3218 diagnosed the mechanism — the CI job was gated on
+# `github.event_name == 'pull_request'`, and this repo's history is
+# overwhelmingly direct commits to main, so for the dominant workflow the gate
+# never fired at all — and then fixed it with a `--window` report invoked by
+# hand at session close. The trigger condition was never changed, so the
+# measured gap did not move: 43 of 134 (32%) uncited when #3218 was filed,
+# 123 of 400 (31%) ten days later.
+#
+# This mode is what runs on every push to main. It reports BOTH directions
+# over the pushed range:
+#
+#   issue -> commit  an issue closed in this window that no commit cites
+#                    (delegated to `--window`, which already does exactly
+#                    this against live `gh` state)
+#   commit -> issue  a pushed commit that touches `*.rs` and names no issue
+#                    at all — the direction neither `--window` nor `--orphan`
+#                    can see, since both start from a set of issues
+#
+# Findings are emitted as GitHub workflow annotations so they land on the
+# commit, in the Actions UI, at push time. It exits 0 on findings by design:
+# a push's history is already written, and failing main's CI cannot add a
+# citation to a commit that is already on the branch. What changes versus
+# #3218 is *when* the signal appears — attached to the push, while the author
+# still has the context — instead of being reconstructed by an auditor weeks
+# later, or not at all. Enforcement still belongs to the PR path below, which
+# is the only point where the message can still be edited.
+if [[ "${1:-}" == "--push" ]]; then
+    if [[ "$#" -ne 3 ]]; then
+        echo "usage: $0 --push <before-sha> <after-sha>" >&2
+        exit 2
+    fi
+    head="$3"
+    base="$(push_base "$2" "${head}")"
+
+    echo "check-issue-traceability: push range ${base}..${head}"
+
+    # issue -> commit. Citations are searched over the whole branch, not the
+    # pushed range: `gh` can only filter closures by DAY, so a range of one
+    # commit would otherwise report every issue closed earlier that day —
+    # each already cited by an earlier push — as uncited. Needs `gh`; without
+    # it (a fork run with no token) this half is skipped rather than failing.
+    if command -v gh >/dev/null 2>&1; then
+        pushed_day="$(git log -1 --format=%cI "${base}")"
+        mapfile -t closed < <(closed_issues_since "${pushed_day%T*}")
+        uncited=()
+        if [[ "${#closed[@]}" -gt 0 ]]; then
+            mapfile -t uncited < <(
+                uncited_among "${closed[@]}" <<<"$(git log --format='%B' "${head}")"
+            )
+        fi
+        if [[ "${#closed[@]}" -eq 0 ]]; then
+            echo "check-issue-traceability: no issues closed since ${pushed_day%T*}"
+        elif [[ "${#uncited[@]}" -eq 0 ]]; then
+            echo "check-issue-traceability: all ${#closed[@]} issue(s) closed since \
+${pushed_day%T*} are cited by a commit"
+        else
+            echo
+            echo "ZERO-CITATION SET -- ${#uncited[@]} of ${#closed[@]} issues closed since"
+            echo "${pushed_day%T*} have no closing-keyword commit anywhere on this branch."
+            for issue in "${uncited[@]}"; do
+                title="$(gh issue view "${issue}" --json title --jq .title 2>/dev/null || echo '?')"
+                printf '  #%-6s %s\n' "${issue}" "${title}"
+                echo "::warning title=Closed issue with no citing commit::#${issue} ${title}"
+            done
+            echo
+        fi
+    else
+        echo "check-issue-traceability: no gh CLI, skipping the closed-issue half"
+    fi
+
+    # commit -> issue.
+    uncited_commits=()
+    while read -r sha; do
+        [[ -n "${sha}" ]] || continue
+        commit_touches_rust "${sha}" || continue
+        commit_mentions_issue <<<"$(git log -1 --format='%B' "${sha}")" && continue
+        uncited_commits+=("${sha}")
+    done < <(git log --format='%H' "${base}..${head}")
+
+    if [[ "${#uncited_commits[@]}" -eq 0 ]]; then
+        echo "check-issue-traceability: every .rs-touching commit in this range names an issue"
+        exit 0
+    fi
+
+    echo
+    echo "UNCITED FIX SET -- ${#uncited_commits[@]} commit(s) touch a .rs file and name no"
+    echo "issue at all. These are invisible to both existing audit modes, which start"
+    echo "from a set of issues: no PR body declares them, and if the work was never"
+    echo "filed, no closed-issue sweep will find it either."
+    for sha in "${uncited_commits[@]}"; do
+        subject="$(git log -1 --format='%s' "${sha}")"
+        printf '  %s  %s\n' "${sha:0:12}" "${subject}"
+        echo "::warning title=Fix with no issue reference::${sha:0:12} ${subject}"
+    done
+    # Advisory — see the block comment above.
     exit 0
 fi
 
@@ -196,6 +403,7 @@ fi
 
 if [[ "$#" -ne 2 ]]; then
     echo "usage: $0 <base-commit> <head-commit>" >&2
+    echo "       $0 --push   <before-sha> <after-sha>      # push-to-main annotations" >&2
     echo "       $0 --window <base-commit> <head-commit>   # close-time citation audit" >&2
     echo "       $0 --orphan <base-commit> <head-commit>   # fixed-but-never-closed audit" >&2
     exit 2

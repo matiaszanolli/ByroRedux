@@ -13,16 +13,34 @@ env:
 jobs:
   issue-traceability:
     name: Issue/commit traceability
-    if: github.event_name == 'pull_request'
+    # #3504 — the job-level `if: github.event_name == 'pull_request'` that
+    # used to live here is why #3218's finding never moved: this repo's
+    # history is overwhelmingly direct commits to main, so the gate never
+    # fired for the dominant workflow at all. The event now selects the
+    # STEP, not whether the job runs.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Self-test the traceability script
+        run: scripts/check-issue-traceability.sh --self-test
       - name: Require a closing-keyword commit for every issue closed by the PR
+        if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: scripts/check-issue-traceability.sh '${{ github.event.pull_request.base.sha }}' '${{ github.event.pull_request.head.sha }}'
+      # Advisory by necessity: a pushed commit's message can no longer be
+      # edited, so failing here would block main without being able to add
+      # the citation it is asking for. What this buys is the signal landing
+      # on the push, as an annotation, while the author still has the
+      # context — instead of an auditor reconstructing it weeks later, which
+      # is the cost #3218 measured and #3504 measured again unchanged.
+      - name: Annotate uncited fixes and uncited closures on the pushed range
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/check-issue-traceability.sh --push '${{ github.event.before }}' '${{ github.event.after }}'
 
   source-integrity:
     name: Text-source integrity
