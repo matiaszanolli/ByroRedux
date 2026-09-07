@@ -777,25 +777,47 @@ fn copied_transform(world: &World, entity: EntityId) -> Option<Transform> {
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
 /// can cascade), or `None` otherwise / when a target can't resolve.
 ///
-/// **Nested-lock safety depends on exclusive scheduling.** The full
-/// residual list, current as of #2660 (SCR-D6-NEW11-03):
-///   - `PlayerControlState` (3 writes — `SetPlayerControls`-family arms)
-///   - `Globals` (1 write — `SetGlobalValue`)
-///   - 12 component-storage acquisitions across the match arms below,
-///     including `Inventory` (`AddItem`) and `GlobalTransform` +
-///     `Transform` (`MoveTo`)
+/// **Nested-lock safety depends on exclusive scheduling.** What this
+/// function runs *inside* is one `resource_2_mut::<QuestStageState,
+/// QuestObjectiveState>()` taken by [`apply_fragment_guard_free`] — a
+/// single TypeId-sorted paired acquisition, scoped to one fragment's
+/// effects and dropped before `deferred.apply(world)` runs. It is NOT held
+/// across the cascade loop, and `QuestStageFragments` is not held at all:
+/// [`quest_fragment_dispatch_system`] clones it before taking any quest
+/// resource, precisely to avoid a read→write nested order.
 ///
-/// all taken while the caller ([`quest_fragment_dispatch_system`]) still
-/// holds the `QuestStageFragments`/`QuestStageState`/`QuestObjectiveState`
-/// resource locks for the whole cascade loop. This is only safe because
-/// every system that touches those quest resources is registered
-/// `add_exclusive` in `byroredux/src/boot.rs` (parallel systems never run
-/// concurrently with an exclusive one), so no other holder can ever form
-/// the other half of an ABBA cycle. Adding a new nested component/resource
-/// lock here, or moving `quest_fragment_dispatch_system` (or any sibling
-/// quest-resource system) onto the parallel lane, needs the same analysis
-/// re-derived — see SCR-D6-NEW3-03 / #2126, and record the change under
-/// the house-rule doc #2270 asks for.
+/// Everything below is therefore nested under those two guards and nothing
+/// else. Listed by where it is taken rather than as a hand count, because
+/// the count is what rotted (#3949 — the previous version of this block
+/// said "12 component-storage acquisitions" and named three resources that
+/// are no longer all held together):
+///
+///   - **directly in the match arms** — `Globals` (write, `SetGlobalValue`),
+///     `PlayerControlState` (write ×3, the `SetPlayerControls` family),
+///     `EquipItemCatalog` (read), `SceneRegistry` (read),
+///     `PapyrusPlayerEntity` (read), and the component storages
+///     `Inventory`, `Transform` (read and write), `GlobalTransform`,
+///     `ActorControlState`, `EvaluatePackageRequest`, `HorseTetherState`,
+///     `MotionTypeChangeRequest` (×2), `SceneStartRequest`,
+///     `SceneStopRequest`
+///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
+///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
+///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
+///
+/// so ~15 distinct storage/resource types across ~20 sites in this
+/// function plus three helpers. The `FragmentExecutionQueue` write is
+/// *not* in this list: it belongs to the latent-continuation path in the
+/// dispatch system, outside these guards.
+///
+/// This is only safe because every system that touches the quest resources
+/// is registered `add_exclusive` in `byroredux/src/boot.rs` (parallel
+/// systems never run concurrently with an exclusive one), so no other
+/// holder can ever form the other half of an ABBA cycle. Adding a new
+/// nested component/resource lock here, or moving
+/// [`quest_fragment_dispatch_system`] (or any sibling quest-resource
+/// system) onto the parallel lane, needs the same analysis re-derived —
+/// see SCR-D6-NEW3-03 / #2126, and record the change under the house-rule
+/// doc #2270 asks for.
 ///
 /// `SceneActorBindings` used to be part of this residual list too (every
 /// `resolve_object` alias lookup read it live) but is now resolved through

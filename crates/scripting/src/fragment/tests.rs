@@ -3014,6 +3014,91 @@ fn nested_lock_contract_documents_apply_effect_itself() {
     );
 }
 
+/// #3949 — the previous residual list said `apply_effect` ran while the
+/// caller held the `QuestStageFragments`/`QuestStageState`/
+/// `QuestObjectiveState` locks "for the whole cascade loop" and counted
+/// "12 component-storage acquisitions". None of that survived the
+/// guard-free rework: `QuestStageFragments` is cloned before any quest
+/// resource is taken, the other two are one paired `resource_2_mut`
+/// scoped to a single fragment, and the real acquisition set is larger.
+///
+/// The count is what rotted, so the count is what gets pinned. Every
+/// storage/resource type `apply_effect` actually acquires must be named in
+/// its own doc block — the next arm that adds one fails here instead of
+/// silently ageing the inventory the Dim-6 checklist delegates to.
+#[test]
+fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
+    const FRAGMENT_RS: &str = include_str!("../fragment.rs");
+
+    let contract_start = FRAGMENT_RS
+        .find("**Nested-lock safety depends on exclusive scheduling.**")
+        .expect("apply_effect's nested-lock residual list");
+    let body_start = FRAGMENT_RS
+        .find("\nfn apply_effect(")
+        .expect("apply_effect's definition");
+    let doc = &FRAGMENT_RS[contract_start..body_start];
+    let body_end = FRAGMENT_RS[body_start..]
+        .find("\n}\n")
+        .expect("the end of apply_effect's body")
+        + body_start;
+    let body = &FRAGMENT_RS[body_start..body_end];
+
+    // `.query_mut::<crate::HorseTetherState>()` -> `HorseTetherState`.
+    // Needle composed at runtime so this test's own source cannot be what
+    // the scan finds.
+    let acquire = format!("{}{}", "::", "<");
+    let mut acquired: Vec<String> = Vec::new();
+    for (index, _) in body.match_indices(&acquire) {
+        let before = &body[..index];
+        if !(before.ends_with("query")
+            || before.ends_with("query_mut")
+            || before.ends_with("resource")
+            || before.ends_with("resource_mut")
+            || before.ends_with("try_resource")
+            || before.ends_with("try_resource_mut")
+            || before.ends_with("get")
+            || before.ends_with("get_mut"))
+        {
+            continue;
+        }
+        let rest = &body[index + acquire.len()..];
+        let Some(close) = rest.find('>') else {
+            continue;
+        };
+        let path = &rest[..close];
+        if path.is_empty() || path.contains(' ') {
+            continue;
+        }
+        let short = path.rsplit("::").next().unwrap_or(path).to_owned();
+        if !acquired.contains(&short) {
+            acquired.push(short);
+        }
+    }
+    assert!(
+        acquired.len() > 10,
+        "the acquisition scan found only {acquired:?} — the extraction broke, \
+         not the doc"
+    );
+
+    let missing: Vec<&String> = acquired.iter().filter(|ty| !doc.contains(*ty)).collect();
+    assert!(
+        missing.is_empty(),
+        "apply_effect acquires {missing:?} without naming them in its own \
+         nested-lock residual list — that list is the inventory the Dim-6 \
+         audit checklist delegates to, so an unlisted acquisition is \
+         invisible to it (#3949)"
+    );
+
+    // The specific stale claim, which no acquisition scan can catch: the
+    // fragment table is cloned, never held.
+    assert!(
+        !doc.contains("holds the `QuestStageFragments`"),
+        "`QuestStageFragments` is cloned before any quest resource is taken \
+         (`quest_fragment_dispatch_system`), so it is never held across this \
+         function (#3949)"
+    );
+}
+
 /// #3935 — a long run of *sequential* `Effect::Conditional`s must dispatch
 /// iteratively.
 ///
