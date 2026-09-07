@@ -71,7 +71,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`scene_buffer/shader_contract_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_432_bytes` and
+/// by `gpu_material_size_is_428_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -87,7 +87,7 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_432_bytes`.
+    /// the std430 layout pinned by `gpu_material_size_is_428_bytes`.
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -103,40 +103,52 @@ pub struct GpuMaterial {
     pub alpha_threshold: f32, // offset 44
 
     // ── Texture indices group A (vec4 #4) ──────────────────────────
-    pub texture_index: u32,    // offset 48 — diffuse / albedo
-    pub normal_map_index: u32, // offset 52
-    pub dark_map_index: u32,   // offset 56
-    pub glow_map_index: u32,   // offset 60
+    // #3909 (REN-2026-09-05-D7-02) — `texture_index` (the diffuse / albedo
+    // handle) used to lead this group. It was written by `to_gpu_material`
+    // from `DrawCommand::texture_handle`, hashed into the dedup key, and
+    // sampled by NO shader: every `textureIndex` read in `shaders/` comes
+    // from `inst` (`GpuInstance`), never `mat`. `GpuInstance`'s own field
+    // doc records why — the diffuse handle is deliberately held per-instance
+    // and NOT migrated to the material table, because the UI quad path
+    // appends an instance with a per-frame texture handle without interning
+    // a material at all. So this was a leftover from before that decision,
+    // and its presence in the dedup key split materials that are identical
+    // in every respect the GPU actually reads. Removed on the #804 precedent
+    // (`avg_albedo_*`, same struct, same reason); subsequent offsets shift
+    // down by 4.
+    pub normal_map_index: u32, // offset 48
+    pub dark_map_index: u32,   // offset 52
+    pub glow_map_index: u32,   // offset 56
 
     // ── Texture indices group B (vec4 #5) ──────────────────────────
-    pub detail_map_index: u32,   // offset 64
-    pub gloss_map_index: u32,    // offset 68
-    pub parallax_map_index: u32, // offset 72
-    pub env_map_index: u32,      // offset 76
+    pub detail_map_index: u32,   // offset 60
+    pub gloss_map_index: u32,    // offset 64
+    pub parallax_map_index: u32, // offset 68
+    pub env_map_index: u32,      // offset 72
 
     // ── env_mask + alpha_test_func + material_kind + alpha (vec4 #6)
-    pub env_mask_index: u32,  // offset 80
-    pub alpha_test_func: u32, // offset 84
-    pub material_kind: u32,   // offset 88
-    pub material_alpha: f32,  // offset 92
+    pub env_mask_index: u32,  // offset 76
+    pub alpha_test_func: u32, // offset 80
+    pub material_kind: u32,   // offset 84
+    pub material_alpha: f32,  // offset 88
 
     // ── Parallax POM + UV offset (vec4 #7) ─────────────────────────
-    pub parallax_height_scale: f32, // offset 96
-    pub parallax_max_passes: f32,   // offset 100
-    pub uv_offset_u: f32,           // offset 104
-    pub uv_offset_v: f32,           // offset 108
+    pub parallax_height_scale: f32, // offset 92
+    pub parallax_max_passes: f32,   // offset 96
+    pub uv_offset_u: f32,           // offset 100
+    pub uv_offset_v: f32,           // offset 104
 
     // ── UV scale + diffuse RG (vec4 #8) ────────────────────────────
-    pub uv_scale_u: f32, // offset 112
-    pub uv_scale_v: f32, // offset 116
-    pub diffuse_r: f32,  // offset 120
-    pub diffuse_g: f32,  // offset 124
+    pub uv_scale_u: f32, // offset 108
+    pub uv_scale_v: f32, // offset 112
+    pub diffuse_r: f32,  // offset 116
+    pub diffuse_g: f32,  // offset 120
 
     // ── diffuse_b + ambient RGB (vec4 #9) ──────────────────────────
-    pub diffuse_b: f32, // offset 128
-    pub ambient_r: f32, // offset 132
-    pub ambient_g: f32, // offset 136
-    pub ambient_b: f32, // offset 140
+    pub diffuse_b: f32, // offset 124
+    pub ambient_r: f32, // offset 128
+    pub ambient_g: f32, // offset 132
+    pub ambient_b: f32, // offset 136
 
     // #804 / R1-N4 — `avg_albedo_r/g/b` (offsets 144-152) removed. The
     // field was populated by `to_gpu_material` for every material but
@@ -147,46 +159,46 @@ pub struct GpuMaterial {
     // per-instance copy stays. Subsequent fields shift down by 12 bytes.
 
     // ── skin_tint_a + skin_tint RGB (offsets 144-156) ───────────────
-    pub skin_tint_a: f32, // offset 144
-    pub skin_tint_r: f32, // offset 148
-    pub skin_tint_g: f32, // offset 152
-    pub skin_tint_b: f32, // offset 156
+    pub skin_tint_a: f32, // offset 140
+    pub skin_tint_r: f32, // offset 144
+    pub skin_tint_g: f32, // offset 148
+    pub skin_tint_b: f32, // offset 152
 
     // ── hair_tint RGB + multi_layer_envmap_strength (offsets 160-172)
-    pub hair_tint_r: f32,                 // offset 160
-    pub hair_tint_g: f32,                 // offset 164
-    pub hair_tint_b: f32,                 // offset 168
-    pub multi_layer_envmap_strength: f32, // offset 172
+    pub hair_tint_r: f32,                 // offset 156
+    pub hair_tint_g: f32,                 // offset 160
+    pub hair_tint_b: f32,                 // offset 164
+    pub multi_layer_envmap_strength: f32, // offset 168
 
     // ── eye_left RGB + eye_cubemap_scale (offsets 176-188) ──────────
-    pub eye_left_center_x: f32, // offset 176
-    pub eye_left_center_y: f32, // offset 180
-    pub eye_left_center_z: f32, // offset 184
-    pub eye_cubemap_scale: f32, // offset 188
+    pub eye_left_center_x: f32, // offset 172
+    pub eye_left_center_y: f32, // offset 176
+    pub eye_left_center_z: f32, // offset 180
+    pub eye_cubemap_scale: f32, // offset 184
 
     // ── eye_right RGB + multi_layer_inner_thickness (offsets 192-204)
-    pub eye_right_center_x: f32,          // offset 192
-    pub eye_right_center_y: f32,          // offset 196
-    pub eye_right_center_z: f32,          // offset 200
-    pub multi_layer_inner_thickness: f32, // offset 204
+    pub eye_right_center_x: f32,          // offset 188
+    pub eye_right_center_y: f32,          // offset 192
+    pub eye_right_center_z: f32,          // offset 196
+    pub multi_layer_inner_thickness: f32, // offset 200
 
     // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
-    pub multi_layer_refraction_scale: f32, // offset 208
-    pub multi_layer_inner_scale_u: f32,    // offset 212
-    pub multi_layer_inner_scale_v: f32,    // offset 216
-    pub sparkle_r: f32,                    // offset 220
+    pub multi_layer_refraction_scale: f32, // offset 204
+    pub multi_layer_inner_scale_u: f32,    // offset 208
+    pub multi_layer_inner_scale_v: f32,    // offset 212
+    pub sparkle_r: f32,                    // offset 216
 
     // ── sparkle_g/b + sparkle_intensity + falloff_start (224-236) ───
-    pub sparkle_g: f32,           // offset 224
-    pub sparkle_b: f32,           // offset 228
-    pub sparkle_intensity: f32,   // offset 232
-    pub falloff_start_angle: f32, // offset 236
+    pub sparkle_g: f32,           // offset 220
+    pub sparkle_b: f32,           // offset 224
+    pub sparkle_intensity: f32,   // offset 228
+    pub falloff_start_angle: f32, // offset 232
 
     // ── falloff_stop + opacities + soft_falloff_depth + pad (240-256)
-    pub falloff_stop_angle: f32,    // offset 240
-    pub falloff_start_opacity: f32, // offset 244
-    pub falloff_stop_opacity: f32,  // offset 248
-    pub soft_falloff_depth: f32,    // offset 252
+    pub falloff_stop_angle: f32,    // offset 236
+    pub falloff_start_opacity: f32, // offset 240
+    pub falloff_stop_opacity: f32,  // offset 244
+    pub soft_falloff_depth: f32,    // offset 248
     /// #890 Stage 2c — bindless texture index of the BSEffectShaderProperty
     /// `greyscale_texture` (1D color LUT). `0` means "no LUT bound"
     /// (the renderer falls back to sampling the source texture as
@@ -202,7 +214,7 @@ pub struct GpuMaterial {
     /// `triangle.frag` (`MATERIAL_KIND_EFFECT_SHADER` branch) +
     /// `cell_loader/spawn.rs` (resolution site). Previously named
     /// `_pad_falloff` — repacked #890 Stage 2c.
-    pub greyscale_lut_index: u32, // offset 256
+    pub greyscale_lut_index: u32, // offset 252
 
     // ── BGSM translucency parameter suite (vec4 #18; offsets 260-280) ─
     //
@@ -218,14 +230,14 @@ pub struct GpuMaterial {
     /// the per-fragment albedo when `BGSM_TRANSLUCENCY_MIX_ALBEDO` is
     /// set; used raw otherwise. Default zero — no contribution when
     /// the gating flag is unset.
-    pub translucency_subsurface_r: f32, // offset 260
-    pub translucency_subsurface_g: f32, // offset 264
-    pub translucency_subsurface_b: f32, // offset 268
+    pub translucency_subsurface_r: f32, // offset 256
+    pub translucency_subsurface_g: f32, // offset 260
+    pub translucency_subsurface_b: f32, // offset 264
     /// `BgsmFile.translucency_transmissive_scale`. Intensity scalar
     /// for the back-side / wraparound transmission term. Higher =
     /// brighter rim glow on thin objects. BGSM-authored range is
     /// typically 0.5 – 4.0 on FO4 content.
-    pub translucency_transmissive_scale: f32, // offset 272
+    pub translucency_transmissive_scale: f32, // offset 268
 
     // ── BGSM translucency turbulence (vec4 #19; offsets 276-280) ─────
     /// `BgsmFile.translucency_turbulence`. Adds a noise-driven
@@ -234,7 +246,7 @@ pub struct GpuMaterial {
     /// (vegetation, frost-rimmed glass). 0.0 = no turbulence. The
     /// shader consumes it as a multiplier on a `sin(viewDotN * k)`
     /// term to keep cost trivial.
-    pub translucency_turbulence: f32, // offset 276
+    pub translucency_turbulence: f32, // offset 272
     // ── PBR IOR (vec4 #20; offsets 280-292) ──────────────────────────
     /// Refractive index — per-material η that drives the Schlick F0
     /// derivation `F0 = ((1-η)/(1+η))²` instead of the legacy hardcoded
@@ -258,7 +270,7 @@ pub struct GpuMaterial {
     /// exception: it overloads this same field as an authored 0-1
     /// distortion strength, not a physical IOR — see
     /// `SurfaceBehavior::ior`'s doc in `crates/core`. See #1248.
-    pub ior: f32, // offset 280
+    pub ior: f32, // offset 276
     // ── Disney diffuse lobe (vec4 #21; offsets 284-296) ──────────────
     /// Disney "subsurface" diffuse-lobe weight (0 = pure Burley
     /// diffuse, 1 = full Hanrahan-Krueger fake-SSS). Cheap
@@ -267,12 +279,12 @@ pub struct GpuMaterial {
     /// transmission). Reference impl:
     /// knightcrawler25/GLSL-PathTracer `disney.glsl:67-87` (MIT).
     /// Default 0.0 keeps the pre-#1249 Lambert behaviour. See #1249.
-    pub subsurface: f32, // offset 284
+    pub subsurface: f32, // offset 280
     /// Disney "sheen" Fresnel-weighted edge highlight strength
     /// (0 = no sheen, 1 = full velvet/silk). Layered on top of the
     /// diffuse lobe so fabric-class materials get their characteristic
     /// edge brightening. Default 0.0. See #1249.
-    pub sheen: f32, // offset 288
+    pub sheen: f32, // offset 284
     /// Disney "sheen tint" — interpolation factor between white sheen
     /// (0.0) and base-colour-tinted sheen (1.0). Standard Disney shape;
     /// the per-pixel sheen colour is `mix(vec3(1.0), albedo / luminance(albedo),
@@ -280,7 +292,7 @@ pub struct GpuMaterial {
     /// intensity (#2819 / REN-D17-05 fixed a regression where this mixed in
     /// raw `albedo`, coupling sheen brightness to base-colour darkness).
     /// Default 0.0 → white sheen. See #1249.
-    pub sheen_tint: f32, // offset 292
+    pub sheen_tint: f32, // offset 288
     /// Anisotropic GGX strength [0, 1] (#1250). Drives the standard
     /// Disney `aspect = sqrt(1 - anisotropic * 0.9)` split:
     /// `ax = roughness / aspect, ay = roughness * aspect`. Default
@@ -291,7 +303,7 @@ pub struct GpuMaterial {
     /// streak when authored values land. The `0.9` cap prevents
     /// complete needle degeneracy at anisotropic = 1. Reference:
     /// knightcrawler25/GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
-    pub anisotropic: f32, // offset 296
+    pub anisotropic: f32, // offset 292
 
     // ── Supplemental semantic texture roles (offsets 300-344) ─────
     // These are source-format agnostic. The NIF translation layer maps
@@ -310,32 +322,32 @@ pub struct GpuMaterial {
     // surprise: one otherwise-unused DDS upload per authored lane, and a
     // dedup-key lane (`hash_gpu_material_fields`) that can split two
     // materials rendering byte-identically. No visual effect.
-    pub tint_map_index: u32,        // offset 300
-    pub inner_layer_map_index: u32, // offset 304
-    pub specular_map_index: u32,    // offset 308
+    pub tint_map_index: u32,        // offset 296
+    pub inner_layer_map_index: u32, // offset 300
+    pub specular_map_index: u32,    // offset 304
     /// **Captured, not yet shaded** (#2712). Populated from
     /// `BSEffectShaderProperty.lighting_texture` and BGSM/BGEM
     /// `lighting_texture`. Blocked on deciding what the lane means to
     /// this renderer: the source games use it as a baked-lighting /
     /// light-mask overlay authored against their own forward pipeline,
     /// which has no direct equivalent in an RT-lit frame.
-    pub lighting_map_index: u32, // offset 312
+    pub lighting_map_index: u32, // offset 308
     /// **Captured, not yet shaded** (#2712). Populated from BGSM
     /// `flow_texture`. Blocked on flow-map coordinate semantics — the
     /// UV-advection convention (and its pairing with the water/animation
     /// path) has to be settled before the lane can drive anything.
-    pub flow_map_index: u32, // offset 316
+    pub flow_map_index: u32, // offset 312
     /// **Captured, not yet shaded** (#2712). Populated from BGSM
     /// `wrinkles_texture`. Blocked on actor control: wrinkle maps are
     /// blended by per-expression facial-animation weights that the
     /// animation path does not deliver to the material yet.
-    pub wrinkle_map_index: u32, // offset 320
-    pub reflectance_map_index: u32, // offset 324
-    pub emittance_gradient_map_index: u32, // offset 328
-    pub decal_map_0_index: u32,     // offset 332
-    pub decal_map_1_index: u32,     // offset 336
-    pub decal_map_2_index: u32,     // offset 340
-    pub decal_map_3_index: u32,     // offset 344
+    pub wrinkle_map_index: u32, // offset 316
+    pub reflectance_map_index: u32, // offset 320
+    pub emittance_gradient_map_index: u32, // offset 324
+    pub decal_map_0_index: u32,     // offset 328
+    pub decal_map_1_index: u32,     // offset 332
+    pub decal_map_2_index: u32,     // offset 336
+    pub decal_map_3_index: u32,     // offset 340
 
     // ── Animated BSShaderProperty color/scalar (offsets 348-360) ────
     //
@@ -353,38 +365,38 @@ pub struct GpuMaterial {
     // one). Populated end-to-end (`DrawCommand` → hash → here) so the
     // plumbing exists; sampling is future work once a named-uniform
     // shader dispatch settles which uniform each controller drives.
-    pub shader_color_r: f32, // offset 348
-    pub shader_color_g: f32, // offset 352
-    pub shader_color_b: f32, // offset 356
-    pub shader_float: f32,   // offset 360
+    pub shader_color_r: f32, // offset 344
+    pub shader_color_g: f32, // offset 348
+    pub shader_color_b: f32, // offset 352
+    pub shader_float: f32,   // offset 356
 
     // ── BGEM v21+ glass optical suite (offsets 364-392) ────────────
-    pub glass_fresnel_r: f32,                   // offset 364
-    pub glass_fresnel_g: f32,                   // offset 368
-    pub glass_fresnel_b: f32,                   // offset 372
-    pub glass_refraction_scale: f32,            // offset 376
-    pub glass_blur_scale: f32,                  // offset 380
-    pub glass_blur_scale_factor: f32,           // offset 384
-    pub glass_roughness_scratch_map_index: u32, // offset 388
-    pub glass_dirt_overlay_map_index: u32,      // offset 392
+    pub glass_fresnel_r: f32,                   // offset 360
+    pub glass_fresnel_g: f32,                   // offset 364
+    pub glass_fresnel_b: f32,                   // offset 368
+    pub glass_refraction_scale: f32,            // offset 372
+    pub glass_blur_scale: f32,                  // offset 376
+    pub glass_blur_scale_factor: f32,           // offset 380
+    pub glass_roughness_scratch_map_index: u32, // offset 384
+    pub glass_dirt_overlay_map_index: u32,      // offset 388
 
     // ── Bethesda authored lighting response (offsets 396-428) ──────
-    pub lighting_effect_1: f32,          // offset 396
-    pub lighting_effect_2: f32,          // offset 400
-    pub subsurface_rolloff: f32,         // offset 404
-    pub rimlight_power: f32,             // offset 408
-    pub backlight_power: f32,            // offset 412
-    pub fresnel_power: f32,              // offset 416
-    pub grayscale_to_palette_scale: f32, // offset 420
-    pub lighting_mask_map_index: u32,    // offset 424
-    pub back_lighting_map_index: u32,    // offset 428 → total 432
+    pub lighting_effect_1: f32,          // offset 392
+    pub lighting_effect_2: f32,          // offset 396
+    pub subsurface_rolloff: f32,         // offset 400
+    pub rimlight_power: f32,             // offset 404
+    pub backlight_power: f32,            // offset 408
+    pub fresnel_power: f32,              // offset 412
+    pub grayscale_to_palette_scale: f32, // offset 416
+    pub lighting_mask_map_index: u32,    // offset 420
+    pub back_lighting_map_index: u32,    // offset 424 → total 432
 }
 
-// SAFETY: `#[repr(C)]` over 108 four-byte scalars (`f32` / `u32`) only, so
-// every byte of the declared 432 is covered by a field and the struct's
+// SAFETY: `#[repr(C)]` over 107 four-byte scalars (`f32` / `u32`) only, so
+// every byte of the declared 428 is covered by a field and the struct's
 // alignment is 4 — there is no larger member for the compiler to pad toward,
-// and 432 % 4 == 0 so the array stride needs no tail padding either.
-// `gpu_material_size_is_432_bytes` and
+// and 428 % 4 == 0 so the array stride needs no tail padding either.
+// `gpu_material_size_is_428_bytes` and
 // `gpu_material_field_offsets_match_shader_contract` pin both halves of that.
 //
 // #3990 — landed alongside `GpuInstance`'s, so the two most churn-prone GPU
@@ -413,7 +425,6 @@ impl Default for GpuMaterial {
             specular_b: 1.0,
             alpha_threshold: 0.0,
             // Texture indices — all 0 = no map (shaders fall back to constants).
-            texture_index: 0,
             normal_map_index: 0,
             dark_map_index: 0,
             glow_map_index: 0,
@@ -1064,8 +1075,9 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.specular_g.to_bits());
     h.write_u32(mat.specular_b.to_bits());
     h.write_u32(mat.alpha_threshold.to_bits());
-    // Texture indices group A
-    h.write_u32(mat.texture_index);
+    // Texture indices group A. #3909 — `texture_index` is gone from the
+    // struct, so it is gone from the hash too; the two must stay byte-equal
+    // (`material_hash_matches_gpu_material_field_hash`).
     h.write_u32(mat.normal_map_index);
     h.write_u32(mat.dark_map_index);
     h.write_u32(mat.glow_map_index);

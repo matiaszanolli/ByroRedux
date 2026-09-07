@@ -96,7 +96,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (396 B std430) defined
+// Mirrors the Rust `GpuMaterial` (428 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -104,8 +104,13 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (396 B) is pinned by
-// `gpu_material_size_is_396_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (428 B) is pinned by
+// `gpu_material_size_is_428_bytes` on the Rust side.
+//
+// (#3909 shrank it 432 -> 428 by removing the unsampled `textureIndex` lane.
+// The 396 B / `gpu_material_size_is_396_bytes` this comment carried before
+// was stale by 36 B and named a test that does not exist — the defect #3846
+// tracks; corrected here rather than left to compound.)
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -119,9 +124,13 @@ struct GpuMaterial {
     float emissiveR, emissiveG, emissiveB, specularStrength;
     // Specular RGB + alpha_threshold (vec4 #3)
     float specularR, specularG, specularB, alphaThreshold;
-    // Texture indices group A (vec4 #4)
-    uint textureIndex, normalMapIndex, darkMapIndex, glowMapIndex;
-    // Texture indices group B (vec4 #5)
+    // Texture indices group A. #3909 — `textureIndex` (the diffuse / albedo
+    // handle) used to lead this group; it was sampled by no shader (every
+    // `textureIndex` read in `shaders/` comes from `inst`, never `mat`) and
+    // is removed. Everything below shifts down by 4 bytes. Same precedent as
+    // #804's `avgAlbedo*` removal a few fields down.
+    uint normalMapIndex, darkMapIndex, glowMapIndex;
+    // Texture indices group B
     uint detailMapIndex, glossMapIndex, parallaxMapIndex, envMapIndex;
     // env_mask + alpha_test_func + material_kind + alpha (vec4 #6)
     uint envMaskIndex, alphaTestFunc, materialKind;
@@ -132,15 +141,15 @@ struct GpuMaterial {
     float uvScaleU, uvScaleV, diffuseR, diffuseG;
     // diffuse_b + ambient RGB (vec4 #9)
     float diffuseB, ambientR, ambientG, ambientB;
-    // #804 / R1-N4 — `avgAlbedoR/G/B` (offsets 144-152) removed; no
+    // #804 / R1-N4 — `avgAlbedoR/G/B` (offsets 140-148) removed; no
     // shader read `mat.avgAlbedo*`. Subsequent fields shift down by 12.
-    // skin_tint A/R/G/B (offsets 144-156)
+    // skin_tint A/R/G/B (offsets 140-152)
     float skinTintA, skinTintR, skinTintG, skinTintB;
-    // hair_tint RGB + multi_layer_envmap_strength (offsets 160-172)
+    // hair_tint RGB + multi_layer_envmap_strength (offsets 156-168)
     float hairTintR, hairTintG, hairTintB, multiLayerEnvmapStrength;
-    // eye_left RGB + eye_cubemap_scale (offsets 176-188)
+    // eye_left RGB + eye_cubemap_scale (offsets 172-184)
     float eyeLeftCenterX, eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale;
-    // eye_right RGB + multi_layer_inner_thickness (offsets 192-204)
+    // eye_right RGB + multi_layer_inner_thickness (offsets 188-200)
     float eyeRightCenterX, eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness;
     // refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
     float multiLayerRefractionScale, multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR;
@@ -151,7 +160,7 @@ struct GpuMaterial {
     // #890 Stage 2c — bindless handle for
     // `BSEffectShaderProperty.greyscale_texture`. 0 = no LUT (the
     // shader's effect branch then samples the source texture raw).
-    // Offset 256.
+    // Offset 252.
     uint greyscaleLutIndex;
     // #1147 Phase 2b — BGSM v>=8 translucency suite. Read only when
     // `materialFlags & MAT_FLAG_TRANSLUCENCY != 0u`. Layout must
@@ -176,13 +185,13 @@ struct GpuMaterial {
     //     via `clamp(mat.ior, 0.0, 1.0)` in `triangle.frag`'s fire-refraction
     //     branch. Do not "fix" values outside ~1.0-2.5 for this kind.
     float ior;
-    // #1249 — Disney diffuse lobe (offsets 284-292). subsurface
+    // #1249 — Disney diffuse lobe (offsets 280-288). subsurface
     // weights the Hanrahan-Krueger fake-SSS approximation against the
     // Burley diffuse; sheen + sheenTint drive the fabric-class edge
     // highlight. All zero by default → byte-identical Lambert
     // behaviour for legacy NIF content. Only consulted when
     // `MAT_FLAG_PBR_BSDF` is set. These complete the #1249 block at
-    // offset 296; #1250 `anisotropic` then completed the prior 300 B layout.
+    // offset 292; #1250 `anisotropic` then completed the prior 300 B layout.
     float subsurface;
     float sheen;
     float sheenTint;
@@ -192,7 +201,7 @@ struct GpuMaterial {
     // capped at `aspect = sqrt(0.1)` so the lobe doesn't fully
     // degenerate into a needle.
     float anisotropic;
-    // Common supplemental semantic texture roles (offsets 300-344).
+    // Common supplemental semantic texture roles (offsets 296-340).
     // Source-game slot numbering has already been translated away.
     //
     // #2712 — `lightingMapIndex`, `flowMapIndex` and `wrinkleMapIndex`
@@ -215,13 +224,13 @@ struct GpuMaterial {
     uint decalMap1Index;
     uint decalMap2Index;
     uint decalMap3Index;
-    // Animated BSShaderProperty color/scalar (offsets 348-360, #2221).
+    // Animated BSShaderProperty color/scalar (offsets 344-356, #2221).
     // Same "layout parity, no shader consumer yet" precedent as the
     // three unsampled map indices above — see the field notes in
     // crates/renderer/src/vulkan/material.rs.
     float shaderColorR, shaderColorG, shaderColorB; // unsampled — see #2221
     float shaderFloat;                              // unsampled — see #2221
-    // BGEM v21+/v22 authored glass optics (offsets 364-392).
+    // BGEM v21+/v22 authored glass optics (offsets 360-388).
     float glassFresnelR, glassFresnelG, glassFresnelB;
     float glassRefractionScale;
     float glassBlurScale;
@@ -229,7 +238,7 @@ struct GpuMaterial {
     uint glassRoughnessScratchMapIndex;
     uint glassDirtOverlayMapIndex;
     // Bethesda-authored direct-light response and translated mask roles
-    // (offsets 396-428). Feature flags independently gate soft, rim and
+    // (offsets 392-424). Feature flags independently gate soft, rim and
     // back lighting so non-zero serialized defaults cannot activate them.
     float lightingEffect1;
     float lightingEffect2;

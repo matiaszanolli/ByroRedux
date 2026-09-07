@@ -452,7 +452,6 @@ impl DrawCommand {
             specular_g: self.specular_color[1],
             specular_b: self.specular_color[2],
             alpha_threshold: self.alpha_threshold,
-            texture_index: self.texture_handle,
             normal_map_index: self.normal_map_index,
             dark_map_index: self.dark_map_index,
             glow_map_index: self.glow_map_index,
@@ -622,7 +621,13 @@ impl DrawCommand {
         h.write_u32(self.specular_color[2].to_bits());
         h.write_u32(self.alpha_threshold.to_bits());
         // Texture indices group A
-        h.write_u32(self.texture_handle);
+        // #3909 — `GpuMaterial.texture_index` is gone (it was written from
+        // `texture_handle`, hashed here, and sampled by no shader; the
+        // diffuse handle lives on `GpuInstance` by design). Dropping the
+        // write keeps this hash byte-equal with `hash_gpu_material_fields`,
+        // the contract `material_hash_matches_gpu_material_field_hash` pins,
+        // and stops materials that differ only in diffuse handle from
+        // splitting the table.
         h.write_u32(self.normal_map_index);
         h.write_u32(self.dark_map_index);
         h.write_u32(self.glow_map_index);
