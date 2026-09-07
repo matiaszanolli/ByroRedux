@@ -59,8 +59,8 @@ use super::*;
 ///   the size so a future size
 ///   shift updates it in lockstep with the assertion.
 #[test]
-fn gpu_material_size_is_432_bytes() {
-    assert_eq!(std::mem::size_of::<GpuMaterial>(), 432);
+fn gpu_material_size_is_428_bytes() {
+    assert_eq!(std::mem::size_of::<GpuMaterial>(), 428);
 }
 
 /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -73,10 +73,240 @@ fn gpu_material_alignment_is_4_bytes() {
     assert_eq!(std::mem::align_of::<GpuMaterial>(), 4);
 }
 
+/// #2712 — pin which supplemental role lanes are actually sampled.
+///
+/// Three of the sixteen (`lightingMapIndex`, `flowMapIndex`,
+/// `wrinkleMapIndex`) are produced, uploaded and hashed but read by no
+/// shader — a deliberate deferral that previously lived only in a one-off
+/// audit report and had already failed to propagate to a sibling report.
+/// This pins it in both directions: a lane silently going dead fails here,
+/// and so does implementing one of the three without removing its
+/// "captured, not yet shaded" note.
+///
+/// #3910 (REN-2026-09-05-D7-03) rewrote the guard. Two defects:
+///
+/// 1. **It covered 9 of the 13 sampled lanes.** The four newest — both
+///    glass-optics lanes and the lighting-mask / back-lighting masks — were
+///    listed nowhere, so exactly the lanes most likely to move were the
+///    least protected. The lane set is now DERIVED from
+///    `material::supplemental_texture_slot` and asserted exhaustive against
+///    its `COUNT`, so lane 17 cannot reopen the same gap: adding a slot
+///    fails this test until it is classified.
+/// 2. **It matched bare identifiers.** `water.frag` declares a *local*
+///    `uint flowMapIndex` read from its own `WaterParams` SSBO push data,
+///    which has nothing to do with `GpuMaterial.flowMapIndex`. A
+///    `src.contains("flowMapIndex")` scan across `shaders/` therefore
+///    reports flow as sampled when it is not. The needle is now the struct
+///    access `mat.<name>`, which is the only way a supplemental lane can
+///    actually be read.
+///
+/// The scan covers every GLSL source that can reach `GpuMaterial`, not just
+/// `triangle.frag`: the struct lives in `include/bindings.glsl`, and any
+/// `#include`d helper (`include/lighting.glsl` already reads other material
+/// fields this way) can sample a lane without `triangle.frag` naming it.
+#[cfg(test)]
+mod supplemental_lane_guard {
+    /// Every GLSL source that could sample a `GpuMaterial` lane. Excludes
+    /// `include/bindings.glsl` itself — that is the declaration, not a read.
+    const GLSL_SOURCES: &[(&str, &str)] = &[
+        ("triangle.frag", include_str!("../../shaders/triangle.frag")),
+        ("water.frag", include_str!("../../shaders/water.frag")),
+        ("triangle.vert", include_str!("../../shaders/triangle.vert")),
+        (
+            "groundcover_blade.frag",
+            include_str!("../../shaders/groundcover_blade.frag"),
+        ),
+        (
+            "volumetrics_inject.comp",
+            include_str!("../../shaders/volumetrics_inject.comp"),
+        ),
+        (
+            "include/lighting.glsl",
+            include_str!("../../shaders/include/lighting.glsl"),
+        ),
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../shaders/include/ray_hit.glsl"),
+        ),
+        (
+            "include/material_sampling.glsl",
+            include_str!("../../shaders/include/material_sampling.glsl"),
+        ),
+    ];
+
+    /// `(slot constant, GLSL field name, sampled?)` for every supplemental
+    /// lane. The slot names are checked against the authoritative
+    /// `supplemental_texture_slot` module below, so this table cannot fall
+    /// behind it — the failure mode #3910 filed.
+    const LANES: &[(&str, &str, bool)] = &[
+        ("TINT", "tintMapIndex", true),
+        ("INNER_LAYER", "innerLayerMapIndex", true),
+        ("SPECULAR", "specularMapIndex", true),
+        // Unsampled: lighting-map semantics are undecided for an RT-lit frame.
+        ("LIGHTING", "lightingMapIndex", false),
+        // Unsampled: needs a settled UV-advection convention.
+        ("FLOW", "flowMapIndex", false),
+        // Unsampled: needs per-expression weights the animation path does not
+        // deliver yet.
+        ("WRINKLE", "wrinkleMapIndex", false),
+        ("REFLECTANCE", "reflectanceMapIndex", true),
+        ("EMITTANCE_GRADIENT", "emittanceGradientMapIndex", true),
+        ("DECAL_0", "decalMap0Index", true),
+        ("DECAL_1", "decalMap1Index", true),
+        ("DECAL_2", "decalMap2Index", true),
+        ("DECAL_3", "decalMap3Index", true),
+        (
+            "GLASS_ROUGHNESS_SCRATCH",
+            "glassRoughnessScratchMapIndex",
+            true,
+        ),
+        ("GLASS_DIRT_OVERLAY", "glassDirtOverlayMapIndex", true),
+        ("LIGHTING_MASK", "lightingMaskMapIndex", true),
+        ("BACK_LIGHTING", "backLightingMapIndex", true),
+    ];
+
+    /// The slot constants declared by `material::supplemental_texture_slot`,
+    /// in declaration order, excluding `COUNT`.
+    fn declared_slots() -> Vec<String> {
+        const MATERIAL_RS: &str = include_str!("material.rs");
+        let start = MATERIAL_RS
+            .find("pub mod supplemental_texture_slot {")
+            .expect("the supplemental slot module must still exist");
+        let block = &MATERIAL_RS[start..];
+        let end = block.find("\n}\n").expect("the slot module must be closed");
+        block[..end]
+            .lines()
+            .filter_map(|line| {
+                let decl = line.trim().strip_prefix("pub const ")?;
+                let (name, _) = decl.split_once(": usize =")?;
+                (name != "COUNT").then(|| name.to_owned())
+            })
+            .collect()
+    }
+
+    /// Whether any GLSL source reads `mat.<field>`.
+    fn sampling_sites(field: &str) -> Vec<&'static str> {
+        let needle = format!("mat.{field}");
+        GLSL_SOURCES
+            .iter()
+            .filter(|(_, src)| src.contains(&needle))
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
+    /// The gap #3910 filed: the guard's list must be exhaustive against the
+    /// supplemental set, not hand-maintained. Adding a slot without
+    /// classifying it here fails immediately.
+    #[test]
+    fn the_lane_table_is_exhaustive_against_the_slot_module() {
+        let declared = declared_slots();
+        assert_eq!(
+            declared.len(),
+            crate::vulkan::material::supplemental_texture_slot::COUNT,
+            "the slot module's named lanes and COUNT must stay in lockstep",
+        );
+        let listed: Vec<&str> = LANES.iter().map(|(slot, _, _)| *slot).collect();
+        assert_eq!(
+            listed, declared,
+            "LANES must name every supplemental slot, in slot order. A new lane \
+             that is not classified sampled/unsampled here is exactly how #2712's \
+             guard silently fell to 9-of-13 coverage (#3910)",
+        );
+    }
+
+    #[test]
+    fn every_supplemental_lane_matches_its_declared_sampling_state() {
+        for (slot, field, sampled) in LANES {
+            let sites = sampling_sites(field);
+            if *sampled {
+                assert!(
+                    !sites.is_empty(),
+                    "slot::{slot} (`mat.{field}`) is a wired supplemental role, but \
+                     no shader reads it any more — the lane is now produced, \
+                     uploaded and hashed for nothing (#2712 / #3910)"
+                );
+            } else {
+                assert!(
+                    sites.is_empty(),
+                    "slot::{slot} (`mat.{field}`) is now sampled by {sites:?} — good, \
+                     but the deferral notes on GpuMaterial and in \
+                     include/bindings.glsl say it is not. Remove them together with \
+                     this lane's `false` (#2712 / #3910)"
+                );
+            }
+        }
+    }
+
+    /// The needle must be the struct access, never the bare identifier.
+    /// `water.frag` declares a local `uint flowMapIndex` from its own
+    /// `WaterParams` push data; a bare-identifier scan reports
+    /// `GpuMaterial.flowMapIndex` as sampled on the strength of a shader that
+    /// never touches the material table. Pin the collision so nobody
+    /// "simplifies" the needle back (#3910).
+    #[test]
+    fn the_bare_identifier_scan_would_have_been_wrong_about_flow() {
+        let water = GLSL_SOURCES
+            .iter()
+            .find(|(name, _)| *name == "water.frag")
+            .expect("water.frag must still be scanned")
+            .1;
+        assert!(
+            water.contains("flowMapIndex"),
+            "fixture precondition: water.frag still declares its own local \
+             flowMapIndex — if it stopped, this test documents a collision that \
+             no longer exists and can go (#3910)"
+        );
+        assert!(
+            !water.contains("mat.flowMapIndex"),
+            "water.frag must not read the GpuMaterial flow lane — its own \
+             flowMapIndex comes from the WaterParams SSBO (#3910)"
+        );
+    }
+
+    /// #3908 (REN-2026-09-05-D6-01) — the seven canonical `Material` fields
+    /// whose docs claimed "captured, not yet shaded" long after the
+    /// 2026-08-25 GPU follow-up wired them. Pin both halves: the shader still
+    /// reads each one, and the canonical docs no longer say otherwise.
+    #[test]
+    fn the_2284_shading_scalars_are_shaded_and_their_docs_say_so() {
+        for field in [
+            "lightingEffect1",
+            "lightingEffect2",
+            "subsurfaceRolloff",
+            "rimlightPower",
+            "backlightPower",
+            "fresnelPower",
+            "grayscaleToPaletteScale",
+        ] {
+            assert!(
+                !sampling_sites(field).is_empty(),
+                "`mat.{field}` is documented as shaded but no GLSL source reads \
+                 it — either the consumer was removed or the canonical doc in \
+                 core's Material needs its deferral note back (#3908)"
+            );
+        }
+
+        const CORE_MATERIAL_RS: &str = include_str!("../../../core/src/ecs/components/material.rs");
+        // Scoped past this file's own quoting of the phrase — the needle is
+        // reproduced verbatim in the doc comments that record the fix.
+        for stale in [
+            "Landed here (captured, not yet shaded)",
+            "Captured here, not yet shaded",
+        ] {
+            assert!(
+                !CORE_MATERIAL_RS.contains(stale),
+                "core's Material still tells a reader that a shaded field is \
+                 unshaded: {stale:?}. That hides real progress and invites \
+                 redundant re-plumbing (#3908)"
+            );
+        }
+    }
+}
+
 /// Regression guard for `GpuMaterial` GLSL field names —
 /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
 /// (`gpu_material_field_offsets_match_shader_contract`) and the
-/// size pin (`gpu_material_size_is_432_bytes`) catch byte-level
+/// size pin (`gpu_material_size_is_428_bytes`) catch byte-level
 /// drift, but neither catches a GLSL-side field rename: the
 /// shader still reads from the same offset, the value still
 /// arrives in the right register, but the field's MEANING in
@@ -92,53 +322,6 @@ fn gpu_material_alignment_is_4_bytes() {
 /// was lifted out of `triangle.frag` into the shared
 /// `include/bindings.glsl` under #1583/#1590 — `triangle.frag`
 /// now `#include`s it.)
-/// #2712 — pin which supplemental role lanes are actually sampled.
-///
-/// Three of the twelve (`lightingMapIndex`, `flowMapIndex`,
-/// `wrinkleMapIndex`) are produced, uploaded and hashed but read by
-/// no shader — a deliberate deferral that previously lived only in a
-/// one-off audit report and had already failed to propagate to a
-/// sibling report. This pins it in both directions: a lane silently
-/// going dead fails here, and so does implementing one of the three
-/// without removing its "captured, not yet shaded" note.
-///
-/// `triangle.frag` is the only pass that reads the supplemental
-/// roles (checked across `shaders/`), and it `#include`s the struct
-/// rather than declaring it, so a name appearing in this file means
-/// the lane is genuinely sampled.
-#[test]
-fn supplemental_role_lanes_sampled_by_triangle_frag_are_exactly_the_nine() {
-    let src = include_str!("../../shaders/triangle.frag");
-
-    for name in &[
-        "tintMapIndex",
-        "innerLayerMapIndex",
-        "specularMapIndex",
-        "reflectanceMapIndex",
-        "emittanceGradientMapIndex",
-        "decalMap0Index",
-        "decalMap1Index",
-        "decalMap2Index",
-        "decalMap3Index",
-    ] {
-        assert!(
-            src.contains(name),
-            "{name} is a wired supplemental role — if this pass stopped \
-             sampling it, the lane is now uploaded and hashed for nothing \
-             (#2712)"
-        );
-    }
-
-    for name in &["lightingMapIndex", "flowMapIndex", "wrinkleMapIndex"] {
-        assert!(
-            !src.contains(name),
-            "{name} is now sampled — good, but the deferral notes on \
-             GpuMaterial and in include/bindings.glsl say it is not. \
-             Remove them together with this assertion (#2712)"
-        );
-    }
-}
-
 #[test]
 fn gpu_material_glsl_field_names_pinned() {
     let src = include_str!("../../shaders/include/bindings.glsl");
@@ -162,7 +345,8 @@ fn gpu_material_glsl_field_names_pinned() {
         "specularG,",
         "specularB,",
         "alphaThreshold;",
-        "textureIndex,",
+        // #3909 — `textureIndex,` used to lead this group; removed as an
+        // unsampled lane, so the needle goes with it.
         "normalMapIndex,",
         "darkMapIndex,",
         "glowMapIndex;",
@@ -275,10 +459,10 @@ fn gpu_material_glsl_field_names_pinned() {
 }
 
 /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-/// The size pin (`gpu_material_size_is_432_bytes`) catches additions
+/// The size pin (`gpu_material_size_is_428_bytes`) catches additions
 /// or removals; this catches reorderings within the record that the
 /// size pin alone would miss — e.g. swapping
-/// `texture_index` and `normal_map_index` within vec4 #4 would
+/// `normal_map_index` and `dark_map_index` within vec4 #4 would
 /// preserve total size but produce wrong shader reads.
 ///
 /// Mirrors the `gpu_instance_field_offsets_match_shader_contract`
@@ -313,157 +497,159 @@ fn gpu_material_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuMaterial, specular_b), 40);
     assert_eq!(offset_of!(GpuMaterial, alpha_threshold), 44);
 
-    // ── Texture indices group A (vec4 #4, offsets 48-60) ───────
-    assert_eq!(offset_of!(GpuMaterial, texture_index), 48);
-    assert_eq!(offset_of!(GpuMaterial, normal_map_index), 52);
-    assert_eq!(offset_of!(GpuMaterial, dark_map_index), 56);
-    assert_eq!(offset_of!(GpuMaterial, glow_map_index), 60);
+    // ── Texture indices group A (offsets 48-56) ────────────────
+    // #3909 — `texture_index` was removed from the head of this group; it
+    // was sampled by no shader and split the dedup key. Everything from
+    // here down shifted 4 B toward zero.
+    assert_eq!(offset_of!(GpuMaterial, normal_map_index), 48);
+    assert_eq!(offset_of!(GpuMaterial, dark_map_index), 52);
+    assert_eq!(offset_of!(GpuMaterial, glow_map_index), 56);
 
-    // ── Texture indices group B (vec4 #5, offsets 64-76) ───────
-    assert_eq!(offset_of!(GpuMaterial, detail_map_index), 64);
-    assert_eq!(offset_of!(GpuMaterial, gloss_map_index), 68);
-    assert_eq!(offset_of!(GpuMaterial, parallax_map_index), 72);
-    assert_eq!(offset_of!(GpuMaterial, env_map_index), 76);
+    // ── Texture indices group B (vec4 #5, offsets 60-72) ───────
+    assert_eq!(offset_of!(GpuMaterial, detail_map_index), 60);
+    assert_eq!(offset_of!(GpuMaterial, gloss_map_index), 64);
+    assert_eq!(offset_of!(GpuMaterial, parallax_map_index), 68);
+    assert_eq!(offset_of!(GpuMaterial, env_map_index), 72);
 
     // ── env_mask + alpha_test_func + material_kind + alpha
-    //    (vec4 #6, offsets 80-92) ───────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, env_mask_index), 80);
-    assert_eq!(offset_of!(GpuMaterial, alpha_test_func), 84);
-    assert_eq!(offset_of!(GpuMaterial, material_kind), 88);
-    assert_eq!(offset_of!(GpuMaterial, material_alpha), 92);
+    //    (vec4 #6, offsets 76-88) ───────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, env_mask_index), 76);
+    assert_eq!(offset_of!(GpuMaterial, alpha_test_func), 80);
+    assert_eq!(offset_of!(GpuMaterial, material_kind), 84);
+    assert_eq!(offset_of!(GpuMaterial, material_alpha), 88);
 
-    // ── Parallax POM + UV offset (vec4 #7, offsets 96-108) ─────
-    assert_eq!(offset_of!(GpuMaterial, parallax_height_scale), 96);
-    assert_eq!(offset_of!(GpuMaterial, parallax_max_passes), 100);
-    assert_eq!(offset_of!(GpuMaterial, uv_offset_u), 104);
-    assert_eq!(offset_of!(GpuMaterial, uv_offset_v), 108);
+    // ── Parallax POM + UV offset (vec4 #7, offsets 92-104) ─────
+    assert_eq!(offset_of!(GpuMaterial, parallax_height_scale), 92);
+    assert_eq!(offset_of!(GpuMaterial, parallax_max_passes), 96);
+    assert_eq!(offset_of!(GpuMaterial, uv_offset_u), 100);
+    assert_eq!(offset_of!(GpuMaterial, uv_offset_v), 104);
 
-    // ── UV scale + diffuse RG (vec4 #8, offsets 112-124) ───────
-    assert_eq!(offset_of!(GpuMaterial, uv_scale_u), 112);
-    assert_eq!(offset_of!(GpuMaterial, uv_scale_v), 116);
-    assert_eq!(offset_of!(GpuMaterial, diffuse_r), 120);
-    assert_eq!(offset_of!(GpuMaterial, diffuse_g), 124);
+    // ── UV scale + diffuse RG (vec4 #8, offsets 108-120) ───────
+    assert_eq!(offset_of!(GpuMaterial, uv_scale_u), 108);
+    assert_eq!(offset_of!(GpuMaterial, uv_scale_v), 112);
+    assert_eq!(offset_of!(GpuMaterial, diffuse_r), 116);
+    assert_eq!(offset_of!(GpuMaterial, diffuse_g), 120);
 
-    // ── diffuse_b + ambient RGB (vec4 #9, offsets 128-140) ─────
-    assert_eq!(offset_of!(GpuMaterial, diffuse_b), 128);
-    assert_eq!(offset_of!(GpuMaterial, ambient_r), 132);
-    assert_eq!(offset_of!(GpuMaterial, ambient_g), 136);
-    assert_eq!(offset_of!(GpuMaterial, ambient_b), 140);
+    // ── diffuse_b + ambient RGB (vec4 #9, offsets 124-136) ─────
+    assert_eq!(offset_of!(GpuMaterial, diffuse_b), 124);
+    assert_eq!(offset_of!(GpuMaterial, ambient_r), 128);
+    assert_eq!(offset_of!(GpuMaterial, ambient_g), 132);
+    assert_eq!(offset_of!(GpuMaterial, ambient_b), 136);
 
     // (#804 / R1-N4 dropped `avg_albedo_r/g/b` — what would have
     // been vec4 #10 at offsets 144-152 is gone; subsequent fields
     // shift down by 12 bytes from their pre-#804 positions.)
 
-    // ── skin_tint A/R/G/B (offsets 144-156) ────────────────────
-    assert_eq!(offset_of!(GpuMaterial, skin_tint_a), 144);
-    assert_eq!(offset_of!(GpuMaterial, skin_tint_r), 148);
-    assert_eq!(offset_of!(GpuMaterial, skin_tint_g), 152);
-    assert_eq!(offset_of!(GpuMaterial, skin_tint_b), 156);
+    // ── skin_tint A/R/G/B (offsets 140-152) ────────────────────
+    assert_eq!(offset_of!(GpuMaterial, skin_tint_a), 140);
+    assert_eq!(offset_of!(GpuMaterial, skin_tint_r), 144);
+    assert_eq!(offset_of!(GpuMaterial, skin_tint_g), 148);
+    assert_eq!(offset_of!(GpuMaterial, skin_tint_b), 152);
 
     // ── hair_tint RGB + multi_layer_envmap_strength
-    //    (offsets 160-172) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, hair_tint_r), 160);
-    assert_eq!(offset_of!(GpuMaterial, hair_tint_g), 164);
-    assert_eq!(offset_of!(GpuMaterial, hair_tint_b), 168);
-    assert_eq!(offset_of!(GpuMaterial, multi_layer_envmap_strength), 172);
+    //    (offsets 156-168) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, hair_tint_r), 156);
+    assert_eq!(offset_of!(GpuMaterial, hair_tint_g), 160);
+    assert_eq!(offset_of!(GpuMaterial, hair_tint_b), 164);
+    assert_eq!(offset_of!(GpuMaterial, multi_layer_envmap_strength), 168);
 
-    // ── eye_left RGB + eye_cubemap_scale (offsets 176-188) ─────
-    assert_eq!(offset_of!(GpuMaterial, eye_left_center_x), 176);
-    assert_eq!(offset_of!(GpuMaterial, eye_left_center_y), 180);
-    assert_eq!(offset_of!(GpuMaterial, eye_left_center_z), 184);
-    assert_eq!(offset_of!(GpuMaterial, eye_cubemap_scale), 188);
+    // ── eye_left RGB + eye_cubemap_scale (offsets 172-184) ─────
+    assert_eq!(offset_of!(GpuMaterial, eye_left_center_x), 172);
+    assert_eq!(offset_of!(GpuMaterial, eye_left_center_y), 176);
+    assert_eq!(offset_of!(GpuMaterial, eye_left_center_z), 180);
+    assert_eq!(offset_of!(GpuMaterial, eye_cubemap_scale), 184);
 
     // ── eye_right RGB + multi_layer_inner_thickness
-    //    (offsets 192-204) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, eye_right_center_x), 192);
-    assert_eq!(offset_of!(GpuMaterial, eye_right_center_y), 196);
-    assert_eq!(offset_of!(GpuMaterial, eye_right_center_z), 200);
-    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_thickness), 204);
+    //    (offsets 188-200) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, eye_right_center_x), 188);
+    assert_eq!(offset_of!(GpuMaterial, eye_right_center_y), 192);
+    assert_eq!(offset_of!(GpuMaterial, eye_right_center_z), 196);
+    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_thickness), 200);
 
     // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r
-    //    (offsets 208-220) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, multi_layer_refraction_scale), 208);
-    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_u), 212);
-    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_v), 216);
-    assert_eq!(offset_of!(GpuMaterial, sparkle_r), 220);
+    //    (offsets 204-216) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, multi_layer_refraction_scale), 204);
+    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_u), 208);
+    assert_eq!(offset_of!(GpuMaterial, multi_layer_inner_scale_v), 212);
+    assert_eq!(offset_of!(GpuMaterial, sparkle_r), 216);
 
     // ── sparkle GB + sparkle_intensity + falloff_start
-    //    (offsets 224-236) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, sparkle_g), 224);
-    assert_eq!(offset_of!(GpuMaterial, sparkle_b), 228);
-    assert_eq!(offset_of!(GpuMaterial, sparkle_intensity), 232);
-    assert_eq!(offset_of!(GpuMaterial, falloff_start_angle), 236);
+    //    (offsets 220-232) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, sparkle_g), 220);
+    assert_eq!(offset_of!(GpuMaterial, sparkle_b), 224);
+    assert_eq!(offset_of!(GpuMaterial, sparkle_intensity), 228);
+    assert_eq!(offset_of!(GpuMaterial, falloff_start_angle), 232);
 
     // ── falloff_stop + opacities + soft_falloff_depth
-    //    (offsets 240-252) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, falloff_stop_angle), 240);
-    assert_eq!(offset_of!(GpuMaterial, falloff_start_opacity), 244);
-    assert_eq!(offset_of!(GpuMaterial, falloff_stop_opacity), 248);
-    assert_eq!(offset_of!(GpuMaterial, soft_falloff_depth), 252);
+    //    (offsets 236-248) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, falloff_stop_angle), 236);
+    assert_eq!(offset_of!(GpuMaterial, falloff_start_opacity), 240);
+    assert_eq!(offset_of!(GpuMaterial, falloff_stop_opacity), 244);
+    assert_eq!(offset_of!(GpuMaterial, soft_falloff_depth), 248);
 
     // ── greyscale palette LUT bindless handle, #890 Stage 2c
-    //    (offset 256) ─────────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, greyscale_lut_index), 256);
+    //    (offset 252) ─────────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, greyscale_lut_index), 252);
 
     // ── BGSM translucency parameter suite, #1147 Phase 2b
-    //    (offsets 260-280) ─────────────────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_r), 260);
-    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_g), 264);
-    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_b), 268);
+    //    (offsets 256-276) ─────────────────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_r), 256);
+    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_g), 260);
+    assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_b), 264);
     assert_eq!(
         offset_of!(GpuMaterial, translucency_transmissive_scale),
-        272
+        268
     );
-    assert_eq!(offset_of!(GpuMaterial, translucency_turbulence), 276);
+    assert_eq!(offset_of!(GpuMaterial, translucency_turbulence), 272);
 
-    // ── PBR IOR (#1248, offset 280) ──────────────────────────
-    assert_eq!(offset_of!(GpuMaterial, ior), 280);
+    // ── PBR IOR (#1248, offset 276) ──────────────────────────
+    assert_eq!(offset_of!(GpuMaterial, ior), 276);
 
-    // ── Disney diffuse lobe (#1249, offsets 284-292) ──────────
-    assert_eq!(offset_of!(GpuMaterial, subsurface), 284);
-    assert_eq!(offset_of!(GpuMaterial, sheen), 288);
-    assert_eq!(offset_of!(GpuMaterial, sheen_tint), 292);
+    // ── Disney diffuse lobe (#1249, offsets 280-288) ──────────
+    assert_eq!(offset_of!(GpuMaterial, subsurface), 280);
+    assert_eq!(offset_of!(GpuMaterial, sheen), 284);
+    assert_eq!(offset_of!(GpuMaterial, sheen_tint), 288);
 
-    // ── Anisotropic GGX (#1250, offset 296) ───────────────────
-    assert_eq!(offset_of!(GpuMaterial, anisotropic), 296);
-    assert_eq!(offset_of!(GpuMaterial, tint_map_index), 300);
-    assert_eq!(offset_of!(GpuMaterial, inner_layer_map_index), 304);
-    assert_eq!(offset_of!(GpuMaterial, specular_map_index), 308);
-    assert_eq!(offset_of!(GpuMaterial, lighting_map_index), 312);
-    assert_eq!(offset_of!(GpuMaterial, flow_map_index), 316);
-    assert_eq!(offset_of!(GpuMaterial, wrinkle_map_index), 320);
-    assert_eq!(offset_of!(GpuMaterial, reflectance_map_index), 324);
-    assert_eq!(offset_of!(GpuMaterial, emittance_gradient_map_index), 328);
-    assert_eq!(offset_of!(GpuMaterial, decal_map_0_index), 332);
-    assert_eq!(offset_of!(GpuMaterial, decal_map_1_index), 336);
-    assert_eq!(offset_of!(GpuMaterial, decal_map_2_index), 340);
-    assert_eq!(offset_of!(GpuMaterial, decal_map_3_index), 344);
+    // ── Anisotropic GGX (#1250, offset 292) ───────────────────
+    assert_eq!(offset_of!(GpuMaterial, anisotropic), 292);
+    assert_eq!(offset_of!(GpuMaterial, tint_map_index), 296);
+    assert_eq!(offset_of!(GpuMaterial, inner_layer_map_index), 300);
+    assert_eq!(offset_of!(GpuMaterial, specular_map_index), 304);
+    assert_eq!(offset_of!(GpuMaterial, lighting_map_index), 308);
+    assert_eq!(offset_of!(GpuMaterial, flow_map_index), 312);
+    assert_eq!(offset_of!(GpuMaterial, wrinkle_map_index), 316);
+    assert_eq!(offset_of!(GpuMaterial, reflectance_map_index), 320);
+    assert_eq!(offset_of!(GpuMaterial, emittance_gradient_map_index), 324);
+    assert_eq!(offset_of!(GpuMaterial, decal_map_0_index), 328);
+    assert_eq!(offset_of!(GpuMaterial, decal_map_1_index), 332);
+    assert_eq!(offset_of!(GpuMaterial, decal_map_2_index), 336);
+    assert_eq!(offset_of!(GpuMaterial, decal_map_3_index), 340);
 
-    // ── Animated BSShaderProperty color/scalar (#2221, offsets 348-360)
-    assert_eq!(offset_of!(GpuMaterial, shader_color_r), 348);
-    assert_eq!(offset_of!(GpuMaterial, shader_color_g), 352);
-    assert_eq!(offset_of!(GpuMaterial, shader_color_b), 356);
-    assert_eq!(offset_of!(GpuMaterial, shader_float), 360);
-    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_r), 364);
-    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_g), 368);
-    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_b), 372);
-    assert_eq!(offset_of!(GpuMaterial, glass_refraction_scale), 376);
-    assert_eq!(offset_of!(GpuMaterial, glass_blur_scale), 380);
-    assert_eq!(offset_of!(GpuMaterial, glass_blur_scale_factor), 384);
+    // ── Animated BSShaderProperty color/scalar (#2221, offsets 344-356)
+    assert_eq!(offset_of!(GpuMaterial, shader_color_r), 344);
+    assert_eq!(offset_of!(GpuMaterial, shader_color_g), 348);
+    assert_eq!(offset_of!(GpuMaterial, shader_color_b), 352);
+    assert_eq!(offset_of!(GpuMaterial, shader_float), 356);
+    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_r), 360);
+    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_g), 364);
+    assert_eq!(offset_of!(GpuMaterial, glass_fresnel_b), 368);
+    assert_eq!(offset_of!(GpuMaterial, glass_refraction_scale), 372);
+    assert_eq!(offset_of!(GpuMaterial, glass_blur_scale), 376);
+    assert_eq!(offset_of!(GpuMaterial, glass_blur_scale_factor), 380);
     assert_eq!(
         offset_of!(GpuMaterial, glass_roughness_scratch_map_index),
-        388
+        384
     );
-    assert_eq!(offset_of!(GpuMaterial, glass_dirt_overlay_map_index), 392);
-    assert_eq!(offset_of!(GpuMaterial, lighting_effect_1), 396);
-    assert_eq!(offset_of!(GpuMaterial, lighting_effect_2), 400);
-    assert_eq!(offset_of!(GpuMaterial, subsurface_rolloff), 404);
-    assert_eq!(offset_of!(GpuMaterial, rimlight_power), 408);
-    assert_eq!(offset_of!(GpuMaterial, backlight_power), 412);
-    assert_eq!(offset_of!(GpuMaterial, fresnel_power), 416);
-    assert_eq!(offset_of!(GpuMaterial, grayscale_to_palette_scale), 420);
-    assert_eq!(offset_of!(GpuMaterial, lighting_mask_map_index), 424);
-    assert_eq!(offset_of!(GpuMaterial, back_lighting_map_index), 428);
+    assert_eq!(offset_of!(GpuMaterial, glass_dirt_overlay_map_index), 388);
+    assert_eq!(offset_of!(GpuMaterial, lighting_effect_1), 392);
+    assert_eq!(offset_of!(GpuMaterial, lighting_effect_2), 396);
+    assert_eq!(offset_of!(GpuMaterial, subsurface_rolloff), 400);
+    assert_eq!(offset_of!(GpuMaterial, rimlight_power), 404);
+    assert_eq!(offset_of!(GpuMaterial, backlight_power), 408);
+    assert_eq!(offset_of!(GpuMaterial, fresnel_power), 412);
+    assert_eq!(offset_of!(GpuMaterial, grayscale_to_palette_scale), 416);
+    assert_eq!(offset_of!(GpuMaterial, lighting_mask_map_index), 420);
+    assert_eq!(offset_of!(GpuMaterial, back_lighting_map_index), 424);
 }
 
 #[test]
@@ -611,17 +797,23 @@ fn distinct_materials_get_distinct_ids() {
 }
 
 /// Two materials differing in a single texture index (e.g.
-/// different diffuse on otherwise-identical material) must NOT
+/// different normal map on otherwise-identical material) must NOT
 /// dedup — they're genuinely distinct on the GPU. Pin this
 /// because a buggy hash that drops bits could collapse them and
 /// silently swap textures across draws.
+///
+/// #3909 — this used to vary `texture_index`, which was the one texture
+/// lane on this struct that NO shader sampled (the diffuse handle lives on
+/// `GpuInstance` by design). It has been removed, so the fixture varies
+/// `normal_map_index` instead: a lane that is both hashed and genuinely
+/// read, which is what makes the "must not dedup" claim meaningful.
 #[test]
-fn texture_index_difference_is_distinct() {
+fn normal_map_index_difference_is_distinct() {
     let mut table = MaterialTable::new();
     let mut a = GpuMaterial::default();
     let mut b = GpuMaterial::default();
-    a.texture_index = 7;
-    b.texture_index = 8;
+    a.normal_map_index = 7;
+    b.normal_map_index = 8;
     assert_ne!(table.intern(a), table.intern(b));
     // Slot 0 = seeded neutral, slot 1 = `a`, slot 2 = `b`. #807.
     assert_eq!(table.len(), 3);
@@ -687,7 +879,7 @@ fn clear_resets_table_but_keeps_capacity() {
     // (user) = 10. #807.
     for i in 0..10 {
         let m = GpuMaterial {
-            texture_index: i,
+            normal_map_index: i,
             ..Default::default()
         };
         table.intern(m);
@@ -767,9 +959,9 @@ fn interned_count_increments_on_hit_and_miss() {
 fn materials_slice_matches_insertion_order() {
     let mut table = MaterialTable::new();
     let mut mats = [GpuMaterial::default(); 3];
-    mats[0].texture_index = 100;
-    mats[1].texture_index = 200;
-    mats[2].texture_index = 300;
+    mats[0].normal_map_index = 100;
+    mats[1].normal_map_index = 200;
+    mats[2].normal_map_index = 300;
     for m in &mats {
         table.intern(*m);
     }
@@ -778,9 +970,9 @@ fn materials_slice_matches_insertion_order() {
     // start at slot 1 in insertion order.
     assert_eq!(slice.len(), 4);
     assert!(slice[0] == GpuMaterial::default(), "slot 0 = neutral");
-    assert_eq!(slice[1].texture_index, 100);
-    assert_eq!(slice[2].texture_index, 200);
-    assert_eq!(slice[3].texture_index, 300);
+    assert_eq!(slice[1].normal_map_index, 100);
+    assert_eq!(slice[2].normal_map_index, 200);
+    assert_eq!(slice[3].normal_map_index, 300);
 }
 
 /// #797 / SAFE-22 + #807 — over-cap interns return id `0` and
@@ -793,9 +985,9 @@ fn materials_slice_matches_insertion_order() {
 /// (implementation-defined OOB read).
 ///
 /// Builds a fresh table, fills it to `MAX_MATERIALS` distinct
-/// entries (each varying by `texture_index`), then asserts:
-///   1. The first `intern` of `texture_index = 0` HITS the seeded
-///      neutral slot (id 0), and `intern` of `texture_index = i`
+/// entries (each varying by `normal_map_index`), then asserts:
+///   1. The first `intern` of `normal_map_index = 0` HITS the seeded
+///      neutral slot (id 0), and `intern` of `normal_map_index = i`
 ///      for `i >= 1` pushes a distinct slot at id `i` — total
 ///      table grows to exactly `MAX_MATERIALS` slots.
 ///   2. The next over-cap intern returns id `0` (the neutral).
@@ -807,14 +999,14 @@ fn materials_slice_matches_insertion_order() {
 fn intern_overflow_returns_material_zero() {
     let mut table = MaterialTable::new();
     // Fill the table to exactly `MAX_MATERIALS` distinct entries.
-    // `texture_index` is part of the byte-Hash dedup so each
+    // `normal_map_index` is part of the byte-Hash dedup so each
     // increment produces a fresh GpuMaterial. Lucky alignment:
-    // `texture_index = i` lands at slot `i` because the seeded
-    // neutral has `texture_index = 0`, and `intern` of i=0 hits
+    // `normal_map_index = i` lands at slot `i` because the seeded
+    // neutral has `normal_map_index = 0`, and `intern` of i=0 hits
     // it. Subsequent i=1..MAX_MATERIALS-1 each push a fresh slot.
     for i in 0..MAX_MATERIALS as u32 {
         let m = GpuMaterial {
-            texture_index: i,
+            normal_map_index: i,
             ..Default::default()
         };
         let id = table.intern(m);
@@ -824,7 +1016,7 @@ fn intern_overflow_returns_material_zero() {
 
     // Over-cap intern: distinct material, but no slot to land in.
     let overflow = GpuMaterial {
-        texture_index: MAX_MATERIALS as u32,
+        normal_map_index: MAX_MATERIALS as u32,
         ..Default::default()
     };
     let overflow_id = table.intern(overflow);
@@ -844,7 +1036,7 @@ fn intern_overflow_returns_material_zero() {
     // Subsequent over-cap interns also fold to id 0 — the warn
     // is `Once`-gated so the second call is silent.
     let overflow2 = GpuMaterial {
-        texture_index: MAX_MATERIALS as u32 + 1,
+        normal_map_index: MAX_MATERIALS as u32 + 1,
         ..Default::default()
     };
     assert_eq!(table.intern(overflow2), 0);
@@ -853,7 +1045,7 @@ fn intern_overflow_returns_material_zero() {
     // Already-interned materials still resolve to their original
     // id — the cap path doesn't poison the dedup map.
     let existing = GpuMaterial {
-        texture_index: 42, // interned at id 42 in the loop above
+        normal_map_index: 42, // interned at id 42 in the loop above
         ..Default::default()
     };
     assert_eq!(
@@ -873,13 +1065,13 @@ fn intern_overflow_persists_across_clear() {
     let mut table = MaterialTable::new();
     for i in 0..MAX_MATERIALS as u32 {
         let m = GpuMaterial {
-            texture_index: i,
+            normal_map_index: i,
             ..Default::default()
         };
         table.intern(m);
     }
     let overflow = GpuMaterial {
-        texture_index: u32::MAX,
+        normal_map_index: u32::MAX,
         ..Default::default()
     };
     assert_eq!(table.intern(overflow), 0);
@@ -889,7 +1081,7 @@ fn intern_overflow_persists_across_clear() {
     // (#807). A user intern of a material distinct from neutral
     // pushes at slot 1 — NOT slot 0, since slot 0 is reserved.
     let first = GpuMaterial {
-        texture_index: 1,
+        normal_map_index: 1,
         ..Default::default()
     };
     assert_eq!(table.intern(first), 1);
@@ -897,4 +1089,102 @@ fn intern_overflow_persists_across_clear() {
 
     // Interning the neutral default itself dedupes to slot 0.
     assert_eq!(table.intern(GpuMaterial::default()), 0);
+}
+
+/// #3911 (REN-2026-09-05-D7-04), SIBLING half — the *second* place a
+/// supplemental role can be transposed.
+///
+/// `static_meshes.rs` fills `DrawCommand::supplemental_texture_indices` from
+/// the role set, and `every_supplemental_texture_slot_is_written_exactly_once`
+/// now pins that correspondence. But the array is then projected onto named
+/// `GpuMaterial` fields by `DrawCommand::to_gpu_material`, and *that* mapping
+/// had no correspondence pin either — `tint_map_index:
+/// self.supplemental_texture_indices[slot::INNER_LAYER]` would compile, upload,
+/// hash and render, just with the wrong map in the wrong lane.
+///
+/// Same derived shape as the CPU-side pin: the expected field name comes from
+/// the slot constant (`GLASS_DIRT_OVERLAY` → `glass_dirt_overlay_map_index`),
+/// so a new lane is covered the moment it is declared rather than when someone
+/// remembers to extend a list.
+#[cfg(test)]
+mod supplemental_projection_pin {
+    const CONTEXT_MOD_RS: &str = include_str!("context/mod.rs");
+
+    /// The `GpuMaterial` field a supplemental slot must be projected onto.
+    /// `DECAL_2` → `decal_map_2_index` is the one irregular shape; everything
+    /// else is `<slot lowercased>_map_index`.
+    fn expected_material_field(slot: &str) -> String {
+        match slot.strip_prefix("DECAL_") {
+            Some(n) => format!("decal_map_{n}_index"),
+            None => format!("{}_map_index", slot.to_lowercase()),
+        }
+    }
+
+    /// `(GpuMaterial field, slot constant)` for every supplemental projection
+    /// inside `to_gpu_material`, tolerating rustfmt's line wrapping.
+    fn projections() -> Vec<(String, String)> {
+        let start = CONTEXT_MOD_RS
+            .find("pub fn to_gpu_material(&self) -> GpuMaterial {")
+            .expect("to_gpu_material must still exist");
+        let body = &CONTEXT_MOD_RS[start..];
+        let end = body
+            .find("\n    /// Hash of the material-relevant DrawCommand fields")
+            .expect("to_gpu_material's following sibling must still exist");
+        // Collapse wrapping so `field: self.supplemental_texture_indices\n
+        // [slot::NAME]` reads the same as the single-line form.
+        let flat = body[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat.replace(
+            "supplemental_texture_indices [",
+            "supplemental_texture_indices[",
+        );
+
+        const NEEDLE: &str = "self.supplemental_texture_indices[slot::";
+        let mut out = Vec::new();
+        let mut rest = flat.as_str();
+        let mut consumed = 0usize;
+        while let Some(at) = rest[consumed..].find(NEEDLE) {
+            let abs = consumed + at;
+            let slot = rest[abs + NEEDLE.len()..]
+                .split(']')
+                .next()
+                .expect("a projection must close its slot index")
+                .to_owned();
+            // Walk back over `: ` to the field name.
+            let head = rest[..abs].trim_end();
+            let head = head
+                .strip_suffix(':')
+                .expect("a supplemental projection must be a `field: self...` initializer");
+            let field = head
+                .rsplit([' ', ','])
+                .next()
+                .expect("a field name must precede the colon")
+                .to_owned();
+            out.push((field, slot));
+            consumed = abs + NEEDLE.len();
+            rest = &flat;
+        }
+        out
+    }
+
+    #[test]
+    fn every_supplemental_slot_projects_onto_its_own_gpu_material_field() {
+        let projections = projections();
+        assert_eq!(
+            projections.len(),
+            crate::vulkan::material::supplemental_texture_slot::COUNT,
+            "to_gpu_material must project every supplemental slot exactly once — \
+             a missing projection leaves that lane at the GpuMaterial default and \
+             is invisible to the CPU-side write pin (#3911)",
+        );
+        for (field, slot) in &projections {
+            let expected = expected_material_field(slot);
+            assert_eq!(
+                field, &expected,
+                "to_gpu_material projects slot::{slot} onto `{field}`, but its role \
+                 field is `{expected}`. Two lanes swapping here keeps every arity \
+                 and CPU-side pin green while sampling the wrong map for the wrong \
+                 purpose (#3911)",
+            );
+        }
+    }
 }
