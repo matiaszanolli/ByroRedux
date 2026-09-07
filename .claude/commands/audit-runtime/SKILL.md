@@ -103,47 +103,61 @@ per `expand_game_profile_args`); games whose install is absent are skipped.
 
 ## Phase 2: Per-game headless launch
 
-For each selected `(game, cell)`:
+For each selected `(game, cell)`, run the capture harness — **do not
+hand-roll the launch/teardown**:
 
-1. Skip the game if its profile data dir doesn't resolve (the engine logs
-   `--game <key>: resolved data dir does not exist`).
-2. Launch under `xvfb-run -a` (the swapchain presents to the headless X server;
-   `byro-dbg` reads telemetry over the TCP debug protocol):
+```bash
+.claude/commands/audit-runtime/capture.sh \
+  --game <KEY> --cell "<CELL_EDID>" --out /tmp/audit/runtime [--frames 240]
+```
 
-   ```bash
-   xvfb-run -a --server-args="-screen 0 1280x720x24" \
-     ./target/release/byroredux \
-       --game <KEY> --cell "<CELL_EDID>" \
-       --bench-frames 240 --bench-hold \
-       > "/tmp/audit/runtime/<game>-<cell>.engine.log" 2>&1 &
-   ```
+Skip the game if its profile data dir doesn't resolve (the engine logs
+`--game <key>: resolved data dir does not exist`). As of the 2026-09-03
+`default_bsas` / `default_materials_bsas` / `sample_cells` addition,
+`--game starfield` expands to real archives including a `--materials-ba2` —
+you no longer need to pass them explicitly. See the Starfield row below
+before spending a run on it, though.
 
-   Capture the PID for cleanup. (As of the 2026-09-03 `default_bsas` /
-   `default_materials_bsas` / `sample_cells` addition, `--game starfield`
-   now expands to real archives including a `--materials-ba2` — you no
-   longer need to pass them explicitly. See the Starfield row below before
-   spending a run on it, though.)
+It writes the same two files this skill's Phase 3 parses
+(`<out>/<game>-<cell>.engine.log` and `.telem.txt`), and does everything the
+old inline recipe did: `xvfb-run -a --server-args="-screen 0 1280x720x24"`,
+`--bench-frames N --bench-hold`, a 90 s `byro-dbg` ping poll, 3 s of settle,
+then `stats` / `tex.missing` / `mesh.cache failed` / `light.dump` / `quit`.
 
-3. Poll `byro-dbg` for ping success (up to 90 s):
+**Why it is a script and not a recipe (#3560).** The teardown this section
+used to prescribe — `kill -INT $PID` on the backgrounded `xvfb-run` job —
+kills the **wrapper, not the engine**. `xvfb-run` runs its command as a child
+(`DISPLAY=… "$@"`, no `exec`; read `/usr/bin/xvfb-run`), so the engine
+survives and keeps holding port 9876. The next game's capture then attaches
+to the **previous game's still-live engine** and files its numbers under the
+new game's filename. Reproduced live on 2026-08-30: an FNV run reported
+Oblivion's `Entities: 718` and Oblivion's exact 8-path `tex.missing` list,
+with `dbg up at 1s` — impossible for a cell that takes ~40 s to load — as the
+only tell. This is the RT-1 / #1619 mis-attribution reached through teardown
+failure rather than parallelism, so running **serially does not prevent it**,
+and any past `--game all` sweep using the old teardown may carry shifted
+telemetry, including baselines regenerated from such a sweep.
 
-   ```bash
-   for i in $(seq 1 90); do
-     if echo "ping" | timeout 2 ./target/release/byro-dbg | grep -q -i pong; then break; fi
-     sleep 1
-   done
-   ```
+The harness closes it with three assertions, and each one **fails the
+capture** rather than warning:
 
-4. Sleep 3 s to let the cell settle past initial load.
-5. Drive the capture sequence (the four live console commands —
-   `byroredux/src/commands/assets.rs` + `byroredux/src/commands/world_info.rs`):
+1. **Pre-flight** — refuses to launch while any `byroredux` process is alive
+   or port 9876 is bound. Uses `pgrep -x`, never `pgrep -f`: the `-f` form
+   matches the harness's own command line and would make the check vacuous.
+2. **Real PID** — resolves the engine's own PID with `pgrep -x byroredux`
+   *after* launch, kills that (not just the wrapper), and sweeps any survivor
+   afterwards.
+3. **Attribution cross-check** — `Entities:` from the `byro-dbg` stats stream
+   against `entities=` on the engine's own `bench:` line. Two different
+   transports from the same run: streaming can move them a little (the
+   tolerance is the same ±2 % the `entities_total` baseline row uses), but a
+   capture that read a *different* engine disagrees by orders of magnitude.
+   All five runs in the 2026-08-30 report pass it; the one that failed it was
+   discarded and re-run, not reported.
 
-   ```bash
-   printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nquit\n" \
-     | ./target/release/byro-dbg \
-     > "/tmp/audit/runtime/<game>-<cell>.telem.txt" 2>&1
-   ```
-
-6. Tear down: `kill -INT $PID; sleep 2; kill -9 $PID; wait $PID`.
+`capture.sh --self-test` exercises the parsers, the tolerance, the PID
+resolution and the survivor sweep with no game data — run it if you change
+the script.
 
 Run games **serially** — one engine + `byro-dbg` capture at a time. The
 debug server binds a single fixed TCP port (`BYRO_DEBUG_PORT`, default
@@ -351,8 +365,13 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 
 1. `rm -rf /tmp/audit/runtime` (baselines under
    `.claude/audit-baselines/runtime/` are NOT touched).
-2. Confirm nothing left running:
-   `pgrep -f 'byroredux|byro-dbg' && pkill -f 'byroredux|byro-dbg'`.
+2. Confirm nothing left running: `pgrep -x byroredux; pgrep -x byro-dbg`,
+   and `pkill -x byroredux; pkill -x byro-dbg` if either reports anything.
+   **`-x`, not `-f`** (#3560): the `-f` form matches your own shell's command
+   line whenever it contains those words, so it reports a survivor that isn't
+   there and `pkill -f` then targets the harness. `capture.sh` already sweeps
+   after each capture; this is the belt-and-braces check for a run that was
+   interrupted before its teardown.
 
 ## Notes
 

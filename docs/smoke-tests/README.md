@@ -85,6 +85,19 @@ All smoke tests follow the same workflow:
    ```
 4. Assert on the captured output and SIGTERM the engine.
 
+> **Why `kill -TERM "$engine_pid"` is enough here, and is not enough in
+> `/audit-runtime` (#3560).** These scripts background `cargo run`, and on
+> Unix `cargo run` **`exec`s** the binary — measured: the backgrounded job's
+> `$!` and the engine's own PID are the same number, and a `TERM` to it kills
+> the engine. The runtime-audit harness backgrounds `xvfb-run` instead, which
+> runs its command as a **child** (`DISPLAY=… "$@"`, no `exec`), so the same
+> signal kills only the wrapper and leaves the engine alive holding port 9876
+> — which silently mis-attributed one game's telemetry to the next. If a
+> smoke test ever gains an `xvfb-run` (or any other non-`exec` wrapper),
+> resolve the engine's real PID with `pgrep -x byroredux` and kill that, the
+> way `.claude/commands/audit-runtime/capture.sh` does. Note `-x`: `pgrep -f`
+> matches the harness's own command line.
+
 Both the `--bench-hold` flag and the debug-server's component
 registry are the load-bearing infrastructure — pre-`73adffb` (`bench-
 hold`) the engine exited too quickly for `byro-dbg` to attach, and
