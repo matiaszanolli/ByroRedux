@@ -441,6 +441,36 @@ impl Component for TerrainCellOrigin {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// The two per-cell inputs the ground-cover density field needs that the
+/// terrain vertices cannot supply (#4054).
+///
+/// Both are resolved once at terrain spawn, from data the spawn path already
+/// has and nothing downstream keeps: the cell's `LTEX` layer names (which
+/// become `cover_affinity` weights, §3's `affinity` term) and its resolved
+/// water height (§3's `moisture` term). Sitting on the terrain entity beside
+/// [`TerrainCellOrigin`] means the per-frame chunk collection reads one
+/// entity per cell rather than re-walking the plugin index every frame.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TerrainCoverInputs {
+    /// `cover_affinity` per LAND splat layer, in the same layer order the
+    /// vertex splat lanes use. Unpainted slots hold the default rather than
+    /// zero — a zero would make an unused layer a hard vegetation hole, which
+    /// is the boundary artifact the design exists to remove.
+    pub(crate) layer_affinity: [f32; 8],
+    /// Y-up water-plane height, or
+    /// [`byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT`].
+    ///
+    /// **The sentinel is load-bearing.** §3's `moisture` term must resolve to
+    /// 1.0 where there is no water, not 0.0: the density field is a pure
+    /// product, so one undefined factor takes the whole field, and the failure
+    /// would be an entire high-desert worldspace with no ground cover and
+    /// nothing in the log to say why.
+    pub(crate) water_y: f32,
+}
+impl Component for TerrainCoverInputs {
+    type Storage = SparseSetStorage<Self>;
+}
+
 // SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).

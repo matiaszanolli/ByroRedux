@@ -495,6 +495,19 @@ struct App {
     /// `about_to_wait`, after the frame has been consumed) can report them.
     /// Zero on a frame that never reached `build_render_data`.
     tlas_policy: crate::render::static_meshes::TlasPolicyCounts,
+    /// EXAL ground cover (#4054). Per-frame scatter input, kept as App-owned
+    /// scratch so the allocations persist across frames — same pattern as
+    /// `draw_commands` and the light buffers.
+    groundcover_cells: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
+    groundcover_chunks: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
+    groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
+    /// Render the accepted candidate points instead of blades. §9's Phase 1
+    /// view: "this is where the distribution is judged, before any blade
+    /// exists". Set by `--groundcover-debug-points`.
+    groundcover_debug_points: bool,
+    /// Skip ground cover entirely (`--groundcover-off`). The A/B switch for a
+    /// feature that changes every exterior frame.
+    groundcover_off: bool,
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
     /// `Some` under `--bench-groundcover-sampling`, carrying the two sample
     /// counts the flag can tune. The renderer-side harness is created on the
@@ -821,6 +834,11 @@ impl App {
             bench_frames_target: None,
             bench_hold: false,
             tlas_policy: Default::default(),
+            groundcover_cells: Vec::new(),
+            groundcover_chunks: Vec::new(),
+            groundcover_species: Vec::new(),
+            groundcover_debug_points: false,
+            groundcover_off: false,
             groundcover_bench: None,
             groundcover_bench_started: false,
             bench_summary_printed: false,

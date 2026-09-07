@@ -1,0 +1,286 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// EXAL ground cover Phase 1 — the scatter pass (§4, #4054).
+//
+// One workgroup per visible 512-unit chunk, mirroring `cluster_cull.comp`'s
+// shape. Each thread draws candidate points from a scrambled progressive
+// low-discrepancy sequence, evaluates the §3 density field at each, and
+// stochastically accepts. Accepted points atomically append to the chunk's
+// fixed-capacity slice of the blade buffer and bump its indirect draw.
+//
+// ## Why the sequence has to be progressive
+//
+// §4: the per-chunk slice is fixed capacity, so it CAN overflow, and the
+// overflow policy is part of the design rather than an implementation detail.
+// A chunk on rich flat ground at full density will hit the cap; the atomic
+// append must saturate rather than wrap, and the frame must not depend on
+// which threads won the race.
+//
+// That constrains the sequence. A blue-noise tile consumed in order is *not*
+// progressive: truncating it leaves whatever the first N entries happen to be,
+// which is not a well-distributed set and shows up as directional clumping in
+// exactly the densest chunks — the ones most on screen. A progressive
+// low-discrepancy sequence, whose every prefix is well distributed, degrades
+// into a uniformly sparser chunk instead, which is the same failure mode the
+// distance fade already produces and therefore reads as nothing at all.
+//
+// ## d_ground vs d_draw
+//
+// The accept test reads `d_draw`. The blade record stores `d_ground`. These
+// are different quantities and conflating them is a bug — see
+// `include/groundcover_density.glsl`'s header.
+//
+// Compile with:
+//   glslangValidator -V -Icrates/renderer/shaders groundcover_scatter.comp -o groundcover_scatter.comp.spv
+
+#include "include/shader_constants.glsl"
+
+layout(local_size_x = GROUNDCOVER_SCATTER_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
+
+#include "include/groundcover_scene.glsl"
+
+layout(std430, set = 0, binding = 0) readonly buffer GcChunkBuffer {
+    GroundCoverChunk gcChunks[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer GcCellBuffer {
+    GroundCoverCell gcCells[];
+};
+
+// The global vertex SSBO — §11.1's path A, the measured winner (#4052).
+// Declared here rather than pulling in all of `bindings.glsl` so the scatter
+// stays off the scene descriptor set.
+layout(std430, set = 0, binding = 2) readonly buffer GcGlobalVertices {
+    float vertexData[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer GcBladeBuffer {
+    GroundCoverBlade gcBlades[];
+};
+
+/// `VkDrawIndirectCommand` per chunk. The scatter owns `vertexCount`; the host
+/// pre-fills the other three so a chunk that accepts nothing draws nothing
+/// without needing a second clear pass.
+struct GcDrawIndirect {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+};
+
+layout(std430, set = 0, binding = 4) buffer GcIndirectBuffer {
+    GcDrawIndirect gcDraws[];
+};
+
+/// Per-chunk accepted count (the atomic append cursor) followed by the §11.3
+/// density histogram. Both live in one buffer because both are per-frame
+/// scratch the host clears in a single fill.
+layout(std430, set = 0, binding = 5) buffer GcCounterBuffer {
+    /// `[0 .. GROUNDCOVER_MAX_CHUNKS)` — accepted blades per chunk.
+    /// `[GROUNDCOVER_MAX_CHUNKS ..]` — `GROUNDCOVER_HISTOGRAM_BUCKETS` d_ground
+    /// buckets, then one overflow tally.
+    uint gcCounters[];
+};
+
+layout(push_constant) uniform GcScatterPush {
+    /// Y-up camera position — `distance_fade` is the only view-dependent term.
+    vec4 cameraPos;
+    uint chunkCount;
+    /// Blades per chunk, i.e. the slice stride. Equals
+    /// GROUNDCOVER_MAX_BLADES_PER_CHUNK; passed rather than hard-coded so a
+    /// tier can dispatch a coarser chunk without a shader variant.
+    uint bladesPerChunk;
+    /// Vertices one blade emits at this tier. The scatter writes it into the
+    /// indirect `vertexCount`, so the LOD chain (§6) changes segment count
+    /// without the scatter knowing what a blade looks like.
+    uint vertsPerBlade;
+    /// Species count in the palette buffer.
+    uint speciesCount;
+} pc;
+
+#include "include/terrain_sample.glsl"
+#include "include/groundcover_density.glsl"
+
+const uint HIST_BASE = GROUNDCOVER_MAX_CHUNKS;
+const uint OVERFLOW_SLOT = GROUNDCOVER_MAX_CHUNKS + GROUNDCOVER_HISTOGRAM_BUCKETS;
+// Four extrema slots after the overflow tally. §11.3 calibrates the field
+// against real cells, and a 16-bucket histogram alone cannot tell "the field
+// is uniformly low" from "the field is fine but every candidate is past the
+// fade" — the two look identical in bucket 0 and have completely different
+// fixes. These record the range of both quantities so the pair is separable.
+const uint EXTREMA_BASE = OVERFLOW_SLOT + 1u;
+const uint SLOT_MIN_DGROUND = EXTREMA_BASE;      // d_ground x 1e6, atomicMin
+const uint SLOT_MAX_DGROUND = EXTREMA_BASE + 1u; // d_ground x 1e6, atomicMax
+const uint SLOT_MIN_VIEWDIST = EXTREMA_BASE + 2u; // world units, atomicMin
+const uint SLOT_MAX_VIEWDIST = EXTREMA_BASE + 3u; // world units, atomicMax
+/// Per-factor maxima, x 1e6, in `GroundCoverFactors` order. The density field
+/// is a pure product, so it fails in exactly one way — one term goes to zero
+/// and takes the whole thing with it — and a histogram of the product cannot
+/// say which of the five did it. These can, in one frame.
+const uint SLOT_FACTOR_BASE = EXTREMA_BASE + 4u;
+
+/// The R2 lattice (Roberts 2018) — a progressive low-discrepancy sequence,
+/// scrambled per chunk by Cranley–Patterson rotation.
+///
+/// Progressive is the requirement §4 spells out: every prefix is
+/// well-distributed, so a chunk that saturates its slice degrades to a
+/// uniformly sparser chunk rather than to a directionally clumped one.
+/// Deterministic in the chunk's world position, so a blade does not move when
+/// the camera does.
+vec2 gcCandidate(uint index, uint seed) {
+    const float A1 = 0.7548776662466927;
+    const float A2 = 0.5698402909980532;
+    float u = fract(0.5 + A1 * float(index));
+    float v = fract(0.5 + A2 * float(index));
+    uint h = seed * 0x9E3779B9u;
+    h ^= h >> 15;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13;
+    return vec2(
+        fract(u + float(h & 0xFFFFu) * (1.0 / 65536.0)),
+        fract(v + float((h >> 16) & 0xFFFFu) * (1.0 / 65536.0))
+    );
+}
+
+/// Per-candidate hash, for the stochastic accept and the blade seed. Kept
+/// separate from the point sequence so changing one does not perturb the
+/// other — a shared stream would make a density tweak also relocate blades.
+uint gcHash(uint seed, uint index) {
+    uint h = seed ^ (index * 0x9E3779B9u);
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return h;
+}
+
+/// The §3 `shelter` term's input: the discrete Laplacian of the heightfield,
+/// one terrain vertex spacing out in each axis.
+///
+/// Sampled at the vertex spacing rather than at some smaller epsilon because
+/// the heightfield HAS no detail below that — a tighter stencil would just
+/// measure the bilinear interpolant's own curvature, which is zero inside a
+/// quad and undefined on its edges.
+float gcLaplacian(GroundCoverCell cell, vec2 worldXZ, float centreHeight) {
+    const float H = LAND_VERTEX_SPACING;
+    float total = 0.0;
+    float taken = 0.0;
+    vec2 offsets[4] = vec2[4](vec2(H, 0.0), vec2(-H, 0.0), vec2(0.0, H), vec2(0.0, -H));
+    for (int i = 0; i < 4; ++i) {
+        TerrainSample n = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ + offsets[i]);
+        // A neighbour outside the cell is skipped rather than clamped. At a
+        // cell seam the stencil is one-sided, which biases the curvature
+        // slightly; clamping would instead fold the boundary vertex in twice
+        // and read as a ridge along every cell edge — a visible 4096-unit grid
+        // in the density, which is precisely the artifact this design exists
+        // to remove.
+        if (n.valid) {
+            total += n.height - centreHeight;
+            taken += 1.0;
+        }
+    }
+    return taken > 0.0 ? total * (4.0 / taken) : 0.0;
+}
+
+void main() {
+    uint chunkIdx = gl_WorkGroupID.x;
+    if (chunkIdx >= pc.chunkCount) {
+        return;
+    }
+    GroundCoverChunk chunk = gcChunks[chunkIdx];
+    GroundCoverCell cell = gcCells[chunk.cellIndex];
+    uint sliceBase = chunkIdx * pc.bladesPerChunk;
+
+    uint lane = gl_LocalInvocationID.x;
+    for (uint i = 0u; i < GROUNDCOVER_CANDIDATES_PER_THREAD; ++i) {
+        uint seqIndex = i * GROUNDCOVER_SCATTER_WORKGROUP + lane;
+        vec2 uv = gcCandidate(seqIndex, chunk.seed);
+        vec2 worldXZ = vec2(
+            chunk.baseXZ.x + uv.x * GROUNDCOVER_CHUNK_UNITS,
+            chunk.baseXZ.y - uv.y * GROUNDCOVER_CHUNK_UNITS
+        );
+
+        TerrainSample s = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ);
+        if (!s.valid) {
+            continue;
+        }
+        float laplacian = gcLaplacian(cell, worldXZ, s.height);
+        GroundCoverFactors factors = byroGcDensityFactors(
+            s, worldXZ, cell.affinity0, cell.affinity1, cell.waterY, laplacian);
+        float dGround = byroGcCombine(factors);
+        float factorValues[5] = float[5](
+            factors.affinity, factors.slope, factors.moisture, factors.shelter, factors.clump);
+        for (int f = 0; f < 5; ++f) {
+            atomicMax(gcCounters[SLOT_FACTOR_BASE + uint(f)], uint(factorValues[f] * 1.0e6));
+        }
+
+        // Histogram every candidate the field was evaluated at, not just the
+        // accepted ones: §11.3 calibrates the *field*, and a histogram of
+        // survivors would be the accept test's output rather than the field's.
+        uint bucket = min(uint(dGround * float(GROUNDCOVER_HISTOGRAM_BUCKETS)),
+                          GROUNDCOVER_HISTOGRAM_BUCKETS - 1u);
+        atomicAdd(gcCounters[HIST_BASE + bucket], 1u);
+
+        vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
+        float viewDist = distance(world, pc.cameraPos.xyz);
+        // Fixed point because `atomicMin`/`atomicMax` on a uint is the only
+        // ordered atomic GLSL gives us, and both quantities are non-negative
+        // so the bit patterns order the same way the values do.
+        atomicMin(gcCounters[SLOT_MIN_DGROUND], uint(dGround * 1.0e6));
+        atomicMax(gcCounters[SLOT_MAX_DGROUND], uint(dGround * 1.0e6));
+        atomicMin(gcCounters[SLOT_MIN_VIEWDIST], uint(viewDist));
+        atomicMax(gcCounters[SLOT_MAX_VIEWDIST], uint(viewDist));
+
+        if (dGround <= 0.0) {
+            continue;
+        }
+
+        float dDraw = dGround * byroGcDistanceFade(viewDist);
+
+        uint hash = gcHash(chunk.seed, seqIndex);
+        float accept = float(hash & 0xFFFFFFu) * (1.0 / 16777216.0);
+        if (accept >= dDraw) {
+            continue;
+        }
+
+        // Saturating append. `atomicAdd` returns the pre-increment value, so a
+        // thread that loses the race gets a slot past the cap and drops its
+        // candidate — the counter runs past `bladesPerChunk` and is clamped
+        // when the indirect draw is written, rather than wrapping. Which
+        // threads win is unspecified and must not matter; that is what the
+        // progressive sequence buys.
+        uint slot = atomicAdd(gcCounters[chunkIdx], 1u);
+        if (slot >= pc.bladesPerChunk) {
+            atomicAdd(gcCounters[OVERFLOW_SLOT], 1u);
+            continue;
+        }
+
+        vec2 local = (worldXZ - vec2(chunk.baseXZ.x, chunk.baseXZ.y)) * vec2(1.0, -1.0);
+        uvec2 fixedLocal = uvec2(clamp(local * (65536.0 / GROUNDCOVER_CHUNK_UNITS),
+                                       vec2(0.0), vec2(65535.0)));
+        uint species = pc.speciesCount > 0u ? (hash >> 24) % pc.speciesCount : 0u;
+
+        GroundCoverBlade blade;
+        blade.packedXZ = fixedLocal.x | (fixedLocal.y << 16);
+        blade.baseY = s.height;
+        blade.seedSpecies = ((hash & 0x00FFFFFFu) << 8) | (species & 0xFFu);
+        blade.dGround = dGround;
+        gcBlades[sliceBase + slot] = blade;
+    }
+
+    // One thread per chunk publishes the draw. `barrier()` first so every
+    // lane's appends are visible — without it the count read here can be
+    // whatever this thread happened to observe, and the chunk renders a
+    // truncated arbitrary prefix of its own blades.
+    barrier();
+    memoryBarrierBuffer();
+    if (lane == 0u) {
+        uint accepted = min(gcCounters[chunkIdx], pc.bladesPerChunk);
+        gcDraws[chunkIdx].vertexCount = accepted * pc.vertsPerBlade;
+        gcDraws[chunkIdx].instanceCount = accepted > 0u ? 1u : 0u;
+        gcDraws[chunkIdx].firstVertex = sliceBase * pc.vertsPerBlade;
+        gcDraws[chunkIdx].firstInstance = 0u;
+    }
+}

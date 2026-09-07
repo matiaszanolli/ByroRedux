@@ -605,6 +605,32 @@ impl VulkanContext {
                 }
             }
 
+            // EXAL ground cover (#4054 / #4055). Inside the main pass, after
+            // opaque geometry and water: §5 Stage 1 makes grass receive-only
+            // but *rasterized here*, so it is lit and shadowed by the same
+            // lights and the same TLAS as everything else. Drawn after water
+            // because a blade below a water plane must be composited under it.
+            //
+            // Restore the depth state the water block above left dynamic —
+            // blades are opaque and write depth so they occlude each other.
+            //
+            // Depth and cull are STATIC on this pipeline (opaque, depth-write
+            // on, two-sided) rather than inherited from the dynamic state the
+            // water block above leaves behind — a blade ribbon has no inside,
+            // and a pipeline that took its cull mode from whatever ran last
+            // would blank half the field the first time the water branch was
+            // skipped. Viewport and scissor stay dynamic and are already set
+            // for the pass.
+            if let Some(ref gc) = self.groundcover {
+                gc.record_draw(
+                    &self.device,
+                    cmd,
+                    frame,
+                    self.texture_registry.descriptor_set(frame),
+                    self.scene_buffers.descriptor_set(frame),
+                );
+            }
+
             self.device.cmd_end_render_pass(cmd);
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_main_render_end(&self.device, cmd, frame);

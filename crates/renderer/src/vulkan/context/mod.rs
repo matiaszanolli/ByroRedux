@@ -1549,6 +1549,11 @@ pub struct VulkanContext {
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
+    /// EXAL ground cover — the scatter pass and its draw (#4054 / #4055).
+    /// `None` when the device lacks ray_query (the blade shader traces the
+    /// same shadow ray `water.frag` does) or when pipeline creation failed;
+    /// ground cover then simply does not render.
+    pub groundcover: Option<super::groundcover::GroundCoverPipeline>,
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
     /// `None` on every normal run — created only by
     /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked

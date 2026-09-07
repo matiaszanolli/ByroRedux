@@ -1833,6 +1833,19 @@ impl ExteriorCellApplyJob {
             Some(acc) => acc,
             None => &mut local_blas,
         };
+        // #4054 — resolved before the terrain spawn (rather than only at the
+        // water-plane spawn below) because the ground-cover `moisture` term
+        // needs it on the terrain entity, and a cell resolves it once.
+        let cell_water_y = resolved_exterior_water_height(
+            cell.water_height_is_explicit,
+            cell.water_height,
+            wctx.default_water_height,
+        );
+        // Bethesda authors water height on its Z axis, and `zup_to_yup_pos`
+        // maps Z-up Z onto Y-up Y unchanged — so this scalar is already the
+        // Y-up height the density field compares blade heights against, with
+        // no flip. (The plane's own placement still needs the full conversion;
+        // that is `exterior_water_tile_transform` below.)
         if let Some(ref land) = cell.landscape {
             // #1855 — `spawn_terrain_mesh` already `log::warn!`s a mesh-upload
             // failure with its own (gx,gy) (the only realistic None cause in
@@ -1849,6 +1862,7 @@ impl ExteriorCellApplyJob {
                     landscape_textures: &index.landscape_textures,
                     landscape_texture_sets: &index.landscape_texture_sets,
                     blas_specs: &mut *blas_sink,
+                    water_y: cell_water_y,
                 },
                 gx,
                 gy,
@@ -1869,11 +1883,7 @@ impl ExteriorCellApplyJob {
         // seabed (#1305 / OBL-D6-NEW-02). An authored XCLW no-water sentinel
         // suppresses that fallback; `water_height_is_explicit` preserves the
         // distinction between "no XCLW" and "explicitly dry".
-        if let Some(water_height) = resolved_exterior_water_height(
-            cell.water_height_is_explicit,
-            cell.water_height,
-            wctx.default_water_height,
-        ) {
+        if let Some(water_height) = cell_water_y {
             // Exterior cell origin in Y-up world coords. The helper composes
             // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
             let (water_center, half) = exterior_water_tile_transform(gx, gy);

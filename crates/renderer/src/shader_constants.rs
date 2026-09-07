@@ -297,6 +297,39 @@ mod tests {
         // no CPU mirror to drift against.
         ("include/groundcover_bench.glsl", "A1"),
         ("include/groundcover_bench.glsl", "A2"),
+        // ── #4054 / #4055, EXAL ground cover ─────────────────────────
+        // The same R2 lattice basis constants as the bench above, in the
+        // production scatter. Mathematical constants of the sequence.
+        ("groundcover_scatter.comp", "A1"),
+        ("groundcover_scatter.comp", "A2"),
+        // The terrain vertex spacing, bound once as a local so the
+        // Laplacian stencil reads as a stencil. `LAND_VERTEX_SPACING`
+        // itself is shared and comes from the header.
+        ("groundcover_scatter.comp", "H"),
+        // Counter-buffer section offsets. These DO have a Rust
+        // counterpart that must match (`COUNTER_HIST_BASE` /
+        // `COUNTER_OVERFLOW` in `vulkan/groundcover.rs`) and are
+        // therefore exempted only because they are *derived* from
+        // constants the header already carries — promoting the
+        // derivation would put the same arithmetic in two places rather
+        // than one. The match is pinned directly by
+        // `groundcover::tests::scatter_counter_layout_matches_the_host`.
+        ("groundcover_scatter.comp", "HIST_BASE"),
+        ("groundcover_scatter.comp", "OVERFLOW_SLOT"),
+        ("groundcover_scatter.comp", "EXTREMA_BASE"),
+        ("groundcover_scatter.comp", "SLOT_MIN_DGROUND"),
+        ("groundcover_scatter.comp", "SLOT_MAX_DGROUND"),
+        ("groundcover_scatter.comp", "SLOT_MIN_VIEWDIST"),
+        ("groundcover_scatter.comp", "SLOT_MAX_VIEWDIST"),
+        ("groundcover_scatter.comp", "SLOT_FACTOR_BASE"),
+        // A specialization constant, not a value: it exists so one vertex
+        // shader compiles into the blade pipeline and the Phase 1 debug
+        // point view. Its Rust counterpart is the
+        // `VkSpecializationMapEntry`, not a shared literal.
+        ("groundcover_blade.vert", "GC_DEBUG_POINTS"),
+        // The two-triangles-from-four-corners index table, consumed by the
+        // line below it. Topology, not tuning.
+        ("groundcover_blade.vert", "QUAD"),
     ];
 
     fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {

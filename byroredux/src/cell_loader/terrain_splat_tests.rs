@@ -9,6 +9,8 @@ use super::terrain::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellS
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
     CellSplatLayer {
+        // #4054 — irrelevant to splat packing, which is what these pin.
+        cover_affinity: crate::groundcover_translate::DEFAULT_AFFINITY,
         diffuse_index: 1,
         normal_index: 0,
         specular_index: 0,

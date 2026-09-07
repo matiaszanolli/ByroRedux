@@ -144,6 +144,164 @@ pub const GROUNDCOVER_BENCH_WORKGROUP: u32 = 64;
 /// the scatter's.
 pub const GROUNDCOVER_BENCH_BLADE_VERTS: u32 = 8;
 
+// ── Ground-cover density field + scatter (§3/§4/§6, #4054) ──────────────
+//
+// Every *parameter* of the density field is canonical here and reaches GLSL
+// through the generated header; the *formula* exists only in
+// `include/groundcover_density.glsl`. §3 is explicit about why: a Rust mirror
+// would be a second source of truth for something that must match exactly, and
+// this codebase has already been bitten by that shape
+// (`GpuInstance` across four shader files). Rust owns the numbers, GLSL owns
+// the arithmetic, and there is exactly one copy of each.
+//
+// The cost, accepted in §3, is that the field is not unit-testable in the
+// usual sense. It is pinned instead by the `groundcover.hist` density
+// histogram over real cells (§11.3) — which is also how the values below get
+// calibrated, since several are starting points rather than derived constants.
+
+/// Affinity for a landscape layer with no name to look up — which in the
+/// shader means *unpainted* ground, the cell's base texture. Re-exported, not
+/// restated: `byroredux::groundcover_translate` resolves named layers against
+/// the same constant, and a drift between the two would move the vegetation
+/// boundary without moving anything a test looks at.
+pub const GROUNDCOVER_DEFAULT_AFFINITY: f32 =
+    byroredux_core::ecs::components::groundcover::DEFAULT_COVER_AFFINITY;
+/// Sentinel water height meaning "no water plane in this cell"; see
+/// `byroGcMoisture`, whose no-water path returns 1.0.
+pub const GROUNDCOVER_NO_WATER: f32 = byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT;
+
+/// `slope_gate` — terrain `normal.y` below which no ground cover grows, and
+/// above which it is unattenuated. Smoothstepped between.
+///
+/// Not arbitrary: these are the cosines of the soil angle of repose. Loose
+/// soil holds a slope to roughly 30–45° depending on moisture and grain, and
+/// beyond that it sheds rather than accumulating; vegetation follows the soil.
+/// `cos(45°) = 0.707`, `cos(30°) = 0.866`. This term alone removes the single
+/// most artificial thing about vanilla grass, which carpets cliff faces
+/// wherever the texture happened to be painted.
+pub const GROUNDCOVER_SLOPE_GATE_START: f32 = 0.707;
+pub const GROUNDCOVER_SLOPE_GATE_FULL: f32 = 0.866;
+
+/// `moisture` — how far above the water plane the riparian bonus decays over,
+/// and the floor it decays to.
+///
+/// **The floor is the important number.** §3: a cell with no water plane must
+/// resolve this term to 1.0, not 0.0 — in a pure product one undefined factor
+/// takes the whole field, and the failure mode is an entire worldspace with no
+/// ground cover and nothing in the log. So the shader's no-water path returns
+/// 1.0 outright, and this floor applies only to ground that *does* have a
+/// water plane and sits well above it.
+///
+/// Calibration starting point (§11.3). 1200 units is a little under a third of
+/// an exterior cell (4096) — far enough that a lake shore reads as lusher than
+/// the ridge behind it, close enough that the whole map is not one gradient.
+pub const GROUNDCOVER_MOISTURE_FALLOFF_UNITS: f32 = 1200.0;
+pub const GROUNDCOVER_MOISTURE_FLOOR: f32 = 0.55;
+/// Below the water plane, cover stops. Submerged ground is not a shoreline.
+pub const GROUNDCOVER_MOISTURE_SUBMERGED_DEPTH: f32 = 24.0;
+
+/// `shelter` — the discrete-Laplacian curvature term. `SCALE` converts the
+/// raw second difference (world units over the sample stencil) into the
+/// [-1, 1] range the gate consumes; `STRENGTH` is how much of the result is
+/// allowed to modulate density, so 0 disables the term without removing it.
+///
+/// Calibration starting points (§11.3).
+pub const GROUNDCOVER_SHELTER_CURVATURE_SCALE: f32 = 0.006;
+pub const GROUNDCOVER_SHELTER_STRENGTH: f32 = 0.35;
+
+/// `clump` — the organic term, and the load-bearing one.
+///
+/// §3 is emphatic: the splat authority is a 17×17 alpha grid per 2048-unit
+/// quadrant, so bilinear sampling fixes the hard step but cannot manufacture
+/// detail below ~128 units. Noise is the **only** term in the product with
+/// authority above that frequency. A build that stubs this to 1.0 "for now"
+/// reproduces the vanilla patch look exactly and looks like the design failed.
+///
+/// Two octaves per §3: a Worley/cellular field at ~600 units for clump
+/// structure, times a low-amplitude fBm at ~4000 units for regional variation.
+/// Both frequencies are the design's own numbers.
+pub const GROUNDCOVER_CLUMP_CELL_UNITS: f32 = 600.0;
+/// Contrast applied to the Worley field. Above 1.0 tightens clumps; the floor
+/// keeps the gaps between them thin rather than bare, so clumping reads as
+/// density variation rather than as holes.
+pub const GROUNDCOVER_CLUMP_CONTRAST: f32 = 1.4;
+pub const GROUNDCOVER_CLUMP_FLOOR: f32 = 0.18;
+pub const GROUNDCOVER_REGION_UNITS: f32 = 4000.0;
+/// Amplitude of the regional fBm, as a fraction. 0.35 means regional variation
+/// moves density within [0.65, 1.0] — visible as one meadow being richer than
+/// the next, never as a hard regional boundary.
+pub const GROUNDCOVER_REGION_AMPLITUDE: f32 = 0.35;
+
+/// `distance_fade` — tier 0's outer range and where the fade begins (§6).
+///
+/// **This is the only term `d_draw` adds over `d_ground`, and the only one the
+/// accept/reject test may see.** Everything downstream reads `d_ground`; §3
+/// spells out why (a view-faded value makes the shadow under a meadow lighten
+/// as the camera retreats).
+pub const GROUNDCOVER_FADE_START: f32 = 1400.0;
+pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 2000.0;
+
+/// Scatter dispatch shape. One workgroup per visible chunk, mirroring
+/// `cluster_cull.comp` (§4).
+pub const GROUNDCOVER_SCATTER_WORKGROUP: u32 = 64;
+/// Candidate points each scatter thread draws. Total candidates per chunk is
+/// `GROUNDCOVER_SCATTER_WORKGROUP × this`.
+pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 16;
+/// Fixed capacity of a chunk's blade slice.
+///
+/// §4: **this can overflow, and the overflow policy is part of the design.** A
+/// chunk on rich flat ground at full density will hit the cap, the atomic
+/// append must saturate rather than wrap, and the frame must not depend on
+/// which threads won the race. That is what forces the progressive
+/// low-discrepancy sequence — a blue-noise tile consumed in order is not
+/// progressive, so truncating it leaves whatever the first N entries happen to
+/// be, which clumps directionally in exactly the densest chunks.
+pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 = 1024;
+/// Ceiling on chunks dispatched in one frame. At 512 units a chunk and a
+/// 2000-unit draw distance the visible set is ~64 chunks; this leaves an order
+/// of magnitude of headroom for a tuned-up radius without sizing the blade
+/// buffer for a radius nobody runs.
+pub const GROUNDCOVER_MAX_CHUNKS: u32 = 1024;
+/// Density-histogram buckets (§11.3). The scatter tallies `d_ground` per
+/// candidate so the field can be calibrated against real cells rather than
+/// against a mirrored Rust function that would not be the thing shipping.
+pub const GROUNDCOVER_HISTOGRAM_BUCKETS: u32 = 16;
+
+// ── Blade geometry + wind (§4 "Blade geometry", §8, #4055) ──────────────
+
+/// Segments in a tier-0 blade. §4: a quadratic Bezier ribbon — base point, a
+/// control point displaced by the bend, and a tip — with `gl_VertexIndex`
+/// selecting the segment and the side. Segment count comes from the LOD tier,
+/// so the same shader emits a 3-segment near blade and a 1-segment far blade
+/// branching only on a per-chunk constant.
+pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
+/// Two triangles per segment, non-indexed. The tip ring collapses to zero
+/// width, so the last segment degenerates into a triangle without needing a
+/// special case in the vertex shader.
+pub const GROUNDCOVER_VERTS_PER_SEGMENT: u32 = 6;
+
+/// Wavelength of the wind flow-noise field, world units.
+///
+/// §8's requirement is that neighbouring blades sample a *continuous* field at
+/// nearby points so they bend together — travelling gust waves across a meadow
+/// rather than per-blade jitter, which is most of what sells grass as alive.
+/// 1500 units is ~12 m: a gust front wide enough to read as weather crossing
+/// the field, narrow enough that a meadow shows more than one at a time.
+pub const GROUNDCOVER_WIND_NOISE_UNITS: f32 = 1500.0;
+/// Maximum bend as a fraction of blade height, at full wind and zero
+/// stiffness. Past ~0.8 the Bezier folds back through itself and the ribbon
+/// self-intersects, which reads as flickering rather than as wind.
+pub const GROUNDCOVER_WIND_MAX_BEND: f32 = 0.7;
+/// Speed the wind field is advected downwind at, as a multiple of
+/// `WindField::speed`. Gust *fronts* travel faster than the air; a factor of 1
+/// makes the pattern appear frozen relative to the air it describes.
+pub const GROUNDCOVER_WIND_ADVECTION_SCALE: f32 = 1.6;
+/// `WindField::speed`'s ceiling — the denominator that turns it into a [0,1]
+/// bend fraction. Re-exported so the shader and the translate boundary cannot
+/// disagree about what "full wind" is.
+pub const GROUNDCOVER_MAX_WIND_SPEED: f32 =
+    byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED;
+
 // Skinning. #3882 — re-exported rather than restated: this file's whole
 // purpose is that a shared constant has one definition, and ~40 of its
 // entries already resolve through `byroredux_core::`. The survey that fixes

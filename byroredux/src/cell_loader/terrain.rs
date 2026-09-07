@@ -56,6 +56,11 @@ pub(super) struct CellSplatLayers {
 }
 
 pub(super) struct CellSplatLayer {
+    /// §3's `cover_affinity` for this layer, resolved from its `LTEX` name by
+    /// the keyword table (#4054). A layer does not *enable* ground cover, it
+    /// *weights* it — which is what makes the vegetation boundary stop
+    /// coinciding with the texture boundary.
+    pub cover_affinity: f32,
     /// Bindless diffuse handle (resolved via LTEX → TXST → TX00).
     /// 0 means the texture failed to load; fragment shader skips (index 0
     /// is the fallback checkerboard).
@@ -166,6 +171,16 @@ pub(super) fn build_cell_splat_layers(
             );
             0
         };
+        // #4054 — the same name the diffuse resolved from also carries the
+        // vegetation signal. `layer_affinity` matches case-insensitively on
+        // substrings, so a texture path works as well as an editor ID (which
+        // is what Oblivion supplies here).
+        let cover_affinity = crate::groundcover_translate::layer_affinity(
+            landscape_textures
+                .get(&ltex)
+                .map(String::as_str)
+                .unwrap_or(""),
+        );
         let texture_set = landscape_texture_sets.get(&ltex);
         let normal_index = resolve_optional_terrain_texture(
             ctx,
@@ -178,6 +193,7 @@ pub(super) fn build_cell_splat_layers(
             texture_set.and_then(|set| set.specular.as_deref()),
         );
         layers.push(CellSplatLayer {
+            cover_affinity,
             diffuse_index,
             normal_index,
             specular_index,
@@ -397,6 +413,14 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub landscape_textures: &'a HashMap<u32, String>,
     pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
+    /// Y-up water-plane height for this cell, or `None` when it has none.
+    ///
+    /// #4054 — resolved by the caller (it already computes exactly this for
+    /// the water plane it spawns a few lines later) and threaded in so the
+    /// ground-cover `moisture` term has a single insertion site alongside the
+    /// affinity table, rather than a second component written from a second
+    /// place that could disagree about which cell it belongs to.
+    pub water_y: Option<f32>,
 }
 
 pub(super) fn spawn_terrain_mesh(
@@ -412,6 +436,7 @@ pub(super) fn spawn_terrain_mesh(
         landscape_textures,
         landscape_texture_sets,
         blas_specs,
+        water_y,
     } = spawn;
     // #4052 — both promoted to `byroredux_core::math::coord` so the
     // ground-cover scatter shader reads the same numbers through
@@ -470,14 +495,27 @@ pub(super) fn spawn_terrain_mesh(
             }
             let position = zup_to_yup_pos([bx, by, bz]);
 
-            // Normal: VNML bytes are unsigned 0–255, center at 128 = zero.
+            // Normal: VNML bytes are **signed** i8, `127 = +1`.
+            //
+            // #4054 — this read `(byte - 128) / 127`, i.e. unsigned centred at
+            // 128, and had done since the terrain path landed. Under that
+            // decode flat ground — authored `(0, 0, 127)` — comes out as
+            // `(-1.008, -1.008, -0.008)`, which normalises to a normal lying
+            // almost exactly in the horizontal plane. Measured, not inferred:
+            // the ground-cover scatter's per-factor telemetry reported the
+            // slope gate at a hard 0.000 across 49,152 candidates on Whiterun
+            // tundra, and probing the stored vertex normal at the centre
+            // vertex of 48 cells gave `(0.768, -0.012, 0.694)` — the exact
+            // signature of the sign error, and the value the signed decode
+            // turns back into `+Y`.
+            //
             // Bethesda Z-up → Y-up via the canonical helper; per-component
             // normalise commutes with the axis swap (#1753).
             let normal = if let Some(ref nml) = land.normals {
                 let ni = idx * 3;
-                let nx = (nml[ni] as f32 - 128.0) / 127.0;
-                let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
-                let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
+                let nx = (nml[ni] as i8) as f32 / 127.0;
+                let ny = (nml[ni + 1] as i8) as f32 / 127.0;
+                let nz = (nml[ni + 2] as i8) as f32 / 127.0;
                 if vnml_raw_magnitude(nx, ny, nz) < VNML_DEGENERATE_RAW_MAGNITUDE {
                     degenerate_normals += 1;
                 }
@@ -712,6 +750,23 @@ pub(super) fn spawn_terrain_mesh(
         entity,
         crate::components::TerrainCellOrigin {
             origin_xz: [origin_x, -origin_y],
+        },
+    );
+    // #4054 — the density field's two per-cell inputs. Written here because
+    // this is the only place that has both: the resolved `LTEX` layer order
+    // (which the shader's splat lanes are indexed by) and the caller's water
+    // height. Unfilled affinity slots take the default rather than zero — an
+    // unused layer must not read as a vegetation hole.
+    let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
+    for (slot, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
+        *slot = layer.cover_affinity;
+    }
+    world.insert(
+        entity,
+        crate::components::TerrainCoverInputs {
+            layer_affinity,
+            water_y: water_y
+                .unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT),
         },
     );
     // #renderlayer — terrain LAND tiles ARE the architectural floor

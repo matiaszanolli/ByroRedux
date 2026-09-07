@@ -143,6 +143,20 @@ pub(crate) fn run() -> Result<()> {
     // AUDIT_FNV_2026-05-08.md` § Coverage gaps).
     let bench_hold = args.iter().any(|a| a == "--bench-hold");
 
+    // --groundcover-debug-points: render the scatter's accepted candidate
+    // points instead of blades. §9's Phase 1 view — "this is where the
+    // distribution is judged, before any blade exists" — and still the right
+    // tool afterwards, because a blade's silhouette hides the distribution it
+    // was placed by. Points are coloured by `d_ground`, so the view answers
+    // "what did the field evaluate to here" and not only "is there a blade".
+    let groundcover_debug_points = args.iter().any(|a| a == "--groundcover-debug-points");
+
+    // --groundcover-off: skip the scatter and the draw entirely. The A/B
+    // switch — ground cover is a whole-screen change to every exterior, so
+    // "is this the grass or was it already like that" has to be answerable
+    // without rebuilding.
+    let groundcover_off = args.iter().any(|a| a == "--groundcover-off");
+
     // --bench-groundcover-sampling [samples_per_thread,blades_per_chunk]:
     // run the EXAL ground-cover §11.1 terrain-attribute sampling bench
     // (#4052) alongside the normal frame, and print a `groundcover-bench:`
@@ -424,6 +438,8 @@ pub(crate) fn run() -> Result<()> {
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;
     app.groundcover_bench = groundcover_bench;
+    app.groundcover_debug_points = groundcover_debug_points;
+    app.groundcover_off = groundcover_off;
     app.screenshot_path = screenshot_path;
     app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;

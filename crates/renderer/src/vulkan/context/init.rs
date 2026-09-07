@@ -710,6 +710,33 @@ impl VulkanContext {
         // RT-capable hardware (the only configuration this engine targets —
         // RT is mandatory) is unaffected: the pipeline is created exactly as
         // before. The matching draw-side skip lives in `draw.rs`.
+        // EXAL ground cover (#4054 / #4055). Gated on ray_query for the same
+        // reason water is: `groundcover_blade.frag` traces the shadow ray
+        // unconditionally, so a device without it would bind a layout whose
+        // TLAS is absent.
+        let groundcover = if device_caps.ray_query_supported {
+            match super::super::groundcover::GroundCoverPipeline::new(
+                &device,
+                &gpu_allocator,
+                render_pass,
+                pipeline_cache,
+                texture_registry.descriptor_set_layout,
+                scene_buffers.descriptor_set_layout,
+            ) {
+                Ok(gc) => Some(gc),
+                Err(e) => {
+                    log::warn!("Ground-cover pipeline creation failed: {e} — no ground cover");
+                    None
+                }
+            }
+        } else {
+            log::info!(
+                "Ground cover skipped: device lacks ray_query support \
+                 (groundcover_blade.frag traces the same shadow ray water.frag does)"
+            );
+            None
+        };
+
         let mut water = if device_caps.ray_query_supported {
             match WaterPipeline::new(
                 &device,
@@ -1496,6 +1523,7 @@ impl VulkanContext {
             scene_buffers,
             accel_manager,
             cluster_cull,
+            groundcover,
             // #4052 — created on demand by
             // `VulkanContext::enable_groundcover_bench`, not here: the
             // harness is `--bench-groundcover-sampling` only and init has no

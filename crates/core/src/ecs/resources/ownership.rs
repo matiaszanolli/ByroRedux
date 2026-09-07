@@ -114,6 +114,21 @@ pub struct OwnershipSnapshot {
     pub tlas_instances: u64,
     /// Allocated terrain tile slots.
     pub terrain_tiles: u64,
+    /// Ground-cover chunks the scatter dispatched on the last sampled frame,
+    /// and blades it accepted into their slices (#4054).
+    ///
+    /// Unlike every other GPU class here these are **occupancy, not
+    /// allocation**: every ground-cover buffer is allocated once at pipeline
+    /// creation and reused for the life of the device, so cell load/unload
+    /// cannot leak through this path at all. What they catch is the other
+    /// shape this design can fail in — the visible chunk set, or the blade
+    /// population inside it, growing without bound as the camera moves. That
+    /// is why both are `Bounded` rather than `Exact`: an out-and-back cycle
+    /// legitimately ends on a different camera pose with a different visible
+    /// set, so returning to the baseline is not the contract; not growing
+    /// monotonically is.
+    pub groundcover_chunks: u64,
+    pub groundcover_blades: u64,
 
     // ── Runtime ─────────────────────────────────────────
     /// Rapier rigid bodies in the solver set.
@@ -253,6 +268,16 @@ impl OwnershipSnapshot {
                 policy: Exact,
             },
             OwnerClass {
+                name: "groundcover_chunks",
+                value: self.groundcover_chunks,
+                policy: Bounded,
+            },
+            OwnerClass {
+                name: "groundcover_blades",
+                value: self.groundcover_blades,
+                policy: Bounded,
+            },
+            OwnerClass {
                 name: "physics_bodies",
                 value: self.physics_bodies,
                 policy: Exact,
@@ -345,6 +370,8 @@ impl OwnershipSnapshot {
         self.blas_entries = next();
         self.tlas_instances = next();
         self.terrain_tiles = next();
+        self.groundcover_chunks = next();
+        self.groundcover_blades = next();
         self.physics_bodies = next();
         self.audio_active_sounds = next();
         self.audio_pending_oneshots = next();

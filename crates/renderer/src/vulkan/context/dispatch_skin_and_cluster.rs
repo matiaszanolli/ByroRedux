@@ -405,6 +405,13 @@ impl VulkanContext {
             }
         }
 
+        // EXAL ground cover (#4054). Outside the render pass and before it:
+        // the scatter writes the blade buffer and the indirect draw list the
+        // geometry pass then consumes.
+        if let Some(ref mut gc) = self.groundcover {
+            gc.record_scatter(&self.device, cmd, frame);
+        }
+
         self.record_groundcover_bench(cmd, frame);
     }
 

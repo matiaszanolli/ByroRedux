@@ -66,8 +66,11 @@ use std::collections::HashMap;
 /// are fully exercised by the test suite against the real `LTEX` corpus, so
 /// this is a *pending* consumer rather than unused code. The palette/wind half
 /// below is already live via `install_ground_cover`.
-#[allow(dead_code)]
-pub const DEFAULT_AFFINITY: f32 = 0.15;
+///
+/// #4054 — re-exported from `byroredux_core` rather than defined here: the
+/// scatter shader needs the same number for unpainted ground, and it reaches
+/// GLSL through the generated header.
+pub use byroredux_core::ecs::components::groundcover::DEFAULT_COVER_AFFINITY as DEFAULT_AFFINITY;
 
 /// Substrings that mean "vegetation is deliberately absent here", checked
 /// before every positive keyword and winning outright.

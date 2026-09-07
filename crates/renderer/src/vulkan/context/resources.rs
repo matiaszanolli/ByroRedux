@@ -633,6 +633,35 @@ impl VulkanContext {
         Ok(())
     }
 
+    /// Hand this frame's ground-cover scatter input to the pipeline (#4054).
+    ///
+    /// Resolves the two things the host cannot see from outside the renderer —
+    /// the live global vertex SSBO handle and the current frame-in-flight slot
+    /// — so the caller needs no `ash` types of its own. No-op when the
+    /// pipeline was never created (no ray_query, or creation failed).
+    pub fn prepare_groundcover(&mut self, input: &super::super::groundcover::GroundCoverFrame<'_>) {
+        // §11.1 path A: the global vertex SSBO, re-resolved every frame
+        // because `MeshRegistry` compacts (#4052). It does not exist until the
+        // first mesh upload, which is why this is an `Option`.
+        let vertex_buffer = self
+            .mesh_registry
+            .global_vertex_buffer
+            .as_ref()
+            .map(|b| b.buffer)
+            .unwrap_or(ash::vk::Buffer::null());
+        let frame = self.current_frame;
+        let device = self.device.clone();
+        if let Some(ref mut gc) = self.groundcover {
+            gc.prepare(&device, frame, vertex_buffer, input);
+        }
+    }
+
+    /// `groundcover:` telemetry row for the bench summary, or `None` when the
+    /// pipeline was never created.
+    pub fn groundcover_stats(&self) -> Option<super::super::groundcover::GroundCoverStats> {
+        self.groundcover.as_ref().map(|gc| gc.stats())
+    }
+
     /// Publish the frame's resident exterior terrain cells for the bench.
     /// No-op (bar the clear) when the bench was never enabled.
     pub fn set_groundcover_bench_cells(&mut self, cells: Vec<GroundcoverBenchCellHandle>) {

@@ -271,6 +271,86 @@ impl App {
             // be carried out of it here.
             self.tlas_policy = frame.tlas_policy;
 
+            // #4054 / #4055 — EXAL ground cover. Collected here rather than in
+            // `build_render_data` because the chunk records carry
+            // `GpuInstance.vertex_offset`, which only the live `MeshRegistry`
+            // can resolve, and #4052 settled that it must be resolved every
+            // frame (the registry compacts).
+            if ctx.groundcover.is_some() && !self.groundcover_off {
+                crate::render::groundcover::collect_groundcover_frame(
+                    &self.world,
+                    &ctx.mesh_registry,
+                    byroredux_core::math::Vec3::from_array(frame.camera_pos),
+                    byroredux_core::math::Vec3::from_array(frame.cam_forward),
+                    &mut self.groundcover_cells,
+                    &mut self.groundcover_chunks,
+                );
+                crate::render::groundcover::collect_groundcover_species(
+                    &self.world,
+                    &mut self.groundcover_species,
+                );
+                let wind = self
+                    .world
+                    .try_resource::<WindField>()
+                    .map(|w| *w)
+                    .unwrap_or(WindField::CALM);
+                let time_seconds = self
+                    .world
+                    .try_resource::<byroredux_core::ecs::TotalTime>()
+                    .map_or(0.0, |t| t.0);
+                // §6 keys blade widening to *projected pixel size*, not
+                // distance: a blade narrower than a pixel flickers rather than
+                // antialiasing, and thin high-contrast geometry is the case
+                // TAA handles worst. That makes the widening resolution- and
+                // FOV-dependent, so the factor has to come from the live
+                // projection — a constant would be correct at exactly one
+                // setting and shimmer at every other.
+                let (_, render_height) = ctx.swapchain_extent();
+                let pixels_per_unit_at_unit_depth =
+                    render_height as f32 * 0.5 / (frame.camera_fov_y * 0.5).tan().max(1.0e-4);
+                let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
+                    cells: &self.groundcover_cells,
+                    chunks: &self.groundcover_chunks,
+                    species: &self.groundcover_species,
+                    view_proj: frame.view_proj,
+                    camera_pos: frame.camera_pos,
+                    render_origin: frame.render_origin,
+                    wind: [
+                        wind.direction[0],
+                        wind.direction[1],
+                        wind.speed,
+                        wind.gust_amplitude,
+                    ],
+                    gust_frequency: wind.gust_frequency,
+                    time_seconds,
+                    pixels_per_unit_at_unit_depth,
+                    debug_points: self.groundcover_debug_points,
+                };
+                ctx.prepare_groundcover(&input);
+            } else if ctx.groundcover.is_some() {
+                // `--groundcover-off`. An empty chunk list is what `prepare`
+                // already treats as "nothing to scatter", so the off switch is
+                // the same code path an interior takes — no second branch in
+                // the renderer that could drift from the live one.
+                self.groundcover_cells.clear();
+                self.groundcover_chunks.clear();
+                self.groundcover_species.clear();
+                let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
+                    cells: &self.groundcover_cells,
+                    chunks: &self.groundcover_chunks,
+                    species: &self.groundcover_species,
+                    view_proj: frame.view_proj,
+                    camera_pos: frame.camera_pos,
+                    render_origin: frame.render_origin,
+                    wind: [0.0, 0.0, 0.0, 0.0],
+                    gust_frequency: 0.0,
+                    time_seconds: 0.0,
+                    pixels_per_unit_at_unit_depth: 1.0,
+                    debug_points: false,
+                };
+                ctx.prepare_groundcover(&input);
+            }
+
             // Tick and render the UI overlay (Ruffle SWF player).
             let ui_t0 = Instant::now();
             let mut ui_tex = None;

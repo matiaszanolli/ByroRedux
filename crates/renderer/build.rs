@@ -202,6 +202,80 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// Ground-cover density field + scatter (#4054)").unwrap();
+    for (name, value) in [
+        ("GROUNDCOVER_DEFAULT_AFFINITY", GROUNDCOVER_DEFAULT_AFFINITY),
+        ("GROUNDCOVER_NO_WATER", GROUNDCOVER_NO_WATER),
+        ("GROUNDCOVER_SLOPE_GATE_START", GROUNDCOVER_SLOPE_GATE_START),
+        ("GROUNDCOVER_SLOPE_GATE_FULL", GROUNDCOVER_SLOPE_GATE_FULL),
+        (
+            "GROUNDCOVER_MOISTURE_FALLOFF_UNITS",
+            GROUNDCOVER_MOISTURE_FALLOFF_UNITS,
+        ),
+        ("GROUNDCOVER_MOISTURE_FLOOR", GROUNDCOVER_MOISTURE_FLOOR),
+        (
+            "GROUNDCOVER_MOISTURE_SUBMERGED_DEPTH",
+            GROUNDCOVER_MOISTURE_SUBMERGED_DEPTH,
+        ),
+        (
+            "GROUNDCOVER_SHELTER_CURVATURE_SCALE",
+            GROUNDCOVER_SHELTER_CURVATURE_SCALE,
+        ),
+        ("GROUNDCOVER_SHELTER_STRENGTH", GROUNDCOVER_SHELTER_STRENGTH),
+        ("GROUNDCOVER_CLUMP_CELL_UNITS", GROUNDCOVER_CLUMP_CELL_UNITS),
+        ("GROUNDCOVER_CLUMP_CONTRAST", GROUNDCOVER_CLUMP_CONTRAST),
+        ("GROUNDCOVER_CLUMP_FLOOR", GROUNDCOVER_CLUMP_FLOOR),
+        ("GROUNDCOVER_REGION_UNITS", GROUNDCOVER_REGION_UNITS),
+        ("GROUNDCOVER_REGION_AMPLITUDE", GROUNDCOVER_REGION_AMPLITUDE),
+        ("GROUNDCOVER_FADE_START", GROUNDCOVER_FADE_START),
+        ("GROUNDCOVER_DRAW_DISTANCE", GROUNDCOVER_DRAW_DISTANCE),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
+    // No `u` suffix — used in `layout(local_size_x = ...)`.
+    writeln!(
+        out,
+        "#define GROUNDCOVER_SCATTER_WORKGROUP {GROUNDCOVER_SCATTER_WORKGROUP}"
+    )
+    .unwrap();
+    for (name, value) in [
+        ("GROUNDCOVER_WIND_NOISE_UNITS", GROUNDCOVER_WIND_NOISE_UNITS),
+        ("GROUNDCOVER_WIND_MAX_BEND", GROUNDCOVER_WIND_MAX_BEND),
+        (
+            "GROUNDCOVER_WIND_ADVECTION_SCALE",
+            GROUNDCOVER_WIND_ADVECTION_SCALE,
+        ),
+        ("GROUNDCOVER_MAX_WIND_SPEED", GROUNDCOVER_MAX_WIND_SPEED),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
+    for (name, value) in [
+        (
+            "GROUNDCOVER_BLADE_SEGMENTS_NEAR",
+            GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+        ),
+        (
+            "GROUNDCOVER_VERTS_PER_SEGMENT",
+            GROUNDCOVER_VERTS_PER_SEGMENT,
+        ),
+        (
+            "GROUNDCOVER_CANDIDATES_PER_THREAD",
+            GROUNDCOVER_CANDIDATES_PER_THREAD,
+        ),
+        (
+            "GROUNDCOVER_MAX_BLADES_PER_CHUNK",
+            GROUNDCOVER_MAX_BLADES_PER_CHUNK,
+        ),
+        ("GROUNDCOVER_MAX_CHUNKS", GROUNDCOVER_MAX_CHUNKS),
+        (
+            "GROUNDCOVER_HISTOGRAM_BUCKETS",
+            GROUNDCOVER_HISTOGRAM_BUCKETS,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
+    writeln!(out).unwrap();
+
     writeln!(out, "// Skinning").unwrap();
     writeln!(out, "#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u").unwrap();
     // No `u` suffix — used in `layout(local_size_x = SKIN_WORKGROUP_SIZE)`.

@@ -1174,6 +1174,17 @@ impl ApplicationHandler for App {
                     // before/after comparison can rely on being there.
                     println!("{}", self.tlas_policy.bench_line());
 
+                    // #4054 — the scatter's own telemetry, including §11.3's
+                    // `d_ground` histogram. The design is explicit that the
+                    // density field cannot be unit-tested (it exists only in
+                    // GLSL, deliberately), and that this histogram over real
+                    // cells is what pins it instead.
+                    if let Some(ref ctx) = self.renderer {
+                        if let Some(stats) = ctx.groundcover_stats() {
+                            println!("{}", stats.bench_line());
+                        }
+                    }
+
                     // #4052 — EXAL ground cover §11.1. One row per measured
                     // variant plus the bake row. Printed as their own lines
                     // rather than folded into the `bench:` line because there

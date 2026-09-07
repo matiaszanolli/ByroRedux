@@ -912,6 +912,22 @@ mod tests {
                 include_bytes!("../../shaders/groundcover_bench_bake.comp.spv"),
             ),
             (
+                "groundcover_blade.frag",
+                include_bytes!("../../shaders/groundcover_blade.frag.spv"),
+            ),
+            (
+                "groundcover_blade.vert",
+                include_bytes!("../../shaders/groundcover_blade.vert.spv"),
+            ),
+            (
+                "groundcover_debug.frag",
+                include_bytes!("../../shaders/groundcover_debug.frag.spv"),
+            ),
+            (
+                "groundcover_scatter.comp",
+                include_bytes!("../../shaders/groundcover_scatter.comp.spv"),
+            ),
+            (
                 "skin_palette.comp",
                 include_bytes!("../../shaders/skin_palette.comp.spv"),
             ),

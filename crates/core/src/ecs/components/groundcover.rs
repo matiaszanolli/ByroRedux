@@ -94,6 +94,31 @@ pub enum Climate {
     Wetland,
 }
 
+/// Ground-cover affinity for a landscape layer whose name matches no keyword.
+///
+/// Deliberately low-but-nonzero. Zero would make an unrecognised layer a hard
+/// vegetation hole — reintroducing the boolean-boundary artifact the whole
+/// design exists to remove — while a high default would carpet asphalt in any
+/// game whose naming we have not seen.
+///
+/// Lives here rather than beside the keyword table in
+/// `byroredux::groundcover_translate` (#4054) because the scatter shader needs
+/// the same number for its *unpainted-ground* case — a vertex with every splat
+/// weight zero is the cell's base texture, which has no `LTEX` record and so
+/// no name to look up. The renderer re-exports it into
+/// `shader_constants.glsl`; a second hand-typed copy there would drift
+/// silently, since nothing renders differently until it does.
+pub const DEFAULT_COVER_AFFINITY: f32 = 0.15;
+
+/// Sentinel `water_height` meaning "this terrain cell has no water plane".
+///
+/// §3's `moisture` term must resolve to 1.0 here, not 0.0 and not an undefined
+/// distance: in a pure product one undefined factor takes the whole field, and
+/// the failure mode is an entire worldspace with no ground cover and nothing
+/// in the log. A sentinel rather than an `Option` because the value crosses
+/// into GLSL, which has neither.
+pub const NO_WATER_HEIGHT: f32 = -1.0e30;
+
 /// One kind of ground cover in a worldspace's palette.
 ///
 /// Field-for-field the design's §7 shape. Every field is a *rendering* or
@@ -115,6 +140,21 @@ pub struct GroundCoverSpecies {
     /// A species with low affinity appears only where the ground strongly
     /// supports cover; a high-affinity one spreads onto marginal ground.
     pub cover_affinity: f32,
+    /// How far this species' colour gradient is pulled toward the terrain
+    /// albedo underneath it, at the blade base (§12.3, #4056).
+    ///
+    /// `0.0` leaves vegetation and ground as two unrelated surfaces — the
+    /// vanilla look, where grass sits *on* the terrain rather than growing out
+    /// of it. `1.0` makes every species the colour of its dirt and the palette
+    /// stops meaning anything. §11.8 lists the calibration as an open
+    /// question; the default here is the low end of "visible", deliberately,
+    /// because the failure mode of too much is a worldspace with no species
+    /// identity left and the failure mode of too little is the status quo.
+    ///
+    /// Landed with its consumer rather than ahead of it, per §12's own rule:
+    /// three invented scalars in a canonical type is how a placeholder becomes
+    /// the value nobody revisits.
+    pub ground_coupling: f32,
     /// Relative presence per climate.
     pub climate_weight: ClimateWeights,
 }
@@ -133,6 +173,7 @@ impl GroundCoverSpecies {
         colour_gradient: [[0.18, 0.26, 0.10], [0.42, 0.52, 0.22]],
         bend_stiffness: 0.35,
         cover_affinity: 1.0,
+        ground_coupling: 0.25,
         climate_weight: ClimateWeights::UNIFORM,
     };
 
@@ -143,6 +184,9 @@ impl GroundCoverSpecies {
         colour_gradient: [[0.24, 0.20, 0.09], [0.52, 0.46, 0.24]],
         bend_stiffness: 0.65,
         cover_affinity: 0.7,
+        // Arid scrub sits in sparse cover on exposed ground, so far more of
+        // what the eye reads near its base is the ground itself.
+        ground_coupling: 0.45,
         climate_weight: ClimateWeights {
             temperate: 0.4,
             arid: 2.0,
@@ -168,6 +212,7 @@ impl GroundCoverSpecies {
             self.width_range.1,
             self.bend_stiffness,
             self.cover_affinity,
+            self.ground_coupling,
         ]
         .iter()
         .all(|v| v.is_finite())
@@ -176,7 +221,11 @@ impl GroundCoverSpecies {
                 .iter()
                 .flatten()
                 .all(|c| c.is_finite() && *c >= 0.0);
-        ranges_ok && finite && self.bend_stiffness >= 0.0 && self.cover_affinity >= 0.0
+        ranges_ok
+            && finite
+            && self.bend_stiffness >= 0.0
+            && self.cover_affinity >= 0.0
+            && (0.0..=1.0).contains(&self.ground_coupling)
     }
 }
 

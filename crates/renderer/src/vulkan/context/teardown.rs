@@ -102,6 +102,14 @@ impl VulkanContext {
         if let Some(ref mut cc) = self.cluster_cull {
             cc.destroy(&self.device, alloc);
         }
+        // #4054 / #4055 — the ground-cover scatter + draw pipelines and
+        // their buffers (chunk/cell/species per frame slot, plus the shared
+        // blade / indirect / counter allocations).
+        if let Some(ref mut gc) = self.groundcover {
+            // SAFETY: same contract as every sibling here — `device_wait_idle`
+            // ran at the top of `Drop`.
+            unsafe { gc.destroy(&self.device, alloc) };
+        }
         // #4052 — the §11.1 sampling bench. Allocator-owned (three array
         // images, a raster target and its per-frame record buffers), so it
         // belongs in this block rather than the allocator-independent one.

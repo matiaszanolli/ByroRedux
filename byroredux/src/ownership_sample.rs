@@ -102,6 +102,13 @@ pub(crate) fn sample_gpu_owners(
             (accel.live_static_blas_count() + accel.live_skinned_blas_count()) as u64;
         out.tlas_instances = accel.tlas_instances_scratch_telemetry().0 as u64;
     }
+    // #4054 — occupancy, not allocation: every ground-cover buffer is
+    // allocated once at pipeline creation. See the fields' own doc for what
+    // this class actually catches.
+    if let Some(stats) = ctx.groundcover_stats() {
+        out.groundcover_chunks = stats.chunks_dispatched as u64;
+        out.groundcover_blades = stats.blades_accepted as u64;
+    }
 }
 
 /// Collect a full snapshot. `renderer` is `None` in headless runs, which

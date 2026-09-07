@@ -1343,6 +1343,7 @@ mod fog_volumes;
 // `pub(crate)` so the `light.atten` console command (REND-#1451) can
 // read `LIGHT_RANGE_EXTENSION` to report the effective brightness at
 // the authored radius.
+pub(crate) mod groundcover;
 pub(crate) mod lights;
 mod particles;
 mod skinned;
