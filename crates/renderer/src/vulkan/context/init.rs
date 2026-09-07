@@ -1681,7 +1681,12 @@ impl VulkanContext {
         {
             log::error!(
                 "FSR context creation failed at startup; promoting to native-resolution \
-                 TAA instead of silently staying at the reduced FSR render extent"
+                 TAA instead of silently staying at the reduced FSR render extent. \
+                 Note that TAA is not an equivalent replacement for image stability: \
+                 its resolve is wired to the pre-composite HDR attachment, so sky, \
+                 denoised indirect, volumetrics, caustics and bloom bypass it \
+                 entirely, where FSR reconstructs the fully composited scene \
+                 (#3572, open) — expect geometry/sky silhouettes to crawl"
             );
             if let Err(e) = context.set_upscaler_mode(UpscalerMode::Taa, window_size) {
                 log::error!(

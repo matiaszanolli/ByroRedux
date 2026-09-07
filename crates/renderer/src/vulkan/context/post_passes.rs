@@ -786,6 +786,36 @@ impl VulkanContext {
     /// frame would freeze on screen for the rest of the session with only
     /// a `warn!` log hinting at the cause. See #479.
     ///
+    /// **Known coverage gap — #3572, OPEN.** This resolve is wired to
+    /// `composite.hdr_image_views[f]`, the raw main-render-pass attachment,
+    /// i.e. direct lighting only. Everything composite *adds* after it —
+    /// the analytically-synthesised sky, the SVGF-denoised indirect,
+    /// volumetrics, water caustics, and (since #2796) bloom — is never seen
+    /// by the resolve. FSR is the mirror image: `record_upscale_pass` takes
+    /// `composite.scene_image(frame)`, the fully composited post-bloom
+    /// scene, so it temporally reconstructs all of it. Since
+    /// `UpscalerMode::default()` is `Fsr3(Quality)`, the lower-coverage path
+    /// is the one `--upscaler taa` selects — including the automatic
+    /// promotion to TAA when FSR fails to construct at startup (#2480).
+    ///
+    /// The visible consequence is the geometry/sky silhouette:
+    /// `composite.frag` classifies each pixel with a hard binary
+    /// `depth < 1.0` against the JITTERED depth buffer, downstream of this
+    /// resolve, so sub-pixel Halton jitter flips a silhouette pixel between
+    /// "TAA-resolved geometry" and "freshly computed, never temporally
+    /// filtered sky" every frame. #2760 softened the history-acceptance half
+    /// (`disocclusionFromSky`), which can only help the frames on which the
+    /// pixel is geometry.
+    ///
+    /// Not fixed here on purpose: the fix is to dispatch this on
+    /// `composite.scene_images[frame]` after `record_composite_pass`, and
+    /// that image is `COLOR_ATTACHMENT | SAMPLED | TRANSFER_SRC | STORAGE`
+    /// and already changes layout twice in the tail of the frame. Per the
+    /// project's standing rule, a barrier/pass-order restructure whose
+    /// failure modes are invisible to `cargo test` needs a RenderDoc capture
+    /// or a `BYRO_VALIDATION=1` sync-validation run first — not test
+    /// evidence.
+    ///
     /// # Safety
     /// `cmd` is in the recording state — opened by `begin_command_buffer`
     /// in `draw_frame` and not yet closed — and this runs once per frame
