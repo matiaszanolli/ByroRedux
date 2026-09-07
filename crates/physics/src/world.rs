@@ -170,9 +170,11 @@ pub struct PhysicsWorld {
     /// Public so tests can force the cap (`0.0`) or disable it (a huge
     /// value); production keeps the [`SUBSTEP_TIME_BUDGET`] default.
     pub substep_time_budget: f32,
-    /// One-shot "something changed, step at least once" flag. Set by any
-    /// mutation that can introduce motion (body spawn, kinematic push,
-    /// velocity set) via [`PhysicsWorld::wake`]. Cleared the next time the
+    /// One-shot "something changed, step at least once" flag. Set via
+    /// [`PhysicsWorld::wake`] by mutations that introduce motion into an
+    /// existing body (kinematic push, velocity set, impulse, ragdoll
+    /// articulation) — NOT by body spawn, which is exempt by design; see
+    /// [`PhysicsWorld::wake`]'s doc (#3969). Cleared the next time the
     /// pipeline actually steps. Lets [`step`](Self::step) skip the (costly)
     /// pipeline run for a fully-asleep scene without missing the first
     /// frame of newly-introduced motion. See the static-scene fast path.
@@ -286,20 +288,49 @@ impl PhysicsWorld {
 
     /// Mark the simulation as needing at least one pipeline step on the next
     /// [`step`](Self::step) call. Must be called by every mutation that can
-    /// introduce motion — spawning a body, pushing a kinematic target,
-    /// setting a velocity — so the static-scene fast path doesn't sleep
-    /// through the first frame of new motion (the island lists only reflect
-    /// the *previous* step, so a just-woken body isn't in them yet).
+    /// introduce motion — pushing a kinematic target, setting a velocity,
+    /// applying an impulse, re-articulating a ragdoll — so the static-scene
+    /// fast path doesn't sleep through the first frame of new motion (the
+    /// island lists only reflect the *previous* step, so a just-woken body
+    /// isn't in them yet).
+    ///
+    /// **Spawning a body is the deliberate exemption**, not an omission
+    /// (#3969 / PHYS-D2-2026-09-06-02 — this doc used to name it as a
+    /// caller). `sync::register_newcomers` builds dynamic bodies
+    /// `sleeping(true)` on purpose (the EXTERIOR-FREEZE FIX: a Skyrim
+    /// exterior streaming frame measured `atw_scheduler=3005ms` with ~3000
+    /// awake dynamics) and announces itself with `mark_colliders_dirty()`
+    /// alone, which the fast path below honours without arming a step.
+    /// Consumers that need first-frame visibility of a newcomer take it as
+    /// an explicit argument instead — see `water.rs`'s
+    /// `apply_buoyancy(world, n_new > 0)` and the `had_newcomers` term in
+    /// its quiesced-scene fast path, whose own comment records that it is
+    /// load-bearing *because* spawn does not arm `pending_wake`.
+    ///
+    /// So: do not "reconcile" this by adding a `wake()` to the spawn path.
+    /// That reintroduces the measured multi-second streaming stall and
+    /// simultaneously makes `had_newcomers` look redundant, inviting its
+    /// removal. A new body-creating path should follow `register_newcomers`
+    /// (spawn asleep + `mark_colliders_dirty`) and hand first-frame
+    /// visibility to its consumers explicitly.
     #[inline]
     pub fn wake(&mut self) {
         self.pending_wake = true;
     }
 
-    /// Whether a pipeline step is already pending (something was woken /
-    /// spawned / re-targeted this frame). Read by the WATAL buoyancy phase
-    /// to skip its per-body scan in a fully-quiesced scene: with nothing
-    /// awake and nothing pending, no body's pose changed, so no dry→wet
-    /// water transition can occur and the scan would be pure waste.
+    /// Whether a pipeline step is already pending (something was woken or
+    /// re-targeted this frame). Read by the WATAL buoyancy phase to skip its
+    /// per-body scan in a fully-quiesced scene: with nothing awake and
+    /// nothing pending, no body's pose changed, so no dry→wet water
+    /// transition can occur and the scan would be pure waste.
+    ///
+    /// #3969 — this doc used to say "woken / **spawned** / re-targeted",
+    /// which is false and misleading exactly where it is read: a body
+    /// streaming in already submerged spawns ASLEEP and does not arm this
+    /// flag, so `apply_buoyancy`'s fast path must additionally consult its
+    /// `had_newcomers` argument to catch that body's first-frame dry→wet
+    /// float-up. Any other consumer using this as "did anything change this
+    /// frame?" needs the same companion signal. See [`PhysicsWorld::wake`].
     #[inline]
     pub fn pending_wake(&self) -> bool {
         self.pending_wake
@@ -517,7 +548,13 @@ impl PhysicsWorld {
         //     previous step; a body can only newly wake via a contact, which
         //     requires something else to have moved — covered by `wake()`).
         //   * Nothing was explicitly woken this frame (`pending_wake`): a
-        //     spawned body, a set velocity, or a kinematic push.
+        //     set velocity, an applied impulse, or a kinematic push. NOT a
+        //     spawn — `register_newcomers` deliberately leaves `pending_wake`
+        //     clear and spawns dynamics asleep (see `wake`'s doc for why, and
+        //     for the consumer-side `had_newcomers` contract that depends on
+        //     it). A streaming frame with no other motion therefore lands
+        //     HERE, in the fast path, and is served by the `colliders_dirty`
+        //     rebuild just below rather than by a pipeline step (#3969).
         //
         // NOTE: we deliberately do NOT gate on `active_kinematic_bodies()`.
         // Rapier keeps every kinematic body in that set structurally for its
@@ -851,6 +888,18 @@ impl PhysicsWorld {
     ///
     /// Same **caller must have called [`update_query_pipeline`]** and
     /// fixed-bodies-only caveats as `cast_ray_down`.
+    ///
+    /// **No walkable-normal screen.** As of #3971 this form has no production
+    /// caller left: the spawn ladder, the door-arrival ladder and `phys.census`
+    /// use [`cast_capsule_down_onto_walkable_surface`] (#2193), and the
+    /// character controller's per-frame ground probe moved to
+    /// [`cast_capsule_down_surface_and_normal`] so it can screen the half of
+    /// its answer that feeds `is_grounded` while keeping the raw hit for its
+    /// anti-drift correction. A new floor probe almost certainly wants one of
+    /// those two rather than this.
+    ///
+    /// [`cast_capsule_down_onto_walkable_surface`]: Self::cast_capsule_down_onto_walkable_surface
+    /// [`cast_capsule_down_surface_and_normal`]: Self::cast_capsule_down_surface_and_normal
     pub fn cast_capsule_down(
         &self,
         origin: byroredux_core::math::Vec3,
@@ -2612,6 +2661,141 @@ mod audit_2026_08_13_regressions {
             sank_new, 0,
             "{sank_new}/{checked} grounded configurations sank through a convex floor (#2857); \
              the pre-fix policy sank {sank_old}/{checked}"
+        );
+    }
+}
+
+/// #3969 / PHYS-D2-2026-09-06-02 — the wake-discipline contract.
+///
+/// `wake`'s docstring is the subsystem contract, and it used to name
+/// "spawning a body" as one of the three mutations that must call it. Two of
+/// the three were true; the third was false for the path that spawns
+/// essentially every body in the engine. `sync::register_newcomers` calls
+/// only `mark_colliders_dirty()`, and builds its dynamic bodies
+/// `sleeping(true)` on purpose (the EXTERIOR-FREEZE FIX — a measured
+/// `atw_scheduler=3005ms` on a Skyrim exterior streaming frame with ~3000
+/// awake dynamics). The crate contained both the false claim and its own
+/// refutation: `water.rs`'s quiesced-scene fast path grew a `had_newcomers`
+/// parameter *because* spawn does not arm `pending_wake`.
+///
+/// The hazard was asymmetric and silent in both directions — a new
+/// body-creating path written on the strength of "spawn arms it" inherits a
+/// body that never moves and errors nowhere, while a maintainer reconciling
+/// comment with code the wrong way reintroduces the multi-second stall and
+/// makes `had_newcomers` look redundant. Neither is observable from
+/// behaviour, so these are source-inspection pins, matching the convention in
+/// `sync.rs`'s `tick_documentation_tests`.
+#[cfg(test)]
+mod wake_contract_tests {
+    const WORLD_RS: &str = include_str!("world.rs");
+    const SYNC_RS: &str = include_str!("sync.rs");
+    const WATER_RS: &str = include_str!("water.rs");
+
+    /// `wake`'s doc, from the start of its doc block to the `pub fn wake`.
+    fn wake_doc() -> &'static str {
+        let end = WORLD_RS
+            .find("    pub fn wake(&mut self) {")
+            .expect("PhysicsWorld::wake must still exist");
+        let start = WORLD_RS[..end]
+            .rfind("    /// Mark the simulation as needing")
+            .expect("wake's doc block must still open with its summary line");
+        &WORLD_RS[start..end]
+    }
+
+    #[test]
+    fn the_spawn_path_still_does_not_arm_pending_wake() {
+        let start = SYNC_RS
+            .find("fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {")
+            .expect("register_newcomers must still exist");
+        let end = SYNC_RS[start..]
+            .find("\nfn push_kinematic(")
+            .expect("register_newcomers' following sibling must still exist")
+            + start;
+        let body = &SYNC_RS[start..end];
+
+        assert!(
+            body.contains("body_builder.sleeping(true)"),
+            "fixture precondition: dynamic newcomers still spawn asleep (the \
+             EXTERIOR-FREEZE FIX) — if that changed, the whole wake exemption \
+             needs re-deciding, not just re-documenting (#3969)"
+        );
+        assert!(
+            body.contains("pw.mark_colliders_dirty();"),
+            "fixture precondition: the spawn path still announces itself with \
+             mark_colliders_dirty alone (#3969)"
+        );
+        assert!(
+            !body.contains(".wake()"),
+            "register_newcomers must NOT arm `pending_wake`: its dynamics spawn \
+             asleep by design, and waking every streaming frame reintroduces the \
+             measured atw_scheduler=3005ms exterior stall. Consumers needing \
+             first-frame visibility of a newcomer take it as an explicit argument \
+             instead — see water.rs's `had_newcomers` (#3969)"
+        );
+    }
+
+    #[test]
+    fn wake_doc_records_the_spawn_exemption_instead_of_claiming_spawn_calls_it() {
+        let doc = wake_doc();
+        assert!(
+            !doc.contains("introduce motion — spawning a body"),
+            "wake's doc must not list spawning among its required callers — the \
+             production spawn path deliberately does not call it (#3969)"
+        );
+        assert!(
+            doc.contains("deliberate exemption"),
+            "wake's doc must state that spawn is an exemption by design, or a \
+             maintainer reconciling doc with code 'restores' the wake and \
+             reintroduces the exterior streaming stall (#3969)"
+        );
+        assert!(
+            doc.contains("had_newcomers"),
+            "wake's doc must point at the consumer-side contract that replaces \
+             the missing wake, or the exemption reads as a bug (#3969)"
+        );
+    }
+
+    /// The accessor doc matters more than the setter's: it is what the WATAL
+    /// buoyancy phase reads, and it claimed `pending_wake` covered spawns
+    /// while sitting one call away from the workaround for it not doing so.
+    #[test]
+    fn pending_wake_accessor_doc_does_not_claim_to_cover_spawns() {
+        let end = WORLD_RS
+            .find("    pub fn pending_wake(&self) -> bool {")
+            .expect("the pending_wake accessor must still exist");
+        let start = WORLD_RS[..end]
+            .rfind("    /// Whether a pipeline step is already pending")
+            .expect("the accessor's doc block must still open with its summary line");
+        let doc = &WORLD_RS[start..end];
+
+        assert!(
+            !doc.contains("woken / spawned / re-targeted"),
+            "the pending_wake accessor doc must not claim a spawn arms this flag \
+             — it is read by apply_buoyancy, which needs `had_newcomers` \
+             precisely because a spawn does not (#3969)"
+        );
+        assert!(
+            doc.contains("had_newcomers"),
+            "the accessor doc must name the companion signal a consumer needs to \
+             see newcomers, since this flag alone does not report them (#3969)"
+        );
+    }
+
+    /// The refutation the doc now cross-references must still be there: if the
+    /// `had_newcomers` term is ever removed, the exemption stops being safe and
+    /// the docs above become wrong in the other direction.
+    #[test]
+    fn the_buoyancy_fast_path_still_carries_the_newcomer_term() {
+        let start = WATER_RS
+            .find("pub(crate) fn apply_buoyancy")
+            .expect("the buoyancy phase must still exist");
+        let body = &WATER_RS[start..];
+        assert!(
+            body.contains("!had_newcomers"),
+            "apply_buoyancy's quiesced-scene fast path must keep consulting \
+             `had_newcomers`: a body that streams in already submerged spawns \
+             ASLEEP and does not arm `pending_wake`, so without this term its \
+             first-frame dry→wet float-up is skipped (#3969)"
         );
     }
 }
