@@ -4085,3 +4085,62 @@ fn the_bench_sink_stays_unfoldable() {
          and the bracket measures the vertex stage"
     );
 }
+
+/// #3989 — `shader-pipeline.md` is the authoritative GPU-layout doc, and the
+/// audit skill's own instruction is to trust it rather than re-derive. Two of
+/// its rows described **live** lanes as free, which is how an author takes a
+/// slot that already carries per-frame state and breaks it with no test
+/// failure.
+///
+/// This is the third instance of that class in this struct family (#1928's
+/// `VolumetricsParams.render_origin.w`, #2750's `GpuCamera.dof_params.zw`), so
+/// the pin is on the doc text rather than on the code the doc describes: the
+/// code was always right.
+#[test]
+fn shader_pipeline_doc_does_not_advertise_live_lanes_as_free() {
+    const DOC: &str = include_str!("../../../../../docs/engine/shader-pipeline.md");
+
+    // `GpuCamera.render_debug.w` — written by `pack_weather_surface`
+    // (`context/assemble_camera_and_lights.rs`), decoded by `triangle.frag`.
+    let render_debug = DOC
+        .lines()
+        .find(|line| line.contains("| `render_debug` |"))
+        .expect("shader-pipeline.md must still document GpuCamera.render_debug");
+    assert!(
+        !render_debug.contains("w reserved"),
+        "render_debug.w is not reserved — it carries the packed weather surface \
+         (#3989): {render_debug}"
+    );
+    assert!(
+        render_debug.contains("weather") && render_debug.contains("Not a free slot"),
+        "the render_debug row must name its live consumer and carry the same \
+         \"not a free slot\" warning the render_origin row above it already \
+         does: {render_debug}"
+    );
+
+    // `material_flags` bit 10 — `material_flag::BGSM_AUTHORED`, host-side only.
+    let bit10 = DOC
+        .lines()
+        .find(|line| line.starts_with("| 10 |"))
+        .expect("shader-pipeline.md must still document material_flags bit 10");
+    assert!(
+        !bit10.contains("unused") && !bit10.contains("reserved"),
+        "material_flags bit 10 is BGSM_AUTHORED, not free (#3989): {bit10}"
+    );
+    assert!(
+        bit10.contains("BGSM_AUTHORED"),
+        "the bit-10 row must name the flag that occupies it: {bit10}"
+    );
+
+    // The two facts the doc rows assert, checked against the code they describe
+    // — so a future flag move breaks this test rather than the doc silently.
+    assert_eq!(
+        crate::vulkan::material::material_flag::BGSM_AUTHORED,
+        1 << 10
+    );
+    assert!(
+        include_str!("../../../src/shader_constants_data.rs")
+            .contains("`material_flag::BGSM_AUTHORED` (Rust-side bit 10) is"),
+        "the \"intentionally NOT emitted\" note the doc row cites must still exist"
+    );
+}

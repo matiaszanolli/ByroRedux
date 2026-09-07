@@ -11,9 +11,10 @@ use super::constants::{
 };
 use crate::vulkan::caustic::CAUSTIC_BYTES_PER_PIXEL;
 use crate::vulkan::context::DrawCommand;
+use crate::vulkan::frame_upscaler::upscale_output_bytes;
 use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
-use crate::vulkan::upscaling::VolumetricsConfig;
+use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
 use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -696,25 +697,45 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
     aligned
 }
 
-/// VRAM the resolution-scaled post-process passes hold before any BLAS is
-/// allocated, so the BLAS budget can be taken from what is actually left
-/// rather than from the whole heap (#3839).
+/// VRAM the resolution-scaled passes hold before any BLAS is allocated, so the
+/// BLAS budget can be taken from what is actually left rather than from the
+/// whole heap (#3839).
 ///
 /// Derived from each pass's own published per-unit constant and the shared
 /// [`froxel_extent`] helper — never a hand-copied figure, so a pass that
-/// re-sizes itself moves this with it. Covers the three passes that scale with
-/// render resolution and dominate the fixed floor documented in
-/// `docs/engine/memory-budget.md`; it is deliberately a floor, not a complete
-/// VRAM census (textures, geometry pools and the swapchain are not here).
+/// re-sizes itself moves this with it. It is deliberately a floor, not a
+/// complete VRAM census: textures, geometry pools and the swapchain are not
+/// here, because all three are demand-driven or already allocator-visible.
+///
+/// # Two extents, not one (#3988)
+///
+/// The parameter used to be a bare `render_extent`, and that signature was the
+/// bug. **The upscaler's outputs live at the *output* extent**, so there was no
+/// extent in scope to bill them against, and the failure's sign is adversarial
+/// to the shipped default: switching from `--upscaler taa` to `fsr3/quality`
+/// shrinks every render-extent term quadratically while the output-extent term
+/// does not shrink at all. The engine's default preset was therefore the one
+/// with the largest *relative* under-count — roughly a quarter at 1080p/Quality
+/// from the output images alone — which is the failure mode #3839 was written
+/// to remove: eviction starting too late on a small-VRAM card, ending in an
+/// allocator failure rather than a reclaim.
+///
+/// `upscaler_sdk_bytes` is the FSR SDK's own `VkDeviceMemory`, allocated by the
+/// vendored FFX Vulkan backend *outside* `gpu-allocator`. It is the one
+/// allocation in the renderer that nothing else can see, which is why it has to
+/// be passed in rather than derived: [`FrameUpscaler::resident_bytes`] already
+/// caches it from the one `memory_usage()` query per swapchain generation.
+/// Zero is the honest reading when there is no SDK context.
 pub(super) fn screen_scaled_reservation_bytes(
-    render_extent: vk::Extent2D,
+    extents: FrameExtentSet,
     volumetrics: VolumetricsConfig,
+    upscaler_sdk_bytes: vk::DeviceSize,
 ) -> vk::DeviceSize {
-    let pixels = u64::from(render_extent.width) * u64::from(render_extent.height);
+    let pixels = u64::from(extents.render.width) * u64::from(extents.render.height);
 
     // The froxel grid is per-frame-in-flight resident, and by memory-budget.md's
     // own words "still the largest resolution-scaled allocation in the engine".
-    let grid = froxel_extent(render_extent, volumetrics);
+    let grid = froxel_extent(extents.render, volumetrics);
     let froxels = u64::from(grid.width) * u64::from(grid.height) * u64::from(grid.depth);
     let froxel_bytes = froxels
         .saturating_mul(FROXEL_BYTES_PER_SLOT)
@@ -723,6 +744,11 @@ pub(super) fn screen_scaled_reservation_bytes(
     froxel_bytes
         .saturating_add(pixels.saturating_mul(u64::from(SVGF_BYTES_PER_PIXEL)))
         .saturating_add(pixels.saturating_mul(u64::from(CAUSTIC_BYTES_PER_PIXEL)))
+        // Output-extent terms. `upscale_output_bytes` is the upscaler's own
+        // published cost, so a format or frame-in-flight change moves this with
+        // it exactly as the three render-extent terms already move.
+        .saturating_add(upscale_output_bytes(extents.output))
+        .saturating_add(upscaler_sdk_bytes)
 }
 
 /// The static-BLAS residency budget: one third of the DEVICE_LOCAL heap that

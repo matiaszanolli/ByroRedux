@@ -273,6 +273,20 @@ pub struct AccelerationManager {
     /// `blas_map_generation` so the TLAS-side cache invalidation
     /// tracks skinned BLAS alongside the static `blas_entries`.
     pub(super) skinned_blas: std::collections::HashMap<EntityId, BlasEntry>,
+    /// #3991 — entities whose skinned BLAS was *inserted* by this frame's
+    /// recording, held until `queue_submit` succeeds.
+    ///
+    /// The insert cannot be deferred the way the other three commits in this
+    /// chain can: `build_tlas` runs later in the same frame and publishes the
+    /// entry's device address for ray queries, which is the whole "zero-lag RT"
+    /// property of the design. So the entry goes in immediately and this list
+    /// is what makes it *provisional* — on a discarded command buffer
+    /// [`Self::rollback_provisional_skinned_blas`] releases it through the same
+    /// `drop_skinned_blas` path a normal eviction takes, rather than leaving
+    /// `has_skinned_blas` reporting `true` for an acceleration structure whose
+    /// backing memory was never written and which every later frame would
+    /// UPDATE-refit and trace against.
+    pub(super) provisional_skinned_blas: Vec<EntityId>,
     /// `minAccelerationStructureScratchOffsetAlignment` queried at
     /// device init (#659 / #260 R-05). Every `scratch_data.device_address`
     /// passed to `cmd_build_acceleration_structures` must be a multiple
@@ -356,6 +370,7 @@ impl AccelerationManager {
             pending_destroy_scratch: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),
+            provisional_skinned_blas: Vec::new(),
             scratch_align,
         })
     }

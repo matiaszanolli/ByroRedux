@@ -1651,6 +1651,11 @@ impl VulkanContext {
         // #1796 / D6-02 — reset before either early-return guard below so
         // a bailed frame reads `false`; see the field doc on `skin_dispatch_ran`.
         self.skin_dispatch_ran = false;
+        // #3991 — the submit-time counterpart. Reset here for the same reason,
+        // and set only once `queue_submit` has returned `Ok`. Everything the
+        // skin chain commits is latched between these two points.
+        self.skin_state_submitted = false;
+        self.skin_pending_populated.clear();
         // #3569 / D9-01 — reset alongside `skin_dispatch_ran`: this frame's
         // upload hasn't happened yet, so any stale `true` from a previous
         // frame's failure must not leak into this frame's rollback check.
@@ -1839,6 +1844,15 @@ impl VulkanContext {
         // copy, and `end_command_buffer`. Each call documents its own
         // recording-order contract; this is the same single `unsafe` scope
         // `draw_frame` opened before the geometry pass was extracted (#1748).
+        // #3991 — the three tail `Err` sites each need `&mut self` for the
+        // skin-state rollback, which cannot be taken inside their `unsafe`
+        // blocks while the sync-object recovery holds a disjoint field borrow.
+        // Latch the error and act on it in the outer scope, the shape the
+        // `end_command_buffer` site's own comment already asked for.
+        let mut end_command_buffer_failed: Option<anyhow::Error> = None;
+        let mut reset_fences_failed: Option<anyhow::Error> = None;
+        let mut submit_failed: Option<anyhow::Error> = None;
+
         unsafe {
             // Publish the bounded fragment-shader probe record to the host.
             // The matching CPU read occurs only after this slot's fence wait
@@ -1969,8 +1983,15 @@ impl VulkanContext {
                 let _ = self
                     .frame_sync
                     .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
+                end_command_buffer_failed = Some(e);
             }
+        }
+        // #3991 — outside the `unsafe` block, where `&mut self` is free: the
+        // command buffer was discarded, so every piece of skin state this
+        // frame's recording latched describes work that will never run.
+        if let Some(e) = end_command_buffer_failed {
+            self.rollback_skin_frame_state(frame);
+            return Err(e);
         }
         t.cmd_record_ns = cmd_t0.elapsed().as_nanos() as u64;
 
@@ -2021,8 +2042,13 @@ impl VulkanContext {
                 let _ = self
                     .frame_sync
                     .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
+                reset_fences_failed = Some(e);
             }
+        }
+        // #3991 — as above: nothing recorded this frame will execute.
+        if let Some(e) = reset_fences_failed {
+            self.rollback_skin_frame_state(frame);
+            return Err(e);
         }
 
         // SAFETY: queue access is serialized by `graphics_queue`'s Mutex held across the call (VUID-vkQueueSubmit-queue-00893); `cmd` was just closed by `end_command_buffer`, `image_available[frame]` is the wait semaphore and `in_flight[frame]` (just reset) is the signal fence. `cmd` is not re-recorded until that fence is next waited on. On failure both the acquire signal and the fence are recreated before propagating.
@@ -2060,9 +2086,17 @@ impl VulkanContext {
                 let _ = self
                     .frame_sync
                     .recreate_in_flight_for_frame(&self.device, frame);
-                return Err(e);
+                submit_failed = Some(e);
+            } else {
+                drop(queue);
             }
-            drop(queue);
+        }
+        // #3991 — the site that gives this frame's whole recording its meaning.
+        // `skin_state_submitted` stays `false`, which is what the caller's
+        // rollback of the CPU-side pose commits reads.
+        if let Some(e) = submit_failed {
+            self.rollback_skin_frame_state(frame);
+            return Err(e);
         }
 
         // #2715 (CONC-D7-UI-01) — `queue_submit` above just created a new
@@ -2088,6 +2122,12 @@ impl VulkanContext {
         // success would leave the counter advanced without the
         // corresponding GPU write — the next frame would assume valid
         // history that wasn't actually written.
+        // #3991 — the skin / skinned-BLAS chain joins its #917 siblings here.
+        // Four pieces of state describing GPU work were previously committed at
+        // RECORD time, above the three tail `Err` sites; they are latched
+        // during recording now and promoted here, on the one line that means
+        // "this frame's commands are on the queue".
+        self.promote_skin_frame_state(frame);
         if let Some(ref mut svgf) = self.svgf {
             svgf.mark_frame_completed();
         }
@@ -2829,6 +2869,98 @@ mod framebuffers_empty_guard_tests {
 /// safe defaults); a static source assertion pins the ordering instead.
 #[cfg(test)]
 mod skin_dispatch_ran_ordering_tests {
+    /// #3991 / REN-2026-09-06-D4-01. `record_skinned_blas_refit` sets
+    /// `skin_dispatch_ran` at its top, and the three sites below sit *under*
+    /// that call: `end_command_buffer`, `reset_fences` and `queue_submit`. On
+    /// any of them the command buffer is discarded and nothing recorded this
+    /// frame executes, so every commit the skin chain made during recording
+    /// describes GPU work that will never run.
+    ///
+    /// #917 established the correct shape ~30 lines below the submit for SVGF,
+    /// TAA, volumetrics, FSR and the rigid-model history swap; the skin chain
+    /// never adopted it. This pins that it now has: a promotion after the
+    /// submit succeeds, and a rollback at each of the three sites.
+    #[test]
+    fn every_tail_err_site_rolls_back_the_recorded_skin_state() {
+        let src = include_str!("draw.rs");
+
+        let call_site = src
+            .find("self.dispatch_skin_and_cluster(")
+            .expect("draw_frame must call dispatch_skin_and_cluster, which reaches the refit");
+        let promote = src
+            .find("self.promote_skin_frame_state(frame);")
+            .expect("draw_frame must promote the skin state after a successful submit (#3991)");
+        let submit_ok = src
+            .find("svgf.mark_frame_completed();")
+            .expect("the #917 post-submit block must still exist");
+
+        // Each tail site latches its error, then rolls back in the outer scope
+        // where `&mut self` is free.
+        for (name, latch) in [
+            ("end_command_buffer", "end_command_buffer_failed"),
+            ("reset_fences", "reset_fences_failed"),
+            ("queue_submit", "submit_failed"),
+        ] {
+            let guard = format!(
+                "if let Some(e) = {latch} {{\n            self.rollback_skin_frame_state(frame);"
+            );
+            assert!(
+                src.contains(&guard),
+                "the {name} failure path must roll the recorded skin state back \
+                 before propagating — otherwise a discarded command buffer \
+                 leaves a stale bone palette, an unpopulated skin output marked \
+                 populated, and a BLAS that is UPDATE-refit and ray-traced from \
+                 memory that was never built (#3991)"
+            );
+            let latch_pos = src.find(&guard).expect("checked by the assertion above");
+            assert!(
+                call_site < latch_pos,
+                "the {name} site must sit below the skin dispatch — if \
+                 it did not, there would be no recorded skin state to roll back \
+                 and this whole finding would not exist"
+            );
+            assert!(
+                latch_pos < promote,
+                "the {name} rollback must precede the promotion: they are the \
+                 two exclusive outcomes of the same recording"
+            );
+        }
+
+        // The promotion belongs with its #917 siblings, on the far side of the
+        // submit rather than anywhere a later `Err` could still bypass it.
+        assert!(
+            promote < submit_ok,
+            "promote_skin_frame_state must sit in the post-submit block \
+             alongside svgf/taa/volumetrics mark_frame_completed (#917/#3991)"
+        );
+    }
+
+    /// The record-time latch and the submit-time flag must both be reset at the
+    /// top of `draw_frame`, or a bailed frame reports the previous frame's
+    /// outcome (#1796 for the first, #3991 for the second).
+    #[test]
+    fn the_submit_time_flag_is_reset_alongside_the_record_time_latch() {
+        let src = include_str!("draw.rs");
+        let record_reset = src
+            .find("self.skin_dispatch_ran = false;")
+            .expect("draw_frame must reset skin_dispatch_ran (#1796)");
+        let submit_reset = src
+            .find("self.skin_state_submitted = false;")
+            .expect("draw_frame must reset skin_state_submitted (#3991)");
+        let fb_guard = src
+            .find("if self.framebuffers.is_empty() {")
+            .expect("draw_frame must guard on empty framebuffers (#1211)");
+        assert!(record_reset < fb_guard && submit_reset < fb_guard);
+        // And the flag is only ever SET from the record-time latch, inside the
+        // promotion — never at recording time, which is the bug this fixes.
+        let refit = include_str!("skinned_blas_refit.rs");
+        assert!(
+            refit.contains("self.skin_state_submitted = self.skin_dispatch_ran;"),
+            "the submit-time flag must be derived from the record-time latch \
+             inside promote_skin_frame_state, and nowhere else (#3991)"
+        );
+    }
+
     #[test]
     fn skin_dispatch_ran_is_reset_before_both_early_return_guards() {
         let src = include_str!("draw.rs");
@@ -2839,18 +2971,34 @@ mod skin_dispatch_ran_ordering_tests {
         let fb_guard_pos = src
             .find("if self.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
+        // #3991 — the second stale needle. The `ERROR_OUT_OF_DATE_KHR` match
+        // moved into `sync_and_acquire_frame` when #3282 split `draw_frame`
+        // into five, and this `find` had been matching its own literal ever
+        // since. `draw_frame`'s guard is now the `?` + `else` on that call.
         let oode_guard_pos = src
-            .find("Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(true),")
-            .expect("draw_frame must guard on ERROR_OUT_OF_DATE_KHR");
-        // `record_skinned_blas_refit` (which sets the flag true) is
-        // defined textually EARLIER in the file than `draw_frame` — so
-        // the assertion anchors on draw_frame's *call site* for that
-        // function, mirroring how the sibling test above anchors on the
-        // `wait_for_fences` / `acquire_next_image` call sites rather
-        // than callee bodies.
+            .find(
+                "let Some((frame, img, suboptimal)) = self.sync_and_acquire_frame(&mut t)? else {",
+            )
+            .expect(
+                "draw_frame must early-return on a failed / out-of-date acquire \
+                 via sync_and_acquire_frame",
+            );
+        // #3991 — this used to anchor on `"self.record_skinned_blas_refit("`,
+        // which does not appear in `draw.rs` at all: the call moved into
+        // `dispatch_skin_and_cluster` and the `find` had been matching the
+        // test's own literal ever since, comparing two needles inside this
+        // module and pinning nothing. (The module doc above warns about
+        // exactly this trap, in this exact file.) Anchor on the real chain:
+        // `draw_frame` -> `dispatch_skin_and_cluster` -> the refit.
         let call_site_pos = src
-            .find("self.record_skinned_blas_refit(")
-            .expect("draw_frame must call record_skinned_blas_refit (#1796)");
+            .find("self.dispatch_skin_and_cluster(")
+            .expect("draw_frame must call dispatch_skin_and_cluster (#1796)");
+        assert!(
+            include_str!("dispatch_skin_and_cluster.rs").contains("record_skinned_blas_refit("),
+            "dispatch_skin_and_cluster must still be what reaches \
+             record_skinned_blas_refit, or this test's anchor is measuring the \
+             wrong call (#1796 / #3991)"
+        );
 
         assert!(
             reset_pos < fb_guard_pos,
@@ -2888,9 +3036,7 @@ mod bind_inverse_upload_failed_reset_tests {
             .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
         let upload_failed_reset_pos = src
             .find("self.bind_inverse_upload_failed = false;")
-            .expect(
-                "draw_frame must reset bind_inverse_upload_failed to false (#3569)",
-            );
+            .expect("draw_frame must reset bind_inverse_upload_failed to false (#3569)");
         let fb_guard_pos = src
             .find("if self.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");

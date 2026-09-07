@@ -380,6 +380,20 @@ pub struct GpuMaterial {
     pub back_lighting_map_index: u32,    // offset 428 → total 432
 }
 
+// SAFETY: `#[repr(C)]` over 108 four-byte scalars (`f32` / `u32`) only, so
+// every byte of the declared 432 is covered by a field and the struct's
+// alignment is 4 — there is no larger member for the compiler to pad toward,
+// and 432 % 4 == 0 so the array stride needs no tail padding either.
+// `gpu_material_size_is_432_bytes` and
+// `gpu_material_field_offsets_match_shader_contract` pin both halves of that.
+//
+// #3990 — landed alongside `GpuInstance`'s, so the two most churn-prone GPU
+// structs in the workspace stop justifying their byte view in prose. The
+// prose was already wrong for `GpuInstance`; this one was correct but had the
+// same failure mode available to it, and #3761 exists precisely because `Copy`
+// alone does not rule the hazard out.
+unsafe impl crate::vulkan::buffer::NoUninit for GpuMaterial {}
+
 impl Default for GpuMaterial {
     fn default() -> Self {
         Self {

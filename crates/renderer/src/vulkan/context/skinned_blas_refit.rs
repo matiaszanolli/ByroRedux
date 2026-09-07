@@ -18,6 +18,59 @@ impl VulkanContext {
     /// `draw_frame` — runs after the bone-palette upload and before the
     /// TLAS build, which picks up the freshly-refit BLAS via `self`. The
     /// internal `unsafe` scopes, barriers, and recording order are unchanged.
+    /// #3991 / #917 — promote everything this frame's skin recording latched,
+    /// now that `queue_submit` has returned `Ok`.
+    ///
+    /// Four commits used to happen at record time, above `draw_frame`'s three
+    /// tail `Err` sites. On any of those the command buffer is discarded and
+    /// nothing recorded executes, so each commit described GPU work that would
+    /// never run: a stale bone palette in one of the two frame-in-flight
+    /// buffers, an unpopulated skin output treated as populated, and — the one
+    /// with spec weight — a BLAS reported present, UPDATE-refit and ray-traced
+    /// from memory that was never built.
+    ///
+    /// The fourth, the `SkinSlotPool`'s pose-hash commits, lives in the caller
+    /// (`byroredux`) and reads [`Self::skin_state_submitted`], which this sets.
+    pub(super) fn promote_skin_frame_state(&mut self, frame: usize) {
+        self.scene_buffers.promote_bone_world_writes(frame);
+        for entity_id in std::mem::take(&mut self.skin_pending_populated) {
+            if let Some(slot) = self.skin_slots.get_mut(&entity_id) {
+                slot.has_populated_output = true;
+            }
+        }
+        if let Some(ref mut accel) = self.accel_manager {
+            accel.commit_provisional_skinned_blas();
+        }
+        // Only now is the record-time latch a submit-time fact.
+        self.skin_state_submitted = self.skin_dispatch_ran;
+    }
+
+    /// #3991 — undo everything [`Self::promote_skin_frame_state`] would have
+    /// promoted, because the command buffer carrying this frame's skin work was
+    /// discarded by one of `draw_frame`'s three tail `Err` sites.
+    ///
+    /// `skin_state_submitted` is left `false`, which is what makes the caller's
+    /// `SkinSlotPool` rollback fire.
+    pub(super) fn rollback_skin_frame_state(&mut self, frame: usize) {
+        // Dropping the latch IS the rollback: the slot states were never
+        // touched, so they still read "needs a copy into this frame's buffer" —
+        // which is exactly what is true.
+        self.scene_buffers.discard_bone_world_promotion(frame);
+        // The list holds only entities whose bit was still `false`, so nothing
+        // an earlier successful frame established is cleared here.
+        self.skin_pending_populated.clear();
+        if let Some(ref mut accel) = self.accel_manager {
+            let dropped = accel.rollback_provisional_skinned_blas();
+            if dropped > 0 {
+                log::warn!(
+                    "Frame submit failed after recording {dropped} first-sight skinned \
+                     BLAS build(s); released them so the next frame rebuilds rather than \
+                     UPDATE-refitting acceleration structures that were never built (#3991)"
+                );
+            }
+        }
+    }
+
     pub(super) fn record_skinned_blas_refit(
         &mut self,
         cmd: vk::CommandBuffer,
@@ -494,10 +547,25 @@ impl VulkanContext {
                                     },
                                     push,
                                 );
-                                // Flip the "populated" bit on the
-                                // first successful dispatch so the
-                                // next-frame skip gate can fire.
-                                slot.has_populated_output = true;
+                                // #3991 — the "populated" bit is what the
+                                // NEXT frame's skip gate reads, and it is only
+                                // true once this frame's dispatch has actually
+                                // executed. Setting it here, at record time,
+                                // makes it true for a command buffer
+                                // `draw_frame`'s three tail `Err` sites may
+                                // still discard — after which the slot's
+                                // output buffer is treated as populated while
+                                // holding whatever it held before, and its
+                                // BLAS is refit against that.
+                                //
+                                // Latched instead; promoted after
+                                // `queue_submit` returns `Ok`. Only entities
+                                // whose bit this dispatch would newly set are
+                                // recorded, so a rollback cannot clear a bit an
+                                // earlier successful frame established.
+                                if !slot.has_populated_output {
+                                    self.skin_pending_populated.push(entity_id);
+                                }
                             }
                         }
                         // #1194 — END of skin compute dispatch bracket

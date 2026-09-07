@@ -367,6 +367,11 @@ impl AccelerationManager {
             // #920 (original landing; the sibling sync builder was
             // deleted in #1141).
             self.total_blas_bytes += blas_size;
+            // #3991 — provisional until the frame submits. See the field's doc
+            // on why this one insert cannot simply be deferred like the other
+            // three commits in this chain: `build_tlas` publishes the device
+            // address later in the same frame.
+            self.provisional_skinned_blas.push(p.entity_id);
             self.skinned_blas.insert(
                 p.entity_id,
                 BlasEntry {
@@ -740,6 +745,38 @@ impl AccelerationManager {
     /// structure is never destroyed while a command buffer still references
     /// it. Mirrors `drop_blas`; `tick_deferred_destroy` and `destroy`
     /// both drain the queue.
+    /// #3991 / #917 — clear this frame's provisional-insert list after
+    /// `queue_submit` returned `Ok`. The entries stay; they are simply no
+    /// longer provisional.
+    pub fn commit_provisional_skinned_blas(&mut self) {
+        self.provisional_skinned_blas.clear();
+    }
+
+    /// #3991 — release every skinned BLAS this frame inserted, because the
+    /// command buffer that would have built them was discarded.
+    ///
+    /// Without this, `has_skinned_blas(entity)` reports `true` for an
+    /// acceleration structure whose backing memory was never written:
+    /// `refit_skinned_blas` then takes the `mode(UPDATE)` /
+    /// `src == dst` path against it on every subsequent frame, and `build_tlas`
+    /// publishes its device address for ray queries to traverse. That is the
+    /// half of #3991 with spec weight.
+    ///
+    /// Routed through [`Self::drop_skinned_blas`] rather than a bare `remove`,
+    /// so the acceleration structure and its buffer go onto
+    /// `pending_destroy_blas` with the usual `MAX_FRAMES_IN_FLIGHT` countdown.
+    /// The discarded command buffer cannot be executing, but an *earlier*
+    /// frame's may still be, and the countdown is what already covers that.
+    /// Next frame re-takes the first-sight path and builds them properly.
+    pub fn rollback_provisional_skinned_blas(&mut self) -> usize {
+        let entities = std::mem::take(&mut self.provisional_skinned_blas);
+        let count = entities.len();
+        for entity_id in entities {
+            self.drop_skinned_blas(entity_id);
+        }
+        count
+    }
+
     pub fn drop_skinned_blas(&mut self, entity_id: EntityId) {
         if let Some(entry) = self.skinned_blas.remove(&entity_id) {
             // Skinned BLAS aren't tracked in `static_blas_bytes` (see

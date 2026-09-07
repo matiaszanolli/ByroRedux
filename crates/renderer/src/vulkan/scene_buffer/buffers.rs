@@ -105,6 +105,17 @@ pub struct SceneBuffers {
     /// transfer. Regions are full slot strides and are populated only for
     /// slots whose CPU pose is newer than this frame-in-flight buffer.
     pub(super) bone_world_copy_regions: Vec<Vec<vk::BufferCopy>>,
+    /// #3991 — how many of `bone_world_copy_regions[frame]` this frame
+    /// recorded, held until `queue_submit` succeeds.
+    ///
+    /// `record_bone_world_copy` used to mark the slots written as it recorded
+    /// the copy, which is record-time state standing in for a submit-time
+    /// fact. `draw_frame` has three `Err` sites below that point on which the
+    /// command buffer is discarded, and a slot marked written for a copy that
+    /// never ran keeps this frame-in-flight's device buffer on the previous
+    /// pose indefinitely. `promote_bone_world_writes` applies the latch after
+    /// the submit; `discard_bone_world_promotion` drops it.
+    pub(super) bone_world_pending_promotion: Vec<usize>,
     /// Full bone-world span needed by `skin_palette.comp`'s dense dispatch.
     /// This is intentionally separate from `bone_input_upload_bytes`, which
     /// describes the sparse transfer range and may be zero on a clean frame.
@@ -952,12 +963,10 @@ impl SceneBuffers {
         // path; the M29.5 inputs are only meaningful when there's
         // skinned content present, which by definition writes them).
         let bone_input_upload_bytes = vec![0; MAX_FRAMES_IN_FLIGHT];
-        let bone_world_copy_regions = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| Vec::new())
-            .collect();
+        let bone_world_copy_regions = (0..MAX_FRAMES_IN_FLIGHT).map(|_| Vec::new()).collect();
+        let bone_world_pending_promotion = vec![0usize; MAX_FRAMES_IN_FLIGHT];
         let bone_world_dispatch_bytes = vec![0; MAX_FRAMES_IN_FLIGHT];
-        let mut bone_world_slot_states =
-            vec![0; MAX_TOTAL_BONES / MAX_BONES_PER_MESH];
+        let mut bone_world_slot_states = vec![0; MAX_TOTAL_BONES / MAX_BONES_PER_MESH];
         // Slot 0 is the global identity fallback and is never present in
         // `pose_dirty` (the pool reserves it), so explicitly seed it as
         // pending to initialize every per-frame bone-world buffer.
@@ -973,6 +982,7 @@ impl SceneBuffers {
             bind_inverse_upload_staging: bufs.bind_inverse_upload_staging,
             bone_input_upload_bytes,
             bone_world_copy_regions,
+            bone_world_pending_promotion,
             bone_world_dispatch_bytes,
             bone_world_slot_states,
             instance_buffers: bufs.instance_buffers,
@@ -981,9 +991,7 @@ impl SceneBuffers {
             material_buffers: bufs.material_buffers,
             indirect_buffers: bufs.indirect_buffers,
             terrain_tile_buffer: bufs.terrain_tile_buffer,
-            terrain_tile_staging_buffers: (0..MAX_FRAMES_IN_FLIGHT)
-                .map(|_| None)
-                .collect(),
+            terrain_tile_staging_buffers: (0..MAX_FRAMES_IN_FLIGHT).map(|_| None).collect(),
             terrain_tile_staging_pool: StagingPool::new(device.clone(), allocator.clone()),
             ray_budget_buffer: bufs.ray_budget_buffer,
             selected_ray_probe_buffers: bufs.selected_ray_probe_buffers,

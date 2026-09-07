@@ -458,25 +458,33 @@ impl AccelerationManager {
     /// A `--rt-test-blas-budget` override always wins and is never recomputed.
     pub fn recompute_blas_budget(
         &mut self,
-        render_extent: vk::Extent2D,
+        extents: crate::vulkan::upscaling::FrameExtentSet,
         volumetrics: crate::vulkan::upscaling::VolumetricsConfig,
+        upscaler_sdk_bytes: vk::DeviceSize,
     ) {
         if self.blas_budget_override.is_some() {
             return;
         }
-        let reserved = screen_scaled_reservation_bytes(render_extent, volumetrics);
+        let reserved = screen_scaled_reservation_bytes(extents, volumetrics, upscaler_sdk_bytes);
         let updated = blas_budget_for_heap(self.blas_heap_bytes, reserved);
         if updated == self.blas_budget_bytes {
             return;
         }
+        // #3988 — both extents are logged. They differ under every FSR preset,
+        // and the render extent alone reads as an implausibly small
+        // reservation for the resolution the user is actually running at.
         log::info!(
-            "BLAS memory budget re-derived for {}x{}: {:.1} MB (heap {:.1} MB less {:.1} MB \
-             reserved for resolution-scaled passes); was {:.1} MB",
-            render_extent.width,
-            render_extent.height,
+            "BLAS memory budget re-derived for {}x{} render / {}x{} output: {:.1} MB \
+             (heap {:.1} MB less {:.1} MB reserved for resolution-scaled passes, \
+             including {:.1} MB of upscaler SDK memory); was {:.1} MB",
+            extents.render.width,
+            extents.render.height,
+            extents.output.width,
+            extents.output.height,
             updated as f64 / (1024.0 * 1024.0),
             self.blas_heap_bytes as f64 / (1024.0 * 1024.0),
             reserved as f64 / (1024.0 * 1024.0),
+            upscaler_sdk_bytes as f64 / (1024.0 * 1024.0),
             self.blas_budget_bytes as f64 / (1024.0 * 1024.0),
         );
         self.blas_budget_bytes = updated;

@@ -1004,8 +1004,13 @@ impl VulkanContext {
         // they actually hold, so the very first frame evicts on real headroom
         // rather than on the whole heap. The resize path re-derives again at
         // each new extent.
+        // #3988 — the upscaler does not exist yet at this point in
+        // construction, so its SDK reservation is passed as 0 here and the
+        // budget is re-derived once more below, immediately after
+        // `FrameUpscaler::new` returns. The output-extent term is available now
+        // and is billed now; only the SDK figure has to wait.
         if let Some(accel) = accel_manager.as_mut() {
-            accel.recompute_blas_budget(render_extent, renderer_config.volumetrics);
+            accel.recompute_blas_budget(frame_extents, renderer_config.volumetrics, 0);
         }
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
@@ -1442,6 +1447,19 @@ impl VulkanContext {
             pipelines.layout,
         )
         .context("create presentation pipeline")?;
+        // #3988 — the SDK's `VkDeviceMemory` is only knowable once the FSR
+        // context exists, and it is the one allocation in the renderer that
+        // nothing else can see (the vendored FFX backend allocates it outside
+        // `gpu-allocator`). Re-derive the budget now that it is in hand; the
+        // call is pure arithmetic over a cached heap size, and it is a no-op
+        // when the figure is 0 (TAA mode, or a degraded FSR context).
+        if let Some(accel) = accel_manager.as_mut() {
+            accel.recompute_blas_budget(
+                frame_extents,
+                renderer_config.volumetrics,
+                frame_upscaler.sdk_memory_bytes(),
+            );
+        }
         let frame_upscaler = Some(frame_upscaler);
         let presentation = Some(presentation);
 
@@ -1543,6 +1561,8 @@ impl VulkanContext {
             last_skin_coverage_frame: super::super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
             skin_dispatch_ran: false,
+            skin_state_submitted: false,
+            skin_pending_populated: Vec::new(),
             bind_inverse_upload_failed: false,
             clean_skin_frames: 0,
             ssao,

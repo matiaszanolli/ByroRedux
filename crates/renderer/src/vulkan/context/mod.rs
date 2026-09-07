@@ -1737,6 +1737,30 @@ pub struct VulkanContext {
     /// rollback_pending_pose_commits` when it reads `false`, undoing the
     /// premature commit so the next frame's comparison stays honest.
     pub skin_dispatch_ran: bool,
+    /// #3991 — the **submit-time** counterpart to `skin_dispatch_ran`, which is
+    /// a **record-time** latch and was being read as if it were this.
+    ///
+    /// `record_skinned_blas_refit` sets `skin_dispatch_ran` at its top, on the
+    /// argument that reaching it proves `draw_frame` got past both early-return
+    /// guards. That was true of the guards it was written for (#1796) and of
+    /// the ones #2522 widened it to — all of which sit *above* that call. It is
+    /// not true of `draw_frame`'s three **tail** `Err` sites, which sit below
+    /// it: `end_command_buffer`, `reset_fences` and `queue_submit`. On any of
+    /// them the command buffer is discarded and nothing recorded this frame
+    /// executes, yet `skin_dispatch_ran` still reads `true`.
+    ///
+    /// Set only after `queue_submit` returns `Ok`, so a caller asking "did this
+    /// frame's skin work actually reach the GPU" gets an honest answer. #917
+    /// established the pattern ~30 lines below the submit for SVGF, TAA,
+    /// volumetrics, FSR and the rigid-model history swap; the skin chain never
+    /// adopted it.
+    pub skin_state_submitted: bool,
+    /// #3991 — entities whose `SkinSlot::has_populated_output` this frame's
+    /// recording would newly set, held until `queue_submit` succeeds.
+    ///
+    /// Only entities whose bit is still `false` are recorded, so a rollback can
+    /// never clear a bit an earlier successful frame established.
+    pub(super) skin_pending_populated: Vec<byroredux_core::ecs::storage::EntityId>,
     /// #3569 / D9-01 — sibling latch to `skin_dispatch_ran` above, for the
     /// gap that flag doesn't cover: `draw_frame` *reaching* the first-sight
     /// `bind_inverses` upload but the upload itself failing
@@ -1749,7 +1773,11 @@ pub struct VulkanContext {
     /// remaining residency. Reset to `false` alongside `skin_dispatch_ran`
     /// at the top of `draw_frame`; set `true` only in the
     /// `upload_pending_bind_inverses` error arm. The caller widens its
-    /// rollback check to `!ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed`.
+    /// rollback check to
+    /// `!ctx.skin_state_submitted || ctx.bind_inverse_upload_failed` — #3991
+    /// moved the first half from `skin_dispatch_ran` to the submit-time flag,
+    /// which subsumes it: the submit-time flag is only ever set on a frame
+    /// that both reached the skin section and submitted successfully.
     pub bind_inverse_upload_failed: bool,
     /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
     /// changed and no `bind_inverses` upload was pending. Reset to `0` on

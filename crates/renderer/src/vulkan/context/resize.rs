@@ -870,8 +870,18 @@ impl VulkanContext {
         // this pass has since claimed. Pure arithmetic over a cached heap size
         // (no device probe, no allocation, no Vulkan object touched), so it is
         // safe at this point in the resize.
+        // #3988 — both extents, plus the FSR SDK's own reservation. The
+        // upscaler's outputs live at the OUTPUT extent and the SDK memory is
+        // allocated outside `gpu-allocator` entirely, so neither was visible to
+        // a render-extent-only signature. Read before the `as_mut` borrow so
+        // the two field borrows do not overlap.
+        let extents = self.frame_extents;
+        let sdk_bytes = self
+            .frame_upscaler
+            .as_ref()
+            .map_or(0, |upscaler| upscaler.sdk_memory_bytes());
         if let Some(accel) = self.accel_manager.as_mut() {
-            accel.recompute_blas_budget(self.frame_extents.render, volumetrics_config);
+            accel.recompute_blas_budget(extents, volumetrics_config, sdk_bytes);
         }
         Ok(())
     }

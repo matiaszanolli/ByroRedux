@@ -756,7 +756,18 @@ impl App {
             // upload and the upload itself fails: `record_skinned_blas_refit`
             // still runs afterward and flips `skin_dispatch_ran` true, so
             // the rollback below must also fire on `bind_inverse_upload_failed`.
-            if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {
+            //
+            // #3991 — the first half now reads `skin_state_submitted`, the
+            // SUBMIT-time flag, rather than `skin_dispatch_ran`, the RECORD-time
+            // one. `skin_dispatch_ran` is set at the top of
+            // `record_skinned_blas_refit`, which sits ABOVE `draw_frame`'s three
+            // tail `Err` sites (`end_command_buffer`, `reset_fences`,
+            // `queue_submit`) — on any of those the command buffer is discarded
+            // and the dispatch this rollback protects never runs, yet the
+            // record-time latch reads `true`. The submit-time flag subsumes the
+            // old condition: it is only ever set on a frame that both reached
+            // the skin section and submitted successfully.
+            if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {
                 self.skin_slot_pool.rollback_pending_pose_commits();
                 self.skin_slot_pool
                     .requeue_pending(std::mem::take(&mut pending_for_requeue));
@@ -950,8 +961,10 @@ mod skin_dispatch_ran_rollback_scope_tests {
             .find("let draw_result = ctx.draw_frame(FrameInputs {")
             .expect("render_one_frame must call draw_frame and capture its Result (#2522)");
         let rollback_check_pos = src
-            .find("if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {")
-            .expect("render_one_frame must check skin_dispatch_ran for rollback (#1791/#1796)");
+            .find("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {")
+            .expect(
+                "render_one_frame must check skin_state_submitted for rollback (#1791/#1796/#3991)",
+            );
         let match_pos = src
             .find("match draw_result {")
             .expect("render_one_frame must match on the captured draw_result (#2522)");
@@ -961,16 +974,15 @@ mod skin_dispatch_ran_rollback_scope_tests {
 
         assert!(
             draw_call_pos < rollback_check_pos,
-            "the skin_dispatch_ran rollback check must come AFTER the \
-             draw_frame call, so it observes this frame's outcome. (#2522)"
+            "the skin-state rollback check must come AFTER the draw_frame \
+             call, so it observes this frame's outcome. (#2522)"
         );
         assert!(
             rollback_check_pos < match_pos,
-            "the skin_dispatch_ran rollback check must come BEFORE the \
-             match on draw_result — i.e. outside and above both arms — or \
-             the Err(e) arm would skip it entirely, silently losing the \
-             #1791/#1796 rollback on any of draw_frame's early-Err paths. \
-             (#2522)"
+            "the skin-state rollback check must come BEFORE the match on \
+             draw_result — i.e. outside and above both arms — or the Err(e) \
+             arm would skip it entirely, silently losing the #1791/#1796 \
+             rollback on any of draw_frame's early-Err paths. (#2522)"
         );
         assert!(
             match_pos < ok_arm_pos,
@@ -993,10 +1005,44 @@ mod bind_inverse_upload_failed_rollback_tests {
         let src = include_str!("app_frame.rs");
 
         assert!(
-            src.contains("if !ctx.skin_dispatch_ran || ctx.bind_inverse_upload_failed {"),
+            src.contains("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {"),
             "the rollback check must widen to bind_inverse_upload_failed \
-             alongside skin_dispatch_ran, or a failed first-sight \
+             alongside the skin-state flag, or a failed first-sight \
              bind_inverses upload is never requeued. (#3569)"
+        );
+    }
+}
+
+/// Regression for #3991 / REN-2026-09-06-D4-01. The gate must read the
+/// **submit-time** flag, not the record-time one.
+///
+/// `skin_dispatch_ran` is set at the top of `record_skinned_blas_refit`, which
+/// sits ABOVE `draw_frame`'s three tail `Err` sites (`end_command_buffer`,
+/// `reset_fences`, `queue_submit`). On any of those the command buffer is
+/// discarded and the dispatch this rollback exists to protect never runs — yet
+/// the record-time latch reads `true`, so the rollback did not fire and the
+/// pool's pose-hash baseline stayed advanced past a dispatch that never
+/// happened.
+#[cfg(test)]
+mod skin_state_submitted_rollback_tests {
+    #[test]
+    fn rollback_reads_the_submit_time_flag_not_the_record_time_latch() {
+        let src = include_str!("app_frame.rs");
+        // Assembled at runtime, not written as one literal: the needle would
+        // otherwise appear in this very file and match itself, pinning nothing.
+        // The module doc above `skin_dispatch_ran_rollback_scope_tests` records
+        // that exact trap for the sibling test.
+        let stale = format!("if !ctx.{} ||", "skin_dispatch_ran");
+        assert!(
+            !src.contains(&stale),
+            "the rollback must not gate on the RECORD-time `skin_dispatch_ran` \
+             — it reads `true` on a frame whose command buffer was discarded by \
+             one of draw_frame's three tail Err sites (#3991)"
+        );
+        assert!(
+            src.contains("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {"),
+            "the rollback must gate on the SUBMIT-time `skin_state_submitted` \
+             (#3991)"
         );
     }
 }

@@ -687,7 +687,7 @@ authoritative rather than re-derived.
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
-| FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
+| FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K). Both this row and the SDK's own working memory are now billed to the BLAS residency reservation (#3988); the SDK figure is still allocated outside `gpu-allocator` and so does not appear in `ctx.memory` |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
 | Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |

@@ -246,6 +246,23 @@ pub struct GpuInstance {
                               // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
+// SAFETY: `#[repr(C)]`, and every byte of the declared 160 is covered by a
+// field. #3990 — this is the impl the old prose safety argument in
+// `upload_instances` was standing in for, and it was wrong about the shape it
+// described: since #2219 / #3231 this struct is NOT "plain f32/u32 fields".
+// It carries three `u64`s, which raise its alignment to 8 and are the only
+// way implicit padding could ever appear in it.
+//
+// The three of them are what this impl has to argue about, and the argument is
+// positional: `surface_id` ends at 112, `skinned_vertex_address` starts there
+// and 112 % 8 == 0; `_reserved[2]` carries 120..128 so `morph_delta_address`
+// starts 8-aligned; `morph_weight_address` follows it at 136; and the trailing
+// three scalar `u32`s take the struct to 160, which is a multiple of 8 so the
+// array stride needs no tail padding either. `gpu_instance_field_offsets_match_
+// shader_contract` pins every one of those offsets, so a field insertion that
+// broke the argument breaks a test rather than this comment.
+unsafe impl NoUninit for GpuInstance {}
+
 impl Default for GpuInstance {
     fn default() -> Self {
         Self {

@@ -231,7 +231,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
-| 336 | 16 | `render_debug` | x = `RenderDebugMode` shader discriminant; y = optional `f32::to_bits` RT-LOD scale; z = diagnostic LOD-counter enable; w reserved |
+| 336 | 16 | `render_debug` | x = `RenderDebugMode` shader discriminant; y = optional `f32::to_bits` RT-LOD scale; z = diagnostic LOD-counter enable; **w = packed weather surface** (low 16 bits rain wetness, high 16 bits snow coverage), written by `pack_weather_surface` and decoded by `triangle.frag`. Not a free slot — same trap as the `render_origin.w` row above (#3989); the `DBG_*` mask is already 32/32 bits, so the next debug-flag expansion is exactly the change that must not take this lane |
 | 352 | 16 | `exterior_sky_tint` | xyz = the live exterior's sky zenith colour (#3323); w reserved. Feeds `triangle.frag`'s window-portal escape branch so a ray leaving an interior cell sees the real outdoor sky instead of a frozen noon-blue default; falls back to `SkyParams::default().zenith_color` when no exterior has loaded this session |
 
 ### `GpuWaterParams` — 368 bytes, SSBO (Set 2, Binding 1)
@@ -381,7 +381,7 @@ distinct authored responses.
 | 7 | `MAT_FLAG_MODEL_SPACE_NORMALS` | Normal map is model-space, not tangent-space |
 | 8 | `MAT_FLAG_TRANSLUCENCY_THICK_OBJECT` | Translucency: thick-object attenuation profile |
 | 9 | `MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO` | Translucency: mix subsurface colour with albedo |
-| 10 | *(unused/reserved)* | — |
+| 10 | `BGSM_AUTHORED` | Host-side provenance only — **deliberately not mirrored to GLSL** (`build.rs` and `shader_constants_data.rs` both carry an explicit "intentionally NOT emitted" note). Not a free bit: a new shader-visible `MAT_FLAG_*` allocated here would collide with the bit `cell_loader.rs` already sets (#3989) |
 | 11 | `MAT_FLAG_THIN_GLASS` | Non-occluding glass — zero-ray Fresnel/framebuffer-transmission path, no RT (#883f57cd) |
 | 12 | `MAT_FLAG_MSN_HAS_AUTHORED_Z` | Model-space normal map carries authored Z instead of requiring reconstruction |
 | 13 | `MAT_FLAG_SOFT_LIGHTING` | Enable masked wrapped diffuse response |

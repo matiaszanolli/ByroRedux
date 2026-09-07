@@ -8,12 +8,12 @@ use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
+use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::buffers::LightHeader;
 use super::descriptors::{
     hash_indirect_slice, hash_instance_slice, hash_light_slice, hash_material_slice,
     hash_previous_model_slice,
 };
-use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::*;
 use anyhow::Result;
 use ash::vk;
@@ -31,8 +31,7 @@ fn mark_bone_world_slot_dirty(state: &mut u8) {
 #[cfg(test)]
 mod bone_world_slot_state_tests {
     use super::{
-        bone_world_slot_needs_copy, mark_bone_world_slot_dirty,
-        mark_bone_world_slot_written,
+        bone_world_slot_needs_copy, mark_bone_world_slot_dirty, mark_bone_world_slot_written,
     };
 
     #[test]
@@ -301,8 +300,7 @@ impl super::buffers::SceneBuffers {
     {
         let count = bone_world.len().min(MAX_TOTAL_BONES);
         let mat4_size = std::mem::size_of::<[[f32; 4]; 4]>();
-        self.bone_world_dispatch_bytes[frame_index] =
-            (mat4_size * count) as vk::DeviceSize;
+        self.bone_world_dispatch_bytes[frame_index] = (mat4_size * count) as vk::DeviceSize;
         self.bone_input_upload_bytes[frame_index] = 0;
         self.bone_world_copy_regions[frame_index].clear();
 
@@ -362,9 +360,7 @@ impl super::buffers::SceneBuffers {
                         .as_ptr()
                         .add(region.src_offset as usize / mat4_size)
                         as *const u8,
-                    world_mapped
-                        .as_mut_ptr()
-                        .add(region.dst_offset as usize),
+                    world_mapped.as_mut_ptr().add(region.dst_offset as usize),
                     region.size as usize,
                 );
             }
@@ -376,9 +372,7 @@ impl super::buffers::SceneBuffers {
             .first()
             .expect("non-empty copy region list")
             .dst_offset;
-        let last_region = copy_regions
-            .last()
-            .expect("non-empty copy region list");
+        let last_region = copy_regions.last().expect("non-empty copy region list");
         let last = last_region.dst_offset + last_region.size;
         world_buf.flush_range(device, first, last - first)?;
         self.bone_input_upload_bytes[frame_index] = last;
@@ -401,6 +395,13 @@ impl super::buffers::SceneBuffers {
         let barrier_size = self.bone_input_upload_bytes[frame_index];
         let region_count = self.bone_world_copy_regions[frame_index].len();
         if barrier_size == 0 || region_count == 0 {
+            // #3991 — clear the promotion latch explicitly rather than relying
+            // on the previous use of this frame index having drained it.
+            // Re-applying a stale latch would set this frame's bit on a slot
+            // that had since been reset to fully-clean, and the NEXT
+            // `mark_bone_world_slot_dirty` would then read that bit as "already
+            // copied into this buffer" and never re-copy it.
+            self.bone_world_pending_promotion[frame_index] = 0;
             return;
         }
         unsafe {
@@ -434,6 +435,30 @@ impl super::buffers::SceneBuffers {
                 &[],
             );
         }
+        // #3991 — the slot bookkeeping used to run here, at RECORD time. The
+        // copy this function records only happens if the frame is submitted,
+        // and `draw_frame` has three `Err` sites below this point
+        // (`end_command_buffer`, `reset_fences`, `queue_submit`) on which the
+        // command buffer is discarded. Marking a slot written for a copy that
+        // never executed leaves `bone_world_device_buffers[frame_index]`
+        // holding the pre-update pose until something re-dirties the slot —
+        // and once the sibling frame-in-flight's bit lands on a later
+        // successful frame, `mark_bone_world_slot_written` resets the byte to
+        // fully clean, so nothing ever does.
+        //
+        // The count is latched instead, and `promote_bone_world_writes`
+        // applies it after a successful submit. The regions themselves are
+        // already retained per frame index (they are only overwritten the next
+        // time this slot is recorded, which is after its fence has been
+        // waited), so there is nothing else to keep alive.
+        self.bone_world_pending_promotion[frame_index] = region_count;
+    }
+
+    /// #3991 / #917 — promote the bone-world slot bookkeeping this frame's
+    /// [`Self::record_bone_world_copy`] deferred. Call **only** after
+    /// `queue_submit` has returned `Ok` for `frame_index`.
+    pub fn promote_bone_world_writes(&mut self, frame_index: usize) {
+        let region_count = std::mem::take(&mut self.bone_world_pending_promotion[frame_index]);
         for index in 0..region_count {
             let offset = self.bone_world_copy_regions[frame_index][index].dst_offset;
             let slot = (offset as usize
@@ -443,6 +468,16 @@ impl super::buffers::SceneBuffers {
                 mark_bone_world_slot_written(state, frame_index);
             }
         }
+    }
+
+    /// Discard the pending bone-world promotion for a frame whose command
+    /// buffer was thrown away (#3991).
+    ///
+    /// Dropping the latch is the whole rollback: the slot states were never
+    /// touched, so they still read "needs a copy into this frame's buffer",
+    /// which is exactly what is true.
+    pub fn discard_bone_world_promotion(&mut self, frame_index: usize) {
+        self.bone_world_pending_promotion[frame_index] = 0;
     }
 
     /// M29.6 — write pending first-sight `bind_inverses` uploads into
@@ -709,20 +744,22 @@ impl super::buffers::SceneBuffers {
             return Ok(());
         }
 
-        let buf = &mut self.instance_buffers[frame_index];
-        let mapped = buf.mapped_slice_mut()?;
-        let byte_size = std::mem::size_of::<GpuInstance>() * count;
-        // SAFETY: GpuInstance is #[repr(C)] with plain f32/u32 fields.
-        // instance_buffers are sized for MAX_INSTANCES; count is clamped.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                instances.as_ptr() as *const u8,
-                mapped.as_mut_ptr(),
-                byte_size,
-            );
-        }
-        // F8 (#1587) — flush only the written byte range, not the full allocation.
-        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
+        // #3990 — `write_mapped` rather than a hand-rolled
+        // `copy_nonoverlapping` + prose. The prose this replaced said
+        // "GpuInstance is #[repr(C)] with plain f32/u32 fields", which stopped
+        // being true at #2219: the struct carries three `u64`s, and those are
+        // the *only* way implicit padding could ever appear in it. The safety
+        // argument was therefore asserting the absence of the one hazard it
+        // needed to rule out, by describing a struct that no longer existed.
+        //
+        // `NoUninit` is the type-level form of that argument (#3761), and the
+        // impl on `GpuInstance` states the positional reasoning about the
+        // three `u64`s that the comment could not. It also narrows its own
+        // non-coherent flush to the written prefix, so the `flush_range(0,
+        // byte_size)` this replaced is preserved rather than widened (#301 /
+        // #1587). `instance_buffers` are sized for MAX_INSTANCES and `count`
+        // is clamped above.
+        self.instance_buffers[frame_index].write_mapped(device, &instances[..count])?;
         self.last_uploaded_instance_hash[frame_index] = Some(hash);
         Ok(())
     }
@@ -810,24 +847,17 @@ impl super::buffers::SceneBuffers {
             return Ok(());
         }
 
-        let buf = &mut self.material_buffers[frame_index];
-        let mapped = buf.mapped_slice_mut()?;
-        let byte_size = std::mem::size_of::<super::super::material::GpuMaterial>() * count;
-        // SAFETY: GpuMaterial is #[repr(C)] with f32/u32 fields and
-        // explicit padding (no implicit Drop, no uninitialised bytes).
-        // material_buffers are sized for MAX_MATERIALS; count is clamped.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                materials.as_ptr() as *const u8,
-                mapped.as_mut_ptr(),
-                byte_size,
-            );
-        }
-        // F8 (#1587) — flush only the written byte range, not the full allocation.
-        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
-        // Stamp the hash AFTER a successful flush — a flush failure
-        // leaves the buffer in an indeterminate state, so we want
-        // the next call to re-upload rather than skip.
+        // #3990 — see `upload_instances`. `GpuMaterial`'s prose argument was
+        // correct where `GpuInstance`'s was not, but it had the same failure
+        // mode available to it, and these two are the workspace's most
+        // churn-prone GPU structs (five GLSL mirrors and one respectively).
+        // Both now carry the type-level form.
+        //
+        // The hash is still stamped only after the write returns `Ok`: a
+        // failed flush leaves the buffer indeterminate, so the next call must
+        // re-upload rather than skip. `material_buffers` are sized for
+        // MAX_MATERIALS and `count` is clamped above.
+        self.material_buffers[frame_index].write_mapped(device, &materials[..count])?;
         self.last_uploaded_material_hash[frame_index] = Some(hash);
         Ok(())
     }
@@ -948,9 +978,7 @@ impl super::buffers::SceneBuffers {
                 .unwrap_or(byte_size);
             previous.release_to(&mut self.terrain_tile_staging_pool, capacity);
         }
-        let (staging_buffer, staging_alloc) = self
-            .terrain_tile_staging_pool
-            .acquire(byte_size)?;
+        let (staging_buffer, staging_alloc) = self.terrain_tile_staging_pool.acquire(byte_size)?;
         let mut staging = super::super::buffer::StagingGuard::new(
             staging_buffer,
             staging_alloc,
@@ -1080,5 +1108,72 @@ impl super::buffers::SceneBuffers {
     /// Get the descriptor set for the current frame-in-flight.
     pub fn descriptor_set(&self, frame_index: usize) -> vk::DescriptorSet {
         self.descriptor_sets[frame_index]
+    }
+}
+
+/// #3991 — the bone-world slot bookkeeping is a *submit-time* fact and must
+/// not be applied at record time.
+///
+/// `record_bone_world_copy` used to call `mark_bone_world_slot_written` in a
+/// loop straight after recording the copy. `draw_frame` has three `Err` sites
+/// below that point on which the command buffer is discarded, and a slot marked
+/// written for a copy that never executed leaves
+/// `bone_world_device_buffers[frame_index]` on the previous pose — permanently,
+/// because once the sibling frame-in-flight's bit lands on a later successful
+/// frame `mark_bone_world_slot_written` resets the byte to fully clean and
+/// nothing re-dirties it.
+#[cfg(test)]
+mod bone_world_promotion_tests {
+    #[test]
+    fn recording_does_not_mark_slots_written() {
+        let src = include_str!("upload.rs");
+        let record = src
+            .split_once("pub fn record_bone_world_copy(")
+            .expect("record_bone_world_copy must still exist")
+            .1
+            .split_once("\n    }")
+            .expect("unterminated function")
+            .0;
+        assert!(
+            !record.contains("mark_bone_world_slot_written("),
+            "record_bone_world_copy must NOT mark slots written — that is a \
+             submit-time fact, and this function only records (#3991)"
+        );
+        assert!(
+            record.contains("self.bone_world_pending_promotion[frame_index] = region_count;"),
+            "record_bone_world_copy must latch the region count for the \
+             post-submit promotion instead (#3991)"
+        );
+
+        let promote = src
+            .split_once("pub fn promote_bone_world_writes(")
+            .expect("the post-submit promotion must exist (#3991)")
+            .1
+            .split_once("\n    }")
+            .expect("unterminated function")
+            .0;
+        assert!(
+            promote.contains("mark_bone_world_slot_written(state, frame_index);")
+                && promote.contains("std::mem::take(&mut self.bone_world_pending_promotion"),
+            "the promotion must apply the latch and drain it, so a frame that \
+             records nothing cannot re-apply a stale one (#3991)"
+        );
+
+        // The rollback is the absence of the promotion, not an inverse
+        // operation: the slot states were never touched, so they still read
+        // "needs a copy into this frame's buffer" — which is what is true.
+        let discard = src
+            .split_once("pub fn discard_bone_world_promotion(")
+            .expect("the rollback must exist (#3991)")
+            .1
+            .split_once("\n    }")
+            .expect("unterminated function")
+            .0;
+        assert!(discard.contains("self.bone_world_pending_promotion[frame_index] = 0;"));
+        assert!(
+            !discard.contains("mark_bone_world_slot_"),
+            "the rollback must not touch slot state — dropping the latch IS the \
+             rollback (#3991)"
+        );
     }
 }

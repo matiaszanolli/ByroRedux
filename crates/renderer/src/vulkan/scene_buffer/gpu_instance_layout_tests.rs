@@ -387,3 +387,76 @@ fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
          after changing GpuTerrainTile (#4057). Found: {strides:?}"
     );
 }
+
+/// #3990 — the byte view `upload_instances` and `hash_instance_slice` take is
+/// only sound while the struct has no implicit padding, and the three `u64`s
+/// added by #2219 / #3231 are the only way padding could enter it: they raise
+/// the alignment to 8, so a `u32` landing immediately before one at an odd
+/// 4-byte offset would make the compiler insert four uninitialised bytes.
+///
+/// `gpu_instance_is_160_bytes_std430_compatible` would catch the resulting size
+/// change, but nothing would say *why* — and the failure that matters is not
+/// the size, it is that the byte view now contains uninitialised bytes (UB in
+/// the upload copy and in the dirty-gate hash, and garbage in whichever std430
+/// lane the padding lands). This pins the positional argument the
+/// `unsafe impl NoUninit for GpuInstance` rests on, so the argument breaks
+/// rather than the comment going quietly stale the way the old prose did.
+#[test]
+fn the_u64_fields_cannot_introduce_implicit_padding() {
+    for (name, offset) in [
+        (
+            "skinned_vertex_address",
+            offset_of!(GpuInstance, skinned_vertex_address),
+        ),
+        (
+            "morph_delta_address",
+            offset_of!(GpuInstance, morph_delta_address),
+        ),
+        (
+            "morph_weight_address",
+            offset_of!(GpuInstance, morph_weight_address),
+        ),
+    ] {
+        assert_eq!(
+            offset % 8,
+            0,
+            "{name} sits at offset {offset}, which is not 8-aligned — the \
+             compiler has inserted implicit padding before it (#3990)"
+        );
+    }
+    // The declared fields must tile the struct with nothing left over: the
+    // last field ends exactly at the struct's size, and the size is a
+    // multiple of the 8-byte alignment so the ARRAY stride needs no tail
+    // padding either (the upload writes `count` contiguous instances).
+    assert_eq!(
+        offset_of!(GpuInstance, _reserved2c) + size_of::<u32>(),
+        size_of::<GpuInstance>()
+    );
+    assert_eq!(align_of::<GpuInstance>(), 8);
+    assert_eq!(size_of::<GpuInstance>() % align_of::<GpuInstance>(), 0);
+}
+
+/// The two most churn-prone GPU structs in the workspace must carry the
+/// type-level no-uninit guard rather than a prose one, and their uploads must
+/// go through the bound that enforces it (#3990 / #3761).
+#[test]
+fn the_churn_prone_gpu_structs_upload_through_the_nouninit_bound() {
+    // Compile-time half: these calls do not typecheck without the impls.
+    fn requires_no_uninit<T: crate::vulkan::buffer::NoUninit>() {}
+    requires_no_uninit::<GpuInstance>();
+    requires_no_uninit::<crate::vulkan::material::GpuMaterial>();
+
+    // Call-site half: prose can be right and still leave the hazard one field
+    // insertion away, which is what #3761 was added to remove.
+    let src = include_str!("upload.rs");
+    for call in [
+        "self.instance_buffers[frame_index].write_mapped(device, &instances[..count])?;",
+        "self.material_buffers[frame_index].write_mapped(device, &materials[..count])?;",
+    ] {
+        assert!(
+            src.contains(call),
+            "expected `{call}` — a hand-rolled copy_nonoverlapping here would \
+             argue the no-uninit invariant in a comment again (#3990)"
+        );
+    }
+}

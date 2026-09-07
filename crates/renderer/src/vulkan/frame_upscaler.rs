@@ -110,6 +110,26 @@ pub struct UpscaleDispatchInputs {
     pub transparency: vk::Image,
 }
 
+/// Bytes per pixel of one upscale output image.
+///
+/// [`HDR_FORMAT`] is `R16G16B16A16_SFLOAT` — four 16-bit channels. Published
+/// beside the images it describes, the way `SVGF_BYTES_PER_PIXEL` and
+/// `CAUSTIC_BYTES_PER_PIXEL` are, so the BLAS reservation reads a constant this
+/// module owns rather than a figure hand-copied into it (#3988).
+pub const UPSCALE_OUTPUT_BYTES_PER_PIXEL: u32 = 8;
+
+/// VRAM the per-frame-in-flight upscale output images hold at `output`.
+///
+/// A free function so the reservation can price a *prospective* extent during
+/// a resize — the point in the frame where the budget is re-derived is not
+/// necessarily one where the upscaler has already been recreated at the new
+/// size.
+pub fn upscale_output_bytes(output: vk::Extent2D) -> vk::DeviceSize {
+    (u64::from(output.width) * u64::from(output.height))
+        .saturating_mul(u64::from(UPSCALE_OUTPUT_BYTES_PER_PIXEL))
+        .saturating_mul(MAX_FRAMES_IN_FLIGHT as u64)
+}
+
 /// Owns the output-resolution HDR images and, in FSR mode, the SDK context.
 pub struct FrameUpscaler {
     mode: UpscalerMode,
@@ -148,6 +168,21 @@ pub struct FrameUpscaler {
     /// than chosen — the SDK reads the physical device directly and offers no
     /// override, so this records which path is live.
     shader_float16: bool,
+    /// The SDK's own `VkDeviceMemory` reservation, cached from the same
+    /// `memory_usage()` call [`Self::build_summary`] already makes (#3988).
+    ///
+    /// **This is the one allocation in the renderer that nothing else can
+    /// see.** It is made by the vendored FFX Vulkan backend, outside
+    /// `gpu-allocator`, so `ctx.memory` does not know about it and neither did
+    /// the BLAS residency reservation. Fixed for a swapchain generation — the
+    /// context is created for `max_upscale_size` — which is exactly what makes
+    /// it a legitimate term in a *fixed-floor* reservation rather than a
+    /// demand-driven cost the reservation's doc disclaims.
+    ///
+    /// `0` in TAA mode and whenever the query fails; a reservation term of
+    /// zero is the honest reading of "we do not know", and it is what the
+    /// budget did before this field existed.
+    sdk_memory_bytes: vk::DeviceSize,
 }
 
 impl FrameUpscaler {
@@ -175,6 +210,8 @@ impl FrameUpscaler {
             dispatch_failure: None,
             new_dispatch_failure: false,
             summary: String::new(),
+            // Filled once the SDK context exists, alongside `summary`.
+            sdk_memory_bytes: 0,
         };
 
         if let Err(error) = upscaler.create_outputs(device, allocator) {
@@ -222,6 +259,7 @@ impl FrameUpscaler {
         }
 
         upscaler.summary = upscaler.build_summary();
+        upscaler.sdk_memory_bytes = upscaler.query_sdk_memory_bytes();
         log::info!("Frame upscaler: {}", upscaler.summary);
 
         Ok(upscaler)
@@ -395,6 +433,28 @@ impl FrameUpscaler {
             );
         }
         self.summary.clone()
+    }
+
+    /// Bytes of `VkDeviceMemory` the FSR SDK holds for this swapchain
+    /// generation, or `0` when there is no SDK context (TAA mode, or a failed
+    /// context creation degraded to the native blit).
+    ///
+    /// Queried once per generation for the same reason [`Self::summary`] is:
+    /// the reservation is fixed for the life of a context, so re-querying it
+    /// per frame would be an FFI round-trip for a value that cannot change.
+    /// The cached SDK reservation — the term the BLAS residency budget needs
+    /// separately from the output images, because during a resize it prices
+    /// those from a *prospective* extent while this figure is fixed for the
+    /// swapchain generation (#3988).
+    pub fn sdk_memory_bytes(&self) -> vk::DeviceSize {
+        self.sdk_memory_bytes
+    }
+
+    fn query_sdk_memory_bytes(&self) -> vk::DeviceSize {
+        self.context
+            .as_ref()
+            .and_then(|context| context.memory_usage().ok())
+            .map_or(0, |usage| usage.total_bytes as vk::DeviceSize)
     }
 
     fn build_summary(&self) -> String {

@@ -416,17 +416,25 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 /// saves ~54 MB/s sustained PCIe at 60 fps. (#2692 — the 112 B / 805 KB /
 /// 48 MB/s figures here predated #2219's `skinned_vertex_address`.)
 ///
-/// `GpuInstance` is `#[repr(C)]` with f32 / u32 / packed-vec4 fields
-/// and zero implicit padding (`gpu_instance_layout_tests` pins this);
-/// the slice-byte cast is sound for the same reason `GpuMaterial`'s
-/// is.
+/// `GpuInstance` is `#[repr(C)]` scalars **plus three `u64`s**
+/// (`skinned_vertex_address`, `morph_delta_address`, `morph_weight_address`),
+/// positioned so no implicit padding appears — #3990 corrected this comment,
+/// which had described the struct as f32/u32-only since #2219 added the first
+/// of those and thereby the only way padding could ever enter it. Hashing over
+/// a byte view that contained uninitialised padding would be UB here exactly as
+/// it would be in the upload copy.
+///
+/// The positional argument now lives once, on `unsafe impl NoUninit for
+/// GpuInstance` in `gpu_types.rs`, next to the field offsets it reasons about.
 pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
     let byte_size = std::mem::size_of_val(instances);
-    // SAFETY: see hash_material_slice — same invariant on the producer
-    // side. The layout test pins the byte-size against a known constant
-    // so an unintended padding insert would surface there first.
+    // SAFETY: `GpuInstance: NoUninit` (see `gpu_types.rs`) is the standing
+    // claim that every byte of a valid instance is initialised, so the byte
+    // view below contains no uninitialised bytes. `byte_size` is exactly the
+    // slice footprint, and `gpu_instance_field_offsets_match_shader_contract`
+    // pins the offsets the impl's argument rests on.
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, byte_size) };
     hasher.write(bytes);

@@ -1155,7 +1155,7 @@ fn degenerate_recovery_inputs_do_nothing() {
 fn blas_budget_subtracts_the_resolution_scaled_reservation() {
     use super::super::constants::MIN_BLAS_BUDGET_BYTES;
     use super::super::predicates::screen_scaled_reservation_bytes;
-    use crate::vulkan::upscaling::VolumetricsConfig;
+    use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
 
     let config = VolumetricsConfig::default();
     let hd = vk::Extent2D {
@@ -1166,9 +1166,13 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
         width: 3840,
         height: 2160,
     };
+    let native = |extent| FrameExtentSet {
+        render: extent,
+        output: extent,
+    };
 
-    let reserved_hd = screen_scaled_reservation_bytes(hd, config);
-    let reserved_uhd = screen_scaled_reservation_bytes(uhd, config);
+    let reserved_hd = screen_scaled_reservation_bytes(native(hd), config, 0);
+    let reserved_uhd = screen_scaled_reservation_bytes(native(uhd), config, 0);
 
     // The reservation is real and grows with resolution — the whole reason the
     // budget cannot be a construction-time constant. 4K is 4x the pixels, and
@@ -1207,5 +1211,120 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
     assert_eq!(
         blas_budget_for_heap(1024 * 1024 * 1024, reserved_uhd),
         MIN_BLAS_BUDGET_BYTES
+    );
+}
+
+/// #3988 — the reservation must see the **output** extent and the FSR SDK's
+/// own reservation, neither of which its render-extent-only signature could
+/// reach.
+///
+/// The pin above asserts only `> 128 MiB` and monotonicity, so it passes with
+/// three terms as easily as five. These assertions are per-term instead: each
+/// one names the omission it exists to catch, so a future pass that lands
+/// without a reservation term fails a test that says which.
+#[test]
+fn the_reservation_covers_both_extents_and_the_upscaler_sdk() {
+    use super::super::predicates::screen_scaled_reservation_bytes;
+    use crate::vulkan::frame_upscaler::{upscale_output_bytes, UPSCALE_OUTPUT_BYTES_PER_PIXEL};
+    use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+    use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
+
+    let config = VolumetricsConfig::default();
+    let output = vk::Extent2D {
+        width: 1920,
+        height: 1080,
+    };
+    // The shipped default: 1080p output, FSR Quality → 1280x720 render.
+    let quality = FrameExtentSet {
+        render: vk::Extent2D {
+            width: 1280,
+            height: 720,
+        },
+        output,
+    };
+    let native = FrameExtentSet {
+        render: output,
+        output,
+    };
+
+    // The output-image term is the one the old signature structurally could
+    // not express — it does not shrink when the render extent does.
+    let upscaled = screen_scaled_reservation_bytes(quality, config, 0);
+    let render_only = screen_scaled_reservation_bytes(
+        FrameExtentSet {
+            render: quality.render,
+            output: quality.render,
+        },
+        config,
+        0,
+    );
+    assert!(
+        upscaled > render_only,
+        "a 1080p output over a 720p render must reserve more than a 720p          output does — the upscale outputs live at the OUTPUT extent (#3988)"
+    );
+    assert_eq!(
+        upscaled - render_only,
+        upscale_output_bytes(output) - upscale_output_bytes(quality.render),
+        "the difference must be exactly the output-image term"
+    );
+
+    // ~33 MB at 1080p × 2 frames in flight, matching `memory-budget.md`'s own
+    // fixed-floor row. Derived from the published constant, never hand-copied.
+    assert_eq!(
+        upscale_output_bytes(output),
+        1920 * 1080 * u64::from(UPSCALE_OUTPUT_BYTES_PER_PIXEL) * MAX_FRAMES_IN_FLIGHT as u64
+    );
+    assert_eq!(UPSCALE_OUTPUT_BYTES_PER_PIXEL, 8, "HDR_FORMAT is RGBA16F");
+
+    // The SDK term rides through untouched — it is measured, not derived, and
+    // is the one allocation `gpu-allocator` never sees.
+    let sdk = 31_800_000u64;
+    assert_eq!(
+        screen_scaled_reservation_bytes(quality, config, sdk),
+        upscaled + sdk
+    );
+    assert_eq!(
+        screen_scaled_reservation_bytes(quality, config, 0),
+        upscaled,
+        "TAA mode (no SDK context) must reserve exactly what it did before"
+    );
+
+    // The adversarial sign #3988 names, stated as the comparison rather than
+    // as a magic ratio: switching TAA -> FSR Quality shrinks every
+    // render-extent term quadratically while the output-extent term does not
+    // shrink at all, so the FSR preset must keep a LARGER share of the TAA
+    // reservation than a render-extent-only model would have given it. That
+    // gap is precisely the under-count the old signature shipped on the
+    // engine's default preset.
+    let taa = screen_scaled_reservation_bytes(native, config, 0);
+    let taa_render_only = screen_scaled_reservation_bytes(
+        FrameExtentSet {
+            render: native.render,
+            output: vk::Extent2D {
+                width: 0,
+                height: 0,
+            },
+        },
+        config,
+        0,
+    );
+    let fsr_render_only = screen_scaled_reservation_bytes(
+        FrameExtentSet {
+            render: quality.render,
+            output: vk::Extent2D {
+                width: 0,
+                height: 0,
+            },
+        },
+        config,
+        0,
+    );
+    let fsr_share = (upscaled as f64) / (taa as f64);
+    let render_only_share = (fsr_render_only as f64) / (taa_render_only as f64);
+    assert!(
+        fsr_share > render_only_share,
+        "FSR Quality keeps {fsr_share:.3} of TAA's reservation with the \
+         output-extent term and {render_only_share:.3} without it — the \
+         difference IS the under-count #3988 reports, so it must be positive"
     );
 }
