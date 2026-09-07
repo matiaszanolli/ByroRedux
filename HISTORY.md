@@ -26,6 +26,45 @@ Commits hold that record.
 
 ---
 
+## Session 81 — "Rashomon": a 24-report audit wave, and the discovery that yesterday's fixes were half-done  (2026-09-04 → 2026-09-07, `07db6639..043dbbb9`, 118 commits)
+
+The session ran the audit suite far wider than usual — 24 reports across four
+days, including the first full 23-dimension renderer sweep since 2026-08-30 —
+and the pattern that came back was not old rot. It was recent fixes that had
+solved the half of their problem a test could see. Three of the four most severe
+renderer findings are follow-ups to commits landed the day before. The session's
+signature is convergence: four dimensions independently reached the same VRAM
+reservation, two reached the same inert accessor, two reached the same skin/BLAS
+chain from opposite ends.
+
+- **Audit wave** — 24 reports: renderer ×4, safety ×2, physics ×2, per-game ×8
+  (FNV, FO3, FO4 ×2, Oblivion, Skyrim, Starfield ×2), plus concurrency, ESM,
+  NIF, NIFAL, performance, scripting, tech-debt and legacy-compat. The renderer
+  sweep alone filed 76 issues (#3976–#4051, 1 CRITICAL / 2 HIGH / 17 MEDIUM).
+- **Correctness sweep** — 98 `Fix` commits closing ~119 issue references across
+  scripting, physics, per-game compat, NIF and the renderer.
+- **Half-done-fix cluster** — #3976 (CRITICAL): `709de0e6`'s `bind_inverses`
+  requeue fixed the bookkeeping but still let the same frame build a skinned
+  BLAS from never-written device memory; fixed in `043dbbb9`. Filed alongside:
+  `fa5c4191`'s VRAM reservation covers 3 of 11 screen-scaled passes and excludes
+  the default upscaler (#3992/#3988/#4011), and its resident-vs-paper BLAS
+  accounting is inert because the callee re-gates on the paper figure
+  (#3994/#3979).
+- **EXAL ground cover** — the §11.1 blocking bench answered (#4052, settled
+  *re-sample* at 0.0018 ns/vertex-sample), then Phases 1, 2, 5, 6 and 7 landed
+  (#4054, #4055, #3807, #4057, #4058). Phase 3 (#4056) proposed; Phase 4 gated
+  on demonstrated need. Nine ground-cover shaders now exist.
+- **Audit instrument repaired** — seven findings are stale premises inside the
+  audit skills themselves. One (#3833's premise) had produced the *same false
+  finding* in two consecutive sweeps before being closed as "nothing to fix";
+  another structurally hid the sixth `GpuInstance` mirror for 13 days.
+
+Net: tests 7185 → **7440** (+255); Rust LOC ~527k → **545k** src, ~563k →
+**586k** total; files 979 → 1034. Bench-of-record unchanged and now 119 commits
+stale.
+
+---
+
 ## Session 80 — "The Point!": Claude finally gets its GPU refresh, and the benchmark learns not to answer the door  (2026-09-03, `ad6e0787..2da754e7`, 27 commits)
 
 Claude had spent 1,059 commits insisting this was the point I absolutely
