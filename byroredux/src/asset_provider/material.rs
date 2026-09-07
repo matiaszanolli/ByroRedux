@@ -2201,7 +2201,13 @@ pub(crate) fn merge_external_material(
     let source = match dispatch_kind {
         Some(MaterialKind::Bgsm) => ImportedTextureSource::Bgsm,
         Some(MaterialKind::Bgem) => ImportedTextureSource::Bgem,
-        None => ImportedTextureSource::Mat,
+        // #3906 — unreachable: the block above returns for every dispatch_kind
+        // that is neither BGSM nor BGEM, `None` included. This used to invent
+        // an `ImportedTextureSource::Mat` here, which was the only "producer"
+        // of that arm anywhere and produced nothing — see the enum's own doc.
+        // Returning what the earlier arm returns for the same condition keeps
+        // behaviour identical without fabricating a provenance no texture has.
+        None => return MergeOutcome::Unresolved,
     };
     record_external_texture_sources(material, &textures_before, source);
 

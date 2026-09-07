@@ -301,13 +301,23 @@ pub use crate::blocks::tri_shape::BsSubIndexTriShapeData;
 /// provider changes only roles it actually fills from an external sidecar;
 /// this lets diagnostics distinguish NIF texture sets from BGSM/BGEM without
 /// teaching the renderer about either file format.
+///
+/// #3906 (SF-2026-09-05-D3-01) — there is deliberately no `Mat` arm for
+/// Starfield's CDB `.mat` sidecars. One existed and was **structurally
+/// unreachable**: no code path constructed it, because Starfield CDB support
+/// is at Phase 1 (header probe only — see `probe_starfield_cdb`) and nothing
+/// yet resolves a texture role out of a `.mat`. Its only effect was to make
+/// `mat.dump` advertise a `src=mat` provenance label that could never appear,
+/// so a developer checking whether a sidecar had been consulted read its
+/// absence as "not consulted" rather than "not implemented". The arm belongs
+/// with the Phase-2 code that fills a role from the CDB, added at that site
+/// so the label means what it says the day it appears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImportedTextureSource {
     #[default]
     NifTextureSet,
     Bgsm,
     Bgem,
-    Mat,
 }
 
 /// Source-agnostic texture roles produced by NIF material translation.
