@@ -992,6 +992,73 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
     }
 }
 
+/// #3905 (NIFAL-2026-09-05-D1-01) — the resolved-state half of #3639's
+/// near-mirror fallback. Returns the neutral roughness when a BGSM material
+/// is still pinned at the clamp floor and no gloss map RESOLVED to modulate
+/// it per-texel; `None` leaves the caller's roughness alone.
+///
+/// #3639 put the whole rule at the merge boundary, gated on
+/// `textures.smooth_spec.is_none()` — was a gloss map *authored*. The shader
+/// escape it exists to restore is gated on `mat.glossMapIndex != 0u` — did a
+/// gloss map *resolve*. An authored-but-unresolvable gloss map (missing from
+/// the archive, failed load) satisfies the first and fails the second, so it
+/// stayed pinned at the over-dark 0.04 floor instead of taking the neutral.
+/// The boundary cannot close that itself: it holds the MATERIALS archive pool
+/// while textures resolve out of `TextureProvider`'s separate pool, so it has
+/// no way to ask whether a path will resolve. This runs where the answer
+/// exists — at spawn, off `MaterialTextureHandles`, using the shader's own
+/// predicate — and is the same "resolve once into canonical state, never
+/// re-derive per draw" shape as [`normal_alpha_spec_roughness`] beside it.
+///
+/// The floor test is what keeps this a no-op on everything else, including
+/// the population the boundary already neutralised (it is sitting at 0.5, not
+/// the floor) and every material whose authored smoothness was not near-mirror.
+pub(crate) fn unresolved_gloss_neutral_roughness(
+    bgsm_pbr_scalars_authored: bool,
+    roughness: f32,
+    gloss_map_index: u32,
+) -> Option<f32> {
+    // Scoped to BGSM content: the floor is reached by
+    // `(1.0 - smoothness).clamp(..)` in the BGSM merge, and #3639 is a
+    // statement about authored BGSM smoothness. Keyword-classified legacy
+    // content never lands here and must not be second-guessed.
+    if !bgsm_pbr_scalars_authored {
+        return None;
+    }
+    // The shader's own predicate, verbatim: a handle of 0 is "no gloss map
+    // bound", whether none was authored or the authored one failed to resolve.
+    if gloss_map_index != 0 {
+        return None;
+    }
+    (roughness <= crate::asset_provider::NEAR_MIRROR_ROUGHNESS_FLOOR)
+        .then_some(crate::asset_provider::NEAR_MIRROR_NEUTRAL_ROUGHNESS)
+}
+
+/// Apply [`unresolved_gloss_neutral_roughness`] once at spawn, after
+/// `MaterialTextureHandles` is attached. Sibling of
+/// [`resolve_normal_alpha_spec_roughness`]; idempotent, since the value it
+/// writes fails its own floor test on a rerun.
+pub(crate) fn resolve_unresolved_gloss_neutral_roughness(
+    world: &mut World,
+    entity: EntityId,
+    bgsm_pbr_scalars_authored: bool,
+) {
+    let Some(roughness) = world.get::<Material>(entity).map(|m| m.roughness) else {
+        return;
+    };
+    let gloss_map_index = world
+        .get::<MaterialTextureHandles>(entity)
+        .map(|handles| handles.textures.smooth_spec)
+        .unwrap_or(0);
+    if let Some(r) =
+        unresolved_gloss_neutral_roughness(bgsm_pbr_scalars_authored, roughness, gloss_map_index)
+    {
+        if let Some(m) = world.get_mut::<Material>(entity) {
+            m.roughness = r;
+        }
+    }
+}
+
 /// Pure decision function backing [`resolve_msn_z_source`]: whether the
 /// bound model-space normal map's blue channel carries authored Z, i.e.
 /// whether `MAT_FLAG_MSN_HAS_AUTHORED_Z` should be set. Only meaningful
@@ -2714,6 +2781,97 @@ mod canonical_completeness_harness {
              classifier's 0.6 matte default, per normal_alpha_spec_roughness's \
              formula: (0.85 - (2.5 - 1.0) * 0.1).clamp(0.4, 0.85) = 0.70, got {}",
             resolved.roughness
+        );
+    }
+}
+
+#[cfg(test)]
+mod unresolved_gloss_neutral_tests {
+    use super::*;
+    use crate::asset_provider::{NEAR_MIRROR_NEUTRAL_ROUGHNESS, NEAR_MIRROR_ROUGHNESS_FLOOR};
+
+    /// #3905 — the population the #3639 boundary check structurally cannot
+    /// see: a gloss map WAS authored (so `smooth_spec.is_none()` is false and
+    /// the merge left the floor in place) but did not resolve, so the shader's
+    /// `mat.glossMapIndex != 0u` escape never runs and the material renders
+    /// over-dark instead of neutral.
+    #[test]
+    fn an_authored_but_unresolved_gloss_map_takes_the_neutral_fallback() {
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
+            Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS),
+            "handle 0 means no gloss map is bound — whether none was authored \
+             or the authored one failed to resolve. Both leave the material \
+             pinned at the floor with no per-pixel escape (#3905 / #3639)"
+        );
+    }
+
+    /// The sibling the boundary already gets right, re-checked through the
+    /// resolved predicate: a gloss map that DID resolve gives the shader
+    /// per-texel information, so the authored floor must survive.
+    #[test]
+    fn a_resolved_gloss_map_keeps_the_near_mirror_floor() {
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_ROUGHNESS_FLOOR, 7),
+            None,
+            "a bound gloss map is exactly the per-pixel escape the floor \
+             assumes — overriding it here would undo authored near-mirror \
+             materials that work today (#3905)"
+        );
+    }
+
+    /// Idempotent: the value this writes fails its own floor test, so a rerun
+    /// (or running after the merge boundary already neutralised the material)
+    /// is a no-op rather than a second, compounding override.
+    #[test]
+    fn the_neutral_is_a_fixed_point() {
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_NEUTRAL_ROUGHNESS, 0),
+            None,
+            "the material the #3639 boundary arm already neutralised sits at \
+             the neutral, not the floor, so this must not fire again (#3905)"
+        );
+    }
+
+    /// Scoped to BGSM content. Keyword-classified legacy material can reach a
+    /// low roughness by its own route; second-guessing it here would be the
+    /// #2606 clobber class, one field over.
+    #[test]
+    fn non_bgsm_material_is_never_second_guessed() {
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(false, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
+            None,
+            "only BGSM-authored scalars reach the clamp floor via \
+             `(1.0 - smoothness)`; legacy content must keep whatever \
+             classify_pbr_keyword resolved (#3905 / #2606)"
+        );
+    }
+
+    /// A material that is merely glossy — not pinned at the floor — keeps its
+    /// authored roughness. Without this bound the fallback would flatten every
+    /// gloss-map-less BGSM toward 0.5.
+    #[test]
+    fn an_authored_roughness_above_the_floor_is_left_alone() {
+        for roughness in [0.05_f32, 0.2, 0.6, 1.0] {
+            assert_eq!(
+                unresolved_gloss_neutral_roughness(true, roughness, 0),
+                None,
+                "roughness {roughness} is authored, not the clamp floor — \
+                 #3639 is about the near-mirror pin specifically (#3905)"
+            );
+        }
+    }
+
+    /// The two halves of the rule must agree on the value, or a material would
+    /// render differently depending on which site caught it.
+    #[test]
+    fn both_halves_of_the_rule_share_one_neutral() {
+        let boundary = include_str!("asset_provider/material.rs");
+        assert!(
+            boundary.contains("material.roughness_override = Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS);"),
+            "the merge boundary's #3639 arm must use the shared constant, not a \
+             second 0.5 literal — the two sites cover disjoint populations of \
+             one rule and must not drift apart (#3905)"
         );
     }
 }

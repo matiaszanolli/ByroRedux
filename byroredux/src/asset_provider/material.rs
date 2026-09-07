@@ -585,6 +585,20 @@ pub(crate) struct MaterialProvider {
 /// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
 /// comfortably hold the unique BGEM/BGSM-ref count of any single vanilla
 /// cell (~100s) plus a few cells of streaming residency.
+/// The roughness a near-mirror BGSM falls back to when no gloss map can
+/// modulate the clamp floor per-texel (#3639). Matches the neutral
+/// `classify_pbr_keyword`'s arms already use
+/// (`crates/core/src/ecs/components/material.rs`) rather than inventing a
+/// second "no data" convention. Shared with
+/// `material_translate::resolve_unresolved_gloss_neutral_roughness`, which
+/// owns the authored-but-unresolvable half of the same rule (#3905).
+pub(crate) const NEAR_MIRROR_NEUTRAL_ROUGHNESS: f32 = 0.5;
+
+/// The floor `(1.0 - smoothness).clamp(..)` pins a near-mirror BGSM to. A
+/// material still sitting exactly here at spawn has had no gloss map recover
+/// it, which is what [`NEAR_MIRROR_NEUTRAL_ROUGHNESS`] exists to fix (#3905).
+pub(crate) const NEAR_MIRROR_ROUGHNESS_FLOOR: f32 = 0.04;
+
 pub(crate) const MAX_BGEM_CACHE_ENTRIES: usize = 1024;
 pub(crate) const MAX_FAILED_PATHS: usize = 1024;
 /// #3899 — entries are one `Option<MaterialKind>` (a byte) plus the key, so
@@ -1520,7 +1534,7 @@ pub(crate) fn merge_external_material(
         } else {
             bgsm_metalness(leaf.specular_color, false)
         };
-        let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
+        let roughness = (1.0 - leaf.smoothness).clamp(NEAR_MIRROR_ROUGHNESS_FLOOR, 1.0);
         material.metalness_override = Some(metalness);
         material.roughness_override = Some(roughness);
         // #2609 — the flag whose meaning is "authoritative PBR scalars were
@@ -1882,8 +1896,26 @@ pub(crate) fn merge_external_material(
         // the neutral roughness `classify_pbr_keyword`'s arms already use
         // elsewhere (`crates/core/src/ecs/components/material.rs`) rather
         // than inventing a second "no data" convention.
+        //
+        // #3905 (NIFAL-2026-09-05-D1-01) — this predicate is the AUTHORED
+        // path; the shader escape it restores is gated on the RESOLVED
+        // bindless index (`glossMapIndex != 0u`). An authored-but-
+        // unresolvable gloss map (missing from the archive, failed load)
+        // satisfies `is_some()` here and still resolves to handle 0 there, so
+        // it stayed pinned at the floor. That gap cannot be closed here:
+        // `MaterialProvider.archives` is the MATERIALS pool
+        // (`--materials-ba2` + the mesh archives scanned for CDBs), while
+        // textures resolve out of `TextureProvider`'s separate
+        // `texture_archives` pool — this boundary has no way to ask whether a
+        // texture path will resolve. What it does have, and spawn does not,
+        // is the full template chain. So the split is by what each site can
+        // see: this arm owns "no gloss map authored anywhere in the chain",
+        // and `material_translate::resolve_unresolved_gloss_neutral_roughness`
+        // owns "authored, but resolved to handle 0", using the shader's own
+        // predicate. Both apply `NEAR_MIRROR_NEUTRAL_ROUGHNESS`, and the
+        // spawn pass is a no-op on materials this arm already neutralised.
         if leaf.smoothness >= 1.0 && material.textures.smooth_spec.is_none() {
-            material.roughness_override = Some(0.5);
+            material.roughness_override = Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS);
         }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {

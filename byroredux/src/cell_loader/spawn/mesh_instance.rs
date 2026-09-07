@@ -1107,6 +1107,16 @@ pub(super) fn spawn_mesh_instance(
     // pattern, for whether the model-space normal map's blue channel
     // carries authored Z.
     crate::material_translate::resolve_msn_z_source(world, entity);
+    // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
+    // pinned at the near-mirror clamp floor whose authored gloss map did
+    // not resolve. Must run AFTER MaterialTextureHandles is attached:
+    // the whole point is to use the shader's resolved-handle predicate
+    // rather than the merge boundary's authored-path one.
+    crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
+        world,
+        entity,
+        mesh.material.bgsm_pbr_scalars_authored,
+    );
     // #2490 — the blend/decal/facing markers derive from the raw
     // `ImportedMaterial` at the same single boundary the `Material`
     // literal does, so this path cannot diverge from the loose-NIF path.

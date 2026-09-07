@@ -1184,6 +1184,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // #2826 (REN-D19-02) — same pattern, for whether the model-space
         // normal map's blue channel carries authored Z.
         crate::material_translate::resolve_msn_z_source(world, entity);
+        // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
+        // pinned at the near-mirror clamp floor whose authored gloss map did
+        // not resolve. Must run AFTER MaterialTextureHandles is attached:
+        // the whole point is to use the shader's resolved-handle predicate
+        // rather than the merge boundary's authored-path one.
+        crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
+            world,
+            entity,
+            mesh.material.bgsm_pbr_scalars_authored,
+        );
 
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();
