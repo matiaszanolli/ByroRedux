@@ -108,6 +108,21 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev libvulkan-dev
       - name: cargo check
         run: cargo check --workspace
+      # #3894 (TD9-2026-09-05-04) — `cargo check --workspace` above does NOT
+      # reach these. Cargo skips a target whose `required-features` are off,
+      # and `byroredux-spt` declares `default = []` with its five `.spt`
+      # reverse-engineering harnesses (`spt_recon`, `spt_dissect`, `spt_tagmap`,
+      # `spt_transitions`, `spt_walk`) gated behind `required-features =
+      # ["recon"]`. No lane passed `--features recon`, so the tooling that
+      # produced the SpeedTree tag dictionary (`6f83b1c3`) — the first thing a
+      # future `.spt` investigation reaches for — was never type-checked and
+      # was free to rot silently against any `crates/spt` or `crates/bsa` API
+      # change. Seconds of wall time on the existing job, no new job; the
+      # `dhat-heap` job below is the in-repo precedent for gating a non-default
+      # feature. `crates/spt` is the workspace's only user of
+      # `required-features`, so this one line closes the whole class.
+      - name: cargo check (spt recon examples, feature-gated out of the workspace lane)
+        run: cargo check -p byroredux-spt --features recon --examples
       - name: cargo test
         run: cargo test --workspace
       - name: cargo clippy
