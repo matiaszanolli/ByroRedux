@@ -10,8 +10,8 @@ use super::super::descriptors::memory_barrier;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
 use super::predicates::{
-    align_scratch_address, blas_over_budget, scratch_alignment_padding, scratch_needs_growth,
-    should_evict_mid_batch, submit_one_time,
+    align_scratch_address, blas_admission_exhausted, blas_over_budget, scratch_alignment_padding,
+    scratch_needs_growth, should_evict_mid_batch, submit_one_time,
 };
 use super::types::{BlasBuildSource, BlasEntry};
 use super::AccelerationManager;
@@ -199,6 +199,14 @@ impl AccelerationManager {
     /// queued, so between an eviction and the next `draw_frame` tick it
     /// understates true residency by the whole queued amount, letting a batch
     /// allocate against headroom that does not exist yet (#3840).
+    ///
+    /// #3979 — the admission check this docstring names now exists:
+    /// [`blas_admission_exhausted`], consumed by `build_blas_batched`'s
+    /// Phase-1 loop. Until then the only consumer was
+    /// [`should_evict_mid_batch`]'s first argument, where the substitution is
+    /// provably inert (that trigger is the 90% line, the callee's gate the
+    /// 100% line on the paper figure) — so the hazard the paragraph above
+    /// describes was still wide open while reading as fixed.
     pub fn resident_static_blas_bytes(&self) -> vk::DeviceSize {
         self.static_blas_bytes
             .saturating_add(self.pending_destroy_static_bytes)
@@ -394,6 +402,12 @@ impl AccelerationManager {
         // Keep the two in sync: a future budget tune made against
         // `pending_bytes` alone is being made against ~⅔ of the real number.
         let mut pending_bytes: vk::DeviceSize = 0;
+        // #3979 (REN-2026-09-06-D1-01) — does the mid-batch eviction still
+        // have candidates? Starts `true` so a batch that never trips the
+        // eviction trigger is never declined by the admission gate below;
+        // an eviction pass that reclaims nothing flips it, which is the
+        // signal that no further iteration can bring residency back down.
+        let mut eviction_can_still_reclaim = true;
         // Now build geometries referencing the stored triangles data.
         for (idx, source) in meshes.iter().enumerate() {
             let mesh_handle = source.mesh_handle;
@@ -429,7 +443,53 @@ impl AccelerationManager {
                 // already-allocated result buffers had grown — the
                 // trigger above fired, but the callee it called was
                 // structurally blind to the very bytes that triggered it.
+                // #3979 — an eviction pass moves bytes from
+                // `static_blas_bytes` into `pending_destroy_static_bytes`
+                // (residency is unchanged until `draw_frame` ticks the
+                // countdown), so the *paper* figure is what shows whether
+                // this pass found any candidate at all. No movement means
+                // eviction is out of candidates and the admission gate
+                // below becomes live.
+                let paper_before = self.static_blas_bytes;
                 self.evict_unused_blas(device, allocator, pending_bytes);
+                eviction_can_still_reclaim = self.static_blas_bytes < paper_before;
+            }
+
+            // #3979 (REN-2026-09-06-D1-01) — the admission gate
+            // `resident_static_blas_bytes`'s own docstring has claimed
+            // since #3840 and never had. Everything above only ever
+            // *evicted*; the Phase-1 loop then allocated unconditionally,
+            // so a batch that evicted early kept spending headroom the GPU
+            // does not have (the allocator free is `DEFAULT_COUNTDOWN`
+            // frames out, inside `draw_frame`, which never runs during a
+            // streaming batch). Once residency + this batch's own
+            // allocations are past the budget AND eviction has run out of
+            // candidates, stop admitting: finish the batch with what is
+            // already prepared and return the partial count. Same
+            // "decline the pass rather than converge-never" policy #3540
+            // installed for `restore_missing_static_blas_for_draws`; the
+            // caller already treats a short count as "RT loses the tail of
+            // this cell", which raster is unaffected by.
+            if blas_admission_exhausted(
+                self.resident_static_blas_bytes(),
+                pending_bytes,
+                self.blas_budget_bytes,
+                eviction_can_still_reclaim,
+            ) {
+                // One-shot: being over the BLAS budget with nothing left to
+                // evict is a property of the loaded set, so it holds for
+                // every batch spent in it. Warn once rather than per batch.
+                static ADMISSION_WARNED: std::sync::Once = std::sync::Once::new();
+                ADMISSION_WARNED.call_once(|| {
+                    log::warn!(
+                        "Static BLAS batch declined at {idx}/{} meshes: {:.1} MB resident                          + {:.1} MB in-batch is past the {:.1} MB budget and eviction has                          no candidates left. Ray-traced shadows / reflections / GI will                          miss the declined tail; raster is unaffected.",
+                        meshes.len(),
+                        self.resident_static_blas_bytes() as f64 / (1024.0 * 1024.0),
+                        pending_bytes as f64 / (1024.0 * 1024.0),
+                        self.blas_budget_bytes as f64 / (1024.0 * 1024.0),
+                    );
+                });
+                break;
             }
 
             let primitive_count = index_count / 3;
@@ -539,6 +599,15 @@ impl AccelerationManager {
                 vertex_count,
                 index_count,
             });
+        }
+
+        // #3979 — the admission gate can decline every mesh in the batch
+        // (already over budget on entry, nothing left to evict). Bail before
+        // Phase 2: a zero-length batch would size the scratch buffer to
+        // nothing and then create a query pool with `queryCount == 0`, which
+        // VUID-VkQueryPoolCreateInfo-queryCount-02763 forbids outright.
+        if prepared.is_empty() {
+            return Ok(0);
         }
 
         // Phase 2: Ensure scratch buffer is large enough. Grow-only

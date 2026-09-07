@@ -275,4 +275,45 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
              or a future reader will 'fix' the break into a thrash (#3840)"
         );
     }
+
+    /// #3979 (REN-2026-09-06-D1-01) — the resident counter must have a real
+    /// ADMISSION consumer, not just the (inert) mid-batch eviction trigger.
+    /// Its docstring has asserted since #3840 that it is "the figure admission
+    /// checks must use … letting a batch allocate against headroom that does
+    /// not exist yet", while no admission check existed anywhere: the Phase-1
+    /// loop called `create_device_local_uninit` unconditionally on every
+    /// iteration and the only budget interaction was an eviction request.
+    #[test]
+    fn the_phase_one_loop_declines_rather_than_allocating_past_residency() {
+        assert!(
+            BLAS_STATIC_RS.contains("if blas_admission_exhausted("),
+            "build_blas_batched's Phase-1 loop must consult the admission gate              before allocating another result buffer — without it the resident              counter cannot change any outcome (#3979)"
+        );
+        let gate = BLAS_STATIC_RS
+            .find("if blas_admission_exhausted(")
+            .expect("the admission gate call must still exist");
+        let alloc = BLAS_STATIC_RS
+            .find("let mut result_buffer = GpuBuffer::create_device_local_uninit(")
+            .expect("the Phase-1 result-buffer allocation must still exist");
+        assert!(
+            gate < alloc,
+            "the admission gate must sit AHEAD of the Phase-1 result-buffer              allocation — a check after the allocation admits the very byte it              was meant to decline (#3979)"
+        );
+        assert!(
+            BLAS_STATIC_RS[gate..alloc].contains("self.resident_static_blas_bytes(),"),
+            "the admission gate must be fed the RESIDENT figure, not the paper              `static_blas_bytes`: eviction credits the paper figure the instant it              queues an entry, but the allocator free is DEFAULT_COUNTDOWN frames              out inside draw_frame, which never runs during a batch (#3979 / #3840)"
+        );
+        assert!(
+            BLAS_STATIC_RS.contains("eviction_can_still_reclaim = self.static_blas_bytes < paper_before;"),
+            "the gate's 'eviction is out of candidates' input must be derived from              the PAPER figure moving across an eviction pass — the resident figure              is unchanged by eviction inside a batch, so a resident-based test would              never report progress (#3979)"
+        );
+        assert!(
+            BLAS_STATIC_RS.contains("if prepared.is_empty() {"),
+            "a batch the gate declines outright must return before Phase 2 — a              zero-length batch creates a query pool with queryCount == 0, which              VUID-VkQueryPoolCreateInfo-queryCount-02763 forbids (#3979)"
+        );
+        assert!(
+            !BLAS_STATIC_RS.contains("self.pending_destroy_blas.tick"),
+            "the admission shortfall must NOT be 'fixed' by ticking the deferred-              destroy queue at a batch boundary — that is the #1449 / #1782              use-after-free class; the countdown stands in for a fence wait              build_blas_batched does not have (#3979)"
+        );
+    }
 }

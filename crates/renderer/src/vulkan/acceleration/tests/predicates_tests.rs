@@ -338,6 +338,69 @@ fn blas_over_budget_accounts_for_pending_bytes() {
     let _ = blas_over_budget(u64::MAX / 2, u64::MAX / 2, budget);
 }
 
+/// #3979 / REN-2026-09-06-D1-01 — the admission gate `build_blas_batched`'s
+/// Phase-1 loop never had. `#3840` added `resident_static_blas_bytes` for
+/// exactly this job and wired it only into `should_evict_mid_batch`'s first
+/// argument, where it is inert (a 90% trigger in front of a 100% gate on the
+/// paper figure): nothing in the loop ever declined to allocate, so a batch
+/// that evicted early kept spending headroom the GPU does not have.
+#[test]
+fn blas_admission_exhausted_only_closes_once_eviction_is_out_of_candidates() {
+    let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
+
+    // Over budget on the resident figure, but eviction is still finding
+    // candidates: each pass lowers the paper figure and frees real VRAM a
+    // few frames later, so the batch must keep going.
+    assert!(
+        !blas_admission_exhausted(1_200_000_000, 0, budget, true),
+        "the gate must not close while eviction still has candidates — that          would decline batches the next eviction pass could have made room for"
+    );
+
+    // Same state, eviction reclaimed nothing: no further iteration can bring
+    // residency down (an evicted entry only moves bytes from
+    // `static_blas_bytes` into `pending_destroy_static_bytes`, and the
+    // countdown that actually frees them ticks in `draw_frame`, which never
+    // runs during a batch). Decline the rest of the batch.
+    assert!(blas_admission_exhausted(1_200_000_000, 0, budget, false));
+
+    // The case the paper figure misses entirely: everything has been evicted
+    // on paper (`static_blas_bytes == 0`, so `blas_over_budget` reads
+    // "under budget"), but every one of those bytes is still on the GPU
+    // waiting out `DEFAULT_COUNTDOWN`. Residency is what decides.
+    assert!(blas_admission_exhausted(1_100_000_000, 0, budget, false));
+
+    // Resident + this batch's own in-flight allocations combine to cross the
+    // line even though neither alone would.
+    assert!(blas_admission_exhausted(
+        600_000_000,
+        500_000_000,
+        budget,
+        false
+    ));
+
+    // Under budget — must never close, whatever eviction reported.
+    assert!(!blas_admission_exhausted(
+        400_000_000,
+        100_000_000,
+        budget,
+        false
+    ));
+    assert!(!blas_admission_exhausted(
+        400_000_000,
+        100_000_000,
+        budget,
+        true
+    ));
+
+    // Exactly at the 100% line is NOT over, matching `blas_over_budget`'s
+    // `>` so the two budget lines cannot disagree by one byte.
+    assert!(!blas_admission_exhausted(budget, 0, budget, false));
+    assert!(blas_admission_exhausted(budget, 1, budget, false));
+
+    // Saturating-add guards against overflow from a bogus caller.
+    let _ = blas_admission_exhausted(u64::MAX / 2, u64::MAX / 2, budget, false);
+}
+
 /// Regression: #300 — when `needs_full_rebuild` is set, the
 /// per-instance address zip-compare must be skipped (the call is
 /// going to BUILD regardless, so paying O(N) is pure waste).

@@ -521,6 +521,55 @@ pub(super) fn blas_over_budget(
     static_blas_bytes.saturating_add(pending_bytes) > budget_bytes
 }
 
+/// Batched-build admission gate (#3979 / REN-2026-09-06-D1-01).
+///
+/// Returns `true` when `build_blas_batched`'s Phase-1 loop must stop
+/// admitting further meshes: the bytes actually RESIDENT on the GPU plus
+/// this batch's own not-yet-committed allocations are past the budget, and
+/// the last mid-batch eviction attempt reclaimed nothing, so no further
+/// iteration can bring the figure back down.
+///
+/// This is the consumer [`AccelerationManager::resident_static_blas_bytes`]
+/// was written for and never got. `#3840` added the resident figure and
+/// wired it into [`should_evict_mid_batch`]'s first argument, where it is
+/// provably inert: that trigger is the 90% line while the callee's own gate
+/// and loop break are the 100% line on the *paper* figure, so every state
+/// in which eviction can actually reclaim already satisfies the trigger
+/// with the paper figure — substituting the (larger) resident figure only
+/// widens the trigger into states where the callee immediately
+/// early-returns. Since nothing in the Phase-1 loop ever declined to
+/// allocate, the resident figure could not stop one byte from being
+/// allocated either, and a batch that evicted early kept allocating
+/// against headroom the GPU does not have (eviction credits
+/// `static_blas_bytes` immediately, but the allocator free happens
+/// `DEFAULT_COUNTDOWN` frames later inside `draw_frame`, which never runs
+/// during a streaming batch).
+///
+/// Eviction genuinely cannot reclaim *inside* a batch — each evicted entry
+/// just moves bytes from `static_blas_bytes` into
+/// `pending_destroy_static_bytes`, leaving `resident` unchanged — which is
+/// precisely why the missing piece has to be admission rather than a
+/// resident-based loop break. Ticking the deferred-destroy queue at a batch
+/// boundary to "fix" this instead is the #1449 / #1782 use-after-free class:
+/// the countdown stands in for a fence wait `build_blas_batched` does not
+/// have.
+///
+/// `eviction_can_still_reclaim` keeps the gate from closing while eviction
+/// is still finding candidates (each pass lowers the paper figure and frees
+/// real VRAM a few frames later), and starts `true` so a batch that never
+/// tripped the eviction trigger is never declined. The resulting policy is
+/// #3540's: decline the pass and finish with what is prepared, rather than
+/// converge-never.
+pub(super) fn blas_admission_exhausted(
+    resident_static_bytes: vk::DeviceSize,
+    pending_bytes: vk::DeviceSize,
+    budget_bytes: vk::DeviceSize,
+    eviction_can_still_reclaim: bool,
+) -> bool {
+    !eviction_can_still_reclaim
+        && resident_static_bytes.saturating_add(pending_bytes) > budget_bytes
+}
+
 /// Decide whether a `DrawCommand` should emit a TLAS instance.
 ///
 /// Three-axis gate (#516 + #1024 + #2297):
