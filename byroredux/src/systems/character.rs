@@ -338,19 +338,44 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // [`resolve_ground_contact`] for why the KCC's own verdict is not
     // sufficient on its own.
     let mut probe_found_support = false;
-    let desired_vertical = if swim.is_none() && controller.is_grounded && !jump_fired {
+    let probe_enabled = support_probe_enabled(swim.is_some(), controller.is_grounded, jump_fired);
+    let desired_vertical = if probe_enabled {
         // Probe down for the surface the capsule is standing on. The player's
         // own body must be excluded or the sweep instantly self-hits (#2859).
-        let support_y = pw.cast_capsule_down(
+        //
+        // #3971 — the *unfiltered* form on purpose, but only for the
+        // correction. This was the sole production caller of
+        // `cast_capsule_down` (every other floor probe in the engine — the
+        // cold-start spawn ladder, the door-arrival ladder, `phys.census` —
+        // uses the walkable-filtered form, #2193), and since #3799 promoted
+        // its answer to a co-authority on `is_grounded` the unscreened hit
+        // also decided the frame's ground-contact bit. On a face steeper than
+        // `max_slope_climb_deg` — routine on Skyrim/FNV/FO3 exterior rock and
+        // terrain — that read grounded on 100% of frames instead of ~50%, so
+        // jump stayed available on a slope `plan_character_spawn` would refuse
+        // to stand the player on at all.
+        //
+        // The split below is the resolution: `correction` keeps the raw hit
+        // (it is an anti-drift clamp toward whatever the capsule is resting
+        // against, and screening it would reintroduce the 0.05 BU/frame creep
+        // the probe exists to cancel), while `probe_found_support` — the half
+        // that feeds `resolve_ground_contact` and therefore jump input — is
+        // gated on the walkable normal. It stays *stricter* than the KCC's own
+        // `result.grounded` (rapier accepts anything within 89.94° of up),
+        // which is the right asymmetry for an OR: the probe may only ADD
+        // ground contact the KCC missed, so it must not add contact on a
+        // surface the engine's own spawn policy calls unstandable.
+        let support = pw.cast_capsule_down_surface_and_normal(
             current_pos,
             controller.half_height,
             controller.radius,
             controller.step_height + kcc_offset.max(0.0),
             body_handle,
         );
-        match support_y {
-            Some(surface_y) => {
-                probe_found_support = true;
+        match support {
+            Some((surface_y, normal_y)) => {
+                probe_found_support =
+                    normal_y.abs() >= crate::scene::min_walkable_normal_y(controller);
                 // Move exactly to resting contact — `offset` above the
                 // support — and no further. Signed on purpose: correcting
                 // a capsule that has crept slightly BELOW the contact band
@@ -1173,12 +1198,53 @@ pub(crate) fn integrate_vertical(
 /// frames, and the M28.5 diagnostic firing on 58% of them.
 ///
 /// The fix is to stop discarding an answer already paid for: when the
-/// grounded branch's `cast_capsule_down` found a support surface within
+/// grounded branch's downward capsule sweep found a support surface within
 /// `step_height + offset`, the capsule *is* standing on something, whatever
 /// a degenerate sweep reports. `probe_found_support` is false whenever that
-/// probe didn't run (airborne, swimming, or the frame a jump fires), so
-/// this can neither keep a falling character grounded nor re-ground a jump
-/// on its launch frame.
+/// probe didn't run — see [`support_probe_enabled`], which owns the three
+/// suppressions (airborne, swimming, jump-launch frame) and is pinned
+/// separately under #3972 — so this can neither keep a falling character
+/// grounded nor re-ground a jump on its launch frame.
+///
+/// #3971 — `probe_found_support` additionally requires a **walkable** hit
+/// normal (`scene::min_walkable_normal_y`), while the probe's own vertical
+/// correction still uses the raw hit. The OR below means this operand can
+/// only ever ADD ground contact the KCC missed, so it must be at least as
+/// strict as the engine's own standability policy: rapier's `result.grounded`
+/// accepts anything within 89.94° of up, and before #3971 an exterior rock
+/// face steeper than `max_slope_climb_deg` set `grounded` — and therefore
+/// enabled jump — on a slope `plan_character_spawn` refuses to stand the
+/// player on at all. Consumers this bit grows (fall damage, footsteps,
+/// locomotion state) inherit that discipline rather than having to know about
+/// it.
+/// Whether the per-frame downward support probe runs this frame.
+///
+/// #3972 / PHYS-D5-2026-09-06-02 — extracted from
+/// `character_controller_system`'s `if` so it can be pinned. `#3799`'s entire
+/// safety argument is these three clauses: *"the probe is suppressed while
+/// airborne, swimming, and on the frame a jump fires, so this can neither keep
+/// a falling character grounded nor re-ground a launch."* All three lived in a
+/// single impure `if` inside a system with no test caller anywhere in the repo,
+/// while the four tests added for #3799 fed `probe_found_support` to
+/// [`resolve_ground_contact`] as a hand-written literal — pinning the OR, never
+/// the thing that computes its operand. Deleting `!jump_fired` would re-ground
+/// a jump on its launch frame (the double-jump / hover class); deleting
+/// `!swimming` would let a swimmer's probe assert ground contact off the lake
+/// bed. Both left the suite green.
+///
+/// The clauses, and why each is load-bearing:
+/// - `!swimming` — a swimmer is buoyant, not standing; a lake-bed hit within
+///   `step_height` must not read as ground contact.
+/// - `was_grounded` — the probe is an anti-drift correction for a *resting*
+///   capsule. Running it while airborne would let a surface below a falling
+///   character cancel the fall before contact.
+/// - `!jump_fired` — on the launch frame the capsule is still within
+///   `step_height` of the floor it just pushed off, so the probe would find
+///   support and immediately re-ground the jump.
+pub(crate) fn support_probe_enabled(swimming: bool, was_grounded: bool, jump_fired: bool) -> bool {
+    !swimming && was_grounded && !jump_fired
+}
+
 pub(crate) fn resolve_ground_contact(
     kcc_grounded: bool,
     probe_found_support: bool,
@@ -1746,10 +1812,16 @@ mod tests {
                 human.jump_velocity,
                 false,
             );
-            // The grounded branch runs (and finds the floor) exactly while
-            // the controller believes it is grounded; the KCC only registers
-            // contact on the frames where a real descent was requested.
-            let probe_found_support = grounded;
+            // #3972 — the gate comes from the production predicate, not a
+            // hand-written restatement of it. Pre-fix this line read
+            // `let probe_found_support = grounded;`, a local model of the
+            // `if` in `character_controller_system` that was free to disagree
+            // with it silently. Not swimming, no jump this frame: the probe
+            // runs exactly while the controller believes it is grounded, and
+            // (in this scene) finds the floor whenever it runs. The KCC only
+            // registers contact on the frames where a real descent was
+            // requested.
+            let probe_found_support = support_probe_enabled(false, grounded, false);
             let kcc_grounded = !grounded;
 
             let (next_grounded, next_velocity) =
@@ -1873,6 +1945,120 @@ mod tests {
             world.get::<Transform>(player).unwrap().translation,
             Vec3::ZERO,
             "the frozen fly-mode body must stay where it was"
+        );
+    }
+
+    /// #3972 / PHYS-D5-2026-09-06-02 — the truth table for #3799's entire
+    /// safety argument. Each clause is checked in isolation: a deletion that
+    /// looks harmless (all three are `&&`-ed in one line) fails exactly one
+    /// row here, and the row names the failure mode it re-opens.
+    #[test]
+    fn support_probe_runs_only_while_resting_on_the_ground() {
+        // The one enabling combination.
+        assert!(
+            support_probe_enabled(false, true, false),
+            "a grounded, non-swimming character with no jump this frame must \
+             run the support probe — that is the anti-drift case #3799 exists \
+             for"
+        );
+
+        // `was_grounded` — deleting it lets a surface below a falling
+        // character cancel the fall before contact.
+        assert!(
+            !support_probe_enabled(false, false, false),
+            "the probe must not run while airborne: it would keep a falling \
+             character grounded (#3972)"
+        );
+
+        // `!jump_fired` — deleting it re-grounds a jump on its launch frame,
+        // which is the double-jump / hover class.
+        assert!(
+            !support_probe_enabled(false, true, true),
+            "the probe must not run on the frame a jump fires: the capsule is \
+             still within step_height of the floor it just pushed off, so the \
+             probe would find support and re-ground the launch (#3972)"
+        );
+
+        // `!swimming` — deleting it lets a swimmer assert ground contact off
+        // the lake bed.
+        assert!(
+            !support_probe_enabled(true, true, false),
+            "the probe must not run while swimming: a buoyant character is not \
+             standing, and a lake-bed hit within step_height must not read as \
+             ground contact (#3972)"
+        );
+
+        // Nothing enables it once any clause fails, in any combination.
+        for jump_fired in [false, true] {
+            for was_grounded in [false, true] {
+                assert!(
+                    !support_probe_enabled(true, was_grounded, jump_fired),
+                    "swimming must veto the probe unconditionally (#3972)"
+                );
+            }
+        }
+    }
+
+    /// The companion the pure test cannot give: `character_controller_system`
+    /// has no test caller anywhere in the repo, so nothing otherwise pins that
+    /// the production `if` still routes through [`support_probe_enabled`].
+    /// Re-inlining the three clauses would leave the truth table above green
+    /// while making it describe nothing. Source-inspection guard, matching the
+    /// convention in `scheduler_access_tests.rs` (#3972).
+    #[test]
+    fn the_production_probe_gate_calls_the_pinned_predicate() {
+        const SRC: &str = include_str!("character.rs");
+        let module_start = SRC
+            .find("fn support_probe_runs_only_while_resting_on_the_ground")
+            .expect("this test must still exist under its own name");
+        let production = &SRC[..module_start];
+
+        assert!(
+            production.contains(
+                "support_probe_enabled(swim.is_some(), controller.is_grounded, jump_fired)"
+            ),
+            "character_controller_system's probe gate must call \
+             support_probe_enabled with the live swim / grounded / jump inputs \
+             — an inlined `if` is unpinnable and is what #3972 filed (#3972)"
+        );
+        assert!(
+            !production.contains("if swim.is_none() && controller.is_grounded && !jump_fired"),
+            "the inlined three-clause gate must not come back (#3972)"
+        );
+    }
+
+    /// #3971 / PHYS-D5-2026-09-06-01 — the per-frame probe was the sole
+    /// production caller of the unfiltered `cast_capsule_down`, and since
+    /// #3799 its answer also decides `is_grounded`. Pin the split: the
+    /// vertical correction keeps the raw hit (anti-drift), the grounded half
+    /// is screened by the walkable normal.
+    #[test]
+    fn the_ground_probe_screens_its_grounded_half_on_the_walkable_normal() {
+        const SRC: &str = include_str!("character.rs");
+        let module_start = SRC
+            .find("fn the_ground_probe_screens_its_grounded_half_on_the_walkable_normal")
+            .expect("this test must still exist under its own name");
+        let production = &SRC[..module_start];
+
+        assert!(
+            production.contains("pw.cast_capsule_down_surface_and_normal("),
+            "the per-frame ground probe must read the hit NORMAL, not just the \
+             surface Y — without it there is nothing to screen on (#3971)"
+        );
+        assert!(
+            production.contains("probe_found_support =")
+                && production
+                    .contains("normal_y.abs() >= crate::scene::min_walkable_normal_y(controller)"),
+            "probe_found_support — the operand resolve_ground_contact ORs into \
+             is_grounded, and therefore what gates jump — must be screened on \
+             the walkable normal, using the same min_walkable_normal_y the \
+             spawn ladder refuses to stand the player on (#3971 / #2193)"
+        );
+        assert!(
+            !production.contains("let support_y = pw.cast_capsule_down("),
+            "the unscreened form must not come back: it made an exterior rock \
+             face steeper than max_slope_climb_deg read grounded on 100% of \
+             frames, with jump available (#3971)"
         );
     }
 }
