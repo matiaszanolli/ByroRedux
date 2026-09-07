@@ -52,7 +52,9 @@ pub use animated::{
 pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
 pub use billboard::{Billboard, BillboardMode, SpeedTreeWind};
 pub use bsx::{BSBound, BSXFlags};
-pub use camera::{ActiveCamera, Camera, DEFAULT_RENDER_DISTANCE};
+pub use camera::{
+    ActiveCamera, Camera, DepthBand, DepthFieldStats, DepthMapping, DEFAULT_RENDER_DISTANCE,
+};
 pub use cell_root::{CellFormId, CellRoot};
 pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use creature_attack::CreatureAttack;

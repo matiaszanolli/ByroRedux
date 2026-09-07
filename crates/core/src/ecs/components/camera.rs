@@ -94,6 +94,11 @@ use super::transform::Transform;
 ///   before/after evidence — the thing that was otherwise unobservable and
 ///   that made shipping reversed-Z speculative.
 ///
+///   The "after" half needs `depth.stats reversed` (#3571): the clear value
+///   and the decode both flip with the mapping, so a conventional read of a
+///   reversed capture classifies nothing as background and drops the whole
+///   sky into the far decade — the one band the gate exists to read.
+///
 ///   **Measured baseline** (RTX 4070 Ti, `--game fnv --grid 0,0 --radius 3
 ///   --upscaler taa`, camera on the Mojave satellite-dish rise looking down
 ///   the valley at the LOD ring, 1280×720, three captures agreeing within
@@ -289,6 +294,35 @@ impl Camera {
         (n / denom).min(f)
     }
 
+    /// Recover the world-space eye distance a **reversed-Z** depth sample
+    /// encodes. Inverse of the `z_ndc(d) = (n/d - n/f) / (1 - n/f)` in
+    /// [`Self::depth_resolution_at_reversed`]'s derivation:
+    /// `d = n / (z·(1 - n/f) + n/f)`.
+    ///
+    /// The sibling [`Self::linear_distance_from_depth`] existed alone
+    /// (#3571), which is why the #3308 gate could only be run *before* a
+    /// conversion: with no reversed inverse the "after" half of the
+    /// before/after evidence had nothing to decode with.
+    ///
+    /// A cleared sample under this mapping is `z == 0.0` (the reversed clear
+    /// value), and decodes to exactly `far` — the mirror of the conventional
+    /// mapping's `z == 1.0`. Same degenerate-input contract as the
+    /// conventional sibling.
+    pub fn linear_distance_from_depth_reversed(&self, z: f32) -> f32 {
+        let (n, f) = (self.near, self.far);
+        if !(z.is_finite() && n.is_finite() && f.is_finite()) {
+            return 0.0;
+        }
+        if n <= 0.0 || f <= n || !(0.0..=1.0).contains(&z) {
+            return 0.0;
+        }
+        let denom = z * (1.0 - n / f) + n / f;
+        if denom <= 0.0 {
+            return f;
+        }
+        (n / denom).min(f)
+    }
+
     /// Bucket a captured depth field into distance decades and report, per
     /// decade, how many *distinct encoded values* it actually contains
     /// alongside what [`Self::depth_resolution_at`] predicts.
@@ -314,9 +348,40 @@ impl Camera {
     /// worldspace one. Samples that decode to `far` are counted as
     /// [`DepthFieldStats::cleared`] and excluded from the bands — they are
     /// background, not geometry, and would otherwise swamp the last decade.
+    ///
+    /// Analyses the conventional near→0 / far→1 mapping. Use
+    /// [`Self::analyze_depth_field_with`] to read a capture from the other
+    /// mapping; this is the thin wrapper that names the default.
     pub fn analyze_depth_field(&self, encoded: &[f32]) -> DepthFieldStats {
+        self.analyze_depth_field_with(encoded, DepthMapping::Conventional)
+    }
+
+    /// [`Self::analyze_depth_field`] against an explicit depth mapping.
+    ///
+    /// #3571 — the gate's stated contract is *"run it before the conversion,
+    /// run it after, and the far decades' `distinct_codes` are the
+    /// before/after evidence"*, and the code could only deliver the "before"
+    /// half. Two sites were hardwired to the conventional mapping: the
+    /// background classifier (`z >= 1.0`, where reversed-Z clears to `0.0`,
+    /// so an "after" run would classify NO sample as background and decode
+    /// the frame's entire sky into the bands — swamping the exact far decade
+    /// the gate reads) and the decode itself, which had no reversed sibling.
+    /// Whoever did the conversion would have had to fix the analysis inside
+    /// the change they were trying to validate with it.
+    ///
+    /// The two `DepthBand::analytic_resolution_*` columns are *analytic*
+    /// predictions from the camera's own near/far — they do not depend on
+    /// which mapping produced the capture, so both are always populated and
+    /// named for the mapping they describe. [`DepthFieldStats::mapping`]
+    /// records which one the caller should read as "current".
+    pub fn analyze_depth_field_with(
+        &self,
+        encoded: &[f32],
+        mapping: DepthMapping,
+    ) -> DepthFieldStats {
         let mut stats = DepthFieldStats {
             total: encoded.len() as u32,
+            mapping,
             ..Default::default()
         };
         if self.near <= 0.0 || self.far <= self.near {
@@ -346,20 +411,28 @@ impl Camera {
         let (mut nearest, mut farthest) = (f32::INFINITY, 0.0f32);
 
         for &z in encoded {
-            // Classify background on the ENCODED side. The depth clear value
-            // is exactly 1.0 and any drawn fragment passed a LESS test
-            // against it, so `z >= 1.0` is precisely "nothing drawn here" —
-            // no decode needed, and therefore no decode error. Round-tripping
-            // instead is not safe: at the far plane one depth step spans tens
-            // of thousands of world units, so f32 error in the decode can put
-            // a cleared sample just *under* `far` and drop the frame's entire
-            // background into the last decade, swamping the one band the
-            // gate most needs to read.
-            if z >= 1.0 {
+            // Classify background on the ENCODED side, at whichever end of
+            // the range this mapping clears to: `1.0` conventionally, `0.0`
+            // under reversed-Z. Any drawn fragment passed the depth test
+            // against that clear value, so the comparison is precisely
+            // "nothing drawn here" — no decode needed, and therefore no
+            // decode error. Round-tripping instead is not safe: at the far
+            // plane one depth step spans tens of thousands of world units, so
+            // f32 error in the decode can put a cleared sample just *under*
+            // `far` and drop the frame's entire background into the last
+            // decade, swamping the one band the gate most needs to read.
+            let is_cleared = match mapping {
+                DepthMapping::Conventional => z >= 1.0,
+                DepthMapping::Reversed => z <= 0.0,
+            };
+            if is_cleared {
                 stats.cleared += 1;
                 continue;
             }
-            let d = self.linear_distance_from_depth(z);
+            let d = match mapping {
+                DepthMapping::Conventional => self.linear_distance_from_depth(z),
+                DepthMapping::Reversed => self.linear_distance_from_depth_reversed(z),
+            };
             if d <= 0.0 {
                 stats.invalid += 1;
                 continue;
@@ -399,7 +472,7 @@ impl Camera {
                     far_edge: w[1],
                     samples: counts[i],
                     distinct_codes: codes[i].len() as u32,
-                    analytic_resolution: self.depth_resolution_at(mid),
+                    analytic_resolution_conventional: self.depth_resolution_at(mid),
                     analytic_resolution_reversed: self.depth_resolution_at_reversed(mid),
                 }
             })
@@ -457,17 +530,48 @@ pub struct DepthBand {
     /// depth values, which is z-fighting waiting to happen.
     pub distinct_codes: u32,
     /// What [`Camera::depth_resolution_at`] predicts at the decade's
-    /// geometric midpoint, in world units per depth step.
-    pub analytic_resolution: f32,
+    /// geometric midpoint under the **conventional** mapping, in world units
+    /// per depth step.
+    ///
+    /// Named for the mapping it describes rather than "the current one"
+    /// (#3571): both columns are analytic functions of the camera's near/far
+    /// alone, so neither depends on which mapping produced the capture.
+    /// Which one is current is [`DepthFieldStats::mapping`].
+    pub analytic_resolution_conventional: f32,
     /// The same prediction under reversed-Z
     /// ([`Camera::depth_resolution_at_reversed`]) — the payoff a conversion
     /// would buy in this decade.
     pub analytic_resolution_reversed: f32,
 }
 
+/// Which end of the `[0, 1]` depth range the near plane encodes to — the
+/// discriminant #3308's comparison gate needs in order to be runnable on
+/// both sides of a reversed-Z conversion (#3571).
+///
+/// This describes a *capture*, not the engine: nothing in the render path
+/// reads it, and the engine ships [`Self::Conventional`] today. It exists so
+/// that whoever does the conversion can point the same analysis at the new
+/// depth buffer instead of having to repair the analysis inside the change
+/// they are trying to validate with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DepthMapping {
+    /// Near plane → `0.0`, far plane → `1.0`; clear value `1.0`. What the
+    /// engine's projection produces today.
+    #[default]
+    Conventional,
+    /// Near plane → `1.0`, far plane → `0.0`; clear value `0.0`. The
+    /// mapping #3308 exists to evaluate — it lands the far field near `0.0`
+    /// where f32 steps are finest.
+    Reversed,
+}
+
 /// Summary of one captured depth buffer. See [`Camera::analyze_depth_field`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DepthFieldStats {
+    /// Which depth mapping the samples were decoded under (#3571) — the
+    /// answer to "which of `DepthBand`'s two analytic columns is the one
+    /// this capture is actually living with".
+    pub mapping: DepthMapping,
     /// Every sample handed in.
     pub total: u32,
     /// Samples at or past the far plane — background, nothing drawn.
@@ -546,6 +650,140 @@ mod tests {
         assert_eq!(cam.linear_distance_from_depth(f32::NAN), 0.0);
     }
 
+    /// Encode a world distance the way a reversed-Z projection would —
+    /// `z_ndc(d) = (n/d - n/f) / (1 - n/f)`, the inverse of
+    /// `linear_distance_from_depth_reversed`.
+    fn encode_reversed(cam: &Camera, d: f32) -> f32 {
+        let (n, f) = (cam.near, cam.far);
+        (n / d - n / f) / (1.0 - n / f)
+    }
+
+    /// #3571 — the "after" half of #3308's before/after gate. The reversed
+    /// decode has to round-trip its own encode to the same standard the
+    /// conventional one is held to, or an "after" run measures the decoder.
+    #[test]
+    fn reversed_depth_decode_round_trips_the_reversed_projection() {
+        for cam in [Camera::default(), Camera::for_content_scale(true)] {
+            for d in [
+                cam.near * 2.0,
+                100.0,
+                1_000.0,
+                50_000.0,
+                196_608.0,
+                250_000.0,
+            ] {
+                if d <= cam.near || d >= cam.far {
+                    continue;
+                }
+                let back = cam.linear_distance_from_depth_reversed(encode_reversed(&cam, d));
+                // Same tolerance rule as the conventional round-trip: one
+                // depth step at that distance, under THIS mapping — which is
+                // the whole point, since reversed-Z's step is orders of
+                // magnitude finer in the far field.
+                let budget = cam.depth_resolution_at_reversed(d);
+                assert!(
+                    (back - d).abs() <= budget,
+                    "near={} d={d} decoded {back} — off by {} with a one-step \
+                     reversed budget of {budget}",
+                    cam.near,
+                    (back - d).abs()
+                );
+            }
+        }
+        let cam = Camera::default();
+        // The reversed clear value is 0.0, and it is the far plane — the
+        // mirror of the conventional mapping's 1.0.
+        assert_eq!(cam.linear_distance_from_depth_reversed(0.0), cam.far);
+        // 1.0 is the NEAR plane under this mapping, not the far one.
+        let at_one = cam.linear_distance_from_depth_reversed(1.0);
+        assert!(
+            (at_one - cam.near).abs() < 1e-4,
+            "reversed z=1 is the near plane, got {at_one}"
+        );
+        assert_eq!(cam.linear_distance_from_depth_reversed(-0.1), 0.0);
+        assert_eq!(cam.linear_distance_from_depth_reversed(1.5), 0.0);
+        assert_eq!(cam.linear_distance_from_depth_reversed(f32::NAN), 0.0);
+    }
+
+    /// #3571 — the failure the hardwiring would have produced on an "after"
+    /// run: under reversed-Z the clear value is `0.0`, so the conventional
+    /// `z >= 1.0` background test classifies NOTHING as background and the
+    /// frame's entire sky decodes into the bands, swamping the far decade
+    /// the gate exists to read. Same synthetic field, both mappings.
+    #[test]
+    fn reversed_analysis_separates_background_the_conventional_one_would_swallow() {
+        let cam = Camera::for_content_scale(true);
+        let mut field = vec![0.0f32; 100]; // reversed clear = 0.0
+        for d in [50.0f32, 500.0, 5_000.0, 50_000.0] {
+            field.push(encode_reversed(&cam, d));
+        }
+
+        let stats = cam.analyze_depth_field_with(&field, DepthMapping::Reversed);
+        assert_eq!(stats.mapping, DepthMapping::Reversed);
+        assert_eq!(stats.cleared, 100, "reversed background clears to 0.0");
+        assert_eq!(stats.bands.iter().map(|b| b.samples).sum::<u32>(), 4);
+        assert_eq!(stats.bands.iter().filter(|b| b.samples > 0).count(), 4);
+        assert!(stats.nearest > 40.0 && stats.nearest < 60.0);
+        assert!(stats.farthest > 45_000.0 && stats.farthest < 55_000.0);
+
+        // The same samples read under the wrong mapping: the 100 cleared
+        // ones are no longer background, and nothing lands where it should.
+        let wrong = cam.analyze_depth_field(&field);
+        assert_eq!(
+            wrong.cleared, 0,
+            "this is the defect — a conventional read of a reversed capture \
+             finds no background at all (#3571)"
+        );
+    }
+
+    /// Both analytic columns are predictions from the camera's own
+    /// near/far, so they are identical whichever mapping decoded the
+    /// capture — only their *labelling* was ambiguous (#3571). The
+    /// `mapping` field is what says which one the operator is living with.
+    #[test]
+    fn analytic_columns_are_mapping_independent_and_labelled() {
+        let cam = Camera::for_content_scale(true);
+        let field: Vec<f32> = [50.0f32, 500.0, 5_000.0]
+            .iter()
+            .map(|&d| encode(&cam, d))
+            .collect();
+        let conventional = cam.analyze_depth_field(&field);
+        let reversed_field: Vec<f32> = [50.0f32, 500.0, 5_000.0]
+            .iter()
+            .map(|&d| encode_reversed(&cam, d))
+            .collect();
+        let reversed = cam.analyze_depth_field_with(&reversed_field, DepthMapping::Reversed);
+
+        assert_eq!(conventional.mapping, DepthMapping::Conventional);
+        assert_eq!(reversed.mapping, DepthMapping::Reversed);
+        assert_eq!(conventional.bands.len(), reversed.bands.len());
+        for (a, b) in conventional.bands.iter().zip(reversed.bands.iter()) {
+            assert_eq!(
+                a.analytic_resolution_conventional,
+                b.analytic_resolution_conventional
+            );
+            assert_eq!(
+                a.analytic_resolution_reversed,
+                b.analytic_resolution_reversed
+            );
+        }
+        // The payoff is a FAR-field one, and only there: conventional-Z
+        // spends its precision at the near plane, so it wins the first
+        // decade and loses every later one by a widening margin. Asserting
+        // the last band keeps the claim to what the numbers support.
+        let far = conventional
+            .bands
+            .last()
+            .expect("the decade walk always yields at least one band");
+        assert!(
+            far.analytic_resolution_reversed * 1_000.0 < far.analytic_resolution_conventional,
+            "the far decade is where reversed-Z pays: got conventional {} vs \
+             reversed {}",
+            far.analytic_resolution_conventional,
+            far.analytic_resolution_reversed
+        );
+    }
+
     /// A synthetic field with known content must be bucketed into the right
     /// decades, with cleared background separated from geometry.
     #[test]
@@ -604,7 +842,7 @@ mod tests {
         );
         // And the analytic pair explains why, in the same row the operator
         // reads: conventional coarse, reversed fine.
-        assert!(far.analytic_resolution > 100.0);
+        assert!(far.analytic_resolution_conventional > 100.0);
         assert!(far.analytic_resolution_reversed < 1.0);
     }
 

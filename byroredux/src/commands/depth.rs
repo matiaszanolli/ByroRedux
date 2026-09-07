@@ -16,7 +16,7 @@
 //! the same shape the screenshot path has, for the same reason.
 
 use super::shared::*;
-use byroredux_core::ecs::components::Camera;
+use byroredux_core::ecs::components::{Camera, DepthMapping};
 use byroredux_core::ecs::{ActiveCamera, DepthCaptureBridge};
 
 /// `depth.stats` — arm a depth capture, then report the captured field.
@@ -28,10 +28,26 @@ impl ConsoleCommand for DepthStatsCommand {
     }
 
     fn description(&self) -> &str {
-        "Capture the depth buffer and report measured vs analytic depth resolution (#3308)"
+        "Capture the depth buffer and report measured vs analytic depth resolution          (#3308); `depth.stats reversed` decodes a reversed-Z capture"
     }
 
-    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        // #3571 — the gate's whole contract is "run it before the conversion,
+        // run it after". The engine's projection is conventional today, so
+        // that is the default; the argument is what makes the "after" half
+        // runnable at all, without the operator having to patch the analysis
+        // inside the change they are using it to validate. It is a property
+        // of the CAPTURE, not of the camera, which is why it is an argument
+        // rather than read off `Camera`.
+        let mapping = match args.trim().to_ascii_lowercase().as_str() {
+            "" | "conventional" => DepthMapping::Conventional,
+            "reversed" | "reverse" | "reversed-z" => DepthMapping::Reversed,
+            other => {
+                return CommandOutput::line(format!(
+                    "unknown depth mapping `{other}` — use `conventional` (default) or `reversed`"
+                ))
+            }
+        };
         let Some(bridge) = world.try_resource::<DepthCaptureBridge>() else {
             return CommandOutput::line(
                 "DepthCaptureBridge not present — the renderer has not finished init",
@@ -57,7 +73,7 @@ impl ConsoleCommand for DepthStatsCommand {
             return CommandOutput::line("no active Camera — cannot decode depth samples");
         };
 
-        let stats = camera.analyze_depth_field(&capture.samples);
+        let stats = camera.analyze_depth_field_with(&capture.samples, mapping);
         // #3630 — `analyze_depth_field` returns early with `bands` empty (and
         // `cleared`/`invalid` both 0) when `near <= 0.0 || far <= near`: its
         // documented contract for a capture that disagrees with the camera is
@@ -78,8 +94,13 @@ impl ConsoleCommand for DepthStatsCommand {
         }
         let mut out = vec![
             format!(
-                "depth {}x{} ({} samples)  near={:.3} far={:.0}",
-                capture.width, capture.height, stats.total, camera.near, camera.far
+                "depth {}x{} ({} samples)  near={:.3} far={:.0}  mapping={}",
+                capture.width,
+                capture.height,
+                stats.total,
+                camera.near,
+                camera.far,
+                mapping_label(mapping)
             ),
             format!(
                 "  background(cleared)={}  geometry={}  invalid={}",
@@ -100,9 +121,14 @@ impl ConsoleCommand for DepthStatsCommand {
                 stats.nearest, stats.farthest
             ));
         }
-        out.push(
-            "  band                samples  codes   BU/step  (reversed-Z would be)".to_string(),
-        );
+        // #3571 — the columns are labelled by which mapping is CURRENT, not
+        // by a fixed "conventional then reversed" order. Both numbers are
+        // analytic predictions from near/far and so are the same either way;
+        // what changes is which one the operator is living with.
+        out.push(format!(
+            "  band                samples  codes   BU/step  ({} would be)",
+            mapping_label(other_mapping(mapping))
+        ));
         for band in stats.bands.iter().filter(|b| b.samples > 0) {
             // `codes / samples` is the headline: when it collapses toward
             // zero the band's surfaces are sharing depth values, which is
@@ -113,14 +139,43 @@ impl ConsoleCommand for DepthStatsCommand {
                 band.far_edge,
                 band.samples,
                 band.distinct_codes,
-                band.analytic_resolution,
-                band.analytic_resolution_reversed,
+                current_resolution(band, mapping),
+                current_resolution(band, other_mapping(mapping)),
             ));
         }
         if stats.bands.iter().all(|b| b.samples == 0) {
             out.push("  (no geometry in frame — every sample is background)".to_string());
         }
         CommandOutput::lines(out)
+    }
+}
+
+/// Short name for the report header.
+fn mapping_label(mapping: DepthMapping) -> &'static str {
+    match mapping {
+        DepthMapping::Conventional => "conventional-Z",
+        DepthMapping::Reversed => "reversed-Z",
+    }
+}
+
+/// The one this report is not decoding under — the "would be" column.
+fn other_mapping(mapping: DepthMapping) -> DepthMapping {
+    match mapping {
+        DepthMapping::Conventional => DepthMapping::Reversed,
+        DepthMapping::Reversed => DepthMapping::Conventional,
+    }
+}
+
+/// The band's analytic resolution under a named mapping. Both columns are
+/// always populated (they are functions of near/far alone); this is only
+/// which one to print where.
+fn current_resolution(
+    band: &byroredux_core::ecs::components::DepthBand,
+    mapping: DepthMapping,
+) -> f32 {
+    match mapping {
+        DepthMapping::Conventional => band.analytic_resolution_conventional,
+        DepthMapping::Reversed => band.analytic_resolution_reversed,
     }
 }
 
@@ -145,6 +200,65 @@ mod tests {
             }))),
         });
         world
+    }
+
+    /// #3571 — the same capture read under both mappings. A reversed-Z
+    /// frame clears to `0.0`, so the conventional read finds no background
+    /// at all and decodes the whole sky into the bands; only the `reversed`
+    /// argument makes the "after" half of #3308's before/after gate
+    /// readable. Also pins that the header names which mapping is current.
+    #[test]
+    fn the_mapping_argument_selects_how_the_capture_is_decoded() {
+        // A reversed-Z frame: three cleared samples plus one surface.
+        let camera = Camera::new(1.0, 1.0, 1.0, 100.0);
+        let surface = (1.0f32 / 10.0 - 1.0 / 100.0) / (1.0 - 1.0 / 100.0);
+        let samples = vec![0.0, 0.0, 0.0, surface];
+
+        let reversed = DepthStatsCommand
+            .execute(&world_with_capture(camera, samples.clone()), "reversed")
+            .lines
+            .join("\n");
+        assert!(
+            reversed.contains("mapping=reversed-Z"),
+            "the header must name the mapping in force: {reversed}"
+        );
+        assert!(
+            reversed.contains("background(cleared)=3") && reversed.contains("geometry=1"),
+            "a reversed capture clears to 0.0 — three background, one \
+             surface: {reversed}"
+        );
+        assert!(
+            reversed.contains("(conventional-Z would be)"),
+            "the comparison column must be labelled as the OTHER mapping, \
+             not fixed to reversed: {reversed}"
+        );
+
+        // The defect, from the other side: read conventionally, the same
+        // frame reports no background and four surfaces.
+        let conventional = DepthStatsCommand
+            .execute(&world_with_capture(camera, samples), "")
+            .lines
+            .join("\n");
+        assert!(
+            conventional.contains("mapping=conventional-Z")
+                && conventional.contains("background(cleared)=0"),
+            "this is what an 'after' run used to produce silently: {conventional}"
+        );
+    }
+
+    /// An unrecognised mapping is refused rather than silently decoded as
+    /// the default — a typo'd "after" run must not report a "before".
+    #[test]
+    fn an_unknown_mapping_argument_is_refused() {
+        let world = world_with_capture(Camera::new(1.0, 1.0, 1.0, 100.0), vec![1.0; 4]);
+        let output = DepthStatsCommand
+            .execute(&world, "revresed")
+            .lines
+            .join("\n");
+        assert!(
+            output.contains("unknown depth mapping"),
+            "expected a refusal, got: {output}"
+        );
     }
 
     // #3630 — a degenerate camera (`near <= 0.0 || far <= near`) must be
