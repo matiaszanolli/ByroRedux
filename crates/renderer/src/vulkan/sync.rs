@@ -23,22 +23,24 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // next evaluates making the depth image per-frame-in-flight must size
 // the work off all of them, and a future MAX_FRAMES_IN_FLIGHT bump
 // review must not read a short list as exhaustive. The safety
-// argument itself is unchanged — the both-slots fence wait covers
-// every consumer at 2 slots. The double-fence
-// wait in `VulkanContext::draw_frame` (#282) guarantees this *only*
-// while waiting on both `in_flight[frame]` and `in_flight[(frame+1)
-// % MAX_FRAMES_IN_FLIGHT]` is equivalent to device-idle for prior
-// frames — which is true at MAX_FRAMES_IN_FLIGHT == 2 because two
-// fences cover both slots. At 3+ slots the both-fences pattern
-// would only cover 2 of N, leaving frame N-2's compute possibly in
-// flight when frame N+1's render pass clears depth.
+// argument itself is unchanged — the top-of-frame fence wait covers
+// every consumer.
 //
-// Bumping this constant requires either:
+// #3442 — that wait used to be `in_flight[frame]` plus
+// `in_flight[(frame + 1) % MAX_FRAMES_IN_FLIGHT]`, which names the other
+// slot only at exactly 2; at 3+ it covered 2 of N and left frame N-2's
+// compute possibly in flight when frame N+1's render pass cleared depth.
+// `context/sync_and_acquire_frame.rs` now waits on the whole
+// `in_flight` array, so "equivalent to device-idle for prior frames" is
+// true at any N. That is remedy (b) below, and it is **done**.
+//
+// Bumping this constant still requires:
 //   (a) making the depth image per-frame-in-flight
 //       (`Vec<vk::Image>` indexed by frame_index, mirroring
-//       `GBuffer`'s own per-frame `images` vec), AND THEN STILL (b), OR
-//   (b) extending the fence wait to cover all in-flight slots
-//       (currently 2; would become MAX_FRAMES_IN_FLIGHT - 1 fences).
+//       `GBuffer`'s own per-frame `images` vec) — NOT done; and
+//   (b) extending the fence wait to cover all in-flight slots — DONE
+//       (#3442). Kept in this list because the bump review needs to
+//       re-derive that it still holds, not assume it from this note.
 //
 // #3643 — read that as written: **(a) alone is NOT sufficient.** The
 // depth image is the resource this assert is named after, not the only
@@ -67,7 +69,11 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // `FrameSync::images_in_flight` (below) carries its own version of the
 // warning and is the sixth. So option (b) — or per-FIF-ing every one of
 // them — is mandatory on any bump; (a) on its own only removes the
-// tripwire. Treat this list the same way the depth-consumer list above
+// tripwire. (b) having landed (#3442) is why these six now rest on an
+// N-agnostic premise rather than on the `== 2` assert alone — but the
+// assert stays: nothing here has audited the *rest* of a bump, and
+// deleting a live tripwire on the strength of one remedy is exactly the
+// move this paragraph was written to prevent. Treat this list the same way the depth-consumer list above
 // asks to be treated: load-bearing, and re-derived rather than trusted
 // as exhaustive.
 //
@@ -128,11 +134,11 @@ pub struct FrameSync {
     ///
     /// Any handle stored here is guaranteed SIGNALED (or `vk::Fence::null()`)
     /// by the time `draw_frame` next reads it (the post-acquire
-    /// image-fence wait). This is upheld upstream by the *both-slots*
-    /// `wait_for_fences` at the top of `draw_frame`, which blocks on BOTH
-    /// frame-in-flight fences before any image-fence read — so by the time
-    /// we reach the guard, every fence in this vec is either null (image
-    /// never used) or matches one of the two frame slots we just waited on.
+    /// image-fence wait). This is upheld upstream by the *all-slots*
+    /// `wait_for_fences` at the top of `draw_frame`, which blocks on every
+    /// frame-in-flight fence before any image-fence read (#3442) — so by
+    /// the time we reach the guard, every fence in this vec is either null
+    /// (image never used) or matches a frame slot we just waited on.
     ///
     /// The aliasing guard `image_fence != in_flight[frame]` then skips the
     /// case where this vec already holds the current slot's own fence.
@@ -245,7 +251,7 @@ impl FrameSync {
     /// points leaves the fence UNSIGNALED with no submit queued to
     /// ever signal it. The preceding `device_wait_idle` doesn't
     /// transition UNSIGNALED fences back to SIGNALED, so the next
-    /// `wait_for_fences` (the both-slots wait at the top of each
+    /// `wait_for_fences` (the all-slots wait at the top of each
     /// frame) would deadlock at `u64::MAX` timeout. Destroying +
     /// recreating the fences with `SIGNALED` here is safe because
     /// `device_wait_idle` guarantees no command buffer is referencing
@@ -359,7 +365,7 @@ impl FrameSync {
     /// immediately before `queue_submit`, post-#952), the fence is
     /// UNSIGNALED with no pending submit. If `vkQueueSubmit` then fails,
     /// the fence stays stuck — there is no `vkSignalFence` to flip it
-    /// back. The next frame's both-slots `wait_for_fences(..., u64::MAX)`
+    /// back. The next frame's all-slots `wait_for_fences(..., u64::MAX)`
     /// at the top of `draw_frame` would block forever.
     ///
     /// Recreating destroys the unsignaled fence and replaces it with a
@@ -586,11 +592,19 @@ mod tests {
     fn frames_in_flight_contract_names_every_dependent_resource() {
         const SYNC_RS: &str = include_str!("sync.rs");
 
+        // #3442 — both needles are composed at runtime. A literal here
+        // matches this test's OWN source (`SYNC_RS` includes it), so a
+        // rename of the production heading kept `split_once` succeeding on
+        // the self-match and then failed downstream with a message blaming
+        // the resource list. Same technique as
+        // `render_finished_is_sized_and_indexed_per_swapchain_image` below.
+        let heading = "// Bumping this constant".to_string() + " still requires:";
+        let assert_open = "const _: () = ".to_string() + "assert!(";
         let block = SYNC_RS
-            .split_once("// Bumping this constant requires either:")
+            .split_once(heading.as_str())
             .expect("the #870 remediation block")
             .1
-            .split_once("const _: () = assert!(")
+            .split_once(assert_open.as_str())
             .expect("the #870 const-assert");
         let (prose, assert_message) = block;
 

@@ -37,27 +37,32 @@ impl VulkanContext {
             p.reset_descriptor_writes_counter();
         }
 
-        // Wait for this frame-in-flight slot AND the previous slot to be
-        // available. SVGF's temporal pass reads the previous slot's G-buffer
-        // images (mesh_id, motion, raw_indirect) — without waiting on the
-        // other slot's fence, a read-after-write hazard exists when the GPU
-        // hasn't finished the other slot's render pass. See #282.
+        // Wait for EVERY frame-in-flight slot to be available. SVGF's
+        // temporal pass reads the previous slot's G-buffer images (mesh_id,
+        // motion, raw_indirect) — without waiting on the other slot's fence,
+        // a read-after-write hazard exists when the GPU hasn't finished that
+        // slot's render pass. See #282.
         //
-        // Cost: zero in practice — the GPU is rarely more than 1 frame
-        // behind the CPU, so the other fence is almost always signaled.
+        // #3442 — this used to wait on `frame` plus `(frame + 1) % N`, which
+        // names the *previous* slot only at exactly `N == 2`. `sync.rs`'s
+        // `MAX_FRAMES_IN_FLIGHT == 2` assertion made that safe, but this site
+        // carries more than temporal history: it is the "GPU is idle with
+        // respect to every prior submission" premise that three synchronous
+        // destroys cite (`pending_skin_unload_victims`,
+        // `pending_morph_unload_victims`, and the deferred-destroy tick). At
+        // `N == 3` the old form left the immediately-previous frame unwaited
+        // and turned those into use-after-free. Waiting on the whole array is
+        // remedy (b) from `sync.rs` and is N-agnostic, so the premise holds
+        // however the sync tier is later raised.
+        //
+        // Identical behaviour at today's `N == 2` (both slots, same order).
+        // Cost stays zero in practice — the GPU is rarely more than 1 frame
+        // behind the CPU, so the other fences are almost always signaled.
         let fence_t0 = Instant::now();
-        // SAFETY: `in_flight[frame]` and `in_flight[prev]` are live fences; both were signal-targets of prior `queue_submit`s (or created pre-signaled), so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
+        // SAFETY: every entry of `in_flight` is a live fence — the vec is built with exactly `MAX_FRAMES_IN_FLIGHT` `create_fence` calls and `recreate_in_flight_for_frame` replaces rather than nulls (only `images_in_flight` is ever `Fence::null()`). All were signal-targets of prior `queue_submit`s or created pre-signaled, so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
         unsafe {
-            let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
             self.device
-                .wait_for_fences(
-                    &[
-                        self.frame_sync.in_flight[frame],
-                        self.frame_sync.in_flight[prev],
-                    ],
-                    true,
-                    u64::MAX,
-                )
+                .wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)
                 .context("wait_for_fences")?;
         }
         t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;

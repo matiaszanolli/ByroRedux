@@ -1,11 +1,7 @@
 # #3442 — SAFE-2026-08-27b-04: #2771's source-scan pin cannot see draw.rs's `(f + 1) % MAX_FRAMES_IN_FLIGHT` — the fence wait every synchronous GPU destroy depends on
 
-- **Source**: `docs/audits/AUDIT_SAFETY_2026-08-27b.md`
-- **Severity**: LOW
-- **Labels**: `low,safety,renderer,vulkan,sync,bug`
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3442
-
----
+State: OPEN
+Labels: bug, renderer, low, vulkan, sync, safety
 
 From `docs/audits/AUDIT_SAFETY_2026-08-27b.md` (Dimension 5 — Vulkan spec / sync + Dimension 3 — drop ordering).
 
@@ -57,3 +53,4 @@ No render-pass / barrier / pipeline-state change is proposed here, per the stand
 - [ ] **SIBLING**: Same pattern checked in related files (`taa.rs`, `svgf.rs`, `restir.rs`, `volumetrics.rs` — the pin's existing list — plus any other qualified `MAX_FRAMES_IN_FLIGHT` spelling)
 - [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
 - [ ] **TESTS**: A regression test pins this specific fix
+

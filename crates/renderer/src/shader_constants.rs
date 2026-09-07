@@ -1082,28 +1082,72 @@ mod tests {
     /// call sites must not be what breaks.
     #[test]
     fn temporal_history_indexing_uses_the_general_previous_slot_form() {
+        // #3442 — the original four-file list plus the two frame-driver
+        // files. The defect this pin exists to catch had moved to
+        // `sync_and_acquire_frame.rs` (the fence wait, split out of
+        // `draw_frame`) where neither the file list nor the needle could
+        // reach it.
         for (file, src) in [
             ("taa.rs", include_str!("vulkan/taa.rs")),
             ("svgf.rs", include_str!("vulkan/svgf.rs")),
             ("restir.rs", include_str!("vulkan/restir.rs")),
             ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
+            ("context/draw.rs", include_str!("vulkan/context/draw.rs")),
+            (
+                "context/sync_and_acquire_frame.rs",
+                include_str!("vulkan/context/sync_and_acquire_frame.rs"),
+            ),
         ] {
             // Code lines only — the prose above these call sites names the
             // rejected form in order to explain why it is rejected.
+            //
+            // #3442 — this used to also truncate at the first `#[cfg(test)]`.
+            // That works for a file whose tests are one trailing module, and
+            // silently defeats the pin on one whose test modules are
+            // interleaved: `context/draw.rs` has 19 of them, the first at
+            // line 238 of 3,397, so the scan covered 7 % of the file. Every
+            // remaining occurrence across all six files is either a comment
+            // (dropped just below) or the `current_frame` advance carved out
+            // further down, so scanning the whole file costs no false
+            // positives and is what makes adding `draw.rs` to the list mean
+            // anything.
             let production: String = src
-                .split("#[cfg(test)]")
-                .next()
-                .unwrap_or(src)
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(
-                !production.contains("+ 1) % MAX_FRAMES_IN_FLIGHT"),
-                "{file}: `(f + 1) % MAX_FRAMES_IN_FLIGHT` names the previous \
-                 slot only at exactly 2 — use `(f + MAX_FRAMES_IN_FLIGHT - \
-                 1) % MAX_FRAMES_IN_FLIGHT` (#2771)"
-            );
+            // #3442 — match any path-qualified spelling, not just the bare
+            // one. The site this pin missed wrote
+            // `% super::super::sync::MAX_FRAMES_IN_FLIGHT`, which the old
+            // literal needle could never match; adding its file to the list
+            // above would not have helped.
+            //
+            // Carve-out: `self.current_frame = (self.current_frame + 1) % N`
+            // is the frame-slot *advance*, where "+ 1" is the whole point.
+            // Only a read that means "the previous slot" is the defect, so
+            // the exemption is keyed on assigning to `current_frame` rather
+            // than on a file, which would exempt every other line in it too.
+            for line in production.lines() {
+                let Some((before, after)) = line.split_once("+ 1) %") else {
+                    continue;
+                };
+                let names_the_constant = after
+                    .trim()
+                    .trim_end_matches(&[';', ',', ')'][..])
+                    .ends_with("MAX_FRAMES_IN_FLIGHT");
+                if !names_the_constant {
+                    continue;
+                }
+                if before.contains("current_frame =") {
+                    continue;
+                }
+                panic!(
+                    "{file}: `(f + 1) % MAX_FRAMES_IN_FLIGHT` names the \
+                     previous slot only at exactly 2 — use `(f + \
+                     MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT`, or \
+                     wait on the whole fence array (#2771, #3442).\n  {line}"
+                );
+            }
         }
     }
 
