@@ -192,6 +192,23 @@ mod tests {
         // from "fixing" it into consistency with the broken ones (#3896).
         for (profile, key, patch, base) in [
             ("fnv", "default_bsas", "Update.bsa", "Fallout - Meshes.bsa"),
+            // #3916 — the same archive in the other two pools. `Fallout -
+            // Textures2.bsa` (which actually holds the shadowing entries)
+            // arrives via the `<stem>N.bsa` numeric-sibling auto-load while
+            // `Fallout - Textures.bsa` is opened, so ordering against the
+            // listed primary is what puts the patch last.
+            (
+                "fnv",
+                "default_textures_bsas",
+                "Update.bsa",
+                "Fallout - Textures.bsa",
+            ),
+            (
+                "fnv",
+                "default_sounds_bsas",
+                "Update.bsa",
+                "Fallout - Sound.bsa",
+            ),
             (
                 "starfield",
                 "default_bsas",
@@ -322,5 +339,55 @@ mod tests {
         }];
         let overrides = overrides_for(&candidates);
         assert_eq!(overrides.roots["fo4"], "/games/FO4/Data");
+    }
+}
+
+#[cfg(test)]
+mod cross_kind_patch_archive_tests {
+    /// #3916 (FNV-2026-09-05-D8-02) — a patch archive must be listed in every
+    /// pool whose asset kinds it carries, not just the one someone happened to
+    /// need first.
+    ///
+    /// `TextureProvider` keeps `mesh_archives` and `texture_archives` as
+    /// disjoint pools and `SoundArchiveProvider` is a third, so an archive
+    /// listed in one pool patches only that pool. `Update.bsa` is FNV's only
+    /// cross-kind patch archive — 55 `.nif` + 25 `.kf`, but also 2 `.dds`,
+    /// 3 `.wav` and 1 `.txt`. #3790 and #3896 both got the mesh half right and
+    /// left the other two kinds shadowed by their base-game namesakes
+    /// (`Fallout - Textures2.bsa`, `Fallout - Sound.bsa` — verified against the
+    /// shipped archives).
+    ///
+    /// The companion ordering assertions live in
+    /// `profiles_list_patch_archives_after_the_base_archives_they_override`;
+    /// this one pins *presence* in each pool, which ordering alone cannot
+    /// express — an archive missing from a pool has no position to be wrong.
+    #[test]
+    fn fnv_update_bsa_is_listed_in_every_pool_whose_kinds_it_carries() {
+        let path = std::path::Path::new("../../assets/debug_profiles.toml");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let document: toml::Table = toml::from_str(&text).unwrap();
+        let fnv = document["profiles"]["fnv"]
+            .as_table()
+            .expect("shipped profiles have an `fnv` block");
+
+        for (key, kinds) in [
+            ("default_bsas", "55 .nif + 25 .kf"),
+            ("default_textures_bsas", "2 .dds"),
+            ("default_sounds_bsas", "3 .wav"),
+        ] {
+            let listed = fnv[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("fnv.{key} must be an array"))
+                .iter()
+                .any(|v| v.as_str() == Some("Update.bsa"));
+            assert!(
+                listed,
+                "fnv.{key} must list `Update.bsa`: it carries {kinds}, and an \
+                 archive listed in one pool patches only that pool — the other \
+                 pools keep serving the base-game namesake (#3916)"
+            );
+        }
     }
 }

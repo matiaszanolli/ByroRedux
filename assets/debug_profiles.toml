@@ -71,8 +71,28 @@ default_bsas = ["Fallout - Meshes.bsa", "Update.bsa"]
 # splash keys were Skyrim-shaped and never resolved on any Fallout title).
 # `Fallout - Voices1.bsa` deliberately NOT added — 105,517 entries, no
 # dialogue consumer exists yet.
-default_sounds_bsas = ["Fallout - Sound.bsa"]
-default_textures_bsas = ["Fallout - Textures.bsa"]
+# #3916 — `Update.bsa` is listed in all THREE pools, not just `default_bsas`.
+# It is FNV's only cross-kind patch archive: of its 86 entries, 55 are `.nif`
+# and 25 `.kf` (the mesh half #3790/#3896 already handled), but it also ships
+# 2 `.dds`, 3 `.wav` and 1 `.txt`. `TextureProvider` keeps `mesh_archives` and
+# `texture_archives` as DISJOINT pools and `SoundArchiveProvider` is a third,
+# so an archive listed in one pool patches only that pool. Measured against
+# the shipped archives, three of those entries were being served in their
+# unpatched form:
+#   textures\dungeons\metro\tunnel\mettunpillar01.dds        ← Fallout - Textures2.bsa
+#   textures\terminals\nv_slotmachine\...-minigame05.dds      ← Fallout - Textures2.bsa
+#   sound\fx\wpn\minigun\wpn_minigun_spin_lpm.wav            ← Fallout - Sound.bsa
+# (The other two `.wav` and the `.txt` exist only here, so they were simply
+# unreachable rather than shadowed.) `Fallout - Textures2.bsa` arrives via the
+# `<stem>N.bsa` numeric-sibling auto-load, which pushes it while opening
+# `Fallout - Textures.bsa` — so listing `Update.bsa` after it is what puts the
+# patch last under last-wins, same rule as the mesh pool above.
+#
+# Opening the same 86-entry archive three times costs one extra directory
+# HashMap each; `open_with_numeric_siblings`' `opened_paths` dedup is per-pool,
+# so this is intended, not a double-open bug.
+default_sounds_bsas = ["Fallout - Sound.bsa", "Update.bsa"]
+default_textures_bsas = ["Fallout - Textures.bsa", "Update.bsa"]
 default_materials_bsas = []
 # F6 (2026-05-26) — all entries verified via
 # `cargo run -p byroredux-plugin --example probe_cells`. Pre-fix
