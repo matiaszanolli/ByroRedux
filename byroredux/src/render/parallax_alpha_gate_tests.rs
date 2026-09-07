@@ -137,3 +137,37 @@ fn normal_with_alpha_still_sets_the_alpha_height_bit() {
         "the bit must ride alongside the index, not replace it"
     );
 }
+
+/// #3567 — the end-to-end half of the same channel question. This fixture is
+/// exactly the `APPLY_HILIGHT2` shape: one texture bound into both the normal
+/// and the height slot, `parallax_height_in_alpha` set, alpha present. Every
+/// precondition of the normal-alpha-as-spec binding is therefore satisfied by
+/// construction, and before the fix the draw carried BOTH bits — the shader
+/// read that one texel as displacement in `sampleParallaxHeight` and as a
+/// specular-intensity mask in `triangle.frag`, so specular tracked the height
+/// field.
+///
+/// Pinned on the emitted `DrawCommand` rather than only on the predicate,
+/// because the two claims are made fifty lines apart in the same draw loop:
+/// the predicate test alone would not catch a future site re-deriving the
+/// binding locally.
+#[test]
+fn a_height_bearing_normal_alpha_is_not_also_bound_as_the_spec_mask() {
+    let cmds = run_build(&world_with_alpha_height_material(true));
+    let cmd = cmds
+        .iter()
+        .find(|cmd| cmd.parallax_map_index != 0)
+        .expect("the mesh must emit a draw with a bound height slot");
+    assert_ne!(
+        cmd.parallax_map_index & crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT,
+        0,
+        "precondition: this draw must be on the #3530 alpha-height route"
+    );
+    assert_eq!(
+        cmd.gloss_map_index & crate::material_translate::NORMAL_ALPHA_SPEC_BIT,
+        0,
+        "the normal alpha is already claimed as parallax height; binding it \
+         as the per-pixel specular mask too makes specular strength track \
+         displacement — crevices matte, raised brickwork glossy (#3567)"
+    );
+}

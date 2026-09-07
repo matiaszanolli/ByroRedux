@@ -67,6 +67,10 @@
 //!   smoothness signal), so **Phase 1's literal is what ships**. Phase 2's
 //!   contribution here is not a roughness write at all: it is the per-draw
 //!   gloss-slot rebind ([`normal_alpha_spec_binding_applies`], render-side).
+//!   That rebind excludes Oblivion's `APPLY_HILIGHT2` route, whose normal
+//!   alpha the parser already claimed as parallax height
+//!   (`Material::parallax_height_in_alpha`, #3530/#3567) — one channel, one
+//!   meaning, arbitrated in the predicate rather than per call site.
 //! * **Alpha-less normal map with high `specular_strength`** — the matte,
 //!   non-env-mapped legacy fallback. This is the only population whose
 //!   roughness Phase 2 writes.
@@ -864,7 +868,28 @@ pub(crate) fn normal_alpha_spec_binding_applies(
     let Some(material) = material else {
         return false;
     };
-    normal_has_alpha
+    // #3567 — a normal alpha already claimed as PARALLAX HEIGHT cannot also
+    // be a specular mask. Oblivion ships no `_p.dds`, so #3530 has
+    // `legacy_properties.rs` bind the *normal* map into
+    // `MaterialTextureSet::height` for `APPLY_HILIGHT2` and record the
+    // channel meaning canonically in `Material::parallax_height_in_alpha`.
+    // For that population every precondition below is satisfied by
+    // construction — `normal_has_alpha` must be true (that alpha IS the
+    // height payload), `normal_map_index != 0` (the parallax slot was bound
+    // from it), and ordinary architecture is `material_kind < 100` — so
+    // without this term the same texel is read twice with two incompatible
+    // meanings in one draw: `sampleParallaxHeight` takes `texel.a` as
+    // displacement while `triangle.frag` multiplies `specStrength` by it.
+    // Specular would track the height field: crevices matte, raised
+    // brickwork glossy.
+    //
+    // Arbitrated here, at the render-side predicate, rather than in the draw
+    // loop, so the two consumers cannot be made exclusive at one call site
+    // and not another — the render-time channel-meaning re-derivation NIFAL
+    // exists to eliminate. The parser-side field is the authority; this only
+    // consults it.
+    !material.parallax_height_in_alpha
+        && normal_has_alpha
         && normal_alpha_spec_applies(
             material_kind,
             metalness,
@@ -2015,6 +2040,29 @@ mod tests {
         assert!(
             !normal_alpha_spec_binding_applies(Some(&material), true, KIND, 0.0, NORMAL, 9),
             "a dedicated gloss map wins over the normal-alpha fallback"
+        );
+
+        // #3567 — the same channel cannot be height AND a spec mask. Every
+        // other input here is the binding population's own shape, so this
+        // isolates the new term.
+        let height_in_alpha = Material {
+            env_map_scale: 0.0,
+            parallax_height_in_alpha: true,
+            ..Material::default()
+        };
+        assert!(
+            !normal_alpha_spec_binding_applies(
+                Some(&height_in_alpha),
+                true,
+                KIND,
+                0.0,
+                NORMAL,
+                GLOSS
+            ),
+            "a normal alpha already claimed as parallax height (Oblivion's \
+             APPLY_HILIGHT2 route, #3530) must not also be bound as the \
+             per-pixel specular mask — the shader would multiply specular \
+             strength by the height field (#3567)"
         );
     }
 
