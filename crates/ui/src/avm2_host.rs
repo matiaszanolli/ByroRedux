@@ -121,8 +121,20 @@ pub(crate) fn inject_into_parsed_movie(
             "Fallout 4 AVM2 adapter '{ADAPTER_NAME}' is already present; \
              skipping injection (#2970)"
         );
+        // #3435 — probe on `DESTROYED_EVENT`, not `DESTROY_CALLBACK`.
+        // `DESTROY_CALLBACK` ("__byroBGSCodeObjDestroy") is a strict prefix
+        // of `DESTROYED_EVENT` ("__byroBGSCodeObjDestroyed"), so a raw byte
+        // scan for the shorter one also matches a pool that carries only the
+        // longer one — it cannot tell the two states apart on its own terms.
+        // It was correct anyway, but only because `build_adapter_abc` emits
+        // all four destroy strings together or none (`has_destroy_trait`),
+        // an invariant held two functions away with nothing pinning it.
+        // The longer needle has no such ambiguity: nothing else in the pool
+        // contains it. `destroy_string_pair_cannot_be_probed_by_prefix` and
+        // `destroy_strings_are_emitted_together_or_not_at_all` pin both
+        // halves so neither can drift.
         let state = if tags.iter().any(|tag| {
-            abc_payload(tag).is_some_and(|abc| contains_bytes(abc, DESTROY_CALLBACK.as_bytes()))
+            abc_payload(tag).is_some_and(|abc| contains_bytes(abc, DESTROYED_EVENT.as_bytes()))
         }) {
             ScaleformHostObjectState::AdapterInjected
         } else {
@@ -1227,6 +1239,121 @@ fn write_ops(ops: &[Op]) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// #3435 — the prefix relationship that made the old state probe
+    /// ambiguous. Pinned so a future rename cannot quietly restore it: if
+    /// these ever stop overlapping, the comment at the probe explaining why
+    /// it uses the longer needle becomes misleading, and if a *third*
+    /// destroy string is added with `DESTROYED_EVENT` as ITS prefix the
+    /// probe silently becomes ambiguous again.
+    #[test]
+    fn destroy_string_pair_cannot_be_probed_by_prefix() {
+        assert!(
+            super::DESTROYED_EVENT.starts_with(super::DESTROY_CALLBACK),
+            "the probe's choice of needle assumes this overlap"
+        );
+        assert_ne!(super::DESTROYED_EVENT, super::DESTROY_CALLBACK);
+        // The direction that matters: scanning for the SHORTER string finds
+        // a pool carrying only the longer one, so it cannot distinguish the
+        // two states. Scanning for the longer one can.
+        let only_the_event = super::DESTROYED_EVENT.as_bytes();
+        assert!(
+            super::contains_bytes(only_the_event, super::DESTROY_CALLBACK.as_bytes()),
+            "the short needle matches a pool that has only the long string \
+             — this is exactly the ambiguity #3435 removed"
+        );
+        assert!(
+            !super::contains_bytes(
+                super::DESTROY_CALLBACK.as_bytes(),
+                super::DESTROYED_EVENT.as_bytes()
+            ),
+            "the long needle must not match a pool that has only the short \
+             string, or swapping to it would have bought nothing"
+        );
+    }
+
+    /// The needle choice itself. No behavioural test can hold it — given
+    /// `destroy_strings_are_emitted_together_or_not_at_all`, both needles
+    /// agree on every pool this code can actually see, which is exactly why
+    /// the ambiguity survived unnoticed. So pin it at the source.
+    #[test]
+    fn the_reinjection_state_probe_uses_the_unambiguous_needle() {
+        let src = include_str!("avm2_host.rs");
+        let start = src
+            .find("let state = if tags.iter().any(|tag| {")
+            .expect("the re-injection state probe must still exist");
+        let probe = &src[start..start + 200];
+        assert!(
+            probe.contains("DESTROYED_EVENT.as_bytes()"),
+            "the state probe must scan for DESTROYED_EVENT — DESTROY_CALLBACK \
+             is its strict prefix, so scanning for the shorter name cannot \
+             distinguish AdapterInjected from \
+             AdapterInjectedWithoutDestroyHook (#3435)"
+        );
+    }
+
+    /// SIBLING (#3435), made permanent. A raw byte scan for any of these
+    /// names is only a sound state probe while no name is a prefix of
+    /// another; `DESTROY_CALLBACK`/`DESTROYED_EVENT` were the only such
+    /// pair and the probe now uses the longer one. A new constant that
+    /// extends an existing name would silently re-open the same hole in
+    /// whichever scan reaches it first, so fail here instead.
+    #[test]
+    fn no_other_injected_name_is_a_prefix_of_another() {
+        let names = [
+            ("INSTALL_HELPER", super::INSTALL_HELPER),
+            ("READY_HELPER", super::READY_HELPER),
+            ("DESTROY_HELPER", super::DESTROY_HELPER),
+            ("READY_CALLBACK", super::READY_CALLBACK),
+            ("LOADED_CALLBACK", super::LOADED_CALLBACK),
+            ("DESTROY_CALLBACK", super::DESTROY_CALLBACK),
+            ("DESTROYED_EVENT", super::DESTROYED_EVENT),
+        ];
+        for (a_name, a) in names {
+            for (b_name, b) in names {
+                if a_name == b_name || (a_name, b_name) == ("DESTROY_CALLBACK", "DESTROYED_EVENT") {
+                    // The known, handled pair — see the test above.
+                    continue;
+                }
+                assert!(
+                    !b.starts_with(a),
+                    "`{a_name}` is a prefix of `{b_name}`: a byte scan for \
+                     {a_name} also matches a pool carrying only {b_name}. \
+                     Either probe the longer name or give them disjoint \
+                     spellings (#3435)"
+                );
+            }
+        }
+    }
+
+    /// The invariant the old probe was silently relying on, now asserted at
+    /// its source rather than two functions away: `build_adapter_abc` adds
+    /// all four destroy strings under one `has_destroy_trait` guard, so a
+    /// pool never carries a proper subset of them.
+    ///
+    /// Scope, measured rather than assumed: *deleting* one of the four is
+    /// already a compile error — the group is a 4-tuple and its consumer
+    /// destructures all four. What the type system does not catch is one of
+    /// them being hoisted OUT of the `has_destroy_trait` closure and added
+    /// unconditionally, which keeps the tuple shape and would let a pool
+    /// carry that string without the others. That relocation is what this
+    /// test sees, so it complements the tuple rather than duplicating it.
+    #[test]
+    fn destroy_strings_are_emitted_together_or_not_at_all() {
+        let src = include_str!("avm2_host.rs");
+        let start = src
+            .find("let destroy_strings = has_destroy_trait.then(|| {")
+            .expect("build_adapter_abc must still gate the destroy strings as a group");
+        let group = &src[start..start + 400];
+        for needle in ["DESTROY_HELPER", "DESTROY_CALLBACK", "DESTROYED_EVENT"] {
+            assert!(
+                group.contains(needle),
+                "{needle} must be added inside the same `has_destroy_trait` \
+                 group — splitting them is what would make the state probe \
+                 able to observe a partial pool (#3435)"
+            );
+        }
+    }
+
     use byroredux_bsa::Ba2Archive;
     use ruffle_core::swf::avm2::read::Reader;
     use swf::avm2::types::{

@@ -1,4 +1,7 @@
-# #3435: UI-D1-2026-08-27-09: minor hygiene — a substring-overlapping state probe, a saturating request-ID bound, and two smoke-test nits
+# #3435 — UI-D1-2026-08-27-09: minor hygiene — a substring-overlapping state probe, a saturating request-ID bound, and two smoke-test nits
+
+State: OPEN
+Labels: bug, low, tech-debt, ui
 
 - **Severity**: LOW
 - **Dimension**: Profile & VM Selection / AVM2 Adapter Injection / Resource Navigator
@@ -44,3 +47,4 @@ None observable today; all three are hygiene.
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other `contains_bytes` prefix probes; other smoke-test scripts' env-var spellings)
 - [ ] **TESTS**: A regression test pins this specific fix
+

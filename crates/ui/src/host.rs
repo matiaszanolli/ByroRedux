@@ -556,10 +556,54 @@ impl ScaleformHostBridge {
 }
 
 fn numeric_request_id(value: f64) -> Option<u64> {
-    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
+    // #3435 — `value < 2^64`, not `value <= u64::MAX as f64`. `u64::MAX` is
+    // not representable in `f64`, so `u64::MAX as f64` rounds *up* to
+    // exactly 2^64; the old bound therefore admitted 2^64 itself, which then
+    // saturated to `u64::MAX` in the cast below. `2f64.powi(64)` is exact,
+    // so the comparison rejects it. No observable change — a `GameDelegate`
+    // request id is a small counter — but the guard now does what it reads
+    // as, and the cast below is no longer reachable in its saturating mode.
+    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value < 2f64.powi(64) {
         Some(value as u64)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod numeric_request_id_tests {
+    use super::numeric_request_id;
+
+    /// #3435 — `u64::MAX` has no `f64` representation; the nearest is 2^64,
+    /// so `value <= u64::MAX as f64` admitted 2^64 and then saturated it
+    /// back to `u64::MAX` in the cast. The bound is exact now.
+    #[test]
+    fn two_to_the_sixty_fourth_is_rejected_rather_than_saturated() {
+        let two_64 = 2f64.powi(64);
+        // The premise: the old bound could not reject this value.
+        assert!(
+            two_64 <= u64::MAX as f64,
+            "if this ever fails, `u64::MAX as f64` stopped rounding up and \
+             the old bound was fine after all"
+        );
+        assert_eq!(numeric_request_id(two_64), None);
+    }
+
+    /// The largest value that survives the round trip. `u64::MAX` itself
+    /// cannot: it is not representable, so it never arrives as an `f64`.
+    #[test]
+    fn the_largest_representable_id_still_round_trips() {
+        let biggest = 2f64.powi(64) - 2048.0; // previous f64 step below 2^64
+        assert_eq!(numeric_request_id(biggest), Some(biggest as u64));
+        assert_eq!(numeric_request_id(0.0), Some(0));
+        assert_eq!(numeric_request_id(42.0), Some(42));
+    }
+
+    #[test]
+    fn non_integral_negative_and_non_finite_are_still_rejected() {
+        for bad in [-1.0, 0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(numeric_request_id(bad), None, "{bad} must not decode");
+        }
     }
 }
 

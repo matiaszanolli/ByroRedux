@@ -46,10 +46,24 @@ set -euo pipefail
 
 GAME="${1:-all}"
 
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+# #3435 — accept both spellings. The smoke-test scripts use
+# `BYROREDUX_SKYRIM_DATA` (7 scripts plus `lib/fixture.sh`) while the crate
+# tests and README use `BYROREDUX_SKYRIMSE_DATA` for the same directory
+# (`crates/ui/src/host/tests.rs`, `README.md`), so an operator who exports
+# one silently skipped whichever gate reads the other. Reading both here
+# does not settle the repo-wide split — that needs one spelling picked
+# across ~20 files — but it stops this gate being the one that silently
+# no-ops, which is the half the UI audit flagged.
+SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}}"
 FO4_DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data}"
 
+# #3435 — exported, not just defined. `byro-dbg` and the engine both read
+# `BYRO_DEBUG_PORT` from the environment; without the export this variable
+# only ever reached the failure message at the bottom of `run_one`, so a
+# run that failed on a non-default port reported a port nothing had been
+# told to use. Exporting makes the reported value the one the children get.
 PORT="${BYRO_DEBUG_PORT:-9876}"
+export BYRO_DEBUG_PORT="$PORT"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 
 LOG_DIR="$(mktemp -d)"
