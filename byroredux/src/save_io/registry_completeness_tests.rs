@@ -455,6 +455,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StudioSession", "editor-mode state for the `--studio` asset-preview/inspection host (SDK v0.1); ObjectId bindings and undo transforms describe a tooling session over loose NIF/asset content, never gameplay in a player save"),
         ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
+        ("TerrainCellOrigin", "Y-up world XZ of the LAND tile's (row 0, col 0) vertex, recomputed from grid_x/grid_y by the terrain-spawn path every load (#4052) — same posture as its TerrainTileSlot sibling"),
         ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),
         ("VisibleWhenDistant", "spawn-time classification derived from the streaming-ring/LOD-radius relationship (#1889), rederived identically every load"),
         ("WaterDrawIndexScratch", "per-frame render scratch whose map is cleared and rebuilt from the current sorted draw list; only allocation capacity persists"),

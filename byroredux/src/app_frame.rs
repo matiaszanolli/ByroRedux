@@ -183,6 +183,23 @@ impl App {
             // doc) — needs `&mut ctx`, which `build_render_data` doesn't take.
             crate::render::update_morph_weights(&self.world, ctx);
 
+            // #4052 — EXAL ground cover §11.1. Stand the harness up on the
+            // first frame with a device, then publish this frame's resident
+            // exterior terrain cells. Both are no-ops without
+            // `--bench-groundcover-sampling`.
+            if let Some(config) = self.groundcover_bench {
+                if !self.groundcover_bench_started {
+                    self.groundcover_bench_started = true;
+                    if let Err(error) = ctx.enable_groundcover_bench(
+                        config.samples_per_thread,
+                        config.blades_per_chunk,
+                    ) {
+                        log::error!("--bench-groundcover-sampling: setup failed: {error:#}");
+                    }
+                }
+                ctx.set_groundcover_bench_cells(collect_groundcover_bench_cells(&self.world));
+            }
+
             {
                 let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
                 tlm.materials_unique = self.material_table.unique_user_count();
@@ -902,4 +919,46 @@ mod material_overflow_no_panic_tests {
              never assert it."
         );
     }
+}
+
+/// Resident exterior terrain cells for the §11.1 sampling bench (#4052).
+///
+/// This IS path A's "chunk-to-instance association" on the host side: a
+/// ground-cover chunk finds its terrain vertices through the covering cell's
+/// `GpuInstance.vertex_offset`, and nothing recorded which exterior cell a
+/// terrain entity covered until `TerrainCellOrigin` landed. The mesh handle
+/// travels rather than a resolved offset — `MeshRegistry` compacts, so the
+/// renderer resolves it at dispatch time against the live registry.
+///
+/// Sorted by origin so the chunk records (and therefore path B's array
+/// layers) are stable frame to frame: an unsorted ECS iteration order would
+/// re-key the layers whenever the resident set changed, forcing a re-bake
+/// that measured nothing but the shuffle.
+fn collect_groundcover_bench_cells(
+    world: &byroredux_core::ecs::World,
+) -> Vec<byroredux_renderer::vulkan::context::GroundcoverBenchCellHandle> {
+    use byroredux_core::ecs::MeshHandle;
+    use byroredux_renderer::vulkan::context::GroundcoverBenchCellHandle;
+
+    let Some(origin_q) = world.query::<crate::components::TerrainCellOrigin>() else {
+        return Vec::new();
+    };
+    let Some(mesh_q) = world.query::<MeshHandle>() else {
+        return Vec::new();
+    };
+    let mut cells: Vec<GroundcoverBenchCellHandle> = origin_q
+        .iter()
+        .filter_map(|(entity, origin)| {
+            mesh_q.get(entity).map(|mesh| GroundcoverBenchCellHandle {
+                origin_xz: origin.origin_xz,
+                mesh_id: mesh.0,
+            })
+        })
+        .collect();
+    cells.sort_by(|a, b| {
+        a.origin_xz[0]
+            .total_cmp(&b.origin_xz[0])
+            .then(a.origin_xz[1].total_cmp(&b.origin_xz[1]))
+    });
+    cells
 }

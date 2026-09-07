@@ -416,6 +416,31 @@ impl Component for TerrainTileSlot {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Y-up world XZ of an exterior LAND tile's (row 0, col 0) vertex — the
+/// origin every terrain-attribute sampler inverts the grid mapping against.
+///
+/// #4052. `cell_loader/terrain.rs` builds the tile's 33×33 vertices from
+/// `grid_x`/`grid_y` and then forgets them; nothing downstream could recover
+/// which exterior cell a given terrain entity covers. That is exactly the
+/// **chunk-to-instance association** `exal-groundcover.md` §11.1 names as the
+/// missing link on its path A: a ground-cover chunk finds its terrain
+/// vertices through the covering cell's `GpuInstance.vertex_offset`, and this
+/// component is how a world-space chunk finds the covering cell in the first
+/// place.
+///
+/// Stored as the resolved origin rather than the `(grid_x, grid_y)` pair it
+/// derives from because every consumer wants the Y-up XZ: keeping the raw
+/// grid coordinates would put the same `origin_y` → `-z` flip in each of
+/// them, and that sign is the one mistake in this mapping that still renders
+/// plausible terrain (see `include/terrain_sample.glsl`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TerrainCellOrigin {
+    pub(crate) origin_xz: [f32; 2],
+}
+impl Component for TerrainCellOrigin {
+    type Storage = SparseSetStorage<Self>;
+}
+
 // SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).

@@ -703,6 +703,17 @@ pub(super) fn spawn_terrain_mesh(
     if let Some(slot) = terrain_tile_index {
         world.insert(entity, TerrainTileSlot(slot));
     }
+    // #4052 — the cell's Y-up origin, kept so a world-space point can find
+    // the terrain instance covering it (`exal-groundcover.md` §11.1's
+    // chunk-to-instance association). `origin_y` is the Bethesda Z-up row
+    // axis, so its Y-up counterpart is `-origin_y`: this is the (row 0,
+    // col 0) vertex, the largest Z in the cell, not the smallest.
+    world.insert(
+        entity,
+        crate::components::TerrainCellOrigin {
+            origin_xz: [origin_x, -origin_y],
+        },
+    );
     // #renderlayer — terrain LAND tiles ARE the architectural floor
     // everything else stacks on. Explicit Architecture (zero bias) so
     // the depth-bias ladder treats them as the canonical baseline,
@@ -982,5 +993,42 @@ mod tests {
     fn total_coverage_zero_for_empty_layer() {
         let slots: PerQuadrantAlpha = Default::default();
         assert_eq!(total_coverage(&slots), 0.0);
+    }
+
+    /// #4052 — `TerrainCellOrigin` must be the Y-up XZ of the (row 0, col 0)
+    /// vertex, which means `-origin_y`, not `origin_y`.
+    ///
+    /// The sign is the one mistake in this mapping that still produces
+    /// plausible terrain: a sampler handed `+origin_y` reads the cell's rows
+    /// mirrored, and every consumer downstream (the ground-cover density
+    /// field, the blade orientation) gets confidently wrong answers rather
+    /// than an error. So this walks the same `zup_to_yup_pos` the vertex loop
+    /// uses and asserts the component agrees with the vertex it claims to
+    /// name.
+    #[test]
+    fn terrain_cell_origin_is_the_row_zero_vertex_in_yup() {
+        for (grid_x, grid_y) in [(0, 0), (3, -7), (-12, 5), (41, 41)] {
+            let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
+            let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;
+            // The component, as `spawn_terrain_mesh` writes it.
+            let component = [origin_x, -origin_y];
+            // The vertex it claims to name: row 0, col 0, height irrelevant.
+            let vertex = zup_to_yup_pos([origin_x, origin_y, 0.0]);
+            assert_eq!(
+                component,
+                [vertex[0], vertex[2]],
+                "TerrainCellOrigin disagrees with the (row 0, col 0) vertex at                  grid ({grid_x}, {grid_y})"
+            );
+            // …and it is the LARGEST z in the cell, since rows run toward -Z.
+            let last_row = zup_to_yup_pos([
+                origin_x,
+                origin_y + (LAND_GRID_VERTS - 1) as f32 * LAND_VERTEX_SPACING,
+                0.0,
+            ]);
+            assert!(
+                component[1] > last_row[2],
+                "row 0 must be the largest Z in the cell; rows advance toward -Z"
+            );
+        }
     }
 }

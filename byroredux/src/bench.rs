@@ -106,6 +106,39 @@ impl FromStr for BenchMode {
     }
 }
 
+/// `--bench-groundcover-sampling` configuration (#4052).
+///
+/// The EXAL ground-cover design's §11.1 asks which of two terrain-attribute
+/// sampling paths a ground-cover scatter and blade-raster pass should use, and
+/// says the question cannot be settled by reasoning. This is the flag that
+/// runs the measurement; the harness itself lives in
+/// `byroredux_renderer::vulkan::groundcover_bench`.
+///
+/// The two counts are exposed because §11.1's answer is a *per-sample* cost,
+/// and a per-sample cost read off a single working-set size is a cost at that
+/// working-set size. Sweeping them is how a run distinguishes a real
+/// per-sample difference from a cache-residency artefact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GroundcoverBenchConfig {
+    /// Candidate points each scatter thread draws.
+    pub samples_per_thread: u32,
+    /// Blades per chunk in the raster half; each emits
+    /// `GROUNDCOVER_BENCH_BLADE_VERTS` vertices, every one of which
+    /// re-samples.
+    pub blades_per_chunk: u32,
+}
+
+impl Default for GroundcoverBenchConfig {
+    fn default() -> Self {
+        Self {
+            samples_per_thread:
+                byroredux_renderer::vulkan::groundcover_bench::DEFAULT_SAMPLES_PER_THREAD,
+            blades_per_chunk:
+                byroredux_renderer::vulkan::groundcover_bench::DEFAULT_BLADES_PER_CHUNK,
+        }
+    }
+}
+
 /// Resolved mode plus its harness-owned camera. `inferred` is true only for
 /// canonical legacy invocations retained during the CLI migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

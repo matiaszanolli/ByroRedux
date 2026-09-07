@@ -356,6 +356,25 @@ The benchmark line also records camera pose, simulated time, entity/draw/light/
 TLAS counts, and a deterministic scene-state hash. CI runs `renderer-static`
 twice and rejects hash drift before it can contaminate a performance cycle.
 
+**Ground-cover terrain-attribute sampling bench.** `--bench-groundcover-sampling`
+measures the two candidate paths for reading terrain height, normal and splat
+weights at an arbitrary world point — reading the global vertex SSBO directly,
+or sampling a baked per-cell attribute texture — for both consumers the EXAL
+ground-cover design has (the scatter pass, once per candidate point; the blade
+vertex shader, once per vertex per blade). It needs a loaded **exterior**
+worldspace, and emits one `groundcover-bench:` row per variant alongside the
+`bench:` summary:
+
+```bash
+cargo run --release -- --game skyrim --grid 5,-9 --radius 3 \
+  --bench-frames 400 --bench-groundcover-sampling --bench-mode renderer-static
+```
+
+An optional `<samples_per_thread>,<blades_per_chunk>` argument sweeps the
+working-set size, which is how a run tells a real per-sample difference from a
+cache-residency artefact. Results and the recommendations they settle are in
+[docs/engine/exal-groundcover.md](docs/engine/exal-groundcover.md) §11.1.
+
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the
 loader also opens `<stem>2.bsa` … `<stem>9.bsa` next to it on disk.

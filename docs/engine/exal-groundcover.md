@@ -6,8 +6,9 @@ outdoors environment; **ground cover** is the vegetation stratum that sits on
 the terrain surface — grass, ferns, moss, low scrub.
 
 **Status**: Phase 0 IMPLEMENTED (2026-08-12); Phase 5 palette resolution
-IMPLEMENTED (2026-09-06, #3807); Phases 1–4 and 6–7 proposed. Rolls out
-per §9.
+IMPLEMENTED (2026-09-06, #3807); §11.1's terrain-attribute sampling question
+MEASURED AND ANSWERED (2026-09-06, #4052) — Phase 1 is no longer gated;
+Phases 1–4 and 6–7 proposed. Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -235,19 +236,25 @@ Per frame, for terrain chunks inside the ground-cover radius:
    `d_ground`, not `d_draw`; see §3). Not a `GpuInstance` — a separate, much
    smaller SSBO that no other pass reads.
 
-   **What is deliberately absent, and the question it raises.** The record
+   **What is deliberately absent, and why it stays absent.** The record
    carries no terrain normal and no terrain albedo, yet the blade vertex shader
    needs the normal to orient the blade to the ground, and §12.3 needs the
-   albedo to tint toward it. Both must therefore be re-sampled in the *raster*
+   albedo to tint toward it. Both are therefore re-sampled in the *raster*
    pass, which samples far more often than the scatter does — once per vertex
-   per blade rather than once per candidate point. §11.1 was written as a
-   question about the scatter pass, and on this reading it measures the cheaper
-   half of the problem; see its revised text.
+   per blade rather than once per candidate point.
 
    Storing them instead is the obvious alternative and is not free: it roughly
    doubles the record, and the blade buffer is the one structure in this design
-   whose size scales with the visible blade population. That trade is exactly
-   what §11.1 has to settle, and it cannot be settled by reasoning.
+   whose size scales with the visible blade population.
+
+   **Settled 2026-09-06 by the §11.1 bench (#4052): re-sample.** The raster
+   re-sample costs 0.0018 ns per vertex sample net of the vertex stage's own
+   invocation and primitive-assembly cost — 0.014 ns per 8-vertex blade,
+   ~0.014 ms per million visible blades — because every vertex of a blade
+   reads the same address and the gather is a cache hit after the first.
+   Storing the two terms instead would buy that back at +16 MB per million
+   blades, written by the scatter and read by the raster every frame. Numbers
+   and method in §11.1.
 4. **Draw.** One `vkCmdDrawIndexedIndirect` over the chunk's draw list, with a
    shared static index buffer describing one blade topology.
 
@@ -500,6 +507,14 @@ Each phase is independently useful and independently reviewable.
   density field in GLSL, `groundcover_scatter.comp`, and debug point rendering
   of accepted candidates over real terrain. This is where the distribution is
   judged — before any blade exists.
+
+  **Ungated 2026-09-06 (#4052).** §11.1's sampling question is answered, and
+  the pieces the answer needed are already in place for the scatter to use:
+  `TerrainCellOrigin` (the chunk-to-instance association),
+  `include/terrain_sample.glsl`'s `byroSampleTerrain`, and the
+  `GROUNDCOVER_CHUNK_UNITS` / `GROUNDCOVER_CHUNKS_PER_CELL_SIDE` constants.
+  The scatter reads the global vertex SSBO directly; there is no attribute
+  texture to bake.
 - **Phase 2 — blades + wind.** Vertex-shader Bezier ribbons, the wind field,
   the near tier only.
 - **Phase 3 — LOD chain.** Tiers 1–3, the stochastic density fade, and the
@@ -598,54 +613,128 @@ Each phase is independently useful and independently reviewable.
 Not answerable from source reading; each needs a `--bench-hold` session against
 real worldspaces before the phase that depends on it.
 
-1. **Terrain attribute sampling path.** The scatter pass needs height, normal
-   and splat weights at arbitrary points. Reading the global vertex SSBO
-   directly (via a base-vertex offset carried on the terrain-tile record) avoids
-   baking anything and stays automatically in lockstep with the terrain — but the
-   indirection cost per candidate point is unmeasured. Fallback is a baked
-   per-cell attribute texture. **Measure before Phase 1.**
+1. **Terrain attribute sampling path — ANSWERED 2026-09-06 (#4052).** Both
+   candidates were built and measured on real terrain. **Read the global vertex
+   SSBO directly (path A). Do not bake an attribute texture.** And, for §4:
+   **re-sample in the vertex shader; do not store the normal and albedo on the
+   blade record.**
 
-   **Scope correction (2026-09-06): measure both consumers, not just the
-   scatter.** The blade *vertex* shader needs the terrain normal to orient each
-   blade and, for §12.3, the terrain albedo to tint toward — and it samples
-   once per vertex per blade, where the scatter samples once per candidate
-   point. The raster side is therefore the larger consumer by a wide margin,
-   and it is the one the §4 blade-record trade (re-sample vs. store, roughly
-   doubling the record) actually turns on. A bench that measures only the
-   scatter answers the smaller question and will make the SSBO path look
-   cheaper than it is.
+   ### What was measured
 
-   **Plumbing correction (2026-09-06): the locator this describes is on the
-   wrong record.** `GpuTerrainTile` is 24 texture indices and nothing else —
-   96 bytes of `uint[8] × 3`, pinned by `gpu_terrain_tile_is_96_bytes` and by
-   `ArrayStride 96` in the shipped `triangle.frag.spv`. It carries no
-   base-vertex offset, no cell origin and no vertex count, so "via a
-   base-vertex offset carried on the terrain-tile record" names a field that
-   does not exist.
+   `--bench-groundcover-sampling` (`byroredux_renderer::vulkan::groundcover_bench`)
+   crosses both paths with both consumers, plus a **control** per consumer that
+   generates the identical candidate points and emits the identical primitives
+   while sampling nothing. The control is what makes the rest readable: the
+   raster half's per-vertex invocation and primitive assembly land inside the
+   same GPU-timer bracket as its sampling, and without a no-sample run "the two
+   paths are indistinguishable" cannot be told apart from "the sampling is
+   buried under an overhead that dominates both". One variant per frame, one
+   bracket, round-robin.
 
-   The locator does exist, one record over: `GpuInstance` already carries
-   `vertex_offset`, `index_offset` and `vertex_count`
-   ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)),
-   which is exactly what finds a terrain cell's vertices in the global vertex
-   SSBO. So path A is really:
+   RTX 4070 Ti, `--radius 3` (49 resident cells → 3136 chunks of 512 units),
+   1024 samples per chunk, 3.21 M samples per frame. `net` is with the
+   consumer's own control subtracted.
 
-   ```
-   chunk → the terrain instance covering it → GpuInstance.vertex_offset
-         → global vertex SSBO
-   ```
+   | Variant | Skyrim tundra (2,-4) ns/sample | net | FNV Mojave (0,0) ns/sample | net |
+   |---|---|---|---|---|
+   | `scatter/ssbo`  | 0.0258 | **0.0244** | 0.0244 | **0.0231** |
+   | `scatter/baked` | 0.0131 | **0.0118** | 0.0128 | **0.0115** |
+   | `scatter/floor` | 0.0013 | — | 0.0013 | — |
+   | `raster/ssbo`   | 0.0332 | **0.0018** | 0.0321 | **0.0013** |
+   | `raster/baked`  | 0.0324 | **0.0010** | 0.0317 | **0.0009** |
+   | `raster/floor`  | 0.0314 | — | 0.0309 | — |
 
-   and the missing piece is the **chunk-to-instance association**, not a field
-   on the tile record. Smaller than growing a 96-byte record whose stride is
-   baked into shipped SPIR-V, but real — and the extra indirection is part of
-   what the bench has to price.
+   Bake: 53,361 texels (49 cells), 0.02–0.23 ms per rebake.
 
-   Worth recording *why* neither path has anything to extend: splat weights
+   The two worldspaces agree to within 6% on every row, which is the answer to
+   §11.4's worry that their different sight lines would matter here: they change
+   how many chunks are visible, not what a sample costs.
+
+   A 16× working-set sweep (`--bench-groundcover-sampling 4,32` and `64,512`,
+   80 M to 1.28 G samples per frame) moves the absolute numbers but not the
+   conclusion: scatter net stays 0.023–0.033 (A) against 0.0115–0.0132 (B), and
+   raster net stays under 0.004 for both.
+
+   ### What the numbers say
+
+   **The raster consumer — the larger one — cannot tell the two paths apart.**
+   95% of its cost is the control: shading a vertex and assembling a primitive
+   for every blade vertex. The sampling on top is 0.0018 ns (A) against 0.0010
+   ns (B), so path A's entire disadvantage in the consumer that samples most is
+   **0.0008 ns/sample** — 0.003 ms per frame at 3.21 M samples. Per-blade
+   coherence is why: `GROUNDCOVER_BENCH_BLADE_VERTS` consecutive invocations
+   read the same address, and path A's gather is a cache hit after the first.
+
+   **The scatter consumer can, and path B wins there by ~2×** (0.0244 vs 0.0118
+   net). That is a real difference and it is what you would predict from bytes
+   touched: path A reads 6 of a vertex's 26 floats but pulls all 104 bytes of
+   the line, four times per bilinear sample — ~416 B against path B's ~96 B
+   through one hardware-filtered fetch plus two splat fetches.
+
+   **But the scatter's whole sampling budget is 0.08 ms/frame.** Path B saves
+   0.04 ms of it. On a 19 ms frame that is 0.2%.
+
+   ### Why path A anyway
+
+   Path B's measured win is 0.04 ms/frame on the *smaller* consumer and nothing
+   on the larger one. Against that it costs:
+
+   * **A staleness class of bug.** The bake is a snapshot of a buffer
+     `MeshRegistry` compacts. The harness keys its rebake on a hash of the
+     resident `(origin, vertex_offset)` set for exactly this reason; production
+     would have to carry the same machinery, and get it right, forever. Path A
+     has no such state — it reads what the terrain currently is.
+   * **Memory that scales with the resident ring** — 1.28 MB per 49 cells here
+     (33×33 × RGBA32F + 2×RGBA8 per cell), against a 4 GB total budget.
+   * **A bake step** on every ring change. Cheap (0.02–0.23 ms) and not the
+     reason to reject it, but not free either.
+
+   Trading a correctness hazard and a memory line item for 0.2% of a frame is
+   the wrong side of that trade.
+
+   **Caveat worth stating: this is a hot-cache measurement.** The 4070 Ti has
+   48 MB of L2, and the resident terrain vertices at `--radius 3` are 5.5 MB
+   (49 × 1089 × 104 B) — path A's gather is L2-resident throughout. On a GPU
+   with a much smaller L2, or at a ground-cover radius large enough to spill it,
+   path A's scatter number would degrade first. The raster conclusion is more
+   robust, since it rests on per-blade coherence rather than on the whole ring
+   fitting in cache. Re-measure before shipping ground cover on a low-L2 target.
+
+   ### §4's store-vs-resample, settled
+
+   Re-sampling the terrain normal and albedo in the blade vertex shader costs
+   **0.0018 ns per vertex sample, net** — 0.014 ns per 8-vertex blade, ~0.014 ms
+   per million visible blades. Storing them instead roughly doubles the 16-byte
+   blade record, and the blade buffer is the one structure in this design whose
+   size scales with the visible population: +16 MB at a million blades, written
+   by the scatter and read by the raster every frame. §4's record stays as
+   designed — no terrain normal, no terrain albedo.
+
+   ### Plumbing this settled along the way
+
+   §11.1 originally described path A as reading "via a base-vertex offset
+   carried on the terrain-tile record". No such field exists.
+   `GpuTerrainTile` is 24 texture indices and nothing else — 96 bytes of
+   `uint[8] × 3`, pinned by `gpu_terrain_tile_is_96_bytes` and by
+   `ArrayStride 96` in the shipped `triangle.frag.spv`.
+
+   The locator is one record over: `GpuInstance.vertex_offset`
+   ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)).
+   So path A is chunk → covering terrain instance → `GpuInstance.vertex_offset`
+   → global vertex SSBO, and the missing piece was the **chunk-to-instance
+   association**, not a field on the tile record. That association now exists:
+   `TerrainCellOrigin` (`byroredux::components`) records each LAND tile's Y-up
+   cell origin at spawn, and the resolved `(origin, vertex_offset)` pair is
+   rebuilt every frame — never cached, because the registry compacts. Both
+   paths go through it, so neither was measured with a locator the other had
+   to look up.
+
+   Also worth recording, because it set the size of the job: splat weights
    reach the fragment shader as interpolated vertex attributes
    ([`triangle.vert:21`](../../crates/renderer/shaders/triangle.vert#L21)), not
-   as a lookup. Terrain attributes have never been sampled at an arbitrary
-   point anywhere in this renderer. Both candidates are new code, which is why
-   this measurement needs a purpose-built harness rather than instrumentation
-   of something that already runs.
+   as a lookup. Terrain attributes had never been sampled at an arbitrary point
+   anywhere in this renderer, so neither candidate had existing code to extend
+   and both had to be built before either could be timed.
 2. **Chunk size.** 512 units (8×8 per cell) is a starting guess balancing
    dispatch count against per-chunk culling granularity. Wants a sweep.
 3. **Density-field calibration.** The affinity table and the noise frequencies

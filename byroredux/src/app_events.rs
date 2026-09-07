@@ -1166,6 +1166,30 @@ impl ApplicationHandler for App {
                         println!("{}", streaming.telemetry.bench_line());
                     }
 
+                    // #4052 — EXAL ground cover §11.1. One row per measured
+                    // variant plus the bake row. Printed as their own lines
+                    // rather than folded into the `bench:` line because there
+                    // are five of them and each carries its own sample count;
+                    // an existing `bench:` extractor sees nothing new.
+                    if self.groundcover_bench.is_some() {
+                        if let Some(ref ctx) = self.renderer {
+                            if ctx.groundcover_bench_has_samples() {
+                                for line in ctx.groundcover_bench_report() {
+                                    println!("{line}");
+                                }
+                            } else {
+                                // An all-zero report would read as a result.
+                                // The overwhelmingly likely cause is an
+                                // interior cell: §11.1 is about LAND terrain,
+                                // and there is none to sample indoors.
+                                println!(
+                                    "groundcover-bench: no samples — the bench needs a loaded \
+                                     exterior worldspace (try --grid X,Y --radius N)"
+                                );
+                            }
+                        }
+                    }
+
                     // --screenshot: queue a capture request and defer
                     // the event-loop exit until the PNG lands (or the
                     // frame-budget elapses). The screenshot flow takes

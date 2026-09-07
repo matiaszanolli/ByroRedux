@@ -140,4 +140,79 @@ TerrainSample byroSampleTerrain(uint vertexOffset, vec2 cellOriginXZ, vec2 world
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Path B — the baked per-cell attribute texture.
+// ---------------------------------------------------------------------------
+//
+// §11.1's fallback. Three array textures, one array layer per resident terrain
+// cell, each `LAND_GRID_VERTS` square:
+//
+//   attrTex   RGBA32F  (height, normal.x, normal.y, normal.z)
+//   splat0Tex RGBA8    LAND layers 0-3
+//   splat1Tex RGBA8    LAND layers 4-7
+//
+// Height is 32-bit on purpose. Exterior world Y runs to five figures in
+// Bethesda units and an f16 quantises to 4-unit steps up there — a quarter of
+// the 128-unit vertex spacing, which would put a visible terrace under the
+// grass and make path B lose the comparison for a reason that is an encoding
+// choice rather than a property of the path.
+//
+// The bake resolution deliberately equals the vertex grid, and a LINEAR
+// sampler over texel centres reproduces path A's bilinear blend exactly. That
+// is what makes the two paths comparable: the same interpolation of the same
+// numbers, differing only in how they are fetched. It is also why the
+// remaining difference between them is entirely the memory path, which is what
+// the bench exists to price.
+//
+// `layer` is the array slice for the cell covering the point, and
+// `cellOriginXZ` is that cell's (row 0, col 0) vertex — both come from the
+// same chunk record path A reads its `vertexOffset` from, so neither path gets
+// a free ride on the chunk-to-cell association.
+TerrainSample byroSampleTerrainBaked(
+    sampler2DArray attrTex,
+    sampler2DArray splat0Tex,
+    sampler2DArray splat1Tex,
+    uint layer,
+    vec2 cellOriginXZ,
+    vec2 worldXZ
+) {
+    TerrainSample s;
+    s.height = 0.0;
+    s.normal = vec3(0.0, 1.0, 0.0);
+    s.splat0 = vec4(0.0);
+    s.splat1 = vec4(0.0);
+    s.valid = false;
+
+    // Same inverse mapping as path A, and same rejection rather than clamp —
+    // see the block comment on `byroSampleTerrain`. A clamping path B would
+    // also read as cheaper here, since the reject branch is the one place the
+    // two paths can diverge in control flow.
+    float fc = (worldXZ.x - cellOriginXZ.x) / LAND_VERTEX_SPACING;
+    float fr = (cellOriginXZ.y - worldXZ.y) / LAND_VERTEX_SPACING;
+
+    float maxIdx = float(LAND_GRID_VERTS - 1u);
+    if (!(fc >= 0.0 && fc <= maxIdx && fr >= 0.0 && fr <= maxIdx)) {
+        return s;
+    }
+
+    // Vertex (row, col) is baked into texel (col, row); its centre is at
+    // (idx + 0.5) / LAND_GRID_VERTS in normalised coordinates. Dropping the
+    // half-texel would bias every sample by half a vertex spacing (64 units) —
+    // wrong, and wrong in a way that still looks like terrain.
+    vec2 uv = (vec2(fc, fr) + 0.5) / float(LAND_GRID_VERTS);
+    float l = float(layer);
+
+    vec4 attr = texture(attrTex, vec3(uv, l));
+    s.height = attr.x;
+    vec3 n = attr.yzw;
+    float nlen = length(n);
+    s.normal = nlen > 1.0e-6 ? n / nlen : vec3(0.0, 1.0, 0.0);
+
+    s.splat0 = texture(splat0Tex, vec3(uv, l));
+    s.splat1 = texture(splat1Tex, vec3(uv, l));
+
+    s.valid = true;
+    return s;
+}
+
 #endif // BYRO_TERRAIN_SAMPLE_GLSL

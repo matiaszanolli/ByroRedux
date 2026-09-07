@@ -174,6 +174,34 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(
+        out,
+        "// Ground-cover chunking + §11.1 sampling bench (#4052)"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define GROUNDCOVER_CHUNK_UNITS {GROUNDCOVER_CHUNK_UNITS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define GROUNDCOVER_CHUNKS_PER_CELL_SIDE {GROUNDCOVER_CHUNKS_PER_CELL_SIDE}u"
+    )
+    .unwrap();
+    // No `u` suffix — used in `layout(local_size_x = ...)`.
+    writeln!(
+        out,
+        "#define GROUNDCOVER_BENCH_WORKGROUP {GROUNDCOVER_BENCH_WORKGROUP}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define GROUNDCOVER_BENCH_BLADE_VERTS {GROUNDCOVER_BENCH_BLADE_VERTS}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Skinning").unwrap();
     writeln!(out, "#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u").unwrap();
     // No `u` suffix — used in `layout(local_size_x = SKIN_WORKGROUP_SIZE)`.

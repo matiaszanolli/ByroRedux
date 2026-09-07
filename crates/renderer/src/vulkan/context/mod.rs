@@ -34,6 +34,19 @@ use crate::texture_registry::TextureRegistry;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+/// One resident exterior terrain cell, as the app publishes it to the
+/// ground-cover sampling bench (#4052). The mesh handle is resolved against
+/// `MeshRegistry` at dispatch time rather than here — see
+/// [`super::groundcover_bench`]'s module docs on why a cached vertex offset
+/// would be unsound.
+#[derive(Clone, Copy, Debug)]
+pub struct GroundcoverBenchCellHandle {
+    /// Y-up world XZ of the cell's (row 0, col 0) terrain vertex.
+    pub origin_xz: [f32; 2],
+    /// `MeshHandle` of the terrain tile covering the cell.
+    pub mesh_id: u32,
+}
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1536,6 +1549,20 @@ pub struct VulkanContext {
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
+    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
+    /// `None` on every normal run — created only by
+    /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked
+    /// attribute textures and four pipelines no production path touches.
+    pub groundcover_bench: Option<super::groundcover_bench::GroundcoverBench>,
+    /// Resident exterior terrain cells for the frame the bench is about to
+    /// measure, published by the app before `draw_frame`. Empty on interiors
+    /// and on every frame of a run without the flag.
+    ///
+    /// Carries the mesh handle rather than a resolved vertex offset: the
+    /// registry compacts, so the offset is looked up at dispatch time from
+    /// the same `MeshRegistry` the draw path reads. See
+    /// `groundcover_bench.rs`'s module docs.
+    pub groundcover_bench_cells: Vec<GroundcoverBenchCellHandle>,
     /// M29 GPU pre-skinning compute pipeline. `None` when RT is
     /// unsupported (no skinned-BLAS path to feed). Per-skinned-entity
     /// SkinSlots live in `skin_slots`; first-sight registration +

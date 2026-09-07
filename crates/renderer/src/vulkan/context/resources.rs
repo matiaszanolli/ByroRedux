@@ -1,6 +1,6 @@
 //! VulkanContext resource management methods (BLAS, UI quad, extent, memory).
 
-use super::VulkanContext;
+use super::{GroundcoverBenchCellHandle, VulkanContext};
 use anyhow::{Context, Result};
 use std::sync::{Arc, Weak};
 
@@ -599,6 +599,63 @@ impl VulkanContext {
             .generate_report();
         let frags = super::super::allocator::compute_block_fragmentation(&report);
         super::super::allocator::fragmentation_report_lines(&frags)
+    }
+}
+
+impl VulkanContext {
+    /// Stand up the EXAL ground-cover §11.1 terrain-attribute sampling bench
+    /// (#4052). Called once, from the boot path, when
+    /// `--bench-groundcover-sampling` is present.
+    ///
+    /// Deliberately not created in `init.rs`: the harness owns ~3.5 MB of
+    /// baked attribute textures and four pipelines that no production path
+    /// touches, so a normal run must not pay for them.
+    pub fn enable_groundcover_bench(
+        &mut self,
+        samples_per_thread: u32,
+        blades_per_chunk: u32,
+    ) -> anyhow::Result<()> {
+        if self.groundcover_bench.is_some() {
+            return Ok(());
+        }
+        let allocator = self
+            .allocator
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("groundcover bench needs a live GPU allocator"))?;
+        let bench = super::super::groundcover_bench::GroundcoverBench::new(
+            &self.device,
+            &allocator,
+            self.pipeline_cache,
+            samples_per_thread,
+            blades_per_chunk,
+        )?;
+        self.groundcover_bench = Some(bench);
+        Ok(())
+    }
+
+    /// Publish the frame's resident exterior terrain cells for the bench.
+    /// No-op (bar the clear) when the bench was never enabled.
+    pub fn set_groundcover_bench_cells(&mut self, cells: Vec<GroundcoverBenchCellHandle>) {
+        self.groundcover_bench_cells = cells;
+    }
+
+    /// `groundcover-bench:` summary lines, or empty when the bench was never
+    /// enabled or never got a frame with resident terrain.
+    pub fn groundcover_bench_report(&self) -> Vec<String> {
+        self.groundcover_bench
+            .as_ref()
+            .map(|b| b.report_lines())
+            .unwrap_or_default()
+    }
+
+    /// Whether the bench has harvested at least one timed frame. The boot
+    /// path uses this to tell "ran and measured" apart from "ran on an
+    /// interior, measured nothing" — a report of all-zero rows would
+    /// otherwise read as a result.
+    pub fn groundcover_bench_has_samples(&self) -> bool {
+        self.groundcover_bench
+            .as_ref()
+            .is_some_and(|b| b.has_samples())
     }
 }
 

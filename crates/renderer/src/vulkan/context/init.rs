@@ -1496,6 +1496,12 @@ impl VulkanContext {
             scene_buffers,
             accel_manager,
             cluster_cull,
+            // #4052 — created on demand by
+            // `VulkanContext::enable_groundcover_bench`, not here: the
+            // harness is `--bench-groundcover-sampling` only and init has no
+            // view of the CLI.
+            groundcover_bench: None,
+            groundcover_bench_cells: Vec::new(),
             skin_compute,
             gpu_timers,
             skin_palette,

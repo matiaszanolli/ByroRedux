@@ -38,6 +38,8 @@
 //! | 29   | skin palette + bone-buffer transfers — end           |
 //! | 30   | depth → history copy — start                         |
 //! | 31   | depth → history copy — end                           |
+//! | 32   | ground-cover §11.1 sampling bench — start            |
+//! | 33   | ground-cover §11.1 sampling bench — end              |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -88,8 +90,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × sixteen brackets.
-const QUERIES_PER_FRAME: u32 = 32;
+/// One TIMESTAMP query per bracket endpoint × seventeen brackets.
+const QUERIES_PER_FRAME: u32 = 34;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -123,6 +125,12 @@ const Q_SKIN_PALETTE_START: u32 = 28;
 const Q_SKIN_PALETTE_END: u32 = 29;
 const Q_DEPTH_HISTORY_COPY_START: u32 = 30;
 const Q_DEPTH_HISTORY_COPY_END: u32 = 31;
+/// #4052 — the EXAL ground-cover §11.1 terrain-attribute sampling bench.
+/// Written only under `--bench-groundcover-sampling`; one variant per frame,
+/// so this bracket measures a different one of the four combinations each
+/// frame (see `groundcover_bench.rs`).
+const Q_GROUNDCOVER_BENCH_START: u32 = 32;
+const Q_GROUNDCOVER_BENCH_END: u32 = 33;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -204,6 +212,13 @@ pub struct GpuTimerSnapshot {
     /// history image for soft-particle fade. Inactive when the scene has no
     /// material carrying `MAT_FLAG_EFFECT_SOFT`.
     pub depth_history_copy_ms: f32,
+    /// EXAL ground-cover §11.1 sampling bench (#4052). Inactive on every
+    /// frame of a normal run — the bench is only created under
+    /// `--bench-groundcover-sampling`, and even then it skips frames with no
+    /// resident exterior terrain. On the frames it does run, this is one of
+    /// four different measurements depending on the round-robin's cursor;
+    /// `GroundcoverBench` owns the attribution, not this snapshot.
+    pub groundcover_bench_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -230,6 +245,7 @@ pub struct GpuTimerSnapshot {
     pub upscale_active: bool,
     pub presentation_active: bool,
     pub depth_history_copy_active: bool,
+    pub groundcover_bench_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -240,33 +256,38 @@ pub struct GpuPerFrameTimers {
     ticks_to_ms: f32,
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
-    /// slot the pool reads from. Each u16 packs `BIT_*` flags
-    /// (one per bracket — currently 16). The bit-gated read in
+    /// slot the pool reads from. Each u32 packs `BIT_*` flags
+    /// (one per bracket — currently 17). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
-    active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
+    ///
+    /// Widened `u16` → `u32` by #4052: the original sixteen brackets had
+    /// filled every bit of the `u16`, so the seventeenth had nowhere to go.
+    active_bits: [u32; MAX_FRAMES_IN_FLIGHT],
     /// Stash for the previous frame's snapshot. Console / bench
     /// consumers read this; the writer pipeline updates it at the
     /// top of `draw_frame`.
     last_snapshot: GpuTimerSnapshot,
 }
 
-const BIT_SKIN_DISPATCH: u16 = 0x0001;
-const BIT_SKIN_PALETTE: u16 = 0x4000;
-const BIT_BLAS_REFIT: u16 = 0x0002;
-const BIT_TAA: u16 = 0x0004;
-const BIT_MAIN_RENDER: u16 = 0x0008;
-const BIT_TLAS_BUILD: u16 = 0x0010;
-const BIT_CLUSTER_CULL: u16 = 0x0020;
-const BIT_SVGF: u16 = 0x0040;
-const BIT_COMPOSITE: u16 = 0x0080;
-const BIT_SSAO: u16 = 0x0100;
-const BIT_BLOOM: u16 = 0x0200;
-const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
-const BIT_VOLUMETRICS: u16 = 0x0800;
-const BIT_UPSCALE: u16 = 0x1000;
-const BIT_PRESENTATION: u16 = 0x2000;
-const BIT_DEPTH_HISTORY_COPY: u16 = 0x8000;
+const BIT_SKIN_DISPATCH: u32 = 0x0001;
+const BIT_SKIN_PALETTE: u32 = 0x4000;
+const BIT_BLAS_REFIT: u32 = 0x0002;
+const BIT_TAA: u32 = 0x0004;
+const BIT_MAIN_RENDER: u32 = 0x0008;
+const BIT_TLAS_BUILD: u32 = 0x0010;
+const BIT_CLUSTER_CULL: u32 = 0x0020;
+const BIT_SVGF: u32 = 0x0040;
+const BIT_COMPOSITE: u32 = 0x0080;
+const BIT_SSAO: u32 = 0x0100;
+const BIT_BLOOM: u32 = 0x0200;
+const BIT_CAUSTIC_SPLAT: u32 = 0x0400;
+const BIT_VOLUMETRICS: u32 = 0x0800;
+const BIT_UPSCALE: u32 = 0x1000;
+const BIT_PRESENTATION: u32 = 0x2000;
+const BIT_DEPTH_HISTORY_COPY: u32 = 0x8000;
+/// #4052. The first bracket past the old `u16`'s width.
+const BIT_GROUNDCOVER_BENCH: u32 = 0x0001_0000;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -274,7 +295,7 @@ const BIT_DEPTH_HISTORY_COPY: u16 = 0x8000;
 /// the part #2278 / PERF-D9-01 is actually about — is unit-testable
 /// without a real `ash::Device`.
 fn snapshot_from_bits(
-    bits: u16,
+    bits: u32,
     ticks: &[u64; QUERIES_PER_FRAME as usize],
     ticks_to_ms: f32,
 ) -> GpuTimerSnapshot {
@@ -350,6 +371,10 @@ fn snapshot_from_bits(
     snap.depth_history_copy_active = bits & BIT_DEPTH_HISTORY_COPY != 0;
     if snap.depth_history_copy_active {
         snap.depth_history_copy_ms = bracket_ms(Q_DEPTH_HISTORY_COPY_START);
+    }
+    snap.groundcover_bench_active = bits & BIT_GROUNDCOVER_BENCH != 0;
+    if snap.groundcover_bench_active {
+        snap.groundcover_bench_ms = bracket_ms(Q_GROUNDCOVER_BENCH_START);
     }
     snap
 }
@@ -692,6 +717,52 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_TLAS_BUILD;
+    }
+
+    /// Write the ground-cover §11.1 sampling-bench START timestamp (#4052).
+    ///
+    /// Unlike every other bracket here, this one does not name a fixed pass:
+    /// `GroundcoverBench` round-robins four variants across frames and owns
+    /// the attribution, so the snapshot only reports "the bench ran and took
+    /// this long". See `groundcover_bench.rs` for why the variants are not
+    /// given four brackets of their own.
+    pub fn cmd_groundcover_bench_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_GROUNDCOVER_BENCH_START,
+            );
+        }
+    }
+
+    /// Write the ground-cover §11.1 sampling-bench END timestamp (#4052).
+    pub fn cmd_groundcover_bench_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // BOTTOM_OF_PIPE, not COMPUTE_SHADER: the bracket wraps a compute
+        // dispatch on two of its four variants and a draw on the other two,
+        // so no single earlier stage covers every case.
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_GROUNDCOVER_BENCH_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_GROUNDCOVER_BENCH;
     }
 
     /// Write the cluster-cull-dispatch START timestamp.

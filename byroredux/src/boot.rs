@@ -143,6 +143,47 @@ pub(crate) fn run() -> Result<()> {
     // AUDIT_FNV_2026-05-08.md` § Coverage gaps).
     let bench_hold = args.iter().any(|a| a == "--bench-hold");
 
+    // --bench-groundcover-sampling [samples_per_thread,blades_per_chunk]:
+    // run the EXAL ground-cover §11.1 terrain-attribute sampling bench
+    // (#4052) alongside the normal frame, and print a `groundcover-bench:`
+    // row per measured variant with the `bench:` summary.
+    //
+    // Needs `--bench-frames N` for the same reason `--bench-camera` does —
+    // the summary is what emits the rows — and needs a loaded **exterior**
+    // worldspace, since the thing being sampled is LAND terrain. Pair it with
+    // `--bench-hold` to keep the process alive for `byro-dbg`.
+    let groundcover_bench = if args.iter().any(|a| a == "--bench-groundcover-sampling") {
+        let mut config = crate::bench::GroundcoverBenchConfig::default();
+        if let Some(spec) = parse_string_arg(&args, "--bench-groundcover-sampling") {
+            // The flag takes an OPTIONAL `s,b` argument, so a bare flag is
+            // followed by whatever came next on the command line (or by
+            // nothing). Only a well-formed pair overrides the defaults;
+            // anything else is the next flag, not a malformed argument.
+            if let Some((s, b)) = spec.split_once(',') {
+                match (s.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                    (Ok(s), Ok(b)) if s > 0 && b > 0 => {
+                        config.samples_per_thread = s;
+                        config.blades_per_chunk = b;
+                    }
+                    _ => anyhow::bail!(
+                        "--bench-groundcover-sampling takes an optional \
+                         `<samples_per_thread>,<blades_per_chunk>` pair of positive \
+                         integers; got '{spec}'"
+                    ),
+                }
+            }
+        }
+        if bench_frames.is_none() {
+            log::warn!(
+                "--bench-groundcover-sampling is inactive without --bench-frames \
+                 (the `groundcover-bench:` rows are emitted with the bench summary)"
+            );
+        }
+        Some(config)
+    } else {
+        None
+    };
+
     // --camera-pos x,y,z + --camera-forward x,y,z — override the
     // auto-computed initial camera pose. Useful for capturing specific
     // framing in bench mode without needing interactive WASD input.
@@ -382,6 +423,7 @@ pub(crate) fn run() -> Result<()> {
     app.bench_mode = bench_mode;
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;
+    app.groundcover_bench = groundcover_bench;
     app.screenshot_path = screenshot_path;
     app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;

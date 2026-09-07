@@ -283,6 +283,20 @@ mod tests {
         ("water.frag", "NORMAL_PLANE_EPS"),
         ("water.vert", "DEFAULT_SCROLL_A"),
         ("water.vert", "DEFAULT_SCROLL_B"),
+        // ── #4052, the EXAL ground-cover §11.1 sampling bench ────────
+        // `BENCH_PATH` is a specialization constant, not a value: it exists
+        // so one shader compiles into two pipelines (path A / path B), and
+        // its Rust counterpart is the `VkSpecializationMapEntry` in
+        // `groundcover_bench.rs`, not a shared numeric literal. Promoting it
+        // to the generated header would fix it at compile time and collapse
+        // the two pipelines the bench exists to compare.
+        ("include/groundcover_bench.glsl", "BENCH_PATH"),
+        // The R2 low-discrepancy lattice's two basis constants (Roberts
+        // 2018), derived from the plastic number. Mathematical constants of
+        // the sequence, in the only file that generates candidate points —
+        // no CPU mirror to drift against.
+        ("include/groundcover_bench.glsl", "A1"),
+        ("include/groundcover_bench.glsl", "A2"),
     ];
 
     fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {

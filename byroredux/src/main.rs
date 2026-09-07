@@ -490,6 +490,15 @@ struct App {
     /// this guard `--bench-hold` would dump the summary line on every
     /// `about_to_wait` and the screenshot path would re-fire forever.
     bench_summary_printed: bool,
+    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
+    /// `Some` under `--bench-groundcover-sampling`, carrying the two sample
+    /// counts the flag can tune. The renderer-side harness is created on the
+    /// first frame that has a device, and the per-frame terrain publication
+    /// is skipped entirely while this is `None`.
+    groundcover_bench: Option<crate::bench::GroundcoverBenchConfig>,
+    /// Latched once `enable_groundcover_bench` has been attempted, so a
+    /// failure is reported once rather than every frame.
+    groundcover_bench_started: bool,
     /// Frames rendered since startup. Paired with `bench_frames_target`
     /// to drive the automated benchmark exit, and — via `--bench-camera` —
     /// to index the deterministic camera path.
@@ -806,6 +815,8 @@ impl App {
             bench_mode: None,
             bench_frames_target: None,
             bench_hold: false,
+            groundcover_bench: None,
+            groundcover_bench_started: false,
             bench_summary_printed: false,
             bench_frames_count: 0,
             bench_camera: None,

@@ -1,0 +1,51 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// EXAL ground cover §11.1 — the SCATTER consumer of the terrain-attribute
+// sampling bench (#4052).
+//
+// Mirrors `groundcover_scatter.comp`'s shape from `exal-groundcover.md` §4:
+// one workgroup per 512-unit chunk, each thread drawing candidate points from
+// a scrambled progressive low-discrepancy sequence and sampling terrain at
+// each. What it deliberately does NOT do is evaluate the density field or
+// append blades — §11.1 asks what a *sample* costs, and folding the accept
+// test in would put the answer behind a second unmeasured quantity.
+//
+// One pipeline per path, specialized on BENCH_PATH; the host runs one variant
+// per frame under a single GPU timer bracket so the two never share a
+// dispatch and neither can hide in the other's queue drain.
+//
+// Compile with:
+//   glslangValidator -V -Icrates/renderer/shaders groundcover_bench.comp -o groundcover_bench.comp.spv
+
+#include "include/shader_constants.glsl"
+
+layout(local_size_x = GROUNDCOVER_BENCH_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
+
+#include "include/groundcover_bench.glsl"
+
+void main() {
+    uint chunkIdx = gl_WorkGroupID.x;
+    if (chunkIdx >= pc.chunkCount) {
+        return;
+    }
+    BenchChunk chunk = chunks[chunkIdx];
+
+    // Strided so consecutive threads take consecutive sequence indices —
+    // the same interleaving a real scatter would use, and the one that gives
+    // path A its worst-case gather spread within a warp.
+    uint lane = gl_LocalInvocationID.x;
+    float acc = 0.0;
+    for (uint i = 0u; i < pc.samplesPerThread; ++i) {
+        uint seqIndex = i * GROUNDCOVER_BENCH_WORKGROUP + lane;
+        acc += benchFold(benchSample(chunk, benchCandidateWorld(chunk, seqIndex)));
+    }
+
+    // One store per thread, not per sample: enough to keep every load alive,
+    // small enough that the store itself is noise against `samplesPerThread`
+    // samples. `sinkScale` is 0.0 at runtime and unknown at compile time, so
+    // the result is deterministic without the accumulation being foldable.
+    // Threads collide on slots by design — nothing reads this buffer back.
+    uint slot = (chunkIdx * GROUNDCOVER_BENCH_WORKGROUP + lane) & pc.resultMask;
+    results[slot] = floatBitsToUint(acc * pc.sinkScale);
+}

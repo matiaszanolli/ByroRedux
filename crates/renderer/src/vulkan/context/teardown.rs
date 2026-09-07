@@ -102,6 +102,15 @@ impl VulkanContext {
         if let Some(ref mut cc) = self.cluster_cull {
             cc.destroy(&self.device, alloc);
         }
+        // #4052 — the §11.1 sampling bench. Allocator-owned (three array
+        // images, a raster target and its per-frame record buffers), so it
+        // belongs in this block rather than the allocator-independent one.
+        if let Some(ref mut bench) = self.groundcover_bench {
+            // SAFETY: same contract as every sibling here — `device_wait_idle`
+            // ran at the top of `Drop`, so nothing in flight references the
+            // bench's pipelines, sets, images or buffers.
+            unsafe { bench.destroy(&self.device, alloc) };
+        }
         if let Some(ref mut sc) = self.skin_compute {
             sc.destroy(&self.device);
         }

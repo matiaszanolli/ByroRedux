@@ -404,6 +404,64 @@ impl VulkanContext {
                 );
             }
         }
+
+        self.record_groundcover_bench(cmd, frame);
+    }
+
+    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
+    ///
+    /// Placed after the cluster-cull dispatch and before the main render
+    /// pass, for the same reason cluster cull sits there: it is compute (or,
+    /// for the raster variants, a self-contained render pass into its own
+    /// throwaway target) that reads buffers already uploaded this frame and
+    /// writes nothing anyone else reads.
+    ///
+    /// Returns immediately on every frame of a normal run — `groundcover_bench`
+    /// is `None` unless `--bench-groundcover-sampling` created it.
+    fn record_groundcover_bench(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        if self.groundcover_bench.is_none() {
+            return;
+        }
+        // The global vertex SSBO is path A's whole subject. It does not exist
+        // until the first mesh upload, and `MeshRegistry` replaces the handle
+        // when it grows — the bench rewrites its descriptors from whatever it
+        // is handed here rather than caching it.
+        let Some(vertex_buffer) = self
+            .mesh_registry
+            .global_vertex_buffer
+            .as_ref()
+            .map(|b| b.buffer)
+        else {
+            return;
+        };
+        // Resolve each published terrain cell against the live registry.
+        // A cell whose mesh has been evicted is dropped rather than sampled
+        // at a stale offset, which would read another mesh's vertices as
+        // terrain and quietly change the numbers.
+        let cells: Vec<super::super::groundcover_bench::BenchCellInput> = self
+            .groundcover_bench_cells
+            .iter()
+            .filter_map(|cell| {
+                self.mesh_registry.get(cell.mesh_id).map(|mesh| {
+                    super::super::groundcover_bench::BenchCellInput {
+                        origin_xz: cell.origin_xz,
+                        vertex_offset: mesh.global_vertex_offset,
+                    }
+                })
+            })
+            .collect();
+
+        let Some(bench) = self.groundcover_bench.as_mut() else {
+            return;
+        };
+        bench.record(
+            &self.device,
+            cmd,
+            frame,
+            vertex_buffer,
+            &cells,
+            self.gpu_timers.as_mut(),
+        );
     }
 }
 

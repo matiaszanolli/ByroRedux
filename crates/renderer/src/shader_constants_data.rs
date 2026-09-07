@@ -126,6 +126,24 @@ pub const LAND_GRID_VERTS: u32 = byroredux_core::math::coord::LAND_GRID_VERTS as
 pub const LAND_VERTEX_SPACING: f32 = byroredux_core::math::coord::LAND_VERTEX_SPACING;
 pub const EXTERIOR_CELL_UNITS: f32 = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
+// Ground-cover chunking + the §11.1 sampling bench (#4052).
+//
+// `exal-groundcover.md` §4 makes the 512-unit chunk the unit of dispatch,
+// culling and LOD selection — an 8×8 grid per exterior cell. The bench
+// dispatches one workgroup per chunk for exactly that reason: a harness that
+// batched samples some other way would not price the per-chunk setup the real
+// scatter pays (chunk record fetch, cell-origin load, sequence scramble).
+pub const GROUNDCOVER_CHUNK_UNITS: f32 = 512.0;
+pub const GROUNDCOVER_CHUNKS_PER_CELL_SIDE: u32 = 8;
+/// No `u` suffix in GLSL — used in `layout(local_size_x = ...)`.
+pub const GROUNDCOVER_BENCH_WORKGROUP: u32 = 64;
+/// Vertices per blade in the raster half of the bench. §4's blade is a
+/// quadratic Bezier ribbon whose near tier is 3 segments, i.e. 4 rings of 2
+/// vertices. The raster consumer's whole point is that it samples once per
+/// vertex per blade, so this factor is what separates its per-sample cost from
+/// the scatter's.
+pub const GROUNDCOVER_BENCH_BLADE_VERTS: u32 = 8;
+
 // Skinning. #3882 — re-exported rather than restated: this file's whole
 // purpose is that a shared constant has one definition, and ~40 of its
 // entries already resolve through `byroredux_core::`. The survey that fixes

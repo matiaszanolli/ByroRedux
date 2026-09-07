@@ -1,0 +1,76 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// EXAL ground cover §11.1 — path B's bake step (#4052).
+//
+// Writes one array layer per resident terrain cell of the three attribute
+// textures path B samples, reading the same global vertex SSBO path A reads
+// live. This is the cost path B carries that path A does not, and the drift
+// risk §11.1 names: the bake is a snapshot, and the mesh registry compacts.
+// The host re-bakes whenever the (origin, vertex_offset) set changes rather
+// than every frame, which is the cheapest honest policy — a per-frame re-bake
+// would price path B's fetch against a bake it would not really pay, and
+// caching it forever would sample a moved mesh.
+//
+// One invocation per baked texel; the bake is NOT inside the measured
+// bracket, and the summary reports its cost separately.
+//
+// Compile with:
+//   glslangValidator -V -Icrates/renderer/shaders groundcover_bench_bake.comp -o groundcover_bench_bake.comp.spv
+
+#include "include/shader_constants.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+struct BenchCell {
+    vec2 originXZ;
+    uint vertexOffset;
+    uint pad0;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer BenchCellBuffer {
+    BenchCell cells[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer BenchGlobalVertices {
+    float vertexData[];
+};
+
+layout(rgba32f, set = 0, binding = 2) writeonly uniform image2DArray attrImage;
+layout(rgba8, set = 0, binding = 3) writeonly uniform image2DArray splat0Image;
+layout(rgba8, set = 0, binding = 4) writeonly uniform image2DArray splat1Image;
+
+layout(push_constant) uniform BakePush {
+    uint cellCount;
+} pc;
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    uint col = id.x;
+    uint row = id.y;
+    uint layer = id.z;
+    if (col >= LAND_GRID_VERTS || row >= LAND_GRID_VERTS || layer >= pc.cellCount) {
+        return;
+    }
+
+    // Same row-major `idx = row * LAND_GRID_VERTS + col` layout
+    // `cell_loader/terrain.rs` builds, and the same lane offsets
+    // `include/terrain_sample.glsl` reads — texel (col, row) holds vertex
+    // (row, col), so a LINEAR fetch over texel centres reproduces path A's
+    // bilinear blend exactly.
+    uint base = (cells[layer].vertexOffset + row * LAND_GRID_VERTS + col) * VERTEX_STRIDE_FLOATS;
+
+    float height = vertexData[base + 1u];
+    vec3 normal = vec3(vertexData[base + VERTEX_NORMAL_OFFSET_FLOATS],
+                       vertexData[base + VERTEX_NORMAL_OFFSET_FLOATS + 1u],
+                       vertexData[base + VERTEX_NORMAL_OFFSET_FLOATS + 2u]);
+    // Splat lanes are 4×u8 unorm, not floats — see the WARNING block above
+    // `GlobalVertices` in bindings.glsl.
+    vec4 splat0 = unpackUnorm4x8(floatBitsToUint(vertexData[base + VERTEX_SPLAT0_OFFSET_FLOATS]));
+    vec4 splat1 = unpackUnorm4x8(floatBitsToUint(vertexData[base + VERTEX_SPLAT1_OFFSET_FLOATS]));
+
+    ivec3 texel = ivec3(int(col), int(row), int(layer));
+    imageStore(attrImage, texel, vec4(height, normal));
+    imageStore(splat0Image, texel, splat0);
+    imageStore(splat1Image, texel, splat1);
+}

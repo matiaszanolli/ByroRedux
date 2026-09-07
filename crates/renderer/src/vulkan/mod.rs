@@ -15,6 +15,7 @@ pub mod exposure;
 pub mod frame_upscaler;
 pub mod gbuffer;
 pub mod gpu_timers;
+pub mod groundcover_bench;
 pub mod instance;
 pub mod material;
 pub mod morph_compute;

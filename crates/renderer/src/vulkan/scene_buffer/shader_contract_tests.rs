@@ -3818,6 +3818,10 @@ fn named_splat_offset_reads_keep_their_unorm_recovery() {
             "triangle.frag",
             include_str!("../../../shaders/triangle.frag"),
         ),
+        (
+            "groundcover_bench_bake.comp",
+            include_str!("../../../shaders/groundcover_bench_bake.comp"),
+        ),
     ];
     for (name, src) in sources {
         for (lineno, line) in src.lines().enumerate() {
@@ -3951,5 +3955,132 @@ fn terrain_sampler_keeps_the_validated_grid_expressions() {
         src.contains("return s;") && src.contains("s.valid = false;"),
         "the out-of-cell early-out disappeared; a clamped sample returns a \
          confident wrong answer for a point in the neighbouring cell"
+    );
+}
+
+/// Path B must reproduce path A's arithmetic, or the bench compares two
+/// different answers and calls the difference a cost.
+///
+/// Two things are pinned. The inverse mapping has to be the same expression
+/// (same row sign — see the guard above), and the fetch has to be at texel
+/// *centres*: `(idx + 0.5) / LAND_GRID_VERTS`. Dropping the half-texel biases
+/// every sample by half a vertex spacing — 64 units — which still looks like
+/// terrain and would show up only as path B being mysteriously "different".
+#[test]
+fn baked_sampler_matches_path_a_arithmetic() {
+    let src = include_str!("../../../shaders/include/terrain_sample.glsl");
+    let baked = src
+        .split_once("TerrainSample byroSampleTerrainBaked(")
+        .expect("terrain_sample.glsl must still define the path-B sampler (#4052)")
+        .1;
+    assert!(
+        baked.contains("float fc = (worldXZ.x - cellOriginXZ.x) / LAND_VERTEX_SPACING;")
+            && baked.contains("float fr = (cellOriginXZ.y - worldXZ.y) / LAND_VERTEX_SPACING;"),
+        "the baked sampler must invert the grid with the same expressions path A \
+         uses, or the two paths sample different points and the bench measures \
+         nothing comparable"
+    );
+    assert!(
+        baked.contains("vec2 uv = (vec2(fc, fr) + 0.5) / float(LAND_GRID_VERTS);"),
+        "the baked fetch must land on texel centres. `(idx + 0.5) / \
+         LAND_GRID_VERTS` is what makes a LINEAR fetch reproduce path A's \
+         bilinear blend exactly; without the half-texel every sample is \
+         biased by half a vertex spacing"
+    );
+    assert!(
+        baked.contains("s.valid = false;"),
+        "the baked sampler must reject out-of-cell queries like path A does. A \
+         clamping path B would also read as cheaper, since the reject branch \
+         is the one place the two paths can diverge in control flow"
+    );
+}
+
+/// The bake writes vertex (row, col) into texel (col, row), and
+/// `byroSampleTerrainBaked` reads it back as `uv = (fc, fr)` — column on x,
+/// row on y. Transposing either half samples the terrain's mirror image
+/// across its diagonal, which on real heightmaps is plausible terrain.
+#[test]
+fn bake_texel_indexing_matches_the_baked_fetch() {
+    let bake = include_str!("../../../shaders/groundcover_bench_bake.comp");
+    assert!(
+        bake.contains("ivec3 texel = ivec3(int(col), int(row), int(layer));"),
+        "the bake must write vertex (row, col) to texel (col, row); \
+         `byroSampleTerrainBaked` reads column on x and row on y (#4052)"
+    );
+    assert!(
+        bake.contains(
+            "uint base = (cells[layer].vertexOffset + row * LAND_GRID_VERTS + col) \
+             * VERTEX_STRIDE_FLOATS;"
+        ),
+        "the bake must index the vertex SSBO with terrain.rs's row-major \
+         `row * LAND_GRID_VERTS + col`, offset by the covering instance's \
+         vertex_offset"
+    );
+}
+
+/// Both bench consumers share `include/groundcover_bench.glsl`'s candidate
+/// generator. If either ever grew its own copy, the scatter and raster halves
+/// would sample different points and the two `ns_sample` columns would stop
+/// being comparable — which is the one comparison §4's store-vs-resample
+/// trade is decided on.
+#[test]
+fn both_bench_consumers_share_one_candidate_generator() {
+    let common = include_str!("../../../shaders/include/groundcover_bench.glsl");
+    assert!(
+        common.contains("vec2 benchCandidateWorld(BenchChunk chunk, uint index)"),
+        "the shared header must still own the candidate-point generator"
+    );
+    for (name, src) in [
+        (
+            "groundcover_bench.comp",
+            include_str!("../../../shaders/groundcover_bench.comp"),
+        ),
+        (
+            "groundcover_bench.vert",
+            include_str!("../../../shaders/groundcover_bench.vert"),
+        ),
+    ] {
+        assert!(
+            src.contains("#include \"include/groundcover_bench.glsl\""),
+            "{name} must include the shared bench header rather than restating it"
+        );
+        assert!(
+            src.contains("benchCandidateWorld("),
+            "{name} must draw its sample points from the shared generator"
+        );
+        assert!(
+            !src.contains("const float A1"),
+            "{name} looks like it grew its own copy of the R2 lattice constants"
+        );
+    }
+}
+
+/// The sink is what stops an optimiser deleting the loads the bench exists to
+/// time. It works only because `sinkScale` is a push constant — unknown at
+/// compile time — rather than a literal the compiler can fold through.
+#[test]
+fn the_bench_sink_stays_unfoldable() {
+    for (name, src) in [
+        (
+            "groundcover_bench.comp",
+            include_str!("../../../shaders/groundcover_bench.comp"),
+        ),
+        (
+            "groundcover_bench.vert",
+            include_str!("../../../shaders/groundcover_bench.vert"),
+        ),
+    ] {
+        assert!(
+            src.contains("pc.sinkScale"),
+            "{name} must route its accumulated sample through the push-constant \
+             sink, or the sampling it is timing can be optimised away entirely"
+        );
+    }
+    let vert = include_str!("../../../shaders/groundcover_bench.vert");
+    assert!(
+        vert.contains("gl_Position = vec4(sink, sink, 0.5, 1.0);"),
+        "the raster half's blades must collapse onto one clip position: that is \
+         what makes every triangle zero-area, so the fragment stage does no work \
+         and the bracket measures the vertex stage"
     );
 }
