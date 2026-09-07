@@ -39,9 +39,23 @@ should_skip() {
     local p="$1"
     # Bare basenames (`lib.rs`, `systems.rs`, `tests.rs`) are used as
     # shorthand inside a paragraph that already established the dir
-    # context. They carry no path info to begin with, so they can't
-    # go stale in the "wrong dir" sense this gate targets.
-    [[ "$p" != */* ]] && return 0
+    # context, so they can't go stale in the "wrong dir" sense this gate
+    # targets.
+    #
+    # #3439 — but that is only half the claim they make. A bare basename
+    # carries no *directory* information while still asserting
+    # *existence*, and the second half is exactly the rot that reached
+    # `docs/engine/` when #3202 extended the glob there: a file that was
+    # deleted rather than moved. So skip a bare basename only when it
+    # resolves somewhere in the tree (genuine shorthand); report it when
+    # it resolves nowhere.
+    if [[ "$p" != */* ]]; then
+        # Resolves somewhere in the tree -> genuine shorthand, skip.
+        # Otherwise fall through to the rules below: `feedback_*.md` and
+        # the archive/asset extensions are bare basenames too, and each
+        # has its own reason to be skipped that outlives this one.
+        path_exists "$p" && return 0
+    fi
     [[ "$p" == /tmp/* ]] && return 0
     [[ "$p" == feedback_*.md ]] && return 0
     [[ "$p" == *.bsa || "$p" == *.esm || "$p" == *.ba2 || "$p" == *.nif ]] && return 0
@@ -114,6 +128,7 @@ shopt -u nullglob
 # `cell/mod.rs` (shorthand for `crates/plugin/src/esm/cell/mod.rs`)
 # resolve via path-suffix match. Excludes target/ and node_modules/
 # to keep the list tight.
+missing_basenames=()
 all_paths_file=$(mktemp)
 trap 'rm -f "$all_paths_file"' EXIT
 git ls-files > "$all_paths_file"
@@ -125,6 +140,54 @@ path_exists() {
     # Path-suffix match: any tracked path ending with `/$p`.
     grep -qE "(^|/)${p//./\\.}\$" "$all_paths_file"
 }
+
+# ---------------------------------------------------------------------------
+# `--selftest` — regression coverage for the skip rules (#3439).
+#
+# The gate has no unit-test harness and its own output cannot distinguish
+# "this rule works" from "nothing happened to exercise it", so the two
+# behaviours #3439 turns on are asserted directly against the live tree.
+# Runs and exits before the repo scan.
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--selftest" ]]; then
+    selftest_failures=0
+    expect() {
+        local want="$1" desc="$2" p="$3"
+        if should_skip "$p"; then got="skip"; else got="report"; fi
+        if [[ "$got" != "$want" ]]; then
+            echo "SELFTEST FAIL: \`$p\` — expected $want, got $got ($desc)"
+            selftest_failures=$((selftest_failures + 1))
+        else
+            echo "ok: \`$p\` -> $got ($desc)"
+        fi
+    }
+
+    # A bare basename that resolves is genuine shorthand — still skipped.
+    expect skip "resolving bare basename stays shorthand" "lib.rs"
+    expect skip "resolving bare basename stays shorthand" "mod.rs"
+    # The #3439 case: a bare basename that resolves nowhere asserts the
+    # existence of a file that is not there. Must NOT be skipped.
+    expect report "deleted bare basename must reach the checker" "ai.rs"
+    expect report "deleted bare basename must reach the checker" \
+        "definitely_not_a_real_file_9f3a.rs"
+    # Regression on the fix itself: making the bare-basename rule return
+    # early instead of falling through stole the later rules from every
+    # bare basename they covered. `feedback_*.md` is the one with teeth —
+    # none of those files are tracked, so a short-circuit turns all of
+    # them into advisories.
+    expect skip "feedback_*.md keeps its own skip rule" "feedback_no_guessing.md"
+    expect skip "asset extensions keep their own skip rule" "Skyrim.esm"
+    # Unchanged rules, pinned so a future edit to the block notices.
+    expect skip "brace-expansion artifacts still skipped" "byroredux/src/fog}.rs"
+    expect skip "prose elision still skipped" "byroredux/src/systems/....rs"
+
+    if (( selftest_failures > 0 )); then
+        echo "SELFTEST: $selftest_failures failure(s)."
+        exit 1
+    fi
+    echo "SELFTEST: all skip-rule expectations hold."
+    exit 0
+fi
 
 for skill in "${skill_files[@]}"; do
     [[ -f "$skill" ]] || continue
@@ -139,8 +202,26 @@ for skill in "${skill_files[@]}"; do
             should_skip "$p" && continue
             checked_count=$((checked_count + 1))
             if ! path_exists "$p"; then
-                echo "STALE: $skill:$line_num — \`$p\`"
-                stale_count=$((stale_count + 1))
+                # #3439 — a bare basename asserts existence but carries no
+                # directory, so it cannot be "stale" in this gate's
+                # wrong-dir sense; it can only be a deleted file. That is a
+                # real class and used to be invisible here. It is reported
+                # ADVISORY rather than FATAL because the extractor cannot
+                # tell a path from any other dotted token: console commands
+                # (`mem.frag`), and truncations of longer names produced by
+                # the extension pattern having no trailing boundary
+                # (`GpuInstance.vertex_offset` -> `GpuInstance.vert`,
+                # `self.shutdown` -> `self.sh`), all arrive here looking
+                # identical to real rot. Tightening that pattern to require
+                # a closing backtick was measured at 174 of 4,091 refs lost
+                # (4.3%), which trades this gate's coverage for its noise —
+                # so the noise is quarantined instead.
+                if [[ "$p" != */* ]]; then
+                    missing_basenames+=("$skill:$line_num — \`$p\`")
+                else
+                    echo "STALE: $skill:$line_num — \`$p\`"
+                    stale_count=$((stale_count + 1))
+                fi
             elif [[ "$VERBOSE" == "1" ]]; then
                 echo "ok: $skill:$line_num — $p"
             fi
@@ -150,6 +231,21 @@ done
 
 echo
 echo "Checked $checked_count refs across ${#skill_files[@]} skill files."
+
+# #3439 — the deleted-file class, reported and never fatal. See the comment
+# at the accumulation site for why this tier exists rather than STALE.
+if (( ${#missing_basenames[@]} > 0 )) && [[ "${SKIP_BASENAME_CHECK:-0}" != "1" ]]; then
+    echo
+    echo "ADVISORY (deleted-file refs) — backticked bare basenames that resolve"
+    echo "nowhere in the tree. Each is either (a) a file that was deleted rather"
+    echo "than moved — update or drop the reference, or (b) not a path at all"
+    echo "(a console command, or a longer name the extractor truncated) — in"
+    echo "which case italicise it instead of backticking."
+    printf '  %s\n' "${missing_basenames[@]}"
+    echo
+    echo "  ${#missing_basenames[@]} advisory ref(s). Not a failure."
+    echo "  Set SKIP_BASENAME_CHECK=1 to silence."
+fi
 
 # ---------------------------------------------------------------------------
 # Crate-count drift (FATAL)

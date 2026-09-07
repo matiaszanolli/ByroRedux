@@ -1,9 +1,7 @@
 # #3439 — TD4-2026-08-27-02: _audit-validate.sh skips every backticked bare basename — a deleted file is invisible to the gate, which is why ten dead ai.rs refs pass
 
-Labels: `low,tech-debt,bug`
-Filed: 2026-08-28 · Source report: `docs/audits/AUDIT_TECH_DEBT_2026-08-27.md`
-
----
+State: OPEN
+Labels: bug, low, tech-debt
 
 **Severity**: LOW · **Dimension**: 4 — Audit-Finding Rot · **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-27.md` (TD4-2026-08-27-02)
 
@@ -60,3 +58,4 @@ Replace the unconditional skip with a conditional one — skip a bare basename o
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (the other `should_skip` rules — each should be re-read for the same "no directory info ≠ no assertion" confusion)
 - [ ] **TESTS**: A regression test pins this specific fix (a fixture doc citing a deleted bare basename must fail the gate)
+
