@@ -1,9 +1,7 @@
 # #3451 — TD1-2026-08-27-01: crates/renderer/src/mesh.rs newly crossed 2000 production LOC (1525 → 2049 in four days), taking the primary bucket from 4 to 5
 
-Labels: `low,renderer,tech-debt,bug`
-Filed: 2026-08-28 · Source report: `docs/audits/AUDIT_TECH_DEBT_2026-08-27.md`
-
----
+State: OPEN
+Labels: bug, renderer, low, tech-debt
 
 **Severity**: LOW · **Dimension**: 1 — File / Function / Module Complexity · **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-08-27.md` (TD1-2026-08-27-01)
 
@@ -50,3 +48,4 @@ Extract the global geometry SSBO lifecycle into `crates/renderer/src/mesh/geomet
 - [ ] **SIBLING**: Same pattern checked in related files (the other primary-bucket members; `context/mod.rs`'s post-split regrowth)
 - [ ] **DROP**: If Vulkan objects move with the extraction, the Drop impl is still reverse-order correct
 - [ ] **TESTS**: A regression test pins this specific fix (the existing chunked-rebuild / compaction-gate tests must move with the code and still pass)
+
