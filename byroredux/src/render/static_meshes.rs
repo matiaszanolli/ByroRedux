@@ -1168,12 +1168,44 @@ mod tests {
             .expect("supplemental texture writes must precede DrawCommand construction");
         let write_block = &write_block[..write_end];
         let marker = "supplemental_texture_indices[slot::";
-        let assigned = write_block
-            .lines()
-            .filter_map(|line| {
-                let suffix = line.trim().strip_prefix(marker)?;
-                Some(suffix.split_once(']')?.0.to_owned())
-            })
+        // #3911 — capture the RIGHT-hand side alongside the slot name. The
+        // block wraps long assignments, so a `slot::X =` with no RHS on the
+        // same line takes it from the next non-empty line; the RHS is
+        // normalised to the bare `texture_indices` field path.
+        let lines: Vec<&str> = write_block.lines().collect();
+        let mut assignments: Vec<(String, String)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(suffix) = line.trim().strip_prefix(marker) else {
+                continue;
+            };
+            let (slot_name, tail) = suffix
+                .split_once(']')
+                .expect("a supplemental write must close its slot index");
+            let rhs_raw = match tail.split_once('=') {
+                Some((_, rhs)) if !rhs.trim().is_empty() => rhs.trim().to_owned(),
+                // Wrapped assignment: the value is on the following line.
+                _ => lines
+                    .get(i + 1)
+                    .map(|next| next.trim().to_owned())
+                    .expect("a wrapped supplemental write must have a value line"),
+            };
+            let rhs = rhs_raw
+                .trim_end_matches(';')
+                .trim()
+                .strip_prefix("texture_indices.")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supplemental slot {slot_name} is fed `{rhs_raw}`, which does not \
+                         come from the `texture_indices` role set — a supplemental lane \
+                         must carry a named role, not an ad-hoc handle (#3911)"
+                    )
+                })
+                .to_owned();
+            assignments.push((slot_name.to_owned(), rhs));
+        }
+        let assigned = assignments
+            .iter()
+            .map(|(slot_name, _)| slot_name.clone())
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -1194,6 +1226,50 @@ mod tests {
                 "CPU writes an undeclared supplemental slot {name}",
             );
         }
+
+        // #3911 (REN-2026-09-05-D7-04) — ARITY IS NOT CORRESPONDENCE.
+        //
+        // Everything above pins that each declared lane is written exactly
+        // once and that no undeclared lane is written. A TRANSPOSITION —
+        // `[slot::RIM] = texture_indices.back_lighting` next to
+        // `[slot::BACK_LIGHTING] = texture_indices.rim` — satisfies all of it:
+        // both lanes are still written exactly once, both names are still
+        // declared, the count is unchanged. It would surface as the wrong map
+        // sampled for the wrong purpose on some games' content, which is
+        // precisely the failure mode the role vocabulary was introduced to
+        // eliminate, and it would surface as a *visual* defect rather than a
+        // test failure.
+        //
+        // So check the right-hand side too: each `slot::NAME` must be fed the
+        // `texture_indices` field of the same name. The expected RHS is
+        // DERIVED from the slot constant (`INNER_LAYER` → `inner_layer`,
+        // `DECAL_2` → `decals[2]`), not tabulated, so a new lane is covered
+        // the moment it is declared.
+        for (slot_name, rhs) in &assignments {
+            let expected = expected_role_field(slot_name);
+            assert_eq!(
+                rhs, &expected,
+                "supplemental slot::{slot_name} is fed `texture_indices.{rhs}` but its \
+                 role is `texture_indices.{expected}`. Two roles swapping slots keeps \
+                 every arity assertion above green and ships the wrong map for the \
+                 wrong purpose (#3911)",
+            );
+        }
+    }
+
+    /// The `texture_indices` field a supplemental slot constant must be fed.
+    ///
+    /// Derived from the constant's own name so the correspondence check in
+    /// [`every_supplemental_texture_slot_is_written_exactly_once`] covers new
+    /// lanes automatically: `TINT` → `tint`, `GLASS_DIRT_OVERLAY` →
+    /// `glass_dirt_overlay`. The four decal lanes are the one irregular
+    /// shape — they index a single `decals` array rather than having four
+    /// separate fields. See #3911.
+    fn expected_role_field(slot_name: &str) -> String {
+        if let Some(n) = slot_name.strip_prefix("DECAL_") {
+            return format!("decals[{n}]");
+        }
+        slot_name.to_lowercase()
     }
 
     #[test]
