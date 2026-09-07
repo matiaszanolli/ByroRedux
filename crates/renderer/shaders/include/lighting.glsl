@@ -5,6 +5,26 @@
 // SSBO/UBO bindings, helper functions, constants) defined in shader_constants.glsl
 // and in earlier includes. Do not compile on its own.
 
+#include "include/groundcover_light.glsl"
+
+// ── EXAL ground cover §12.5, the terrain receiver (#4057) ───────────
+//
+// Grass shadowing the ground is the half of §12.5 anyone notices, and it
+// attaches here rather than at each of `triangle.frag`'s five
+// `shadowableLightRadiance` call sites because this function has the one
+// exit every direct-light path leaves through. Splitting it across those
+// sites would put the ReSTIR estimator's shadowed subtraction out of step
+// with its unshadowed accumulation, which the #1369 invariant forbids —
+// pass 1 and pass 2 have to evaluate the identical expression.
+//
+// Globals rather than parameters because this function already takes 17 of
+// them and only one caller in one shader ever sets these. Zero canopy height
+// is the neutral state, which is what every non-terrain fragment, every other
+// shader including lighting.glsl, and every frame before a ground-cover
+// palette resolves leaves them at.
+float gGcCanopyHeight = 0.0;   // world units of sward over the fragment
+float gGcDGround = 0.0;        // §3's intrinsic density, never `d_draw`
+
 // ── Point / spot distance attenuation (REND-#1451) ──────────────────
 //
 // Two-term model mirroring the OpenMW / Bethesda light lineage
@@ -243,6 +263,19 @@ vec3 shadowableLightRadiance(
         specular *= multiScatterEnergyCompensation(F0, NdotV, aaRoughness);
     }
     vec3 unshadowedRadiance = lightColor * atten;
+    // §12.5 — the canopy the light crossed before it reached this fragment.
+    // Directional only: the sun is what a metre of grass measurably
+    // attenuates, and a point light standing inside the sward is not
+    // travelling through the slab the way this closed form assumes.
+    //
+    // `L.y` is the cosine of the light's angle from vertical, so a low sun
+    // traverses more canopy and its shadow deepens and lengthens on its own —
+    // the behaviour that reads as a real shadow, out of a closed form with no
+    // BLAS, no TLAS entry and no ray budget.
+    if (lightType >= 1.5 && gGcCanopyHeight > 0.0) {
+        unshadowedRadiance *=
+            byroGcCanopyTransmittance(gGcDGround, gGcCanopyHeight, L.y);
+    }
     vec3 diffuseBrdf;
     if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
         float HdotL = max(dot(H, L), 0.0);

@@ -13,7 +13,7 @@
 //! regression here would have to come from the module boundary rather than
 //! from edited logic.
 
-use byroredux_core::ecs::components::groundcover::WindField;
+use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField};
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -285,8 +285,18 @@ impl App {
                     &mut self.groundcover_cells,
                     &mut self.groundcover_chunks,
                 );
+                // #4057 — the per-weather grass dimmer, read live each frame
+                // from the slot `weather_system` writes it into. Absent (every
+                // non-Oblivion game, and any frame before weather resolves) is
+                // neutral, not zero.
+                let dimmer = self
+                    .world
+                    .try_resource::<GroundCoverDimmer>()
+                    .map(|d| *d)
+                    .unwrap_or(GroundCoverDimmer::NEUTRAL);
                 crate::render::groundcover::collect_groundcover_species(
                     &self.world,
+                    dimmer,
                     &mut self.groundcover_species,
                 );
                 let wind = self

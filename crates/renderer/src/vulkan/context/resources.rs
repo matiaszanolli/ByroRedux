@@ -829,6 +829,7 @@ mod tests {
             layer_diffuse_index: [1, 2, 3, 4, 5, 6, 7, 8],
             layer_normal_index: [11, 12, 13, 14, 15, 16, 17, 18],
             layer_specular_index: [21, 22, 23, 24, 25, 26, 27, 28],
+            ..Default::default()
         });
         let mut dest: Vec<GpuTerrainTile> = Vec::new();
         let mut dirty = true;
@@ -925,6 +926,7 @@ mod tests {
             layer_diffuse_index: [11, 22, 33, 44, 55, 66, 77, 88],
             layer_normal_index: [111, 122, 133, 144, 155, 166, 177, 188],
             layer_specular_index: [211, 222, 233, 244, 255, 266, 277, 288],
+            ..Default::default()
         });
         let mut free_list: Vec<u32> = vec![0, 1, 3];
         let mut dirty = false;

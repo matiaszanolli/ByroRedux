@@ -197,6 +197,39 @@ float byroGcClump(vec2 worldXZ) {
     return clamp(cellular * regional, 0.0, 1.0);
 }
 
+/// Discrete Laplacian of the heightfield at `worldXZ`, sampled one terrain
+/// vertex spacing out in each axis — the input `byroGcShelter` wants.
+///
+/// Sampled at the vertex spacing rather than at some smaller epsilon because
+/// the heightfield HAS no detail below that: a tighter stencil would just
+/// measure the bilinear interpolant's own curvature, which is zero inside a
+/// quad and undefined on its edges.
+///
+/// Lives here rather than in the scatter because §12.5's terrain receiver
+/// (#4057) evaluates the same field from `triangle.frag`, and a second copy
+/// of this stencil would be a second way for the sward's density and the
+/// density of the shadow it casts to disagree.
+float byroGcLaplacian(uint vertexOffset, vec2 originXZ, vec2 worldXZ, float centreHeight) {
+    const float H = LAND_VERTEX_SPACING;
+    float total = 0.0;
+    float taken = 0.0;
+    vec2 offsets[4] = vec2[4](vec2(H, 0.0), vec2(-H, 0.0), vec2(0.0, H), vec2(0.0, -H));
+    for (int i = 0; i < 4; ++i) {
+        TerrainSample n = byroSampleTerrain(vertexOffset, originXZ, worldXZ + offsets[i]);
+        // A neighbour outside the cell is skipped rather than clamped. At a
+        // cell seam the stencil is one-sided, which biases the curvature
+        // slightly; clamping would instead fold the boundary vertex in twice
+        // and read as a ridge along every cell edge — a visible 4096-unit grid
+        // in the density, which is precisely the artifact this design exists
+        // to remove.
+        if (n.valid) {
+            total += n.height - centreHeight;
+            taken += 1.0;
+        }
+    }
+    return taken > 0.0 ? total * (4.0 / taken) : 0.0;
+}
+
 // ── The field ───────────────────────────────────────────────────────────
 
 /// The five intrinsic factors, unmultiplied.

@@ -304,8 +304,11 @@ mod tests {
         ("groundcover_scatter.comp", "A2"),
         // The terrain vertex spacing, bound once as a local so the
         // Laplacian stencil reads as a stencil. `LAND_VERTEX_SPACING`
-        // itself is shared and comes from the header.
-        ("groundcover_scatter.comp", "H"),
+        // itself is shared and comes from the header. #4057 moved the
+        // stencil into the shared density include so §12.5's terrain
+        // receiver runs the identical curvature; the exemption moved with
+        // it, and the scatter now reaches it through a wrapper.
+        ("include/groundcover_density.glsl", "H"),
         // Counter-buffer section offsets. These DO have a Rust
         // counterpart that must match (`COUNTER_HIST_BASE` /
         // `COUNTER_OVERFLOW` in `vulkan/groundcover.rs`) and are

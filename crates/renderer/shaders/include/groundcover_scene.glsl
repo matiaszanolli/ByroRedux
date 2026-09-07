@@ -107,6 +107,13 @@ struct GroundCoverSpecies {
     vec4 baseColour;
     /// Tip colour (rgb) + ground-coupling weight (a, §12.3).
     vec4 tipColour;
+    /// Transmission colour (rgb, §12.2) + sheen amount (a, §12.6).
+    ///
+    /// Both landed with their consumer in #4057 rather than ahead of it, per
+    /// §12's own rule: their defaults had to be calibrated against a render,
+    /// and an invented scalar in a canonical type is how a placeholder becomes
+    /// the value nobody revisits.
+    vec4 transmissionSheen;
 };
 
 #endif // BYRO_GROUNDCOVER_SCENE_GLSL

@@ -249,6 +249,39 @@ fn main() {
     ] {
         writeln!(out, "#define {name} {value:?}").unwrap();
     }
+    writeln!(
+        out,
+        "\n// Ground-cover light response (§12.1/12.2/12.5/12.6, #4057)"
+    )
+    .unwrap();
+    for (name, value) in [
+        (
+            "GROUNDCOVER_CANOPY_EXTINCTION_K",
+            GROUNDCOVER_CANOPY_EXTINCTION_K,
+        ),
+        (
+            "GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY",
+            GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY,
+        ),
+        ("GROUNDCOVER_CANOPY_MIN_COS", GROUNDCOVER_CANOPY_MIN_COS),
+        ("GROUNDCOVER_SKY_DIFFUSIVITY", GROUNDCOVER_SKY_DIFFUSIVITY),
+        (
+            "GROUNDCOVER_BLADE_TRANSMISSION_EXTINCTION",
+            GROUNDCOVER_BLADE_TRANSMISSION_EXTINCTION,
+        ),
+        (
+            "GROUNDCOVER_TRANSMISSION_DISTORTION",
+            GROUNDCOVER_TRANSMISSION_DISTORTION,
+        ),
+        (
+            "GROUNDCOVER_TRANSMISSION_POWER",
+            GROUNDCOVER_TRANSMISSION_POWER,
+        ),
+        ("GROUNDCOVER_SHEEN_F0", GROUNDCOVER_SHEEN_F0),
+        ("GROUNDCOVER_SHEEN_ROUGHNESS", GROUNDCOVER_SHEEN_ROUGHNESS),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
     for (name, value) in [
         (
             "GROUNDCOVER_BLADE_SEGMENTS_NEAR",

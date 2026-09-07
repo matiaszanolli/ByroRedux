@@ -297,6 +297,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterLodInfo", "diagnostic-only worldspace LOD provenance rebuilt with the render-only LOD entity and removed on unload"),
         ("WaterNoiseMapHandles", "GPU bindless noise-texture handles rebuilt from WATR NAM2/NAM3/NAM4 paths at cell load; released on unload and never save-relevant"),
         ("WindField", "EXAL-derived (#2369): re-translated from the live WeatherDataRes wind byte at every worldspace entry; the saved WTHR state it derives from is what carries forward"),
+        ("GroundCoverDimmer", "EXAL-derived (#4057): re-translated from the live WeatherDataRes `grass_dimmer` at every worldspace entry and rewritten by `weather_system` each frame, exactly as WindField above; the saved WTHR state it derives from is what carries forward"),
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
         // ── crates/scripting/src/ ────────────────────────────────────
         ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),

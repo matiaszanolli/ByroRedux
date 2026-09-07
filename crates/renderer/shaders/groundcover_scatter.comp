@@ -155,33 +155,11 @@ uint gcHash(uint seed, uint index) {
     h ^= h >> 16;
     return h;
 }
-
-/// The §3 `shelter` term's input: the discrete Laplacian of the heightfield,
-/// one terrain vertex spacing out in each axis.
-///
-/// Sampled at the vertex spacing rather than at some smaller epsilon because
-/// the heightfield HAS no detail below that — a tighter stencil would just
-/// measure the bilinear interpolant's own curvature, which is zero inside a
-/// quad and undefined on its edges.
+/// #4057 moved this stencil into `groundcover_density.glsl` so §12.5's
+/// terrain receiver evaluates the identical curvature from `triangle.frag`.
+/// The wrapper stays because the scatter's callers work in `GroundCoverCell`s.
 float gcLaplacian(GroundCoverCell cell, vec2 worldXZ, float centreHeight) {
-    const float H = LAND_VERTEX_SPACING;
-    float total = 0.0;
-    float taken = 0.0;
-    vec2 offsets[4] = vec2[4](vec2(H, 0.0), vec2(-H, 0.0), vec2(0.0, H), vec2(0.0, -H));
-    for (int i = 0; i < 4; ++i) {
-        TerrainSample n = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ + offsets[i]);
-        // A neighbour outside the cell is skipped rather than clamped. At a
-        // cell seam the stencil is one-sided, which biases the curvature
-        // slightly; clamping would instead fold the boundary vertex in twice
-        // and read as a ridge along every cell edge — a visible 4096-unit grid
-        // in the density, which is precisely the artifact this design exists
-        // to remove.
-        if (n.valid) {
-            total += n.height - centreHeight;
-            taken += 1.0;
-        }
-    }
-    return taken > 0.0 ? total * (4.0 / taken) : 0.0;
+    return byroGcLaplacian(cell.vertexOffset, cell.originXZ, worldXZ, centreHeight);
 }
 
 void main() {

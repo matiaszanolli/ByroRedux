@@ -7,7 +7,7 @@
 use crate::vulkan::buffer::NoUninit;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GpuTerrainTile {
     /// Bindless diffuse indices for LAND overlay layers 0-7.
     pub layer_diffuse_index: [u32; 8],
@@ -17,6 +17,36 @@ pub struct GpuTerrainTile {
     /// Specular-colour maps paired with [`Self::layer_diffuse_index`].
     /// Zero means the layer keeps the material's scalar specular colour.
     pub layer_specular_index: [u32; 8],
+    // ── EXAL ground cover, §12.5's terrain receiver (#4057) ──────────────
+    //
+    // §12.5 has two receivers and one term: grass shadowing the *ground* is
+    // the shadow anyone actually notices, and it needs `d_ground` evaluated
+    // at the terrain fragment. Everything the density field wants is already
+    // reachable from `triangle.frag` — splat weights arrive as interpolated
+    // vertex attributes, the terrain normal is the shading geometry normal,
+    // and the global vertex SSBO is bound for the height stencil — *except*
+    // the four per-cell values below, which no existing GPU record carried.
+    //
+    // They ride this record rather than a new SSBO because that is exactly
+    // what this record is: per-LAND-tile data indexed by the tile slot
+    // `GpuInstance.flags`'s top 16 bits already carry. A parallel array
+    // indexed the same way would be a second thing to keep in step with the
+    // first, and a new descriptor binding to keep in step with both.
+    /// `cover_affinity` for LAND splat layers 0-3 and 4-7, in the same layer
+    /// order the vertex splat lanes use. Mirrors `GroundCoverCell`'s pair.
+    pub cover_affinity0: [f32; 4],
+    pub cover_affinity1: [f32; 4],
+    /// Y-up world XZ of this tile's (row 0, col 0) vertex — the origin the
+    /// terrain-attribute sampler inverts the grid mapping against.
+    pub cell_origin_xz: [f32; 2],
+    /// Y-up water-plane height, or `NO_WATER_HEIGHT`. The sentinel is
+    /// load-bearing: §3's moisture term must resolve to 1.0 here, not 0.0.
+    pub water_y: f32,
+    /// Canopy slab thickness in world units — the palette's mean blade
+    /// height (§12.5). **Zero disables the whole term for this tile**, which
+    /// is what an interior, a LOD tile, or a worldspace with no resolved
+    /// ground-cover palette gets, and is why no separate enable flag exists.
+    pub canopy_height: f32,
 }
 
 impl GpuTerrainTile {

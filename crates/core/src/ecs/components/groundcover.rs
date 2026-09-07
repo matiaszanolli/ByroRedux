@@ -130,9 +130,33 @@ pub struct GroundCoverSpecies {
     pub height_range: (f32, f32),
     /// Blade width range in Gamebryo units.
     pub width_range: (f32, f32),
-    /// Base → tip colour. Blades are darker at the base in nearly all real
-    /// vegetation because the base is self-shadowed by the canopy above it.
+    /// Base → tip colour: **the plant's own colour variation, and nothing
+    /// else**.
+    ///
+    /// Until #4057 this baked a dark base as a stand-in for self-shadowing —
+    /// the doc comment said so. §12.1's contact occlusion now computes that
+    /// term from the density field, and the two compound: a gradient that
+    /// still carried the fake would put the real occlusion on top of it and
+    /// the base of every blade would go black. So the bases below were lifted
+    /// to what a grass sheath actually is — slightly paler and warmer than the
+    /// lamina, not three stops darker.
     pub colour_gradient: [Rgb; 2],
+    /// Colour of light **transmitted through** the blade (§12.2, #4057).
+    ///
+    /// Cannot be derived from [`Self::colour_gradient`]: chlorophyll absorbs
+    /// blue and red on the way in *and* on the way out, but a single thin
+    /// leaf leaks far more red in transmission than it returns in reflection,
+    /// which is why backlit vegetation reads warmer and more saturated than
+    /// the same leaf lit from the front rather than simply brighter.
+    pub transmission_colour: Rgb,
+    /// Strength of the grazing sheen lobe (§12.6, #4057), `0.0` = matte.
+    ///
+    /// Blades carry a waxy cuticle, and a meadow with the sun low and ahead
+    /// of you goes silver because of it. The *index* of that cuticle is a
+    /// constant (see `GROUNDCOVER_SHEEN_F0`); what varies per species is how
+    /// much intact cuticle there is — a dry summer grass silvers more than a
+    /// green reed, which is the ordering the defaults below use.
+    pub sheen: f32,
     /// Resistance to wind bend, `0.0` = limp, `1.0` = rigid. Feeds the Bezier
     /// control-point displacement in the blade vertex shader (§8).
     pub bend_stiffness: f32,
@@ -170,7 +194,11 @@ impl GroundCoverSpecies {
     pub const DEFAULT_TEMPERATE: Self = Self {
         height_range: (6.0, 14.0),
         width_range: (0.7, 1.4),
-        colour_gradient: [[0.18, 0.26, 0.10], [0.42, 0.52, 0.22]],
+        // Base is the sheath: paler and a touch warmer than the lamina. It is
+        // NOT a darkened tip — see the field's doc and §12.1.
+        colour_gradient: [[0.34, 0.44, 0.16], [0.42, 0.52, 0.22]],
+        transmission_colour: [0.48, 0.50, 0.10],
+        sheen: 0.45,
         bend_stiffness: 0.35,
         cover_affinity: 1.0,
         ground_coupling: 0.25,
@@ -181,7 +209,11 @@ impl GroundCoverSpecies {
     pub const DEFAULT_ARID: Self = Self {
         height_range: (4.0, 9.0),
         width_range: (0.9, 1.8),
-        colour_gradient: [[0.24, 0.20, 0.09], [0.52, 0.46, 0.24]],
+        colour_gradient: [[0.40, 0.36, 0.14], [0.52, 0.46, 0.24]],
+        transmission_colour: [0.62, 0.46, 0.12],
+        // Dry standing grass is most of what silvers in a low sun; a green
+        // sward's cuticle is softened by the water in the blade under it.
+        sheen: 0.70,
         bend_stiffness: 0.65,
         cover_affinity: 0.7,
         // Arid scrub sits in sparse cover on exposed ground, so far more of
@@ -213,6 +245,7 @@ impl GroundCoverSpecies {
             self.bend_stiffness,
             self.cover_affinity,
             self.ground_coupling,
+            self.sheen,
         ]
         .iter()
         .all(|v| v.is_finite())
@@ -220,11 +253,13 @@ impl GroundCoverSpecies {
                 .colour_gradient
                 .iter()
                 .flatten()
+                .chain(self.transmission_colour.iter())
                 .all(|c| c.is_finite() && *c >= 0.0);
         ranges_ok
             && finite
             && self.bend_stiffness >= 0.0
             && self.cover_affinity >= 0.0
+            && self.sheen >= 0.0
             && (0.0..=1.0).contains(&self.ground_coupling)
     }
 }
@@ -271,6 +306,55 @@ impl Default for GroundCoverPalette {
 }
 
 impl Resource for GroundCoverPalette {}
+
+/// Per-weather ground-cover colour multiplier (§12, Phase 5 remainder; #4057).
+///
+/// Oblivion's `WTHR.HNAM` carries a `grassDimmer` alongside `sunlightDimmer`
+/// and `treeDimmer` — a colour multiplier the source engine applies at the
+/// grass-generator stage, *before* scene lighting. It is the one authored
+/// per-weather control this design's palette has a use for.
+///
+/// **It is a resource, not a palette field, and that is the whole point.**
+/// [`GroundCoverPalette`] resolves once when a worldspace is entered; folding
+/// the dimmer in there would freeze it at whichever weather happened to be
+/// active on entry, so an overcast sward would stay overcast through a whole
+/// day cycle. This rides the slot `weather_system` already writes
+/// [`WindField`] into, and is re-read every frame.
+///
+/// `1.0` — the neutral value and the default — is what every non-Oblivion
+/// game gets: `HNAM` is Oblivion-only, and FNV / FO3 / Skyrim+ weather ships
+/// no equivalent. A game with no authored dimmer must render exactly as it
+/// did before this existed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroundCoverDimmer(pub f32);
+
+impl GroundCoverDimmer {
+    /// No tint change. The value every game without an authored `HNAM` uses.
+    pub const NEUTRAL: Self = Self(1.0);
+
+    /// Clamp an authored value into a range that cannot blank or blow out the
+    /// stratum.
+    ///
+    /// Vanilla Oblivion authors this in `[0, 1]` and mostly near 1; a mod (or
+    /// a misparse) is the only way a wild value arrives, and an unclamped one
+    /// multiplies straight into blade albedo. The ceiling is above 1 because
+    /// a weather brightening its grass is a legitimate authored effect, and
+    /// the floor is above 0 because "this weather has no grass" is not.
+    pub fn from_authored(value: f32) -> Self {
+        if !value.is_finite() {
+            return Self::NEUTRAL;
+        }
+        Self(value.clamp(0.05, 4.0))
+    }
+}
+
+impl Default for GroundCoverDimmer {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
+impl Resource for GroundCoverDimmer {}
 
 /// Canonical wind, translated from `WTHR`'s wind-speed byte (§8).
 ///

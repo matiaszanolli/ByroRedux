@@ -396,6 +396,29 @@ struct GpuTerrainTile {
     uint layerDiffuseIndex[8];
     uint layerNormalIndex[8];
     uint layerSpecularIndex[8];
+    // ── EXAL ground cover, §12.5's terrain receiver (#4057) ──────────────
+    //
+    // Grass shadowing the ground is the half of §12.5 anyone actually
+    // notices, and it needs `d_ground` at the terrain fragment. Splat
+    // weights, the terrain normal and the global vertex SSBO are already
+    // here; these four per-cell values were the only missing inputs, and
+    // they ride the record the tile slot already indexes rather than a
+    // parallel array plus a new descriptor binding to keep in step with it.
+    //
+    // std430: both vec4 rows are on their 16-byte boundaries (96, 112) and
+    // the struct's stride is 144. `gpu_terrain_tile_field_offsets_match_
+    // shader_contract` pins the Rust half against exactly those numbers.
+    /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
+    vec4 coverAffinity0;
+    vec4 coverAffinity1;
+    /// Y-up world XZ of the tile's (row 0, col 0) vertex.
+    vec2 cellOriginXZ;
+    /// Y-up water-plane height, or `GROUNDCOVER_NO_WATER`.
+    float waterY;
+    /// Canopy slab thickness, world units. **Zero disables the term** —
+    /// a LOD tile, an interior, or a worldspace with no ground-cover
+    /// palette, which is why there is no separate enable flag.
+    float canopyHeight;
 };
 // Binding 11: adaptive RT quality + glass-work telemetry. The CPU zeroes the
 // first word before each render pass; Phase-3 IOR glass fragments atomically

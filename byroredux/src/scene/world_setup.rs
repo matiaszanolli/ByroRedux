@@ -603,7 +603,7 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         resolve_palette_from_grasses, resolve_wind, resolve_wind_with_direction,
     };
 
-    let (wind_speed, wind_direction) = world
+    let (wind_speed, wind_direction, grass_dimmer) = world
         .try_resource::<WeatherDataRes>()
         .map(|w| {
             (
@@ -611,9 +611,10 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
                 w.weather
                     .wind_direction_authored
                     .then_some(w.weather.wind_direction),
+                w.grass_dimmer,
             )
         })
-        .unwrap_or((0, None));
+        .unwrap_or((0, None, 1.0));
     // Classify over the full WNAM ancestry, not the leaf name: FO3's
     // `MegatonWorld` carries no geographic signal of its own and reads as
     // temperate, when Megaton is a Capital Wasteland settlement.
@@ -643,6 +644,15 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
     );
     world.insert_resource(palette);
     world.insert_resource(wind);
+    // #4057 — seed the per-weather dimmer here for the same reason the wind is
+    // seeded here: `weather_system` only ever gets `&World`, so it can update
+    // the resource but not create it. Entering a worldspace is the one moment
+    // that has `&mut World`.
+    world.insert_resource(
+        byroredux_core::ecs::components::groundcover::GroundCoverDimmer::from_authored(
+            grass_dimmer,
+        ),
+    );
 }
 
 /// Collapse any `WeatherTransitionRes` still in flight from a prior
@@ -1312,6 +1322,7 @@ mod tests {
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
         }
     }
 

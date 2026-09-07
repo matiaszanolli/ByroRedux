@@ -3485,10 +3485,11 @@ fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
 
     assert_eq!(
         rust_fields.len(),
-        3,
+        8,
         "GpuTerrainTile gained or lost a Rust field ({rust_fields:?}) — update the \
-         GLSL mirror in include/bindings.glsl, the 96 B size pin, and the offset \
-         pin above together (#2463)"
+         GLSL mirror in include/bindings.glsl, the 144 B size pin, and the offset \
+         pin above together (#2463). It was 3 fields / 96 B until #4057 added \
+         §12.5's terrain receiver."
     );
     assert_eq!(
         glsl_fields, rust_fields,

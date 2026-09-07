@@ -7,8 +7,11 @@ the terrain surface — grass, ferns, moss, low scrub.
 
 **Status**: Phase 0 IMPLEMENTED (2026-08-12); Phase 5 palette resolution
 IMPLEMENTED (2026-09-06, #3807); §11.1's terrain-attribute sampling question
-MEASURED AND ANSWERED (2026-09-06, #4052) — Phase 1 is no longer gated;
-Phases 1–4 and 6–7 proposed. Rolls out per §9.
+MEASURED AND ANSWERED (2026-09-06, #4052); Phases 1–2 IMPLEMENTED (2026-09-06,
+#4054 / #4055); Phase 6 IMPLEMENTED (2026-09-06, #4057) — which answered §11.6,
+§11.7, §11.9 and §11.10 and closed Phase 5's `grass_dimmer` remainder. Phase 3
+(#4056) and Phase 7 (#4058) proposed; Phase 4 gated on a demonstrated need
+(§5 Stage 2). Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -442,8 +445,10 @@ the palette, or on whether one did.
 
 Oblivion's WTHR `grass_dimmer`
 ([`weather.rs:147-149`](../../crates/plugin/src/esm/records/weather.rs#L147-L149))
-is already parsed and folds naturally into the palette's colour gradient as a
-per-weather multiplier.
+is a per-weather multiplier and therefore explicitly **not** a palette field —
+see §8's "the per-weather path already exists". #4057 landed it as
+`GroundCoverDimmer`, a small resource riding the slot `weather_system` already
+writes `WindField` into.
 
 ---
 
@@ -559,19 +564,32 @@ Each phase is independently useful and independently reviewable.
   / Skyrim SE carry usable dimensions and become real species; the rest fall
   through to the built-in default, as does content with no `GRAS` at all.
 
-  Two pieces of this phase are **not** done, both for want of a consumer
-  rather than for want of data:
+  **`grass_dimmer` done (2026-09-06, #4057)** as `GroundCoverDimmer`, a
+  per-weather resource `weather_system` cross-fades alongside `precipitation`
+  and `WindField`, seeded by `install_ground_cover` at worldspace entry
+  (systems only get `&World`, so entry is the one moment with `&mut World`).
+  `collect_groundcover_species` multiplies it into every authored colour —
+  reflected and transmitted alike, since it describes the light the weather is
+  passing, not the reflectance — and leaves the `.w` lanes (bend stiffness,
+  ground coupling, sheen amount) untouched. `1.0` for every game that ships no
+  `HNAM`, which is all of them except Oblivion.
+
+  One piece of this phase remains **not** done, for want of a consumer rather
+  than for want of data:
 
   1. **Colour gradient from the model texture.** §7 sources it from the
      `GRAS` model's texture, which needs the archive-backed asset provider,
      not the record — `colour_range` is a per-instance jitter *amount*, not a
      colour, so there is nothing in the record to approximate it from.
      Species keep the climate default's gradient until then.
-  2. **`grass_dimmer`.** It is a *per-weather* multiplier, and the palette is
-     resolved once at worldspace entry. Folding it in here would freeze it at
-     whichever weather happened to be active on entry and never update it
-     across a transition, so it belongs at shade time, alongside the Phase 2
-     blade shader that will read it.
+
+     **Deliberately still deferred after #4057**, and §12.3 is why: if colour
+     turns out to be substantially coupled to the ground the species gradient
+     is a smaller input than §7 assumed, and the size of this job should be
+     decided after that coupling weight is calibrated (§11.8, Phase 3 / #4056)
+     rather than before. Building the texture-sampling path first would be
+     sequencing by implementation convenience — the same mistake §12.4's entry
+     in §10 records.
 
   The corpus census behind the decode is recorded in
   [`records/gras.rs`](../../crates/plugin/src/esm/records/gras.rs)'s module
@@ -581,13 +599,17 @@ Each phase is independently useful and independently reviewable.
   does not correlate with plant height in any corpus (Spearman +0.11 on
   Oblivion's n=99, −0.05 on Skyrim's n=21), so `bend_stiffness` stays a
   palette-level constant rather than a per-species translation.
-- **Phase 6 — the organic terms.** Contact occlusion, translucency,
-  ground-colour coupling, canopy shadowing and sheen (§12.1–12.3, §12.5–12.6).
-  Every one of them is analytic and rayless. Needs blades to exist (Phase 2) but
-  is independent of both the LOD chain and the RT shell, so it can land
-  beside either. **Do not defer this behind Phases 3–4**: those make ground
-  cover cheaper and push it further away, while this is what makes it read
-  as a living surface at all, which is the stated goal.
+- **Phase 6 — the organic terms.** Contact occlusion, translucency, canopy
+  shadowing and sheen (§12.1, §12.2, §12.5, §12.6). Every one of them is
+  analytic and rayless. Needs blades to exist (Phase 2) but is independent of
+  both the LOD chain and the RT shell, so it can land beside either. **Do not
+  defer this behind Phases 3–4**: those make ground cover cheaper and push it
+  further away, while this is what makes it read as a living surface at all,
+  which is the stated goal.
+
+  **Done (2026-09-06, #4057)**, together with Phase 5's `grass_dimmer`
+  remainder. §12.3's ground-colour coupling moved to Phase 3 (#4056), where it
+  is the same idea as §6's tier-3 detail layer from the opposite end.
 - **Phase 7 — interaction.** The displacement field (§12.4).
 
 ---
@@ -770,30 +792,89 @@ real worldspaces before the phase that depends on it.
    a per-texel density map. Only answerable once Phase 4 renders — and Phase 4 is
    now gated behind a demonstrated need (§5 Stage 2), so this question may never
    have to be answered at all.
-6. **Occlusion strength vs. density.** How hard the §12.1 base darkening should
-   track `d_ground`, and over what fraction of blade height it falls off. Too weak and
-   the stratum stays a field of separate cards; too strong and a sparse verge
-   reads as a hole. Wants a side-by-side over real cells at several densities,
-   not a number picked here.
-7. **Transmission colour granularity.** Whether one transmission colour per
-   species (§12.2) suffices, or whether it has to vary along blade height — real
-   leaves are more translucent near the tip, where they are thinner. The cheap
-   version is one colour scaled by the existing width taper; only a render says
-   whether that is enough.
+6. **Occlusion strength vs. density — ANSWERED 2026-09-06 (#4057). It is not
+   a free parameter.** The question assumed §12.1 needed a strength scalar and
+   a height falloff of its own. It does not: §12.1 and §12.5 are the *same*
+   extinction through the *same* slab, differing only in the direction light
+   arrives from. §12.5 integrates along the sun (`1/cos θ`); §12.1 integrates
+   over the hemisphere, and the standard two-stream approximation replaces that
+   angular integral with a single diffusivity factor of 5/3 (Elsasser).
+
+   So `byroGcSkyOcclusion` is `byroGcCanopyTransmittance` with `1/cos θ`
+   swapped for `GROUNDCOVER_SKY_DIFFUSIVITY`, over the same
+   `byroGcCanopyOpticalDepth`, and the falloff over blade height falls out of
+   the slab geometry — a fragment at parametric height `t` has `height·(1−t)`
+   units of canopy above it. Both properties are pinned by
+   `occlusion_and_canopy_shadow_share_one_extinction`.
+
+   A separate "occlusion strength" would have been a way for the two terms to
+   disagree about how thick the same grass is, which is a bug with no symptom
+   until someone tunes one of them.
+7. **Transmission colour granularity — ANSWERED 2026-09-06 (#4057). One colour
+   per species, thickness-modulated.** The along-height variation the question
+   was about is real, and it comes out of the geometry rather than the palette:
+   `byroGcBladeTransmittance` is Beer–Lambert through the blade's *tapered*
+   width, so a tip that has narrowed to nothing transmits freely while the base
+   at full width transmits ~8% — the measured band for a single green leaf in
+   the visible, where chlorophyll absorbs blue and red hard. A per-height
+   authored gradient would be a second, hand-tuned copy of a curve the taper
+   already draws.
+
+   The one deliberate exclusion: the vertex shader feeds this the taper
+   *before* §6's projected-pixel width floor. That floor widens a far ribbon so
+   it can be antialiased; letting it make the blade optically thicker would
+   darken the distant field for a reason that has nothing to do with the plant.
 8. **Ground-coupling weight.** How far the species gradient should be pulled
    toward terrain albedo (§12.3). At zero, vegetation and ground stay two
    surfaces; at one, every species is the colour of its dirt and the palette
    stops meaning anything. Calibrate on the §11.3 telemetry run, which already
    samples both terms.
-9. **Canopy extinction coefficient.** The `k` in §12.5's Beer–Lambert
-   transmittance, which sets how fast light dies through the sward. It is the
-   one number standing between "grass tints the ground" and "grass paints a
-   black hole under itself", and it interacts with blade height, so it cannot
-   be picked independently of the §11.3 calibration run.
-10. **Sheen granularity.** Whether one sheen scalar per species (§12.6) is
-   enough, or whether it needs to vary with wetness — the same blade is a very
-   different surface in rain, and §12.3's weather coupling would be the natural
-   driver if so. Deliberately not designed for until the dry case renders.
+9. **Canopy extinction coefficient — ANSWERED 2026-09-06 (#4057). It is two
+   numbers, and both have units.** `k` was opaque because it bundled a
+   dimensionless optical property with a density-to-leaf-area conversion.
+   Split:
+
+   * `GROUNDCOVER_CANOPY_EXTINCTION_K = 0.5` — the Beer–Lambert extinction
+     coefficient for a canopy of randomly oriented leaves (spherical leaf-angle
+     distribution; Monsi & Saeki 1953, still the textbook value in Campbell &
+     Norman). Grass is erectophile, so its true `K` runs a little under this
+     with the sun high and a little over with it low; the spherical value is
+     the neutral middle of that swing, and §12.5's `1/cos θ` already carries
+     the dominant part of the angular dependence.
+   * `GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY = 0.4` per unit — leaf area per unit
+     of canopy depth at `d_ground == 1`. A dense temperate sward has a leaf
+     area index of 3–5; LAI = 4 over the ~10-unit canopy the default temperate
+     species stands up gives 0.4.
+
+   Their product is the old `k = 0.2`, so a full-density sward transmits
+   `exp(−2) ≈ 0.14` of vertical sun to the ground — the measured order for
+   photosynthetically active radiation reaching a dense pasture floor. The
+   question's "one number between grass tints the ground and grass paints a
+   black hole" is now two numbers that can each be checked against a
+   measurement instead of against taste.
+
+   `GROUNDCOVER_CANOPY_MIN_COS = 0.1` caps the path length at 10× vertical (a
+   sun ~5.7° up). That one is a numerical guard and says so: an uncapped
+   `1/cos θ` drives the transmittance to zero and paints the terrain black
+   through the last minutes of every sunset.
+10. **Sheen granularity — ANSWERED 2026-09-06 (#4057) for the dry case: one
+   scalar per species.** The lobe splits into a part that is a property of
+   *fibres* and a part that is a property of the *plant*, and only the second
+   varies:
+
+   * `GROUNDCOVER_SHEEN_F0 = 0.034` is derived, not chosen — plant cuticular
+     wax has a refractive index of ~1.45, so `((1.45−1)/(1.45+1))²`. It is a
+     property of the wax and therefore species-independent.
+   * `GROUNDCOVER_SHEEN_ROUGHNESS = 0.3` sets the width of the Charlie lobe
+     (Estevez & Kulla 2017, the fibre model `KHR_materials_sheen` adopted),
+     which is a property of a ribbed, curved blade and likewise does not vary
+     between grasses. This is the one number here still wanting a render.
+   * `GroundCoverSpecies::sheen` scales the *amount*, which is how much intact
+     cuticle there is. A dry summer grass silvers more than a green reed, and
+     the shipped defaults order them that way (0.70 arid, 0.45 temperate).
+
+   Wetness would move both, and stays deferred with §12.3's weather coupling
+   exactly as this question proposed.
 
 ---
 
@@ -825,6 +906,14 @@ consumers: their defaults have to be calibrated against a render, and landing
 three invented scalars in a canonical type is how a placeholder becomes the
 value nobody revisits.
 
+**Status.** §12.1, §12.2, §12.5 and §12.6 landed in #4057, along with the
+transmission colour and sheen amount they need; the ground-coupling weight
+landed early with the type and waits for §12.3's consumer in #4056. §12.4 is
+#4058. The four light terms all live in
+[`include/groundcover_light.glsl`](../../crates/renderer/shaders/include/groundcover_light.glsl)
+— one header, because they are two pairs and building half of either pair has a
+recognisable failure.
+
 ### 12.1 Contact occlusion
 
 **The problem.** Light does not reach the base of a dense sward. Blades lit
@@ -839,6 +928,9 @@ baked gradient is a *constant*: the sparse edge of a patch is shaded as dark
 at the base as the middle of a meadow, when the whole point is that the middle
 is dark *because* it is the middle.
 
+**It has no strength parameter, and that is the answer to §11.6.** §12.1 and
+§12.5 are the same extinction through the same slab; see §11.6.
+
 **Approach.** Derive the term from the density field that already exists.
 `d_ground` is evaluated per candidate point at scatter time and §4 already keeps
 it in the blade record for width compensation, so the blade shader has it for
@@ -852,7 +944,10 @@ would make a meadow's interior brighten as the camera retreats from it.
 **Consequence for §7.** Once this is computed the species gradient must stop
 baking it, or the two compound and the base goes black. The gradient then
 becomes what it should always have been — the plant's own colour variation,
-not a stand-in for a lighting term.
+not a stand-in for a lighting term. Done in #4057: both built-in species'
+`colour_gradient[0]` was lifted to what a grass sheath actually is — slightly
+paler and warmer than the lamina, not three stops darker — and
+`the_default_gradients_no_longer_bake_a_self_shadow` keeps it that way.
 
 ### 12.2 Translucency
 
@@ -960,8 +1055,28 @@ T = exp(−k · d_ground · h / max(cos θ, ε))
 with θ the light's angle from vertical. A low sun therefore traverses more
 canopy and the shadow deepens and lengthens on its own — the behaviour that
 reads as a real shadow — out of a closed form, with no BLAS, no TLAS entry and
-no ray budget. `k` is a calibration parameter (§11.9), owned by Rust and
-emitted into `shader_constants.glsl` like every other §3 number.
+no ray budget. `k` turned out to be two physical numbers rather than one
+calibration scalar — an extinction coefficient and a leaf area density; see
+§11.9, which #4057 answered.
+
+**How the terrain receiver gets `d_ground`.** It evaluates the same
+`byroGcDensityGround`, off the same include, from `triangle.frag`. Splat
+weights and the geometry normal are already there as interpolated vertex
+attributes; the height stencil §3's shelter term needs goes through
+`byroSampleTerrain` against the global vertex SSBO, which `triangle.frag`
+already binds. The four remaining per-cell inputs — the affinity table, the
+water plane, the cell origin and the canopy thickness — ride `GpuTerrainTile`,
+which grew from 96 to 144 bytes for them. They ride that record rather than a
+new SSBO because that is exactly what it is: per-LAND-tile data indexed by the
+tile slot `GpuInstance.flags` already carries, so there is no parallel array
+and no second descriptor binding to keep in step.
+
+`canopy_height == 0` disables the term, which is what a LOD tile, a BTXT-only
+cell, an interior and a worldspace with no resolved palette all arrive as. The
+attenuation attaches at `shadowableLightRadiance`'s single exit, for
+directional lights only — splitting it across `triangle.frag`'s five call
+sites would break the #1369 invariant that the ReSTIR estimator's shadowed
+subtraction cancel bit-for-bit against its unshadowed accumulation.
 
 **Two receivers, one term.**
 

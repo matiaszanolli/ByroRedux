@@ -1423,6 +1423,16 @@ pub(crate) struct WeatherDataRes {
     pub(crate) cloud_layer_alphas: [[f32; 4]; 4],
     /// Non-colour weather controls from DATA/NAM2/NAM3/classification.
     pub(crate) weather: WeatherSkyState,
+    /// Oblivion `WTHR.HNAM.grassDimmer` — the per-weather ground-cover colour
+    /// multiplier (#4057, `exal-groundcover.md` §12 Phase 5 remainder).
+    ///
+    /// `1.0` for every game that does not ship `HNAM`, which is all of them
+    /// except Oblivion. `weather_system` cross-fades this alongside
+    /// `precipitation` and publishes it as
+    /// [`byroredux_core::ecs::components::groundcover::GroundCoverDimmer`], so
+    /// the sward's tint follows a `WTHR` change instead of freezing at the
+    /// weather that happened to be active when the worldspace was entered.
+    pub(crate) grass_dimmer: f32,
 }
 impl Resource for WeatherDataRes {}
 

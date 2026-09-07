@@ -5,7 +5,7 @@
 //! transition, and writes the result into `SkyParamsRes` /
 //! `CloudSimState` / `CellLightingRes`.
 
-use byroredux_core::ecs::components::groundcover::WindField;
+use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField};
 use byroredux_core::ecs::World;
 
 use crate::components::{
@@ -959,6 +959,18 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     } else {
         wd.precipitation
     };
+    // #4057 — the ground-cover colour multiplier cross-fades with everything
+    // else. A step here would show as the whole sward changing tint on the
+    // frame a WTHR swap starts, while the sky it is standing under takes the
+    // authored TNAM seconds to follow.
+    let weather_grass_dimmer = if transition_t > 0.0 {
+        world
+            .try_resource::<WeatherTransitionRes>()
+            .map(|tr| wd.grass_dimmer + (tr.target.grass_dimmer - wd.grass_dimmer) * transition_t)
+            .unwrap_or(wd.grass_dimmer)
+    } else {
+        wd.grass_dimmer
+    };
 
     drop(wd);
 
@@ -987,6 +999,13 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     };
     if let Some(mut wind) = world.try_resource_mut::<WindField>() {
         *wind = WindField::from_weather_byte(weather_wind_speed, wind_direction);
+    }
+    // #4057 — ride the same slot with the ground-cover dimmer. Updated, never
+    // inserted: systems only get `&World`. `install_ground_cover` seeds the
+    // resource at worldspace entry, and the render path falls back to
+    // `GroundCoverDimmer::NEUTRAL` on any frame that reaches it before then.
+    if let Some(mut dimmer) = world.try_resource_mut::<GroundCoverDimmer>() {
+        *dimmer = GroundCoverDimmer::from_authored(weather_grass_dimmer);
     }
 
     // Update SkyParamsRes.
@@ -1854,6 +1873,7 @@ mod interior_gate_tests {
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
         });
 
         world
@@ -2100,6 +2120,7 @@ mod seeded_at_wrong_tod_resample_tests {
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
         });
 
         // The buggy seed: direction already correct (below-horizon
@@ -2206,6 +2227,7 @@ mod dalc_cube_crossfade_tests {
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
         }
     }
 

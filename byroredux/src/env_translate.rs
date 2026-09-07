@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 
+use byroredux_core::ecs::components::groundcover::GroundCoverDimmer;
 use byroredux_core::ecs::components::water::{
     SubmersionState, WaterFlow, WaterKind, WaterMaterial,
 };
@@ -1325,6 +1326,12 @@ pub(crate) fn translate_weather(
         cloud_layer_colors,
         cloud_layer_alphas: wthr.cloud_layer_alphas,
         weather: weather_sky_state(wthr, 1),
+        // #4057 — `HNAM` is Oblivion-only, and its absence must be neutral:
+        // FNV / FO3 / Skyrim+ ground cover has to render exactly as it did
+        // before this field existed.
+        grass_dimmer: wthr.oblivion_hdr.map_or(1.0, |hdr| {
+            GroundCoverDimmer::from_authored(hdr.grass_dimmer).0
+        }),
     }
 }
 
@@ -1468,6 +1475,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         cloud_layer_colors: [[[1.0; 3]; 4]; 4],
         cloud_layer_alphas: [[1.0; 4]; 4],
         weather: WeatherSkyState::default(),
+        grass_dimmer: 1.0,
     }
 }
 

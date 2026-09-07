@@ -115,8 +115,10 @@ pub struct GpuGroundCoverSpecies {
     pub base_colour: [f32; 4],
     /// Tip colour RGB + ground-coupling weight (§12.3).
     pub tip_colour: [f32; 4],
+    /// Transmission colour RGB (§12.2) + sheen amount (§12.6). #4057.
+    pub transmission_sheen: [f32; 4],
 }
-// SAFETY: 48 bytes of `f32`, no padding.
+// SAFETY: 64 bytes of `f32`, no padding.
 unsafe impl NoUninit for GpuGroundCoverSpecies {}
 
 /// Push constants for the scatter dispatch.
@@ -1187,7 +1189,7 @@ mod tests {
     fn gpu_records_match_their_std430_layout() {
         assert_eq!(std::mem::size_of::<GpuGroundCoverCell>(), 64);
         assert_eq!(std::mem::size_of::<GpuGroundCoverChunk>(), 16);
-        assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 48);
+        assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 64);
         // §4's blade record is "~16 bytes", and the blade buffer is sized by
         // that number in `create_buffers`.
         assert_eq!(
@@ -1374,6 +1376,112 @@ mod tests {
             src.contains("uint accepted = min(gcCounters[chunkIdx], pc.bladesPerChunk);"),
             "the published draw must clamp the cursor: it deliberately runs \
              past the cap, so the raw value is candidates-that-tried"
+        );
+    }
+
+    /// §12.2's ordering trap, pinned in the one place it can be: the shader
+    /// text. Transmission must not be gated on the diffuse `max(N·L, 0)` — the
+    /// near face of a lit blade is precisely the case that should glow — but
+    /// it *must* still take the traced shadow, because a blade shadowed by a
+    /// distant rock receives nothing. Folding it into the diffuse clamp is the
+    /// shape a first implementation reaches for and the reason backlit grass
+    /// so often comes out flat (#4057).
+    #[test]
+    fn transmission_survives_the_diffuse_clamp_but_not_the_shadow_ray() {
+        let src = include_str!("../../shaders/groundcover_blade.frag");
+        let body = src
+            .split_once("void main()")
+            .expect("the blade shader must still have a main")
+            .1;
+        let lobe = body
+            .find("float lobe = byroGcTransmissionLobe(")
+            .expect("§12.2's transmission lobe must be evaluated");
+        let gate = body
+            .find("if (diffuse <= 0.0 && lobe <= 0.0 && sheenLobe <= 0.0)")
+            .expect(
+                "the early-out must require ALL THREE lobes to be dark; a \
+                 `diffuse <= 0.0` continue alone would drop every backlit \
+                 blade before its transmission was ever evaluated",
+            );
+        assert!(
+            lobe < gate,
+            "the lobe must be computed before the early-out"
+        );
+        assert!(
+            body.contains("transmitted += incoming * (lobe * bladeTransmittance);"),
+            "transmission must accumulate separately from the diffuse term"
+        );
+        // `incoming` is the one place the traced shadow and the canopy
+        // transmittance are folded in, and both lobes read it.
+        assert!(
+            body.contains("* shadow * canopy;"),
+            "both lobes must still be gated on the traced world shadow"
+        );
+    }
+
+    /// §12.1 and §12.5 are the same extinction through the same slab, so a
+    /// build that gave occlusion its own strength parameter would let the two
+    /// disagree about how thick the same grass is (§11.6's answer).
+    #[test]
+    fn occlusion_and_canopy_shadow_share_one_extinction() {
+        let src = include_str!("../../shaders/include/groundcover_light.glsl");
+        let depth = src
+            .split_once("float byroGcCanopyOpticalDepth(")
+            .expect("the canopy's optical depth must still be one function")
+            .1
+            .split_once("\n}")
+            .expect("unterminated function")
+            .0;
+        assert!(
+            depth.contains("GROUNDCOVER_CANOPY_EXTINCTION_K")
+                && depth.contains("GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY"),
+            "the optical depth must be K x LAD x d x depth — two named physical \
+             constants, not one opaque scalar (§11.9)"
+        );
+        for consumer in ["byroGcCanopyTransmittance", "byroGcSkyOcclusion"] {
+            let body = src
+                .split_once(&format!("float {consumer}("))
+                .unwrap_or_else(|| panic!("{consumer} must exist"))
+                .1
+                .split_once("\n}")
+                .expect("unterminated function")
+                .0;
+            assert!(
+                body.contains("byroGcCanopyOpticalDepth("),
+                "{consumer} must go through the shared optical depth; a second \
+                 expression here is how §12.1 and §12.5 come to disagree"
+            );
+        }
+    }
+
+    /// §12.5's terrain receiver has to read the SAME density the sward it
+    /// shadows was scattered from, off the same include. A second expression
+    /// in `triangle.frag` would let the shadow's density and the grass's drift
+    /// apart with nothing failing (#4057).
+    #[test]
+    fn the_terrain_receiver_reuses_the_shared_density_field() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(
+            src.contains("#include \"include/groundcover_density.glsl\""),
+            "triangle.frag must evaluate the shared field, not a local copy"
+        );
+        assert!(
+            src.contains("gGcDGround = byroGcDensityGround(") && src.contains("byroGcLaplacian("),
+            "the terrain receiver must call the shared density entry point and \
+             the shared curvature stencil"
+        );
+        assert!(
+            src.contains("terrainTile.canopyHeight > 0.0"),
+            "a zero canopy height must disable the term — that is what a LOD \
+             tile, an interior and an unresolved palette all arrive as"
+        );
+        let lighting = include_str!("../../shaders/include/lighting.glsl");
+        assert!(
+            lighting.contains("lightType >= 1.5 && gGcCanopyHeight > 0.0"),
+            "the canopy must attenuate DIRECTIONAL light only, at \
+             shadowableLightRadiance's single exit — splitting it across \
+             triangle.frag's call sites breaks the #1369 cancel-bit-for-bit \
+             invariant between the ReSTIR passes"
         );
     }
 

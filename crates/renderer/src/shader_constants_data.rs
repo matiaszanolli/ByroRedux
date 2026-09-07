@@ -302,6 +302,93 @@ pub const GROUNDCOVER_WIND_ADVECTION_SCALE: f32 = 1.6;
 pub const GROUNDCOVER_MAX_WIND_SPEED: f32 =
     byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED;
 
+// ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
+//
+// Every term here is analytic — no ray, no probe, no bake step — and every
+// number below is a physical quantity with a source, not a knob. §11.6, §11.7,
+// §11.9 and §11.10 asked "what should this scalar be"; the answer they got is
+// that three of the four are not free scalars at all once the canopy is
+// modelled as what it is: a participating slab of leaves.
+
+/// Beer–Lambert extinction coefficient `K` for a canopy of randomly oriented
+/// leaves — the classic spherical leaf-angle-distribution value from
+/// Monsi & Saeki (1953), still the textbook constant (Campbell & Norman,
+/// *Environmental Biophysics*).
+///
+/// Grass is erectophile rather than spherical, so its true `K` is a little
+/// lower with the sun high and a little higher with it low. The spherical
+/// value is the neutral middle of that swing, and §12.5's `1/cos θ` already
+/// carries the dominant part of the angular dependence.
+pub const GROUNDCOVER_CANOPY_EXTINCTION_K: f32 = 0.5;
+/// Leaf area per unit of canopy depth, at `d_ground == 1.0`, in inverse
+/// Gamebryo units.
+///
+/// A dense temperate sward has a leaf area index of 3–5; taking LAI = 4 over
+/// the ~10-unit canopy the default temperate species stands up
+/// (`height_range` 6–14) gives 0.4 per unit. Together with `K` above this
+/// makes §12.5's whole coefficient `k = K × LAD = 0.2`, so a full-density
+/// sward transmits `exp(−2) ≈ 0.14` of vertical sun to the ground — which is
+/// the measured order for photosynthetically active radiation reaching a
+/// dense pasture floor, and the reason §11.9's "the one number between grass
+/// tints the ground and grass paints a black hole" is now two numbers that
+/// each have a unit and a meaning.
+pub const GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY: f32 = 0.4;
+/// Floor on `cos θ` in §12.5's `1 / max(cos θ, ε)` path-length term.
+///
+/// A numerical guard, not a physical claim: it caps the traversed canopy at
+/// 10× vertical, which is a sun ~5.7° above the horizon. Below that the sun
+/// is reddened and dimmed by the atmosphere anyway, while an uncapped
+/// `1/cos θ` drives the transmittance to zero and paints the terrain black
+/// through the last minutes of every sunset.
+pub const GROUNDCOVER_CANOPY_MIN_COS: f32 = 0.1;
+/// Diffusivity factor: the mean `1 / cos θ` of an isotropic hemisphere, used
+/// to turn §12.5's directional extinction into §12.1's ambient one.
+///
+/// This is Elsasser's constant from two-stream radiative transfer (`5/3`),
+/// and it is why §12.1 needs **no strength parameter of its own** — the
+/// answer to §11.6. Ambient occlusion and canopy shadow are the same
+/// extinction through the same slab, integrated over the sky instead of along
+/// the sun; a second independent "occlusion strength" scalar would be a way
+/// for the two to disagree about how thick the same grass is.
+pub const GROUNDCOVER_SKY_DIFFUSIVITY: f32 = 1.6666666;
+
+/// Extinction through a blade's own thickness (§12.2), per unit of blade
+/// width.
+///
+/// A single green leaf transmits ~5–10% of visible light (chlorophyll absorbs
+/// the blue and red bands hard; the near-infrared it passes freely is not
+/// rendered). `exp(−2.5 × 1.0) ≈ 0.08` puts a mid-width blade in that band,
+/// and because the shader feeds this the *tapered* width the tip transmits
+/// more than the base for free — which is §11.7's answer: one transmission
+/// colour per species is enough, the height variation real leaves show falls
+/// out of the taper rather than needing its own authored gradient.
+pub const GROUNDCOVER_BLADE_TRANSMISSION_EXTINCTION: f32 = 2.5;
+/// Normal-bending applied to the light vector before the transmission lobe is
+/// evaluated, and the lobe's exponent — the two parameters of the
+/// Barré-Brisebois & Bouchard translucency approximation (GDC 2011,
+/// "Approximating Translucency for a Fast, Cheap and Convincing
+/// Subsurface-Scattering Look"), inside the ranges that paper recommends
+/// (distortion 0.1–0.5, power 1–16).
+pub const GROUNDCOVER_TRANSMISSION_DISTORTION: f32 = 0.2;
+pub const GROUNDCOVER_TRANSMISSION_POWER: f32 = 4.0;
+
+/// Normal-incidence Fresnel reflectance of the blade cuticle (§12.6).
+///
+/// Derived, not chosen: plant cuticular wax has a refractive index of ~1.45,
+/// so `F0 = ((1.45 − 1) / (1.45 + 1))² = 0.034`. It is a species-independent
+/// property of the wax, which is why `GroundCoverSpecies::sheen` scales the
+/// lobe's *amount* rather than its index.
+pub const GROUNDCOVER_SHEEN_F0: f32 = 0.034;
+/// Roughness of the Charlie sheen lobe (Estevez & Kulla 2017, the
+/// fabric/fibre model glTF's `KHR_materials_sheen` adopted).
+///
+/// §11.10 asked whether one sheen scalar per species suffices. For the dry
+/// case it does, and this is why: the *shape* of the lobe is a property of
+/// fibres — a ribbed, curved blade — and does not vary between grasses, while
+/// the amount does and is per-species. Wetness would change both, and stays
+/// deferred with §12.3's weather coupling exactly as §11.10 proposed.
+pub const GROUNDCOVER_SHEEN_ROUGHNESS: f32 = 0.3;
+
 // Skinning. #3882 — re-exported rather than restated: this file's whole
 // purpose is that a shared constant has one definition, and ~40 of its
 // entries already resolve through `byroredux_core::`. The survey that fixes

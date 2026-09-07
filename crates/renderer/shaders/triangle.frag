@@ -76,6 +76,10 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/pbr.glsl"
 #include "include/shadow_common.glsl"
 #include "include/shadow_transport.glsl"
+#include "include/terrain_sample.glsl"
+#include "include/groundcover_density.glsl"
+// `lighting.glsl` pulls in `groundcover_light.glsl` and declares the two
+// §12.5 globals this shader sets below (#4057).
 #include "include/lighting.glsl"
 #include "include/material_sampling.glsl"
 
@@ -2567,6 +2571,50 @@ void main() {
     const float AMBIENT_FILL = 0.5;
     vec3 ambientFill = sceneFlags.yzw * AMBIENT_FILL;
     vec3 ambient = max(dielectricAmbient + metallicAmbient, ambientFill);
+    // ── EXAL ground cover §12.5, the terrain receiver (#4057) ───────────
+    //
+    // Grass that casts no shadow reads as pasted onto the terrain, and almost
+    // all of the visual work a grass shadow does is contact darkening: ground
+    // under and beside a clump is darker, and darker still as the sward
+    // thickens. That is not a shape that needs a ray. It is a function of the
+    // density field and the light direction, and this shader already has
+    // everything both need.
+    //
+    // The evaluation is the *same* `byroGcDensityGround` the scatter runs, off
+    // the same include, so the shadow's density and the density of the sward
+    // casting it cannot disagree. Splat weights and the geometry normal come
+    // from the interpolated vertex attributes rather than a re-sample —
+    // they are the same numbers `byroSampleTerrain` would return, already
+    // interpolated by the rasterizer — while the height stencil §3's shelter
+    // term needs does go through the sampler, because curvature is not
+    // something a single fragment's attributes can carry.
+    //
+    // `terrainTile.canopyHeight == 0` disables the whole block: LOD tiles,
+    // BTXT-only cells with no allocated tile slot, interiors, and any
+    // worldspace whose ground-cover palette never resolved. `gGcCanopyHeight`
+    // then stays at its neutral zero and `shadowableLightRadiance` skips it.
+    if (terrainSplatActive && terrainTile.canopyHeight > 0.0) {
+        TerrainSample gcSample;
+        gcSample.height = fragWorldPos.y;
+        gcSample.normal = terrainGeometryNormal;
+        gcSample.splat0 = terrainSplat[0];
+        gcSample.splat1 = terrainSplat[1];
+        gcSample.valid = true;
+        float gcLap = byroGcLaplacian(
+            inst.vertexOffset,
+            terrainTile.cellOriginXZ,
+            fragWorldPos.xz,
+            fragWorldPos.y);
+        gGcDGround = byroGcDensityGround(
+            gcSample,
+            fragWorldPos.xz,
+            terrainTile.coverAffinity0,
+            terrainTile.coverAffinity1,
+            terrainTile.waterY,
+            gcLap);
+        gGcCanopyHeight = terrainTile.canopyHeight;
+    }
+
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
     uint selectedLightDebug = 0xFFFFFFFFu;
     vec3 selectedVisibilityDebug = vec3(-1.0);

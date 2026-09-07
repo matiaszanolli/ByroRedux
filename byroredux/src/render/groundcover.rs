@@ -11,7 +11,7 @@
 //! texture) and the registry compacts, so a cached offset would silently point
 //! into another mesh's vertices and grow grass out of a rock.
 
-use byroredux_core::ecs::components::groundcover::GroundCoverPalette;
+use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, GroundCoverPalette};
 use byroredux_core::ecs::{MeshHandle, World};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::shader_constants::{
@@ -186,13 +186,33 @@ fn chunk_seed(base_xz: [f32; 2]) -> u32 {
     h
 }
 
-/// Flatten the resolved palette into the GPU species array.
+/// Flatten the resolved palette into the GPU species array, applying the live
+/// per-weather grass dimmer.
 ///
 /// `GroundCoverPalette::resolve` guarantees at least one entry, so the shader
 /// has no empty-palette branch to get wrong; this preserves that by falling
 /// back to the built-in default if the resource is somehow absent (an interior
 /// frame that reached here, say).
-pub(crate) fn collect_groundcover_species(world: &World, out: &mut Vec<GpuGroundCoverSpecies>) {
+///
+/// # Why the dimmer is applied here and not in the palette
+///
+/// [`GroundCoverDimmer`] is Oblivion's `WTHR.HNAM.grassDimmer` — a per-weather
+/// colour multiplier the source engine applies at the grass-generator stage,
+/// before scene lighting. Folding it into `GroundCoverPalette` would freeze it
+/// at whichever weather was active when the worldspace was entered, because
+/// that is the one time the palette resolves. This function runs every frame
+/// off the live resource `weather_system` writes, which is the same slot
+/// `WindField` rides, so a `WTHR` cross-fade moves the sward's tint with it.
+///
+/// It multiplies **every** authored colour, transmission included: it is a
+/// property of the light the weather is passing, not of the reflectance, so
+/// dimming what a blade reflects while leaving what it transmits alone would
+/// make backlit grass brighten relative to its surroundings under overcast.
+pub(crate) fn collect_groundcover_species(
+    world: &World,
+    dimmer: GroundCoverDimmer,
+    out: &mut Vec<GpuGroundCoverSpecies>,
+) {
     use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
     out.clear();
     let fallback = [GroundCoverSpecies::DEFAULT_TEMPERATE];
@@ -201,6 +221,7 @@ pub(crate) fn collect_groundcover_species(world: &World, out: &mut Vec<GpuGround
         Some(p) if !p.species.is_empty() => &p.species,
         _ => &fallback,
     };
+    let k = dimmer.0;
     for s in species.iter().take(MAX_GROUNDCOVER_SPECIES) {
         out.push(GpuGroundCoverSpecies {
             size_range: [
@@ -210,18 +231,27 @@ pub(crate) fn collect_groundcover_species(world: &World, out: &mut Vec<GpuGround
                 s.width_range.1,
             ],
             base_colour: [
-                s.colour_gradient[0][0],
-                s.colour_gradient[0][1],
-                s.colour_gradient[0][2],
+                s.colour_gradient[0][0] * k,
+                s.colour_gradient[0][1] * k,
+                s.colour_gradient[0][2] * k,
                 s.bend_stiffness,
             ],
             tip_colour: [
-                s.colour_gradient[1][0],
-                s.colour_gradient[1][1],
-                s.colour_gradient[1][2],
+                s.colour_gradient[1][0] * k,
+                s.colour_gradient[1][1] * k,
+                s.colour_gradient[1][2] * k,
                 // §12.3's ground-coupling weight. Landed with the canonical
                 // type in #4056; older palettes read the type's default.
                 s.ground_coupling,
+            ],
+            transmission_sheen: [
+                s.transmission_colour[0] * k,
+                s.transmission_colour[1] * k,
+                s.transmission_colour[2] * k,
+                // §12.6's sheen amount is a *lobe strength*, not a colour —
+                // the dimmer must not scale it, or an overcast weather would
+                // also flatten the silvering that overcast light produces.
+                s.sheen,
             ],
         });
     }
@@ -272,8 +302,58 @@ mod tests {
     fn species_collection_is_never_empty() {
         let world = World::new();
         let mut out = Vec::new();
-        collect_groundcover_species(&world, &mut out);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut out);
         assert_eq!(out.len(), 1);
         assert!(out[0].size_range[1] >= out[0].size_range[0]);
+    }
+
+    /// The grass dimmer has to reach the GPU record every frame, or a `WTHR`
+    /// cross-fade leaves the sward tinted for whichever weather happened to be
+    /// active when the worldspace resolved its palette (#4057).
+    #[test]
+    fn grass_dimmer_scales_every_authored_colour_but_not_the_sheen() {
+        let world = World::new();
+        let mut neutral = Vec::new();
+        let mut dimmed = Vec::new();
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut neutral);
+        collect_groundcover_species(&world, GroundCoverDimmer(0.5), &mut dimmed);
+        for c in 0..3 {
+            assert!((dimmed[0].base_colour[c] - neutral[0].base_colour[c] * 0.5).abs() < 1.0e-6);
+            assert!((dimmed[0].tip_colour[c] - neutral[0].tip_colour[c] * 0.5).abs() < 1.0e-6);
+            assert!(
+                (dimmed[0].transmission_sheen[c] - neutral[0].transmission_sheen[c] * 0.5).abs()
+                    < 1.0e-6
+            );
+        }
+        // The `.w` lanes are not colours: bend stiffness, ground coupling and
+        // the sheen lobe strength all have to survive the multiply untouched.
+        assert_eq!(dimmed[0].base_colour[3], neutral[0].base_colour[3]);
+        assert_eq!(dimmed[0].tip_colour[3], neutral[0].tip_colour[3]);
+        assert_eq!(
+            dimmed[0].transmission_sheen[3],
+            neutral[0].transmission_sheen[3]
+        );
+    }
+
+    /// §12.1 supersedes §7's baked dark base. If the gradient still carried a
+    /// stand-in for self-shadowing the two would compound and the base of
+    /// every blade would go black under the real occlusion term.
+    #[test]
+    fn the_default_gradients_no_longer_bake_a_self_shadow() {
+        use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
+        for sp in [
+            GroundCoverSpecies::DEFAULT_TEMPERATE,
+            GroundCoverSpecies::DEFAULT_ARID,
+        ] {
+            let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            let base = lum(sp.colour_gradient[0]);
+            let tip = lum(sp.colour_gradient[1]);
+            assert!(
+                base > tip * 0.7,
+                "base {base} is still a darkened tip {tip} — §12.1 now computes \
+                 that term and the two would compound (#4057)"
+            );
+            assert!(base < tip, "the sheath is still paler than the lamina");
+        }
     }
 }

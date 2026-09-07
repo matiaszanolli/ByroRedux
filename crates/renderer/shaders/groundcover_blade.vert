@@ -105,6 +105,16 @@ layout(location = 2) out float vBladeT;
 layout(location = 3) out float vDGround;
 layout(location = 4) flat out uint vSpecies;
 layout(location = 5) out float vColourJitter;
+/// The blade's own height in world units (§12.5) and its half-width at this
+/// vertex (§12.2). Both are seed-derived here and would otherwise have to be
+/// re-derived from the seed in the fragment shader, which would duplicate the
+/// taper formula on the one side that cannot see `gl_VertexIndex`.
+///
+/// `flat` on the height because it is a per-blade constant; interpolating it
+/// would make the canopy slab thickness vary across a single blade's own
+/// triangles, which is not a thing a slab does.
+layout(location = 6) flat out float vBladeHeight;
+layout(location = 7) out float vBladeWidth;
 
 /// Split the 24-bit seed into independent [0,1) streams. Multiplying by
 /// distinct large odd constants and taking the high bits decorrelates them;
@@ -205,6 +215,8 @@ void main() {
         vWorldPos = base;
         vWorldNormal = up;
         vBladeT = 0.0;
+        vBladeHeight = height;
+        vBladeWidth = width;
         gl_Position = pc.viewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
         gl_PointSize = clamp(64.0 / max(distance(base, GC_CAMERA_POS) * 0.02, 1.0), 1.0, 6.0);
         return;
@@ -250,6 +262,16 @@ void main() {
     // Shading normal faces out of the ribbon's flat side.
     vWorldNormal = normalize(cross(widthAxis, tangent));
     vBladeT = t;
+    vBladeHeight = height;
+    // §12.2's thickness proxy is the blade's *tapered* width, not the species
+    // width: a tip that has narrowed to nothing transmits freely, and that
+    // along-height variation is what §11.7 asked whether the transmission
+    // colour had to carry. It does not — the taper carries it. The pixel-size
+    // floor above is deliberately excluded: it widens the ribbon so it can be
+    // antialiased, and letting a far blade's antialiasing floor make it
+    // optically thicker would darken the distant field for a reason that has
+    // nothing to do with the plant.
+    vBladeWidth = width * (1.0 - t * t);
     // Absolute out to the fragment shader (lighting and the RT shadow ray
     // both want world space), render-origin-relative into the projection.
     gl_Position = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);

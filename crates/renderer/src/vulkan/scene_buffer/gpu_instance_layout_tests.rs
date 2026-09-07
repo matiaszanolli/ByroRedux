@@ -318,27 +318,72 @@ fn mesh_id_format_is_r32_uint() {
 /// exterior cell. No test fails, no validation layer fires: the byte count
 /// is legal either way.
 #[test]
-fn gpu_terrain_tile_is_96_bytes() {
+fn gpu_terrain_tile_is_144_bytes() {
     assert_eq!(
         size_of::<GpuTerrainTile>(),
-        96,
-        "GpuTerrainTile must stay 96 B (3 × uint[8]) to match the std430 \
-         `struct GpuTerrainTile` in include/bindings.glsl. The shipped \
-         triangle.frag.spv carries `ArrayStride 96` for this type; changing \
-         the Rust side alone silently misaligns every tile after index 0."
+        144,
+        "GpuTerrainTile must stay 144 B (3 × uint[8], then #4057's two vec4 \
+         affinity rows and the vec2+float+float canopy tail) to match the \
+         std430 `struct GpuTerrainTile` in include/bindings.glsl. The shipped \
+         triangle.frag.spv carries `ArrayStride 144` for this type; changing \
+         the Rust side alone silently misaligns every tile after index 0. \
+         It was 96 B until #4057 added §12.5's terrain receiver."
     );
-    // `uint[8]` members are 4-byte-aligned scalars in std430 (no vec4
-    // rounding), so the Rust and GLSL offsets coincide only while every
-    // member stays a plain `[u32; N]`. A `[f32; 3]`/`vec3` member would
-    // introduce std430 padding the Rust side does not reproduce.
+    // std430 rounds a `vec4` member to a 16-byte boundary. Both vec4 rows
+    // land on multiples of 16 by construction (96, 112) and the struct's
+    // total is a multiple of 16, so the array stride needs no tail padding
+    // the Rust side would have to reproduce by hand.
+    assert_eq!(size_of::<GpuTerrainTile>() % 16, 0);
     assert_eq!(align_of::<GpuTerrainTile>(), 4);
 }
 
 #[test]
 fn gpu_terrain_tile_field_offsets_match_shader_contract() {
-    // Matches `OpDecorate ... ArrayStride 96` + members at 0 / 32 / 64 in
-    // the shipped triangle.frag.spv.
+    // Matches `OpDecorate ... ArrayStride 144` + members at 0 / 32 / 64 /
+    // 96 / 112 / 128 / 136 / 140 in the shipped triangle.frag.spv.
     assert_eq!(offset_of!(GpuTerrainTile, layer_diffuse_index), 0);
     assert_eq!(offset_of!(GpuTerrainTile, layer_normal_index), 32);
     assert_eq!(offset_of!(GpuTerrainTile, layer_specular_index), 64);
+    // The two vec4 rows have to sit on their std430 16-byte boundaries, or
+    // GLSL reads the affinity table shifted by one lane — which yields
+    // plausible density numbers over the wrong layers, not a crash.
+    assert_eq!(offset_of!(GpuTerrainTile, cover_affinity0), 96);
+    assert_eq!(offset_of!(GpuTerrainTile, cover_affinity1), 112);
+    assert_eq!(offset_of!(GpuTerrainTile, cell_origin_xz), 128);
+    assert_eq!(offset_of!(GpuTerrainTile, water_y), 136);
+    assert_eq!(offset_of!(GpuTerrainTile, canopy_height), 140);
+}
+
+/// The shipped SPIR-V is the contract's other half. A Rust-side layout change
+/// that never reached a `glslangValidator` run would pass every assertion
+/// above and still read the tile array at the old stride on the GPU.
+#[test]
+fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
+    let spv = include_bytes!("../../../shaders/triangle.frag.spv");
+    // ArrayStride is `OpDecorate <id> ArrayStride <n>`: opcode 71, decoration
+    // 6. Scan the word stream for any array decorated with 144 rather than
+    // parsing the module — the point is only that the new stride is present
+    // and the old one is not still describing this array.
+    let words: Vec<u32> = spv
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    let mut strides = Vec::new();
+    let mut i = 5; // skip the 5-word header
+    while i < words.len() {
+        let len = (words[i] >> 16) as usize;
+        let op = words[i] & 0xFFFF;
+        if len == 0 {
+            break;
+        }
+        if op == 71 && len == 4 && words[i + 2] == 6 {
+            strides.push(words[i + 3]);
+        }
+        i += len;
+    }
+    assert!(
+        strides.contains(&144),
+        "no ArrayStride 144 in the shipped triangle.frag.spv — recompile it \
+         after changing GpuTerrainTile (#4057). Found: {strides:?}"
+    );
 }

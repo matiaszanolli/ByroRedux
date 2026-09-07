@@ -398,9 +398,78 @@ fn sanitize_land_height(raw: f32) -> (f32, bool) {
     }
 }
 
+/// Mean blade height across the installed ground-cover palette, world units —
+/// §12.5's canopy slab thickness for the terrain receiver (#4057).
+///
+/// Zero when no palette is installed. That is not a fallback thickness, it is
+/// the disable: `GpuTerrainTile::canopy_height == 0` makes `triangle.frag`
+/// skip the whole canopy-shadow block, which is the correct answer for an
+/// interior, a synthetic test cell, or a worldspace whose palette never
+/// resolved. Inventing a thickness there would paint a shadow under grass
+/// that does not exist.
+///
+/// The *mean* of each species' height midpoint rather than a max: the slab is
+/// a bulk property of the sward, and one tall outlier species in the palette
+/// should not deepen the shadow everywhere the short ones grow. Species are
+/// unweighted because the per-climate selection weights govern how often a
+/// species is *drawn*, not how much of the canopy it is — and a chunk's actual
+/// mix is not knowable from here.
+fn mean_palette_blade_height(world: &World) -> f32 {
+    use byroredux_core::ecs::components::groundcover::GroundCoverPalette;
+    let Some(palette) = world.try_resource::<GroundCoverPalette>() else {
+        return 0.0;
+    };
+    if palette.species.is_empty() {
+        return 0.0;
+    }
+    let total: f32 = palette
+        .species
+        .iter()
+        .map(|s| (s.height_range.0 + s.height_range.1) * 0.5)
+        .sum();
+    let mean = total / palette.species.len() as f32;
+    if mean.is_finite() && mean > 0.0 {
+        mean
+    } else {
+        0.0
+    }
+}
+
 /// Raw (pre-renormalize) magnitude of a decoded VNML sample.
 fn vnml_raw_magnitude(nx: f32, ny: f32, nz: f32) -> f32 {
     (nx * nx + ny * ny + nz * nz).sqrt()
+}
+
+/// Decode one LAND `VNML` byte triple into a renderer-space (Y-up) unit
+/// normal, plus whether the raw sample was degenerate.
+///
+/// **The bytes are signed `i8`, `127 = +1`.** #4059: this read
+/// `(byte - 128) / 127` — unsigned centred at 128 — from the day the terrain
+/// path landed until `637b6526`. Under that decode flat ground, authored
+/// `(0, 0, 127)`, came out as `(-1.008, -1.008, -0.008)` and normalised to a
+/// vector lying almost exactly in the horizontal plane, so *every* exterior
+/// terrain vertex normal in the engine pointed sideways.
+///
+/// It survived because nothing that consumed the normal failed loudly: a
+/// sideways normal on flat ground is a plausible shading input, not a crash,
+/// and the magnitude guard below is satisfied by both decodes (the wrong one
+/// yields 1.425 for flat ground, comfortably above the floor). It measured
+/// that the data was not degenerate — which was true — and not that it was
+/// being read the right way up.
+///
+/// So this is a named function rather than three lines inside a 200-line
+/// loop: the *direction* is what needs a test, and a test cannot reach an
+/// expression buried in a mesh builder. See
+/// `flat_ground_vnml_decodes_to_world_up`.
+fn decode_vnml_normal(nml: [u8; 3]) -> ([f32; 3], bool) {
+    let nx = (nml[0] as i8) as f32 / 127.0;
+    let ny = (nml[1] as i8) as f32 / 127.0;
+    let nz = (nml[2] as i8) as f32 / 127.0;
+    let degenerate = vnml_raw_magnitude(nx, ny, nz) < VNML_DEGENERATE_RAW_MAGNITUDE;
+    // Bethesda Z-up -> Y-up via the canonical helper; per-component normalise
+    // commutes with the axis swap (#1753).
+    let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
+    (zup_to_yup_pos([nx / len, ny / len, nz / len]), degenerate)
 }
 
 /// Renderer-side borrows shared by terrain spawning: the Vulkan context,
@@ -495,32 +564,19 @@ pub(super) fn spawn_terrain_mesh(
             }
             let position = zup_to_yup_pos([bx, by, bz]);
 
-            // Normal: VNML bytes are **signed** i8, `127 = +1`.
-            //
-            // #4054 — this read `(byte - 128) / 127`, i.e. unsigned centred at
-            // 128, and had done since the terrain path landed. Under that
-            // decode flat ground — authored `(0, 0, 127)` — comes out as
-            // `(-1.008, -1.008, -0.008)`, which normalises to a normal lying
-            // almost exactly in the horizontal plane. Measured, not inferred:
-            // the ground-cover scatter's per-factor telemetry reported the
-            // slope gate at a hard 0.000 across 49,152 candidates on Whiterun
-            // tundra, and probing the stored vertex normal at the centre
-            // vertex of 48 cells gave `(0.768, -0.012, 0.694)` — the exact
-            // signature of the sign error, and the value the signed decode
-            // turns back into `+Y`.
-            //
-            // Bethesda Z-up → Y-up via the canonical helper; per-component
-            // normalise commutes with the axis swap (#1753).
+            // Normal: signed `i8` VNML — see `decode_vnml_normal` (#4059).
+            // The sign error this replaced was found by the ground-cover
+            // scatter's per-factor telemetry, which reported the slope gate at
+            // a hard 0.000 across 49,152 candidates on Whiterun tundra;
+            // probing the stored vertex normal at the centre vertex of 48
+            // cells gave `(0.768, -0.012, 0.694)`, the exact signature.
             let normal = if let Some(ref nml) = land.normals {
                 let ni = idx * 3;
-                let nx = (nml[ni] as i8) as f32 / 127.0;
-                let ny = (nml[ni + 1] as i8) as f32 / 127.0;
-                let nz = (nml[ni + 2] as i8) as f32 / 127.0;
-                if vnml_raw_magnitude(nx, ny, nz) < VNML_DEGENERATE_RAW_MAGNITUDE {
+                let (n, degenerate) = decode_vnml_normal([nml[ni], nml[ni + 1], nml[ni + 2]]);
+                if degenerate {
                     degenerate_normals += 1;
                 }
-                let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
-                zup_to_yup_pos([nx / len, ny / len, nz / len])
+                n
             } else {
                 [0.0, 1.0, 0.0]
             };
@@ -670,6 +726,27 @@ pub(super) fn spawn_terrain_mesh(
     // layers. BTXT-only cells skip this and render with the pre-#470
     // single-texture path for free. The slot is freed in `unload_cell`
     // via `VulkanContext::free_terrain_tile_slot`.
+    // #4054 — the density field's two per-cell inputs. Resolved here because
+    // this is the only place that has both: the resolved `LTEX` layer order
+    // (which the shader's splat lanes are indexed by) and the caller's water
+    // height. Unfilled affinity slots take the default rather than zero — an
+    // unused layer must not read as a vegetation hole.
+    let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
+    for (slot, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
+        *slot = layer.cover_affinity;
+    }
+    let cover_water_y =
+        water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
+    // #4057 — §12.5's canopy slab thickness for this tile: the resolved
+    // palette's mean blade height. Zero when no palette is installed, which
+    // disables the terrain half of the canopy shadow rather than guessing a
+    // thickness for a sward that is not there.
+    //
+    // Read once at spawn rather than per frame because a palette resolves once
+    // per worldspace entry (§7) and this record's whole job is to carry
+    // per-cell constants; a per-frame path would be a second upload of a
+    // number that cannot change while the cell is resident.
+    let canopy_height = mean_palette_blade_height(world);
     let terrain_tile_index = if !splat_layers.layers.is_empty() {
         let mut diffuse_indices = [0u32; 8];
         let mut normal_indices = [0u32; 8];
@@ -683,6 +760,24 @@ pub(super) fn spawn_terrain_mesh(
             layer_diffuse_index: diffuse_indices,
             layer_normal_index: normal_indices,
             layer_specular_index: specular_indices,
+            cover_affinity0: [
+                layer_affinity[0],
+                layer_affinity[1],
+                layer_affinity[2],
+                layer_affinity[3],
+            ],
+            cover_affinity1: [
+                layer_affinity[4],
+                layer_affinity[5],
+                layer_affinity[6],
+                layer_affinity[7],
+            ],
+            // The Y-up counterpart of the Bethesda Z-up row axis — the same
+            // `(row 0, col 0)` vertex `TerrainCellOrigin` records below, and
+            // the origin `byroSampleTerrain` inverts its grid mapping against.
+            cell_origin_xz: [origin_x, -origin_y],
+            water_y: cover_water_y,
+            canopy_height,
         })
     } else {
         None
@@ -752,21 +847,11 @@ pub(super) fn spawn_terrain_mesh(
             origin_xz: [origin_x, -origin_y],
         },
     );
-    // #4054 — the density field's two per-cell inputs. Written here because
-    // this is the only place that has both: the resolved `LTEX` layer order
-    // (which the shader's splat lanes are indexed by) and the caller's water
-    // height. Unfilled affinity slots take the default rather than zero — an
-    // unused layer must not read as a vegetation hole.
-    let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
-    for (slot, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
-        *slot = layer.cover_affinity;
-    }
     world.insert(
         entity,
         crate::components::TerrainCoverInputs {
             layer_affinity,
-            water_y: water_y
-                .unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT),
+            water_y: cover_water_y,
         },
     );
     // #renderlayer — terrain LAND tiles ARE the architectural floor
@@ -889,12 +974,66 @@ mod tests {
 
     #[test]
     fn vnml_raw_magnitude_flags_the_exact_zero_vector_as_degenerate() {
-        // Byte triple (128, 128, 128) decodes to exactly (0.0, 0.0, 0.0)
-        // — the one input the existing `.max(0.001)` renormalize floor
-        // exists to survive without exploding into a NaN/Inf normal.
+        // Byte triple (0, 0, 0) decodes to exactly (0.0, 0.0, 0.0) under the
+        // signed reading — the one input the existing `.max(0.001)`
+        // renormalize floor exists to survive without exploding into a
+        // NaN/Inf normal. (Pre-#4059 this comment named (128,128,128), which
+        // was the zero of the *unsigned* decode; under the signed one those
+        // bytes are (-128,-128,-128), a full-magnitude sample.)
         let mag = vnml_raw_magnitude(0.0, 0.0, 0.0);
         assert_eq!(mag, 0.0);
         assert!(mag < VNML_DEGENERATE_RAW_MAGNITUDE);
+        assert!(
+            decode_vnml_normal([0, 0, 0]).1,
+            "byte zero is the degenerate sample"
+        );
+        assert!(
+            !decode_vnml_normal([128, 128, 128]).1,
+            "(128,128,128) is the unsigned zero, not the signed one — it is a \
+             full-magnitude sample and must not be reported as degenerate"
+        );
+    }
+
+    /// #4059. The corpus magnitude guard above cannot see a sign error: the
+    /// wrong decode gives flat ground a raw magnitude of 1.425, comfortably
+    /// inside the measured range. Only the *direction* separates the two
+    /// readings, so that is what this pins.
+    #[test]
+    fn flat_ground_vnml_decodes_to_world_up() {
+        // Authored flat ground is (0, 0, 127): Z-up +Z at full scale.
+        let (n, degenerate) = decode_vnml_normal([0, 0, 127]);
+        assert!(!degenerate);
+        assert!(
+            n[1] > 0.999,
+            "flat ground must decode to renderer +Y, got {n:?} — the unsigned \
+             reading gives a near-horizontal normal here (#4059)"
+        );
+        // The unsigned decode, for the record: (0,0,127) -> (-1.008, -1.008,
+        // -0.008), whose Y-up form has a Y component near zero.
+        let unsigned = |b: u8| (f32::from(b) - 128.0) / 127.0;
+        let (ux, uy, uz) = (unsigned(0), unsigned(0), unsigned(127));
+        let ulen = (ux * ux + uy * uy + uz * uz).sqrt();
+        let wrong = zup_to_yup_pos([ux / ulen, uy / ulen, uz / ulen]);
+        assert!(
+            wrong[1].abs() < 0.05,
+            "the pre-#4059 decode is supposed to be the near-horizontal one; \
+             got {wrong:?}"
+        );
+    }
+
+    /// The other half of "signed": a negative authored component has to stay
+    /// negative. A decode that is signed but scaled wrong would still pass the
+    /// flat-ground test above.
+    #[test]
+    fn vnml_negative_components_survive_the_decode() {
+        // (-127, 0, 0) in Z-up is fully -X, which the Y-up flip leaves on -X.
+        let (n, _) = decode_vnml_normal([0x81, 0, 0]);
+        assert!(n[0] < -0.999, "expected -X, got {n:?}");
+        // A 45 degree slope: Z-up (0, -90, 90) is unit-ish and must keep both
+        // signs through the axis swap rather than folding to a positive pair.
+        let (slope, _) = decode_vnml_normal([0, 0xA6, 90]);
+        assert!(slope[1] > 0.6, "up component lost: {slope:?}");
+        assert!(slope[2].abs() > 0.6, "horizontal component lost: {slope:?}");
     }
 
     /// Build a layer tuple with one painted quadrant filled to a
