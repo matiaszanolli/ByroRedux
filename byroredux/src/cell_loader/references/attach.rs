@@ -691,9 +691,15 @@ pub(super) fn attach_vmad_scripts(
         };
         // `script_instance` borrows `index` / the placed ref (not
         // `world`), so it stays valid across the `&mut World` spawn.
+        // #3939 — `servable_catalog`, not `catalog`: lowering a provider
+        // program against aliases no live callback can serve produces a
+        // handler that is attached and then never dispatched. Sibling of the
+        // quest/scene fragment seams in `asset_provider/script.rs`, where the
+        // same inconsistency is worse (a dropped barrier strands its tail
+        // mid-fragment).
         let providers = world
             .try_resource::<byroredux_scripting::PapyrusProviderRuntime>()
-            .map(|runtime| runtime.catalog())
+            .map(|runtime| runtime.servable_catalog())
             .unwrap_or_default();
         let translation = byroredux_scripting::translate_pex_detailed_with_providers(
             &resolved.bytes,

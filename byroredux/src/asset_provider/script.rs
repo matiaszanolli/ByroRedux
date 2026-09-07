@@ -173,9 +173,14 @@ pub(crate) fn populate_quest_fragments(
     if !have_archive {
         return;
     }
+    // #3939 — `servable_catalog`, not `catalog`: lowering against aliases the
+    // dispatcher has no callback to serve turns a provider call into a
+    // barrier that is later dropped along with its tail, mid-fragment, after
+    // the prefix already mutated quest state. Declining at the boundary is
+    // the consistent outcome.
     let providers = world
         .resource::<byroredux_scripting::PapyrusProviderRuntime>()
-        .catalog();
+        .servable_catalog();
 
     let mut total = 0usize;
     let mut quests_with_fragments = 0usize;
@@ -255,9 +260,14 @@ fn populate_scene_fragments(
     if !have_archive {
         return 0;
     }
+    // #3939 — `servable_catalog`, not `catalog`: lowering against aliases the
+    // dispatcher has no callback to serve turns a provider call into a
+    // barrier that is later dropped along with its tail, mid-fragment, after
+    // the prefix already mutated quest state. Declining at the boundary is
+    // the consistent outcome.
     let providers = world
         .resource::<byroredux_scripting::PapyrusProviderRuntime>()
-        .catalog();
+        .servable_catalog();
 
     let mut total = 0;
     for (&scene_form_id, scene) in &index.scenes {
@@ -901,5 +911,62 @@ mod tests {
         assert!(world
             .resource::<byroredux_scripting::QuestStageFragments>()
             .is_populated());
+    }
+
+    /// Regression for #3939. Every production seam that lowers against the
+    /// provider catalog must read `servable_catalog`, never `catalog`: the
+    /// latter can return a non-empty `engine_compatibility()` catalog with
+    /// no live callback behind it — `PapyrusProviderRuntime::default()` does
+    /// exactly that, and so does every early return in
+    /// `load_requested_extensions` that exits before the callback is synced.
+    /// A fragment lowered that way turns a provider call into a barrier that
+    /// dispatch later drops together with its tail, after the prefix has
+    /// already mutated quest state.
+    ///
+    /// Source scan because the alternative is booting the extension host
+    /// with a deliberately broken manifest set; the distinction is one
+    /// method name at three call sites, which is exactly what a scan is for.
+    #[test]
+    fn every_lowering_seam_reads_the_servable_catalog() {
+        const SEAMS: [(&str, &str); 2] = [
+            ("asset_provider/script.rs", include_str!("script.rs")),
+            (
+                "cell_loader/references/attach.rs",
+                include_str!("../cell_loader/references/attach.rs"),
+            ),
+        ];
+        // Composed at runtime so this test's own body cannot satisfy — or
+        // trip — the scan it performs.
+        let unservable = format!("{}{}", ".catalog", "()");
+        let servable = format!("{}{}", ".servable_catalog", "()");
+
+        // Anchored on each mention of the runtime type rather than on a
+        // leading `split("#[cfg(test)]")`: `attach.rs` interleaves test
+        // modules from line 335, so a prefix scan would stop before its
+        // seam at 702 and pass vacuously — the exact failure mode #3442
+        // found in `draw.rs`.
+        let anchor = format!("{}{}", "PapyrusProvider", "Runtime");
+        let mut seams = 0usize;
+        for (name, source) in SEAMS {
+            for (index, _) in source.match_indices(anchor.as_str()) {
+                let window = &source[index..(index + 240).min(source.len())];
+                if window.contains(servable.as_str()) {
+                    seams += 1;
+                    continue;
+                }
+                assert!(
+                    !window.contains(unservable.as_str()),
+                    "{name} lowers against the raw provider catalog. With no \
+                     live callback that catalog is unservable, and the \
+                     fragment it lowers strands its own tail at dispatch \
+                     instead of declining (#3939)"
+                );
+            }
+        }
+        assert!(
+            seams >= 3,
+            "expected the three production lowering seams, found {seams} — \
+             re-derive this pin (#3939)"
+        );
     }
 }

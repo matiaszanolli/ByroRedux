@@ -250,6 +250,105 @@ fn engine_compatibility_catalog_lowers_read_only_input_aliases() {
     ));
 }
 
+/// Regression for #3939. `PapyrusProviderRuntime::default()` publishes a
+/// non-empty `engine_compatibility()` catalog with `callback: None` — and so
+/// does every one of the thirteen `?` exits in `load_requested_extensions`
+/// that return before the callback is synced, a startup error `App::new`
+/// logs and continues past.
+///
+/// Lowering against that catalog turns `Game.GetModCount()` into a provider
+/// *barrier* rather than declining, and dispatch then drops the barrier and
+/// its tail after the fragment prefix has already mutated quest state. The
+/// read is what enforces the pairing now: no callback, no catalog.
+#[test]
+fn a_catalog_with_no_live_callback_is_not_servable() {
+    let runtime = PapyrusProviderRuntime::default();
+
+    // The raw accessor still reports what was published — this is not a
+    // claim that the catalog is empty, only that it cannot be served.
+    assert!(
+        runtime.catalog().resolve("Game", "GetModCount").is_some(),
+        "precondition: Default publishes the engine-compatibility catalog"
+    );
+    assert!(
+        runtime.callback().is_none(),
+        "precondition: Default publishes no callback"
+    );
+
+    let servable = runtime.servable_catalog();
+    assert!(
+        servable.resolve("Game", "GetModCount").is_none(),
+        "an alias the dispatcher has no callback to serve must not reach \
+         lowering — it becomes a barrier that strands its own fragment tail \
+         (#3939)"
+    );
+    // An empty catalog is exactly "no providers" at the seam: the call
+    // yields no `TypedPapyrusProviderCall`, so nothing becomes a barrier.
+    // (It reports `UnknownFunction` rather than `Ok(None)` because `Game` is
+    // a *statically* known provider identifier — both arms decline in
+    // `classify_effect_or_provider_call`, which is the outcome that matters.)
+    assert!(
+        !matches!(
+            lower_provider_call(&expression("Game.GetModCount()"), &servable),
+            Ok(Some(_))
+        ),
+        "an unservable alias must not lower to a provider call"
+    );
+}
+
+/// The behaviour #3939 is actually about, at the fragment level: the same
+/// body lowers to a barrier plus its tail against a live catalog, and
+/// declines *wholesale* against the unservable one — rather than lowering to
+/// a barrier that dispatch later drops along with the `SetStage` behind it,
+/// after the prefix has already run.
+#[test]
+fn a_provider_fragment_declines_wholesale_when_the_catalog_is_not_servable() {
+    use crate::translate::effects::lower_fragment_with_quest_properties_and_providers;
+    use byroredux_papyrus::parse_script;
+
+    let (script, errors) = parse_script(
+        "ScriptName QF extends Quest\n\
+         Function Fragment_0()\n\
+         Game.GetModByName(\"Update.esm\")\n\
+         Self.SetStage(20)\n\
+         EndFunction\n",
+    )
+    .expect("fixture parses");
+    assert!(errors.is_empty());
+    let body = script
+        .body
+        .iter()
+        .find_map(|item| match &item.node {
+            byroredux_papyrus::ast::ScriptItem::Function(function) => Some(function.body.clone()),
+            _ => None,
+        })
+        .expect("the fixture declares one function");
+    let body = body.as_slice();
+
+    let live = PapyrusProviderCatalog::engine_compatibility();
+    let lowered =
+        lower_fragment_with_quest_properties_and_providers(body, &Default::default(), Some(&live))
+            .expect("a servable catalog claims the provider call");
+    assert!(
+        lowered.len() > 1,
+        "precondition: the live catalog lowers the barrier AND its tail — \
+         the tail is what dispatch strands"
+    );
+
+    let unservable = PapyrusProviderRuntime::default().servable_catalog();
+    assert_eq!(
+        lower_fragment_with_quest_properties_and_providers(
+            body,
+            &Default::default(),
+            Some(&unservable)
+        ),
+        None,
+        "with no callback to serve it, the fragment must decline at the \
+         boundary — inert and consistent — instead of advancing its prefix \
+         and stranding everything after the barrier (#3939)"
+    );
+}
+
 #[test]
 fn engine_compatibility_catalog_lowers_exact_game_storage_and_container_aliases() {
     let mut catalog = PapyrusProviderCatalog::engine_compatibility();
