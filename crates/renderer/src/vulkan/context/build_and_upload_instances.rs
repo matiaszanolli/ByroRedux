@@ -171,32 +171,55 @@ impl VulkanContext {
                 }
             }
 
-            // #1260 / PERF-D3-NEW-05 — flag-bit assembly is rasterizer-
-            // only state. The non-uniform-scale dot products feed the
-            // vertex shader's inverse-transpose path (triangle.vert
-            // line 175); ALPHA_BLEND / FLAT_SHADING / TERRAIN_SPLAT /
-            // RENDER_LAYER are all read only by the rasterized fragment
-            // shader (`inst.flags & ...` at triangle.frag:1011 / 1074 /
-            // 1119 / 1231 / 1728); CAUSTIC_SOURCE is gated by the
-            // meshId G-buffer (caustic_splat.comp:170-172), which only
-            // contains pixels for in-frustum rasterized geometry. The
-            // RT hit paths read `hitInst.vertexOffset / indexOffset /
-            // materialId / avgAlbedo* / textureIndex` (triangle.frag:
-            // 438 / 543 / 2981 / 2147) but NEVER `hitInst.flags`.
-            // Therefore off-frustum + water entries can ship `flags=0`
-            // and skip the entire assembly block — the SSBO slot still
-            // serves the RT contract (#516) via model+mesh refs +
-            // material_id + avg_albedo, which are written
-            // unconditionally below.
-            let flags = if skip_batch {
-                0u32
-            } else {
+            // #1260 / PERF-D3-NEW-05 skipped the ENTIRE flag word for
+            // draws that will not be rasterized (`skip_batch`), on the
+            // written premise that "the RT hit paths … NEVER read
+            // `hitInst.flags`". #3978 (REN-2026-09-06-D12-01): that
+            // premise rotted two months later and the skip is now
+            // narrowed to the bits that really are rasterizer-only.
+            //
+            // `include/ray_hit.glsl` — pulled in by `raytrace.glsl`,
+            // `shadow_transport.glsl`, `triangle.frag` and `water.frag`
+            // — reads the HIT instance's flags at four sites, all added
+            // after #1260 landed: FLAT_SHADING + NON_UNIFORM_SCALE in
+            // `getHitInterpolatedNormal` (`9ade7506`), DIFFUSE_ALPHA +
+            // ALPHA_BLEND in `rayHitHasCoverage` (`5d8bb982`, also read
+            // by `shadow_transport.glsl`). Off-frustum instances are
+            // exactly the population that stays in the TLAS (see
+            // `tlas::build_tlas_instances` — "frustum culling only gates
+            // rasterization … off-screen occluders stay in", #516), so
+            // they are precisely the instances rays land on. Shipping
+            // `flags = 0` for them made an off-screen alpha-blended pane,
+            // foliage card or curtain a FULLY OPAQUE blocker for shadow /
+            // reflection / GI rays, and skewed the hit normal of every
+            // non-uniformly-scaled off-frustum surface — a
+            // camera-dependent lighting change on geometry the camera
+            // cannot see, the exact artifact class off-screen TLAS
+            // retention exists to avoid.
+            //
+            // So these four are assembled unconditionally (three dot
+            // products plus one branch over an already-cached
+            // `handle_has_alpha` lookup), and the skip keeps only the
+            // bits no `ray_hit.glsl` / `raytrace.glsl` /
+            // `shadow_transport.glsl` path reads: CAUSTIC_SOURCE (gated
+            // by the meshId G-buffer in `caustic_splat.comp:170-172`,
+            // which only contains in-frustum rasterized pixels — #922's
+            // half of the original rationale IS still sound),
+            // TERRAIN_SPLAT + its packed tile index, and the RENDER_LAYER
+            // debug-viz bits. `rt_visible_flag_assembly_tests` below
+            // replaces the prose invariant with a source scan of the RT
+            // include set — the premise rotted silently precisely because
+            // it was only a comment.
+            let flags = {
                 // Detect non-uniform scale from the model matrix column
                 // lengths. If the 3 column vectors of the upper-3x3
                 // have different lengths, the vertex shader must use
                 // inverse-transpose for normals. Otherwise it can skip
                 // the expensive inverse (~40 ALU ops). Three dot
                 // products is trivial compared to the per-vertex savings.
+                // `getHitInterpolatedNormal` takes the same branch for
+                // secondary-ray hits, which is why this is not skippable
+                // for off-frustum draws (#3978).
                 let col0_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
                 let col1_sq = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
                 let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
@@ -249,25 +272,34 @@ impl VulkanContext {
                         f |= INSTANCE_FLAG_DIFFUSE_ALPHA;
                     }
                 }
-                if is_caustic_source(draw_cmd) {
-                    f |= INSTANCE_FLAG_CAUSTIC_SOURCE;
-                }
-                if let Some(tile_idx) = draw_cmd.terrain_tile_index {
-                    f |= INSTANCE_FLAG_TERRAIN_SPLAT;
-                    f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
-                }
                 // #869 — NiShadeProperty.flags==0 flat-shading:
                 // fragment shader replaces interpolated normal with
-                // the per-face derivative when this bit is set.
+                // the per-face derivative when this bit is set. Also read
+                // by `getHitInterpolatedNormal` for secondary-ray hits,
+                // so it is not skippable off-frustum (#3978).
                 if draw_cmd.flat_shading {
                     f |= INSTANCE_FLAG_FLAT_SHADING;
                 }
-                // #renderlayer — pack the 2-bit layer discriminant
-                // into bits 4..5 for the fragment shader's debug-viz
-                // branch (BYROREDUX_RENDER_DEBUG=0x40 tints fragments
-                // by layer).
-                f |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
-                    << INSTANCE_RENDER_LAYER_SHIFT;
+                // Rasterizer-only bits from here down — skipped for draws
+                // that will not be rasterized (#1260, narrowed by #3978).
+                // Every constant below must stay absent from the `flags &`
+                // reads in the RT include set, which
+                // `rt_visible_flag_assembly_tests` scans for.
+                if !skip_batch {
+                    if is_caustic_source(draw_cmd) {
+                        f |= INSTANCE_FLAG_CAUSTIC_SOURCE;
+                    }
+                    if let Some(tile_idx) = draw_cmd.terrain_tile_index {
+                        f |= INSTANCE_FLAG_TERRAIN_SPLAT;
+                        f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
+                    }
+                    // #renderlayer — pack the 2-bit layer discriminant
+                    // into bits 4..5 for the fragment shader's debug-viz
+                    // branch (BYROREDUX_RENDER_DEBUG=0x40 tints fragments
+                    // by layer).
+                    f |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
+                        << INSTANCE_RENDER_LAYER_SHIFT;
+                }
                 f
             };
 
@@ -1054,5 +1086,133 @@ mod ui_instance_idx_overflow_tests {
             "the old unclamped capture (index taken as u32 before the MAX_INSTANCES check) \
              must not come back"
         );
+    }
+}
+
+#[cfg(test)]
+mod rt_visible_flag_assembly_tests {
+    /// #3978 (REN-2026-09-06-D12-01) — #1260's `flags = 0` skip for
+    /// non-rasterized draws rested on a prose invariant ("the RT hit paths
+    /// … NEVER read `hitInst.flags`") that `include/ray_hit.glsl` and
+    /// `include/shadow_transport.glsl` invalidated two months later, and a
+    /// comment cannot fail a build. This replaces it with a scan: every
+    /// `INSTANCE_FLAG_*` the RT include set tests against an instance's
+    /// `flags` word must be assembled UNCONDITIONALLY, i.e. above the
+    /// `if !skip_batch {` arm that carries the rasterizer-only bits.
+    ///
+    /// Off-frustum instances stay in the TLAS by design (#516), so they are
+    /// exactly the population secondary rays land on while carrying whatever
+    /// this assembly shipped for them.
+    ///
+    /// A live test is impractical here — `build_and_upload_instances` needs a
+    /// real `VulkanContext`; this follows the crate's established convention
+    /// for that class of function (see the sibling `batches_scratch_reserve_tests`
+    /// and `ui_instance_idx_overflow_tests` modules above).
+    const RT_INCLUDES: &[(&str, &str)] = &[
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+        ),
+        (
+            "include/raytrace.glsl",
+            include_str!("../../../shaders/include/raytrace.glsl"),
+        ),
+        (
+            "include/shadow_transport.glsl",
+            include_str!("../../../shaders/include/shadow_transport.glsl"),
+        ),
+        (
+            "include/shadow_common.glsl",
+            include_str!("../../../shaders/include/shadow_common.glsl"),
+        ),
+    ];
+
+    /// Every `INSTANCE_FLAG_*` name appearing as `…flags & INSTANCE_FLAG_X`
+    /// in one of the RT includes, paired with the file it came from.
+    fn rt_read_flag_constants() -> Vec<(&'static str, String)> {
+        const NEEDLE: &str = "flags & INSTANCE_FLAG_";
+        let mut found = Vec::new();
+        for (name, src) in RT_INCLUDES {
+            let mut rest = *src;
+            while let Some(at) = rest.find(NEEDLE) {
+                let tail = &rest[at + NEEDLE.len() - "INSTANCE_FLAG_".len()..];
+                let end = tail
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .unwrap_or(tail.len());
+                found.push((*name, tail[..end].to_string()));
+                rest = &tail[end..];
+            }
+        }
+        found
+    }
+
+    /// The production `let flags = { … }` block, split at the
+    /// `if !skip_batch {` arm: everything before it is assembled for every
+    /// instance, everything inside it only for rasterized ones.
+    fn flag_assembly_halves() -> (String, String) {
+        let full_src = include_str!("build_and_upload_instances.rs");
+        let module_start = full_src
+            .find("mod rt_visible_flag_assembly_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+        let start = src
+            .find("let flags = {")
+            .expect("the per-instance flag assembly block must still exist");
+        let block = &src[start..];
+        let split = block
+            .find("if !skip_batch {")
+            .expect("the rasterizer-only arm must still be spelled `if !skip_batch {`");
+        let end = block
+            .find("\n                f\n            };")
+            .expect("the flag block's terminator must still exist");
+        (block[..split].to_string(), block[split..end].to_string())
+    }
+
+    #[test]
+    fn every_rt_read_instance_flag_is_assembled_unconditionally() {
+        let reads = rt_read_flag_constants();
+        assert!(
+            !reads.is_empty(),
+            "the scan found no `flags & INSTANCE_FLAG_*` in the RT include set — \
+             the needle has drifted (a rename, or the reads moved to another file), \
+             so this test would silently pass on anything (#3978)"
+        );
+
+        let (unconditional, raster_only) = flag_assembly_halves();
+        for (file, constant) in reads {
+            assert!(
+                unconditional.contains(&constant),
+                "{file} tests `flags & {constant}` on a RAY-HIT instance, but \
+                 build_and_upload_instances only assembles that bit inside the \
+                 `if !skip_batch` (rasterized-only) arm. Off-frustum instances stay \
+                 in the TLAS (#516), so they would reach that read with the bit \
+                 clear — move the assembly above the arm (#3978)"
+            );
+            assert!(
+                !raster_only.contains(&constant),
+                "{constant} is read by {file} on a ray-hit instance AND assembled \
+                 inside the `if !skip_batch` arm — a non-rasterized instance would \
+                 ship it clear (#3978)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rasterizer_only_arm_still_carries_the_bits_it_owns() {
+        let (_, raster_only) = flag_assembly_halves();
+        for constant in [
+            "INSTANCE_FLAG_CAUSTIC_SOURCE",
+            "INSTANCE_FLAG_TERRAIN_SPLAT",
+            "INSTANCE_RENDER_LAYER_SHIFT",
+        ] {
+            assert!(
+                raster_only.contains(constant),
+                "{constant} is rasterizer-only state (the caustic gate is mesh-ID \
+                 driven per #922; terrain splat and the render-layer debug bits are \
+                 read only by the rasterized fragment shader) and must stay inside \
+                 the `if !skip_batch` arm — #1260's optimization is narrowed by \
+                 #3978, not reverted"
+            );
+        }
     }
 }
