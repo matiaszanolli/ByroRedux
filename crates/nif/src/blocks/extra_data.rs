@@ -35,6 +35,12 @@ pub struct NiExtraData {
     /// the skeleton's bone-LOD level. The string is the bone's
     /// `NiFixedString` name; resolves to `None` for empty / null
     /// string-table indices. See nif.xml `BoneLOD` (line 2597) and #614.
+    ///
+    /// **Deferred, not wired (2026-09-07, #3931).** Decoded and pinned by
+    /// its dispatch test; nothing reads it. It is the *switching schedule*
+    /// for a mechanism the engine does not have — see
+    /// [`Self::bone_translations`] for the full statement of what would have
+    /// to exist first, which is the same list for both fields.
     pub bone_lods: Option<Vec<(u32, Option<Arc<str>>)>>,
     /// Populated for `SkinAttach` (Starfield) — list of bone names
     /// the parent BSGeometry's skin instance should attach to. Each
@@ -45,6 +51,33 @@ pub struct NiExtraData {
     /// translation)` pairs supplying per-bone offset deltas for the
     /// skeleton at this LOD. Per `nifly::BoneTranslations::Sync`
     /// (ExtraData.cpp:441). See #708.
+    ///
+    /// **Deferred, not wired (2026-09-07, #3931).** Every one of the 256
+    /// instances in the swept Starfield archives carries a non-empty
+    /// payload (281 across all 13 archives), so this is data that exists and
+    /// is dropped — not a dormant field waiting for content. It is recorded
+    /// as deferred rather than carried onto [`crate::import::ImportedSkin`]
+    /// because the deltas are *per bone-LOD level*, and the engine has no
+    /// bone-LOD level to apply them at:
+    ///
+    /// * nothing reads [`Self::bone_lods`], the Skyrim+ switching schedule
+    ///   this pairs with;
+    /// * `NiBSBoneLODController` is dispatched and its body consumed, but
+    ///   the LOD *switching* it describes is not implemented;
+    /// * no skeleton-LOD selection exists anywhere in `crates/core` or the
+    ///   animation path — a grep for one finds only these parsers.
+    ///
+    /// So the honest interim is this note, not a field on `ImportedSkin`
+    /// that would be just as unread one layer higher while looking wired.
+    /// What has to land first is bone-LOD *selection*; applying these
+    /// deltas is then keyed by bone name, which survives the
+    /// `SkinAttach`/`bone_refs` resolution (#3930). The consequence while
+    /// deferred is bounded and specific: a skinned mesh at a reduced
+    /// skeleton LOD is posed from unadjusted bind data — a LOD-boundary
+    /// artefact, never a LOD-0 one.
+    ///
+    /// `every_deferred_extra_data_field_is_still_unconsumed` fails if this
+    /// stops being true, so the note cannot outlive the deferral.
     pub bone_translations: Option<Vec<(String, [f32; 3])>>,
 }
 

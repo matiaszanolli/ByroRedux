@@ -516,3 +516,83 @@ fn ni_floats_extra_data_skyrim() {
     let arr = extra.floats_array.expect("floats_array must populate");
     assert_eq!(arr, vec![1.0, 2.0, 3.0]);
 }
+
+/// #3931 — `bone_translations` and `bone_lods` are decoded on every instance
+/// that ships and read by nothing. Both are recorded as *deliberately
+/// deferred* rather than carried further, because what they need is a
+/// bone-LOD selection mechanism the engine does not have; see their doc
+/// comments for the full statement.
+///
+/// A deferral note is only honest while the deferral holds, and the specific
+/// rot the finding names is a field that "looks wired". So the claim is
+/// pinned: if either field grows a reader anywhere in the workspace, this
+/// fails and says to update the note — which is the point, not an obstacle.
+#[test]
+fn every_deferred_extra_data_field_is_still_unconsumed() {
+    use std::path::{Path, PathBuf};
+
+    // Field names composed at runtime so this file's own text is matched
+    // through the allowlist below rather than by accident.
+    let deferred = [
+        format!("{}{}", "bone_", "translations"),
+        format!("{}{}", "bone_", "lods"),
+    ];
+    // The parser that produces them, the dispatch tests that pin the decode,
+    // one struct-literal `None` in a mesh fixture, and this file.
+    let allowed = [
+        "crates/nif/src/blocks/extra_data.rs",
+        "crates/nif/src/blocks/extra_data_tests.rs",
+        "crates/nif/src/blocks/dispatch_tests/starfield.rs",
+        "crates/nif/src/blocks/dispatch_tests/extra_data.rs",
+        "crates/nif/src/import/mesh/tangent_convention_tests.rs",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut stack: Vec<PathBuf> = vec![
+        root.join("crates"),
+        root.join("byroredux"),
+        root.join("tools"),
+    ];
+    let mut consumers: Vec<String> = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "target") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !deferred.iter().any(|field| text.contains(field.as_str())) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if allowed.iter().any(|known| relative.ends_with(known)) {
+                continue;
+            }
+            consumers.push(relative);
+        }
+    }
+    consumers.sort();
+    assert!(
+        consumers.is_empty(),
+        "these files now read a deferred BSBoneLOD/BoneTranslations field: \
+         {consumers:?}. That is progress, not a defect — delete this test and \
+         the 'deferred, not wired' notes on the fields it guards, which claim \
+         nothing consumes them (#3931)"
+    );
+}
