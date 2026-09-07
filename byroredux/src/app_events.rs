@@ -1166,6 +1166,14 @@ impl ApplicationHandler for App {
                         println!("{}", streaming.telemetry.bench_line());
                     }
 
+                    // #4053 — TLAS membership by policy verdict. Printed
+                    // unconditionally, because its value is as a *diff*: the
+                    // failure mode in this area is "something quietly entered
+                    // or left the TLAS", which no test sees and no frame-time
+                    // graph shows. A row that is always present is one a
+                    // before/after comparison can rely on being there.
+                    println!("{}", self.tlas_policy.bench_line());
+
                     // #4052 — EXAL ground cover §11.1. One row per measured
                     // variant plus the bake row. Printed as their own lines
                     // rather than folded into the `bench:` line because there

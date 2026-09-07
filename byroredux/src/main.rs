@@ -490,6 +490,11 @@ struct App {
     /// this guard `--bench-hold` would dump the summary line on every
     /// `about_to_wait` and the screenshot path would re-fire forever.
     bench_summary_printed: bool,
+    /// #4053 — last frame's TLAS-membership verdicts, by reason, stashed off
+    /// `RenderFrameView` so the bench summary (which prints from
+    /// `about_to_wait`, after the frame has been consumed) can report them.
+    /// Zero on a frame that never reached `build_render_data`.
+    tlas_policy: crate::render::static_meshes::TlasPolicyCounts,
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
     /// `Some` under `--bench-groundcover-sampling`, carrying the two sample
     /// counts the flag can tune. The renderer-side harness is created on the
@@ -815,6 +820,7 @@ impl App {
             bench_mode: None,
             bench_frames_target: None,
             bench_hold: false,
+            tlas_policy: Default::default(),
             groundcover_bench: None,
             groundcover_bench_started: false,
             bench_summary_printed: false,

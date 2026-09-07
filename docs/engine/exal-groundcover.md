@@ -78,18 +78,16 @@ pipeline already builds:
   Ground cover needs the same exclusion (§5).
 
   **Correction (2026-09-06):** this bullet used to say `IsLodTerrain` "keeps it
-  out of the TLAS", and that has not been true for some time. The predicate is
-  now `(!is_lod || lod_shadow_caster)`
-  ([`static_meshes.rs:251`](../../byroredux/src/render/static_meshes.rs#L251)):
-  a camera-local subset of LOD blocks *does* enter the TLAS as structure shadow
-  casters. So `IsLodTerrain` is a distance-gated policy, not a boolean
-  exclusion, and §5's proposed `ExcludedFromTlas` generalisation cannot simply
-  subsume it — collapsing the two would silently change LOD shadowing. The
-  predicate is also already a three-term chain (`is_lod`, `is_decal_mesh`,
-  `MATERIAL_KIND_FIRE_REFRACTION`), so the cleanup §5 asks for is still worth
-  doing; it is just a larger and riskier change than "add a marker component",
-  and its failure mode — something quietly entering or leaving the TLAS — is
-  invisible to the test suite.
+  out of the TLAS", and that has not been true for some time. A camera-local
+  subset of LOD blocks *does* enter the TLAS as structure shadow casters, so
+  `IsLodTerrain` is a distance-gated policy, not a boolean exclusion, and §5's
+  proposed `ExcludedFromTlas` generalisation could not simply subsume it —
+  collapsing the two would have silently changed LOD shadowing.
+
+  **Resolved 2026-09-06 (#4053):** the three-term chain is now one policy
+  function, `render::static_meshes::tlas_exclusion`, returning a named
+  `TlasExclusion` reason rather than a composite boolean. Not a marker
+  component — see §5.
 - **Wind** — WTHR's `wind_speed` byte is already parsed and currently drives
   only cloud scroll (`WeatherDataRes::wind_speed`,
   [`components.rs:914`](../../byroredux/src/components.rs#L914)).
@@ -289,12 +287,31 @@ and GI sample like any other fragment, so it is correctly lit, shadowed by the
 world, and colour-bled into by nearby surfaces. It contributes nothing back: no
 BLAS, no TLAS entry, no ray-budget cost.
 
-This needs a TLAS-exclusion marker. `IsLodTerrain` already does exactly this job
-for distant terrain, so rather than adding a second special case the renderer's
-TLAS query should generalise to a marker component (working name
-`ExcludedFromTlas`) that both `IsLodTerrain` and ground cover carry. That
-refactor is small and belongs in §9's Phase 1 rather than being deferred — a
-third ad-hoc exclusion is how this becomes a per-feature `if` chain.
+Grass therefore needs no TLAS entry at all.
+
+**This section used to ask for an `ExcludedFromTlas` marker component here, and
+that was wrong twice over (revised 2026-09-06, #4053).**
+
+Wrong on the mechanism: `IsLodTerrain` does not "do exactly this job". Its
+exclusion is *distance-gated* — the same LOD block is in the TLAS when the
+camera is near it and out when it is far (§2) — so it cannot be expressed as a
+marker without inserting and removing that marker every frame, which turns a
+read-only render pass into a structural mutation of the world.
+
+Wrong on the need: §2's binding constraint makes blades a GPU-side point list,
+never ECS entities, so nothing in the ground-cover path flows through the
+static-mesh loop that reads such a marker. The first entity that would is the
+Stage 2 proxy shell, which is now gated on a demonstrated need.
+
+The underlying complaint was real, and was fixed on its own terms in #4053:
+`render::static_meshes::tlas_exclusion` is now the single TLAS-membership
+policy, with each exclusion named (`DistantLodBlock`, `DecalSurface`,
+`FireRefraction`) and its gating preserved exactly. A fourth reason adds an
+enum variant, not a fourth `&&`. Membership was verified unchanged across four
+scenes by the `bench:` line's `state_hash`, which hashes per-draw `in_tlas`
+alongside `entity_id`; the accompanying `tlas-policy:` row reports the
+verdict counts by reason, so a scene proves it exercised an arm rather than
+being assumed to.
 
 ### Stage 2 — the shadow grass owes back
 
@@ -503,10 +520,14 @@ Each phase is independently useful and independently reviewable.
   Affinity *values* remain initial estimates pending the §11.3 density-histogram
   calibration; the tests pin ordering and structure, never the scalars, so that
   calibration can move numbers without rewriting the suite.
-- **Phase 1 — scatter.** `ExcludedFromTlas` generalisation, chunking, the
-  density field in GLSL, `groundcover_scatter.comp`, and debug point rendering
-  of accepted candidates over real terrain. This is where the distribution is
-  judged — before any blade exists.
+- **Phase 1 — scatter.** Chunking, the density field in GLSL,
+  `groundcover_scatter.comp`, and debug point rendering of accepted candidates
+  over real terrain. This is where the distribution is judged — before any
+  blade exists.
+
+  The `ExcludedFromTlas` generalisation that used to head this list is gone:
+  ground cover never carries such a marker (§5), and the TLAS-membership
+  cleanup it was standing in for landed separately as #4053.
 
   **Ungated 2026-09-06 (#4052).** §11.1's sampling question is answered, and
   the pieces the answer needed are already in place for the scatter to use:

@@ -266,6 +266,10 @@ impl App {
                 s.draw_command_count = self.draw_commands.len() as u32;
                 s.raster_draw_command_count = frame.raster_draw_count;
             });
+            // #4053 — the bench summary prints from `about_to_wait`, long
+            // after `frame` is gone, so the TLAS-membership verdicts have to
+            // be carried out of it here.
+            self.tlas_policy = frame.tlas_policy;
 
             // Tick and render the UI overlay (Ruffle SWF player).
             let ui_t0 = Instant::now();

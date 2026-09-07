@@ -47,6 +47,143 @@ fn lod_shadow_caster_in_range(center: Vec3, radius: f32, cam_pos: Vec3) -> bool 
         <= byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE + radius.max(0.0)
 }
 
+/// Why a static draw is kept out of the ray-tracing acceleration structure.
+///
+/// #4053. These three reasons arrived as three independent additions to one
+/// `&&`-chain — each correct, none related to the others, and by the third the
+/// expression no longer said what it was for. Naming them changes no behaviour
+/// and buys two things the chain could not give: the reason a draw was
+/// excluded becomes reportable (see [`TlasPolicyCounts`]), and each arm's
+/// gating becomes pinnable by a test that names the arm rather than asserting
+/// on a composite boolean.
+///
+/// **This is deliberately not an `ExcludedFromTlas` marker component**, which
+/// is what `exal-groundcover.md` §5 proposed. [`Self::DistantLodBlock`] is not
+/// a property of the entity — the same LOD block is in the TLAS when the
+/// camera is near it and out when it is far — so a marker would have to be
+/// inserted and removed every frame, turning a read-only render pass into a
+/// structural mutation of the world. The design was written when LOD terrain
+/// really was a boolean exclusion; `lod_shadow_caster_in_range` changed that
+/// and the design text had not caught up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TlasExclusion {
+    /// A distant-terrain / distant-object LOD block outside the conservative
+    /// shadow-caster reach around the camera (#view-dist).
+    ///
+    /// **Distance-gated, not a flat exclusion.** A camera-local subset of LOD
+    /// blocks *does* enter the TLAS, as structure shadow casters, so the
+    /// closer blocks stand in for the full-detail geometry that has not
+    /// streamed in yet. An LOD block with no `WorldBound` has no position to
+    /// test and is excluded — it cannot be shown to be in range.
+    DistantLodBlock,
+    /// An authored decal surface (`IsDecalMesh`). Decals need alpha-over
+    /// compositing but must not become coplanar depth/TLAS occluders — a
+    /// decal in the TLAS shadows and occludes the surface it is painted on.
+    ///
+    /// Deliberately narrower than `RenderLayer::Decal`, which also covers
+    /// ordinary alpha cutouts; those stay in the TLAS.
+    DecalSurface,
+    /// `MATERIAL_KIND_FIRE_REFRACTION`, per that constant's own contract:
+    /// raster-only, "must not cast shadows, receive GI hits, enter
+    /// reflections, or synthesize a physics collider".
+    ///
+    /// `MATERIAL_KIND_EFFECT_SHADER` is deliberately absent here. Effect
+    /// surfaces stay in the TLAS on purpose and occupy
+    /// `VISIBILITY_LAYER_EFFECT`, so optical/GI rays can see them while
+    /// opaque shadow masks cannot.
+    FireRefraction,
+}
+
+impl TlasExclusion {
+    /// Stable token for the telemetry line. Kept short and `snake_case` so a
+    /// harness can grep `excluded_<token>=`.
+    fn token(self) -> &'static str {
+        match self {
+            TlasExclusion::DistantLodBlock => "distant_lod_block",
+            TlasExclusion::DecalSurface => "decal_surface",
+            TlasExclusion::FireRefraction => "fire_refraction",
+        }
+    }
+}
+
+/// The one TLAS-membership policy. `None` means the draw belongs in the TLAS.
+///
+/// Every exclusion the static-mesh loop applies goes through here, so "what
+/// keeps a static draw out of the acceleration structure?" has exactly one
+/// answer to read. The arms are evaluated in the order the pre-#4053 `&&`
+/// chain evaluated them, so the reason reported for a draw that trips more
+/// than one is the same arm that would have short-circuited before.
+///
+/// Note this is the *producer*-side policy. There is a second, deliberately
+/// overlapping consumer-side gate in the renderer
+/// (`acceleration::predicates::draw_command_eligible_for_tlas`), which
+/// re-checks fire-refraction and additionally drops water. That redundancy is
+/// intentional defense-in-depth (#2297) — a future producer that forgets an
+/// exclusion still cannot slip geometry into the TLAS — so consolidating the
+/// two is *not* part of this cleanup.
+pub(super) fn tlas_exclusion(
+    is_lod_terrain: bool,
+    world_bound: Option<&WorldBound>,
+    cam_pos: Vec3,
+    is_decal_mesh: bool,
+    material_kind: u32,
+) -> Option<TlasExclusion> {
+    if is_lod_terrain
+        && !world_bound.is_some_and(|wb| lod_shadow_caster_in_range(wb.center, wb.radius, cam_pos))
+    {
+        return Some(TlasExclusion::DistantLodBlock);
+    }
+    if is_decal_mesh {
+        return Some(TlasExclusion::DecalSurface);
+    }
+    if material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
+        return Some(TlasExclusion::FireRefraction);
+    }
+    None
+}
+
+/// Per-frame tally of [`tlas_exclusion`]'s verdicts.
+///
+/// The failure mode this whole area has is "something quietly enters or leaves
+/// the TLAS", which no unit test can see and which a frame-time graph will not
+/// show either. Counting the policy's verdicts by reason makes that visible in
+/// the bench summary: a refactor that preserves membership leaves all four
+/// numbers unchanged, and a scene that exercises an arm proves it by reporting
+/// a non-zero count for it rather than by being asserted to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TlasPolicyCounts {
+    /// Draws the policy admitted.
+    pub included: u32,
+    pub distant_lod_block: u32,
+    pub decal_surface: u32,
+    pub fire_refraction: u32,
+}
+
+impl TlasPolicyCounts {
+    fn record(&mut self, verdict: Option<TlasExclusion>) {
+        match verdict {
+            None => self.included += 1,
+            Some(TlasExclusion::DistantLodBlock) => self.distant_lod_block += 1,
+            Some(TlasExclusion::DecalSurface) => self.decal_surface += 1,
+            Some(TlasExclusion::FireRefraction) => self.fire_refraction += 1,
+        }
+    }
+
+    /// `tlas-policy:` summary row, one `key=value` per verdict.
+    pub(crate) fn bench_line(&self) -> String {
+        format!(
+            "tlas-policy: included={} excluded_{}={} excluded_{}={} excluded_{}={}",
+            self.included,
+            TlasExclusion::DistantLodBlock.token(),
+            self.distant_lod_block,
+            TlasExclusion::DecalSurface.token(),
+            self.decal_surface,
+            TlasExclusion::FireRefraction.token(),
+            self.fire_refraction,
+        )
+    }
+}
+
 /// Walk every (GlobalTransform, MeshHandle) entity, apply per-entity
 /// optional-component overrides, frustum-cull, intern materials, and
 /// append the resulting `DrawCommand`s to `draw_commands`.
@@ -62,7 +199,8 @@ pub(super) fn collect_static_mesh_draws(
     skin_offsets: &FxHashMap<EntityId, u32>,
     draw_commands: &mut Vec<DrawCommand>,
     material_table: &mut MaterialTable,
-) {
+) -> TlasPolicyCounts {
+    let mut tlas_policy = TlasPolicyCounts::default();
     // ── Render-data query bundle (#246) ──────────────────────────────
     //
     // Collect draw commands from entities with (GlobalTransform,
@@ -243,14 +381,13 @@ pub(super) fn collect_static_mesh_draws(
                 .as_ref()
                 .is_some_and(|q| q.get(entity).is_some());
             let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-            let lod_shadow_caster = is_lod
-                && world_bound
-                    .is_some_and(|wb| lod_shadow_caster_in_range(wb.center, wb.radius, cam_pos));
             let mat = mat_q.as_ref().and_then(|q| q.get(entity));
             let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
-            let in_tlas = (!is_lod || lod_shadow_caster)
-                && !is_decal_mesh
-                && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
+            // #4053 — one policy, three named reasons. See `tlas_exclusion`.
+            let tlas_verdict =
+                tlas_exclusion(is_lod, world_bound, cam_pos, is_decal_mesh, material_kind);
+            tlas_policy.record(tlas_verdict);
+            let in_tlas = tlas_verdict.is_none();
             if !in_raster && !in_tlas {
                 continue;
             }
@@ -976,6 +1113,7 @@ pub(super) fn collect_static_mesh_draws(
             }
         }
     }
+    tlas_policy
 }
 
 #[cfg(test)]
@@ -1071,6 +1209,226 @@ mod tests {
             100.0,
             Vec3::ZERO,
         ));
+    }
+
+    // ── #4053: the TLAS-membership policy, one test per named arm ────
+    //
+    // These replace what used to be a three-clause `&&` inside the draw
+    // loop, testable only by standing up a World and reading a composite
+    // boolean back off a `DrawCommand`. The point of naming the reasons is
+    // that each arm can now be pinned on its own, including the two things
+    // most at risk of a silent change: the LOD arm's *distance* gate, and
+    // what happens to an LOD block with no `WorldBound`.
+
+    const NOT_FIRE: u32 = 0;
+
+    fn near_bound() -> WorldBound {
+        WorldBound::new(Vec3::ZERO, 0.0)
+    }
+
+    fn far_bound() -> WorldBound {
+        WorldBound::new(
+            Vec3::new(
+                byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE + 1.0,
+                0.0,
+                0.0,
+            ),
+            0.0,
+        )
+    }
+
+    #[test]
+    fn ordinary_static_geometry_enters_the_tlas() {
+        assert_eq!(
+            tlas_exclusion(false, Some(&near_bound()), Vec3::ZERO, false, NOT_FIRE),
+            None
+        );
+        // …and having no WorldBound at all is not, by itself, an exclusion.
+        assert_eq!(
+            tlas_exclusion(false, None, Vec3::ZERO, false, NOT_FIRE),
+            None
+        );
+    }
+
+    /// The arm most at risk from the `ExcludedFromTlas` marker the design
+    /// proposed: LOD terrain is **not** a boolean exclusion. A camera-local
+    /// block is a structure shadow caster and belongs in the TLAS; the same
+    /// block does not, once the camera moves away. A marker component could
+    /// not express this without being rewritten every frame.
+    #[test]
+    fn lod_terrain_exclusion_is_distance_gated_not_flat() {
+        assert_eq!(
+            tlas_exclusion(true, Some(&near_bound()), Vec3::ZERO, false, NOT_FIRE),
+            None,
+            "a camera-local LOD block is a shadow caster and must stay in the TLAS"
+        );
+        assert_eq!(
+            tlas_exclusion(true, Some(&far_bound()), Vec3::ZERO, false, NOT_FIRE),
+            Some(TlasExclusion::DistantLodBlock)
+        );
+    }
+
+    /// An LOD block with no `WorldBound` has no position to test, so it
+    /// cannot be *shown* to be in range and is excluded. Reading the gate as
+    /// "not proven far ⇒ keep" would silently admit every not-yet-bounded LOD
+    /// block on the frame it spawns.
+    #[test]
+    fn lod_block_without_a_world_bound_is_excluded() {
+        assert_eq!(
+            tlas_exclusion(true, None, Vec3::ZERO, false, NOT_FIRE),
+            Some(TlasExclusion::DistantLodBlock)
+        );
+    }
+
+    /// The LOD range test uses the sphere's radius, so a large distant block
+    /// whose near edge reaches the camera still casts.
+    #[test]
+    fn lod_range_test_accounts_for_the_sphere_radius() {
+        let reach = byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE;
+        let big = WorldBound::new(Vec3::new(reach + 99.0, 0.0, 0.0), 100.0);
+        assert_eq!(
+            tlas_exclusion(true, Some(&big), Vec3::ZERO, false, NOT_FIRE),
+            None
+        );
+    }
+
+    #[test]
+    fn decal_surfaces_are_excluded() {
+        assert_eq!(
+            tlas_exclusion(false, Some(&near_bound()), Vec3::ZERO, true, NOT_FIRE),
+            Some(TlasExclusion::DecalSurface)
+        );
+    }
+
+    #[test]
+    fn fire_refraction_material_is_excluded() {
+        assert_eq!(
+            tlas_exclusion(
+                false,
+                Some(&near_bound()),
+                Vec3::ZERO,
+                false,
+                byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+            ),
+            Some(TlasExclusion::FireRefraction)
+        );
+    }
+
+    /// Effect-shader surfaces stay in the TLAS on purpose — optical/GI rays
+    /// must see them even though opaque shadow masks do not. Excluding them
+    /// alongside fire-refraction is the obvious-looking mistake here.
+    #[test]
+    fn effect_shader_material_stays_in_the_tlas() {
+        assert_eq!(
+            tlas_exclusion(
+                false,
+                Some(&near_bound()),
+                Vec3::ZERO,
+                false,
+                byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
+            ),
+            None
+        );
+    }
+
+    /// The pre-#4053 `&&` chain short-circuited LOD → decal → material kind.
+    /// The reported reason must be the arm that would have short-circuited,
+    /// or a `tlas-policy:` row attributes an exclusion to the wrong cause.
+    #[test]
+    fn reported_reason_follows_the_original_short_circuit_order() {
+        assert_eq!(
+            tlas_exclusion(
+                true,
+                Some(&far_bound()),
+                Vec3::ZERO,
+                true,
+                byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+            ),
+            Some(TlasExclusion::DistantLodBlock)
+        );
+        assert_eq!(
+            tlas_exclusion(
+                false,
+                Some(&near_bound()),
+                Vec3::ZERO,
+                true,
+                byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+            ),
+            Some(TlasExclusion::DecalSurface)
+        );
+    }
+
+    /// Equivalence against the exact expression this replaced, over every
+    /// combination of its inputs. The refactor's whole claim is "membership
+    /// is unchanged"; this is that claim, exhaustively, for the boolean half.
+    #[test]
+    fn policy_matches_the_pre_4053_predicate_over_every_input() {
+        let bounds = [None, Some(near_bound()), Some(far_bound())];
+        let kinds = [
+            NOT_FIRE,
+            byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
+        ];
+        for &is_lod in &[false, true] {
+            for wb in &bounds {
+                for &is_decal_mesh in &[false, true] {
+                    for &material_kind in &kinds {
+                        let cam_pos = Vec3::ZERO;
+                        // Verbatim transcription of the replaced expression.
+                        let lod_shadow_caster = is_lod
+                            && wb.as_ref().is_some_and(|wb| {
+                                lod_shadow_caster_in_range(wb.center, wb.radius, cam_pos)
+                            });
+                        let expected = (!is_lod || lod_shadow_caster)
+                            && !is_decal_mesh
+                            && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
+                        let actual = tlas_exclusion(
+                            is_lod,
+                            wb.as_ref(),
+                            cam_pos,
+                            is_decal_mesh,
+                            material_kind,
+                        )
+                        .is_none();
+                        assert_eq!(
+                            actual, expected,
+                            "membership changed for (is_lod={is_lod}, wb={wb:?}, \
+                             is_decal_mesh={is_decal_mesh}, material_kind={material_kind})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every draw the policy judges lands in exactly one bucket, so
+    /// `included + the three exclusions` is the number of candidates and a
+    /// dropped arm shows up as a total that no longer adds up.
+    #[test]
+    fn policy_counts_partition_the_candidates() {
+        let mut counts = TlasPolicyCounts::default();
+        counts.record(None);
+        counts.record(None);
+        counts.record(Some(TlasExclusion::DistantLodBlock));
+        counts.record(Some(TlasExclusion::DecalSurface));
+        counts.record(Some(TlasExclusion::DecalSurface));
+        counts.record(Some(TlasExclusion::FireRefraction));
+        assert_eq!(
+            counts,
+            TlasPolicyCounts {
+                included: 2,
+                distant_lod_block: 1,
+                decal_surface: 2,
+                fire_refraction: 1,
+            }
+        );
+        assert_eq!(
+            counts.bench_line(),
+            concat!(
+                "tlas-policy: included=2 excluded_distant_lod_block=1 ",
+                "excluded_decal_surface=2 excluded_fire_refraction=1",
+            )
+        );
     }
 
     use byroredux_core::ecs::{GlobalTransform, World};

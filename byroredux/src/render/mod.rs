@@ -958,6 +958,10 @@ pub(crate) struct RenderFrameView {
     /// depth-history copy. This comes from all loaded mesh materials and
     /// particle emitters, not the frustum-filtered draw list.
     pub has_effect_soft_material: bool,
+    /// #4053 — this frame's TLAS-membership verdicts, by reason. Reported in
+    /// the bench summary as a `tlas-policy:` row; see
+    /// [`static_meshes::TlasPolicyCounts`] for why the counts exist at all.
+    pub tlas_policy: static_meshes::TlasPolicyCounts,
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
@@ -1087,7 +1091,7 @@ pub(crate) fn build_render_data(
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
     let t_static = mark(profile);
-    static_meshes::collect_static_mesh_draws(
+    let tlas_policy = static_meshes::collect_static_mesh_draws(
         world,
         &frustum,
         vp_mat,
@@ -1313,6 +1317,7 @@ pub(crate) fn build_render_data(
         aperture,
         focus_dist,
         has_effect_soft_material,
+        tlas_policy,
     }
 }
 
@@ -1342,7 +1347,7 @@ pub(crate) mod lights;
 mod particles;
 mod skinned;
 mod sky;
-mod static_meshes;
+pub(crate) mod static_meshes;
 mod water;
 pub(crate) use water::WaterDrawIndexScratch;
 
