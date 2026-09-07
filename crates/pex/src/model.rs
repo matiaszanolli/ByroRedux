@@ -235,7 +235,9 @@ pub struct Object {
 }
 
 /// `DebugInfo::FunctionType` (Champollion).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` so it can key the debug-line index `call_sites` builds (#3938).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FunctionType {
     Method,
     Getter,

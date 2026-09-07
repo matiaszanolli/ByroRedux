@@ -1,5 +1,7 @@
 //! Deterministic Papyrus call-site extraction for compatibility preflight.
 
+use std::collections::HashMap;
+
 use crate::{Function, FunctionType, Instruction, OpCode, Pex, Value};
 
 /// Lexical owner of a bytecode call.
@@ -55,19 +57,28 @@ impl Pex {
     /// including full-property getter and setter bodies.
     pub fn call_sites(&self) -> CallSiteScan {
         let mut scan = CallSiteScan::default();
+        // #3938 — built ONCE, in O(D), instead of a linear `find` over the
+        // whole debug-info table per function. Both dimensions are
+        // attacker-controlled and independently `u16`-bounded per container,
+        // and this runs synchronously on the cell-load attach path for every
+        // scripted REFR / quest `.pex`, so the old O(F·D) shape was a CPU
+        // denial-of-service from a file that passes every reader check:
+        // 11.6 s at F = D = 65 535 (release, single thread) against 15 µs for
+        // the vanilla-shaped F = D = 60.
+        let debug_lines = debug_line_index(self);
         for object in &self.objects {
             for property in &object.properties {
                 if let Some(function) = &property.read_function {
                     let scope = CallScope::PropertyGetter {
                         property: property.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &mut scan);
+                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
                 }
                 if let Some(function) = &property.write_function {
                     let scope = CallScope::PropertySetter {
                         property: property.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &mut scan);
+                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
                 }
             }
             for state in &object.states {
@@ -76,7 +87,7 @@ impl Pex {
                         state: state.name.clone(),
                         function: function.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &mut scan);
+                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
                 }
             }
         }
@@ -89,9 +100,10 @@ fn scan_function(
     object: &crate::Object,
     function: &Function,
     scope: CallScope,
+    debug_lines: &DebugLineIndex<'_>,
     scan: &mut CallSiteScan,
 ) {
-    let line_numbers = debug_lines(pex, &object.name, &scope);
+    let line_numbers = lookup_debug_lines(debug_lines, &object.name, &scope);
     for (instruction_index, instruction) in function.instructions.iter().enumerate() {
         if !matches!(
             instruction.op,
@@ -169,7 +181,42 @@ fn identifier<'a>(value: Option<&'a Value>, role: &'static str) -> Result<&'a st
     value.and_then(Value::as_identifier).ok_or(role)
 }
 
-fn debug_lines<'a>(pex: &'a Pex, object: &str, scope: &CallScope) -> Option<&'a [u16]> {
+/// Debug-info line tables keyed by the tuple the scan matches on, with the
+/// three names lower-cased because the original lookup compared them with
+/// `eq_ignore_ascii_case` (#3938).
+type DebugLineIndex<'a> = HashMap<(String, String, String, FunctionType), &'a [u16]>;
+
+/// One O(D) pass over `function_infos`.
+///
+/// `or_insert` rather than `insert`: the linear `find` this replaces stopped
+/// at the FIRST match, so a `.pex` carrying duplicate `(object, state,
+/// function, type)` entries — nothing in the format forbids it — must still
+/// resolve to the first one. Entries whose `function_type` byte was unknown
+/// (`None`) are skipped, because the old predicate's `== Some(..)` could
+/// never match them either.
+fn debug_line_index(pex: &Pex) -> DebugLineIndex<'_> {
+    let mut index = HashMap::with_capacity(pex.debug_info.function_infos.len());
+    for info in &pex.debug_info.function_infos {
+        let Some(function_type) = info.function_type else {
+            continue;
+        };
+        index
+            .entry((
+                info.object_name.to_ascii_lowercase(),
+                info.state_name.to_ascii_lowercase(),
+                info.function_name.to_ascii_lowercase(),
+                function_type,
+            ))
+            .or_insert(info.line_numbers.as_slice());
+    }
+    index
+}
+
+fn lookup_debug_lines<'a>(
+    index: &DebugLineIndex<'a>,
+    object: &str,
+    scope: &CallScope,
+) -> Option<&'a [u16]> {
     let (state, function, function_type) = match scope {
         CallScope::StateFunction { state, function } => {
             (state.as_str(), function.as_str(), FunctionType::Method)
@@ -177,16 +224,14 @@ fn debug_lines<'a>(pex: &'a Pex, object: &str, scope: &CallScope) -> Option<&'a 
         CallScope::PropertyGetter { property } => ("", property.as_str(), FunctionType::Getter),
         CallScope::PropertySetter { property } => ("", property.as_str(), FunctionType::Setter),
     };
-    pex.debug_info
-        .function_infos
-        .iter()
-        .find(|info| {
-            info.object_name.eq_ignore_ascii_case(object)
-                && info.state_name.eq_ignore_ascii_case(state)
-                && info.function_name.eq_ignore_ascii_case(function)
-                && info.function_type == Some(function_type)
-        })
-        .map(|info| info.line_numbers.as_slice())
+    index
+        .get(&(
+            object.to_ascii_lowercase(),
+            state.to_ascii_lowercase(),
+            function.to_ascii_lowercase(),
+            function_type,
+        ))
+        .copied()
 }
 
 #[cfg(test)]
@@ -204,6 +249,91 @@ mod tests {
                 .collect(),
             var_args: vec![Value::None; argument_count],
         }
+    }
+
+    /// Regression for #3938. `call_sites` re-scanned the whole debug-info
+    /// table once per function, before any call instruction had been found:
+    /// O(F·D) with both dimensions attacker-controlled and independently
+    /// `u16`-bounded, running synchronously on the cell-load attach path for
+    /// every scripted REFR / quest `.pex`. Measured at 11.6 s for
+    /// F = D = 65 535 in release against 15 µs for a vanilla-shaped
+    /// F = D = 60 — a CPU denial-of-service from a file that passes every
+    /// reader check.
+    ///
+    /// The shape is what matters, so this is built to be maximally hostile
+    /// to the old code and cheap for the new: every debug entry matches the
+    /// object and state but no function name, so each of the F lookups used
+    /// to walk all D entries and find nothing.
+    ///
+    /// The bound is wall-clock and deliberately loose — this runs in debug
+    /// under `cargo test` on a loaded machine, and it only has to separate
+    /// "indexed" from "quadratic", which are three orders of magnitude apart
+    /// at this size. A regression fails it by minutes, not milliseconds.
+    #[test]
+    fn call_sites_does_not_rescan_the_debug_table_per_function() {
+        const COUNT: usize = 20_000;
+
+        let functions: Vec<Function> = (0..COUNT)
+            .map(|index| Function {
+                name: format!("Fn{index}"),
+                instructions: vec![call(
+                    OpCode::CallStatic,
+                    &["StorageUtil", "GetIntValue", "::temp0"],
+                    2,
+                )],
+                ..Default::default()
+            })
+            .collect();
+        // Same object and state, never a matching function name: the worst
+        // case for a linear `find`, which has to reject all D every time.
+        let function_infos: Vec<FunctionInfo> = (0..COUNT)
+            .map(|index| FunctionInfo {
+                object_name: "Hostile".to_owned(),
+                state_name: String::new(),
+                function_name: format!("Absent{index}"),
+                function_type: Some(FunctionType::Method),
+                line_numbers: vec![1],
+            })
+            .collect();
+
+        let pex = Pex {
+            script_type: ScriptType::Skyrim,
+            header: Header {
+                source_file_name: "Hostile.psc".to_owned(),
+                ..Default::default()
+            },
+            string_table: Vec::new(),
+            debug_info: DebugInfo {
+                present: true,
+                function_infos,
+                ..Default::default()
+            },
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "Hostile".to_owned(),
+                states: vec![State {
+                    name: String::new(),
+                    functions,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let started = std::time::Instant::now();
+        let scan = pex.call_sites();
+        let elapsed = started.elapsed();
+
+        assert_eq!(scan.calls.len(), COUNT, "every call must still be found");
+        assert!(
+            scan.calls.iter().all(|site| site.source_line.is_none()),
+            "no debug entry names any of these functions, so no call may \
+             resolve a source line — otherwise this measures the wrong path"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "call_sites took {elapsed:?} for {COUNT} functions against \
+             {COUNT} debug entries — the per-function rescan is back (#3938)"
+        );
     }
 
     #[test]
