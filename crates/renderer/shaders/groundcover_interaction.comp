@@ -1,0 +1,104 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// EXAL ground cover — the interaction displacement field's per-frame update
+// (§12.4, #4058).
+//
+// One thread per texel. Three steps, in this order:
+//
+//   1. **Reproject** — read last frame's value at this texel's world position.
+//      The origin is texel-snapped on the host, so the offset between frames
+//      is an exact integer and this is a copy, not a filtered fetch. A filter
+//      applied every frame to its own output is a low-pass running at frame
+//      rate; it would smear a crisp channel into nothing within a second.
+//   2. **Decay** — exponential, toward zero. The field decays rather than
+//      clearing, which is what makes a trail persist behind a runner and fade
+//      instead of snapping upright the instant the entity passes. That
+//      boundary is more distracting than no interaction at all.
+//   3. **Splat** — the per-texel maximum against this frame's disturbers, not
+//      a sum. Max makes a second pass over the same ground *refresh* the
+//      trail rather than double it, keeps the field bounded without a clamp
+//      that would flatten the response near a crowd, and leaves recovery a
+//      pure decay with nothing to unwind.
+//
+// Compile with:
+//   glslangValidator -V -Icrates/renderer/shaders groundcover_interaction.comp -o groundcover_interaction.comp.spv
+
+#include "include/shader_constants.glsl"
+#include "include/groundcover_interaction.glsl"
+
+layout(local_size_x = GROUNDCOVER_INTERACTION_WORKGROUP,
+       local_size_y = GROUNDCOVER_INTERACTION_WORKGROUP,
+       local_size_z = 1) in;
+
+/// Both halves of the field, `packHalf2x16` XZ displacement per texel. Read
+/// from `prevHalf`, written to `writeHalf`; the two alternate every frame.
+layout(std430, set = 0, binding = 0) buffer GcFieldBuffer {
+    uint gcField[];
+};
+
+/// The frame's field header, written by the host. Both this shader and the
+/// blade vertex shader read it, which is why it is a buffer rather than a
+/// push constant — the blade draw's push block is already at Vulkan's
+/// guaranteed 128-byte floor.
+layout(std430, set = 0, binding = 1) readonly buffer GcFieldStateBuffer {
+    /// xy = this frame's snapped origin, z = seconds since the last update,
+    /// w = write half (0 or 1).
+    vec4 gcFieldCurrent;
+    /// xy = last frame's snapped origin, z = disturber count, w = 1.0 when
+    /// the previous half holds a field this origin can be reprojected from.
+    vec4 gcFieldPrevious;
+};
+
+/// `(worldX, worldZ, radius, strength)` per disturbing entity.
+layout(std430, set = 0, binding = 2) readonly buffer GcDisturberBuffer {
+    vec4 gcDisturbers[];
+};
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (!byroGcFieldInBounds(texel)) {
+        return;
+    }
+
+    uint writeHalf = uint(gcFieldCurrent.w);
+    uint prevHalf = 1u - writeHalf;
+    vec2 origin = gcFieldCurrent.xy;
+    float dt = max(gcFieldCurrent.z, 0.0);
+    vec2 worldXZ = byroGcFieldTexelWorld(origin, texel);
+
+    // ── 1. Reproject ────────────────────────────────────────────────────
+    vec2 value = vec2(0.0);
+    if (gcFieldPrevious.w > 0.5) {
+        // Snapped origins make this land exactly on a texel centre; `round`
+        // rather than `floor` so a 1-ULP negative bias cannot shift the whole
+        // field by one texel per frame, which would read as the trail
+        // crawling away from where it was laid.
+        ivec2 prevTexel = ivec2(round(byroGcFieldCoord(gcFieldPrevious.xy, worldXZ)));
+        // Outside the previous field is genuinely empty: the camera has moved
+        // and this ground was not covered last frame. Zero, not a clamp to the
+        // edge — clamping would smear the boundary row across the whole
+        // newly-exposed strip.
+        if (byroGcFieldInBounds(prevTexel)) {
+            value = unpackHalf2x16(gcField[byroGcFieldIndex(prevTexel, prevHalf)]);
+        }
+    }
+
+    // ── 2. Decay ────────────────────────────────────────────────────────
+    if (dt > 0.0) {
+        // exp(-ln2 * dt / halfLife) — half the disturbance gone every
+        // half-life, framerate-independent by construction.
+        value *= exp(-0.6931472 * dt / max(GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS, 1.0e-3));
+    }
+
+    // ── 3. Splat ────────────────────────────────────────────────────────
+    uint count = min(uint(gcFieldPrevious.z), GROUNDCOVER_INTERACTION_MAX_DISTURBERS);
+    for (uint i = 0u; i < count; ++i) {
+        vec2 push = byroGcDisturbance(gcDisturbers[i], worldXZ);
+        if (dot(push, push) > dot(value, value)) {
+            value = push;
+        }
+    }
+
+    gcField[byroGcFieldIndex(texel, writeHalf)] = packHalf2x16(value);
+}

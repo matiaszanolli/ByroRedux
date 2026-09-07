@@ -299,6 +299,19 @@ impl App {
                     dimmer,
                     &mut self.groundcover_species,
                 );
+                // #4058 — §12.4's disturbers. Collected here rather than in
+                // `build_render_data` for the same reason the chunks are: this
+                // is where the frame's camera position is settled, and the
+                // list is culled and sorted against it.
+                crate::render::groundcover::collect_groundcover_disturbers(
+                    &self.world,
+                    byroredux_core::math::Vec3::from_array(frame.camera_pos),
+                    &mut self.groundcover_disturbers,
+                );
+                let frame_dt = self
+                    .world
+                    .try_resource::<DeltaTime>()
+                    .map_or(0.0, |dt| dt.0);
                 let wind = self
                     .world
                     .try_resource::<WindField>()
@@ -335,6 +348,8 @@ impl App {
                     time_seconds,
                     pixels_per_unit_at_unit_depth,
                     debug_points: self.groundcover_debug_points,
+                    disturbers: &self.groundcover_disturbers,
+                    delta_seconds: frame_dt,
                 };
                 ctx.prepare_groundcover(&input);
             } else if ctx.groundcover.is_some() {
@@ -357,6 +372,11 @@ impl App {
                     time_seconds: 0.0,
                     pixels_per_unit_at_unit_depth: 1.0,
                     debug_points: false,
+                    // `--groundcover-off` also stops the interaction field, so
+                    // the off switch really is off — no compute dispatch, no
+                    // trail decaying behind a feature that is not drawing.
+                    disturbers: &[],
+                    delta_seconds: 0.0,
                 };
                 ctx.prepare_groundcover(&input);
             }

@@ -501,6 +501,9 @@ struct App {
     groundcover_cells: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
     groundcover_chunks: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
     groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
+    /// §12.4's per-frame disturber list (#4058). Caller-owned scratch, so the
+    /// allocation persists across frames like the chunk and cell vectors.
+    groundcover_disturbers: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
     /// Render the accepted candidate points instead of blades. §9's Phase 1
     /// view: "this is where the distribution is judged, before any blade
     /// exists". Set by `--groundcover-debug-points`.
@@ -837,6 +840,7 @@ impl App {
             groundcover_cells: Vec::new(),
             groundcover_chunks: Vec::new(),
             groundcover_species: Vec::new(),
+            groundcover_disturbers: Vec::new(),
             groundcover_debug_points: false,
             groundcover_off: false,
             groundcover_bench: None,

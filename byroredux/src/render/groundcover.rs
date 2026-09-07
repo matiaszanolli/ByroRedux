@@ -16,11 +16,11 @@ use byroredux_core::ecs::{MeshHandle, World};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::shader_constants::{
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_DRAW_DISTANCE,
-    GROUNDCOVER_MAX_CHUNKS,
+    GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_MAX_CHUNKS,
 };
 use byroredux_renderer::vulkan::groundcover::{
-    GpuGroundCoverCell, GpuGroundCoverChunk, GpuGroundCoverSpecies, CHUNKS_PER_CELL,
-    MAX_GROUNDCOVER_CELLS, MAX_GROUNDCOVER_SPECIES,
+    GpuGroundCoverCell, GpuGroundCoverChunk, GpuGroundCoverDisturber, GpuGroundCoverSpecies,
+    CHUNKS_PER_CELL, MAX_GROUNDCOVER_CELLS, MAX_GROUNDCOVER_SPECIES,
 };
 use byroredux_renderer::MeshRegistry;
 
@@ -161,6 +161,100 @@ pub(crate) fn collect_groundcover_frame(
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
     let _ = CHUNKS_PER_CELL;
 }
+
+/// Collect this frame's §12.4 interaction disturbers (#4058), nearest first.
+///
+/// # Which entities feed the field
+///
+/// **Every live actor** — anything carrying [`ActorValues`] and a world
+/// transform, the player included. The issue left this open as a cost/quality
+/// trade; the two alternatives it named lose for reasons that do not need a
+/// render to see:
+///
+/// - *Player only* would make the world feel dead the moment an NPC walked
+///   past you through the same grass and left none of it moved. The whole
+///   point of the term is that the stratum reacts to the world, not to the
+///   camera.
+/// - *All physics bodies* would spend the budget on every dropped bottle and
+///   every settled prop, most of which never move again and none of which the
+///   eye is tracking. A disturber costs one loop iteration per field texel.
+///
+/// Actors are what the eye follows, and an actor's motion through grass is the
+/// only motion that reads as motion. The remaining refinements — a cart, a
+/// rolling boulder, a spell effect — are entities that would each want their
+/// own radius anyway, so they are additions to this list rather than reasons
+/// to have picked a different one.
+///
+/// # Radius
+///
+/// The actor's own character-controller capsule when it has one, and
+/// [`CharacterController::HUMAN`]'s radius when it does not — a canonical
+/// constant that already describes a vanilla actor capsule (36 units wide),
+/// not a number invented here.
+pub(crate) fn collect_groundcover_disturbers(
+    world: &World,
+    camera_pos: Vec3,
+    out: &mut Vec<GpuGroundCoverDisturber>,
+) {
+    use byroredux_core::ecs::components::{ActorValues, GlobalTransform};
+    out.clear();
+    let (Some(actor_q), Some(xform_q)) = (
+        world.query::<ActorValues>(),
+        world.query::<GlobalTransform>(),
+    ) else {
+        return;
+    };
+    let controller_q = world.query::<byroredux_physics::CharacterController>();
+    // Anything past this cannot reach a texel of the field, so it would cost a
+    // per-texel loop iteration to contribute exactly zero.
+    let reach = GROUNDCOVER_INTERACTION_UNITS * 0.5 + MAX_DISTURBER_RADIUS;
+    let mut found: Vec<(f32, GpuGroundCoverDisturber)> = Vec::new();
+    for (entity, _) in actor_q.iter() {
+        let Some(xform) = xform_q.get(entity) else {
+            continue;
+        };
+        let pos = xform.translation;
+        let radius = controller_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map_or(DEFAULT_DISTURBER_RADIUS, |cc| cc.radius)
+            .clamp(1.0, MAX_DISTURBER_RADIUS);
+        let dx = pos.x - camera_pos.x;
+        let dz = pos.z - camera_pos.z;
+        // Horizontal only, for the same reason the chunk cull is horizontal:
+        // an actor on a ledge above the camera is standing in grass the camera
+        // can see, and a 3-D distance would drop it.
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq > reach * reach {
+            continue;
+        }
+        found.push((
+            dist_sq,
+            GpuGroundCoverDisturber {
+                world_xz: [pos.x, pos.z],
+                radius,
+                strength: 1.0,
+            },
+        ));
+    }
+    // Nearest first, because the renderer truncates at
+    // `GROUNDCOVER_INTERACTION_MAX_DISTURBERS` and the ones nearest the camera
+    // are the ones whose trails are legible.
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.extend(
+        found
+            .into_iter()
+            .take(GROUNDCOVER_INTERACTION_MAX_DISTURBERS as usize)
+            .map(|(_, d)| d),
+    );
+}
+
+/// Fallback disturber radius — a vanilla actor capsule.
+const DEFAULT_DISTURBER_RADIUS: f32 = byroredux_physics::CharacterController::HUMAN.radius;
+
+/// Ceiling on an authored capsule radius, so a mod's giant does not open a
+/// channel wider than the field can represent.
+const MAX_DISTURBER_RADIUS: f32 = 256.0;
 
 /// A resident cell's scatter inputs, before chunking.
 struct EntityCell {
@@ -333,6 +427,83 @@ mod tests {
             dimmed[0].transmission_sheen[3],
             neutral[0].transmission_sheen[3]
         );
+    }
+
+    /// §12.4's disturber list is the actors, nearest first, capped. The cap
+    /// is why the sort matters: an unsorted list truncated at 64 would drop
+    /// whichever actors the ECS happened to iterate last, which is not stable
+    /// between frames — so a distant crowd could evict the actor standing next
+    /// to you, and their trail would flicker in and out (#4058).
+    #[test]
+    fn disturbers_are_actors_sorted_by_horizontal_distance() {
+        use byroredux_core::ecs::components::{ActorValues, GlobalTransform};
+        let mut world = World::new();
+        // Three actors at increasing horizontal distance, plus one entity with
+        // a transform but no ActorValues (a prop) that must not appear.
+        for (i, x) in [900.0f32, 100.0, 400.0].into_iter().enumerate() {
+            let e = world.spawn();
+            world.insert(e, ActorValues::from_pairs([(7, 5.0 + i as f32)]));
+            world.insert(
+                e,
+                GlobalTransform {
+                    translation: Vec3::new(x, 0.0, 0.0),
+                    ..GlobalTransform::IDENTITY
+                },
+            );
+        }
+        let prop = world.spawn();
+        world.insert(
+            prop,
+            GlobalTransform {
+                translation: Vec3::new(50.0, 0.0, 0.0),
+                ..GlobalTransform::IDENTITY
+            },
+        );
+
+        let mut out = Vec::new();
+        collect_groundcover_disturbers(&world, Vec3::ZERO, &mut out);
+        assert_eq!(out.len(), 3, "the prop must not disturb anything");
+        assert_eq!(out[0].world_xz[0], 100.0);
+        assert_eq!(out[1].world_xz[0], 400.0);
+        assert_eq!(out[2].world_xz[0], 900.0);
+        // No CharacterController on any of them, so each takes the vanilla
+        // actor capsule rather than a number invented at the call site.
+        assert_eq!(out[0].radius, DEFAULT_DISTURBER_RADIUS);
+    }
+
+    /// An actor far enough out cannot reach a texel of the field, so it would
+    /// cost a per-texel loop iteration to contribute exactly zero.
+    #[test]
+    fn distant_actors_are_culled_from_the_field() {
+        use byroredux_core::ecs::components::{ActorValues, GlobalTransform};
+        let mut world = World::new();
+        let far = world.spawn();
+        world.insert(far, ActorValues::from_pairs([(7, 5.0)]));
+        world.insert(
+            far,
+            GlobalTransform {
+                translation: Vec3::new(GROUNDCOVER_INTERACTION_UNITS * 2.0, 0.0, 0.0),
+                ..GlobalTransform::IDENTITY
+            },
+        );
+        // Vertically distant but horizontally close: an actor on a ledge above
+        // the camera is standing in grass the camera can see, and culling on
+        // 3-D distance would drop it — the same reason the chunk cull is
+        // horizontal.
+        let above = world.spawn();
+        world.insert(above, ActorValues::from_pairs([(7, 5.0)]));
+        world.insert(
+            above,
+            GlobalTransform {
+                translation: Vec3::new(64.0, 5000.0, 0.0),
+                ..GlobalTransform::IDENTITY
+            },
+        );
+
+        let mut out = Vec::new();
+        collect_groundcover_disturbers(&world, Vec3::ZERO, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].world_xz, [64.0, 0.0]);
     }
 
     /// §12.1 supersedes §7's baked dark base. If the gradient still carried a

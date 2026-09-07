@@ -389,6 +389,55 @@ pub const GROUNDCOVER_SHEEN_F0: f32 = 0.034;
 /// deferred with §12.3's weather coupling exactly as §11.10 proposed.
 pub const GROUNDCOVER_SHEEN_ROUGHNESS: f32 = 0.3;
 
+// ── Interaction displacement field (§12.4, #4058) ───────────────────────
+//
+// Grass that does not move when something walks through it is static scenery,
+// whatever else is right about it. The field is structurally the same object
+// as §8's wind: a small world-space texture centred on the camera, sampled by
+// the blade vertex shader at the blade base. The difference — and the part
+// that is easy to get wrong — is that it is **stateful**: accumulated and
+// decayed per frame rather than re-rendered from scratch, so a trail persists
+// behind a runner and fades instead of snapping upright at the boundary.
+
+/// Field resolution, texels per side.
+///
+/// With the extent below this is 8 world units per texel. A human capsule is
+/// 36 units across (`CharacterController::HUMAN`), so a footfall covers ~4.5
+/// texels — enough for the bilinear fetch in the blade shader to draw a
+/// channel with shape, and coarse enough that neighbouring blades sample
+/// almost the same value and therefore part *together*, which is the whole
+/// point of using a field rather than a per-blade test.
+pub const GROUNDCOVER_INTERACTION_TEXELS: u32 = 256;
+/// World-space extent of the field, one side.
+///
+/// Half an exterior cell, ~29 m. Interaction is only legible at close range —
+/// a blade is 6–14 units tall — so the field does not need the 2000-unit draw
+/// distance, and covering it at this resolution would cost 64× the memory to
+/// animate grass nobody can see move.
+pub const GROUNDCOVER_INTERACTION_UNITS: f32 = 2048.0;
+/// Half-life of a disturbance, seconds.
+///
+/// **The recovery is the part that is easy to get wrong.** Blades snapping
+/// upright the instant an entity passes reads worse than no interaction at
+/// all, because it draws the eye straight to the boundary. Real grass springs
+/// most of the way back in a second or two after a light pass, and a trail
+/// through a tall sward lingers longer; 1.5 s is inside that range and errs
+/// toward the trail, which is the half that sells the effect.
+pub const GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS: f32 = 1.5;
+/// Maximum bend a fully-disturbed blade takes, as a fraction of its height.
+///
+/// 0.9 lays the blade nearly flat without letting the Bezier tip pass through
+/// the ground, which a value at or above 1 would do on a downslope.
+pub const GROUNDCOVER_INTERACTION_MAX_BEND: f32 = 0.9;
+/// Disturbers the host uploads per frame, nearest first.
+///
+/// The field is 2048 units across; 64 actors inside it is already a crowd, and
+/// the compute pass costs one loop iteration per texel per disturber.
+pub const GROUNDCOVER_INTERACTION_MAX_DISTURBERS: u32 = 64;
+/// Compute workgroup side for the field update. No `u` suffix — used in
+/// `layout(local_size_x = ...)`.
+pub const GROUNDCOVER_INTERACTION_WORKGROUP: u32 = 8;
+
 // Skinning. #3882 — re-exported rather than restated: this file's whole
 // purpose is that a shared constant has one definition, and ~40 of its
 // entries already resolve through `byroredux_core::`. The survey that fixes

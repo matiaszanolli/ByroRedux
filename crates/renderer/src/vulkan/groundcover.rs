@@ -45,11 +45,14 @@ use super::buffer::{GpuBuffer, NoUninit};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
     GROUNDCOVER_BLADE_SEGMENTS_NEAR, GROUNDCOVER_CHUNKS_PER_CELL_SIDE,
-    GROUNDCOVER_HISTOGRAM_BUCKETS, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
+    GROUNDCOVER_HISTOGRAM_BUCKETS, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
+    GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
+    GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
     GROUNDCOVER_VERTS_PER_SEGMENT,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
+const INTERACTION_SPV: &[u8] = include_bytes!("../../shaders/groundcover_interaction.comp.spv");
 const BLADE_VERT_SPV: &[u8] = include_bytes!("../../shaders/groundcover_blade.vert.spv");
 const BLADE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/groundcover_blade.frag.spv");
 const DEBUG_FRAG_SPV: &[u8] = include_bytes!("../../shaders/groundcover_debug.frag.spv");
@@ -121,6 +124,44 @@ pub struct GpuGroundCoverSpecies {
 // SAFETY: 64 bytes of `f32`, no padding.
 unsafe impl NoUninit for GpuGroundCoverSpecies {}
 
+/// World units one interaction-field texel covers (§12.4).
+pub const GROUNDCOVER_INTERACTION_TEXEL_UNITS: f32 =
+    GROUNDCOVER_INTERACTION_UNITS / GROUNDCOVER_INTERACTION_TEXELS as f32;
+
+/// Texels in one half of the interaction field.
+const INTERACTION_TEXEL_COUNT: u64 =
+    (GROUNDCOVER_INTERACTION_TEXELS as u64) * (GROUNDCOVER_INTERACTION_TEXELS as u64);
+
+/// One disturbing entity: `(worldX, worldZ, radius, strength)` (§12.4).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuGroundCoverDisturber {
+    pub world_xz: [f32; 2],
+    pub radius: f32,
+    pub strength: f32,
+}
+// SAFETY: 16 bytes of `f32`, no padding.
+unsafe impl NoUninit for GpuGroundCoverDisturber {}
+
+/// The interaction field's per-frame header. Mirrors `GcFieldStateBuffer` in
+/// `groundcover_interaction.comp` and `groundcover_blade.vert`.
+///
+/// A buffer rather than a push constant because **both** the compute pass and
+/// the blade vertex shader read it, and the blade draw's push block is already
+/// at Vulkan's guaranteed 128-byte floor.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuGroundCoverFieldState {
+    /// xy = this frame's snapped origin, z = seconds since the last update,
+    /// w = write half (0 or 1).
+    pub current: [f32; 4],
+    /// xy = last frame's snapped origin, z = disturber count, w = 1.0 when the
+    /// previous half holds a field this origin can be reprojected from.
+    pub previous: [f32; 4],
+}
+// SAFETY: 32 bytes of `f32`, no padding.
+unsafe impl NoUninit for GpuGroundCoverFieldState {}
+
 /// Push constants for the scatter dispatch.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -175,6 +216,14 @@ pub struct GroundCoverFrame<'a> {
     pub pixels_per_unit_at_unit_depth: f32,
     /// Render the accepted candidate points instead of blades (§9 Phase 1).
     pub debug_points: bool,
+    /// Entities disturbing the sward this frame (§12.4), nearest first. The
+    /// excess past `GROUNDCOVER_INTERACTION_MAX_DISTURBERS` is dropped, which
+    /// is why the host sorts.
+    pub disturbers: &'a [GpuGroundCoverDisturber],
+    /// Seconds since the previous frame, for the field's decay. Clamped
+    /// renderer-side: a long hitch must not clear a trail outright, and a
+    /// negative or non-finite value must not revive one.
+    pub delta_seconds: f32,
 }
 
 /// Per-frame scatter telemetry, harvested one pipelined cycle late.
@@ -265,6 +314,13 @@ pub struct GroundCoverPipeline {
     scatter_pipeline_layout: vk::PipelineLayout,
     scatter_pipeline: vk::Pipeline,
 
+    /// §12.4's field update. Its own set and pipeline: it shares no buffer
+    /// with the scatter, runs before it, and giving it the scatter's layout
+    /// would let a future edit reach the blade buffer from here.
+    interaction_set_layout: vk::DescriptorSetLayout,
+    interaction_pipeline_layout: vk::PipelineLayout,
+    interaction_pipeline: vk::Pipeline,
+
     /// Set 2 for the draw pipelines. Sets 0 and 1 are the shared bindless
     /// texture array and scene descriptor set, exactly as `water.rs` binds
     /// them — blades are lit by the same lights, through the same TLAS.
@@ -287,6 +343,21 @@ pub struct GroundCoverPipeline {
     /// so the histogram (§11.3) and the overflow tally can be reported without
     /// stalling the frame that produced them.
     counter_readback: Vec<GpuBuffer>,
+    /// Both halves of §12.4's field, device-local. Persistent across frames
+    /// by design — the field is stateful, and clearing it per frame is the
+    /// naive version this design exists not to be.
+    field_buffer: Option<GpuBuffer>,
+    field_state_buffers: Vec<GpuBuffer>,
+    disturber_buffers: Vec<GpuBuffer>,
+    interaction_sets: Vec<vk::DescriptorSet>,
+    /// The previous frame's snapped field origin, and whether the previous
+    /// half holds anything to reproject from. `None` until the first update,
+    /// which is what makes the first frame start from an empty field rather
+    /// than from whatever `create_device_local_uninit` left behind.
+    field_previous: Option<[f32; 2]>,
+    field_write_half: u32,
+    frame_field_state: GpuGroundCoverFieldState,
+    frame_disturber_count: u32,
 
     bound_vertex_buffer: vk::Buffer,
     /// Chunk count each in-flight slot dispatched, so the readback taken one
@@ -312,6 +383,9 @@ impl GroundCoverPipeline {
             scatter_set_layout: vk::DescriptorSetLayout::null(),
             scatter_pipeline_layout: vk::PipelineLayout::null(),
             scatter_pipeline: vk::Pipeline::null(),
+            interaction_set_layout: vk::DescriptorSetLayout::null(),
+            interaction_pipeline_layout: vk::PipelineLayout::null(),
+            interaction_pipeline: vk::Pipeline::null(),
             draw_set_layout: vk::DescriptorSetLayout::null(),
             draw_pipeline_layout: vk::PipelineLayout::null(),
             blade_pipeline: vk::Pipeline::null(),
@@ -326,6 +400,14 @@ impl GroundCoverPipeline {
             indirect_buffer: None,
             counter_buffer: None,
             counter_readback: Vec::new(),
+            field_buffer: None,
+            field_state_buffers: Vec::new(),
+            disturber_buffers: Vec::new(),
+            interaction_sets: Vec::new(),
+            field_previous: None,
+            field_write_half: 0,
+            frame_field_state: GpuGroundCoverFieldState::default(),
+            frame_disturber_count: 0,
             bound_vertex_buffer: vk::Buffer::null(),
             pending_chunks: [0; MAX_FRAMES_IN_FLIGHT],
             stats: GroundCoverStats::default(),
@@ -387,7 +469,31 @@ impl GroundCoverPipeline {
                 (COUNTER_SLOTS * 4) as vk::DeviceSize,
                 vk::BufferUsageFlags::TRANSFER_DST,
             )?);
+            self.field_state_buffers
+                .push(GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    std::mem::size_of::<GpuGroundCoverFieldState>() as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )?);
+            self.disturber_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                (GROUNDCOVER_INTERACTION_MAX_DISTURBERS as vk::DeviceSize)
+                    * std::mem::size_of::<GpuGroundCoverDisturber>() as vk::DeviceSize,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?);
         }
+        // §12.4's field: two halves, one `uint` (packHalf2x16 XZ) per texel.
+        // 256² × 4 B × 2 = 512 KB device-local, against the 4 GB budget. Not
+        // per-frame-in-flight: the field is *state*, and a per-slot copy would
+        // give a 2-frame pipeline two independent trails that alternate.
+        self.field_buffer = Some(GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            INTERACTION_TEXEL_COUNT * 2 * 4,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )?);
         // 16 B per blade × the cap. See the module docs on why the cap is
         // sized for a chunk-size sweep rather than for today's visible set.
         let blade_bytes =
@@ -461,6 +567,39 @@ impl GroundCoverPipeline {
                 .context("create ground-cover scatter pipeline layout")?
         };
 
+        // §12.4's own set: the field, its header, and the frame's disturbers.
+        let interaction_bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..3)
+            .map(|binding| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(binding)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(compute)
+            })
+            .collect();
+        // SAFETY: `interaction_bindings` outlives the call; the layout is
+        // owned here until `destroy`.
+        self.interaction_set_layout = unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&interaction_bindings),
+                    None,
+                )
+                .context("create ground-cover interaction set layout")?
+        };
+        let interaction_sets = [self.interaction_set_layout];
+        // SAFETY: the slice outlives the call. No push constants: everything
+        // the field update needs is in its header buffer, which the blade
+        // vertex shader also reads.
+        self.interaction_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&interaction_sets),
+                    None,
+                )
+                .context("create ground-cover interaction pipeline layout")?
+        };
+
         // Set 2 for the draw pipelines. Bindings 4 and 5 (indirect, counters)
         // are deliberately absent: the draw reads neither, and declaring them
         // would let a future edit sample the scatter's scratch from a fragment
@@ -472,6 +611,9 @@ impl GroundCoverPipeline {
             storage_binding(2, vertex),
             storage_binding(3, vertex),
             storage_binding(6, vertex | vk::ShaderStageFlags::FRAGMENT),
+            // §12.4's field and header, read-only in the vertex shader.
+            storage_binding(7, vertex),
+            storage_binding(8, vertex),
         ];
         // SAFETY: as above.
         self.draw_set_layout = unsafe {
@@ -516,16 +658,17 @@ fn storage_binding(
 impl GroundCoverPipeline {
     fn create_descriptors(&mut self, device: &ash::Device) -> Result<()> {
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
+        // 6 scatter + 7 draw + 3 interaction bindings per frame-in-flight.
         let sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(11 * frames)];
+            .descriptor_count(16 * frames)];
         // SAFETY: `sizes` outlives the call; the pool is owned here.
         self.descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
                         .pool_sizes(&sizes)
-                        .max_sets(2 * frames),
+                        .max_sets(3 * frames),
                     None,
                 )
                 .context("create ground-cover descriptor pool")?
@@ -552,6 +695,17 @@ impl GroundCoverPipeline {
                 )
                 .context("allocate ground-cover draw sets")?
         };
+        let interaction_layouts = vec![self.interaction_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: as above.
+        self.interaction_sets = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(self.descriptor_pool)
+                        .set_layouts(&interaction_layouts),
+                )
+                .context("allocate ground-cover interaction sets")?
+        };
         Ok(())
     }
 
@@ -563,25 +717,55 @@ impl GroundCoverPipeline {
     ) -> Result<()> {
         let entry = std::ffi::CString::new("main").expect("static literal");
         let scatter = shader_module(device, SCATTER_SPV, "groundcover_scatter.comp")?;
+        let interaction = shader_module(device, INTERACTION_SPV, "groundcover_interaction.comp")?;
         let vert = shader_module(device, BLADE_VERT_SPV, "groundcover_blade.vert")?;
         let blade_frag = shader_module(device, BLADE_FRAG_SPV, "groundcover_blade.frag")?;
         let debug_frag = shader_module(device, DEBUG_FRAG_SPV, "groundcover_debug.frag")?;
-        let result = self.build_pipelines(
-            device,
-            pipeline_cache,
-            render_pass,
-            &entry,
-            scatter,
-            vert,
-            blade_frag,
-            debug_frag,
-        );
-        for module in [scatter, vert, blade_frag, debug_frag] {
+        let result = self
+            .build_interaction_pipeline(device, pipeline_cache, &entry, interaction)
+            .and_then(|()| {
+                self.build_pipelines(
+                    device,
+                    pipeline_cache,
+                    render_pass,
+                    &entry,
+                    scatter,
+                    vert,
+                    blade_frag,
+                    debug_frag,
+                )
+            });
+        for module in [scatter, interaction, vert, blade_frag, debug_frag] {
             // SAFETY: pipeline creation has returned, and the spec allows a
             // module to be destroyed as soon as it has.
             unsafe { device.destroy_shader_module(module, None) };
         }
         result
+    }
+
+    fn build_interaction_pipeline(
+        &mut self,
+        device: &ash::Device,
+        pipeline_cache: vk::PipelineCache,
+        entry: &std::ffi::CStr,
+        module: vk::ShaderModule,
+    ) -> Result<()> {
+        let stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(module)
+            .name(entry);
+        let info = vk::ComputePipelineCreateInfo::default()
+            .stage(stage)
+            .layout(self.interaction_pipeline_layout);
+        // SAFETY: the create-info's borrows outlive the call; layout and
+        // module are live.
+        self.interaction_pipeline = unsafe {
+            device
+                .create_compute_pipelines(pipeline_cache, &[info], None)
+                .map_err(|(_, e)| e)
+                .context("create ground-cover interaction pipeline")?[0]
+        };
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -766,15 +950,34 @@ impl GroundCoverPipeline {
             return false;
         }
 
+        // §12.4 — advance the field's header before the descriptor write, so
+        // this slot's state buffer and its descriptor go up together.
+        let disturbers = &input.disturbers[..input
+            .disturbers
+            .len()
+            .min(GROUNDCOVER_INTERACTION_MAX_DISTURBERS as usize)];
+        let field_state =
+            self.advance_field_state(input.camera_pos, input.delta_seconds, disturbers.len());
+
         let uploads = self.chunk_buffers[frame]
             .write_mapped(device, chunks)
             .and_then(|()| self.cell_buffers[frame].write_mapped(device, cells))
-            .and_then(|()| self.species_buffers[frame].write_mapped(device, species));
+            .and_then(|()| self.species_buffers[frame].write_mapped(device, species))
+            .and_then(|()| self.field_state_buffers[frame].write_mapped(device, &[field_state]))
+            .and_then(|()| {
+                if disturbers.is_empty() {
+                    Ok(())
+                } else {
+                    self.disturber_buffers[frame].write_mapped(device, disturbers)
+                }
+            });
         if let Err(error) = uploads {
             log::warn!("ground cover: record upload failed: {error}");
             self.frame_chunk_count = 0;
             return false;
         }
+        self.frame_field_state = field_state;
+        self.frame_disturber_count = disturbers.len() as u32;
         self.write_descriptor_sets(device, frame, vertex_buffer);
         self.bound_vertex_buffer = vertex_buffer;
 
@@ -808,6 +1011,32 @@ impl GroundCoverPipeline {
             ],
         };
         true
+    }
+
+    /// Advance §12.4's field header for this frame and flip the ping-pong.
+    ///
+    /// **The origin is snapped to the texel grid**, which is what makes the
+    /// compute pass's reprojection a copy rather than a filtered fetch. A
+    /// fractional offset would need bilinear resampling, and a filter applied
+    /// every frame to its own output is a low-pass running at frame rate: a
+    /// crisp channel smears into nothing within a second or two.
+    ///
+    /// The previous half is only declared usable once one update has actually
+    /// run, so the first frame starts from an empty field rather than from
+    /// whatever `create_device_local_uninit` left in the allocation.
+    fn advance_field_state(
+        &mut self,
+        camera_pos: [f32; 3],
+        delta_seconds: f32,
+        disturbers: usize,
+    ) -> GpuGroundCoverFieldState {
+        advance_field_state(
+            &mut self.field_previous,
+            &mut self.field_write_half,
+            camera_pos,
+            delta_seconds,
+            disturbers,
+        )
     }
 
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
@@ -877,6 +1106,10 @@ impl GroundCoverPipeline {
         let indirect_info = info(indirect.buffer);
         let counter_info = info(counters.buffer);
         let species_info = info(self.species_buffers[frame].buffer);
+        let field = self.field_buffer.as_ref().expect("created in new()");
+        let field_info = info(field.buffer);
+        let field_state_info = info(self.field_state_buffers[frame].buffer);
+        let disturber_info = info(self.disturber_buffers[frame].buffer);
 
         fn write<'a>(
             set: vk::DescriptorSet,
@@ -903,6 +1136,11 @@ impl GroundCoverPipeline {
             write(draw, 2, &vertex_info),
             write(draw, 3, &blade_info),
             write(draw, 6, &species_info),
+            write(draw, 7, &field_info),
+            write(draw, 8, &field_state_info),
+            write(self.interaction_sets[frame], 0, &field_info),
+            write(self.interaction_sets[frame], 1, &field_state_info),
+            write(self.interaction_sets[frame], 2, &disturber_info),
         ];
         // SAFETY: every `*_info` slice outlives the call, and only slot
         // `frame`'s sets are touched — the caller has waited that slot's
@@ -916,6 +1154,7 @@ impl GroundCoverPipeline {
         if self.frame_chunk_count == 0 {
             return;
         }
+        self.record_interaction(device, cmd, frame);
         let counters = self.counter_buffer.as_ref().expect("created in new()");
         // SAFETY: `cmd` is recording; every handle below is live and owned by
         // this pipeline. The barriers order the clear against the dispatch and
@@ -1012,6 +1251,70 @@ impl GroundCoverPipeline {
         self.pending_chunks[frame] = self.frame_chunk_count;
     }
 
+    /// Record §12.4's field update. Runs from `record_scatter`, before the
+    /// scatter's own dispatch, so ordering against the blade draw is the
+    /// scatter's existing trailing barrier and there is no second edge to get
+    /// wrong.
+    ///
+    /// It shares the scatter's "only when there is ground cover" gate on
+    /// purpose. Nothing reads the field on a frame with no chunks, and the
+    /// staleness that skipping introduces resolves itself: the origin the next
+    /// live frame snaps to either matches (the camera did not move, and the
+    /// trail is genuinely still there) or does not (every reprojection falls
+    /// outside the previous field and reads zero).
+    fn record_interaction(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        if self.interaction_pipeline == vk::Pipeline::null() {
+            return;
+        }
+        // SAFETY: `cmd` is recording; the pipeline, layout and set are live and
+        // owned here, and the caller has waited slot `frame`'s fence so the
+        // host-visible header and disturber buffers this set points at are not
+        // in flight. The trailing barrier orders the field's writes against
+        // the blade vertex shader that reads them.
+        unsafe {
+            // The field is one persistent allocation shared by every
+            // frame-in-flight, and this dispatch READS the half the *previous*
+            // frame's dispatch wrote. The per-slot fence only serialises
+            // frames MAX_FRAMES_IN_FLIGHT apart, so consecutive frames can
+            // overlap on the queue and that read is a genuine hazard. A
+            // barrier's first synchronization scope covers everything
+            // submitted earlier on the queue, so this one edge closes it.
+            buffer_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+            );
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.interaction_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.interaction_pipeline_layout,
+                0,
+                &[self.interaction_sets[frame]],
+                &[],
+            );
+            let groups = GROUNDCOVER_INTERACTION_TEXELS.div_ceil(GROUNDCOVER_INTERACTION_WORKGROUP);
+            device.cmd_dispatch(cmd, groups, groups, 1);
+            // The field's two halves alternate, so this frame's writes are the
+            // next frame's reads as well as this frame's vertex-shader reads.
+            buffer_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::VERTEX_SHADER,
+                vk::AccessFlags::SHADER_READ,
+            );
+        }
+    }
+
     /// Record the blade (or debug-point) draw. Must be INSIDE the main
     /// geometry render pass, after opaque geometry.
     pub fn record_draw(
@@ -1072,6 +1375,7 @@ impl GroundCoverPipeline {
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for pipeline in [
             &mut self.scatter_pipeline,
+            &mut self.interaction_pipeline,
             &mut self.blade_pipeline,
             &mut self.debug_pipeline,
         ] {
@@ -1083,6 +1387,7 @@ impl GroundCoverPipeline {
         }
         for layout in [
             &mut self.scatter_pipeline_layout,
+            &mut self.interaction_pipeline_layout,
             &mut self.draw_pipeline_layout,
         ] {
             if *layout != vk::PipelineLayout::null() {
@@ -1098,8 +1403,13 @@ impl GroundCoverPipeline {
             self.descriptor_pool = vk::DescriptorPool::null();
             self.scatter_sets.clear();
             self.draw_sets.clear();
+            self.interaction_sets.clear();
         }
-        for layout in [&mut self.scatter_set_layout, &mut self.draw_set_layout] {
+        for layout in [
+            &mut self.scatter_set_layout,
+            &mut self.interaction_set_layout,
+            &mut self.draw_set_layout,
+        ] {
             if *layout != vk::DescriptorSetLayout::null() {
                 // SAFETY: the pipeline layouts and sets referencing it are gone.
                 unsafe { device.destroy_descriptor_set_layout(*layout, None) };
@@ -1112,9 +1422,12 @@ impl GroundCoverPipeline {
             .chain(self.cell_buffers.iter_mut())
             .chain(self.species_buffers.iter_mut())
             .chain(self.counter_readback.iter_mut())
+            .chain(self.field_state_buffers.iter_mut())
+            .chain(self.disturber_buffers.iter_mut())
             .chain(self.blade_buffer.iter_mut())
             .chain(self.indirect_buffer.iter_mut())
             .chain(self.counter_buffer.iter_mut())
+            .chain(self.field_buffer.iter_mut())
         {
             buffer.destroy(device, allocator);
         }
@@ -1122,9 +1435,50 @@ impl GroundCoverPipeline {
         self.cell_buffers.clear();
         self.species_buffers.clear();
         self.counter_readback.clear();
+        self.field_state_buffers.clear();
+        self.disturber_buffers.clear();
         self.blade_buffer = None;
         self.indirect_buffer = None;
         self.counter_buffer = None;
+        self.field_buffer = None;
+    }
+}
+
+/// Free-function core of [`GroundCoverPipeline::advance_field_state`], so the
+/// snapping and clamping rules can be tested without a Vulkan device.
+fn advance_field_state(
+    field_previous: &mut Option<[f32; 2]>,
+    field_write_half: &mut u32,
+    camera_pos: [f32; 3],
+    delta_seconds: f32,
+    disturbers: usize,
+) -> GpuGroundCoverFieldState {
+    let texel = GROUNDCOVER_INTERACTION_TEXEL_UNITS;
+    let half_extent = GROUNDCOVER_INTERACTION_UNITS * 0.5;
+    let snap = |v: f32| ((v - half_extent) / texel).floor() * texel;
+    let origin = [snap(camera_pos[0]), snap(camera_pos[2])];
+    // Clamped, not trusted. A long hitch must not wipe a trail outright (the
+    // decay is exponential, so a quarter-second step already removes ~11% of
+    // it), and a negative or non-finite dt would *amplify* one — `exp(-k·dt)`
+    // with dt < 0 grows without bound, and the field is fed back into itself
+    // every frame, so one bad value would not decay away.
+    let dt = if delta_seconds.is_finite() {
+        delta_seconds.clamp(0.0, 0.25)
+    } else {
+        0.0
+    };
+    let write_half = *field_write_half;
+    let previous = *field_previous;
+    *field_write_half = 1 - write_half;
+    *field_previous = Some(origin);
+    GpuGroundCoverFieldState {
+        current: [origin[0], origin[1], dt, write_half as f32],
+        previous: [
+            previous.map_or(0.0, |p| p[0]),
+            previous.map_or(0.0, |p| p[1]),
+            disturbers as f32,
+            if previous.is_some() { 1.0 } else { 0.0 },
+        ],
     }
 }
 
@@ -1483,6 +1837,97 @@ mod tests {
              triangle.frag's call sites breaks the #1369 cancel-bit-for-bit \
              invariant between the ReSTIR passes"
         );
+    }
+
+    /// §12.4's records are shader contracts like every other GPU struct here.
+    #[test]
+    fn interaction_records_match_their_std430_layout() {
+        assert_eq!(std::mem::size_of::<GpuGroundCoverDisturber>(), 16);
+        assert_eq!(std::mem::size_of::<GpuGroundCoverFieldState>(), 32);
+        // 256² texels x 4 B x two halves = 512 KB device-local.
+        assert_eq!(INTERACTION_TEXEL_COUNT * 2 * 4, 512 * 1024);
+        // The field is centred on the camera and one texel must be coarse
+        // enough that neighbouring blades read nearly the same value — that
+        // shared read is what makes them part together rather than tip
+        // individually — and fine enough to give a human footfall shape.
+        assert_eq!(GROUNDCOVER_INTERACTION_TEXEL_UNITS, 8.0);
+        let human = 36.0;
+        assert!(
+            human / GROUNDCOVER_INTERACTION_TEXEL_UNITS >= 4.0,
+            "a vanilla actor capsule must span at least 4 texels, or the \
+             channel it opens has no shape (§12.4)"
+        );
+    }
+
+    /// §12.4's recovery is the part that is easy to get wrong: the field must
+    /// **decay**, never clear, or a blade snaps upright the instant an entity
+    /// passes and draws the eye straight to the boundary.
+    #[test]
+    fn the_interaction_field_decays_rather_than_clearing() {
+        let src = include_str!("../../shaders/groundcover_interaction.comp");
+        assert!(
+            src.contains("value *= exp(-0.6931472 * dt"),
+            "the field must decay exponentially toward zero, framerate-independently"
+        );
+        assert!(
+            src.contains("unpackHalf2x16(gcField[byroGcFieldIndex(prevTexel, prevHalf)])"),
+            "each frame must start from the PREVIOUS frame's field — a shader \
+             that re-splats from scratch is the naive version §12.4 exists not \
+             to be"
+        );
+        assert!(
+            src.contains("if (dot(push, push) > dot(value, value))"),
+            "disturbers must combine by per-texel maximum, not by sum: a second \
+             pass over the same ground refreshes the trail rather than doubling it"
+        );
+        // The reprojection has to be an exact texel copy. A filter applied
+        // every frame to its own output is a low-pass at frame rate.
+        assert!(
+            src.contains("ivec2(round(byroGcFieldCoord("),
+            "the reprojection must round to a texel, which the host's snapped \
+             origin makes exact"
+        );
+    }
+
+    /// A negative or non-finite `dt` turns the decay into growth without
+    /// bound (`exp(-k·dt)`, dt < 0), and a hitch must not wipe a trail.
+    #[test]
+    fn the_field_clamps_the_frame_delta() {
+        for (input, expected) in [
+            (-1.0f32, 0.0f32),
+            (f32::NAN, 0.0),
+            (10.0, 0.25),
+            (0.016, 0.016),
+        ] {
+            let (mut prev, mut half) = (None, 0u32);
+            let state = advance_field_state(&mut prev, &mut half, [0.0; 3], input, 0);
+            assert_eq!(state.current[2], expected, "dt {input} clamped wrong");
+        }
+    }
+
+    /// The origin must land on the texel grid, or the compute pass's
+    /// reprojection needs a filtered fetch and the field smears into itself.
+    #[test]
+    fn the_field_origin_snaps_to_the_texel_grid() {
+        let (mut prev, mut half) = (None, 0u32);
+        // First update has no previous half to reproject from.
+        let first = advance_field_state(&mut prev, &mut half, [1234.5, 0.0, -987.25], 0.016, 3);
+        assert_eq!(first.previous[3], 0.0);
+        assert_eq!(first.current[3], 0.0, "first frame writes half 0");
+        for axis in [first.current[0], first.current[1]] {
+            assert_eq!(
+                axis % GROUNDCOVER_INTERACTION_TEXEL_UNITS,
+                0.0,
+                "origin {axis} is off the texel grid"
+            );
+        }
+        // Second update flips the half and can reproject.
+        let second = advance_field_state(&mut prev, &mut half, [1234.5, 0.0, -987.25], 0.016, 3);
+        assert_eq!(second.current[3], 1.0);
+        assert_eq!(second.previous[3], 1.0);
+        assert_eq!(second.previous[0], first.current[0]);
+        assert_eq!(second.previous[1], first.current[1]);
+        assert_eq!(second.previous[2], 3.0, "disturber count rides previous.z");
     }
 
     #[test]

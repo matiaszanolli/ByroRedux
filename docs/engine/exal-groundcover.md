@@ -9,9 +9,10 @@ the terrain surface — grass, ferns, moss, low scrub.
 IMPLEMENTED (2026-09-06, #3807); §11.1's terrain-attribute sampling question
 MEASURED AND ANSWERED (2026-09-06, #4052); Phases 1–2 IMPLEMENTED (2026-09-06,
 #4054 / #4055); Phase 6 IMPLEMENTED (2026-09-06, #4057) — which answered §11.6,
-§11.7, §11.9 and §11.10 and closed Phase 5's `grass_dimmer` remainder. Phase 3
-(#4056) and Phase 7 (#4058) proposed; Phase 4 gated on a demonstrated need
-(§5 Stage 2). Rolls out per §9.
+§11.7, §11.9 and §11.10 and closed Phase 5's `grass_dimmer` remainder; Phase 7
+IMPLEMENTED (2026-09-06, #4058), which answered its own open question about
+which entities feed the field. Phase 3 (#4056) proposed; Phase 4 gated on a
+demonstrated need (§5 Stage 2). Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -611,6 +612,7 @@ Each phase is independently useful and independently reviewable.
   remainder. §12.3's ground-colour coupling moved to Phase 3 (#4056), where it
   is the same idea as §6's tier-3 detail layer from the opposite end.
 - **Phase 7 — interaction.** The displacement field (§12.4).
+  **Done (2026-09-06, #4058).**
 
 ---
 
@@ -908,8 +910,8 @@ value nobody revisits.
 
 **Status.** §12.1, §12.2, §12.5 and §12.6 landed in #4057, along with the
 transmission colour and sheen amount they need; the ground-coupling weight
-landed early with the type and waits for §12.3's consumer in #4056. §12.4 is
-#4058. The four light terms all live in
+landed early with the type and waits for §12.3's consumer in #4056. §12.4
+landed in #4058. The four light terms all live in
 [`include/groundcover_light.glsl`](../../crates/renderer/shaders/include/groundcover_light.glsl)
 — one header, because they are two pairs and building half of either pair has a
 recognisable failure.
@@ -1029,6 +1031,57 @@ nothing from it. See §10's revised entry.
 **Out of scope within this term.** Physical simulation of blades, collision
 response, and any feedback from grass back onto the entity. The field is
 one-directional.
+
+**Which entities feed it — ANSWERED 2026-09-06 (#4058): every live actor**,
+the player included, meaning anything carrying `ActorValues` and a world
+transform. The two alternatives the question named lose without needing a
+render:
+
+- *Player only* makes the world feel dead the moment an NPC walks past you
+  through the same grass and leaves none of it moved. The point of the term is
+  that the stratum reacts to the world, not to the camera.
+- *All physics bodies* spends the budget on every dropped bottle and every
+  settled prop — most never move again, none is being watched, and a disturber
+  costs one loop iteration per field texel.
+
+An actor's radius comes from its own character-controller capsule when it has
+one and from `CharacterController::HUMAN` (36 units across) when it does not.
+Carts, boulders and spell effects are additions to that list later, not
+reasons to have picked a different one.
+
+**Extent and resolution — 2048 units across, 256², so 8 units per texel.** The
+extent is half an exterior cell: interaction is only legible at ankle height,
+so the field does not need §6's 2000-unit draw distance, and covering it at
+this resolution would cost 64× the memory to animate grass nobody can see move.
+The resolution puts ~4.5 texels across a vanilla actor capsule — enough for the
+blade shader's bilinear fetch to give the channel shape, and coarse enough that
+neighbouring blades read almost the same value and therefore part *together*,
+which is the property the whole approach rests on. 256² × 4 B × two halves =
+512 KB device-local. Both numbers are the cost/quality trade the question
+flagged and both still want a render to confirm.
+
+**Implementation notes worth having up front.**
+
+- The field is a plain SSBO, not a storage image. The blade vertex shader needs
+  a bilinear read, which is six lines of arithmetic against a sampler, two
+  image layouts and a transition per frame.
+- The origin is **snapped to the texel grid**, which makes the frame-to-frame
+  reprojection an exact integer copy. A fractional offset would need a filtered
+  fetch, and a filter applied every frame to its own output is a low-pass
+  running at frame rate: a crisp channel smears into nothing within a second.
+- Disturbers combine by per-texel **maximum**, not by sum, so a second pass
+  over the same ground refreshes the trail instead of doubling it, the field
+  stays bounded without a clamp that would flatten the response near a crowd,
+  and recovery stays a pure decay with nothing to unwind.
+- A trodden blade also gets **shorter** (`sqrt(1 − k²)`, the vertical leg of a
+  fixed-length blade whose tip has moved `k` of that length sideways). Without
+  it the tip stays at full height and only slides, which reads as grass combed
+  rather than walked through.
+- The field is one persistent allocation shared by every frame-in-flight,
+  because it is *state*; a per-slot copy would give a 2-frame pipeline two
+  independent trails that alternate. The consequence is a real cross-frame
+  read-after-write hazard, closed by a leading barrier in each frame's command
+  buffer.
 
 ### 12.5 Canopy shadowing — the cheap one
 

@@ -282,6 +282,41 @@ fn main() {
     ] {
         writeln!(out, "#define {name} {value:?}").unwrap();
     }
+    writeln!(out, "\n// Ground-cover interaction field (§12.4, #4058)").unwrap();
+    for (name, value) in [
+        (
+            "GROUNDCOVER_INTERACTION_UNITS",
+            GROUNDCOVER_INTERACTION_UNITS,
+        ),
+        (
+            "GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS",
+            GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS,
+        ),
+        (
+            "GROUNDCOVER_INTERACTION_MAX_BEND",
+            GROUNDCOVER_INTERACTION_MAX_BEND,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
+    for (name, value) in [
+        (
+            "GROUNDCOVER_INTERACTION_TEXELS",
+            GROUNDCOVER_INTERACTION_TEXELS,
+        ),
+        (
+            "GROUNDCOVER_INTERACTION_MAX_DISTURBERS",
+            GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
+    // No `u` suffix — used in `layout(local_size_x = ...)`.
+    writeln!(
+        out,
+        "#define GROUNDCOVER_INTERACTION_WORKGROUP {GROUNDCOVER_INTERACTION_WORKGROUP}"
+    )
+    .unwrap();
     for (name, value) in [
         (
             "GROUNDCOVER_BLADE_SEGMENTS_NEAR",

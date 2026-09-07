@@ -59,6 +59,15 @@ layout(std430, set = 2, binding = 3) readonly buffer GcBladeBuffer {
 layout(std430, set = 2, binding = 6) readonly buffer GcSpeciesBuffer {
     GroundCoverSpecies gcSpecies[];
 };
+/// §12.4's displacement field and its per-frame header (#4058). Read-only
+/// here; `groundcover_interaction.comp` owns the writes.
+layout(std430, set = 2, binding = 7) readonly buffer GcFieldBuffer {
+    uint gcField[];
+};
+layout(std430, set = 2, binding = 8) readonly buffer GcFieldStateBuffer {
+    vec4 gcFieldCurrent;
+    vec4 gcFieldPrevious;
+};
 
 /// Exactly 128 bytes — Vulkan's guaranteed `maxPushConstantsSize` floor.
 /// Packed rather than laid out one-field-per-vec4 for that reason: this
@@ -94,6 +103,36 @@ layout(push_constant) uniform GcBladePush {
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
+#include "include/groundcover_interaction.glsl"
+
+/// §12.4 — bilinear read of the displacement field at a world point.
+///
+/// Bilinear, not nearest, and that is the whole reason the field works: two
+/// blades a few units apart read almost the same value and therefore lean
+/// almost the same way, so a walker opens a *channel* through the sward
+/// rather than tipping a ring of blades individually.
+vec2 byroGcSampleField(vec2 worldXZ) {
+    vec2 coord = byroGcFieldCoord(gcFieldCurrent.xy, worldXZ);
+    vec2 base = floor(coord);
+    vec2 frac = coord - base;
+    ivec2 b = ivec2(base);
+    vec2 acc = vec2(0.0);
+    // Out-of-bounds taps contribute zero rather than clamping to the edge:
+    // past the field there is genuinely no disturbance, and a clamp would
+    // stretch the boundary texel across everything beyond it.
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            ivec2 t = b + ivec2(dx, dy);
+            if (!byroGcFieldInBounds(t)) {
+                continue;
+            }
+            float w = (dx == 0 ? 1.0 - frac.x : frac.x)
+                    * (dy == 0 ? 1.0 - frac.y : frac.y);
+            acc += unpackHalf2x16(gcField[byroGcFieldIndex(t, uint(gcFieldCurrent.w))]) * w;
+        }
+    }
+    return acc;
+}
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vWorldNormal;
@@ -201,12 +240,41 @@ void main() {
     float restLean = 0.12 + 0.10 * gcSeedStream(seed, 4u);
     vec3 bend = leanDir * (height * (bendFraction + restLean * (1.0 - bendFraction)));
 
+    // ── Interaction (§12.4, #4058) ──────────────────────────────────────
+    //
+    // Sampled at the blade *base*, not at each vertex: the disturbance is a
+    // property of the ground the plant is rooted in, and per-vertex sampling
+    // would shear a single blade against itself as the field varies along its
+    // own length.
+    //
+    // Added to the wind bend rather than blended with it. A blade in a gust
+    // that someone also walks through is doing both, and a `mix` would make
+    // the trodden blade stand *back up* into the wind — the one direction it
+    // certainly is not going. The sum is clamped through `bend`'s use below,
+    // where the Bezier control point keeps the tip on the near side of the
+    // ground.
+    vec2 disturbance = byroGcSampleField(base.xz);
+    float disturbAmount = min(length(disturbance), 1.0);
+    // A trodden blade gets shorter as it lies over, because a blade is not a
+    // rubber band. Without this the tip stays at full height and only slides
+    // sideways — a lean, not a flattening — and the channel reads as grass
+    // combed rather than walked through. `sqrt(1 - k²)` is the vertical leg of
+    // a blade of fixed length whose tip has moved `k` of that length
+    // horizontally, so the plant keeps its length as it bends.
+    float uprightScale = 1.0;
+    if (disturbAmount > 1.0e-4) {
+        vec3 pushDir = normalize(vec3(disturbance.x, 0.0, disturbance.y));
+        float k = GROUNDCOVER_INTERACTION_MAX_BEND * disturbAmount;
+        bend += pushDir * (height * k);
+        uprightScale = sqrt(max(1.0 - k * k, 0.0));
+    }
+
     // Quadratic Bezier: P0 base, P1 control (half height, displaced by bend),
     // P2 tip. The control at half height is what makes the blade curve rather
     // than hinge.
     vec3 p0 = base;
-    vec3 p1 = base + up * (height * 0.5) + bend * 0.5;
-    vec3 p2 = base + up * height + bend;
+    vec3 p1 = base + up * (height * 0.5 * uprightScale) + bend * 0.5;
+    vec3 p2 = base + up * (height * uprightScale) + bend;
 
     if (GC_DEBUG_POINTS == 1u) {
         // The distribution view. One point at the accepted position, sized so
