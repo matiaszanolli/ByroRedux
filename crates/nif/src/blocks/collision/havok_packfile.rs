@@ -49,6 +49,57 @@ const SECTION_HEADER_SIZE: usize = 64;
 const SECTION_NAME_FIELD_LEN: usize = 19;
 const SECTION_TABLE_START: usize = 0x40;
 
+/// Entry stride of the local-fixup table: two `u32`s.
+const LOCAL_FIXUP_SIZE: usize = 8;
+/// Entry stride of the global- and virtual-fixup tables: three `u32`s.
+const GLOBAL_FIXUP_SIZE: usize = 12;
+
+/// A pointer relocation *within* one section: the `u32`/`u64` slot at
+/// `src_offset` holds a pointer whose target is `dst_offset`, both
+/// relative to the owning section's `absolute_data_start`.
+///
+/// These are what make an object's variable-length members reachable —
+/// an array member's data pointer is a local fixup from the member slot
+/// to the array's payload elsewhere in the same section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalFixup {
+    pub src_offset: u32,
+    pub dst_offset: u32,
+}
+
+/// A pointer relocation from this section into another section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalFixup {
+    pub src_offset: u32,
+    pub dst_section: u32,
+    pub dst_offset: u32,
+}
+
+/// "At `data_offset` there is an object whose class name lives at
+/// `class_name_offset` in section `class_section`."
+///
+/// This is the table that makes the `__data__` section navigable: it
+/// gives the exact start offset and runtime type of every top-level
+/// object in the blob, without decoding any object's fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualFixup {
+    pub data_offset: u32,
+    pub class_section: u32,
+    pub class_name_offset: u32,
+}
+
+/// A located, typed object inside the `__data__` section, resolved from
+/// a [`VirtualFixup`] against the class-name table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackfileObject {
+    /// e.g. `"hknpCompressedMeshShapeData"`.
+    pub class_name: String,
+    /// Offset relative to the owning section's `absolute_data_start`.
+    pub section_offset: u32,
+    /// Offset from the start of the whole blob.
+    pub absolute_offset: usize,
+}
+
 /// One entry of the packfile's section table (classic layout carries
 /// exactly three: `__classnames__`, `__types__`, `__data__`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +118,15 @@ pub struct PackfileSection {
     /// `absolute_data_start` this equals the blob's total length for
     /// the final (`__data__`) section, verified across the corpus.
     pub end_offset: u32,
+    /// Intra-section pointer relocations, from
+    /// `[local_fixups_offset, global_fixups_offset)`.
+    pub local_fixups: Vec<LocalFixup>,
+    /// Cross-section pointer relocations, from
+    /// `[global_fixups_offset, virtual_fixups_offset)`.
+    pub global_fixups: Vec<GlobalFixup>,
+    /// Object-location/type records, from
+    /// `[virtual_fixups_offset, exports_offset)`.
+    pub virtual_fixups: Vec<VirtualFixup>,
 }
 
 impl PackfileSection {
@@ -78,8 +138,9 @@ impl PackfileSection {
     /// The section's named-content byte range — `[absolute_data_start,
     /// absolute_data_start + local_fixups_offset)` — i.e. the actual
     /// payload before its fixup tables begin. For `__classnames__` this
-    /// is the null-separated class-name list; for `__data__` this is
-    /// the (still-opaque) serialized object stream. Empty for
+    /// is the record list; for `__data__` this is the serialized object
+    /// image — navigable via [`virtual_fixups`](Self::virtual_fixups),
+    /// which names and locates every top-level object in it. Empty for
     /// `__types__` in every sampled blob.
     pub fn content_range(&self) -> Range<usize> {
         self.absolute_data_start as usize
@@ -124,6 +185,11 @@ pub struct HavokPackfile {
     /// loading application's own type registry; FO4 physics uses the
     /// `hknp` family, not the older `hkp` rigid-body pipeline.
     pub class_names: Vec<String>,
+    /// Byte offset of each [`class_names`](Self::class_names) entry's
+    /// *name text*, relative to the `__classnames__` section's
+    /// `absolute_data_start`. Parallel to `class_names` — a
+    /// [`VirtualFixup`] identifies a class by this offset, not by index.
+    pub class_name_offsets: Vec<u32>,
 }
 
 impl HavokPackfile {
@@ -134,6 +200,46 @@ impl HavokPackfile {
     /// Whether `class_names` contains the given type (exact match).
     pub fn has_class(&self, name: &str) -> bool {
         self.class_names.iter().any(|c| c == name)
+    }
+
+    /// Resolve a [`VirtualFixup::class_name_offset`] to its class name.
+    pub fn class_name_at(&self, offset: u32) -> Option<&str> {
+        self.class_name_offsets
+            .iter()
+            .position(|&o| o == offset)
+            .map(|i| self.class_names[i].as_str())
+    }
+
+    /// Every top-level object in `__data__`, located and typed.
+    ///
+    /// This is what makes the payload addressable without decoding a
+    /// single object field: the virtual-fixup table states outright
+    /// where each object begins and which runtime class it was
+    /// serialized against. In the FO4 precombine corpus the answer is
+    /// the same five objects in every blob — `hknpPhysicsSystemData`,
+    /// `hknpCompressedMeshShape`, `hkRefCountedProperties`,
+    /// `hknpBSMaterialProperties`, `hknpCompressedMeshShapeData`.
+    ///
+    /// Objects are returned in table order, which is ascending
+    /// `data_offset` in every sampled blob; an object's extent is
+    /// therefore bounded by the next object's start (and the last by the
+    /// section's `local_fixups_offset`).
+    pub fn objects(&self) -> Vec<PackfileObject> {
+        let Some(data) = self.section("__data__") else {
+            return Vec::new();
+        };
+        data.virtual_fixups
+            .iter()
+            .filter_map(|vf| {
+                self.class_name_at(vf.class_name_offset)
+                    .map(|name| PackfileObject {
+                        class_name: name.to_string(),
+                        section_offset: vf.data_offset,
+                        absolute_offset: data.absolute_data_start as usize
+                            + vf.data_offset as usize,
+                    })
+            })
+            .collect()
     }
 }
 
@@ -168,7 +274,10 @@ const CLASSNAME_RECORD_PREFIX_LEN: usize = 5;
 /// carry a few trailing padding bytes after the last real record that
 /// don't form a valid record (too short, or not printable ASCII) —
 /// those are silently dropped rather than surfaced as a bogus name.
-fn parse_classname_records(content: &[u8]) -> Vec<String> {
+/// Returns `(offset_of_name, name)` per record. The offset is of the
+/// *name text*, not the record start — that is what a [`VirtualFixup`]'s
+/// `class_name_offset` points at, verified against the corpus.
+fn parse_classname_records(content: &[u8]) -> Vec<(u32, String)> {
     let mut names = Vec::new();
     let mut pos = 0usize;
     while pos + CLASSNAME_RECORD_PREFIX_LEN < content.len() {
@@ -178,13 +287,74 @@ fn parse_classname_records(content: &[u8]) -> Vec<String> {
         };
         let name_bytes = &content[name_start..name_start + nul];
         if !name_bytes.is_empty() && name_bytes.iter().all(|&b| (0x20..0x7f).contains(&b)) {
-            names.push(String::from_utf8_lossy(name_bytes).into_owned());
+            names.push((
+                name_start as u32,
+                String::from_utf8_lossy(name_bytes).into_owned(),
+            ));
         } else {
             break;
         }
         pos = name_start + nul + 1;
     }
     names
+}
+
+/// Read a fixup table, stopping at the first `0xFFFFFFFF` sentinel (real
+/// blobs pad a table's tail to its declared span) or at `end`.
+fn read_local_fixups(data: &[u8], start: usize, end: usize) -> Vec<LocalFixup> {
+    let mut out = Vec::new();
+    let mut p = start;
+    while p + LOCAL_FIXUP_SIZE <= end.min(data.len()) {
+        let (src, dst) = (
+            u32::from_le_bytes(data[p..p + 4].try_into().unwrap()),
+            u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
+        );
+        if src == u32::MAX {
+            break;
+        }
+        out.push(LocalFixup {
+            src_offset: src,
+            dst_offset: dst,
+        });
+        p += LOCAL_FIXUP_SIZE;
+    }
+    out
+}
+
+fn read_global_fixups(data: &[u8], start: usize, end: usize) -> Vec<GlobalFixup> {
+    let mut out = Vec::new();
+    let mut p = start;
+    while p + GLOBAL_FIXUP_SIZE <= end.min(data.len()) {
+        let src = u32::from_le_bytes(data[p..p + 4].try_into().unwrap());
+        if src == u32::MAX {
+            break;
+        }
+        out.push(GlobalFixup {
+            src_offset: src,
+            dst_section: u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
+            dst_offset: u32::from_le_bytes(data[p + 8..p + 12].try_into().unwrap()),
+        });
+        p += GLOBAL_FIXUP_SIZE;
+    }
+    out
+}
+
+fn read_virtual_fixups(data: &[u8], start: usize, end: usize) -> Vec<VirtualFixup> {
+    let mut out = Vec::new();
+    let mut p = start;
+    while p + GLOBAL_FIXUP_SIZE <= end.min(data.len()) {
+        let off = u32::from_le_bytes(data[p..p + 4].try_into().unwrap());
+        if off == u32::MAX {
+            break;
+        }
+        out.push(VirtualFixup {
+            data_offset: off,
+            class_section: u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
+            class_name_offset: u32::from_le_bytes(data[p + 8..p + 12].try_into().unwrap()),
+        });
+        p += GLOBAL_FIXUP_SIZE;
+    }
+    out
 }
 
 /// Parse the outer container of a [`BhkSystemBinary`](super::BhkSystemBinary)
@@ -225,23 +395,54 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
         }
         let name = read_cstr(data, base, SECTION_NAME_FIELD_LEN)?;
         let f = base + 20; // past the 19-byte name field + 0xFF terminator
+        let absolute_data_start = read_u32_le(data, f)?;
+        let local_fixups_offset = read_u32_le(data, f + 4)?;
+        let global_fixups_offset = read_u32_le(data, f + 8)?;
+        let virtual_fixups_offset = read_u32_le(data, f + 12)?;
+        let exports_offset = read_u32_le(data, f + 16)?;
+
+        // The three fixup tables sit back-to-back between their declared
+        // offsets. Each table is read only up to the number of whole
+        // entries its declared byte span holds — real blobs pad the tail
+        // of a table with `0xFFFFFFFF`, which `read_fixups` stops on.
+        let base_abs = absolute_data_start as usize;
+        let local_fixups = read_local_fixups(
+            data,
+            base_abs + local_fixups_offset as usize,
+            base_abs + global_fixups_offset as usize,
+        );
+        let global_fixups = read_global_fixups(
+            data,
+            base_abs + global_fixups_offset as usize,
+            base_abs + virtual_fixups_offset as usize,
+        );
+        let virtual_fixups = read_virtual_fixups(
+            data,
+            base_abs + virtual_fixups_offset as usize,
+            base_abs + exports_offset as usize,
+        );
+
         sections.push(PackfileSection {
             name,
-            absolute_data_start: read_u32_le(data, f)?,
-            local_fixups_offset: read_u32_le(data, f + 4)?,
-            global_fixups_offset: read_u32_le(data, f + 8)?,
-            virtual_fixups_offset: read_u32_le(data, f + 12)?,
-            exports_offset: read_u32_le(data, f + 16)?,
+            absolute_data_start,
+            local_fixups_offset,
+            global_fixups_offset,
+            virtual_fixups_offset,
+            exports_offset,
             imports_offset: read_u32_le(data, f + 20)?,
             end_offset: read_u32_le(data, f + 24)?,
+            local_fixups,
+            global_fixups,
+            virtual_fixups,
         });
     }
 
-    let class_names = sections
-        .iter()
-        .find(|s| s.name == "__classnames__")
+    let classnames_section = sections.iter().find(|s| s.name == "__classnames__");
+    let class_name_records = classnames_section
         .map(|s| parse_classname_records(data.get(s.content_range()).unwrap_or(&[])))
         .unwrap_or_default();
+    let class_name_offsets = class_name_records.iter().map(|(o, _)| *o).collect();
+    let class_names = class_name_records.into_iter().map(|(_, n)| n).collect();
 
     Ok(HavokPackfile {
         header: HavokPackfileHeader {
@@ -256,6 +457,7 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
         },
         sections,
         class_names,
+        class_name_offsets,
     })
 }
 
@@ -270,6 +472,20 @@ mod tests {
     /// embedded — this project doesn't ship copyrighted game data in
     /// its test fixtures.
     fn build_synthetic_packfile(class_names: &[&str], data_payload: &[u8]) -> Vec<u8> {
+        build_synthetic_packfile_with_fixups(class_names, data_payload, &[], &[], &[])
+    }
+
+    /// As above, but `__data__` also carries the three fixup tables. The
+    /// real corpus lays them out back-to-back after the object payload —
+    /// local (8 B/entry), then global, then virtual (12 B/entry each) —
+    /// which is what the offsets below reproduce.
+    fn build_synthetic_packfile_with_fixups(
+        class_names: &[&str],
+        data_payload: &[u8],
+        locals: &[LocalFixup],
+        globals: &[GlobalFixup],
+        virtuals: &[VirtualFixup],
+    ) -> Vec<u8> {
         let mut classnames_blob = Vec::new();
         for (i, name) in class_names.iter().enumerate() {
             // Arbitrary per-entry prefix bytes (real semantic unconfirmed,
@@ -344,17 +560,189 @@ mod tests {
         push_section(&mut buf, "__types__", types_start, 0, 0, 0, 0, 0, 0);
 
         // __data__: starts where types ends (also classnames end,
-        // since types is empty), carries `data_payload`.
+        // since types is empty), carries `data_payload` then the three
+        // fixup tables back-to-back, as the real corpus does.
         let data_start = types_start;
-        let data_len = data_payload.len() as u32;
+        let payload_len = data_payload.len() as u32;
+        let local_end = payload_len + (locals.len() * LOCAL_FIXUP_SIZE) as u32;
+        let global_end = local_end + (globals.len() * GLOBAL_FIXUP_SIZE) as u32;
+        let virtual_end = global_end + (virtuals.len() * GLOBAL_FIXUP_SIZE) as u32;
         push_section(
-            &mut buf, "__data__", data_start, data_len, data_len, data_len, data_len, data_len,
-            data_len,
+            &mut buf,
+            "__data__",
+            data_start,
+            payload_len,
+            local_end,
+            global_end,
+            virtual_end,
+            virtual_end,
+            virtual_end,
         );
 
         buf.extend_from_slice(&classnames_blob);
         buf.extend_from_slice(data_payload);
+        for l in locals {
+            buf.extend_from_slice(&l.src_offset.to_le_bytes());
+            buf.extend_from_slice(&l.dst_offset.to_le_bytes());
+        }
+        for g in globals {
+            buf.extend_from_slice(&g.src_offset.to_le_bytes());
+            buf.extend_from_slice(&g.dst_section.to_le_bytes());
+            buf.extend_from_slice(&g.dst_offset.to_le_bytes());
+        }
+        for v in virtuals {
+            buf.extend_from_slice(&v.data_offset.to_le_bytes());
+            buf.extend_from_slice(&v.class_section.to_le_bytes());
+            buf.extend_from_slice(&v.class_name_offset.to_le_bytes());
+        }
         buf
+    }
+
+    /// Offset of a class name's *text* within the synthetic
+    /// `__classnames__` blob — mirrors the builder's own record layout so
+    /// a virtual fixup in a test can point at a real name.
+    fn synthetic_class_name_offset(class_names: &[&str], want: &str) -> u32 {
+        let mut pos = 0u32;
+        for name in class_names {
+            let text = pos + CLASSNAME_RECORD_PREFIX_LEN as u32;
+            if *name == want {
+                return text;
+            }
+            pos = text + name.len() as u32 + 1;
+        }
+        panic!("{want} not in fixture");
+    }
+
+    #[test]
+    fn decodes_the_three_fixup_tables() {
+        let classes = ["hknpPhysicsSystemData", "hknpCompressedMeshShapeData"];
+        let locals = [
+            LocalFixup {
+                src_offset: 16,
+                dst_offset: 128,
+            },
+            LocalFixup {
+                src_offset: 64,
+                dst_offset: 208,
+            },
+        ];
+        let globals = [GlobalFixup {
+            src_offset: 208,
+            dst_section: 2,
+            dst_offset: 320,
+        }];
+        let virtuals = [
+            VirtualFixup {
+                data_offset: 0,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(&classes, "hknpPhysicsSystemData"),
+            },
+            VirtualFixup {
+                data_offset: 320,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(
+                    &classes,
+                    "hknpCompressedMeshShapeData",
+                ),
+            },
+        ];
+        let blob = build_synthetic_packfile_with_fixups(
+            &classes,
+            &[0u8; 512],
+            &locals,
+            &globals,
+            &virtuals,
+        );
+        let pf = parse_havok_packfile(&blob).expect("parse");
+        let data = pf.section("__data__").expect("__data__");
+        assert_eq!(data.local_fixups, locals);
+        assert_eq!(data.global_fixups, globals);
+        assert_eq!(data.virtual_fixups, virtuals);
+    }
+
+    /// The point of the virtual-fixup table: it turns the `__data__`
+    /// section from opaque bytes into located, named objects.
+    #[test]
+    fn virtual_fixups_resolve_to_located_typed_objects() {
+        let classes = ["hknpPhysicsSystemData", "hknpCompressedMeshShapeData"];
+        let virtuals = [
+            VirtualFixup {
+                data_offset: 0,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(&classes, "hknpPhysicsSystemData"),
+            },
+            VirtualFixup {
+                data_offset: 320,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(
+                    &classes,
+                    "hknpCompressedMeshShapeData",
+                ),
+            },
+        ];
+        let blob = build_synthetic_packfile_with_fixups(&classes, &[0u8; 512], &[], &[], &virtuals);
+        let pf = parse_havok_packfile(&blob).expect("parse");
+        let objects = pf.objects();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].class_name, "hknpPhysicsSystemData");
+        assert_eq!(objects[0].section_offset, 0);
+        assert_eq!(objects[1].class_name, "hknpCompressedMeshShapeData");
+        assert_eq!(objects[1].section_offset, 320);
+
+        let data_start = pf.section("__data__").unwrap().absolute_data_start as usize;
+        assert_eq!(objects[1].absolute_offset, data_start + 320);
+        // The absolute offset must actually address the blob, not run past it.
+        assert!(objects[1].absolute_offset < blob.len());
+    }
+
+    /// A fixup table's declared span may exceed the entries it holds —
+    /// real blobs pad the tail with `0xFFFFFFFF`. The reader must stop at
+    /// the sentinel rather than emit a bogus entry.
+    #[test]
+    fn fixup_tables_stop_at_the_padding_sentinel() {
+        let classes = ["hkClass"];
+        let virtuals = [VirtualFixup {
+            data_offset: 0,
+            class_section: 0,
+            class_name_offset: synthetic_class_name_offset(&classes, "hkClass"),
+        }];
+        let mut blob =
+            build_synthetic_packfile_with_fixups(&classes, &[0u8; 64], &[], &[], &virtuals);
+        // Widen __data__'s virtual-fixup span by one entry's worth of
+        // padding, exactly as a real blob's tail looks.
+        let data_base = SECTION_TABLE_START + 2 * SECTION_HEADER_SIZE + 20;
+        let virtual_end =
+            u32::from_le_bytes(blob[data_base + 16..data_base + 20].try_into().unwrap());
+        let widened = virtual_end + GLOBAL_FIXUP_SIZE as u32;
+        for off in [16usize, 20, 24] {
+            blob[data_base + off..data_base + off + 4].copy_from_slice(&widened.to_le_bytes());
+        }
+        blob.extend_from_slice(&[0xFFu8; GLOBAL_FIXUP_SIZE]);
+
+        let pf = parse_havok_packfile(&blob).expect("parse");
+        assert_eq!(
+            pf.section("__data__").unwrap().virtual_fixups.len(),
+            1,
+            "the 0xFFFFFFFF pad must not decode as a sixth object"
+        );
+        assert_eq!(pf.objects().len(), 1);
+    }
+
+    /// A virtual fixup naming an offset no class record starts at is
+    /// dropped rather than surfaced as an object with a garbage name.
+    #[test]
+    fn an_unresolvable_class_offset_yields_no_object() {
+        let classes = ["hkClass"];
+        let virtuals = [VirtualFixup {
+            data_offset: 0,
+            class_section: 0,
+            class_name_offset: 9999,
+        }];
+        let blob = build_synthetic_packfile_with_fixups(&classes, &[0u8; 64], &[], &[], &virtuals);
+        let pf = parse_havok_packfile(&blob).expect("parse");
+        assert_eq!(pf.section("__data__").unwrap().virtual_fixups.len(), 1);
+        assert!(pf.objects().is_empty());
+        assert!(pf.class_name_at(9999).is_none());
     }
 
     #[test]

@@ -47,7 +47,8 @@ pub use constraints::{
     RagdollCInfo,
 };
 pub use havok_packfile::{
-    parse_havok_packfile, HavokPackfile, HavokPackfileHeader, PackfileSection, HAVOK_PACKFILE_MAGIC,
+    parse_havok_packfile, GlobalFixup, HavokPackfile, HavokPackfileHeader, LocalFixup,
+    PackfileObject, PackfileSection, VirtualFixup, HAVOK_PACKFILE_MAGIC,
 };
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,

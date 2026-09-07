@@ -166,7 +166,7 @@ therefore feeds every game:
 | **Oblivion / Morrowind** | NIF ≤ 20.0.0.5 (`#NI_BS_LTE_16#`) | Ragdoll 6×Vec4 + 6×f32 (pivots-first, **no motors**); LimitedHinge 7×Vec4 + 3×f32 (**no Perp B1**); Hinge 5×Vec4 = 80 B (**no Axis A** — derived); Prismatic 8×Vec4 + 3×f32 = 140 B, pivots-first order, **no motor** | **decoded (2026-06-14; Hinge #3330, Prismatic #3792)** |
 | **FO3 / FNV** | NIF 20.2.0.7, bsver ≤ 34 (`!#NI_BS_LTE_16#`) | Ragdoll 8×Vec4 + 6×f32 + motor; LimitedHinge 8×Vec4 + 3×f32 + motor; Hinge 8×Vec4 = 128 B + motor (no serialized limits); Prismatic 8×Vec4 + 3×f32 = 140 B + motor, `Sliding/Rotation/Plane/Pivot` A-then-B order (**not** the Oblivion order) | **decoded — slice 1 reference** |
 | **Skyrim LE/SE** | NIF 20.2.0.7, bsver 83–127 | identical FO3+ layout; gated by NIF **version**, not bsver. `havok_scale` ×69.99 applied at import via `havok_scale_for(header)` | **decoded; version-gate pinned by test, real-data validation pending** |
-| **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **blocked on a blob decoder (multi-day reverse-engineering); documented limitation, not a leak** |
+| **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **container + object table decoded (#3809, `parse_havok_packfile`); blocked on `hknpCompressedMeshShapeData`'s field layout. Documented limitation, not a leak** |
 
 Sources of truth (no-guessing): `/mnt/data/src/reference/nifxml/nif.xml`
 (`bhkRagdollConstraintCInfo` / `bhkLimitedHingeConstraintCInfo` /
@@ -266,11 +266,34 @@ rigid body — deferred, mirroring the NIFAL collision note. FO3 DLC
 `bhkSPCollisionObject` now dispatches through the same phantom wrapper instead
 of being misclassified as classic rigid-body authoring.
 
-### FO4+ packed Havok — **blocked (blob decoder)**
+### FO4+ packed Havok — **container decoded; one payload class remains**
 
 `BhkNPCollisionObject → BhkSystemBinary` holds the whole physics system
-(bodies + constraints) as a serialised Havok binary. Decoding it is a separate
-multi-day project; until then FO4/FO76/Starfield ragdolls don't thread (runtime
+(bodies + constraints) as a serialised Havok binary. The **container** is no
+longer opaque: `blocks::collision::parse_havok_packfile` decodes the classic
+packfile header, section table, class-name table and — since #3809 — all three
+fixup tables, which makes `HavokPackfile::objects()` return every top-level
+object in `__data__` with its exact offset and runtime class name.
+
+Validated over the whole FO4 precombine corpus (4,484 `_physics.nif` blobs in
+`Fallout4 - MeshesExtra.ba2`), where six independent cross-checks hold at
+100 %: parse success, last section's `absolute_end()` landing exactly on the
+blob length, every virtual fixup resolving to a declared class, objects in
+ascending offset order, every global fixup naming a real section, every local
+fixup landing inside its section. Every blob carries the same five objects in
+the same order — `hknpPhysicsSystemData`, `hknpCompressedMeshShape`,
+`hkRefCountedProperties`, `hknpBSMaterialProperties`,
+`hknpCompressedMeshShapeData`.
+
+What remains is **not** "decode a Havok binary format" but the field layout of
+those named classes, and in practice one of them: `hknpCompressedMeshShapeData`
+carries the bit-packed mesh. `__types__` is empty in every blob, so the file
+ships no reflection metadata to mine — the layouts have to come from corpus
+inference. The local-fixup table does give the array-member pointers inside
+each object, so that inference now starts from known object bounds and known
+array locations rather than from an undifferentiated byte run.
+
+Until that lands, FO4/FO76/Starfield ragdolls still don't thread (runtime
 collision uses the layer-aware geometry approximations described in
 [`physics.md`](physics.md)). Documented limitation, **not** a silent leak.
 
@@ -292,8 +315,9 @@ get-up / hit-react / partial-ragdoll. Needs the joint-limit fidelity work first.
 4. Death / hit-react AI triggers — replace the console trigger with gameplay
    (the activation path is already trigger-agnostic).
 5. Active ragdoll — drive the captured motors.
-6. FO4+ `BhkSystemBinary` decoder — unblocks the packed-Havok games (large,
-   independent).
+6. FO4+ `BhkSystemBinary` payload decode — the container and its object table
+   are done (#3809); what is left is `hknpCompressedMeshShapeData`'s field
+   layout. Unblocks the packed-Havok games (large, independent).
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (writeback rides existing skinning).

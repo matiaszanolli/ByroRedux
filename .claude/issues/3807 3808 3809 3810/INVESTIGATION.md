@@ -110,10 +110,26 @@ that hex-dumps the header region). 30 samples spanning 2,608 B to
    quantization scheme) — real further research, out of this session's
    scope.
 
-6. `__data__`'s content (from `absolute_data_start` onward) is
-   high-entropy binary starting almost immediately after the class-name
-   list ends — consistent with an already-compressed/bit-packed object
-   stream, not a plain serialized struct.
+6. ~~`__data__`'s content (from `absolute_data_start` onward) is
+   high-entropy binary ... consistent with an already-compressed/bit-packed
+   object stream, not a plain serialized struct.~~
+
+   **Corrected 2026-09-07 (#3809).** `__data__` is a plain relocatable
+   object image, not a compressed stream. This pass missed the section's
+   three *fixup tables*, which sit between `local_fixups_offset` and
+   `exports_offset` and were being read as part of the payload — the
+   "high entropy" was the relocation tables. Decoded, they give:
+   - **virtual fixups** → `(data_offset, class_name_offset)`, i.e. the
+     exact start and runtime type of every top-level object;
+   - **global fixups** → cross-section pointer relocations;
+   - **local fixups** → intra-section pointers, which are the array-member
+     data pointers inside each object.
+
+   All 4,484 corpus blobs carry the same five objects in the same order.
+   Finding 5's conclusion still holds for the *field layouts* (`__types__`
+   really is empty, so there is no schema to mine), but "the real remaining
+   blocker is the whole payload" was too broad: object bounds and array
+   locations are container-level facts and are now recovered.
 
 ## #3810 — `.uvd` previs/occlusion header
 
