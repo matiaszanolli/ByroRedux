@@ -44,9 +44,20 @@
 //! # Scope (Stage B per audit #762)
 //!
 //! This crate parses the binary CDB into a generic `Value` tree. The
-//! consumer-side mapping (Starfield-specific material → `ImportedMesh`
-//! fields) happens in `byroredux/src/asset_provider.rs` and is a
-//! separate concern from the format parsing here.
+//! consumer side lives in `byroredux/src/asset_provider/material.rs` —
+//! `discover_starfield_cdbs` finds the databases, `merge_external_material`
+//! is the entry point, and `apply_cdb_pbr_fallback` is the Starfield arm.
+//! That is a separate concern from the format parsing here.
+//!
+//! #3932 — this used to point at the pre-Session-34 `asset_provider` *file*,
+//! which that refactor turned into the directory above, and to describe the
+//! mapping as "material → `ImportedMesh` fields". Both were overstatements
+//! of what exists: the mapping returns `MergeOutcome::PresenceOnly` today —
+//! one routing flag (`is_pbr`, so the mesh takes the Disney lobe) and no
+//! authored fields at all. Per-field extraction from the Component
+//! Database is the deferred Phase 2 (#3398). This is the only pointer from
+//! the parser to its consumer, so it is the first place someone tracing
+//! the boundary looks.
 
 mod chunk;
 mod error;
@@ -59,3 +70,53 @@ pub use chunk::ChunkType;
 pub use error::{Error, Result};
 pub use reader::{CdbHeaderInfo, ComponentDatabaseFile, ParseLimits};
 pub use value::Value;
+
+#[cfg(test)]
+mod module_doc_tests {
+    /// #3932 — the crate doc's pointer at its consumer named the
+    /// pre-Session-34 `asset_provider` *file*, which that refactor turned
+    /// into a directory. It is the only signpost from this parser to the
+    /// code that consumes what it produces, so a reader tracing the boundary
+    /// hits a missing path first. (Spelled without the dead path, because
+    /// the scan below takes no exceptions — which is the point of it.)
+    ///
+    /// Every workspace path this crate's docs name must exist. A moved file
+    /// then fails here instead of ageing quietly into the one pointer nobody
+    /// re-checks.
+    #[test]
+    fn every_workspace_path_named_in_the_crate_doc_exists() {
+        const LIB_RS: &str = include_str!("lib.rs");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // Prefixes composed at runtime so this test's own text is not what
+        // the scan matches on.
+        let prefixes = [
+            format!("{}{}", "byroredux/", "src/"),
+            format!("{}{}", "crates/", ""),
+            format!("{}{}", "docs/", ""),
+        ];
+        let mut missing = Vec::new();
+        for token in LIB_RS.split(|c: char| c.is_whitespace() || c == '`' || c == '(' || c == ')') {
+            let token = token.trim_end_matches([',', '.', ';', ':']);
+            if !prefixes
+                .iter()
+                .any(|prefix| token.starts_with(prefix.as_str()))
+            {
+                continue;
+            }
+            if root.join(token).exists() {
+                continue;
+            }
+            let entry = token.to_owned();
+            if !missing.contains(&entry) {
+                missing.push(entry);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "the crate doc names workspace paths that do not exist: {missing:?} \
+             — this crate's only pointer at its consumer is a path, so a stale \
+             one is a dead end for the next reader (#3932)"
+        );
+    }
+}
