@@ -100,7 +100,7 @@ Today in `crates/scripting/src/events.rs`:
 | `AnimationTextKeyEvents` | ✅ defined | ✅ `animation_system` |
 | `OnTriggerEnterEvent` | ✅ defined | ✅ `trigger_detection_system` |
 | `OnCellLoadEvent` | ✅ defined | ✅ REFR script attachment |
-| `OnEquipEvent` | ✅ defined | marker contract shipped; emit coverage remains demand-driven |
+| `EquipmentEventBatch` | ✅ defined | ✅ `emit_equipment_changes` (inventory equip/unequip + the `EquipItem` fragment effect) |
 
 ## System registration (M27-aware)
 
@@ -159,5 +159,5 @@ This lives in the plugin crate; the cell loader consumes it.
 - [x] Cell loading resolves base record → script → registry on REFR spawn
 - [x] Synthetic end-to-end coverage exercises attachment and activation
 - [x] `ActivateEvent` has a shared gameplay/diagnostic emit path
-- [x] `OnTriggerEnterEvent`, `OnCellLoadEvent`, and `OnEquipEvent` exist; trigger and cell-load emit paths are live
+- [x] `OnTriggerEnterEvent`, `OnCellLoadEvent`, and `EquipmentEventBatch` exist; trigger, cell-load and equipment emit paths are live
 - [x] Scheduler access declarations pass the cargo-test-reachable zero-conflict guard

@@ -309,8 +309,10 @@ behavior. *Cost: incremental / ongoing.*
 
 ### Phase 4 — Event emit sites
 Wire the defined-but-unemitted markers as recognized scripts require them:
-`OnEquipEvent` (M41 equip pipeline), `OnTriggerEnterEvent` (Rapier sensor
-volumes), `HitEvent` (combat). `sys.accesses` stays 0-conflict.
+`EquipmentEventBatch` (M41 equip pipeline; the single per-wearer marker this
+plan originally assumed became a wearer-keyed *batch*, so several transitions
+in one frame cannot overwrite each other in a sparse slot),
+`OnTriggerEnterEvent` (Rapier sensor volumes), `HitEvent` (combat). `sys.accesses` stays 0-conflict.
 **Deliverable:** scripts gated on those events actually fire. *Cost: medium
 (touches 3 subsystems).*
 
@@ -368,7 +370,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 - [ ] coverage metric (recognized / total scripted REFRs) reported on a real cell
 
 **Phase 4**
-- [ ] `OnEquipEvent` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites
+- [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
 - [ ] `sys.accesses` reports 0 unknown / 0 conflicts after additions
 
 **Phase 5**

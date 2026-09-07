@@ -135,14 +135,13 @@ in the design narrative.
 |---|---|---|---|
 | `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
 | `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
-| `EquipmentEventBatch` | ordered item FormID + equipped-state transitions | actor `OnObjectEquipped` / `OnObjectUnequipped` | inventory/equip runtime and translated fragment effects |
+| `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory.rs`](../../byroredux/src/inventory.rs) and the `EquipItem` fragment effect |
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
 | `OnInitEvent` | (unit) | `OnInit` for translated provider handlers | `attach_papyrus_provider_program`; drained after one frame |
 | `OnCellLoadEvent` | (unit) | `OnLoad` / `OnCellLoad` | **live** — cell loader's `attach_script_for_refr` ([`byroredux/src/cell_loader/references/attach.rs`](../../byroredux/src/cell_loader/references/attach.rs)) |
 | `OnTriggerEnterEvent` | triggerer set | `OnTriggerEnter` (Skyrim+) / `OnTrigger` (FO3/FNV) | `trigger_detection_system` over live trigger volumes |
-| `OnEquipEvent` | `wearer: EntityId` | `OnEquip` / `OnEquipped` | marker contract is shipped; coverage remains demand-driven |
 | `QuestStageAdvanced` | `quest: QuestFormId`, `previous_stage`, `new_stage: u16` | quest stage-advance fragments | consumed by `quest_fragment_dispatch_system`, including bounded cascades |
 
 The marker pattern is zero-cost for entities that don't participate — no

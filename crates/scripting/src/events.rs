@@ -208,3 +208,85 @@ pub struct EquipmentEventBatch(pub Vec<EquipmentChange>);
 impl Component for EquipmentEventBatch {
     type Storage = SparseSetStorage<Self>;
 }
+
+#[cfg(test)]
+mod doc_ground_truth_tests {
+    /// #3950 — `OnEquipEvent` was replaced by [`super::EquipmentEventBatch`]
+    /// (a wearer-keyed batch, so several transitions in one frame cannot
+    /// overwrite each other in a sparse slot), but the engine docs the
+    /// `/audit-scripting` checklist treats as ground truth went on listing
+    /// it as defined and shipped — in a status table, in a completed
+    /// checklist item, and in a plan phase.
+    ///
+    /// A deleted marker leaving its name behind in the docs is the whole
+    /// defect class, so this pins the class rather than the instance: every
+    /// event type the engine docs name must still be declared in this file.
+    /// `docs/audits/` is deliberately excluded — audit reports are dated
+    /// snapshots of what was true when they were written, and rewriting
+    /// them would destroy the record.
+    #[test]
+    fn every_event_type_the_engine_docs_name_still_exists() {
+        const EVENTS_RS: &str = include_str!("events.rs");
+        const DOCS: [(&str, &str); 3] = [
+            (
+                "docs/engine/scripting.md",
+                include_str!("../../../docs/engine/scripting.md"),
+            ),
+            (
+                "docs/engine/m47-0-design.md",
+                include_str!("../../../docs/engine/m47-0-design.md"),
+            ),
+            (
+                "docs/engine/m47-2-design.md",
+                include_str!("../../../docs/engine/m47-2-design.md"),
+            ),
+        ];
+
+        // Every `pub struct X` declared across the modules that own event
+        // markers — this one plus `recurring_update`, whose `OnUpdateEvent`
+        // the same docs list. Composed at runtime so this test's own text is
+        // not what the scan matches on.
+        const MARKER_MODULES: [&str; 2] = [EVENTS_RS, include_str!("recurring_update.rs")];
+        let decl = format!("{} {}", "pub", "struct ");
+        let mut declared: Vec<&str> = Vec::new();
+        for source in MARKER_MODULES {
+            for (index, _) in source.match_indices(decl.as_str()) {
+                let rest = &source[index + decl.len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                declared.push(&rest[..end]);
+            }
+        }
+        assert!(
+            declared.len() > 5,
+            "the declaration scan found only {declared:?} — the extraction \
+             broke, not the docs"
+        );
+
+        // Names that read like this module's markers. `Batch`/`Events`
+        // suffixes included: they are the shapes a marker gets replaced BY,
+        // which is exactly how #3950 happened.
+        let mut stale = Vec::new();
+        for (path, text) in DOCS {
+            for token in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                let looks_like_marker = (token.starts_with("On") && token.ends_with("Event"))
+                    || token.ends_with("EventBatch");
+                if !looks_like_marker || declared.contains(&token) {
+                    continue;
+                }
+                let entry = format!("{path}: {token}");
+                if !stale.contains(&entry) {
+                    stale.push(entry);
+                }
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "the engine docs name event types this module no longer declares: \
+             {stale:?}. A renamed or deleted marker must be renamed in the \
+             ground-truth docs too, or the next audit reads a shipped \
+             contract that does not exist (#3950)"
+        );
+    }
+}
