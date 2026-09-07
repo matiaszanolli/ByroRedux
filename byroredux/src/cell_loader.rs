@@ -568,6 +568,8 @@ mod inventory_release_tests;
 #[cfg(test)]
 mod lgtm_fallback_tests;
 #[cfg(test)]
+mod navm_boundary_soak_tests;
+#[cfg(test)]
 mod nif_import_registry_tests;
 #[cfg(test)]
 mod nif_light_spawn_gate_tests;

@@ -713,8 +713,94 @@ pub(crate) fn resolve_cached_waypoints(
     }
 }
 
+/// Shared NAVM tile fixtures.
+///
+/// Lives outside `mod tests` because the EX-16 boundary/soak harness
+/// (`cell_loader::navm_boundary_soak_tests`, #3806) drives the very same
+/// two-tile geometry through a real cell load/unload cycle. The exact
+/// shared-vertex property `adjacent_quad` documents below is what makes a
+/// cross-tile portal exist at all, so a second hand-written copy that
+/// drifted by one unit would leave that harness silently exercising two
+/// unconnected tiles instead of a boundary crossing.
+#[cfg(test)]
+pub(crate) mod test_tiles {
+    use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+
+    /// A 2-triangle quad on the XZ plane spanning `[0,10] x [0,10]`
+    /// (Y-up), split along the diagonal: `(0,0)-(10,0)-(10,10)` and
+    /// `(0,0)-(10,10)-(0,10)`, sharing the `(0,0)-(10,10)` diagonal edge
+    /// (vertex indices 0 and 2). Vertices are stored pre-converted from
+    /// the Z-up authoring space this fixture stands in for, so
+    /// `vertex_yup`'s conversion round-trips back to these Y-up
+    /// coordinates exactly — built via `zup_to_yup_pos`'s own inverse
+    /// `(x, y, z) -> (x, -z, y)` so the fixture doesn't have to hardcode
+    /// the conversion twice.
+    pub(crate) fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    pub(crate) fn two_triangle_quad() -> NavmRecord {
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 0.0, 10.0],
+            [0.0, 0.0, 10.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    /// Same shape as [`two_triangle_quad`], offset `x_offset` world units
+    /// along X and tagged with `form_id` — a second navmesh tile for
+    /// cross-tile (Phase 2, #3802) tests. `x_offset = 10.0` makes this
+    /// tile's `[10,20] x [0,10]` footprint share its entire `x = 10` edge
+    /// with `two_triangle_quad`'s `[0,10] x [0,10]` footprint exactly (no
+    /// quantization tolerance needed), giving triangle 0's `(10,0,0)-
+    /// (10,0,10)` border edge a real geometric portal to match.
+    pub(crate) fn adjacent_quad(form_id: u32, x_offset: f32) -> NavmRecord {
+        let yup_verts = [
+            [x_offset, 0.0, 0.0],
+            [x_offset + 10.0, 0.0, 0.0],
+            [x_offset + 10.0, 0.0, 10.0],
+            [x_offset, 0.0, 10.0],
+        ];
+        NavmRecord {
+            form_id,
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_tiles::{adjacent_quad, two_triangle_quad, zup_from_yup};
     use super::*;
     use byroredux_plugin::esm::records::NavmTriangle;
 
@@ -753,77 +839,6 @@ mod tests {
             include_str!("follow.rs").contains("std::mem::take(&mut d.waypoints)"),
             "follow.rs must hand its waypoints to the stepper, not clone them"
         );
-    }
-
-    /// A 2-triangle quad on the XZ plane spanning `[0,10] x [0,10]`
-    /// (Y-up), split along the diagonal: `(0,0)-(10,0)-(10,10)` and
-    /// `(0,0)-(10,10)-(0,10)`, sharing the `(0,0)-(10,10)` diagonal edge
-    /// (vertex indices 0 and 2). Vertices are stored pre-converted from
-    /// the Z-up authoring space this fixture stands in for, so
-    /// `vertex_yup`'s conversion round-trips back to these Y-up
-    /// coordinates exactly — built via `zup_to_yup_pos`'s own inverse
-    /// `(x, y, z) -> (x, -z, y)` so the fixture doesn't have to hardcode
-    /// the conversion twice.
-    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
-        [p[0], -p[2], p[1]]
-    }
-
-    fn two_triangle_quad() -> NavmRecord {
-        let yup_verts = [
-            [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-            [10.0, 0.0, 10.0],
-            [0.0, 0.0, 10.0],
-        ];
-        NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
-            triangles: vec![
-                NavmTriangle {
-                    vertices: [0, 1, 2],
-                    edge_neighbours: [None, Some(1), None],
-                    flags: 0,
-                },
-                NavmTriangle {
-                    vertices: [0, 2, 3],
-                    edge_neighbours: [Some(0), None, None],
-                    flags: 0,
-                },
-            ],
-            ..NavmRecord::default()
-        }
-    }
-
-    /// Same shape as [`two_triangle_quad`], offset `x_offset` world units
-    /// along X and tagged with `form_id` — a second navmesh tile for
-    /// cross-tile (Phase 2, #3802) tests. `x_offset = 10.0` makes this
-    /// tile's `[10,20] x [0,10]` footprint share its entire `x = 10` edge
-    /// with `two_triangle_quad`'s `[0,10] x [0,10]` footprint exactly (no
-    /// quantization tolerance needed), giving triangle 0's `(10,0,0)-
-    /// (10,0,10)` border edge a real geometric portal to match.
-    fn adjacent_quad(form_id: u32, x_offset: f32) -> NavmRecord {
-        let yup_verts = [
-            [x_offset, 0.0, 0.0],
-            [x_offset + 10.0, 0.0, 0.0],
-            [x_offset + 10.0, 0.0, 10.0],
-            [x_offset, 0.0, 10.0],
-        ];
-        NavmRecord {
-            form_id,
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
-            triangles: vec![
-                NavmTriangle {
-                    vertices: [0, 1, 2],
-                    edge_neighbours: [None, Some(1), None],
-                    flags: 0,
-                },
-                NavmTriangle {
-                    vertices: [0, 2, 3],
-                    edge_neighbours: [Some(0), None, None],
-                    flags: 0,
-                },
-            ],
-            ..NavmRecord::default()
-        }
     }
 
     // ── Phase 2 — cross-tile geometric join (#3802) ───────────────────

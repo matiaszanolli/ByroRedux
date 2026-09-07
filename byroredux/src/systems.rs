@@ -20,7 +20,7 @@ mod guard;
 mod light_anim;
 mod locomotion;
 mod metrics;
-mod navmesh_path;
+pub(crate) mod navmesh_path;
 mod particle;
 mod patrol;
 mod sandbox;
