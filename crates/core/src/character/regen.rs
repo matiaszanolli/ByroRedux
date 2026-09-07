@@ -136,7 +136,8 @@ impl Resource for PoolRegenConfig {}
 /// ids (a different game, or an entity that isn't a full actor) are simply
 /// skipped, not force-populated with a zero entry.
 ///
-/// Gated on **two** resources, not one (#2950):
+/// Gated on **two** resources, not one (#2950), and — since #3483 — on
+/// exactly those two:
 ///
 /// * [`PoolRegenConfig`] — per-game resolved AVIF ids, inserted when a live
 ///   [`CharacterRuleset`] lands (absent until Oblivion's wiring arrives).
@@ -147,6 +148,17 @@ impl Resource for PoolRegenConfig {}
 /// a missing accumulator silently returns at the second line — indistinguishable
 /// from "no game loaded" at a glance. The accumulator is armed at boot precisely
 /// so the config is the only outstanding precondition.
+///
+/// [`CharacterRuleset`] is **not** a third gate (#3483). It is read only by
+/// the Magicka branch, to decide whether the max-Magicka row is
+/// actor-general; Fatigue's rate is the flat [`FATIGUE_REGEN_PER_SEC`]
+/// constant and reads no ruleset row at all. Acquiring it as a hard
+/// precondition made a load that resolved the regen AVIFs but no ruleset
+/// lose *both* pools silently — the same failure mode #2950 was filed for,
+/// but undocumented, since this docstring listed only the two gates above.
+/// The acquire stays here (before the [`ActorValues`] query) rather than
+/// moving inside the loop: that order is the one half of the #3441
+/// lock-order pair this system is responsible for holding.
 ///
 /// Also a no-op if less than one 60 Hz tick has elapsed.
 pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
@@ -183,9 +195,10 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
     }
     let elapsed = ticks as f32 * POOL_REGEN_DT;
 
-    let Some(ruleset) = world.try_resource::<CharacterRuleset>() else {
-        return;
-    };
+    // #3483 — optional, not a gate. `None` disables only the scoped-max
+    // lookup below, which already has a `base_max` fallback for the
+    // player-only rows it declines; Fatigue is unaffected either way.
+    let ruleset = world.try_resource::<CharacterRuleset>();
     let Some(mut avs_q) = world.query_mut::<ActorValues>() else {
         return;
     };
@@ -210,10 +223,12 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
             // `.unwrap_or(0.0)` was the same gap seen from the other side: an
             // actor with a populated Magicka pool but no matching row
             // regenerated nothing at all.
-            let scoped_max = ruleset
-                .derived_formula(config.magicka_avif)
-                .filter(|f| f.scope == DerivedScope::ActorGeneral)
-                .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, 1));
+            let scoped_max = ruleset.as_ref().and_then(|ruleset| {
+                ruleset
+                    .derived_formula(config.magicka_avif)
+                    .filter(|f| f.scope == DerivedScope::ActorGeneral)
+                    .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, 1))
+            });
             let max_magicka = scoped_max.unwrap_or(base_max);
             let rate = magicka_regen_per_sec(willpower, max_magicka, false);
             avs.restore(config.magicka_avif, rate * elapsed);
@@ -443,5 +458,60 @@ mod tests {
         let world = World::new();
         // No PoolRegenConfig inserted — must not panic.
         pool_regen_tick_system(&world, POOL_REGEN_DT);
+    }
+
+    /// Regression for #3483. `CharacterRuleset` used to be acquired as a
+    /// hard precondition ahead of the actor loop, but only the Magicka
+    /// branch reads it — Fatigue's rate is a flat constant
+    /// (`fFatigueReturnMult` ships at `0.0`, so `FATIGUE_REGEN_PER_SEC`
+    /// *is* the formula). A world holding both documented gates but no
+    /// ruleset therefore regenerated neither pool, silently.
+    ///
+    /// Magicka must still regenerate here, via the same `base_max`
+    /// fallback #2932 already installed for player-only rows: "no ruleset"
+    /// and "no actor-general row for this AVIF" are the same situation
+    /// from the branch's point of view.
+    #[test]
+    fn both_pools_regenerate_without_a_character_ruleset() {
+        const FATIGUE: u32 = 0x01;
+        const MAGICKA: u32 = 0x10;
+        const WILLPOWER: u32 = 0x11;
+
+        let mut world = World::new();
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: FATIGUE,
+            magicka_avif: MAGICKA,
+            willpower_avif: WILLPOWER,
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        // Deliberately NO CharacterRuleset.
+        let entity = world.spawn();
+        let mut avs =
+            ActorValues::from_pairs([(FATIGUE, 100.0), (MAGICKA, 80.0), (WILLPOWER, 30.0)]);
+        avs.apply_damage(FATIGUE, 50.0);
+        avs.apply_damage(MAGICKA, 40.0);
+        world.insert(entity, avs);
+
+        // One full second (60 ticks).
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+
+        let q = world.query::<ActorValues>().unwrap();
+        let avs = q.get(entity).unwrap();
+        assert!(
+            (avs.current(FATIGUE) - 60.0).abs() < 1e-3,
+            "flat Fatigue regen reads no ruleset row and must not be gated on \
+             one; expected 50 + 10/s = 60, got {} (#3483)",
+            avs.current(FATIGUE)
+        );
+        // rate = (30×0.02 + 0.75) × (80/100) = 1.08/sec, off the actor's own
+        // base — the same value #2932's player-only fallback produces.
+        assert!(
+            (avs.current(MAGICKA) - (40.0 + 1.08)).abs() < 1e-2,
+            "Magicka must fall back to the actor's base max when no ruleset \
+             is loaded, got {}",
+            avs.current(MAGICKA)
+        );
     }
 }
