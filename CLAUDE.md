@@ -7,11 +7,22 @@ Long-term goal: load and render content from Gamebryo/Creation-era games.
 
 ```bash
 cargo check                    # Type check (fast)
-cargo test -p byroredux-core    # Run ECS/core tests
+cargo test -p byroredux-core --features inspect   # Run ECS/core tests (see note)
 cargo test                     # Full workspace tests
 cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
 ```
+
+`--features inspect` on the core line is load-bearing (#3895). `byroredux-core`'s
+`default` is `["parallel-scheduler"]` only, and the three `#[cfg(all(test, feature
+= "inspect"))]` animation-serialization guards (`animation::player::inspect_tests`,
+`animation::stack::inspect_tests` — the #486 round-trips) are silently dropped from
+a bare `cargo test -p byroredux-core`, with no diagnostic. CI never noticed because
+`cargo test --workspace` pulls `byroredux-save`, which depends on core with
+`features = ["save"]` and `save = ["inspect"]`, so feature unification builds core
+with `inspect` on exactly once. The gap was only ever in the *documented developer
+command*: a contributor iterating on `AnimationPlayer`/`AnimationStack` locally got
+a green run that omitted precisely the tests covering the field they were editing.
 
 ### Debug CLI
 ```bash
