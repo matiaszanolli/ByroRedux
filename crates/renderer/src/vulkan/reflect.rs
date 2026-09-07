@@ -1173,19 +1173,32 @@ mod tests {
     }
 
     /// Water shares the main render pass, so its fragment shader must also
-    /// account for the FSR mask attachments. It writes HDR (0) and both masks
-    /// (6, 7) while leaving the intermediate G-buffer slots to the opaque
-    /// pass — a gap in the declared locations that is intentional, and that
-    /// the blend array in `water.rs` masks off.
+    /// account for the FSR mask attachments. It writes HDR (0), the
+    /// demodulated-indirect coverage slot (4) and both masks (6, 7), leaving
+    /// the remaining G-buffer slots to the opaque pass — a gap in the declared
+    /// locations that is intentional, and that the blend array in `water.rs`
+    /// masks off.
+    ///
+    /// #3977 (REN-2026-09-06-D11-01) — 4 is in this list because #3821 gave
+    /// attachments 4 AND 5 a live RGBA coverage blend without adding either
+    /// fragment output. An enabled colour attachment the fragment interface
+    /// omits receives UNDEFINED values, and with blending on both the
+    /// undefined source colour and its alpha feed the blend equation. 4 now
+    /// has a real output (coverage in the alpha lane); 5 went back to
+    /// `masked_off`, because composite reassembles `direct + indirect *
+    /// albedo` and attenuating both factors would apply water's coverage
+    /// twice. The gap must stay exactly the set `water.rs` masks off —
+    /// `water::attachment_doc_pin_tests` holds the two to each other.
     #[test]
-    fn water_frag_declares_hdr_and_both_fsr_masks() {
+    fn water_frag_declares_hdr_raw_indirect_and_both_fsr_masks() {
         let spv: &[u8] = include_bytes!("../../shaders/water.frag.spv");
         let locs = reflect_output_locations(spv).expect("reflect water.frag.spv outputs");
         assert_eq!(
             locs,
-            vec![0, 6, 7],
-            "water.frag.spv declares color outputs at {locs:?}; water must write HDR plus the \
-             two FSR masks, and its 8-entry blend array in water.rs must match the render pass."
+            vec![0, 4, 6, 7],
+            "water.frag.spv declares color outputs at {locs:?}; water must write HDR, the \
+             demodulated-indirect coverage slot and the two FSR masks, and its 8-entry blend \
+             array in water.rs must enable writes on exactly those (#3977)."
         );
     }
 }

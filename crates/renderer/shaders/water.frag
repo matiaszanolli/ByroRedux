@@ -163,12 +163,33 @@ layout(location = 4) in vec2 vUV;
 // normal / motion / mesh-ID writes from water — RT denoising stays on
 // the opaque pass).
 layout(location = 0) out vec4 outColor;
+// Demodulated-indirect attachment (4). #3821 gave this slot a coverage
+// blend (`auxiliary_blend_attachment`: SRC_ALPHA / ONE_MINUS_SRC_ALPHA,
+// RGBA write mask) so the opaque receiver's GI is attenuated by water's
+// own coverage instead of composite adding it back at 100% underneath an
+// alpha-blended surface — but it did NOT add the matching fragment output,
+// and a colour attachment enabled for writing that the fragment interface
+// does not include receives UNDEFINED values, which with blending on feed
+// both the source colour AND source alpha of the blend equation (#3977 /
+// REN-2026-09-06-D11-01). Declared here so the write is defined.
+//
+// Water contributes no demodulated indirect of its own: `outColor` already
+// carries the fully-composed surface (reflection + refraction + specular +
+// foam) as direct light, so the RGB lane is zero and only the alpha lane —
+// the surface's blend coverage — is meaningful. Composite reassembles
+// `direct + indirect * albedo`, so attenuating BOTH 4 and 5 would apply
+// coverage twice ((1-a)^2) and would additionally scale down the
+// `albedo * causticRadiance` term water's own caustic splat feeds; the
+// albedo attachment (5) is therefore left write-masked in the blend table
+// (`water.rs::create_water_pipeline`) and the attenuation happens exactly
+// once, here.
+layout(location = 4) out vec4 outRawIndirect;
 // FSR reconstruction masks (attachments 6 and 7). Water writes both at full
 // strength: its surface colour comes from reflection and refraction of
 // geometry that its own depth and motion vectors do not describe, which is
 // precisely the transparency-and-composition case. The blend state MAX-
-// accumulates these, and the intermediate G-buffer attachments stay masked
-// off as before.
+// accumulates these, and the remaining intermediate G-buffer attachments
+// (1 normal, 2 motion, 3 mesh_id, 5 albedo) stay masked off.
 layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
 
@@ -616,6 +637,10 @@ float rainSurfaceNoise(vec2 uv, float time) {
 void main() {
     outFsrReactive = 1.0;
     outFsrTransparency = 1.0;
+    // Seeded here alongside the FSR masks so the attachment is never left
+    // undefined; the alpha lane (water's blend coverage) is filled in once
+    // `alpha` is resolved, next to the `outColor` write. See #3977.
+    outRawIndirect = vec4(0.0);
 
     // ── Setup ──
     float time = push.timing.x;
@@ -1165,6 +1190,11 @@ void main() {
         : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
+    // #3977 — attachment 4's coverage blend reads this alpha as its
+    // SRC_ALPHA, so the receiver's demodulated GI survives as
+    // `(1 - alpha) * dst`. RGB stays zero: water adds no indirect of its
+    // own (all of its light is already in `surfaceColor` above).
+    outRawIndirect.a = alpha;
 
     // ── #1256 / Phase D of #1210 — water-side caustic splat ─────────
     //

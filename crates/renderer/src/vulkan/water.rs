@@ -18,13 +18,19 @@
 //! - a growable per-frame [`GpuWaterParams`] SSBO carrying the full authored material
 //!   payload, selected by a compact 16-byte [`WaterPush`] draw index;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
-//!   attachments 1..=3 (normal, motion, mesh_id) are masked off
-//!   (`color_write_mask = 0`) so water never pollutes the G-buffer feeding
-//!   SVGF / motion-vector reprojection. Attachments 4 and 5 (raw_indirect,
-//!   albedo) are coverage-blended (`auxiliary_blend_attachment`, #3821 /
+//!   attachments 1..=3 (normal, motion, mesh_id) and 5 (albedo) are masked
+//!   off (`color_write_mask = 0`) so water never pollutes the G-buffer
+//!   feeding SVGF / motion-vector reprojection. Attachment 4 (raw_indirect)
+//!   is coverage-blended (`auxiliary_blend_attachment`, #3821 /
 //!   REN-WD-D8-01) so the opaque receiver's demodulated GI is attenuated
 //!   by water's own coverage instead of composite adding it back at 100%
-//!   underneath an alpha-blended water surface. Attachments 6 and 7 — the
+//!   underneath an alpha-blended water surface; `water.frag` declares the
+//!   matching `layout(location = 4) out` and writes coverage into its alpha
+//!   lane (#3977 — #3821 enabled the blend on 4 AND 5 without adding either
+//!   output, and an enabled attachment the fragment interface omits takes
+//!   UNDEFINED values). Albedo stays masked because composite reassembles
+//!   `direct + indirect * albedo`: attenuating both factors would apply
+//!   water's coverage twice. Attachments 6 and 7 — the
 //!   FSR reactive and transparency-and-composition masks — ARE written,
 //!   MAX-blended at full strength: water's surface colour comes from
 //!   reflection and refraction that neither depth nor motion describes, so
@@ -850,12 +856,26 @@ fn build_pipeline(
     // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR (attachment 0).
     // Attachments 1..=3 (normal, motion, mesh_id) are write-masked off:
     // water never updates those slots, so SVGF and motion-vector
-    // reprojection see only the opaque pass behind the water. Attachments
-    // 4 and 5 (raw_indirect, albedo) are coverage-blended (#3821 /
-    // REN-WD-D8-01, see `auxiliary_blend` below) so the opaque receiver's
-    // demodulated GI is attenuated by water's own coverage rather than
-    // left untouched for composite to add back at 100%. Attachments 6
-    // and 7 (the FSR masks) are written — see below.
+    // reprojection see only the opaque pass behind the water. Attachment
+    // 4 (raw_indirect) is coverage-blended (#3821 / REN-WD-D8-01, see
+    // `auxiliary_blend` below) so the opaque receiver's demodulated GI is
+    // attenuated by water's own coverage rather than left untouched for
+    // composite to add back at 100%.
+    // #3977 (REN-2026-09-06-D11-01) — attachment 5 (albedo) is BACK to
+    // `masked_off`. #3821 gave 4 and 5 an RGBA write mask and a live blend
+    // without adding either fragment output to `water.frag`; per the
+    // Vulkan fragment-output-interface rules an enabled attachment the
+    // shader's interface omits receives UNDEFINED values, and with
+    // blending on the undefined source colour *and* alpha both feed the
+    // blend equation, destroying the receiver's demodulated GI and albedo
+    // by an undefined amount rather than attenuating them. Attachment 4
+    // now has a real `layout(location = 4) out vec4 outRawIndirect` (RGB
+    // zero — water's light is all in `outColor` — alpha = the surface's
+    // blend coverage). Attachment 5 stays masked because composite
+    // reassembles `direct + indirect * albedo` and additionally scales
+    // caustics by albedo: attenuating both factors would apply water's
+    // coverage twice, so the single attenuation lives on 4 alone.
+    // Attachments 6 and 7 (the FSR masks) are written — see below.
     // #3826 (REN-WD-D8-02) — the alpha lane routes through the same
     // `coverage_alpha_factors` accumulated-coverage convention every other
     // transparent writer uses (#2466), rather than hardcoding `(ONE, ZERO)`
@@ -912,7 +932,7 @@ fn build_pipeline(
         masked_off,
         masked_off,
         auxiliary_blend,
-        auxiliary_blend,
+        masked_off,
         fsr_mask_max,
         fsr_mask_max,
     ];
@@ -1884,6 +1904,7 @@ mod absorption_ramp_tests {
 #[cfg(test)]
 mod attachment_doc_pin_tests {
     const WATER_RS: &str = include_str!("water.rs");
+    const WATER_FRAG: &str = include_str!("../../shaders/water.frag");
 
     /// The 8-entry array literal `create_water_pipeline` hands to
     /// `PipelineColorBlendStateCreateInfo`, with whitespace collapsed.
@@ -1905,15 +1926,38 @@ mod attachment_doc_pin_tests {
             .join("\n")
     }
 
+    /// The eight blend-state identifiers, in attachment order, parsed out of
+    /// the array literal `blend_table` returns.
+    fn blend_states() -> Vec<String> {
+        let table = blend_table();
+        let inner = table
+            .split_once('[')
+            .and_then(|(_, rest)| rest.rsplit_once(']'))
+            .expect("the blend table must still be an array literal")
+            .0;
+        let states: Vec<String> = inner
+            .split(',')
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        assert_eq!(
+            states.len(),
+            8,
+            "the main render pass has eight color attachments; the blend \
+             table must carry exactly one entry per attachment (#647 / RP-1)",
+        );
+        states
+    }
+
     #[test]
     fn module_doc_matches_the_blend_table() {
         let table = blend_table();
         assert_eq!(
             table,
             "let attachments = [ hdr_blend, masked_off, masked_off, masked_off, \
-             auxiliary_blend, auxiliary_blend, fsr_mask_max, fsr_mask_max, ];",
+             auxiliary_blend, masked_off, fsr_mask_max, fsr_mask_max, ];",
             "the water blend table changed — update the module doc's \
-             attachment list in the same edit (#3604, #3821)",
+             attachment list in the same edit (#3604, #3821, #3977)",
         );
 
         let doc = module_doc();
@@ -1944,6 +1988,61 @@ mod attachment_doc_pin_tests {
             doc.contains("FSR"),
             "the module doc must state that attachments 6 and 7 (the FSR \
              masks) are written, not masked off (#3604)",
+        );
+    }
+
+    /// #3977 (REN-2026-09-06-D11-01) — the limb `module_doc_matches_the_blend_table`
+    /// structurally cannot have: it pins the Rust-side table against the Rust-side
+    /// prose, so #3821 could enable a live RGBA blend on attachments 4 and 5
+    /// without adding either fragment output and still pass. Per the Vulkan
+    /// fragment-output-interface rules a colour attachment enabled for writing
+    /// that the fragment shader's interface does not include receives UNDEFINED
+    /// values — and with `blend_enable`, the undefined source colour *and* source
+    /// alpha both feed the blend equation, so the destination is destroyed by an
+    /// undefined amount rather than attenuated. A zero write mask is what makes a
+    /// non-declared attachment safe, which is exactly why the pre-#3821 shape was
+    /// correct. This limb holds the two sides to each other in both directions.
+    #[test]
+    fn every_non_masked_attachment_has_a_matching_water_frag_output() {
+        for (index, state) in blend_states().iter().enumerate() {
+            let declared = WATER_FRAG.contains(&format!("layout(location = {index}) out "));
+            if state == "masked_off" {
+                assert!(
+                    !declared,
+                    "water.frag declares an output at location {index} but the blend \
+                     table masks that attachment off — either drop the declaration or \
+                     give the attachment a real blend state (#3977)",
+                );
+            } else {
+                assert!(
+                    declared,
+                    "the blend table enables writes on attachment {index} (`{state}`) but \
+                     water.frag declares no `layout(location = {index}) out` — an enabled \
+                     attachment the fragment interface omits takes UNDEFINED values, and \
+                     with blending on both its colour and its alpha feed the blend \
+                     equation and destroy the destination (#3977 / REN-2026-09-06-D11-01)",
+                );
+            }
+        }
+    }
+
+    /// The alpha lane of attachment 4 is the whole point of the coverage blend
+    /// (`auxiliary_blend_attachment` uses SRC_ALPHA / ONE_MINUS_SRC_ALPHA), so
+    /// `water.frag` must actually put water's blend coverage there rather than
+    /// leaving the seeded zero — a zero alpha makes the blend a no-op and
+    /// re-opens #3821. See #3977.
+    #[test]
+    fn water_frag_writes_coverage_into_the_raw_indirect_alpha_lane() {
+        assert!(
+            WATER_FRAG.contains("outRawIndirect = vec4(0.0);"),
+            "outRawIndirect must be seeded at the top of main() alongside the FSR \
+             masks so the attachment is never left undefined (#3977)",
+        );
+        assert!(
+            WATER_FRAG.contains("outRawIndirect.a = alpha;"),
+            "outRawIndirect's alpha lane must carry water's resolved blend coverage \
+             — that alpha IS the SRC_ALPHA the coverage blend attenuates the \
+             receiver's demodulated GI by (#3977 / #3821)",
         );
     }
 }
