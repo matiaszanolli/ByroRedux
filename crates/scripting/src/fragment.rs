@@ -1964,44 +1964,50 @@ fn populate_quest_fragments_from_pex_detailed_internal(
     providers: Option<FragmentProviderScope<'_>>,
 ) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
-    let pex = match byroredux_pex::parse(pex_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            log::debug!(
-                "populate_quest_fragments: .pex parse failed (quest {:08X}): {e}",
-                quest.0
-            );
-            return FragmentPexTranslation::failed(fingerprint);
+    // #3948 — the net spans the whole sequence, not just the decompile. See
+    // `translate::catching_panics`; the same reasoning applies here, and this
+    // is the variant the cell loader actually calls for quest fragments.
+    crate::translate::catching_panics("populate_quest_fragments", || {
+        let pex = match byroredux_pex::parse(pex_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!(
+                    "populate_quest_fragments: .pex parse failed (quest {:08X}): {e}",
+                    quest.0
+                );
+                return FragmentPexTranslation::failed(fingerprint);
+            }
+        };
+        let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
+        crate::compatibility::log_compatibility_report(&compatibility);
+        let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            byroredux_pex::decompile::decompile_script(&pex)
+        })) {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                log::debug!(
+                    "populate_quest_fragments: decompile failed (quest {:08X}): {e}",
+                    quest.0
+                );
+                return FragmentPexTranslation::declined(fingerprint, compatibility);
+            }
+            Err(_) => {
+                log::debug!(
+                    "populate_quest_fragments: decompile panicked (quest {:08X})",
+                    quest.0
+                );
+                return FragmentPexTranslation::declined(fingerprint, compatibility);
+            }
+        };
+        FragmentPexTranslation {
+            inserted: populate_quest_fragments_from_script_internal(
+                frags, quest, &script, bindings, providers,
+            ),
+            compatibility: Some(compatibility),
+            fingerprint,
         }
-    };
-    let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
-    crate::compatibility::log_compatibility_report(&compatibility);
-    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        byroredux_pex::decompile::decompile_script(&pex)
-    })) {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            log::debug!(
-                "populate_quest_fragments: decompile failed (quest {:08X}): {e}",
-                quest.0
-            );
-            return FragmentPexTranslation::declined(fingerprint, compatibility);
-        }
-        Err(_) => {
-            log::debug!(
-                "populate_quest_fragments: decompile panicked (quest {:08X})",
-                quest.0
-            );
-            return FragmentPexTranslation::declined(fingerprint, compatibility);
-        }
-    };
-    FragmentPexTranslation {
-        inserted: populate_quest_fragments_from_script_internal(
-            frags, quest, &script, bindings, providers,
-        ),
-        compatibility: Some(compatibility),
-        fingerprint,
-    }
+    })
+    .unwrap_or_else(|| FragmentPexTranslation::failed(fingerprint))
 }
 
 /// The AST half of [`populate_quest_fragments_from_pex`] — lower each
@@ -2220,45 +2226,51 @@ fn populate_scene_fragments_from_pex_detailed_internal(
     providers: Option<FragmentProviderScope<'_>>,
 ) -> FragmentPexTranslation {
     let fingerprint = crate::translate::pex_fingerprint(pex_bytes);
-    let pex = match byroredux_pex::parse(pex_bytes) {
-        Ok(pex) => pex,
-        Err(error) => {
-            log::debug!(
-                "populate_scene_fragments: .pex parse failed (scene {scene_form_id:08X}): {error}"
-            );
-            return FragmentPexTranslation::failed(fingerprint);
+    // #3948 — same whole-sequence net as the quest sibling above.
+    crate::translate::catching_panics("populate_scene_fragments", || {
+        let pex = match byroredux_pex::parse(pex_bytes) {
+            Ok(pex) => pex,
+            Err(error) => {
+                log::debug!(
+                    "populate_scene_fragments: .pex parse failed (scene {scene_form_id:08X}): {error}"
+                );
+                return FragmentPexTranslation::failed(fingerprint);
+            }
+        };
+        let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
+        crate::compatibility::log_compatibility_report(&compatibility);
+        let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            byroredux_pex::decompile::decompile_script(&pex)
+        })) {
+            Ok(Ok(script)) => script,
+            Ok(Err(error)) => {
+                log::debug!(
+                    "populate_scene_fragments: decompile failed (scene {scene_form_id:08X}): {error}"
+                );
+                return FragmentPexTranslation::declined(fingerprint, compatibility);
+            }
+            Err(_) => {
+                log::debug!(
+                    "populate_scene_fragments: decompile panicked (scene {scene_form_id:08X})"
+                );
+                return FragmentPexTranslation::declined(fingerprint, compatibility);
+            }
+        };
+        FragmentPexTranslation {
+            inserted: populate_scene_fragments_from_script_internal(
+                frags,
+                scene_form_id,
+                context,
+                vmad,
+                &script,
+                bindings,
+                providers,
+            ),
+            compatibility: Some(compatibility),
+            fingerprint,
         }
-    };
-    let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
-    crate::compatibility::log_compatibility_report(&compatibility);
-    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        byroredux_pex::decompile::decompile_script(&pex)
-    })) {
-        Ok(Ok(script)) => script,
-        Ok(Err(error)) => {
-            log::debug!(
-                "populate_scene_fragments: decompile failed (scene {scene_form_id:08X}): {error}"
-            );
-            return FragmentPexTranslation::declined(fingerprint, compatibility);
-        }
-        Err(_) => {
-            log::debug!("populate_scene_fragments: decompile panicked (scene {scene_form_id:08X})");
-            return FragmentPexTranslation::declined(fingerprint, compatibility);
-        }
-    };
-    FragmentPexTranslation {
-        inserted: populate_scene_fragments_from_script_internal(
-            frags,
-            scene_form_id,
-            context,
-            vmad,
-            &script,
-            bindings,
-            providers,
-        ),
-        compatibility: Some(compatibility),
-        fingerprint,
-    }
+    })
+    .unwrap_or_else(|| FragmentPexTranslation::failed(fingerprint))
 }
 
 /// Result of one fragment PEX parse/decompile/lower pass.

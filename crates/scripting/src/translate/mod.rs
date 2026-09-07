@@ -136,39 +136,53 @@ pub fn translate_pex_detailed_with_providers(
     providers: &crate::PapyrusProviderCatalog,
 ) -> PexTranslation {
     let fingerprint = pex_fingerprint(pex_bytes);
-    let pex = match byroredux_pex::parse(pex_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            log::debug!("translate_pex: .pex parse failed: {e}");
-            return PexTranslation {
-                recognized: None,
-                provider_program: None,
-                provider_error: None,
-                compatibility: None,
-                fingerprint,
-            };
-        }
-    };
-    let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
-    crate::compatibility::log_compatibility_report(&compatibility);
-    let mut provider_program = None;
-    let mut provider_error = None;
-    let recognized = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))
-        .and_then(|script| {
-            match crate::lower_provider_program(&script, providers) {
-                Ok(program) => provider_program = program,
-                Err(error) => provider_error = Some(error),
+    // #3948 — the whole parse -> preflight -> decompile -> provider-lower ->
+    // recognize sequence runs inside the net, not just the decompile. Every
+    // stage after the parse consumes untrusted-derived data, and this runs
+    // on the cell loader's path where an escaping panic aborts the load.
+    catching_panics("translate_pex", || {
+        let pex = match byroredux_pex::parse(pex_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!("translate_pex: .pex parse failed: {e}");
+                return PexTranslation {
+                    recognized: None,
+                    provider_program: None,
+                    provider_error: None,
+                    compatibility: None,
+                    fingerprint,
+                };
             }
-            let source = ScriptSource::PapyrusSource(&script);
-            translate_script(&source, game, script_instance, owning_quest)
-        });
-    PexTranslation {
-        recognized,
-        provider_program,
-        provider_error,
-        compatibility: Some(compatibility),
+        };
+        let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
+        crate::compatibility::log_compatibility_report(&compatibility);
+        let mut provider_program = None;
+        let mut provider_error = None;
+        let recognized =
+            decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))
+                .and_then(|script| {
+                    match crate::lower_provider_program(&script, providers) {
+                        Ok(program) => provider_program = program,
+                        Err(error) => provider_error = Some(error),
+                    }
+                    let source = ScriptSource::PapyrusSource(&script);
+                    translate_script(&source, game, script_instance, owning_quest)
+                });
+        PexTranslation {
+            recognized,
+            provider_program,
+            provider_error,
+            compatibility: Some(compatibility),
+            fingerprint,
+        }
+    })
+    .unwrap_or(PexTranslation {
+        recognized: None,
+        provider_program: None,
+        provider_error: None,
+        compatibility: None,
         fingerprint,
-    }
+    })
 }
 
 pub(crate) fn pex_fingerprint(bytes: &[u8]) -> u64 {
@@ -201,14 +215,41 @@ fn decompile_catching_panics<F>(decompile: F) -> Option<byroredux_papyrus::ast::
 where
     F: FnOnce() -> Result<byroredux_papyrus::ast::Script, byroredux_pex::decompile::DecompileError>,
 {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decompile)) {
-        Ok(Ok(s)) => Some(s),
-        Ok(Err(e)) => {
+    match catching_panics("translate_pex: decompile", decompile) {
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => {
             log::debug!("translate_pex: decompile failed: {e}");
             None
         }
+        None => None,
+    }
+}
+
+/// Run `body` under a panic net, flattening an unwind to `None`.
+///
+/// #3948 — #1816's net covered `decompile_script` and nothing else, but the
+/// same untrusted-derived data flows on through `analyze_pex_compatibility`,
+/// `lower_provider_program` and the recognizer, including ~7k LOC of
+/// unaudited SDK-layer code with `unreachable!` arms in
+/// `papyrus_provider/execute.rs`. All of it runs on the cell loader's path,
+/// where an escaping panic aborts cell load exactly as #1816's did. This is
+/// the generalized net the whole sequence is wrapped in; the narrower
+/// [`decompile_catching_panics`] stays, both because it can name the failing
+/// stage in its log line and because #3287's falsifiability argument is
+/// attached to it.
+///
+/// Hardening, not a demonstrated panic: no fixture reaches these arms (see
+/// [`decompile_catching_panics`] for why a hostile `.pex` is not
+/// constructible by hand). What is testable is the mechanism, and it is —
+/// remove a net and the matching test unwinds instead of passing.
+pub(crate) fn catching_panics<T, F>(what: &str, body: F) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => Some(value),
         Err(_) => {
-            log::debug!("translate_pex: decompile panicked");
+            log::debug!("{what}: panicked");
             None
         }
     }
@@ -261,6 +302,78 @@ mod tests {
             Err(byroredux_pex::decompile::DecompileError::BadJumpOffset { ip: 0 })
         });
         assert!(caught.is_none());
+    }
+
+    /// #3948 — the generalized net. A panic anywhere in the wrapped body
+    /// flattens to `None` for the caller to substitute a declined result
+    /// for, instead of unwinding out of the cell loader.
+    #[test]
+    fn catching_panics_flattens_an_unwind_and_passes_values_through() {
+        assert_eq!(catching_panics("test", || 7u32), Some(7));
+
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught = catching_panics("test", || -> u32 { panic!("provider lowering tripped") });
+        std::panic::set_hook(prev);
+        assert!(
+            caught.is_none(),
+            "a panic in any wrapped stage must flatten to None, not escape"
+        );
+    }
+
+    /// #3948's real content is *where* the net sits, and that is not
+    /// reachable from a test: no hand-constructible `.pex` drives the
+    /// unaudited SDK arms into a panic (see `decompile_catching_panics`).
+    /// So the placement is pinned at the source, the same way #3287 pinned
+    /// the original wrapper — every production entry that feeds
+    /// untrusted-derived data through the preflight / provider-lower /
+    /// recognize sequence must run that sequence inside the net, not just
+    /// its `decompile_script` call.
+    #[test]
+    fn every_pex_entry_point_wraps_its_whole_sequence_in_the_panic_net() {
+        let entries: [(&str, &str, &str); 3] = [
+            (
+                "translate_pex_detailed_with_providers",
+                include_str!("mod.rs"),
+                "pub fn translate_pex_detailed_with_providers",
+            ),
+            (
+                "populate_quest_fragments_from_pex_detailed_internal",
+                include_str!("../fragment.rs"),
+                "fn populate_quest_fragments_from_pex_detailed_internal",
+            ),
+            (
+                "populate_scene_fragments_from_pex_detailed_internal",
+                include_str!("../fragment.rs"),
+                "fn populate_scene_fragments_from_pex_detailed_internal",
+            ),
+        ];
+        // Composed at runtime so this test's own source cannot satisfy the
+        // scan it performs.
+        let needle = format!("{}{}", "catching_", "panics(");
+        let preflight = format!("{}{}", "analyze_pex_", "compatibility(");
+        for (name, source, signature) in entries {
+            let start = source
+                .find(signature)
+                .unwrap_or_else(|| panic!("{name}: entry point not found — signature moved?"));
+            let body = &source[start..];
+            let end = body
+                .find("\n}\n")
+                .unwrap_or_else(|| panic!("{name}: could not find the end of the body"));
+            let body = &body[..end];
+            let net = body
+                .find(&needle)
+                .unwrap_or_else(|| panic!("{name}: the panic net is gone (#3948/#1816)"));
+            let sequence = body
+                .find(&preflight)
+                .unwrap_or_else(|| panic!("{name}: the preflight call moved — re-derive this pin"));
+            assert!(
+                net < sequence,
+                "{name}: the compatibility preflight runs BEFORE the panic net \
+                 opens, so a panic there still escapes into the cell loader \
+                 (#3948)"
+            );
+        }
     }
 
     #[test]
