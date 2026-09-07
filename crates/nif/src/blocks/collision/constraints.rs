@@ -13,12 +13,15 @@ use std::io;
 /// A Havok constraint block.
 ///
 /// Always holds the shared `bhkConstraintCInfo` base (two entity refs
-/// plus priority). On FO3+ the joint geometry a humanoid ragdoll uses is
-/// decoded into [`BhkConstraintData`] (M41.x): bare `bhkRagdollConstraint`
-/// / `bhkLimitedHingeConstraint`, and — the dominant FNV form —
-/// `bhkMalleableConstraint` wrapping one of those (surfaced as the inner
-/// joint, with the malleable block's outer entity refs as the bodies).
-/// Every other type stays a `type_name`-only stub. See #117 / M41.x.
+/// plus priority). Four wire types decode their joint geometry into
+/// [`BhkConstraintData`] on both eras — `bhkRagdollConstraint`,
+/// `bhkLimitedHingeConstraint` (M41.x), `bhkHingeConstraint` (#3330) and
+/// `bhkPrismaticConstraint` (#3792) — reachable bare, via
+/// `bhkMalleableConstraint` (the dominant FNV form; surfaced as the inner
+/// joint, with the malleable block's outer entity refs as the bodies), or
+/// via [`BhkBreakableConstraint`]. Every other type stays a
+/// `type_name`-only stub. See #117 / M41.x and `docs/engine/physal.md` §3
+/// for the full inventory.
 #[derive(Debug)]
 pub struct BhkConstraint {
     /// RTTI class name — one of the seven constraint types.
@@ -41,10 +44,13 @@ impl NiObject for BhkConstraint {
     }
 }
 
-/// Decoded per-variant `bhkConstraintCInfo` payload. Only the variants
-/// a humanoid ragdoll articulation uses are decoded today (M41.x); the
-/// rest stay [`Other`](BhkConstraintData::Other) (the bytes are still
-/// consumed/skipped, just not surfaced).
+/// Decoded per-variant `bhkConstraintCInfo` payload. Three CInfo structs
+/// cover four wire types today — a `bhkHingeConstraint` decodes into
+/// [`LimitedHinge`](BhkConstraintData::LimitedHinge) with synthesized ±π
+/// limits, an unlimited hinge being a limited one with the limits opened.
+/// Anything else stays [`Other`](BhkConstraintData::Other) (the bytes are
+/// still consumed/skipped, just not surfaced). Inventory:
+/// `docs/engine/physal.md` §3.
 #[derive(Debug, Clone)]
 pub enum BhkConstraintData {
     /// `bhkRagdollConstraintCInfo` — a 3-DOF cone/twist ball joint.
@@ -500,11 +506,13 @@ impl BhkConstraint {
         })
     }
 
-    /// Parse a constraint block by type name. For the two joints a
-    /// humanoid ragdoll uses (`bhkRagdollConstraint` /
-    /// `bhkLimitedHingeConstraint`, bare or malleable-wrapped) the typed
-    /// CInfo is decoded into [`BhkConstraintData`] in the era-correct field
-    /// order — Oblivion (`#NI_BS_LTE_16#`) or FO3+ (`!#NI_BS_LTE_16#`).
+    /// Parse a constraint block by type name. For the four decoded types
+    /// (`bhkRagdollConstraint`, `bhkLimitedHingeConstraint`,
+    /// `bhkHingeConstraint` — #3330, `bhkPrismaticConstraint` — #3792; bare
+    /// or malleable-wrapped) the typed CInfo is decoded into
+    /// [`BhkConstraintData`] in the era-correct field order — Oblivion
+    /// (`#NI_BS_LTE_16#`) or FO3+ (`!#NI_BS_LTE_16#`), which for Prismatic
+    /// are genuinely different field ORDERS, not just different lengths.
     /// Every other type reads its base (and, on Oblivion, skips its fixed
     /// payload) and stays [`BhkConstraintData::Other`]; on FO3+ the outer
     /// walker seeks past any unread remainder via `block_size`.
@@ -518,11 +526,12 @@ impl BhkConstraint {
         // NIF-version one; matches the sibling rigid_body.rs gate. (#1608)
         let is_oblivion = stream.bsver() <= crate::version::bsver::NI_BS_LTE_16;
         if is_oblivion {
-            // PHYSAL per-game seam: decode the two joints a humanoid
-            // ragdoll uses in the Oblivion (`#NI_BS_LTE_16#`) field order.
-            // Everything downstream of the resulting `BhkConstraintData` is
-            // game-agnostic — only the byte layout differs here, so this is
-            // the *only* Oblivion-specific code in the ragdoll path.
+            // PHYSAL per-game seam: decode the four typed joints in the
+            // Oblivion (`#NI_BS_LTE_16#`) field order. Everything downstream
+            // of the resulting `BhkConstraintData` is game-agnostic — only
+            // the byte layout differs here, so this is the *only*
+            // Oblivion-specific code in the ragdoll path. See
+            // `docs/engine/physal.md` §3 for the inventory this must match.
             match type_name {
                 "bhkRagdollConstraint" => {
                     return Ok(Self {
@@ -649,10 +658,10 @@ impl BhkConstraint {
             }
         }
 
-        // FO3+ (FNV/FO3, `!#NI_BS_LTE_16#`). For the two variants a
-        // humanoid ragdoll uses, decode the typed CInfo prefix
-        // (field order + sizes from nif.xml, cross-checked against the
-        // breakable-constraint byte tables below). The trailing
+        // FO3+ (FNV/FO3, `!#NI_BS_LTE_16#`). For each of the four decoded
+        // types, read the typed CInfo prefix (field order + sizes from
+        // nif.xml, cross-checked against the breakable-constraint byte
+        // tables below). The trailing
         // `bhkConstraintMotorCInfo` is deliberately NOT consumed here:
         // it's the last field of the struct, carries nothing slice 1
         // needs, and the outer parse_nif loop absolute-seeks to the next
@@ -952,3 +961,166 @@ impl BhkBreakableConstraint {
 }
 
 impl_ni_object!(BhkBreakableConstraint => "bhkBreakableConstraint");
+
+/// #3970 / PHYS-D4-2026-09-06-02 — the PHYSAL spec and this file's own
+/// docstrings must name the same constraint inventory.
+///
+/// `physal.md` §3 is where someone deciding whether the next wire type is
+/// worth decoding looks. After #3330 (`bhkHingeConstraint`) and #3792
+/// (`bhkPrismaticConstraint`) landed without touching it, it still said "the
+/// typed decode of **two** constraint CInfos", named two importers, listed two
+/// byte layouts and cited two nif.xml structs — so the table a planner would
+/// consult omitted two kinds already done. The same paragraph had already
+/// drifted once (#2883, the seam *count*); a prose-only invariant is what let
+/// it drift twice.
+#[cfg(test)]
+mod physal_seam_doc_tests {
+    const PHYSAL_MD: &str = include_str!("../../../../../docs/engine/physal.md");
+
+    /// The production half of this file — everything above this test module.
+    ///
+    /// Scoping matters: the stale phrases this module searches for are quoted
+    /// verbatim in its own assertions, so an unscoped `include_str!` scan would
+    /// always match itself and pass with the real docstrings unfixed.
+    fn production_src() -> &'static str {
+        const FULL: &str = include_str!("constraints.rs");
+        let end = FULL
+            .find("mod physal_seam_doc_tests")
+            .expect("this test module must still exist under its own name");
+        &FULL[..end]
+    }
+
+    /// The wire types `parse` decodes into a typed `BhkConstraintData`.
+    const DECODED_WIRE_TYPES: &[&str] = &[
+        "bhkRagdollConstraint",
+        "bhkLimitedHingeConstraint",
+        "bhkHingeConstraint",
+        "bhkPrismaticConstraint",
+    ];
+
+    /// `bhkMalleableConstraint` has a dispatch arm but is a WRAPPER, not a
+    /// decoded joint — it recurses into its inner constraint.
+    const WRAPPER_WIRE_TYPES: &[&str] = &["bhkMalleableConstraint"];
+
+    /// Named arms that are NOT decodes: entries in the Oblivion payload-size
+    /// table, whose fixed bytes are consumed and dropped so the block stays
+    /// recoverable. Listed here rather than filtered by shape so that
+    /// promoting one to a real decode fails this module until physal.md §3
+    /// and the docstrings are updated with it.
+    const SKIPPED_WIRE_TYPES: &[&str] = &["bhkBallAndSocketConstraint", "bhkStiffSpringConstraint"];
+
+    /// Every `"bhk…Constraint" =>` match arm in the production source,
+    /// de-duplicated. Discovered from the dispatch rather than restated, so a
+    /// new decode arm shows up here without anyone remembering to add it.
+    fn dispatched_wire_types() -> Vec<String> {
+        let src = production_src();
+        let mut found: Vec<String> = Vec::new();
+        let mut rest = src;
+        while let Some(at) = rest.find("Constraint\" =>") {
+            let head = &rest[..at + "Constraint".len()];
+            if let Some(open) = head.rfind('"') {
+                let name = &head[open + 1..];
+                if name.starts_with("bhk") && !found.iter().any(|f| f == name) {
+                    found.push(name.to_string());
+                }
+            }
+            rest = &rest[at + "Constraint".len()..];
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn the_decoded_type_list_matches_the_dispatch() {
+        let mut expected: Vec<String> = DECODED_WIRE_TYPES
+            .iter()
+            .chain(WRAPPER_WIRE_TYPES)
+            .chain(SKIPPED_WIRE_TYPES)
+            .map(|s| s.to_string())
+            .collect();
+        expected.sort();
+        assert_eq!(
+            dispatched_wire_types(),
+            expected,
+            "`parse`'s dispatch and this module's inventory disagree. A decode \
+             arm was added or removed without updating DECODED_WIRE_TYPES, \
+             physal.md §3's table, and the docstrings above — the exact edit \
+             #3330 and #3792 each skipped (#3970)"
+        );
+    }
+
+    /// The skipped types must stay out of the decoded inventory: physal.md's
+    /// table is read as "what is left to do", so a type appearing there as a
+    /// decode when it is really a payload skip is worse than its absence.
+    #[test]
+    fn the_skipped_types_are_not_advertised_as_decoded() {
+        for ty in SKIPPED_WIRE_TYPES {
+            assert!(
+                !DECODED_WIRE_TYPES.contains(ty),
+                "{ty} is in the Oblivion payload-skip table, not the decode \
+                 dispatch — moving it must be a real code change (#3970)"
+            );
+        }
+    }
+
+    #[test]
+    fn physal_md_names_every_decoded_type_and_importer() {
+        for ty in DECODED_WIRE_TYPES {
+            assert!(
+                PHYSAL_MD.contains(ty),
+                "docs/engine/physal.md §3 does not mention `{ty}`, which this \
+                 parser decodes — that table is what a planner reads to decide \
+                 what is left to do (#3970)"
+            );
+        }
+        for importer in ["ragdoll_joint", "limited_hinge_joint", "prismatic_joint"] {
+            assert!(
+                PHYSAL_MD.contains(importer),
+                "docs/engine/physal.md §3 must list the `{importer}` importer \
+                 alongside its siblings (#3970)"
+            );
+        }
+        for cinfo in ["RagdollCInfo", "LimitedHingeCInfo", "PrismaticCInfo"] {
+            assert!(
+                PHYSAL_MD.contains(cinfo),
+                "docs/engine/physal.md §3 must name the `{cinfo}` struct in its \
+                 'feeds every game' list (#3970)"
+            );
+        }
+    }
+
+    #[test]
+    fn physal_md_does_not_restate_the_stale_two_type_seam() {
+        assert!(
+            !PHYSAL_MD.contains("the typed decode of two"),
+            "docs/engine/physal.md §3 still calls the constraint seam a two-CInfo \
+             decode — it is four wire types into three CInfos at HEAD (#3970)"
+        );
+        assert!(
+            PHYSAL_MD.contains("captured but unused"),
+            "docs/engine/physal.md §3 must record that the friction scalars are \
+             decoded but not consumed by the importers, or the next reader \
+             assumes the joints are fully translated (#3970)"
+        );
+    }
+
+    #[test]
+    fn the_docstrings_here_do_not_restate_the_stale_two_joint_claim() {
+        let src = production_src();
+        for stale in [
+            "the two joints a",
+            "For the two joints a",
+            "decode the two joints",
+            "the two variants a",
+            "Only the variants",
+        ] {
+            assert!(
+                !src.contains(stale),
+                "a docstring in constraints.rs still describes the seam as the two \
+                 ragdoll joints: {stale:?}. Four types are decoded at HEAD, and the \
+                 parser's own docs were the corroborating evidence that made the \
+                 physal.md claim look true (#3970)"
+            );
+        }
+    }
+}

@@ -679,14 +679,24 @@ registry guard to be *dropped* before `QuestStageState`, because
 **Physics shapes.** `physics_sync::collect_newcomers`
 (`crates/physics/src/sync.rs`) establishes the component span, acquiring
 `GlobalTransform` last so it matches `push_kinematic`'s handles → body →
-global order. `PhysicsWorld` is *not* part of that span and must never be
-held with it: every site — `collect_newcomers`/`register_newcomers`,
-`push_kinematic`, `combat_input_system`, `interaction`'s line-of-sight ray,
-`ragdoll_writeback_system` (`byroredux/src/ragdoll.rs`, `LocalBound`/
-`WorldBound` hoisted above the resource guard by #3655) — collects what it
-needs from the component queries, drops them, and only then takes the
-resource. Treat `PhysicsWorld` the way `StringPool` is treated at the tail
-of the main order, except that here the guards do not overlap at all.
+global order. `PhysicsWorld` is *not* part of that span. `collect_newcomers`/
+`register_newcomers`, `push_kinematic`, `combat_input_system` and
+`interaction`'s line-of-sight ray each collect what they need from the
+component queries, **drop them**, and only then take the resource — the
+strong form: those guards do not overlap at all.
+
+`ragdoll_writeback_system` (`byroredux/src/ragdoll.rs`) satisfies the
+**weaker but sufficient** form, and #3970 corrected this paragraph for
+claiming otherwise. It holds eight component guards (`Ragdoll`,
+`RagdollTemplate`, `Transform`, `Parent`, `Children`, `GlobalTransform`,
+and — hoisted above the resource guard by #3655 — `LocalBound`/`WorldBound`)
+*across* the `PhysicsWorld` guard. That is safe because the rule the order
+actually needs is **`PhysicsWorld` last, with nothing taken under it**:
+it is a sink with no outgoing edges, so no cycle is recordable no matter
+what is held above it. What #3655 fixed was the two bound queries being
+taken *after* the resource; hoisting them made the acquisition monotone,
+not disjoint. Treat `PhysicsWorld` the way `StringPool` is treated at the
+tail of the main order.
 
 Two properties make a violation cheap to miss and expensive to hit:
 

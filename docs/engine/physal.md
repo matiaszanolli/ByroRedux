@@ -127,31 +127,58 @@ both produces scale² geometry while ragdoll articulation remains scale¹ (#3064
 > *which* skeleton asset feeds this pipeline. That is asset resolution, not
 > physics translation — no physics semantics, not a fourth seam.
 
-The per-game seam **in the constraint graph** is the typed decode of two
-constraint CInfos (`crates/nif/src/blocks/collision/constraints.rs`). The importer
-(`ragdoll_joint` / `limited_hinge_joint`) reads the **common subset** of
-fields (twist/plane/pivot + angle limits for ragdoll; axis/perp/pivot +
-limits for hinge — the LimitedHinge perp-axis zero-reference threads through
-to the canonical spec as of #2448 / PHYS-02), so only genuinely era-only
-fields (FO3+ motors) are decoded-and-discarded. `Perp Axis In B1` is zeroed
-by the parser on Oblivion/Morrowind content (not authored in that era's
-layout) rather than discarded by the importer — the solver boundary's
-`frame_rot` falls back to a synthesized perpendicular for that degenerate
-input, so behavior on that era is unchanged. One `RagdollCInfo` /
-`LimitedHingeCInfo` therefore feeds every game:
+The per-game seam **in the constraint graph** is the typed decode of the
+constraint CInfos (`crates/nif/src/blocks/collision/constraints.rs`). At HEAD that
+is **four wire types → three CInfo structs → three importer functions**, reachable
+through **three wrappers** (bare, `bhkMalleableConstraint`-wrapped, and
+`BhkBreakableConstraint`-wrapped):
+
+| Wire type | CInfo struct | Importer | Landed |
+|---|---|---|---|
+| `bhkRagdollConstraint` | `RagdollCInfo` | `ragdoll_joint` | M41.x slice 1 |
+| `bhkLimitedHingeConstraint` | `LimitedHingeCInfo` | `limited_hinge_joint` | M41.x slice 1 |
+| `bhkHingeConstraint` | `LimitedHingeCInfo` (synthesized ±π limits, zero friction) | `limited_hinge_joint` | #3330 |
+| `bhkPrismaticConstraint` | `PrismaticCInfo` | `prismatic_joint` | #3792 |
+
+> Two counts, not one — a hinge is decoded into the *LimitedHinge* CInfo because
+> an unlimited hinge is a limited one with the limits opened to ±π. Any type not
+> in this table (`bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint`,
+> `bhkMalleableConstraint` with an undecoded inner, …) still reads its base, skips
+> its fixed Oblivion payload, and stays `BhkConstraintData::Other`.
+
+Each importer reads the **common subset** of fields — twist/plane/pivot + angle
+limits for ragdoll; axis/perp/pivot + limits for hinge (the LimitedHinge perp-axis
+zero-reference threads through to the canonical spec as of #2448 / PHYS-02);
+sliding/rotation/pivot + min/max distance for prismatic — so only genuinely
+era-only or unmodelled fields are decoded-and-discarded: the FO3+ **motors**, and
+the friction scalars (`LimitedHingeCInfo::max_friction`, `PrismaticCInfo::friction`)
+which are **captured but unused** by the importers today. `Perp Axis In B1` is
+zeroed by the parser on Oblivion/Morrowind content (not authored in that era's
+layout) rather than discarded by the importer — the solver boundary's `frame_rot`
+falls back to a synthesized perpendicular for that degenerate input, so behavior on
+that era is unchanged. `Axis A` is likewise **not serialized** for an Oblivion-era
+hinge; the parser derives it as `Perp A1 × Perp A2`, nif.xml's own stated identity,
+rather than guessing. One `RagdollCInfo` / `LimitedHingeCInfo` / `PrismaticCInfo`
+therefore feeds every game:
 
 | Game | Discriminator | Constraint layout | State |
 |---|---|---|---|
-| **Oblivion / Morrowind** | NIF ≤ 20.0.0.5 (`#NI_BS_LTE_16#`) | Ragdoll 6×Vec4 + 6×f32 (pivots-first, **no motors**); LimitedHinge 7×Vec4 + 3×f32 (**no Perp B1**) | **decoded (2026-06-14)** |
-| **FO3 / FNV** | NIF 20.2.0.7, bsver ≤ 34 (`!#NI_BS_LTE_16#`) | Ragdoll 8×Vec4 + 6×f32 + motor; LimitedHinge 8×Vec4 + 3×f32 + motor; the dominant FNV form is a `bhkMalleableConstraint` wrapping a Ragdoll | **decoded — slice 1 reference** |
+| **Oblivion / Morrowind** | NIF ≤ 20.0.0.5 (`#NI_BS_LTE_16#`) | Ragdoll 6×Vec4 + 6×f32 (pivots-first, **no motors**); LimitedHinge 7×Vec4 + 3×f32 (**no Perp B1**); Hinge 5×Vec4 = 80 B (**no Axis A** — derived); Prismatic 8×Vec4 + 3×f32 = 140 B, pivots-first order, **no motor** | **decoded (2026-06-14; Hinge #3330, Prismatic #3792)** |
+| **FO3 / FNV** | NIF 20.2.0.7, bsver ≤ 34 (`!#NI_BS_LTE_16#`) | Ragdoll 8×Vec4 + 6×f32 + motor; LimitedHinge 8×Vec4 + 3×f32 + motor; Hinge 8×Vec4 = 128 B + motor (no serialized limits); Prismatic 8×Vec4 + 3×f32 = 140 B + motor, `Sliding/Rotation/Plane/Pivot` A-then-B order (**not** the Oblivion order) | **decoded — slice 1 reference** |
 | **Skyrim LE/SE** | NIF 20.2.0.7, bsver 83–127 | identical FO3+ layout; gated by NIF **version**, not bsver. `havok_scale` ×69.99 applied at import via `havok_scale_for(header)` | **decoded; version-gate pinned by test, real-data validation pending** |
 | **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **blocked on a blob decoder (multi-day reverse-engineering); documented limitation, not a leak** |
 
 Sources of truth (no-guessing): `/mnt/data/src/reference/nifxml/nif.xml`
-(`bhkRagdollConstraintCInfo` / `bhkLimitedHingeConstraintCInfo`, both version
-branches) cross-checked against the sibling `BhkBreakableConstraint` byte tables in
-the same file. Every decoder asserts exact stream advancement (byte-level tests in
+(`bhkRagdollConstraintCInfo` / `bhkLimitedHingeConstraintCInfo` /
+`bhkHingeConstraintCInfo` / `bhkPrismaticConstraintCInfo`, both version branches)
+cross-checked against the sibling `BhkBreakableConstraint` byte tables in the same
+file. Every decoder asserts exact stream advancement (byte-level tests in
 `blocks/collision/bhk_constraint_tests.rs`).
+
+> This paragraph has drifted twice now — #2883 corrected the seam *count*, #3970
+> the *type* count after #3330 and #3792 landed without touching this file. If you
+> add a decode arm, the table above and the `constraints.rs` docstrings are part of
+> the same edit; `physal_seam_doc_tests` in that file fails the build if they are not.
 
 ### Extract — articulation graph (`crates/nif/src/import/collision/ragdoll.rs`)
 
