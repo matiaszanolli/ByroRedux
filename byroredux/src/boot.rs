@@ -1854,6 +1854,14 @@ fn register_late_systems(scheduler: &mut Scheduler) {
         byroredux_scripting::legacy_obscript_load_order_system,
         Access::new()
             .reads_resource::<byroredux_scripting::LegacyObscriptContentCatalog>()
+            // #3951 — the host-function invoker was missing. These
+            // declarations do not affect scheduling today (the analyzer only
+            // walks parallel-stage pairs, and exclusives run serially), so
+            // this is not a deadlock fix; their stated purpose (#3473) is to
+            // be the thing compared against if either system is ever
+            // promoted to a parallel lane, and an under-declaration defeats
+            // exactly that.
+            .reads_resource::<byroredux_scripting::ExtensionScriptFunctionInvoker>()
             .reads::<byroredux_scripting::LegacyObscriptProgram>()
             .reads::<byroredux_scripting::OnCellLoadEvent>()
             .reads::<byroredux_scripting::ActivateEvent>()
@@ -1867,9 +1875,24 @@ fn register_late_systems(scheduler: &mut Scheduler) {
         byroredux_scripting::papyrus_provider_system,
         Access::new()
             .reads_resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            // #3951 — the continuation queue and the mod-event runtime are
+            // `resource_mut`s, the form pool and six further event/identity
+            // component storages are reads, and none of them were declared:
+            // the body acquires thirteen types where this list named four.
+            // See the sibling above for why that matters even though these
+            // declarations do not currently affect scheduling.
+            .writes_resource::<byroredux_scripting::PapyrusProviderContinuationQueue>()
+            .writes_resource::<byroredux_scripting::PapyrusModEventRuntime>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads::<byroredux_scripting::PapyrusProviderProgram>()
             .reads::<byroredux_scripting::OnCellLoadEvent>()
             .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_scripting::OnInitEvent>()
+            .reads::<byroredux_scripting::HitEvent>()
+            .reads::<byroredux_scripting::EquipmentEventBatch>()
+            .reads::<byroredux_scripting::OnTriggerEnterEvent>()
+            .reads::<byroredux_scripting::OnUpdateEvent>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
     scheduler.add_exclusive_with_access(
@@ -2732,5 +2755,112 @@ mod ai_storage_registration_tests {
                  NavPath shipped inert for exactly this reason."
             );
         }
+    }
+}
+
+/// #3951 — a declared exclusive's `Access` must not under-report what its
+/// body actually acquires.
+///
+/// `add_exclusive_with_access` declarations do not affect scheduling today
+/// (`scheduler.rs`'s analyzer only walks parallel-stage pairs, and
+/// exclusives run serially), so an under-declaration is not a deadlock
+/// vector. But their stated purpose (#3473) is to be the thing compared
+/// against if either system is ever promoted to a parallel lane — and a
+/// declaration that names four of the thirteen types its body acquires
+/// defeats exactly that, silently, at the moment it would matter most.
+///
+/// Static source check, matching this file's existing `include_str!`
+/// convention: the two systems' bodies live in `byroredux-scripting`, and
+/// running them wants a live `World` with a provider runtime installed.
+#[cfg(test)]
+mod scripting_system_access_declaration_tests {
+    const BOOT_SRC: &str = include_str!("boot.rs");
+    const EXECUTE_SRC: &str =
+        include_str!("../../crates/scripting/src/papyrus_provider/execute.rs");
+    const OBSCRIPT_SRC: &str = include_str!("../../crates/scripting/src/obscript_runtime.rs");
+
+    /// The `Access::new()` block registered for `system` in `boot.rs`.
+    fn declaration<'a>(system: &str) -> &'a str {
+        // The test module's own text is excluded so its mentions of these
+        // system names cannot be what the scan finds.
+        let setup = BOOT_SRC
+            .split("mod scripting_system_access_declaration_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let start = setup
+            .find(system)
+            .unwrap_or_else(|| panic!("{system} is not registered in boot.rs"));
+        let rest = &setup[start..];
+        let end = rest
+            .find("\n    );")
+            .unwrap_or_else(|| panic!("{system}: could not find the end of its Access block"));
+        &rest[..end]
+    }
+
+    /// Every storage/resource type acquired inside `system`'s body.
+    fn acquired(source: &str, system: &str) -> Vec<String> {
+        let start = source
+            .find(&format!("pub fn {system}("))
+            .unwrap_or_else(|| panic!("{system}: definition not found"));
+        let rest = &source[start..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{system}: could not find the end of its body"));
+        let body = &rest[..end];
+
+        // `.query_mut::<crate::Foo>()` -> `Foo`. Needle composed at runtime.
+        let open = format!("{}{}", "::", "<");
+        let mut types: Vec<String> = Vec::new();
+        for (index, _) in body.match_indices(open.as_str()) {
+            let before = &body[..index];
+            let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
+                .iter()
+                .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")));
+            if !is_acquire {
+                continue;
+            }
+            let tail = &body[index + open.len()..];
+            let Some(close) = tail.find('>') else {
+                continue;
+            };
+            let path = &tail[..close];
+            if path.is_empty() || path.contains(' ') {
+                continue;
+            }
+            let short = path.rsplit("::").next().unwrap_or(path).to_owned();
+            if !types.contains(&short) {
+                types.push(short);
+            }
+        }
+        types
+    }
+
+    fn assert_declares_everything_it_acquires(source: &str, system: &str) {
+        let types = acquired(source, system);
+        assert!(
+            types.len() > 3,
+            "{system}: the acquisition scan found only {types:?} — the \
+             extraction broke, not the declaration"
+        );
+        let declared = declaration(system);
+        let missing: Vec<&String> = types.iter().filter(|ty| !declared.contains(*ty)).collect();
+        assert!(
+            missing.is_empty(),
+            "{system} acquires {missing:?} without declaring them. These \
+             declarations do not gate scheduling today, so this is not a live \
+             deadlock — it is the comparison basis for promoting the system to \
+             a parallel lane, and an under-declaration makes that promotion \
+             look safe when it is not (#3951/#3473)"
+        );
+    }
+
+    #[test]
+    fn papyrus_provider_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(EXECUTE_SRC, "papyrus_provider_system");
+    }
+
+    #[test]
+    fn legacy_obscript_load_order_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(OBSCRIPT_SRC, "legacy_obscript_load_order_system");
     }
 }
