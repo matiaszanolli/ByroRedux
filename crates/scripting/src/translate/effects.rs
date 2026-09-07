@@ -165,10 +165,11 @@ pub enum Effect {
         item: ObjectRef,
         silent: bool,
     },
-    /// `<moved>.MoveTo(<destination>)` — the conservative 2-arg shape
-    /// only. A 3rd+ argument (offsets / match-rotation) declines the
-    /// whole fragment rather than silently dropping the offset and
-    /// misplacing the object.
+    /// `<moved>.MoveTo(<destination>)` — destination only. The trailing
+    /// offset/rotation parameters are accepted only at their Papyrus
+    /// defaults (see [`prim_move_to`], #3487); a real offset declines the
+    /// whole fragment rather than being silently dropped, which would
+    /// misplace the object.
     MoveTo {
         moved: ObjectRef,
         destination: ObjectRef,
@@ -696,6 +697,17 @@ fn collect_not_3d_loaded_actors(
 
 // ── Effect primitives ────────────────────────────────────────────────
 
+/// `ObjectReference.MoveTo`'s full parameter count: `akTarget` plus three
+/// float offsets plus `abMatchRotation` is five on Skyrim/FO4, and
+/// Starfield's `abRotateOffset` makes six. Anything longer is not a shape
+/// any shipped game's compiler can emit (#3487).
+const MOVE_TO_MAX_ARGS: usize = 6;
+
+/// `Game.DisablePlayerControls`/`EnablePlayerControls` take nine
+/// parameters, and exist only on Skyrim — see [`prim_player_controls`]
+/// for why this is not the FO4/Starfield count (#3487).
+const SKYRIM_PLAYER_CONTROLS_ARGS: usize = 9;
+
 fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetValue")?;
     if args.len() != 1 {
@@ -909,12 +921,44 @@ fn prim_equip_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `ObjectReference.MoveTo(akTarget, afXOffset = 0.0, afYOffset = 0.0,
+/// afZOffset = 0.0, abMatchRotation = true)` — Skyrim and Fallout 4;
+/// Starfield appends `abRotateOffset = false` for six parameters total
+/// (verified against the shipped Base scripts: `skse64`/`f4se`
+/// `scripts/vanilla/ObjectReference.psc` and Starfield's
+/// `ObjectReference.psc`).
+///
+/// #3487 — this used to require `args.len() == 1`, the shape an *author*
+/// writes. Quest fragments only ever reach this table through the `.pex`
+/// frontend, and the Papyrus compiler materializes **every** parameter of
+/// a call, including the ones the author omitted; the `.psc` route is
+/// test-only. So the authored shape does not occur in compiled content at
+/// all, and this primitive declined 3,334 of 3,334 real `MoveTo` calls —
+/// a shipped, dispatch-wired, alias-aware effect that could never fire.
+///
+/// The original reasoning (refusing to silently drop an offset and
+/// misplace the object) is kept, applied to the right input shape: a
+/// trailing argument is accepted only when it is a literal equal to its
+/// declared Papyrus default, which is what the compiler emits for an
+/// omitted parameter. 3,253 of the corpus's 3,334 calls are exactly that;
+/// the ~81 carrying a real offset still decline, and so does a
+/// non-literal (a variable whose runtime value is unknown), via
+/// [`as_num`]/[`bool_arg`] returning `None`.
 fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "MoveTo")?;
-    // The conservative 2-arg shape only (receiver + destination) — a 3rd+
-    // argument (offsets / match-rotation) declines rather than silently
-    // dropping it and misplacing the object.
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > MOVE_TO_MAX_ARGS {
+        return None;
+    }
+    // args[1..=3] — the three float offsets, each defaulting to `0.0`.
+    for offset in args.iter().take(4).skip(1) {
+        if as_num(&offset.value.node)? != 0.0 {
+            return None;
+        }
+    }
+    // args[4] `abMatchRotation` (default `true`) and Starfield's args[5]
+    // `abRotateOffset` (default `false`). `Effect::MoveTo` models neither,
+    // so anything but the default declines.
+    if !bool_arg(args, 4)?.unwrap_or(true) || bool_arg(args, 5)?.unwrap_or(false) {
         return None;
     }
     let moved = receiver_object(object, scope)?;
@@ -1022,9 +1066,30 @@ fn prim_enable_player_controls(e: &Expr, _scope: &Scope) -> Option<Effect> {
     prim_player_controls(e, "EnablePlayerControls", true)
 }
 
+/// `Game.DisablePlayerControls(abMovement, abFighting, abCamSwitch,
+/// abLooking, abSneaking, abMenu, abActivate, abJournalTabs,
+/// aiDisablePOVType)` — nine parameters, and **Skyrim only**.
+///
+/// #3487 asked for this bound to be widened to the FO4/Starfield
+/// parameter count, on a corpus tally of 61 eleven-argument calls. It is
+/// deliberately not widened, because those calls are not this function:
+/// Fallout 4 and Starfield have no `Game.DisablePlayerControls` at all
+/// (their `Game` script keeps only the `Is*ControlsEnabled` queries), and
+/// moved the pair to `InputEnableLayer`, whose eleven-parameter
+/// signature ends `..., abJournalTabs, abVATS, abFavorites, abRunning` —
+/// arg 8 is a `bool`, where Skyrim's is `int aiDisablePOVType`.
+/// [`game_call`] already declines every one of those on the receiver, so
+/// widening the arity would claim nothing; if it ever did match, arg 8
+/// would be read as a POV type it is not. Signatures verified against the
+/// shipped Base scripts (`skse64`/`f4se` `scripts/vanilla/Game.psc` and
+/// `InputEnableLayer.psc`, and Starfield's `Game.psc`).
+///
+/// Claiming the `InputEnableLayer` shape needs its own primitive and a
+/// canonical model of input layers (priority stacking, per-layer enable),
+/// which [`PlayerControlSelection`] does not have.
 fn prim_player_controls(e: &Expr, method: &str, enabled: bool) -> Option<Effect> {
     let args = game_call(e, method)?;
-    if args.len() > 9 {
+    if args.len() > SKYRIM_PLAYER_CONTROLS_ARGS {
         return None;
     }
     let defaults = PlayerControlSelection::PAPYRUS_DEFAULT;
@@ -1205,9 +1270,20 @@ fn prim_player_animation_event(
     Some(Effect::RegisterPlayerAnimationEvent { event })
 }
 
+/// `Actor.EvaluatePackage()` on Skyrim; `Actor.EvaluatePackage(abResetAI
+/// = false)` on Fallout 4 and Starfield (shipped `Actor.psc`).
+///
+/// #3487 — same default-materialization problem as [`prim_move_to`]:
+/// requiring zero arguments declined 2,628 of 3,481 real calls, all of
+/// them the FO4/Starfield build of the same statement, making the
+/// primitive silently game-asymmetric. The compiler-emitted literal
+/// `false` is accepted; a literal `true` still declines, because
+/// resetting the actor's AI is a second effect that
+/// [`Effect::EvaluatePackage`] does not model (2,621 of the 2,628 pass
+/// the default).
 fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "EvaluatePackage")?;
-    if !args.is_empty() {
+    if args.len() > 1 || bool_arg(args, 0)?.unwrap_or(false) {
         return None;
     }
     Some(Effect::EvaluatePackage {
@@ -1906,14 +1982,87 @@ mod tests {
 
     #[test]
     fn move_to_declines_with_offset_args() {
-        // The conservative 2-arg shape only — offsets/match-rotation
-        // decline rather than silently misplacing the object.
+        // A real offset declines rather than silently misplacing the
+        // object — the reasoning #3487 kept, now applied to the compiled
+        // call shape instead of the authored one.
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_12()\n\
              SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 10.0)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    /// Regression for #3487. The Papyrus compiler emits every parameter
+    /// of a call, including omitted ones left at their declared default,
+    /// and quest fragments only ever reach the effect table through the
+    /// `.pex` frontend. The two shapes here are what
+    /// `SomeRef.MoveTo(SomeMarker)` compiles to on Skyrim/FO4 (five args)
+    /// and on Starfield (six, with `abRotateOffset`); between them they
+    /// are 3,253 of the corpus's 3,334 `MoveTo` calls, every one of which
+    /// the old `args.len() == 1` guard declined.
+    #[test]
+    fn lowers_the_default_materialized_move_to_shapes() {
+        let expected = Some(vec![Effect::MoveTo {
+            moved: ObjectRef::Property("SomeRef".into()),
+            destination: ObjectRef::Property("SomeMarker".into()),
+        }]);
+
+        // Skyrim / Fallout 4: akTarget + 3 offsets + abMatchRotation.
+        let skyrim = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&skyrim), expected);
+
+        // Starfield: the same plus `abRotateOffset = false`.
+        let starfield = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, true, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&starfield), expected);
+    }
+
+    /// #3487 — the acceptance above is exactly "every trailing argument
+    /// is a literal at its Papyrus default", not "ignore the tail".
+    #[test]
+    fn move_to_declines_non_default_and_over_long_tails() {
+        // `abMatchRotation = false` is a real instruction the effect does
+        // not model.
+        let no_match_rotation = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&no_match_rotation), None);
+
+        // Starfield's `abRotateOffset = true`, likewise.
+        let rotate_offset = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&rotate_offset), None);
+
+        // A non-literal offset: the runtime value is unknown, so the
+        // default cannot be assumed.
+        let variable_offset = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             float dz = 4.0\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, dz, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&variable_offset), None);
+
+        // Longer than any shipped game's signature.
+        let too_long = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, true, false, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&too_long), None);
     }
 
     #[test]
@@ -2671,6 +2820,9 @@ mod tests {
         assert_eq!(lower_fragment(&furniture), None);
     }
 
+    /// `abResetAI = true` resets the actor's AI on top of the package
+    /// re-evaluation, which `Effect::EvaluatePackage` does not model —
+    /// so it still declines after #3487 widened the arity bound.
     #[test]
     fn evaluate_package_declines_with_args() {
         let body = first_fn_body(
@@ -2679,6 +2831,27 @@ mod tests {
              Alias_Hadvar.GetActorRef().EvaluatePackage(true)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    /// Regression for #3487. Skyrim's `Actor.EvaluatePackage()` takes no
+    /// parameters; FO4's and Starfield's take `abResetAI = false`, so the
+    /// identical statement compiles to a one-argument call there. The
+    /// old zero-argument guard made this primitive silently
+    /// game-asymmetric — working on Skyrim, declining 2,628 of 3,481
+    /// calls on FO4/Starfield.
+    #[test]
+    fn lowers_the_default_materialized_evaluate_package_shape() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_40()\n\
+             Alias_Hadvar.GetActorRef().EvaluatePackage(false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::EvaluatePackage {
+                actor: ObjectRef::Property("Alias_Hadvar".into()),
+            }])
+        );
     }
 
     #[test]
