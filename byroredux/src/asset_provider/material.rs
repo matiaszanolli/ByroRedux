@@ -524,6 +524,16 @@ pub(crate) struct MaterialProvider {
     pub(crate) failed_paths: HashSet<String>,
     /// Insertion-order key tracker for [`failed_paths`] — drives half-eviction.
     failed_paths_order: VecDeque<String>,
+    /// #3899 — memoised `BGSM`-vs-`BGEM` magic per normalised path, for paths
+    /// no material cache can answer for (not yet resolved, or resolved and
+    /// failed). `None` means "extracted, but the magic was unrecognised or the
+    /// file is in no archive" — a real answer worth remembering, since the
+    /// alternative is re-extracting and re-inflating the whole file to learn
+    /// it again on the next REFR that references it. Bounded like its
+    /// siblings; see [`MAX_MAGIC_CACHE_ENTRIES`].
+    magic_cache: HashMap<String, Option<byroredux_bgsm::MaterialKind>>,
+    /// Insertion-order key tracker for [`magic_cache`] — drives half-eviction.
+    magic_cache_order: VecDeque<String>,
     /// Number of Starfield `materialsbeta.cdb` Component Databases
     /// discovered across the loaded archives. The base game ships one
     /// (`materials\materialsbeta.cdb` in `Starfield - Materials.ba2`);
@@ -577,6 +587,10 @@ pub(crate) struct MaterialProvider {
 /// cell (~100s) plus a few cells of streaming residency.
 pub(crate) const MAX_BGEM_CACHE_ENTRIES: usize = 1024;
 pub(crate) const MAX_FAILED_PATHS: usize = 1024;
+/// #3899 — entries are one `Option<MaterialKind>` (a byte) plus the key, so
+/// this is far cheaper per entry than the parsed-material caches and can be
+/// sized to cover a whole streaming working set rather than a cell's.
+pub(crate) const MAX_MAGIC_CACHE_ENTRIES: usize = 4096;
 
 impl MaterialProvider {
     pub(crate) fn new() -> Self {
@@ -585,6 +599,8 @@ impl MaterialProvider {
             bgsm_cache: TemplateCache::new(256),
             bgem_cache: HashMap::new(),
             bgem_cache_order: VecDeque::new(),
+            magic_cache: HashMap::new(),
+            magic_cache_order: VecDeque::new(),
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
             sf_cdb_count: 0,
@@ -621,6 +637,17 @@ impl MaterialProvider {
 
     fn push_archive(&mut self, archive: Archive) {
         self.archives.push(archive);
+        // #3899 — the magic memo caches NEGATIVE answers too ("in no loaded
+        // archive" and "magic unrecognised" both memoise as `None`). A new
+        // archive can turn a `None` into a real kind, so drop the memo rather
+        // than let a peek taken before this load pin a stale miss. The two
+        // material caches need no equivalent: they only ever memoise
+        // successful parses, which a later archive cannot invalidate (archive
+        // precedence is last-listed-wins on *content*, and `extract_from_archives`
+        // already applies it at parse time). Clearing here is free — archives
+        // are loaded during setup, before any streaming peek.
+        self.magic_cache.clear();
+        self.magic_cache_order.clear();
     }
 
     /// True once at least one Starfield Component Database has been
@@ -784,12 +811,72 @@ impl MaterialProvider {
         }
     }
 
-    /// Read the first 4 bytes of a material file from the archives to detect
-    /// whether it is BGSM or BGEM by magic, independent of its file extension.
-    /// Returns `None` when the file isn't found or the magic is unrecognised.
-    fn peek_magic(&self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
-        let bytes = self.extract_from_archives(path)?;
-        byroredux_bgsm::detect_kind(&bytes)
+    /// Detect whether a material file is BGSM or BGEM by magic, independent of
+    /// its file extension. Returns `None` when the file isn't found or the
+    /// magic is unrecognised.
+    ///
+    /// #3899 (FO4-2026-09-05-D2-02) — this used to go straight to
+    /// `extract_from_archives`, i.e. a full archive extract **plus zlib
+    /// inflate of the whole material file**, on every merge, purely to read
+    /// four bytes. It consulted neither material cache, so a material already
+    /// parsed and cached was re-extracted and re-inflated on every subsequent
+    /// REFR that referenced it — redundant work proportional to REFR count
+    /// rather than distinct-material count, on the cell-streaming hot path,
+    /// where it also serialised against the archive's file mutex (the same
+    /// mutex #3659 is about; the two compound).
+    ///
+    /// Three tiers, cheapest first:
+    ///
+    /// 1. **Either material cache holds the path** — the magic is implied by
+    ///    which cache answered, because that is exactly what dispatched the
+    ///    parse that populated it. Zero I/O. This is the steady state: once a
+    ///    material resolves, every later reference lands here.
+    /// 2. **`magic_cache` holds the path** — we extracted once before and
+    ///    remembered the answer. Covers the reference that arrives before the
+    ///    first resolve completes, and the material that is present but fails
+    ///    to parse (which never reaches tier 1 at all, so without this tier it
+    ///    would re-extract forever).
+    /// 3. **Extract, detect, memoise.** Paid once per distinct path.
+    ///
+    /// Deliberately NOT consulted: `failed_paths`. Despite its name it is a
+    /// log-dedup set, not a negative cache — nothing in this file ever reads
+    /// it, only inserts (its `insert` return value gates a `warn!`). It also
+    /// could not answer this question if it were: a path fails for reasons
+    /// that say nothing about its magic ("present but unparseable" and "in no
+    /// archive" land in the same set). Tier 2 covers that case properly.
+    pub(crate) fn peek_magic(&mut self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
+        use byroredux_bgsm::MaterialKind;
+        let key = normalize_material_path(path).to_ascii_lowercase();
+
+        // Tier 1 — a populated material cache already answers this.
+        if self.bgem_cache.contains_key(&key) {
+            return Some(MaterialKind::Bgem);
+        }
+        if self.bgsm_cache.contains(&key) {
+            return Some(MaterialKind::Bgsm);
+        }
+        // Tier 2 — memoised from a previous peek.
+        if let Some(hit) = self.magic_cache.get(&key) {
+            return *hit;
+        }
+
+        // Tier 3 — the expensive path, paid once per distinct material.
+        let kind = self
+            .extract_from_archives(&key)
+            .and_then(|bytes| byroredux_bgsm::detect_kind(&bytes));
+        // #951 / SAFE-26 / #1430 — same half-eviction on overflow the sibling
+        // caches use: drop the oldest N/2 by insertion order so the recent
+        // working set survives instead of clearing everything.
+        if self.magic_cache.len() >= MAX_MAGIC_CACHE_ENTRIES {
+            for _ in 0..MAX_MAGIC_CACHE_ENTRIES / 2 {
+                if let Some(old) = self.magic_cache_order.pop_front() {
+                    self.magic_cache.remove(&old);
+                }
+            }
+        }
+        self.magic_cache_order.push_back(key.clone());
+        self.magic_cache.insert(key, kind);
+        kind
     }
 
     /// Seed a parsed BGEM directly so merge tests exercise the production
@@ -807,6 +894,20 @@ impl MaterialProvider {
     ) {
         let key = normalize_material_path(path).to_ascii_lowercase();
         self.bgsm_cache.insert_resolved(&key, Arc::new(resolved));
+    }
+
+    /// #3899 — memo size, for the peek-magic cache-tier tests. The order
+    /// tracker is the load-bearing one: it grows once per tier-3 (extract +
+    /// inflate) run, so an unchanged length across two peeks is direct
+    /// evidence the second was served from the memo.
+    #[cfg(test)]
+    pub(crate) fn magic_cache_len(&self) -> usize {
+        self.magic_cache.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn magic_cache_order_len(&self) -> usize {
+        self.magic_cache_order.len()
     }
 
     #[cfg(test)]

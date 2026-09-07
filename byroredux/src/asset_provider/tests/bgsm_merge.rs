@@ -2202,3 +2202,150 @@ fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
         "a BGSM that wins the slot and authors the bit OFF keeps the remap off (#2108)"
     );
 }
+
+// ── #3899 (FO4-2026-09-05-D2-02) — peek_magic cache tiers ──────────
+//
+// `peek_magic` used to go straight to `extract_from_archives`, i.e. a full
+// archive extract plus zlib inflate of the whole material file, on every
+// merge, purely to read four magic bytes. It consulted neither material cache,
+// so a material already parsed and cached was re-extracted and re-inflated on
+// every subsequent REFR referencing it — redundant work proportional to REFR
+// count rather than distinct-material count, on the cell-streaming hot path.
+//
+// These tests exploit a property that makes "did it extract?" directly
+// observable with no instrumentation: a `MaterialProvider` with NO archives
+// loaded can only answer from a cache. Any answer other than `None` proves the
+// extract path was not taken.
+
+/// Tier 1, BGSM: a resolved chain in `bgsm_cache` implies the kind, because
+/// that cache is populated by the BGSM parse the magic dispatched in the first
+/// place. With no archives loaded, an extract could only return `None`.
+#[test]
+fn peek_magic_answers_bgsm_from_the_cache_without_touching_archives() {
+    let path = "materials/tests/cached.bgsm";
+    let mut provider = MaterialProvider::new();
+    assert!(
+        provider.archives.is_empty(),
+        "fixture precondition: no archive is loaded, so any non-None answer \
+         below can only have come from a cache"
+    );
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile::default(),
+            parent: None,
+        },
+    );
+
+    assert_eq!(
+        provider.peek_magic(path),
+        Some(byroredux_bgsm::MaterialKind::Bgsm),
+        "a cached BGSM must resolve its kind from bgsm_cache — re-extracting \
+         and re-inflating the file to read four bytes it already parsed is the \
+         #3899 waste"
+    );
+}
+
+/// Tier 1, BGEM sibling.
+#[test]
+fn peek_magic_answers_bgem_from_the_cache_without_touching_archives() {
+    let path = "materials/tests/cached.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(path, BgemFile::default());
+
+    assert_eq!(
+        provider.peek_magic(path),
+        Some(byroredux_bgsm::MaterialKind::Bgem),
+        "a cached BGEM must resolve its kind from bgem_cache (#3899)"
+    );
+}
+
+/// The cache lookup must use the same normalisation the caches are keyed by,
+/// or a hit becomes a miss and the extract runs anyway — the bug would survive
+/// the two tests above while being invisible on real content, whose authored
+/// paths carry build prefixes and `/` separators.
+#[test]
+fn peek_magic_cache_lookup_normalises_the_path_like_the_caches_do() {
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        "materials/tests/normalised.bgsm",
+        ResolvedMaterial {
+            file: BgsmFile::default(),
+            parent: None,
+        },
+    );
+
+    for variant in [
+        r"materials\tests\normalised.bgsm",
+        r"MATERIALS\TESTS\NORMALISED.BGSM",
+        r"data\materials\tests\normalised.bgsm",
+        r"c:\projects\fallout4\build\pc\data\materials\tests\normalised.bgsm",
+        "tests/normalised.bgsm",
+    ] {
+        assert_eq!(
+            provider.peek_magic(variant),
+            Some(byroredux_bgsm::MaterialKind::Bgsm),
+            "'{variant}' must hit the same cache entry the canonical form did — \
+             `normalize_material_path` is what makes these one material (#3899)"
+        );
+    }
+}
+
+/// Tier 2: a path no material cache can answer for is memoised, so the second
+/// reference is free. This is the case tier 1 structurally cannot cover — a
+/// material present in an archive but unparseable never populates either
+/// material cache, so without the memo it would re-extract on every REFR
+/// forever.
+///
+/// The insertion-order tracker is what makes "did tier 3 run again?"
+/// observable: re-inserting the same key would leave the map length
+/// unchanged, but tier 3 pushes to `magic_cache_order` every time it runs.
+#[test]
+fn peek_magic_memoises_an_uncached_path_so_the_second_reference_is_free() {
+    let mut provider = MaterialProvider::new();
+    let path = "materials/tests/uncached.bgsm";
+
+    assert_eq!(
+        provider.peek_magic(path),
+        None,
+        "no archive holds it, so there is no magic to report"
+    );
+    assert_eq!(
+        (provider.magic_cache_len(), provider.magic_cache_order_len()),
+        (1, 1),
+        "the miss must be memoised — 'present but unparseable' and 'in no \
+         archive' both land here, and neither ever reaches a material cache, \
+         so without the memo every REFR re-extracts (#3899)"
+    );
+
+    assert_eq!(provider.peek_magic(path), None);
+    assert_eq!(
+        (provider.magic_cache_len(), provider.magic_cache_order_len()),
+        (1, 1),
+        "the second reference must be served from the memo — a second push to \
+         magic_cache_order means tier 3 (extract + inflate) ran again (#3899)"
+    );
+}
+
+/// The memo caches NEGATIVE answers, so a newly loaded archive can invalidate
+/// it: a path that was in no archive may now be in one. `push_archive` needs a
+/// real `Archive` (and therefore a real file), so pin the clear by source
+/// inspection — the crate's established convention for a site a unit test
+/// cannot reach.
+#[test]
+fn push_archive_drops_the_magic_memo() {
+    let src = include_str!("../material.rs");
+    let start = src
+        .find("fn push_archive(&mut self, archive: Archive) {")
+        .expect("push_archive must still exist");
+    let body = &src[start..start + src[start..].find("\n    }\n").expect("closing brace")];
+
+    assert!(
+        body.contains("self.magic_cache.clear();")
+            && body.contains("self.magic_cache_order.clear();"),
+        "push_archive must drop the magic memo: it caches negative answers \
+         (\"in no loaded archive\" memoises as None), and a new archive can turn \
+         one into a real kind. Both the map and its order tracker must be \
+         cleared or the eviction bookkeeping drifts (#3899)"
+    );
+}

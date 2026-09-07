@@ -137,6 +137,18 @@ impl TemplateCache {
         self.entries.is_empty()
     }
 
+    /// Whether a resolved chain for `path` is already cached, without
+    /// resolving (and therefore without touching the archive).
+    ///
+    /// Lowercases like [`Self::resolve`] and [`Self::insert_resolved`] so the
+    /// answer matches what those would key on. Added for #3899: the engine's
+    /// magic peek needs to know "have we already parsed this?" — a cache hit
+    /// implies the material kind, which is the whole answer the peek was
+    /// re-extracting and re-inflating the file to compute.
+    pub fn contains(&self, path: &str) -> bool {
+        self.entries.contains_key(&path.to_ascii_lowercase())
+    }
+
     /// Seed an already-resolved chain under `path`, bypassing the resolver.
     ///
     /// Exists so callers can drive their BGSM code paths against synthetic
