@@ -719,8 +719,22 @@ fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Quest.SetStage(int aiStage)` — one parameter in every shipped game.
+///
+/// #3496 — this and the three objective primitives were the only four of
+/// 31 with no upper argument-count bound, so an over-arity call lowered
+/// silently instead of declining. `SetStage` is the highest-traffic
+/// effect in the domain (20,322 real calls, all one-argument), so it is
+/// also the one whose false-positive lowering has the largest blast
+/// radius: `SomeQuest.SetStage(10, <unmodeled term>)` became a plain
+/// `SetStage { stage: 10 }`. Not reachable from vanilla content — the
+/// compiler emits exactly the declared arity — but a modded `.pex` is
+/// untrusted input that reaches this code.
 fn prim_set_stage(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetStage")?;
+    if args.len() > 1 {
+        return None;
+    }
     let stage = u16::try_from(int_arg(args, 0)?).ok()?;
     Some(Effect::SetStage {
         quest: receiver_quest(object, scope)?,
@@ -830,8 +844,13 @@ fn prim_set_quest_active(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Quest.SetObjectiveDisplayed(int aiObjective, bool abDisplayed = true,
+/// bool abForce = false)` — three parameters (#3496).
 fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveDisplayed")?;
+    if args.len() > 3 {
+        return None;
+    }
     let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     // Optional 2nd arg `abDisplayed` defaults to true in Papyrus.
     let displayed = bool_arg(args, 1)?.unwrap_or(true);
@@ -842,8 +861,13 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Quest.SetObjectiveCompleted(int aiObjective, bool abCompleted =
+/// true)` — two parameters (#3496).
 fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveCompleted")?;
+    if args.len() > 2 {
+        return None;
+    }
     let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     let completed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveCompleted {
@@ -853,8 +877,13 @@ fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Quest.SetObjectiveFailed(int aiObjective, bool abFailed = true)` —
+/// two parameters (#3496).
 fn prim_set_objective_failed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveFailed")?;
+    if args.len() > 2 {
+        return None;
+    }
     let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     let failed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveFailed {
@@ -2607,6 +2636,133 @@ mod tests {
     // ── Decline-path coverage for SCR-D5-NEW5-02 / #2289 ────────────────
     // One `?`/arg-count/arg-type guard test per primitive that previously
     // shipped with a positive-path test only.
+
+    /// Regression for #3496. `prim_set_stage` and the three objective
+    /// primitives read only positional args 0 and 1 and, alone among the
+    /// primitives, bounded neither — so an over-arity call lowered
+    /// silently instead of declining. Vanilla content cannot produce one
+    /// (the compiler emits exactly the declared arity, and all four
+    /// signatures are inside the read range), but a modded `.pex` is
+    /// untrusted input that reaches this code.
+    #[test]
+    fn stage_and_objective_primitives_decline_over_arity_calls() {
+        // `Quest.SetStage(int aiStage)` — one parameter.
+        let set_stage = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_50()\n\
+             Self.SetStage(10, 1)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&set_stage), None);
+
+        // `SetObjectiveDisplayed(aiObjective, abDisplayed = true,
+        // abForce = false)` — three.
+        let displayed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_51()\n\
+             Self.SetObjectiveDisplayed(10, true, false, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&displayed), None);
+
+        // `SetObjectiveCompleted`/`SetObjectiveFailed(aiObjective,
+        // ab… = true)` — two.
+        let completed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_52()\n\
+             Self.SetObjectiveCompleted(10, true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&completed), None);
+
+        let failed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_53()\n\
+             Self.SetObjectiveFailed(10, true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&failed), None);
+    }
+
+    /// The positive side of the bounds above: each primitive's real
+    /// signature must still lower at full arity, so the fix is a bound at
+    /// the declared parameter count and not a narrowing (#3496).
+    #[test]
+    fn stage_and_objective_primitives_still_lower_at_full_arity() {
+        let displayed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_54()\n\
+             Self.SetObjectiveDisplayed(10, true, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&displayed),
+            Some(vec![Effect::SetObjectiveDisplayed {
+                quest: QuestRef::SelfRef,
+                objective: 10,
+                displayed: true,
+            }])
+        );
+
+        let completed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_55()\n\
+             Self.SetObjectiveCompleted(10, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&completed),
+            Some(vec![Effect::SetObjectiveCompleted {
+                quest: QuestRef::SelfRef,
+                objective: 10,
+                completed: false,
+            }])
+        );
+
+        let failed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_56()\n\
+             Self.SetObjectiveFailed(10, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&failed),
+            Some(vec![Effect::SetObjectiveFailed {
+                quest: QuestRef::SelfRef,
+                objective: 10,
+                failed: false,
+            }])
+        );
+    }
+
+    /// #3496's completeness check, mechanized: every effect primitive must
+    /// bound its argument count, directly or through the primitive it
+    /// delegates to. The finding came out of a hand sweep of all 31
+    /// `prim_*` bodies that found exactly four unguarded; a hand sweep
+    /// does not survive the next primitive being added, so it becomes a
+    /// gate here.
+    #[test]
+    fn every_effect_primitive_bounds_its_argument_count() {
+        let src = include_str!("effects.rs");
+        // Column-0 `fn prim_` only: the test functions in this module are
+        // indented, so the scan cannot pick up its own body.
+        let mut unguarded = Vec::new();
+        let mut seen = 0usize;
+        for chunk in src.split("\nfn prim_").skip(1) {
+            let name = chunk.split('(').next().unwrap_or_default();
+            let body = chunk.split("\n}\n").next().unwrap_or_default();
+            seen += 1;
+            let bounded = body.contains("args.len()") || body.contains("args.is_empty()");
+            // A primitive that forwards to another primitive inherits its
+            // bound (the `PlayerImodAnimation`/`PlayerFurnitureAnimation`
+            // and player-controls pairs).
+            let delegates = body.contains("prim_");
+            if !bounded && !delegates {
+                unguarded.push(name.to_owned());
+            }
+        }
+        assert!(seen > 30, "the primitive scan matched only {seen} bodies");
+        assert!(
+            unguarded.is_empty(),
+            "every effect primitive must bound its argument count against its \
+             real Papyrus signature — an unbounded one silently lowers an \
+             over-arity call from a modded .pex instead of declining \
+             (#3496). Unguarded: {unguarded:?}"
+        );
+    }
 
     #[test]
     fn set_open_declines_with_extra_arg() {
