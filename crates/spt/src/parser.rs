@@ -291,7 +291,7 @@ mod tests {
         // Tag 8003 (fixed 52 bytes).
         buf.extend_from_slice(&8003u32.to_le_bytes());
         buf.extend_from_slice(&[0u8; 52]);
-        // "Geometry tail" marker — out-of-range u32 = 0x4E25 (= 19 989).
+        // "Geometry tail" marker — out-of-range u32 = 0x4E25 (= 20 005).
         buf.extend_from_slice(&0x00004E25u32.to_le_bytes());
         buf.extend_from_slice(&[0xCAu8, 0xFE, 0xBA, 0xBE]); // body of the tail
         buf

@@ -301,10 +301,20 @@ characters (`?333?`, `?ff&?`, `L=.#`) — that's the binary geometry
 ```
 
 The repeated `00 00 80 3f` = f32 `1.0` blocks suggest float-vector
-data (positions / UVs / normals). Tag `0x4E25` (= 19 989) and
-`0x4E21` (= 19 985) at offsets 6 696 / 6 732 fit the TLV pattern at
+data (positions / UVs / normals). Tag `0x4E25` (= ~~19 989~~ **20 005**)
+and `0x4E21` (= ~~19 985~~ **20 001**) at offsets 6 696 / 6 732 fit the
+TLV pattern at
 much higher tag values than the parameter section's `~2000` band —
 likely the geometry subsection IDs.
+
+> **Corrected 2026-09-07 (#3808).** Two errors in the paragraph above,
+> left in place because they are what four months of downstream docs
+> were quoting. (1) The decimal conversions are **wrong by 16**:
+> `0x4E25` = **20 005** and `0x4E21` = **20 001**. 19 985/19 989 occur
+> in zero of the 159 corpus files. (2) "Geometry subsection IDs" is not
+> what these are — the region is this same TLV parameter stream
+> continuing past `parser::TAG_MAX`, and no `.spt` is large enough to
+> hold geometry. See the 2026-09-07 entry at the end of this file.
 
 ### Updated parser plan for Phase 1.3
 
@@ -315,7 +325,9 @@ likely the geometry subsection IDs.
 4. Curves: length-prefix string → `parse_bezier_spline_text(s: &str)`
    — pure text parser, fully unit-testable.
 5. Geometry tail: deferred to a follow-up sub-phase once the TLV
-   walker reaches the high-tag (19 985+) region cleanly.
+   walker reaches the high-tag (~~19 985~~ **20 001**+) region cleanly.
+   *(2026-09-07, #3808: the region is reached, and is not geometry —
+   see the closing entry of this file.)*
 
 Acceptance gate stays: ≥ 95 % of FNV's `.spt` corpus parses through
 the TLV walker without falling into the unknown-tag bail-out.
@@ -671,3 +683,136 @@ gate.
 Tracked here rather than as a dedicated issue — the placeholder
 fallback already covers these 4 trees today, and Oblivion is well
 above the 95 % acceptance gate.
+
+---
+
+## 2026-09-07 — Phase 2.1 geometry-tail dissection (closeout of #3808)
+
+Run with the new `spt_tail` recon tool over FNV + FO3 + Oblivion (incl.
+Shivering Isles) `Meshes` archives — **159 files, all 159 parsed**:
+
+```bash
+cargo run -p byroredux-spt --features recon --example spt_tail -- \
+    ".../Fallout New Vegas/Data/Fallout - Meshes.bsa" \
+    ".../Fallout 3 goty/Data/Fallout - Meshes.bsa" \
+    ".../Oblivion/Data/Oblivion - Meshes.bsa" \
+    ".../Oblivion/Data/DLCShiveringIsles - Meshes.bsa"
+```
+
+Three findings, in the order they invalidate each other's premises.
+
+### 1. The two candidate markers never existed — arithmetic error
+
+The 2026-05-09 note reads `0x4E25` as 19 989 and `0x4E21` as 19 985.
+Both conversions are wrong by exactly 16:
+
+| hex | claimed decimal | actual decimal |
+|---|---:|---:|
+| `0x4E25` | ~~19 989~~ | **20 005** |
+| `0x4E21` | ~~19 985~~ | **20 001** |
+
+19 985 and 19 989 appear in **zero** of the 159 corpus tails. 20 001 and
+20 005 appear in **100 %** of them, exactly once per file. The error
+propagated verbatim into `exal-trees.md` §3.2 and §10 and into #3808's own
+body, so "confirm or refute the two candidate markers" was unanswerable as
+written — the named values are not in the data.
+
+### 2. The tail is not a geometry section — it is this same TLV stream
+
+`parser::TAG_MAX = 13_999` is a hard cap: the walker stops at the first
+u32 outside `TAG_MIN..=TAG_MAX` and records that offset as `tail_offset`.
+Every tag family found past it sits immediately above that constant
+(14 000 / 15 000 / 16 000 / 18 000 / 19 000 / 20 000 / 21 000 / 22 000
+bands), which is what a continuing tag vocabulary looks like, not what a
+geometry payload looks like.
+
+Measured: **159 / 159 files (100 %)** contain values past `tail_offset`
+that the *existing* parameter dictionary already classifies, at 4-byte
+alignment. Not stragglers — a coherent recurring set:
+
+| known tag past `tail_offset` | files (of 159) |
+|---:|---:|
+| 10001, 10004, 13000, 13002, 13003, 13004, 13005 | 151 |
+| 13006, 13007 | 149 |
+| 10003 | 147 |
+
+The byte-exact confirmation, from `trees\treecottonwoodsu.spt`
+(Oblivion), reading from `tail_offset + 1`:
+
+```
+5646: b8 36 00 00   tag   14008
+5650: 01 00 00 00   u32   1
+5654: d0 32 00 00   tag   13008        ← already in the dictionary
+5658: 01 00 00 00   u32   1
+5662: b0 36 00 00   tag   14000
+5666: b2 36 00 00   tag   14002
+5670: 10 00 00 00   u32   16           ← length prefix
+5674: 44 65 66 61 …  "DefaultFrond.tga" (exactly 16 bytes)
+5690: b3 36 00 00   tag   14003
+```
+
+This is the `SptTagKind::String` shape — `u32` length then raw ASCII —
+already dictionaried for tags 2000 / 4003 / 13001. The declared length
+matching the string's actual length **exactly** is what makes this
+self-validating, and is why it is not the same class of claim as the
+2026-07-04 note's debunked `14007` sighting: that one keyed off a single
+value eyeballed 3 bytes off the walker's cursor, with nothing to check it
+against. A length prefix that predicts its own payload boundary cannot be
+produced by reading float data at the wrong offset.
+
+### 3. `tail_offset` is a desync point, not a section boundary
+
+For each file, the byte shift from `tail_offset` that maximises
+known-tag hits:
+
+| shift | files |
+|---:|---:|
+| 0 | 86 |
+| 1 | 36 |
+| 2 | 33 |
+| 3 | 4 |
+
+**46 % of the corpus needs a 1–3 byte shift to resync**, so in nearly half
+of all files the walker stopped *inside* a payload it mis-sized rather
+than at any boundary. `SptScene::tail_offset`'s doc comment ("start of the
+binary geometry tail") describes something the data does not support.
+
+### 4. No baked geometry can be present at all
+
+| metric | bytes |
+|---|---:|
+| smallest `.spt` in corpus | 5 131 |
+| mean | 6 632 |
+| **largest `.spt` in corpus** | **8 793** |
+
+A single indexed mesh of N vertices carrying position + normal + UV as
+`f32` costs 32 N bytes before indices. The largest file in the entire
+corpus is under that cost for **274 vertices** — and that is the whole
+file, parameter section included. Branch + frond + leaf-card geometry for
+a tree does not fit in any `.spt` this corpus contains, at any layout.
+
+Combined with what the parameter section already decodes — BezierSpline
+curve text (Family B), control-point quintets (Family C), texture names
+like `DefaultFrond.tga` — the consistent reading is that `.spt` is a
+**procedural tree definition**, not a geometry container: parameters and
+curves from which a generator produces the mesh. Whether that generator is
+the IDV runtime is not observable from the files and does not need to be:
+the engine-side consequence is the same either way, and ByroRedux cannot
+decode geometry that is not in the file.
+
+### Consequence for the rollout
+
+`exal-trees.md` §3 asks for exactly this to be recorded rather than
+silently abandoned: Phase 2.2 (branch/frond import "once 2.1 confirms the
+layout") and 2.3 (leaf-card canopy) have no layout to confirm, because
+there is no geometry to lay out. They need re-scoping, not scheduling.
+Recorded in `exal-trees.md` §3 and §10; the option set belongs to a
+follow-up design pass, not to this dissection.
+
+What Phase 2.1 *did* unblock is a concrete, bounded parser task: the tag
+bands past `TAG_MAX` are ordinary TLV in the format this crate already
+walks. Raising the cap and dictionarying the 14 000–22 000 bands by the
+same measured-modal-payload method that built the current table would
+convert ~1 KB per file of currently-opaque bytes into parameters — with
+the desync in finding 3 fixed first, since a walker that stops mid-payload
+cannot be extended past the stop.

@@ -88,18 +88,49 @@ doesn't replace it:
 
 ### The binding constraint
 
-Same one ground cover names for itself: **the geometry-tail decode is
-genuinely unstarted, not merely unpolished.** `format-notes.md`'s own log
-(2026-05-09, "Geometry is in the binary tail") identifies two candidate
-high-tag markers (`0x4E25` = 19989, `0x4E21` = 19985) past `tail_offset` and
-observes repeated `00 00 80 3F` (`f32` `1.0`) runs consistent with
-float-vector data — and stops there. No vertex/index/UV layout is confirmed.
-Phase 2's first real step (§3) is exactly the kind of format-cracking work
-that produced the parameter-section dictionary, aimed at the tail instead.
+~~Same one ground cover names for itself: **the geometry-tail decode is
+genuinely unstarted, not merely unpolished.**~~ **SETTLED 2026-09-07
+(#3808) — the constraint was misidentified, and so were the numbers.**
+
+The 2026-05-09 log entry this paragraph cited converts `0x4E25` to 19989
+and `0x4E21` to 19985. Both are wrong by exactly 16: the values are
+**20005** and **20001**. 19985/19989 appear in zero of the 159 corpus
+files; 20001/20005 appear in all of them. Every restatement of the pair
+below inherited that error.
+
+The larger correction is that there is no geometry tail to decode. The
+region past `tail_offset` is this same TLV parameter stream continuing
+past `parser::TAG_MAX = 13_999`, and no `.spt` in the corpus is large
+enough to hold branch/frond/leaf geometry at any layout (largest file:
+8 793 B). See `crates/spt/docs/format-notes.md`, 2026-09-07, for the
+measurements. Phase 2's binding constraint is therefore a **parser** task
+(dictionary the 14 000–22 000 tag bands, fix the mid-payload desync), not
+a format-cracking one.
 
 ---
 
 ## 3. Geometry-tail decode (the actual unknown)
+
+> **RESOLVED 2026-09-07 (#3808) — and resolved against this section's
+> premise.** There is no geometry in the tail to decode. Steps 1–2 below
+> ran as written; steps 3–5 have no subject. Full measurements:
+> `crates/spt/docs/format-notes.md`, 2026-09-07. In summary:
+>
+> - **Step 2 refuted on its own terms.** `19985`/`19989` are mis-conversions
+>   of `0x4E21`/`0x4E25`, off by 16; the real values are `20001`/`20005`.
+>   The named values appear in 0 of 159 files.
+> - **The tail is this same TLV stream**, continuing past the walker's
+>   `TAG_MAX = 13_999` cap. All 159 files carry already-dictionaried
+>   parameter tags past `tail_offset`, and `tail_offset` itself lands
+>   mid-payload in 46 % of them — it is a desync point, not a boundary.
+> - **Step 3 is unreachable**: the largest `.spt` in the corpus is 8 793 B,
+>   below the cost of 274 vertices of position + normal + UV, for the whole
+>   file. No vertex layout can be recovered because no vertices are stored.
+> - **Step 4's cross-check therefore cannot discriminate anything**, and
+>   step 5's acceptance gate has nothing to gate.
+>
+> This section's own closing paragraph asked for exactly this outcome to be
+> recorded rather than left to go stale — see the re-scoping note below it.
 
 Not answerable from source reading — needs the same iterative
 dissect-then-dictionary method `format-notes.md` already used successfully
@@ -144,6 +175,34 @@ turns out to need per-version handling this codebase's three source games
 don't share, or turns out to be compressed/obfuscated rather than raw TLV),
 this document's Phase 2/3 need re-scoping, not silent abandonment — record
 that finding here rather than letting it go stale.
+
+### Re-scoping note (2026-09-07, #3808)
+
+Step 3 did not succeed, and not for either reason anticipated above: the
+tail is neither per-version nor obfuscated, it is plain TLV in the format
+this crate already walks — it simply contains no geometry. `.spt` is a
+procedural tree *definition* (parameters, BezierSpline curves, texture
+names such as `DefaultFrond.tga`), not a geometry container.
+
+So §4 (consuming decoded geometry), §5 (RT/BLAS boundary), §6's
+per-vertex wind weight, and §7's LOD chain all rest on a step that cannot
+be completed as specified. Three directions remain open; picking between
+them is a design decision, deliberately **not** made here:
+
+1. **Generate geometry from the parameters.** The honest equivalent of what
+   the source games do. Largest by far, and blocked on decoding the
+   14 000–22 000 tag bands into generator semantics.
+2. **Keep the billboard.** Already shipped, already the degrade path §3.5
+   names. Costs nothing and remains correct.
+3. **Source tree geometry outside `.spt`.** Skyrim+ bakes trees into NIFs
+   rooted at `BSTreeNode`, which `crates/nif` is already the home for;
+   whether that is reusable for pre-Skyrim content is its own question.
+
+What *is* unblocked and bounded: the tag bands past `TAG_MAX` are ordinary
+TLV, so raising the cap and dictionarying them by the same measured-modal
+method that built the current table is ordinary parser work — with the
+mid-payload desync fixed first, since a walker that stops inside a payload
+cannot be extended past the stop.
 
 ---
 
@@ -321,21 +380,25 @@ Same posture as the ground-cover document's own §11 — not answerable from
 source reading, each needs a real dissection/bench session before the phase
 that depends on it:
 
-1. **Are `19985`/`19989` real geometry-section tags, or float-data
-   coincidences?** (§3.2) First question, blocks everything else.
-2. **What is the actual per-vertex layout, and does it vary by source game /
-   export-tool version** across Oblivion/FO3/FNV's `.spt` corpora? (§3.3)
-3. **Do bark/leaf texture-path counts from the existing parameter-section
-   parser line up with however many geometry sub-blocks the tail contains?**
-   (§3.4) — the cheapest available cross-check once a candidate layout
-   exists, before trusting it.
+1. ~~**Are `19985`/`19989` real geometry-section tags, or float-data
+   coincidences?**~~ **ANSWERED 2026-09-07 (#3808): neither.** The decimal
+   conversions were wrong by 16 — the values are `20001`/`20005`, which do
+   occur in every file. And the region they sit in is not a geometry
+   section: it is this same TLV parameter stream past `TAG_MAX = 13_999`.
+   See §3's re-scoping note.
+2. ~~**What is the actual per-vertex layout…**~~ **MOOT (#3808)** — no
+   vertices are stored in any `.spt`; the largest file in the corpus is
+   8 793 B.
+3. ~~**Do bark/leaf texture-path counts line up with geometry sub-blocks?**~~
+   **MOOT (#3808)** — there are no geometry sub-blocks to count against.
 4. **Do BezierSpline wind curves affect geometry placement, or are they pure
    animation-response data layered on static geometry?** (§6)
 5. **Does the export format bake a per-vertex wind weight**, and if so, does
    using it look meaningfully better than the procedural height-based
    approximation this document defaults to? (§6's own flagged note)
-6. **What's a real per-tree leaf-card count**, to inform the BLAS-cost
-   decision in §5 instead of guessing a scratch-memory margin ahead of time?
+6. ~~**What's a real per-tree leaf-card count?**~~ **NOT ANSWERABLE FROM
+   `.spt` (#3808)** — leaf cards are generated, not stored. Any figure would
+   have to come from a generator, once one exists.
 7. **Mid-distance LOD tier design** (§7) — genuinely deferred, not just
    unmeasured; needs its own follow-up pass once near-field geometry exists
    to compare degrade strategies against.

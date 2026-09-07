@@ -1,10 +1,13 @@
 //! Output type for the `.spt` parameter-section walker.
 //!
 //! The parser emits an ordered list of `(tag, value)` pairs plus a
-//! `tail_offset` marking where the binary geometry tail begins (still
-//! out-of-scope for the parameter walker; covered by a future
-//! sub-phase). Consumers query the typed accessors (`bark_textures`,
-//! `leaf_textures`, `curves`, …) when they want a specific section.
+//! `tail_offset` marking where the walk stopped. Consumers query the
+//! typed accessors (`bark_textures`, `leaf_textures`, `curves`, …) when
+//! they want a specific section.
+//!
+//! `tail_offset` used to be documented as "where the binary geometry tail
+//! begins". The 2026-09-07 dissection (#3808) measured that claim and it
+//! does not hold — see [`SptScene::tail_offset`].
 
 use crate::tag::SptTagKind;
 
@@ -86,9 +89,10 @@ impl SptValue {
     }
 }
 
-/// A parsed `.spt` parameter section. The geometry tail past
-/// `tail_offset` is intentionally not decoded — that's a separate
-/// future phase once the parameter section is fully understood.
+/// A parsed `.spt` parameter section, up to wherever the walker stopped.
+///
+/// What lies past [`tail_offset`](Self::tail_offset) is *more of this same
+/// stream*, not a different kind of data — see that field's docs.
 #[derive(Debug, Clone, Default)]
 pub struct SptScene {
     /// Every `(tag, value)` entry in stream order. The parser
@@ -96,8 +100,29 @@ pub struct SptScene {
     /// identical parameters but different tag-emit order still
     /// round-trip distinctly.
     pub entries: Vec<TagEntry>,
-    /// Byte offset where the parameter walker stopped (start of the
-    /// binary geometry tail, or end-of-file for tail-less files).
+    /// Byte offset where the parameter walker stopped, or end-of-file for
+    /// files it walked to completion.
+    ///
+    /// **Not a section boundary, and not the start of a geometry tail** —
+    /// both of which this field's documentation used to claim. The
+    /// 2026-09-07 corpus dissection (#3808,
+    /// `crates/spt/docs/format-notes.md`) measured three things that
+    /// together rule that reading out:
+    ///
+    /// - All 159 files in the FNV + FO3 + Oblivion corpus carry values
+    ///   past this offset that the *existing* parameter dictionary already
+    ///   classifies (10001, 10003, 10004, 13000, 13002-13007), at 4-byte
+    ///   alignment. The stream continues; the walker merely stops, because
+    ///   [`TAG_MAX`](crate::parser::TAG_MAX) caps it at 13 999 and the next
+    ///   tag bands start at 14 000.
+    /// - In 46 % of files the resync needs a 1-3 byte shift, meaning the
+    ///   walker stopped *inside* a payload it mis-sized rather than at any
+    ///   boundary.
+    /// - No `.spt` in the corpus exceeds 8 793 bytes — below the cost of
+    ///   274 vertices of position + normal + UV, for the entire file. There
+    ///   is no geometry here to mark the start of.
+    ///
+    /// Treat it as "where parsing gave up", which is what it measures.
     pub tail_offset: usize,
     /// True when the walker stopped because it ran out of bytes
     /// (`is_eof`) rather than because it hit a non-tag value (the
@@ -262,5 +287,99 @@ mod tests {
             .filter_map(|e| e.value.as_str())
             .collect();
         assert_eq!(curves, vec!["a", "b"]);
+    }
+}
+
+/// Guards the one thing that made #3808's blocking question unanswerable
+/// for four months: a hex-to-decimal slip that then propagated verbatim
+/// into two design docs and an issue body.
+///
+/// `0x4E25` and `0x4E21` were written up as 19 989 and 19 985 — both off
+/// by exactly 16. Nobody could confirm or refute "the two candidate
+/// markers" because the decimal values named were not the ones in the
+/// files. Cheap to pin, and the pin is what stops the wrong pair coming
+/// back the next time someone restates the pair from memory.
+#[cfg(test)]
+mod marker_value_pins {
+    /// The arithmetic itself, so a restatement anywhere has something
+    /// authoritative to check against.
+    #[test]
+    fn the_two_high_tag_markers_convert_to_20001_and_20005() {
+        assert_eq!(0x4E21, 20_001, "0x4E21 is 20001, not 19985");
+        assert_eq!(0x4E25, 20_005, "0x4E25 is 20005, not 19989");
+    }
+
+    /// The corrected values were measured present in 100 % of the corpus
+    /// and the mis-converted ones in 0 %, so any doc still asserting the
+    /// old pair as fact is asserting something the data contradicts.
+    ///
+    /// Scoped by *paragraph*, not by line: the docs deliberately keep the
+    /// wrong numbers visible inside strikethroughs and "off by exactly 16"
+    /// corrections, which is the record of the error rather than a
+    /// restatement of it — and those corrections wrap across lines, so a
+    /// line-scoped needle flags the correction itself. A paragraph that
+    /// names the old pair must also carry its correction somewhere.
+    #[test]
+    fn no_design_doc_states_the_miscoverted_pair_as_a_live_value() {
+        /// Markers that make a paragraph a correction rather than a claim.
+        const CORRECTION_MARKERS: &[&str] = &[
+            "~~",
+            "wrong",
+            "zero",
+            "ANSWERED",
+            "MOOT",
+            "mis-conversion",
+            "mis-conversions",
+            "off by",
+        ];
+        for (label, src) in [
+            (
+                "docs/engine/exal-trees.md",
+                include_str!("../../../docs/engine/exal-trees.md"),
+            ),
+            (
+                "crates/spt/docs/format-notes.md",
+                include_str!("../docs/format-notes.md"),
+            ),
+        ] {
+            for paragraph in src.split("\n\n") {
+                let mentions_old = paragraph.contains("19985")
+                    || paragraph.contains("19989")
+                    || paragraph.contains("19 985")
+                    || paragraph.contains("19 989");
+                if !mentions_old {
+                    continue;
+                }
+                assert!(
+                    CORRECTION_MARKERS.iter().any(|m| paragraph.contains(m)),
+                    "{label} restates 19985/19989 as a live value; they are \
+                     mis-conversions of 0x4E21/0x4E25 (= 20001/20005) and \
+                     appear in 0 of 159 corpus files.\n\n{paragraph}"
+                );
+            }
+        }
+    }
+
+    /// The same slip reached two source comments as well. Code carries no
+    /// historical record worth preserving, so the rule there is strict
+    /// absence rather than the docs' "must be accompanied by its
+    /// correction".
+    #[test]
+    fn no_source_comment_carries_the_miscoverted_pair() {
+        for (label, src) in [
+            ("crates/spt/src/parser.rs", include_str!("parser.rs")),
+            (
+                "crates/spt/examples/spt_tagmap.rs",
+                include_str!("../examples/spt_tagmap.rs"),
+            ),
+        ] {
+            for needle in ["19985", "19989", "19 985", "19 989"] {
+                assert!(
+                    !src.contains(needle),
+                    "{label} still carries {needle}; 0x4E21/0x4E25 are \
+                     20001/20005"
+                );
+            }
+        }
     }
 }

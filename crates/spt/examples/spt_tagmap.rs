@@ -207,7 +207,7 @@ fn walk_one_file(bytes: &[u8], tags: &mut BTreeMap<u32, TagStats>, tail: &mut Ta
     let mut i: usize = 20;
     // Parameter-section tag value range — observed via `spt_dissect`:
     // tags cluster between ~1 002 and ~13 000 (sample: 1002, 1016, 2000s,
-    // 6000, 7000, ~13 000). Geometry-tail "tags" jump to 19 985+ or
+    // 6000, 7000, ~13 000). Values past the cap jump to 20 001+ or
     // are uniformly zero (binary data). A tag outside [TAG_MIN, TAG_MAX]
     // is the cleanest signal we've crossed into the binary tail.
     const TAG_MIN: u32 = 100;
