@@ -289,13 +289,26 @@ pub struct Material {
     /// values rendered with the engine's fixed Disney BSDF response
     /// instead of the author's tuned curve.
     ///
-    /// Landed here (captured, not yet shaded) rather than also wiring a
-    /// `GpuMaterial`/`triangle.frag` consumer in the same change, so the
-    /// canonical `Material` no longer silently drops authored data while
-    /// the GPU-side shading consumer lands as separate,
-    /// independently-reviewable follow-up work. Defaults mirror
-    /// `ImportedMaterial`'s own parser-stub defaults (`fresnel_power`
+    /// Landed here first, without wiring a `GpuMaterial`/`triangle.frag`
+    /// consumer in the same change, so the canonical `Material` stopped
+    /// silently dropping authored data while the GPU-side shading consumer
+    /// landed as separate, independently-reviewable follow-up work. Defaults
+    /// mirror `ImportedMaterial`'s own parser-stub defaults (`fresnel_power`
     /// 5.0 = standard Schlick exponent; the rest 0.0 = no contribution).
+    ///
+    /// **That follow-up landed on 2026-08-25 — all six are shaded.** #3908
+    /// (REN-2026-09-05-D6-01): this doc said "captured, not yet shaded" for
+    /// nine months after it stopped being true, which both hid real progress
+    /// and invited someone hunting unwired fields to re-plumb wired ones.
+    /// Each has a `GpuMaterial` lane, is hashed in both material-table paths,
+    /// is mirrored in `include/bindings.glsl`, and is read by the canonical
+    /// direct / glass / GI response: `lighting_effect_1` and
+    /// `subsurface_rolloff` are the two lanes of the wrap width, and
+    /// `lighting_effect_2` and `rimlight_power` the two lanes of the rim
+    /// exponent (Skyrim authors one, FO4/BGSM the other — `lighting.glsl`
+    /// prefers whichever is non-zero, so the shader never asks which game
+    /// wrote it); `backlight_power` scales the back-lighting term there too;
+    /// `fresnel_power` drives the Schlick rim exponent in `triangle.frag`.
     ///
     /// #2592 (SKY-D7-04) — this doc used to justify that shape by citing
     /// "the existing `grayscale_to_palette_scale` precedent (see that
@@ -308,11 +321,10 @@ pub struct Material {
     ///
     /// #2443 (MAT-D3-01) closed that gap:
     /// [`grayscale_to_palette_scale`](Self::grayscale_to_palette_scale) is
-    /// now a canonical field copied at the boundary, so it has caught up to
-    /// these six and the two groups are genuinely the same shape — captured,
-    /// awaiting a `GpuMaterial`/shader consumer. Both remain listed in
-    /// `docs/engine/nifal.md`'s parked-passthrough inventory until that
-    /// consumer lands.
+    /// now a canonical field copied at the boundary, so it caught up to these
+    /// six and the two groups are genuinely the same shape. Both groups have
+    /// since been shaded as well (#3908), so neither is a parked passthrough
+    /// any more — `docs/engine/nifal.md` records the closure.
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
     pub subsurface_rolloff: f32,
@@ -350,14 +362,23 @@ pub struct Material {
     /// 0.5 that should soften a shared greyscale ramp rendered as the full
     /// palette colour instead.
     ///
-    /// Captured here, not yet shaded — `triangle.frag`'s palette branch still
-    /// performs an unmodulated direct lookup, and the `GpuMaterial` slot plus
-    /// the multiply in its `MAT_FLAG_EFFECT_PALETTE_COLOR` block are a
-    /// separate, independently-reviewable follow-up. This is the same
-    /// captured-then-shaded staging the #2284 scalars above use; what it is
-    /// no longer is the *earlier* failure mode those field docs contrast
-    /// themselves against ("`grayscale_to_palette_scale` never reaches
-    /// `Material` at all" — true until this landed, see #2592 / SKY-D7-04).
+    /// **Shaded since the 2026-08-25 GPU follow-up.** #3908
+    /// (REN-2026-09-05-D6-01): this doc said "captured, not yet shaded —
+    /// `triangle.frag`'s palette branch still performs an unmodulated direct
+    /// lookup" long after that branch grew the modulation. `GpuMaterial`
+    /// carries the lane and `triangle.frag` clamps it to `[0, 1]` and uses it
+    /// as the `mix` weight toward the LUT colour in **both** palette paths —
+    /// the `MATERIAL_KIND_EFFECT_SHADER` branch and the lit-BGSM branch — so
+    /// an authored 0.5 now softens a shared greyscale ramp instead of
+    /// rendering as the full palette colour. `EFFECT_PALETTE_COLOR`/`ALPHA`
+    /// is a *replace*, not a blend, which is what made the missing weight
+    /// visible rather than subtle.
+    ///
+    /// This followed the same captured-then-shaded staging the #2284 scalars
+    /// above use; what it never was is the *earlier* failure mode those field
+    /// docs contrast themselves against ("`grayscale_to_palette_scale` never
+    /// reaches `Material` at all" — true until #2443 landed, see #2592 /
+    /// SKY-D7-04).
     pub grayscale_to_palette_scale: f32,
     /// Canonical PBR metalness `[0, 1]` — **fully resolved, no Option,
     /// no render-time fallback**. Populated once at the translation
