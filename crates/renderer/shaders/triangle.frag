@@ -121,9 +121,26 @@ vec2 decodeWeatherSurface() {
 // irregular snow coverage instead of UV-locked material noise. Two scales
 // are combined at the call site so the result remains stable while the
 // terrain texture layers continue to stream independently.
+//
+// #3980 (REN-2026-09-06-D10-01) — the cell index is hashed in the INTEGER
+// domain, not through `fract(sin(dot(cell, vec2(127.1, 311.7))) *
+// 43758.5453)`. The key here is deliberately ABSOLUTE world XZ (a
+// render-origin-relative key would make the pattern jump every time
+// `render_origin` snaps across a cell boundary), and the sine hash
+// multiplies that key up by ~440x before the precision-critical `sin`.
+// This block is gated on `terrainSplatActive`, i.e. it only ever runs on
+// exterior LAND — exactly the regime where the argument is largest. At
+// `cellSize = 2.5` on Skyrim's Tamriel (±233 000 u, Markarth at
+// X ~ -176 000) `|dot(cell, vec2(127.1, 311.7))|` reaches ~4.1e7, where
+// the f32 ULP is 4.0 RADIANS — more than half a period of `sin`, which
+// GLSL/SPIR-V additionally gives no accuracy guarantee for at arguments
+// that far outside [-pi, pi], so the same cell hashed differently on two
+// GPUs. `byroGcHash1` (already `#include`d above for the ground-cover
+// clump term) is a xor-shift/odd-multiplier integer hash: exact at any
+// cell magnitude, driver-independent, and it keeps the absolute world key.
 float weatherGroundNoise(vec2 worldXZ, float cellSize) {
     vec2 cell = floor(worldXZ / max(cellSize, 0.001));
-    return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    return byroGcHash1(cell);
 }
 
 // ── Main ────────────────────────────────────────────────────────────
