@@ -919,10 +919,24 @@ pub(super) fn validate_pipeline_cache_header(
     // headerSize is the size of the fixed-prefix struct itself
     // (always 32 today). A driver that writes a longer prefix would
     // bump this; a value < 32 means the file lies about its own
-    // shape — reject. We don't upper-bound: a future version might
-    // legitimately grow the prefix, and the body bytes after the
-    // prefix are driver-specific.
-    if header_size < 32 {
+    // shape — reject.
+    //
+    // The upper bound is the file's own length, not a version constant
+    // (#4004). The original comment here declined to bound `headerSize`
+    // at all, reasoning that "a future version might legitimately grow
+    // the prefix" — true, and this preserves it: a grown prefix still
+    // fits inside the file that carries it. What it does reject is the
+    // one shape this gate's own threat model names — a file "dropped
+    // next to the binary by a process with filesystem write access"
+    // that describes a prefix longer than itself. Before this, a
+    // 32-byte file claiming `headerSize = 0xFFFF_FFFF` passed every
+    // check, matching vendor/device/UUID, and was handed to
+    // `vkCreatePipelineCache`.
+    //
+    // `as usize` rather than casting the length to u32: on a 64-bit
+    // host every u32 is representable, and comparing in the wider type
+    // cannot truncate a large `header_size` down into the valid range.
+    if header_size < 32 || header_size as usize > initial_data.len() {
         return false;
     }
     if header_version != 1 {
@@ -1110,6 +1124,43 @@ mod pipeline_cache_header_tests {
         ));
     }
 
+    /// #4004 — `headerSize` larger than the file it describes. The gate
+    /// exists so "a bad header never reaches the driver", and this is the
+    /// exact shape its threat model names: a hand-written file with the
+    /// right vendor/device/UUID whose prefix claims to be longer than the
+    /// whole file. Every other check passes; only the length bound stops it.
+    #[test]
+    fn header_size_larger_than_the_file_returns_false() {
+        let uuid = [0x42u8; 16];
+        // A 32-byte file claiming a 4 GiB fixed prefix.
+        let data = make_header(u32::MAX, 1, 0x1002, 0x73BF, uuid);
+        assert_eq!(data.len(), 32);
+        assert!(!validate_pipeline_cache_header(
+            &data, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
+    /// The bound is the file's own length, so a prefix one byte longer than
+    /// the file is rejected while one exactly filling it is accepted. Pins
+    /// that the comparison is `>` and not `>=` — an off-by-one the other way
+    /// would reject every canonical 32-byte-prefix cache with no body.
+    #[test]
+    fn header_size_may_equal_but_not_exceed_the_file_length() {
+        let uuid = [0x42u8; 16];
+
+        // Exactly the file length: a bodyless 32-byte cache, headerSize 32.
+        let exact = make_header(32, 1, 0x1002, 0x73BF, uuid);
+        assert!(validate_pipeline_cache_header(
+            &exact, 0x1002, 0x73BF, &uuid
+        ));
+
+        // One byte over.
+        let over = make_header(33, 1, 0x1002, 0x73BF, uuid);
+        assert!(!validate_pipeline_cache_header(
+            &over, 0x1002, 0x73BF, &uuid
+        ));
+    }
+
     #[test]
     fn unknown_header_version_returns_false() {
         let uuid = [0x42u8; 16];
@@ -1175,6 +1226,12 @@ mod pipeline_cache_header_tests {
     /// Future-driver headers may legitimately grow the prefix
     /// (`headerSize > 32`). The validator must accept that — only
     /// the < 32 case is malformed.
+    ///
+    /// #4004 added an upper bound, and this is the case that constrains its
+    /// shape: the bound is the *file's own length*, not a version constant,
+    /// so a grown prefix stays acceptable as long as it fits inside the file
+    /// carrying it. Bounding against a fixed 32 instead would reject every
+    /// future header this test exists to protect.
     #[test]
     fn larger_header_size_returns_true_when_other_fields_match() {
         let uuid = [0x42u8; 16];
