@@ -211,7 +211,8 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
         // every RT ray origin built from it. Guard the POST-projection
         // length like the sibling TBN builders already do
         // (`parallaxDisplaceUV`'s `dot(T, T) < 1e-8` bail,
-        // `getRayHitTangentFrame`'s identical `worldT` guard) — Path 2
+        // `getRayHitTangentFrame`'s identical `worldT` guard, and
+        // `lighting.glsl`'s anisotropic-GGX frame since #3984) — Path 2
         // below needs no equivalent guard because its derivative-built
         // T is already tangent-plane by construction. Fall back to the
         // unperturbed geometric normal: there is no valid tangent

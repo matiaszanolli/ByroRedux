@@ -1571,6 +1571,102 @@ fn every_shader_struct_is_classified() {
     }
 }
 
+/// Body of a GLSL function, by brace matching from its declaration.
+fn glsl_fn_body<'a>(src: &'a str, decl: &str) -> &'a str {
+    let start = src
+        .find(decl)
+        .unwrap_or_else(|| panic!("`{decl}` must still exist"));
+    let open = start
+        + src[start..]
+            .find('{')
+            .unwrap_or_else(|| panic!("`{decl}` has no body"));
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &src[open..open + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced braces in `{decl}`");
+}
+
+/// #3984 (REN-2026-09-06-D17-02) — every Gram-Schmidt TBN builder in the
+/// shader tree must test the length of the projected tangent, not just the
+/// raw one.
+///
+/// `T = normalize(T - dot(T, N) * N)` is `0/0` when T is parallel to N, and
+/// the anisotropic-GGX branch in `shadowableLightRadiance` was the one
+/// builder of four without the test — its guard proved only that the raw
+/// `fragTangent` was non-zero. `N` there is the normal-mapped shading normal,
+/// so a strongly-perturbing normal map can rotate it onto the authored
+/// tangent; that is the same reasoning behind `perturbNormal`'s guard
+/// (#2815). Because `shadowableLightRadiance` is also the ReSTIR `pHat`
+/// scorer and the legacy shadow subtrahend, a NaN there reaches the reservoir
+/// (spatial reuse spreads it to neighbours) and the EMA history, where the
+/// `mix()` recurrence can never clear it — a spreading blot, not a speck.
+///
+/// Enumerated rather than spot-checked: `material_sampling.glsl`'s comment
+/// keeps the list of builders, and a fifth one added without a guard is
+/// exactly how the fourth got missed.
+#[test]
+fn every_gram_schmidt_tangent_frame_guards_the_projected_length() {
+    let material_sampling = include_str!("../../../shaders/include/material_sampling.glsl");
+    let ray_hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    for (label, src, decl) in [
+        ("perturbNormal", material_sampling, "vec3 perturbNormal("),
+        (
+            "parallaxDisplaceUV",
+            material_sampling,
+            "vec2 parallaxDisplaceUV(",
+        ),
+        (
+            "getRayHitTangentFrame",
+            ray_hit,
+            "bool getRayHitTangentFrame(",
+        ),
+        (
+            "shadowableLightRadiance",
+            lighting,
+            "vec3 shadowableLightRadiance(",
+        ),
+    ] {
+        let body = glsl_fn_body(src, decl);
+        assert!(
+            body.contains("1e-8"),
+            "{label} builds a tangent frame by Gram-Schmidt but carries no \
+             post-projection length test — `normalize()` of the collapsed \
+             projection is 0/0 (#3984 / #2815)"
+        );
+    }
+
+    // The anisotropic branch specifically: the guard must sit between the
+    // projection and the lobe, not merely somewhere in the function.
+    let aniso = glsl_fn_body(lighting, "vec3 shadowableLightRadiance(");
+    let proj = aniso
+        .find("vec3 Tproj = T - dot(T, N) * N;")
+        .expect("the anisotropic branch must still Gram-Schmidt the tangent");
+    let lobe = aniso
+        .find("distributionGGXAniso(")
+        .expect("the anisotropic lobe must still be reachable");
+    let guard = aniso
+        .find("dot(Tproj, Tproj) >= 1e-8")
+        .expect("the anisotropic branch must test the projected length (#3984)");
+    assert!(
+        proj < guard && guard < lobe,
+        "the projected-length guard must sit between the Gram-Schmidt \
+         projection and the anisotropic lobe — outside that span it does not \
+         stop the NaN from reaching distributionGGXAniso (#3984)"
+    );
+}
+
 fn normalize_ident(s: &str) -> String {
     s.chars()
         .filter(|c| *c != '_')

@@ -227,24 +227,45 @@ vec3 shadowableLightRadiance(
         ? roughness
         : specularAaRoughness(N, roughness);
     float D;
+    bool anisoUsable = false;
     if (mat.anisotropic > 0.0
         && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
     {
         vec3 T = normalize(fragTangent.xyz);
-        T = normalize(T - dot(T, N) * N);
-        // Clamp the interpolated handedness to ±1 (REN-D19-04 / #2512) —
-        // the per-vertex ±1 guarantee doesn't survive interpolation across
-        // a mixed-sign (UV-fold) triangle, and a raw fractional multiply
-        // here shortens B and skews the anisotropic lobe orientation.
-        float tangentSign = fragTangent.w < 0.0 ? -1.0 : 1.0;
-        vec3 B = normalize(cross(N, T)) * tangentSign;
-        float HdotX = dot(H, T);
-        float HdotY = dot(H, B);
-        float ax;
-        float ay;
-        deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
-        D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
-    } else {
+        // #3984 — guard the POST-projection length, like the three sibling
+        // TBN builders already do (`perturbNormal`, `parallaxDisplaceUV`,
+        // `getRayHitTangentFrame`). The gate above proves only that the RAW
+        // tangent is non-zero; when T is parallel to N the Gram-Schmidt
+        // projection IS the zero vector and `normalize()` on it is 0/0 → NaN.
+        // `N` here is the normal-mapped shading normal (or `glassViewNormal`),
+        // not the geometric normal, so a strongly-perturbing normal map is
+        // enough to rotate N onto the authored tangent — which is the exact
+        // reasoning behind `perturbNormal`'s own guard (#2815). A NaN escaping
+        // here does not stay local: this function is the shared BRDF for the
+        // pass-1 accumulation, the ReSTIR pHat score and the legacy shadow
+        // subtraction, so it poisons the reservoir (which spatial reuse then
+        // spreads to neighbours) and the EMA history, which `mix()` can never
+        // clear. Fall back to the isotropic lobe: with no tangent left there
+        // is no anisotropy to orient.
+        vec3 Tproj = T - dot(T, N) * N;
+        anisoUsable = dot(Tproj, Tproj) >= 1e-8;
+        if (anisoUsable) {
+            T = normalize(Tproj);
+            // Clamp the interpolated handedness to ±1 (REN-D19-04 / #2512) —
+            // the per-vertex ±1 guarantee doesn't survive interpolation across
+            // a mixed-sign (UV-fold) triangle, and a raw fractional multiply
+            // here shortens B and skews the anisotropic lobe orientation.
+            float tangentSign = fragTangent.w < 0.0 ? -1.0 : 1.0;
+            vec3 B = normalize(cross(N, T)) * tangentSign;
+            float HdotX = dot(H, T);
+            float HdotY = dot(H, B);
+            float ax;
+            float ay;
+            deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
+            D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
+        }
+    }
+    if (!anisoUsable) {
         D = distributionGGX(NdotH, aaRoughness);
     }
     float G = geometrySmith(NdotV, NdotL, aaRoughness);
