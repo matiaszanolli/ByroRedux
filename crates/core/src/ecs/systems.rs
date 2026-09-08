@@ -86,11 +86,16 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
     let mut transform_dirty: Vec<EntityId> = Vec::new();
     let mut queued: FxHashSet<EntityId> = FxHashSet::default();
     let mut expanded: FxHashSet<EntityId> = FxHashSet::default();
+    // Set view of `transform_dirty`, used by the incremental seed pass to
+    // ask "does this entity have a dirty ancestor?" (#4060). Persistent for
+    // the same reason as the others: keeps the allocation across frames.
+    let mut dirty_set: FxHashSet<EntityId> = FxHashSet::default();
 
     move |world: &World, _dt: f32| {
         queue.clear();
         queued.clear();
         expanded.clear();
+        dirty_set.clear();
 
         // Acquire all ECS queries once per frame and hold them across
         // both phases and the BFS walk. The prior implementation called
@@ -226,13 +231,70 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             // in one frame) so each subtree is seeded once.
             transform_dirty.sort_unstable();
             transform_dirty.dedup();
+            dirty_set.extend(transform_dirty.iter().copied());
+            // #4060 — climbing `Parent` here costs its OWN budget, not the
+            // shared `traversal_guard`. The climbs are O(dirty x depth) in
+            // the worst case, which can exceed the BFS budget on a deep
+            // hierarchy; spending the shared one would abort the walk that
+            // does the actual work. Both are bounded by the same size, so a
+            // `Parent` cycle still terminates.
+            let mut seed_guard = HierarchyTraversalGuard::new(
+                world.next_entity_id() as usize,
+                child_reference_count,
+            );
             for &e in &transform_dirty {
+                // Seed only the SHALLOWEST dirty entities. When an ancestor
+                // of `e` is also dirty, seeding `e` here composes it against
+                // that ancestor's not-yet-updated global — and, worse,
+                // immediately enqueues `e`'s children, which are then popped
+                // and marked `expanded` while `e` still holds the wrong
+                // value. When the BFS later recomposes `e` correctly its
+                // re-enqueue of those children is refused by the `expanded`
+                // guard (#3700), so the subtree below `e` keeps a global
+                // built from `e`'s pre-update value and never self-heals:
+                // the next frame nothing is dirty, the state key is
+                // unchanged, and the fast path returns immediately.
+                //
+                // Skipping the seed lets the BFS from that dirty ancestor
+                // reach `e` top-down exactly once, with a correct parent
+                // global, and drops the redundant seed work as a side
+                // effect. It relies on `e` being reachable from the ancestor
+                // through `Children` — the same assumption the structural
+                // path already makes, since an entity missing from its
+                // parent's `Children` is never enqueued by the root walk
+                // either and so has no correct global on any path.
+                let mut has_dirty_ancestor = false;
+                if let Some(pq) = parent_q.as_ref() {
+                    let mut cursor = e;
+                    while let Some(parent) = pq.get(cursor) {
+                        if !seed_guard.step() {
+                            // Budget exhausted (a `Parent` cycle, or a
+                            // pathological depth). Fail safe: seed `e` the
+                            // pre-#4060 way rather than skip it entirely.
+                            has_dirty_ancestor = false;
+                            break;
+                        }
+                        if dirty_set.contains(&parent.0) {
+                            has_dirty_ancestor = true;
+                            break;
+                        }
+                        cursor = parent.0;
+                    }
+                }
+                if has_dirty_ancestor {
+                    continue;
+                }
                 let local = tq.get(e).copied().unwrap_or(Transform::IDENTITY);
-                // Recompose e's own global: parent's current global ∘ local
-                // (the parent did not move, so its global is correct), or the
-                // local itself when e is a root. If e and an ancestor are both
-                // dirty, the ancestor's seeded subtree re-fixes e — order
-                // doesn't matter, only that every moved subtree is walked.
+                // Recompose e's own global: parent's current global ∘ local,
+                // or the local itself when e is a root. The parent's global
+                // is correct here BY CONSTRUCTION as of #4060 — the climb
+                // above skipped every `e` that has a dirty ancestor, so any
+                // remaining `e` has only clean ancestors, whose globals were
+                // finalised last frame.
+                //
+                // This used to say the ancestor's seeded subtree "re-fixes e
+                // — order doesn't matter". It re-fixed `e` but not `e`'s
+                // children; see the climb's comment above.
                 let e_global = match parent_q.as_ref().and_then(|pq| pq.get(e)) {
                     Some(parent) => match gq.get_mut(parent.0).map(|g| *g) {
                         Some(pg) => GlobalTransform::compose(
@@ -248,13 +310,12 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                 if let Some(g) = gq.get_mut(e) {
                     *g = e_global;
                 }
-                // Leave dirty descendants unexpanded until the BFS reaches
-                // them. If both an ancestor and descendant are dirty, this
-                // lets the descendant be recomposed once more after the
-                // ancestor's new global has been written, regardless of the
-                // EntityId ordering of the dirty list. Dirty roots can still
-                // be marked now so a malformed child edge back to the root is
-                // diagnosed immediately.
+                // Leave the seeded entity unexpanded so the BFS can still
+                // reach it through a dirty ancestor's subtree. Post-#4060 no
+                // ancestor of `e` is dirty, so this is now only about a
+                // second path to `e` through a shared/duplicate edge. Dirty
+                // roots are marked immediately so a malformed child edge back
+                // to the root is diagnosed rather than walked.
                 if parent_q.as_ref().and_then(|pq| pq.get(e)).is_none() {
                     expanded.insert(e);
                 }
@@ -840,16 +901,28 @@ mod tests {
         assert!(gq.get(b).unwrap().translation.is_finite());
     }
 
+    /// #4060 — this fixture used to stop at a two-entity chain, where the
+    /// dirty descendant is a LEAF. That is precisely the one shape the
+    /// defect cannot exhibit, so the test's name over-promised: the
+    /// pre-#4060 recovery did re-fix the dirty descendant itself, and only
+    /// stranded its children. The chain is now four deep with a clean node
+    /// between the two dirty entities, which is what the name claims.
     #[test]
     fn dirty_descendant_is_recomposed_after_a_later_dirty_ancestor() {
         let mut world = World::new();
-        // Spawn the child first so its EntityId sorts before its parent in the
-        // dirty list. This forces the incremental seed pass to encounter the
-        // descendant before the moved ancestor.
+        // Spawn leaf-first so EntityIds sort descendant-before-ancestor in
+        // the dirty list, forcing the seed pass to meet the descendant
+        // before the moved ancestor.
+        let leaf = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
         let child = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
-        let parent = spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
-        world.insert(child, Parent(parent));
-        world.insert(parent, Children(vec![child]));
+        let middle = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+        let parent =
+            spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        // parent -> middle -> child -> leaf. `middle` stays clean.
+        for (c, p) in [(middle, parent), (child, middle), (leaf, child)] {
+            world.insert(c, Parent(p));
+            world.insert(p, Children(vec![c]));
+        }
 
         let mut sys = make_transform_propagation_system();
         sys(&world, 0.016);
@@ -863,6 +936,94 @@ mod tests {
 
         let gq = world.query::<GlobalTransform>().unwrap();
         assert_eq!(gq.get(parent).unwrap().translation.x, 20.0);
-        assert_eq!(gq.get(child).unwrap().translation.x, 22.0);
+        assert_eq!(gq.get(middle).unwrap().translation.x, 21.0);
+        assert_eq!(gq.get(child).unwrap().translation.x, 23.0);
+        assert_eq!(
+            gq.get(leaf).unwrap().translation.x,
+            24.0,
+            "the subtree BELOW the dirty descendant is the half the two-entity \
+             fixture could not reach (#4060)"
+        );
+    }
+
+    /// #4060 (ECS-2026-09-08-D8-01) — a CLEAN node between two dirty ones
+    /// used to permanently strand the subtree below the deeper dirty entity.
+    ///
+    /// `dirty_descendant_is_recomposed_after_a_later_dirty_ancestor` above
+    /// reads as if it covers this, but its dirty descendant is a **leaf** —
+    /// the one shape that cannot exhibit the defect, because the recovery
+    /// the incremental seed relies on ("the ancestor's seeded subtree
+    /// re-fixes `e`") works for `e` itself and not for `e`'s children.
+    ///
+    /// Chain A → B → C → D with A and C dirty, B and D clean. Pre-fix trace:
+    /// seeding C composed it from B's still-stale global and enqueued D; the
+    /// BFS popped D (composing it from the wrong C) and marked it
+    /// `expanded`, so when C was finally recomposed correctly its re-enqueue
+    /// of D was refused as a "cyclic or duplicate Children edge". D kept a
+    /// global built from C's pre-update value, and the next frame's fast
+    /// path returned immediately, so it never self-healed.
+    #[test]
+    fn a_clean_node_between_two_dirty_ones_does_not_strand_the_subtree_below() {
+        for leaf_first in [false, true] {
+            let mut world = World::new();
+            // Both spawn orders: the dirty list is sorted by EntityId, so
+            // this flips which of A / C is seeded first. The defect
+            // reproduced either way.
+            let ids: Vec<_> = (0..4)
+                .map(|_| spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0))
+                .collect();
+            let (a, b, c, d) = if leaf_first {
+                (ids[3], ids[2], ids[1], ids[0])
+            } else {
+                (ids[0], ids[1], ids[2], ids[3])
+            };
+
+            for (child, parent) in [(b, a), (c, b), (d, c)] {
+                world.insert(child, Parent(parent));
+                world.insert(parent, Children(vec![child]));
+            }
+
+            let mut sys = make_transform_propagation_system();
+            sys(&world, 0.016);
+            {
+                let gq = world.query::<GlobalTransform>().unwrap();
+                assert_eq!(gq.get(d).unwrap().translation.x, 4.0, "baseline");
+            }
+
+            // Move A and C. B and D are untouched — B is the clean node
+            // BETWEEN the two dirty ones, which is what makes C's seed
+            // compose against a stale parent.
+            {
+                let mut tq = world.query_mut::<Transform>().unwrap();
+                tq.get_mut(a).unwrap().translation.x = 10.0;
+                tq.get_mut(c).unwrap().translation.x = 100.0;
+            }
+            sys(&world, 0.016);
+
+            {
+                let gq = world.query::<GlobalTransform>().unwrap();
+                let got = |e| gq.get(e).unwrap().translation.x;
+                assert_eq!(got(a), 10.0, "leaf_first={leaf_first}: A is a moved root");
+                assert_eq!(got(b), 11.0, "leaf_first={leaf_first}: B rides A");
+                assert_eq!(got(c), 111.0, "leaf_first={leaf_first}: C rides B");
+                assert_eq!(
+                    got(d),
+                    112.0,
+                    "leaf_first={leaf_first}: D must ride C's RECOMPOSED global, not the \
+                     one C briefly held while B was still stale (#4060)"
+                );
+            }
+
+            // It never self-healed: nothing is dirty now and the state key
+            // is unchanged, so the fast path returns immediately. Pin that
+            // the value is right on the frame that does no work at all.
+            sys(&world, 0.016);
+            let gq = world.query::<GlobalTransform>().unwrap();
+            assert_eq!(
+                gq.get(d).unwrap().translation.x,
+                112.0,
+                "leaf_first={leaf_first}: the fast-path frame must not resurrect a stale value"
+            );
+        }
     }
 }
