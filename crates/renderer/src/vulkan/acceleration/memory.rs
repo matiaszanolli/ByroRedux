@@ -413,9 +413,18 @@ impl AccelerationManager {
         true
     }
 
-    /// Current total BLAS memory in bytes (static + skinned). Use for
-    /// telemetry / `tex.stats` console output. Use `static_blas_bytes()`
-    /// for residency-budget decisions — see #920.
+    /// Current total BLAS memory in bytes (static + skinned). Surfaced by
+    /// `VulkanContext::fill_rt_integrity_stats` as
+    /// `RtIntegrityStats::blas_total_bytes`, which the `rt.integrity`
+    /// console command prints. Use `static_blas_bytes()` for
+    /// residency-budget decisions — see #920.
+    ///
+    /// #3999 — this used to point at a texture-stats console command that
+    /// was never registered, and the accessor had no caller at all, so total
+    /// BLAS residency was not readable from a running engine despite a
+    /// docstring asserting otherwise. (The dead name is not spelled here: the
+    /// scan that enforces this takes no exceptions, which is the point of
+    /// it.)
     pub fn total_blas_bytes(&self) -> vk::DeviceSize {
         self.total_blas_bytes
     }

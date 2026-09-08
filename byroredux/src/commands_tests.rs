@@ -1023,12 +1023,39 @@ fn rt_integrity_prints_the_shared_machine_line() {
         tlas_emitted: 12,
         cluster_sampled: true,
         cluster_max_lights: 37,
+        // #3999 — BLAS device residency and the deferred-destroy backlog.
+        blas_total_bytes: 89_128_960,
+        blas_static_bytes: 67_108_864,
+        blas_pending_destroy_bytes: 4_194_304,
+        blas_pending_destroy_count: 3,
+        scratch_pending_destroy_count: 1,
         ..Default::default()
     });
     let text = RtIntegrityCommand.execute(&world, "").lines.join("\n");
     assert!(text.starts_with("rt-integrity: frame=9"), "{text}");
     assert!(text.contains("tlas_eligible=12 tlas_emitted=12"), "{text}");
-    assert!(text.contains("cluster_max=37 verdict=PASS"), "{text}");
+    assert!(text.contains("cluster_max=37"), "{text}");
+    assert!(text.ends_with("verdict=PASS"), "{text}");
+
+    // #3999 — the five numbers the acceleration manager had been computing
+    // behind accessors with no callers. Asserted here rather than only at the
+    // renderer seam because this is the operator-facing end: the whole finding
+    // was that these were unreadable from a running engine.
+    assert!(
+        text.contains("blas_total_bytes=89128960 blas_static_bytes=67108864"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "blas_pending_destroy_bytes=4194304 blas_pending_destroy_count=3 \
+             scratch_pending_destroy_count=1"
+        ),
+        "{text}"
+    );
+
+    // Residency is a magnitude, not a correctness predicate — a large
+    // deferred-destroy backlog must not turn the verdict red.
+    assert!(text.contains("verdict=PASS"), "{text}");
 }
 
 #[test]

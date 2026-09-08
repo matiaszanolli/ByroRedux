@@ -2617,6 +2617,21 @@ impl VulkanContext {
         stats.cluster_overflowed = cluster.overflowed_clusters;
         stats.cluster_dropped = cluster.dropped_lights;
         stats.cluster_max_lights = cluster.max_lights;
+
+        // #3999 — BLAS residency + the deferred-destroy backlog. The
+        // acceleration manager already computed all five; each sat behind a
+        // `pub` accessor with no caller, so the exact overshoot
+        // `REN-2026-09-06-D1-01` describes was undiagnosable in the field.
+        // Read through the accessors rather than the fields so this is a
+        // genuine consumer of the documented surface, not a second path
+        // around it.
+        if let Some(accel) = self.accel_manager.as_ref() {
+            stats.blas_total_bytes = accel.total_blas_bytes();
+            stats.blas_static_bytes = accel.static_blas_bytes();
+            stats.blas_pending_destroy_bytes = accel.pending_destroy_static_bytes();
+            stats.blas_pending_destroy_count = accel.pending_destroy_blas_count() as u32;
+            stats.scratch_pending_destroy_count = accel.pending_destroy_scratch_count() as u32;
+        }
     }
 
     // draw_frame is in draw.rs

@@ -353,6 +353,82 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
     }
 }
 
+/// #3999 — every BLAS-residency accessor must have a live consumer.
+///
+/// Four `pub` accessors had none, and three named one that did not exist: a
+/// texture-stats console command never registered, and two unit tests never
+/// written. The newest was added by #3840 *the day before* the audit,
+/// specifically so an operator could read how much VRAM the deferred-destroy
+/// queue holds — and then not connected. The effect was that the exact
+/// overshoot `REN-2026-09-06-D1-01` describes was not diagnosable from a
+/// running engine even after the number had been computed.
+///
+/// A docstring cannot be compiled, so the claim needs a gate. This asserts
+/// the consumer end: `fill_rt_integrity_stats` must call each accessor by
+/// name. Scanning the caller rather than counting greps means a future
+/// refactor that reads the private fields directly — re-orphaning the public
+/// surface while keeping the telemetry working — still fails here.
+#[cfg(test)]
+mod blas_residency_telemetry_tests {
+    const CONTEXT_MOD_RS: &str = include_str!("../../context/mod.rs");
+
+    #[test]
+    fn every_blas_residency_accessor_reaches_the_rt_integrity_snapshot() {
+        let fill = CONTEXT_MOD_RS
+            .split("pub fn fill_rt_integrity_stats(")
+            .nth(1)
+            .expect(
+                "fill_rt_integrity_stats must still exist — it is the one path \
+                 BLAS residency takes to the console (#3999)",
+            );
+        // Stop at the next documented item so a call elsewhere in the file
+        // cannot satisfy this.
+        let body = fill
+            .split("\n    /// ")
+            .next()
+            .expect("the fn must still be followed by another documented item");
+
+        for accessor in [
+            "accel.total_blas_bytes()",
+            "accel.static_blas_bytes()",
+            "accel.pending_destroy_static_bytes()",
+            "accel.pending_destroy_blas_count()",
+            "accel.pending_destroy_scratch_count()",
+        ] {
+            assert!(
+                body.contains(accessor),
+                "`{accessor}` is no longer read by fill_rt_integrity_stats — \
+                 BLAS device residency and the deferred-destroy backlog become \
+                 unreadable from a running engine again, and the accessor \
+                 becomes a `pub` item whose docstring names a consumer that \
+                 does not exist (#3999)"
+            );
+        }
+    }
+
+    /// The docstrings themselves, since naming a command that was never
+    /// registered is what made the original four misleading rather than
+    /// merely unused. The sweep found a fifth mention the report did not
+    /// list, on the `total_blas_bytes` *field* in `acceleration/mod.rs`.
+    #[test]
+    fn no_blas_accessor_docstring_names_a_command_that_does_not_exist() {
+        // Composed at runtime so this test's own text is not what it matches.
+        let phantom = format!("{}{}", "tex", ".stats");
+        for (label, src) in [
+            ("blas_static.rs", include_str!("../blas_static.rs")),
+            ("memory.rs", include_str!("../memory.rs")),
+            ("acceleration/mod.rs", include_str!("../mod.rs")),
+        ] {
+            assert!(
+                !src.contains(phantom.as_str()),
+                "{label} names a console command that is not in the registry \
+                 — the docstring asserts an observability path an operator \
+                 cannot take (#3999)"
+            );
+        }
+    }
+}
+
 /// #4000 / PERF-D6-01 residual — the acceleration module carries its own
 /// hot-path-hashing pin.
 ///

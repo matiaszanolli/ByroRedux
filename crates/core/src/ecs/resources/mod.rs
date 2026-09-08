@@ -932,6 +932,37 @@ pub struct RtIntegrityStats {
     pub cluster_dropped: u32,
     /// Largest unclamped candidate count observed in any cluster.
     pub cluster_max_lights: u32,
+    /// Total BLAS device memory in bytes — static (mesh-keyed) plus skinned
+    /// (per-entity).
+    ///
+    /// #3999 — the acceleration manager computed all five of the figures
+    /// below and exposed each behind a `pub` accessor, three of whose
+    /// docstrings named a consumer that did not exist (a `tex.stats` command
+    /// that was never registered, and two unit tests that were never
+    /// written). BLAS device residency and the deferred-destroy backlog were
+    /// therefore not readable from a running engine at all — which is
+    /// precisely the accounting the #3840 work computed and
+    /// `REN-2026-09-06-D1-01` describes going wrong. `rt.integrity` already
+    /// crosses renderer → resource → console every frame, so these ride it
+    /// rather than growing a second telemetry channel.
+    ///
+    /// Deliberately absent from [`Self::verdict`]: residency is a magnitude,
+    /// not a correctness predicate, and there is no threshold here that
+    /// should turn a PASS into a FAIL.
+    pub blas_total_bytes: u64,
+    /// Static (mesh-keyed) BLAS bytes — the LRU-evictable subset of
+    /// [`Self::blas_total_bytes`], and the figure residency-budget decisions
+    /// are made against.
+    pub blas_static_bytes: u64,
+    /// Static-BLAS bytes already deducted from [`Self::blas_static_bytes`]
+    /// but not yet freed, because their entries are waiting out the
+    /// deferred-destroy countdown. The gap between the paper figure and true
+    /// residency; the number a batch can overshoot its budget by.
+    pub blas_pending_destroy_bytes: u64,
+    /// Entries waiting in the deferred-destroy BLAS queue.
+    pub blas_pending_destroy_count: u32,
+    /// Retired scratch buffers waiting in the deferred-destroy scratch queue.
+    pub scratch_pending_destroy_count: u32,
 }
 
 impl RtIntegrityStats {
@@ -965,7 +996,10 @@ impl RtIntegrityStats {
              missing_skinned={} missing_rigid={} missing_ssbo={} \
              lights_submitted={} lights_uploaded={} lights_dropped={} \
              cluster_sampled={} cluster_overflowed={} cluster_dropped={} \
-             cluster_max={} verdict={}",
+             cluster_max={} \
+             blas_total_bytes={} blas_static_bytes={} \
+             blas_pending_destroy_bytes={} blas_pending_destroy_count={} \
+             scratch_pending_destroy_count={} verdict={}",
             self.frame,
             u8::from(self.sampled),
             u8::from(self.rt_supported),
@@ -983,6 +1017,11 @@ impl RtIntegrityStats {
             self.cluster_overflowed,
             self.cluster_dropped,
             self.cluster_max_lights,
+            self.blas_total_bytes,
+            self.blas_static_bytes,
+            self.blas_pending_destroy_bytes,
+            self.blas_pending_destroy_count,
+            self.scratch_pending_destroy_count,
             self.verdict(),
         )
     }
@@ -1508,7 +1547,38 @@ mod tests {
              tlas_build=1 tlas_eligible=17 tlas_emitted=17 missing_skinned=0 \
              missing_rigid=0 missing_ssbo=0 lights_submitted=0 \
              lights_uploaded=0 lights_dropped=0 cluster_sampled=1 \
-             cluster_overflowed=0 cluster_dropped=0 cluster_max=23 verdict=PASS"
+             cluster_overflowed=0 cluster_dropped=0 cluster_max=23 \
+             blas_total_bytes=0 blas_static_bytes=0 \
+             blas_pending_destroy_bytes=0 blas_pending_destroy_count=0 \
+             scratch_pending_destroy_count=0 verdict=PASS"
+        );
+
+        // #3999 — BLAS residency is telemetry, not a correctness predicate.
+        // A large deferred-destroy backlog is exactly the state
+        // `REN-2026-09-06-D1-01` needs an operator to be able to *see*, so it
+        // must reach `machine_line` while leaving the verdict alone; folding
+        // it into `verdict()` would turn an ordinary eviction burst into a
+        // FAIL.
+        let backlogged = RtIntegrityStats {
+            blas_total_bytes: 89_128_960,
+            blas_static_bytes: 67_108_864,
+            blas_pending_destroy_bytes: 4_194_304,
+            blas_pending_destroy_count: 3,
+            scratch_pending_destroy_count: 1,
+            ..clean
+        };
+        assert_eq!(backlogged.verdict(), "PASS");
+        let line = backlogged.machine_line();
+        assert!(
+            line.contains("blas_total_bytes=89128960 blas_static_bytes=67108864"),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "blas_pending_destroy_bytes=4194304 blas_pending_destroy_count=3 \
+                 scratch_pending_destroy_count=1"
+            ),
+            "{line}"
         );
     }
 

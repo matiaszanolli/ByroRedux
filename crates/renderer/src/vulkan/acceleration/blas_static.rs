@@ -176,17 +176,28 @@ impl AccelerationManager {
     }
 
     /// Number of entries currently waiting in `pending_destroy_blas`.
-    /// Surfaced for [`drain_pending_destroys`]'s unit test and shutdown
-    /// telemetry — the count must reach zero after a drain. See #732.
+    /// Surfaced by `VulkanContext::fill_rt_integrity_stats` as
+    /// `RtIntegrityStats::blas_pending_destroy_count`, printed by the
+    /// `rt.integrity` console command. See #732.
+    ///
+    /// #3999 — this used to claim a `drain_pending_destroys` unit test and
+    /// "shutdown telemetry" as its consumers. Neither existed: no test named
+    /// it and it had no caller anywhere in the tree.
     pub fn pending_destroy_blas_count(&self) -> usize {
         self.pending_destroy_blas.len()
     }
 
     /// Static-BLAS bytes already deducted from `static_blas_bytes` but not yet
     /// freed, because their entries are still waiting out the deferred-destroy
-    /// countdown. Companion to [`Self::pending_destroy_blas_count`] for
-    /// `ctx.scratch` telemetry — the count alone can't show how much VRAM the
-    /// queue is holding. See #3840.
+    /// countdown. Companion to [`Self::pending_destroy_blas_count`] — the
+    /// count alone can't show how much VRAM the queue is holding. See #3840.
+    ///
+    /// #3999 — this named `ctx.scratch`, which exists but emits host-side
+    /// `Vec`/`HashMap` `(len, capacity)` rows only, never device bytes. The
+    /// accessor was added by #3840 specifically so an operator could see this
+    /// number and then was never connected to anything. It now reaches the
+    /// console as `RtIntegrityStats::blas_pending_destroy_bytes` via
+    /// `rt.integrity`.
     pub fn pending_destroy_static_bytes(&self) -> vk::DeviceSize {
         self.pending_destroy_static_bytes
     }
@@ -213,9 +224,13 @@ impl AccelerationManager {
     }
 
     /// Number of retired scratch buffers currently waiting in
-    /// `pending_destroy_scratch`. Surfaced for the deferred-destroy
-    /// regression test and shutdown telemetry — the count must reach
-    /// zero after a drain. See #1782.
+    /// `pending_destroy_scratch`. Surfaced by
+    /// `VulkanContext::fill_rt_integrity_stats` as
+    /// `RtIntegrityStats::scratch_pending_destroy_count`, printed by the
+    /// `rt.integrity` console command. See #1782.
+    ///
+    /// #3999 — this used to claim "the deferred-destroy regression test and
+    /// shutdown telemetry". Neither existed; the accessor had no caller.
     pub fn pending_destroy_scratch_count(&self) -> usize {
         self.pending_destroy_scratch.len()
     }

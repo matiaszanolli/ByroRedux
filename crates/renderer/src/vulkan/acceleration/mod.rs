@@ -180,8 +180,11 @@ pub struct AccelerationManager {
     /// from the odd-slot perspective. See REN-D8-NEW-12 (audit
     /// 2026-05-09) — cosmetic note, no behaviour change implied.
     pub(super) frame_counter: u64,
-    /// Total BLAS memory currently allocated (static + skinned), reported
-    /// by `total_blas_bytes()` for telemetry / `tex.stats` console output.
+    /// Total BLAS memory currently allocated (static + skinned), reported by
+    /// [`Self::total_blas_bytes`] and printed by the `rt.integrity` console
+    /// command as `blas_total_bytes` (#3999 — the sibling of the accessor's
+    /// own stale pointer; the command this used to name was never
+    /// registered).
     pub(super) total_blas_bytes: vk::DeviceSize,
     /// Subset of `total_blas_bytes` that lives in `blas_entries` (static,
     /// mesh-keyed BLAS). Skinned per-entity BLAS in `skinned_blas` are NOT
