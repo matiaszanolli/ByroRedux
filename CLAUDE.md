@@ -249,7 +249,9 @@ crates/
     src/listener.rs          TcpListener, per-client threads, command queue
     src/system.rs            DebugDrainSystem (Late-stage exclusive), screenshot flow
     src/evaluator.rs         Papyrus AST → ECS query evaluation
-    src/registration.rs      register_component::<T>() for 15 inspectable types
+    src/registration.rs      register_component::<T>() per inspectable type (re-derive the
+                             count with `grep -c 'register_component::<' crates/debug-server/src/registration.rs`
+                             rather than trusting a number here — it moves with every component added)
 tools/
   byro-dbg/                  Standalone debug CLI binary
     src/main.rs              TCP client, REPL loop, shorthand commands

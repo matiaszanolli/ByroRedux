@@ -252,9 +252,17 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   procedure carry them). Verify a growing actor population doesn't force any of
   them onto `PackedStorage`. An NPC's active package is always a single winning
   `PackRecord` (`active_package`'s `find` in `crates/plugin/src/esm/records/misc/pack.rs`),
-  so at most one Behavior component lands per actor at spawn — a regression that
-  lets two of these seven land on the same entity is a correctness bug in the
-  `npc_spawn.rs` spawn-tail's `if runs_*` chain, not a storage issue.
+  so at most one Behavior component lands per actor at spawn. That is now
+  structural rather than a thing to audit for: selection is a single `match`
+  over the `AmbientBehavior` enum (`insert_at_spawn` / `insert_at_runtime`,
+  `byroredux/src/npc_spawn/ai_package.rs`), so two behaviors on one actor is
+  unrepresentable. There is no `if runs_*` chain — that predicate family no
+  longer exists anywhere in the workspace, so do not go looking for it. What
+  IS worth auditing is that the enum's arms, `clear_ambient_behavior`'s
+  teardown list, and the `byro-dbg` registry
+  (`crates/debug-server/src/registration.rs`) all still enumerate the same
+  seven procedures; the registry lagged six of them by five milestones
+  (#4063) precisely because nothing tied the three lists together.
   - **One-shot terminal markers**: `Seated` (Sandbox) and `Traveled`/`Escorted`
     (Travel/Escort) are one-shot gates — once tagged, the corresponding system
     must skip the entity on every later frame (never re-enter seat search /
@@ -421,8 +429,15 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   file still mention them; do not flag their absence as DRY-undo drift.
 - **`footstep_system` scratch** (#932): `byroredux/src/systems/audio.rs` writes a
   `FootstepScratch: Resource` via `mem::take` + restore to preserve Vec capacity;
-  per-frame `Vec::new` is the regression. (Registered
-  `add_exclusive(Stage::PostUpdate, footstep_system)`.)
+  per-frame `Vec::new` is the regression. Registered
+  `add_exclusive(Stage::Late, footstep_system)` — it moved out of
+  `Stage::PostUpdate` in `1382efb0` (#3652 SIBLING follow-up), following
+  `make_billboard_system`, because both read the active camera's
+  `GlobalTransform` and `camera_follow_system` authors it in `Stage::Late`.
+  The stage is load-bearing when auditing it: the PostUpdate ordering contract
+  and the `GlobalTransform`-drain invariant in `#4061`/`#4062` are
+  stage-relative, so check it against `register_late_systems`, not
+  `register_post_update_systems`.
 - **Poison side-table** (#466): `World::despawn` names the offending component
   via the `type_names` side-table; removing it loses the type name in panic
   messages (10× harder bisects).
