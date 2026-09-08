@@ -156,6 +156,7 @@ fn run_game(game: Game, limit: Option<usize>) {
 
         totals.total += stats.total;
         totals.clean += stats.clean;
+        totals.guessed_recoveries += stats.guessed_recoveries;
         totals.truncated.extend(stats.truncated);
         totals.failures.extend(stats.failures);
     }
@@ -203,6 +204,31 @@ fn run_game(game: Game, limit: Option<usize>) {
             ),
             None => "none".to_string(),
         },
+    );
+    // #3926 — an absolute zero, not a rate, and deliberately so.
+    //
+    // The two assertions above measure how much content a parse lost. This
+    // one measures whether the parser *guessed* to avoid losing it. Only
+    // Oblivion-era files can reach the guessing paths at all (every later
+    // title ships `NifHeader.block_sizes`, so recovery seeks to a length
+    // the file declares), and vanilla Oblivion is 9,612 / 9,612 clean with
+    // zero inferred skips, so zero is the measured state of every shipped
+    // corpus rather than an aspiration.
+    //
+    // It is not redundant with the clean floor. That floor is a 99.5 %
+    // rate, so ~48 Oblivion files could guess their way past it; and the
+    // failure mode being guarded is not bounded by the file it starts in —
+    // a skip landing on a *plausible* boundary parses "successfully" from
+    // the wrong offset and is counted by nothing, clean rate included.
+    // #3925 measured the counted half of that multiplier at 74 genuine
+    // `NiSkinPartition` failures producing 464 downstream `NiNode`
+    // substitutions.
+    assert_eq!(
+        totals.guessed_recoveries,
+        0,
+        "[{}] {} block(s) were skipped by an inferred distance (Oblivion-era          median size cache / oblivion_skip_sizes) rather than one the file          declares. Every shipped corpus measures zero here, so this is an          upstream parser bug being papered over, not a recovery: find the          block type that started failing (RUST_LOG=byroredux_nif=info names          it) rather than raising this bound (#3926)",
+        game.label(),
+        totals.guessed_recoveries,
     );
 }
 

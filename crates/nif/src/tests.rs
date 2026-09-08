@@ -115,6 +115,7 @@ fn nif_scene_struct_carries_truncated_field() {
         truncated: true,
         dropped_block_count: 3,
         recovered_blocks: 0,
+        recovered_by_guess: 0,
         link_errors: 0,
         drift_histogram: std::collections::BTreeMap::new(),
         stubbed_drift_histogram: std::collections::BTreeMap::new(),
@@ -558,82 +559,92 @@ fn oblivion_skip_sizes_oversized_hint_falls_back_to_truncation() {
     assert!(scene.blocks.is_empty());
 }
 
+/// Oblivion-era (v20.0.0.5) header for `num_blocks` `NiNode` blocks — no
+/// `block_sizes` table and no string table, which is the configuration the
+/// runtime-size-cache recovery path in `parse_nif`'s `Err` arm needs.
+///
+/// Extracted from `oblivion_runtime_size_cache_recovers_corrupted_block`
+/// under #3926 so the recovery tests share one fixture: they differ only in
+/// the block payloads that follow, and a header that drifts between them
+/// would make their verdicts incomparable.
+fn oblivion_ninode_header(num_blocks: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"Gamebryo File Format, Version 20.0.0.5\n");
+    buf.extend_from_slice(&0x14000005u32.to_le_bytes()); // version
+    buf.push(1); // little-endian
+    buf.extend_from_slice(&11u32.to_le_bytes()); // user_version
+    buf.extend_from_slice(&num_blocks.to_le_bytes());
+    buf.extend_from_slice(&21u32.to_le_bytes()); // user_version_2
+
+    // BSStreamHeader short strings (author / process script / export script).
+    for _ in 0..3 {
+        buf.push(1);
+        buf.push(0);
+    }
+
+    // Block types: one type, "NiNode".
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&6u32.to_le_bytes());
+    buf.extend_from_slice(b"NiNode");
+
+    // Block type indices — every block points at type 0.
+    for _ in 0..num_blocks {
+        buf.extend_from_slice(&0u16.to_le_bytes());
+    }
+
+    // NO block_sizes (v20.0.0.5 < 20.2.0.5), NO string table (< 20.1.0.1).
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+    buf
+}
+
+/// One valid v20.0.0.5 `NiNode` block carrying `name`.
+///
+/// The name is the only variable-length field, so it is also the knob that
+/// makes this type's on-disk size vary within one file — which is precisely
+/// what #3926's guard reasons about.
+fn build_ninode_block(name: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    // NiObjectNET: name (u32 length-prefixed string).
+    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    b.extend_from_slice(name.as_bytes());
+    // extra_data_refs: count=0
+    b.extend_from_slice(&0u32.to_le_bytes());
+    // controller_ref: -1
+    b.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiAVObject: flags (u16 for v20.0.0.5)
+    b.extend_from_slice(&14u16.to_le_bytes());
+    // translation
+    for _ in 0..3 {
+        b.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    // rotation (3x3 identity)
+    for &v in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    // scale
+    b.extend_from_slice(&1.0f32.to_le_bytes());
+    // properties: count=0
+    b.extend_from_slice(&0u32.to_le_bytes());
+    // collision_ref: -1
+    b.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiNode: children count=0, effects count=0
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b
+}
+
 /// Regression test for #324: Oblivion NIFs (no block_sizes) recover
 /// from a corrupted block using the runtime size cache built from
 /// earlier successful parses of the same type.
 #[test]
 fn oblivion_runtime_size_cache_recovers_corrupted_block() {
-    // Build an Oblivion-style NIF (v20.0.0.5, no block_sizes) with
-    // 3 NiNode blocks. Block 0 and 2 are valid; block 1 is truncated
-    // (data too short → parse error). The runtime cache should learn
+    // 3 NiNode blocks. Block 0 and 2 are valid; block 1 is corrupted
+    // (poisoned name length -> parse error). The runtime cache should learn
     // the NiNode size from block 0, use it to skip block 1, and
     // successfully parse block 2.
-    let mut buf = Vec::new();
+    let mut buf = oblivion_ninode_header(3);
 
-    // ── Header (Oblivion v20.0.0.5) ────────────────────────────
-    buf.extend_from_slice(b"Gamebryo File Format, Version 20.0.0.5\n");
-    buf.extend_from_slice(&0x14000005u32.to_le_bytes()); // version
-    buf.push(1); // little-endian
-    buf.extend_from_slice(&11u32.to_le_bytes()); // user_version
-    buf.extend_from_slice(&3u32.to_le_bytes()); // num_blocks = 3
-    buf.extend_from_slice(&21u32.to_le_bytes()); // user_version_2
-
-    // Short strings
-    buf.push(1);
-    buf.push(0);
-    buf.push(1);
-    buf.push(0);
-    buf.push(1);
-    buf.push(0);
-
-    // Block types: 1 type "NiNode"
-    buf.extend_from_slice(&1u16.to_le_bytes());
-    buf.extend_from_slice(&6u32.to_le_bytes());
-    buf.extend_from_slice(b"NiNode");
-
-    // Block type indices: all 3 blocks → type 0
-    buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes());
-
-    // NO block_sizes (v20.0.0.5 < 20.2.0.5 threshold).
-    // NO string table (v20.0.0.5 < 20.1.0.1 threshold).
-    // num_groups (v >= 5.0.0.6)
-    buf.extend_from_slice(&0u32.to_le_bytes());
-
-    // ── Build a valid NiNode block (v20.0.0.5 layout) ─────────
-    fn build_ninode_block() -> Vec<u8> {
-        let mut b = Vec::new();
-        // NiObjectNET: name (u32 length-prefixed string, 0 = empty)
-        b.extend_from_slice(&0u32.to_le_bytes());
-        // extra_data_refs: count=0
-        b.extend_from_slice(&0u32.to_le_bytes());
-        // controller_ref: -1
-        b.extend_from_slice(&(-1i32).to_le_bytes());
-        // NiAVObject: flags (u16 for v20.0.0.5)
-        b.extend_from_slice(&14u16.to_le_bytes());
-        // translation
-        b.extend_from_slice(&0.0f32.to_le_bytes());
-        b.extend_from_slice(&0.0f32.to_le_bytes());
-        b.extend_from_slice(&0.0f32.to_le_bytes());
-        // rotation (3×3 identity)
-        for &v in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
-            b.extend_from_slice(&v.to_le_bytes());
-        }
-        // scale
-        b.extend_from_slice(&1.0f32.to_le_bytes());
-        // properties: count=0
-        b.extend_from_slice(&0u32.to_le_bytes());
-        // collision_ref: -1
-        b.extend_from_slice(&(-1i32).to_le_bytes());
-        // NiNode: children count=0
-        b.extend_from_slice(&0u32.to_le_bytes());
-        // effects count=0
-        b.extend_from_slice(&0u32.to_le_bytes());
-        b
-    }
-
-    let good_block = build_ninode_block();
+    let good_block = build_ninode_block("");
     let block_len = good_block.len();
 
     // Block 0: valid
@@ -662,6 +673,124 @@ fn oblivion_runtime_size_cache_recovers_corrupted_block() {
     assert_eq!(scene.blocks[0].block_type_name(), "NiNode");
     assert_eq!(scene.blocks[1].block_type_name(), "NiUnknown");
     assert_eq!(scene.blocks[2].block_type_name(), "NiNode");
+
+    // #3926 — the same recovery, now counted as what it is. The skip
+    // distance came from a median of prior parses, not from anything the
+    // file declares, so it lands in `recovered_by_guess` as well as in the
+    // `recovered_blocks` total. Both are 1: the guess was right here, which
+    // is exactly why it cannot be told apart from a wrong one by outcome.
+    assert_eq!(scene.recovered_blocks, 1);
+    assert_eq!(scene.recovered_by_guess, 1);
+}
+
+/// #3926 — the guard. When the failed block's own parser already consumed
+/// more bytes than the median of its type's prior parses, the two available
+/// measurements of this block's length contradict each other, and skipping
+/// by the median would land *inside* a region the parser already walked as
+/// this block's own data. The recovery is declined rather than applied.
+///
+/// The fixture makes the contradiction unambiguous: block 0 carries an
+/// empty name so it is this type's minimum size, and block 1 carries a
+/// 100-byte name — legitimately read, so `consumed` passes the median long
+/// before the poisoned `extra_data_refs` count fails the parse.
+///
+/// Without the guard this file parses "successfully": the median skip lands
+/// mid-way through block 1's name, block 2 is decoded from that wrong
+/// offset, and nothing in `truncated` / `recovered_blocks` / the
+/// recoverable-rate gate says so. That is the 74-failures-to-464-
+/// substitutions multiplier #3925 measured on `Oblivion - Meshes.bsa`,
+/// reproduced at fixture scale.
+#[test]
+fn a_median_smaller_than_the_failed_block_s_own_consumption_is_declined() {
+    let mut buf = oblivion_ninode_header(3);
+
+    let small = build_ninode_block("");
+    buf.extend_from_slice(&small); // block 0 — teaches the cache the minimum
+
+    // Block 1: a legitimately longer NiNode whose parse dies *after*
+    // out-consuming the median.
+    let long_name = "N".repeat(100);
+    buf.extend_from_slice(&(long_name.len() as u32).to_le_bytes());
+    buf.extend_from_slice(long_name.as_bytes());
+    buf.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // poison extra_data count
+    buf.extend_from_slice(&vec![0xAA; small.len()]); // trailing bytes to skip into
+
+    buf.extend_from_slice(&small); // block 2 — never reached
+
+    let scene = parse_nif(&buf).unwrap();
+
+    assert!(
+        scene.truncated,
+        "a median that contradicts the failed block's own consumption must \
+         not be trusted; truncation is the loud outcome, and the #3919 clean \
+         floor is what catches it"
+    );
+    assert_eq!(
+        scene.recovered_by_guess, 0,
+        "the declined skip must not be counted as a recovery"
+    );
+    assert_eq!(
+        scene.blocks.len(),
+        1,
+        "only block 0 survives — blocks 1 and 2 are dropped, not silently \
+         mis-parsed from a wrong offset"
+    );
+    assert_eq!(scene.dropped_block_count, 2);
+}
+
+/// #3926 — the guard is a rejection of a *contradiction*, not a tolerance
+/// band, so a median that merely differs from the failed block's partial
+/// consumption still recovers exactly as it did before.
+///
+/// Here block 1 dies on its very first field, having consumed 4 bytes
+/// against a median of `small.len()` — a large disagreement in the other
+/// direction, and one the parser has no evidence against. Recovery stands.
+#[test]
+fn a_median_larger_than_the_failed_consumption_still_recovers() {
+    let small = build_ninode_block("");
+    let mut buf = oblivion_ninode_header(3);
+    buf.extend_from_slice(&small);
+    buf.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // dies at 4 bytes consumed
+    buf.extend_from_slice(&vec![0xAA; small.len() - 4]);
+    buf.extend_from_slice(&small);
+
+    let scene = parse_nif(&buf).unwrap();
+    assert!(!scene.truncated);
+    assert_eq!(scene.recovered_by_guess, 1);
+    assert_eq!(scene.len(), 3);
+}
+
+/// #3926 — `oblivion_skip_sizes` is a caller-registered constant, which is
+/// still a distance the file never declared. It shares the median's
+/// misalignment risk and therefore shares its counter.
+#[test]
+fn a_caller_registered_skip_hint_also_counts_as_a_guess() {
+    let type_name = "BSUnknownOblivionSkipTest";
+    let payload = 24;
+    let data = build_oblivion_nif_with_unknowns(type_name, 3, payload);
+
+    let mut options = ParseOptions::default();
+    options
+        .oblivion_skip_sizes
+        .insert(type_name.to_string(), payload as u32);
+    let scene = parse_nif_with_options(&data, &options).unwrap();
+
+    assert_eq!(scene.recovered_blocks, 3);
+    assert_eq!(scene.recovered_by_guess, 3);
+}
+
+/// #3926 — the counter must stay a strict subset of the total, and must be
+/// zero on a file whose recovery never inferred a distance. `build_drifted_nif`
+/// carries a `block_sizes` table (v20.2.0.7), so its recovery — when it has
+/// one — seeks to a length the file itself declares.
+#[test]
+fn a_header_declared_block_size_recovery_is_not_counted_as_a_guess() {
+    let scene = parse_nif(&build_drifted_nif(4)).unwrap();
+    assert_eq!(
+        scene.recovered_by_guess, 0,
+        "no inferred skip happened, so nothing may land in the guess bucket"
+    );
+    assert!(scene.recovered_by_guess <= scene.recovered_blocks);
 }
 
 // Real-game NIF parse coverage lives in `tests/parse_real_nifs.rs`, which

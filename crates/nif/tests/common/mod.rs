@@ -533,6 +533,19 @@ pub struct ParseStats {
     pub truncated: Vec<ParseOutcome>,
     /// Hard parse failures (parse_nif returned Err).
     pub failures: Vec<ParseOutcome>,
+    /// Total `NifScene::recovered_by_guess` across every parse in this walk
+    /// — blocks skipped by a distance the parser *inferred* (Oblivion-era
+    /// median size cache / `oblivion_skip_sizes`) rather than one the file
+    /// declares. #3926.
+    ///
+    /// Deliberately a raw count, not a rate: the `clean` metric above
+    /// already treats any recovery as non-clean, so this is not a second
+    /// way to measure the same loss. It answers a different question —
+    /// whether the parser is guessing at all — because an inferred skip
+    /// that lands wrong mis-parses every *subsequent* block from a bad
+    /// offset instead of losing one, and one that lands plausibly is never
+    /// counted anywhere at all.
+    pub guessed_recoveries: usize,
 }
 
 impl ParseStats {
@@ -621,6 +634,9 @@ impl ParseStats {
 /// If `limit` is `Some(n)`, only the first `n` NIFs are parsed.
 pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) -> ParseStats {
     let mut stats = ParseStats::default();
+    // Accumulated outside `ParseStats::record`, which takes only an outcome:
+    // this is a per-scene count, not a per-file verdict. #3926.
+    let mut guessed = 0usize;
     let files: Vec<String> = archive
         .list_files()
         .into_iter()
@@ -640,6 +656,7 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
             },
             Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
                 Ok(scene) => {
+                    guessed += scene.recovered_by_guess;
                     // #568 — a non-zero `recovered_blocks` means at
                     // least one block was replaced with NiUnknown via
                     // the parse-loop recovery path (block_size seek,
@@ -671,12 +688,17 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
         stats.record(outcome);
     }
 
+    stats.guessed_recoveries = guessed;
     stats
 }
 
 /// Parse every .nif under a directory (recursively) and collect stats.
 pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
     let mut stats = ParseStats::default();
+    // Same per-scene accumulation as `parse_all_nifs_in_archive` — a walker
+    // that left this at its default would report a clean zero it never
+    // measured. #3926.
+    let mut guessed = 0usize;
     let mut stack = vec![root.to_path_buf()];
     let mut count = 0usize;
     while let Some(dir) = stack.pop() {
@@ -711,6 +733,7 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
                 },
                 Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
                     Ok(scene) => {
+                        guessed += scene.recovered_by_guess;
                         // #568 — see sibling site for full rationale.
                         let status = if scene.truncated || scene.recovered_blocks > 0 {
                             ParseStatus::Truncated {
@@ -736,6 +759,7 @@ pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
             stats.record(outcome);
         }
     }
+    stats.guessed_recoveries = guessed;
     stats
 }
 

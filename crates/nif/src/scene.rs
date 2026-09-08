@@ -43,6 +43,32 @@ pub struct NifScene {
     /// clean" rate. Pre-#568 the recovery path warned but didn't
     /// surface anywhere observable.
     pub recovered_blocks: usize,
+    /// The subset of [`Self::recovered_blocks`] whose skip distance was
+    /// **inferred** rather than read from the file — the two Oblivion-era
+    /// fallbacks in `parse_nif`'s `Err` arm (the runtime median size cache
+    /// from #324, and a caller-registered `oblivion_skip_sizes` hint from
+    /// #224). Always zero for games that ship `NifHeader.block_sizes`,
+    /// where recovery seeks to a length the file itself declares.
+    ///
+    /// #3926 — this is the "recovered by guessing" half of
+    /// `recovered_blocks`, and it needs its own name because the two have
+    /// different failure modes. A `block_size` recovery loses exactly one
+    /// block. An inferred skip that lands on the wrong boundary makes every
+    /// *subsequent* block parse from a wrong offset, so one upstream parser
+    /// bug multiplies into hundreds of `NiUnknown` placeholders — and the
+    /// recoverable-rate gate scores all of them as success. #3925 measured
+    /// that multiplier on `Oblivion - Meshes.bsa`, against the bug #3918
+    /// then fixed: 74 genuine
+    /// `NiSkinPartition` failures produced 464 downstream `NiNode`
+    /// substitutions, and both went to 0 the moment the upstream bug was
+    /// fixed. Worse than the counted case, a skip that happens to land on a
+    /// *plausible* boundary parses "successfully" from the wrong offset and
+    /// is never counted at all.
+    ///
+    /// Vanilla Oblivion is 9,612 / 9,612 clean today, so a corpus gate can
+    /// assert this stays zero and turn that multiplier red instead of
+    /// invisible.
+    pub recovered_by_guess: usize,
     /// Number of dangling `BlockRef`s found by [`Self::validate_refs`]
     /// when [`crate::ParseOptions::validate_links`] was set on the
     /// parse call. Zero for parses that didn't request validation
@@ -132,6 +158,7 @@ impl Default for NifScene {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -378,6 +405,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -400,6 +428,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -419,6 +448,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -446,6 +476,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -471,6 +502,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
@@ -492,6 +524,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),

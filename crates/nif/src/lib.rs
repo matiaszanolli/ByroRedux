@@ -197,7 +197,6 @@ fn is_havok_constraint_stub(type_name: &str) -> bool {
     )
 }
 
-
 /// Parse a NIF file from raw bytes.
 ///
 /// Performs all three phases: parse header → parse blocks → build scene.
@@ -221,6 +220,7 @@ struct DispatchedBlocks {
     truncated: bool,
     dropped_block_count: usize,
     recovered_blocks: usize,
+    recovered_by_guess: usize,
     drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
     stubbed_drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
 }
@@ -281,6 +281,11 @@ fn dispatch_blocks(
     // scene flagged as clean and hid under-consuming parser bugs like
     // #546. See #568.
     let mut recovered_blocks: usize = 0;
+    // #3926 — the subset of `recovered_blocks` recovered by an *inferred*
+    // skip distance (median size cache / `oblivion_skip_sizes`) rather than
+    // one the file declares. See `NifScene::recovered_by_guess` for why the
+    // two are counted apart.
+    let mut recovered_by_guess: usize = 0;
 
     // Per-block-type recovery counters. Bumped every time the
     // block_size-driven `Err` recovery fires, the runtime size cache
@@ -627,25 +632,65 @@ fn dispatch_blocks(
                         let mut sorted = sizes.clone();
                         sorted.sort_unstable();
                         let median_size = sorted[sorted.len() / 2];
-                        stream.set_position(start_pos);
-                        if stream.skip(median_size as u64).is_ok() {
-                            log::info!(
-                                "Block {} '{}' (offset {}): skipped {} bytes via \
-                                 runtime size cache (median of {} prior parses; was: {})",
+                        // #3926 — the one plausibility check available at this
+                        // point that is a *fact* rather than a tuned bound.
+                        //
+                        // Two independent measurements of this block's length
+                        // are in hand: `consumed`, the bytes its own parser
+                        // read as this block's fields before erroring, and
+                        // `median_size`, the length prior instances of the
+                        // same type took in the same file. When the median is
+                        // the smaller of the two they contradict each other —
+                        // skipping to `start_pos + median_size` would land
+                        // *inside* a region the parser already walked as this
+                        // block's own data, so the skip is misaligned by
+                        // construction rather than merely uncertain.
+                        //
+                        // Rejecting falls through to truncation, which loses
+                        // this file's tail. That is the deliberate trade:
+                        // truncation is loud, counted (`dropped_block_count`)
+                        // and red on the #3919 clean-rate floor, whereas a
+                        // known-misaligned skip is silent and multiplies (see
+                        // `NifScene::recovered_by_guess`). No factor, ratio or
+                        // tolerance is invented here — only the case where the
+                        // two numbers provably disagree is refused, so a
+                        // variable-size type whose median is merely an
+                        // estimate still recovers exactly as it did before.
+                        if (median_size as u64) < consumed {
+                            log::warn!(
+                                "Block {} '{}' (offset {}): declining runtime-size-cache \
+                                 recovery — median of {} prior parses is {} bytes but the \
+                                 failed parse already consumed {}; the skip would land \
+                                 inside this block (#3926)",
                                 i,
                                 type_name,
                                 start_pos,
-                                median_size,
                                 sizes.len(),
-                                e
+                                median_size,
+                                consumed,
                             );
-                            blocks.push(Box::new(blocks::NiUnknown {
-                                type_name: Arc::clone(&type_name_arc),
-                                data: Vec::new(),
-                            }));
-                            recovered_blocks += 1;
-                            bump_counter(&mut recovered_by_type, type_name);
-                            continue;
+                        } else {
+                            stream.set_position(start_pos);
+                            if stream.skip(median_size as u64).is_ok() {
+                                log::info!(
+                                    "Block {} '{}' (offset {}): skipped {} bytes via \
+                                     runtime size cache (median of {} prior parses; was: {})",
+                                    i,
+                                    type_name,
+                                    start_pos,
+                                    median_size,
+                                    sizes.len(),
+                                    e
+                                );
+                                blocks.push(Box::new(blocks::NiUnknown {
+                                    type_name: Arc::clone(&type_name_arc),
+                                    data: Vec::new(),
+                                }));
+                                recovered_blocks += 1;
+                                recovered_by_guess += 1;
+                                bump_counter(&mut recovered_by_type, type_name);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -669,6 +714,11 @@ fn dispatch_blocks(
                             data: Vec::new(),
                         }));
                         recovered_blocks += 1;
+                        // #3926 — a caller-registered constant is still a
+                        // distance this file never declared, so it carries the
+                        // same misalignment risk as the median and is counted
+                        // in the same bucket.
+                        recovered_by_guess += 1;
                         bump_counter(&mut recovered_by_type, type_name);
                         continue;
                     }
@@ -752,6 +802,7 @@ fn dispatch_blocks(
         truncated,
         dropped_block_count,
         recovered_blocks,
+        recovered_by_guess,
         drift_histogram,
         stubbed_drift_histogram,
     })
@@ -770,6 +821,7 @@ fn finalize_scene(
         truncated,
         dropped_block_count,
         recovered_blocks,
+        recovered_by_guess,
         drift_histogram,
         stubbed_drift_histogram,
     } = dispatched;
@@ -828,6 +880,7 @@ fn finalize_scene(
         truncated,
         dropped_block_count,
         recovered_blocks,
+        recovered_by_guess,
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
         stubbed_drift_histogram: scene_stubbed_drift_histogram,
