@@ -59,6 +59,7 @@ pub(crate) fn build_static_object_from_subs(
     let mut addon_dnam: Option<(u16, u16)> = None;
     let mut has_script = false;
     let mut script_instance = None;
+    let mut script_form_id: u32 = 0;
     let mut xpwr_form_id: Option<u32> = None;
 
     for sub in subs {
@@ -94,6 +95,19 @@ pub(crate) fn build_static_object_from_subs(
                     super::super::records::script_instance::ScriptInstanceData::parse_with_remap(
                         &sub.data, remap,
                     ),
+                );
+            }
+            // #3941 — the `SCRI` sibling of the `VMAD` arm above. Oblivion /
+            // FO3 / FNV attach ObScript by external SCPT reference rather than
+            // by inline Papyrus, and this family (DOOR / FURN / LIGH / TACT /
+            // FLOR) routes here rather than to a typed map, so without this
+            // arm the form id was simply dropped. Remapped like every other
+            // FormID the builder captures — the raw value is master-local.
+            b"SCRI" if sub.data.len() >= 4 => {
+                has_script = true;
+                script_form_id = super::super::records::common::remap_fid(
+                    crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default(),
+                    remap,
                 );
             }
             b"DATA" if is_ligh && sub.data.len() >= 12 => {
@@ -325,6 +339,7 @@ pub(crate) fn build_static_object_from_subs(
             addon_data,
             has_script,
             script_instance,
+            script_form_id,
             visible_when_distant,
         })
     } else {
@@ -656,6 +671,10 @@ fn parse_scol_group_inner(
                         // presence (out of this issue's scope; no vanilla
                         // SCOL carries one). Not the same gap as STAT/etc.
                         script_instance: None,
+                        // #3941 — SCOL / PKIN / MOVS are Skyrim+ / FO4-era
+                        // record types; `SCRI` is the Oblivion / FO3 / FNV
+                        // ObScript attachment and never appears on them.
+                        script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
                     },
                 );
@@ -732,6 +751,10 @@ fn parse_pkin_group_inner(
                         addon_data: None,
                         has_script: false,
                         script_instance: None,
+                        // #3941 — SCOL / PKIN / MOVS are Skyrim+ / FO4-era
+                        // record types; `SCRI` is the Oblivion / FO3 / FNV
+                        // ObScript attachment and never appears on them.
+                        script_form_id: 0,
                         // Nominal expansion-trigger entry (empty model_path);
                         // the flag rides the real PKIN header for completeness,
                         // though the synthetic child placements are what render.
@@ -815,6 +838,10 @@ fn parse_movs_group_inner(
                         // presence (out of this issue's scope; vanilla
                         // Fallout4.esm ships zero MOVS records).
                         script_instance: None,
+                        // #3941 — SCOL / PKIN / MOVS are Skyrim+ / FO4-era
+                        // record types; `SCRI` is the Oblivion / FO3 / FNV
+                        // ObScript attachment and never appears on them.
+                        script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
                     },
                 );

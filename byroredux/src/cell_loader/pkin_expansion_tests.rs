@@ -292,6 +292,9 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
             addon_data: None,
             has_script: false,
             script_instance: None,
+            // #3941 — PKIN / SCOL are Skyrim+/FO4-era types; `SCRI` is the
+            // Oblivion / FO3 / FNV ObScript attachment and never appears.
+            script_form_id: 0,
             visible_when_distant: false,
         },
     );

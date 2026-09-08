@@ -733,12 +733,13 @@ impl EsmIndex {
     /// `base_form_id` isn't found OR the matched record has
     /// `script_form_id == 0` (the "no script attached" sentinel).
     ///
+    /// #3941 closed the DOOR / FURN / LIGH / TACT / FLOR gap that used to
+    /// be listed here: rather than lifting that family into typed maps,
+    /// `StaticObject` gained a `script_form_id` and `cells.statics` gained
+    /// an arm below. 560 scripted base records across the three ObScript
+    /// games (174 FNV, 202 FO3, 184 Oblivion) reach the lane as a result.
+    ///
     /// **Coverage gaps to close later:**
-    /// - DOOR / LIGH / FURN / etc. — these currently land in
-    ///   `cells.statics` (bulk MODL catch-all), not typed maps, and
-    ///   the static record doesn't carry `script_form_id`. Lifting
-    ///   them into typed maps (with the SCRI field) is sibling work
-    ///   tracked alongside M47.0.
     /// - Skyrim+ VMAD-attached scripts — the per-instance script
     ///   override mechanism. Decoded by M47.2, not by this lookup.
     ///
@@ -775,6 +776,16 @@ impl EsmIndex {
             return nonzero(r.script_form_id);
         }
         if let Some(r) = self.creatures.get(&base_form_id) {
+            return nonzero(r.script_form_id);
+        }
+        // #3941 — the statics arm, deliberately LAST. `cells.statics` is the
+        // bulk MODL catch-all: every label above also populates it for visual
+        // placement (see `build_static_object_from_subs`'s doc), so a record
+        // in a typed map is *also* in here. Walking it first would shadow the
+        // typed maps with a duplicate whose `script_form_id` the typed parser
+        // may have resolved differently. Same ordering rationale as #2663's
+        // VMAD sibling.
+        if let Some(r) = self.cells.statics.get(&base_form_id) {
             return nonzero(r.script_form_id);
         }
         None
@@ -1638,6 +1649,9 @@ mod tests {
                         properties: Vec::new(),
                     }],
                 }),
+                // #3941 — VMAD (Skyrim+) and SCRI (pre-Skyrim) are exclusive;
+                // this fixture exercises the VMAD lane.
+                script_form_id: 0,
                 visible_when_distant: false,
             },
         );
@@ -1668,10 +1682,88 @@ mod tests {
                 addon_data: None,
                 has_script: false,
                 script_instance: None,
+                script_form_id: 0,
                 visible_when_distant: false,
             },
         );
         assert!(idx.base_record_script_instance(PLAIN).is_none());
+    }
+
+    /// #3941 — a `cells.statics` entry carrying the legacy `SCRI` form id
+    /// must reach `base_record_script`, the sibling of the VMAD case above.
+    ///
+    /// Before this arm existed, DOOR / FURN / LIGH / TACT / FLOR base
+    /// records — the whole MODL-only world-placement family on Oblivion,
+    /// FO3 and FNV — landed in `cells.statics`, which carried no
+    /// `script_form_id` at all. `base_record_script` returned `None` for
+    /// every one of them, so `attach_scpt_script`'s two real consumers
+    /// (`record_compatibility_report` and `attach_legacy_obscript_program`)
+    /// were silently skipped with no log at any level. Raw sub-record
+    /// census of the installed masters: 174 unreachable on FalloutNV.esm,
+    /// 202 on Fallout3.esm, 184 on Oblivion.esm.
+    #[test]
+    fn base_record_script_finds_a_statics_family_scri_script() {
+        use crate::esm::cell::StaticObject;
+
+        const DOOR: u32 = 0x0002_4010;
+        const SCPT: u32 = 0x0002_4011;
+
+        let mut idx = EsmIndex::default();
+        idx.cells.statics.insert(
+            DOOR,
+            StaticObject {
+                form_id: DOOR,
+                editor_id: "NVDoorScripted01".to_string(),
+                model_path: "architecture\\door01.nif".to_string(),
+                record_type: crate::record::RecordType::DOOR,
+                light_data: None,
+                addon_data: None,
+                has_script: true,
+                script_instance: None,
+                script_form_id: SCPT,
+                visible_when_distant: false,
+            },
+        );
+
+        assert_eq!(
+            idx.base_record_script(DOOR),
+            Some(SCPT),
+            "a scripted DOOR/FURN/LIGH/TACT/FLOR base record must reach the \
+             legacy ObScript lane (#3941)"
+        );
+    }
+
+    /// #3941 companion — the `0` sentinel still means "no script" on the
+    /// statics arm, exactly as it does on every arm above it. Without this
+    /// the new arm would hand `attach_scpt_script` a form id of 0 and turn
+    /// an unscripted static into a failed SCPT lookup.
+    #[test]
+    fn base_record_script_declines_a_static_with_zero_scri() {
+        use crate::esm::cell::StaticObject;
+
+        const PLAIN_DOOR: u32 = 0x0002_4012;
+
+        let mut idx = EsmIndex::default();
+        idx.cells.statics.insert(
+            PLAIN_DOOR,
+            StaticObject {
+                form_id: PLAIN_DOOR,
+                editor_id: "NVDoorPlain01".to_string(),
+                model_path: "architecture\\door02.nif".to_string(),
+                record_type: crate::record::RecordType::DOOR,
+                light_data: None,
+                addon_data: None,
+                has_script: false,
+                script_instance: None,
+                script_form_id: 0,
+                visible_when_distant: false,
+            },
+        );
+
+        assert!(
+            idx.base_record_script(PLAIN_DOOR).is_none(),
+            "script_form_id == 0 is the no-script sentinel, not a SCPT key (#3941)"
+        );
     }
 
     /// Regression for #2663 (SCR-D7-NEW11-02) — TERM is parsed through

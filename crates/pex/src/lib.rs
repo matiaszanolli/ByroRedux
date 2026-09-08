@@ -782,4 +782,49 @@ mod tests {
         bytes.push(3); // major only, then nothing
         assert!(matches!(parse(&bytes), Err(PexError::UnexpectedEof { .. })));
     }
+
+    /// #3942 — the "`take` is the single bounds gate" invariant, pinned
+    /// exhaustively instead of by hand.
+    ///
+    /// `rejects_truncation` above pins exactly ONE cut (5 bytes, mid-header),
+    /// so every later reader — the string table, debug info, the function /
+    /// property / state walkers, the var-arg and guard paths — was re-verified
+    /// by reading the code each cycle rather than by a test. Cutting each
+    /// wire-valid builder at every prefix and asserting `parse` errors reaches
+    /// all of them mechanically, across all three dialects (Skyrim LE and BE,
+    /// Starfield-with-guards, and the extender-dependent Skyrim BE sample).
+    ///
+    /// The assertion is deliberately "errors", not "errors with
+    /// `UnexpectedEof`": a truncation can legitimately surface as a different
+    /// variant (a length prefix that now overruns, a bad opcode read out of
+    /// what is left). What must never happen is a truncated file parsing
+    /// SUCCESSFULLY, or panicking — the two failure modes an untrusted-input
+    /// reader cannot have. A panic fails the test by unwinding.
+    #[test]
+    fn every_prefix_of_every_wire_valid_sample_is_rejected() {
+        let samples = [
+            ("skyrim_le", build_sample()),
+            ("skyrim_be", build_sample_skyrim_be()),
+            ("extender_skyrim_be", build_extender_dependent_skyrim_be()),
+            ("starfield_guards", build_sample_starfield_with_guards()),
+        ];
+        for (name, full) in samples {
+            // The full buffer is the control: it must parse.
+            assert!(
+                parse(&full).is_ok(),
+                "{name}: the untruncated sample must parse — otherwise this \
+                 test proves nothing about truncation (#3942)"
+            );
+            for cut in 0..full.len() {
+                let truncated = &full[..cut];
+                assert!(
+                    parse(truncated).is_err(),
+                    "{name}: a {cut}-byte prefix of a {}-byte file parsed \
+                     successfully — `take` is supposed to be the single bounds \
+                     gate on every read (#3942)",
+                    full.len()
+                );
+            }
+        }
+    }
 }

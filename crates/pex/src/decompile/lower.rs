@@ -388,6 +388,24 @@ fn lower_property(
 /// functions become top-level items, named states become `State` items.
 /// Synthetic (`::`-prefixed) variables — temps and property backing
 /// stores — are dropped (they're not source-level declarations).
+/// Is `state` the object's auto (default) state?
+///
+/// The single source of truth for that question. `88e7dbfc` (#3786) made the
+/// comparison case-INSENSITIVE here — Papyrus identifiers are case-insensitive
+/// and the compiler's own `.pex` output does not guarantee that a state's
+/// `name` and the object's `auto_state_name` agree in case — but the
+/// `pex_corpus_smoke` harness kept a hand-copied `==`. A mismatched-casing auto
+/// state therefore made the #3017 shape check disagree with `decompile_script`
+/// on the very input #3786 fixed, reporting a spurious
+/// `decompiled_shape_mismatch` and sending triage at the decompiler (#3943).
+///
+/// Exported so the harness calls this rather than re-spelling the rule; the
+/// predicate has now drifted once, so a second copy is the thing to prevent,
+/// not the specific comparison operator.
+pub fn is_auto_state(object: &crate::model::Object, state: &crate::model::State) -> bool {
+    state.name.eq_ignore_ascii_case(&object.auto_state_name)
+}
+
 pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     let object = pex.main_object().ok_or(DecompileError::EmptyPex)?;
     let mut body: Vec<Spanned<ScriptItem>> = Vec::new();
@@ -421,7 +439,7 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
         // named state rather than corrupting anything — but it's still the
         // one inconsistent comparison, and identifiers are untrusted `.pex`
         // string-table data.
-        if state.name.eq_ignore_ascii_case(&object.auto_state_name) {
+        if is_auto_state(object, state) {
             // Auto/default state: its callables live at script scope.
             for f in &state.functions {
                 let item = handler_to_script_item(build_handler(object, f, &f.name)?);
@@ -539,6 +557,42 @@ mod tests {
         assert_eq!(e.params[0].name.node.0, "akActivator");
         // body: Foo() as an expression statement.
         assert!(matches!(e.body[0].node, Stmt::ExprStmt(_)));
+    }
+
+    /// #3943 — `is_auto_state` is the one spelling of the auto-state rule.
+    ///
+    /// #3786 fixed the comparison here; the `pex_corpus_smoke` harness kept a
+    /// hand-copied `==` and so disagreed with `decompile_script` on exactly
+    /// the input #3786 fixed, reporting a spurious `decompiled_shape_mismatch`.
+    /// Both callers now go through this function. The predicate has already
+    /// drifted once, so the property worth pinning is case-insensitivity
+    /// itself, not any particular call site.
+    #[test]
+    fn is_auto_state_ignores_identifier_casing() {
+        use crate::model::{Object, State};
+        let object = Object {
+            auto_state_name: "Waiting".into(),
+            ..Default::default()
+        };
+        for spelling in ["Waiting", "waiting", "WAITING", "WaItInG"] {
+            let state = State {
+                name: spelling.into(),
+                ..Default::default()
+            };
+            assert!(
+                is_auto_state(&object, &state),
+                "`{spelling}` must match auto_state_name `Waiting` — Papyrus \
+                 identifiers are case-insensitive (#3943)"
+            );
+        }
+        let other = State {
+            name: "Running".into(),
+            ..Default::default()
+        };
+        assert!(
+            !is_auto_state(&object, &other),
+            "a genuinely different state name must not match (#3943)"
+        );
     }
 
     #[test]

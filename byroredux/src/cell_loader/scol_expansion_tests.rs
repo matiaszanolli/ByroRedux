@@ -22,6 +22,9 @@ fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
         addon_data: None,
         has_script: false,
         script_instance: None,
+        // #3941 — PKIN / SCOL are Skyrim+/FO4-era types; `SCRI` is the
+        // Oblivion / FO3 / FNV ObScript attachment and never appears.
+        script_form_id: 0,
         visible_when_distant: false,
     }
 }

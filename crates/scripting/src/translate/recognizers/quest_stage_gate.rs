@@ -149,14 +149,39 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
         PropertyValue::Int32(value) => Some(*value),
         _ => None,
     };
-    let bool_property = |name: &str, default: bool| {
-        instance
-            .property(name)
-            .and_then(|property| match &property.value {
-                PropertyValue::Bool(value) => Some(*value),
-                _ => None,
-            })
-            .unwrap_or(default)
+    // #3940 — three-case reads for the OPTIONAL properties. `Some(None)` is
+    // "absent", so the caller applies its own default; `Some(Some(v))` is
+    // "present and correctly typed"; `None` is "present but wrong type", which
+    // must DECLINE rather than collapse onto the default.
+    //
+    // The required properties above (`stage`, `myQuest`, `TriggerActor`) need
+    // no such split: declining is already the right answer for both absent and
+    // mistyped, which is what their `?` does. It is only the optional ones that
+    // have a third state to lose, and `.unwrap_or(..)` on a two-case `Option`
+    // is exactly how it gets lost — a mistyped `prereqStageOPT` silently became
+    // "no prerequisite", dropping the `GetStageDone(prereq) == 1` condition so
+    // the trigger fires without its prerequisite; a mistyped `disableWhenDone`
+    // or `onlyOnce` silently became `false`, so it re-fires on every entry.
+    //
+    // Mirrors `vmad_bool` (`two_state_activator.rs`), the crate's canonical
+    // spelling of this contract. Same shape as #2669 / #2023 / #1909.
+    let opt_int_property = |name: &str| -> Option<Option<i32>> {
+        let Some(property) = instance.property(name) else {
+            return Some(None);
+        };
+        match &property.value {
+            PropertyValue::Int32(value) => Some(Some(*value)),
+            _ => None,
+        }
+    };
+    let opt_bool_property = |name: &str| -> Option<Option<bool>> {
+        let Some(property) = instance.property(name) else {
+            return Some(None);
+        };
+        match &property.value {
+            PropertyValue::Bool(value) => Some(Some(*value)),
+            _ => None,
+        }
     };
     let object_property = |name: &str| match &instance.property(name)?.value {
         PropertyValue::Object { form_id, alias: -1 } => Some(*form_id),
@@ -166,7 +191,7 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     let owning_quest = object_property("myQuest")?;
     let trigger_actor = object_property("TriggerActor")?;
     let target_stage = u16::try_from(int_property("stage")?).ok()?;
-    let prerequisite = int_property("prereqStageOPT").unwrap_or(-1);
+    let prerequisite = opt_int_property("prereqStageOPT")?.unwrap_or(-1);
     let conditions = if prerequisite >= 0 {
         vec![Condition {
             function_index: 59,
@@ -188,8 +213,8 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
         conditions,
         target_stage,
         activator_gate: ActivatorGate::BaseForm(trigger_actor),
-        disable_after_advance: bool_property("disableWhenDone", false)
-            || bool_property("onlyOnce", false),
+        disable_after_advance: opt_bool_property("disableWhenDone")?.unwrap_or(false)
+            || opt_bool_property("onlyOnce")?.unwrap_or(false),
     };
     Some(Recognized::new(
         format!("quest_stage_gate@{}", script.name.node),
@@ -587,6 +612,123 @@ mod tests {
             ActivatorGate::BaseForm(0x654E5)
         ));
         assert!(component.disable_after_advance);
+    }
+
+    /// #3940 — build the `defaultSetStageTRIGSpecificActor` VMAD shape with
+    /// the three required properties well-typed, then let the caller override
+    /// or omit one optional property. Used by the pair of tests below.
+    fn specific_actor_instance(optional: Option<(&str, PropertyValue)>) -> ScriptInstanceData {
+        let mut properties = vec![
+            ScriptProperty {
+                name: "myQuest".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: 0x3372B,
+                    alias: -1,
+                },
+            },
+            ScriptProperty {
+                name: "TriggerActor".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: 0x654E5,
+                    alias: -1,
+                },
+            },
+            ScriptProperty {
+                name: "stage".into(),
+                status: 1,
+                value: PropertyValue::Int32(22),
+            },
+        ];
+        if let Some((name, value)) = optional {
+            properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value,
+            });
+        }
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "defaultSetStageTRIGSpecificActor".into(),
+                status: 1,
+                properties,
+            }],
+        }
+    }
+
+    fn specific_actor_source() -> byroredux_papyrus::ast::Script {
+        let src = "ScriptName defaultSetStageTRIGSpecificActor extends ObjectReference\n\
+                   Event OnTriggerEnter(ObjectReference triggerRef)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("specific actor trigger parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        script
+    }
+
+    /// #3940 — a present-but-wrong-typed OPTIONAL property must make the
+    /// recognizer DECLINE, not silently collapse onto its default.
+    ///
+    /// Before the fix, `int_property("prereqStageOPT").unwrap_or(-1)` and
+    /// `bool_property(name, false)` mapped "present but wrong type" onto the
+    /// same value as "absent". The consequences are not cosmetic: a mistyped
+    /// `prereqStageOPT` drops the `GetStageDone(prereq) == 1` condition
+    /// entirely, so the trigger advances the quest without its prerequisite;
+    /// a mistyped `disableWhenDone` / `onlyOnce` leaves
+    /// `disable_after_advance` false, so the trigger re-fires on every entry.
+    ///
+    /// This is the two-case collapse #2669 fixed in `two_state_activator.rs`
+    /// and #2023 / #1909 fixed in their own recognizers.
+    #[test]
+    fn declines_specific_actor_trigger_on_mistyped_optional_property() {
+        // Each optional property, given a value of the wrong PropertyValue
+        // variant. `prereqStageOPT` wants Int32, the other two want Bool.
+        let mistyped = [
+            ("prereqStageOPT", PropertyValue::Bool(true)),
+            ("disableWhenDone", PropertyValue::Int32(1)),
+            ("onlyOnce", PropertyValue::Int32(1)),
+        ];
+        let script = specific_actor_source();
+        for (name, value) in mistyped {
+            let instance = specific_actor_instance(Some((name, value)));
+            let source = ScriptSource::PapyrusSource(&script);
+            assert!(
+                translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+                "a present-but-wrong-typed `{name}` must decline, not collapse onto \
+                 its default (#3940)"
+            );
+        }
+    }
+
+    /// #3940 companion — the fix must not turn ABSENCE into a decline. An
+    /// omitted optional property is legitimate and keeps its default: no
+    /// prerequisite condition, and `disable_after_advance == false`.
+    #[test]
+    fn absent_optional_properties_still_recognize_with_defaults() {
+        let script = specific_actor_source();
+        let instance = specific_actor_instance(None);
+        let source = ScriptSource::PapyrusSource(&script);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("omitting every optional property must still recognize (#3940)");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let component = world
+            .get::<QuestAdvanceOnActivate>(entity)
+            .expect("quest stage trigger component");
+        assert_eq!(component.target_stage, 22);
+        assert!(
+            component.conditions.is_empty(),
+            "an absent `prereqStageOPT` means no prerequisite condition"
+        );
+        assert!(
+            !component.disable_after_advance,
+            "absent `disableWhenDone`/`onlyOnce` default to false"
+        );
     }
 
     /// #2186 — the same shape, but the `Quest Property` is alias-bound.

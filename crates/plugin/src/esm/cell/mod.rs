@@ -837,6 +837,20 @@ pub struct StaticObject {
     /// #2189 fixed for the item family. Measured impact: 42 unreachable
     /// scripted base records in `Skyrim.esm`, 442 in `Fallout4.esm`.
     pub script_instance: Option<ScriptInstanceData>,
+    /// The legacy `SCRI` → SCPT form id (Oblivion / FO3 / FNV ObScript), or
+    /// `0` for "no script attached". The pre-Skyrim sibling of
+    /// [`script_instance`](Self::script_instance) above: that field carries
+    /// Skyrim+ inline Papyrus, this one the older external-script reference.
+    ///
+    /// #3941 — before this field existed the same MODL-only world-placement
+    /// family landed in `cells.statics` with no `script_form_id` anywhere on
+    /// the type, so [`crate::esm::records::index::Index::base_record_script`]
+    /// had no map to consult and returned `None` for every one of them. That
+    /// is 560 scripted base records across the three ObScript games (174 FNV,
+    /// 202 FO3, 184 Oblivion by raw sub-record census) reaching neither the
+    /// ObScript attach lane nor the extender-compatibility census — the
+    /// `SCRI` half of exactly the gap #2663 closed for `VMAD`.
+    pub script_form_id: u32,
     /// True when the base record's header carries the **Visible-When-Distant**
     /// / "Has Distant LOD" flag (`0x00010000`,
     /// [`crate::esm::reader::FLAG_VISIBLE_WHEN_DISTANT`], surfaced via
