@@ -425,15 +425,25 @@ overhead that exceeds the traversal saving). Switching back recovered
 
 ### LRU eviction
 
-`AccelerationManager::evict_unused_blas` runs pre-batch and mid-batch
-(triggered at 90% of BLAS budget). Eviction check interval:
+`AccelerationManager::evict_unused_blas` runs at **three** points inside
+`build_blas_batched`: pre-batch, mid-batch (triggered at 90% of BLAS budget),
+and once at the head of the compaction phase (`alloc_compact`, #2927 /
+`PERF-D3-03`). The third passes the exact `total_before + total_after` peak
+rather than `0`, because it is the only site that sees a batch's real
+residency peak — the compaction destinations are allocated while every Phase-1
+original is still live. Eviction check interval:
 `BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. LRU victim = the BLAS
 with the smallest last-used frame tick.
 
 One more call site (#1911 / REN-D1-01), with `pending_bytes = 0` (#1792 —
 it has no in-flight batch context to report on top of): a per-frame call at
-the end of `draw_frame`'s TLAS-build block
-([`draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs)).
+the tail of `draw_frame`'s TLAS-build block, which since `7463204e` ("split
+`draw_frame` into phase helpers") lives in
+[`dispatch_skin_and_cluster.rs`](../../crates/renderer/src/vulkan/context/dispatch_skin_and_cluster.rs),
+not `draw.rs` — the behaviour is unchanged, only the file. Note the split
+separated it from its end-of-frame neighbours: `shrink_tlas_to_fit` and
+`shrink_tlas_scratch_to_fit` **are** still in `draw.rs`, so adjacent work
+described in the same breath now lives in two files (#3997).
 
 #2914 — this paragraph used to name a third site, "a single-shot guard
 inside `build_blas` itself … for the ad-hoc / UI-quad / lazy-upload path".

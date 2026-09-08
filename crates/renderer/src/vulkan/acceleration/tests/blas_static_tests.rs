@@ -461,3 +461,67 @@ mod hot_path_hashing_tests {
         );
     }
 }
+
+/// #3997 — `memory-budget.md`'s eviction census must name the file that
+/// actually holds the per-frame call, and must count all three internal ones.
+///
+/// `7463204e` ("split `draw_frame` into phase helpers") moved the per-frame
+/// `evict_unused_blas` out of `draw.rs` and the doc kept pointing there, while
+/// its sibling claim about `shrink_tlas_to_fit` stayed correct — so the doc
+/// described adjacent end-of-frame work as living in one file when it lives in
+/// two. Separately it said eviction "runs pre-batch and mid-batch", omitting
+/// the compaction-phase call (#2927), which `blas_static.rs`'s own
+/// `evict_unused_blas` doc already counted. The code and the doc disagreed
+/// with each other.
+///
+/// This doc is what an auditor is told to check the code against, so a wrong
+/// file name here becomes a wrong finding on the next sweep — the same
+/// mechanism as #3996.
+#[cfg(test)]
+mod memory_budget_eviction_census_tests {
+    const DOC: &str = include_str!("../../../../../../docs/engine/memory-budget.md");
+    const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
+
+    #[test]
+    fn the_doc_names_the_file_that_holds_the_per_frame_eviction_call() {
+        const OWNER: &str = "dispatch_skin_and_cluster";
+        assert!(
+            include_str!("../../context/dispatch_skin_and_cluster.rs")
+                .contains("evict_unused_blas("),
+            "the per-frame eviction call left {OWNER}.rs — memory-budget.md \
+             points readers there and must be re-pointed with it (#3997)"
+        );
+        assert!(
+            DOC.contains(OWNER),
+            "memory-budget.md does not name {OWNER}, which is where the \
+             per-frame eviction call has lived since 7463204e (#3997)"
+        );
+
+        // The sibling half the doc gets right, and why the split matters: the
+        // two shrink calls really are still in `draw.rs`, so the doc has to
+        // describe two files rather than one.
+        assert!(
+            include_str!("../../context/draw.rs").contains("shrink_tlas_to_fit("),
+            "shrink_tlas_to_fit left draw.rs too — memory-budget.md's \
+             end-of-frame account now needs a third file (#3997)"
+        );
+    }
+
+    #[test]
+    fn the_doc_counts_every_internal_eviction_site() {
+        let sites = BLAS_STATIC_RS.matches("self.evict_unused_blas(").count();
+        assert_eq!(
+            sites, 3,
+            "build_blas_batched's internal eviction-site count changed; \
+             memory-budget.md and `evict_unused_blas`'s own doc both state \
+             three (pre-batch, mid-batch, compaction) and must be updated \
+             together (#3997 / #2927)"
+        );
+        assert!(
+            DOC.contains("**three**") || DOC.contains("at **three** points"),
+            "memory-budget.md must state all three internal eviction sites — \
+             it said \"pre-batch and mid-batch\", omitting the compaction-phase \
+             call that passes the real residency peak (#2927 / #3997)"
+        );
+    }
+}
