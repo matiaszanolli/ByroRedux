@@ -22,8 +22,10 @@ frame times recorded here describe a degraded baseline.
 Phase 3 landed the deterministic jitter/reset state (`FsrTemporalState`), previous
 rigid-instance motion history, the boundary motion adapter + scale, the shared
 `signal_temporal_discontinuity` reset dispatcher (SVGF + TAA + FSR + rigid-history
-clear), the 1×1 `R32_SFLOAT` exposure producer consumed by the composite tonemap,
-and the `DBG_VIZ_MOTION` / `DBG_VIZ_FSR_TEMPORAL` (jitter + reset-bit) debug views.
+clear), the 1×1 `R32_SFLOAT` exposure producer consumed by the presentation
+tone-map (`presentation.frag`, since phase 4 — `composite.frag` has neither an
+`exposure` uniform nor `aces()`), and the `DBG_VIZ_MOTION` /
+`DBG_VIZ_FSR_TEMPORAL` (jitter + reset-bit) debug views.
 
 Phase 4 landed the output-resolution split: a render-resolution scene-composition
 pass, an explicit reconstruction slot in the frame graph, and an
@@ -126,9 +128,18 @@ resolution.
 
 ### 0.2 Current frame graph
 
-The current renderer does not have a standalone path-tracing pass. ReSTIR-DI,
+**This section records the graph as found at exploration time, before any FSR
+phase landed — it is a dated survey, not a description of HEAD.** Phases 3 and 4
+have since moved exposure and ACES out of composite into an output-resolution
+presentation pass, and #2796 moved bloom to run *after* composite rather than
+off the raw pre-TAA HDR. The live order today is composite → bloom → upscale →
+presentation → egui (`context/post_passes.rs::record_post_passes`); §1.2 below
+is the target graph. Read the diagram for the baseline the plan was written
+against.
+
+The renderer did not have a standalone path-tracing pass. ReSTIR-DI,
 ray-query shadows/reflections, and the indirect sample are produced inline by
-the main fragment shader. The actual order is:
+the main fragment shader. The order as found was:
 
 ```mermaid
 flowchart LR

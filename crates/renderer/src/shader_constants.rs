@@ -1542,6 +1542,53 @@ mod tests {
         assert!(src.contains("max(mappedRadiance, vec3(opacity))"));
     }
 
+    /// #4026 — the FSR plan's phase-3 status line attributed the 1×1
+    /// exposure producer to composite's tone-map, contradicted five lines
+    /// later in its own header by phase 4's "presentation pass that owns
+    /// exposure + ACES". A reader chasing an exposure mismatch — the exact
+    /// invariant #2833 covers — was sent to the wrong shader.
+    ///
+    /// Deliberately bidirectional. It fires if the stale attribution comes
+    /// back, and it fires if exposure/ACES ever move back into
+    /// `composite.frag`, which would make the *corrected* sentence the wrong
+    /// one. A one-way ban on the old phrasing would have rotted the same way
+    /// the original did.
+    #[test]
+    fn fsr_plan_attributes_exposure_to_the_shader_that_applies_it() {
+        let plan = include_str!("../../../docs/engine/fsr3-upscaler-integration-plan.md");
+        let composite = include_str!("../shaders/composite.frag");
+        let presentation = include_str!("../shaders/presentation.frag");
+
+        // Ground truth first — the doc sentence is only right while this holds.
+        assert!(
+            presentation.contains("aces(graded * params.exposure)"),
+            "presentation.frag no longer applies exposure inside aces(); the \
+             FSR plan's phase-3 attribution needs re-checking (#4026)",
+        );
+        for absent in ["params.exposure", "aces("] {
+            assert!(
+                !composite.contains(absent),
+                "composite.frag grew `{absent}` — exposure/ACES moved back \
+                 into composite and the FSR plan's phase-3 sentence, which \
+                 now names presentation.frag, has become the stale one (#4026)",
+            );
+        }
+
+        // Needle composed at runtime so this assertion's own source text
+        // cannot satisfy the scan it performs.
+        let stale = format!("consumed by the composite {}", "tonemap");
+        assert!(
+            !plan.contains(&stale),
+            "fsr3-upscaler-integration-plan.md again attributes exposure to \
+             composite; phase 4 moved it to presentation.frag (#4026)",
+        );
+        assert!(
+            plan.contains("exposure producer consumed by the presentation"),
+            "fsr3-upscaler-integration-plan.md must name the live exposure \
+             consumer in its phase-3 status line (#4026)",
+        );
+    }
+
     /// #2045 (TD7-101) — `triangle.frag` must NOT redeclare
     /// `INST_RENDER_LAYER_SHIFT`/`_MASK` (the pre-fix hand-written
     /// names) or `INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` (the generated
