@@ -392,6 +392,43 @@ bool rayHitHasCoverage(
     }
     alpha *= mat.materialAlpha
         * getHitVertexAlpha(instanceIdx, primitiveIdx, barycentrics);
+    // #3986 — the raster path composites up to four NiTexturingProperty decal
+    // overlays alpha-over BEFORE evaluating the alpha test, and this function
+    // did not. Because the composite is alpha-over, the raster alpha is always
+    // >= the un-composited one wherever a slot is bound, so the RT silhouette
+    // was a strict SUBSET of the visible one: shadow, reflection, refraction,
+    // GI and water rays punched through texels the surface covers. Exactly the
+    // divergence `getHitVertexAlpha`'s own docstring names ("alpha-tested
+    // leaves/grates cast a different silhouette from the visible surface").
+    //
+    // Gated so the common path pays four uint compares and nothing else. The
+    // census behind that gate: across Oblivion, FO3, FNV, Skyrim SE and FO4 —
+    // 119,946 files, 368,814 meshes — exactly ZERO bind a decal slot, so no
+    // vanilla mesh reaches the loop at all. The slots are a live mod-facing
+    // path (`NiTexturingProperty::decal_textures` -> `MaterialInfo::decal_maps`
+    // -> `GpuMaterial::decalMap*Index`), which is why the divergence is closed
+    // rather than the feature removed.
+    if (mat.decalMap0Index != 0u || mat.decalMap1Index != 0u
+        || mat.decalMap2Index != 0u || mat.decalMap3Index != 0u) {
+        uint rayDecals[4] = uint[4](
+            mat.decalMap0Index,
+            mat.decalMap1Index,
+            mat.decalMap2Index,
+            mat.decalMap3Index
+        );
+        for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+            uint handle = rayDecals[decalIndex];
+            if (handle == 0u) {
+                continue;
+            }
+            // Explicit LOD: secondary-ray hits have no quad and therefore no
+            // implicit derivatives, the same reason `sampleRayHitBase` takes
+            // one. Level 0 matches the base sample this composites onto.
+            float decalAlpha =
+                textureLod(textures[nonuniformEXT(handle)], uv, 0.0).a;
+            alpha = decalAlpha + alpha * (1.0 - decalAlpha);
+        }
+    }
     if (!alphaComparePass(alpha, mat.alphaThreshold, mat.alphaTestFunc)) {
         return false;
     }

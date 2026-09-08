@@ -369,18 +369,16 @@ void main() {
     //   4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER.
     float aThresh = mat.alphaThreshold;
     if (aThresh > 0.0) {
-        uint aFunc = mat.alphaTestFunc;
-        float a = texColor.a;
-        bool pass = true;
-        if      (aFunc == 1u) pass = (a <  aThresh);        // LESS
-        else if (aFunc == 2u) pass = (abs(a - aThresh) < 0.004); // EQUAL (~1/255)
-        else if (aFunc == 3u) pass = (a <= aThresh);        // LESSEQUAL
-        else if (aFunc == 4u) pass = (a >  aThresh);        // GREATER
-        else if (aFunc == 5u) pass = (abs(a - aThresh) >= 0.004); // NOTEQUAL
-        else if (aFunc == 6u) pass = (a >= aThresh);        // GREATEREQUAL
-        else if (aFunc == 7u) pass = false;                  // NEVER
-        // aFunc == 0 is ALWAYS → pass stays true
-        if (!pass) discard;
+        // #3986 — one definition of the seven-arm table, shared with the
+        // secondary-ray path. This block used to hand-write it a second time
+        // and had already drifted: its EQUAL/NOTEQUAL epsilon was a rounded
+        // three-decimal constant against `alphaComparePass`'s exact
+        // 1.0/255.0, so the two paths disagreed about a band roughly 2% of a
+        // quantisation step wide. Two copies that have drifted once will
+        // drift again.
+        if (!alphaComparePass(texColor.a, aThresh, mat.alphaTestFunc)) {
+            discard;
+        }
     }
 
     // D3D9 fixed-function parity: blend-enabled meshes with

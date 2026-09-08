@@ -1626,6 +1626,66 @@ fn every_shader_struct_is_classified() {
     }
 }
 
+/// #3986 (REN-2026-09-06-D2-01) — the secondary-ray coverage test must build
+/// its alpha from the same chain the raster path does, and both must run the
+/// same comparison table.
+///
+/// `getHitVertexAlpha`'s own docstring states the invariant: "secondary rays
+/// must reconstruct the same barycentric value or alpha-tested leaves/grates
+/// cast a different silhouette from the visible surface." `rayHitHasCoverage`
+/// reproduced every step of the raster chain except the four-slot decal
+/// alpha-over composite. Because that composite only ever raises alpha, the RT
+/// silhouette was a strict SUBSET of the visible one — shadow, reflection,
+/// refraction, GI and water rays punching through covered texels.
+///
+/// The second leg is the comparison table itself. It was hand-written twice
+/// and had already drifted: `triangle.frag` used a rounded `0.004`
+/// EQUAL/NOTEQUAL epsilon where `alphaComparePass` uses an exact `1.0/255.0`.
+/// One definition now, so it cannot drift a second time.
+#[test]
+fn ray_and_raster_coverage_share_one_alpha_chain() {
+    let ray_hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    let coverage = glsl_fn_body(ray_hit, "bool rayHitHasCoverage(");
+    let decals = coverage
+        .find("mat.decalMap0Index")
+        .expect("rayHitHasCoverage must composite the decal slots (#3986)");
+    let compare = coverage
+        .find("alphaComparePass(")
+        .expect("rayHitHasCoverage must still run the shared comparison table");
+    assert!(
+        decals < compare,
+        "the decal composite must run BEFORE the alpha comparison, as the \
+         raster path does — after it, the test sees the un-composited alpha \
+         and the silhouettes diverge exactly as before (#3986)"
+    );
+    assert!(
+        coverage.contains("textureLod("),
+        "the decal samples must use an explicit LOD — a secondary-ray hit has \
+         no quad and therefore no implicit derivatives (#3986)"
+    );
+
+    // One definition of the seven-arm table. The raster path must call the
+    // shared helper, and must not carry its own epsilon.
+    assert!(
+        frag.contains("alphaComparePass(texColor.a, aThresh, mat.alphaTestFunc)"),
+        "triangle.frag must run its per-instance alpha test through \
+         alphaComparePass rather than hand-writing the table (#3986)"
+    );
+    // The hand-written table's signature, not a bare float literal: `0.004`
+    // occurs legitimately elsewhere in this shader (glass optical thickness),
+    // so scanning for the epsilon would fire on unrelated code — and on this
+    // fix's own explanatory comment. `aFunc ==` appears only in the copy.
+    let arm = format!("a{} ==", "Func");
+    assert!(
+        !frag.contains(arm.as_str()),
+        "triangle.frag hand-writes the alpha-comparison arms again — \
+         alphaComparePass is the one definition, and the epsilon is what \
+         drifted last time (#3986)"
+    );
+}
+
 /// Body of a GLSL function, by brace matching from its declaration.
 fn glsl_fn_body<'a>(src: &'a str, decl: &str) -> &'a str {
     let start = src
