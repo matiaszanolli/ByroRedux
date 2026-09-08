@@ -19,6 +19,15 @@ use gpu_allocator::MemoryLocation;
 /// renderer surface needs stencil, the packed format must come back
 /// with separate stencil-layout transitions (VK_KHR_separate_depth_
 /// stencil_layouts, Vulkan 1.2+).
+/// Render-extent VRAM the depth pair holds, per pixel (#3992 / #3993).
+///
+/// `depth_image` and `depth_history_image`, both created by
+/// [`create_depth_resources`] at the render extent, both single-buffered
+/// rather than per-frame-in-flight. [`find_depth_format`] selects
+/// `D32_SFLOAT` and `depth_capture_record_copy` has refused anything else
+/// since #3570, so 4 B/px each.
+pub(crate) const DEPTH_BYTES_PER_PIXEL: u32 = 2 * 4;
+
 pub(super) fn find_depth_format(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,

@@ -2805,6 +2805,10 @@ mod depth_capture;
 mod dispatch_skin_and_cluster;
 mod geometry_pass;
 mod helpers;
+// #3992 — the depth pair's per-pixel cost, re-exported rather than widening
+// the whole module: `screen_scaled_reservation_bytes` bills it from the pass
+// that creates it (`helpers::create_depth_resources`).
+pub(crate) use helpers::DEPTH_BYTES_PER_PIXEL;
 mod init;
 mod post_passes;
 mod render_debug;

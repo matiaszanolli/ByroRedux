@@ -1237,6 +1237,67 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
     let reserved_hd = screen_scaled_reservation_bytes(native(hd), config, 0);
     let reserved_uhd = screen_scaled_reservation_bytes(native(uhd), config, 0);
 
+    // #3992 — an ENUMERATION, not a magnitude floor. The floor below passes
+    // with three terms and with two, which is exactly how the reservation came
+    // to carry 3 of the 11 screen-scaled passes memory-budget.md ledgers (~44%
+    // of the bytes) with a green suite. Subtract the froxel grid and the
+    // output-extent terms, and what remains must equal the render extent times
+    // the sum of every owning pass's own published per-pixel constant — so a
+    // pass added without a term fails here rather than silently shrinking the
+    // coverage ratio.
+    {
+        use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
+        use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
+        use crate::vulkan::composite::COMPOSITE_BYTES_PER_PIXEL;
+        use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
+        use crate::vulkan::frame_upscaler::upscale_output_bytes;
+        use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
+        use crate::vulkan::restir::RESERVOIR_STRIDE;
+        use crate::vulkan::ssao::SSAO_BYTES_PER_PIXEL;
+        use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
+        use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+        use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
+        use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
+
+        // Named here INDEPENDENTLY of the production helper. Deriving both
+        // sides from `render_extent_bytes_per_pixel_x1024` would make this a
+        // tautology that passes with any term dropped — which is the shape of
+        // the guard #3992 is about, so reproducing it here would be a joke at
+        // this test's own expense.
+        let expected_x1024 = (u64::from(SVGF_BYTES_PER_PIXEL)
+            + u64::from(CAUSTIC_BYTES_PER_PIXEL)
+            + u64::from(WATER_BYTES_PER_PIXEL)
+            + u64::from(GBUFFER_BYTES_PER_PIXEL)
+            + u64::from(TAA_BYTES_PER_PIXEL)
+            + u64::from(SSAO_BYTES_PER_PIXEL)
+            + u64::from(COMPOSITE_BYTES_PER_PIXEL)
+            + u64::from(DEPTH_BYTES_PER_PIXEL)
+            + RESERVOIR_STRIDE * MAX_FRAMES_IN_FLIGHT as u64)
+            * 1024
+            + u64::from(BLOOM_BYTES_PER_PIXEL_X1024);
+
+        for extent in [hd, uhd] {
+            let grid = froxel_extent(extent, config);
+            let froxel_bytes = u64::from(grid.width)
+                * u64::from(grid.height)
+                * u64::from(grid.depth)
+                * FROXEL_BYTES_PER_SLOT
+                * MAX_FRAMES_IN_FLIGHT as u64;
+            let pixels = u64::from(extent.width) * u64::from(extent.height);
+            let reserved = screen_scaled_reservation_bytes(native(extent), config, 0);
+            let render_extent_terms = reserved - froxel_bytes - upscale_output_bytes(extent);
+            assert_eq!(
+                render_extent_terms,
+                pixels * expected_x1024 / 1024,
+                "the render-extent half of the reservation at {}x{} is not the \
+                 enumerated per-pass sum — a term was dropped, double-counted, \
+                 or a pass was added to one list and not the other (#3992)",
+                extent.width,
+                extent.height,
+            );
+        }
+    }
+
     // The reservation is real and grows with resolution — the whole reason the
     // budget cannot be a construction-time constant. 4K is 4x the pixels, and
     // the froxel grid scales with them, so the reservation must grow markedly.

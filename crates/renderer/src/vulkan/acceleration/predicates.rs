@@ -9,11 +9,18 @@ use super::constants::{
     BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_JITTER,
     SKINNED_BLAS_REFIT_THRESHOLD, TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
 };
-use crate::vulkan::caustic::CAUSTIC_BYTES_PER_PIXEL;
+use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
+use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
+use crate::vulkan::composite::COMPOSITE_BYTES_PER_PIXEL;
 use crate::vulkan::context::DrawCommand;
+use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
 use crate::vulkan::frame_upscaler::upscale_output_bytes;
+use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
+use crate::vulkan::restir::RESERVOIR_STRIDE;
+use crate::vulkan::ssao::SSAO_BYTES_PER_PIXEL;
 use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
 use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
 use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
 use anyhow::{Context, Result};
@@ -756,6 +763,15 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
 /// complete VRAM census: textures, geometry pools and the swapchain are not
 /// here, because all three are demand-driven or already allocator-visible.
 ///
+/// #3992 completed the render-extent half. It previously carried three of the
+/// eleven screen-scaled passes `memory-budget.md` ledgers — about 44 % of the
+/// bytes — while its own docstring claimed to cover the ones that "dominate
+/// the fixed floor". The largest omission was ReSTIR at 64 B/px, which that
+/// page calls "the largest single VRAM addition of the denoiser overhaul". The
+/// enumeration now lives in [`render_extent_bytes_per_pixel_x1024`], and the
+/// guard on it compares against an independently-written list rather than a
+/// magnitude floor, because a floor passes with any number of terms.
+///
 /// # Two extents, not one (#3988)
 ///
 /// The parameter used to be a bare `render_extent`, and that signature was the
@@ -775,6 +791,30 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
 /// be passed in rather than derived: [`FrameUpscaler::resident_bytes`] already
 /// caches it from the one `memory_usage()` query per swapchain generation.
 /// Zero is the honest reading when there is no SDK context.
+/// Every render-extent pass's own per-pixel cost, summed (#3992).
+///
+/// Enumerated in one place so [`screen_scaled_reservation_bytes`] cannot
+/// silently cover a shrinking fraction of the passes it claims to. Before
+/// #3992 the reservation carried three of the eleven screen-scaled passes
+/// `memory-budget.md` ledgers — about 44 % of the bytes — and the guard on it
+/// only asserted a magnitude floor, which three terms and two terms both pass.
+///
+/// Each term reads the owning pass's published constant, so a pass that
+/// re-sizes itself moves this with it. Bloom is the one pyramid rather than a
+/// flat screen-sized image, hence the 1/1024 scaling.
+pub(super) const fn render_extent_bytes_per_pixel_x1024() -> u64 {
+    let flat = SVGF_BYTES_PER_PIXEL as u64
+        + CAUSTIC_BYTES_PER_PIXEL as u64
+        + WATER_BYTES_PER_PIXEL as u64
+        + GBUFFER_BYTES_PER_PIXEL as u64
+        + TAA_BYTES_PER_PIXEL as u64
+        + SSAO_BYTES_PER_PIXEL as u64
+        + COMPOSITE_BYTES_PER_PIXEL as u64
+        + DEPTH_BYTES_PER_PIXEL as u64
+        + RESERVOIR_STRIDE * MAX_FRAMES_IN_FLIGHT as u64;
+    flat * 1024 + BLOOM_BYTES_PER_PIXEL_X1024 as u64
+}
+
 pub(super) fn screen_scaled_reservation_bytes(
     extents: FrameExtentSet,
     volumetrics: VolumetricsConfig,
@@ -791,8 +831,10 @@ pub(super) fn screen_scaled_reservation_bytes(
         .saturating_mul(MAX_FRAMES_IN_FLIGHT as u64);
 
     froxel_bytes
-        .saturating_add(pixels.saturating_mul(u64::from(SVGF_BYTES_PER_PIXEL)))
-        .saturating_add(pixels.saturating_mul(u64::from(CAUSTIC_BYTES_PER_PIXEL)))
+        // Every render-extent pass, from its own published constant — see
+        // `render_extent_bytes_per_pixel_x1024` for the enumeration and why it
+        // is one list rather than a chain of terms here.
+        .saturating_add(pixels.saturating_mul(render_extent_bytes_per_pixel_x1024()) / 1024)
         // Output-extent terms. `upscale_output_bytes` is the upscaler's own
         // published cost, so a format or frame-in-flight change moves this with
         // it exactly as the three render-extent terms already move.

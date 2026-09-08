@@ -37,6 +37,18 @@ use gpu_allocator::vulkan as vk_alloc;
 /// Octahedral-encoded normal (2 channels). RGBA16_SNORM→RG16_SNORM saves
 /// 50% bandwidth (4B vs 8B/pixel). The fragment shader encodes via
 /// octahedral projection; consumers decode with the inverse. See #275.
+/// Render-extent VRAM this G-buffer holds, per pixel, across all frames in
+/// flight (#3992).
+///
+/// Five 4-byte attachments (normal `R16G16_SNORM`, motion `R16G16_SFLOAT`,
+/// mesh-id `R32_UINT`, raw-indirect and albedo `B10G11R11_UFLOAT_PACK32`) plus
+/// the two 1-byte FSR masks (`R8_UNORM`) = 22 B/px, doubled per frame in
+/// flight. Published so `screen_scaled_reservation_bytes` can bill it from the
+/// owning pass rather than a hand-copied figure, the discipline
+/// `SVGF_BYTES_PER_PIXEL` already sets. `memory-budget.md`'s roll-up row
+/// carries the same 22 B/px x 2 FIF derivation.
+pub const GBUFFER_BYTES_PER_PIXEL: u32 = (5 * 4 + 2 * 1) * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
 /// Stable surface ID for opaque SVGF / TAA disocclusion, and current-frame

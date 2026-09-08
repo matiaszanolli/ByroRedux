@@ -73,6 +73,24 @@ const BLOOM_APPLY_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_apply.co
 /// the upsample chain, not regenerated). 5 levels covers a 32×
 /// blur at the final mip on a 1280×720 input — enough for soft glow
 /// without losing too much fidelity.
+/// Render-extent VRAM the bloom pyramid holds, per pixel of the *render*
+/// extent, across all frames in flight (#3992).
+///
+/// Unlike the flat screen-sized passes this is a pyramid, so the figure is the
+/// geometric sum rather than one image: a half-resolution base, then
+/// [`BLOOM_MIP_COUNT`] down-levels and `BLOOM_MIP_COUNT - 1` up-levels, all
+/// `B10G11R11_UFLOAT_PACK32` (4 B/px), one independent pyramid per frame in
+/// flight (see the module docs for why the FIF split is load-bearing rather
+/// than incidental).
+///
+/// Expressed in 1/1024ths of a full-resolution pixel because the sum is
+/// fractional: down = (1/4)(1 + 1/4 + ... + 1/256) = 341/1024, up =
+/// (1/4)(1 + 1/4 + ... + 1/64) = 340/1024. An analytic approximation of the
+/// integer-rounded per-mip extents, which is the right shape for a reservation
+/// floor — it never over-bills, and the residual is under a kilobyte.
+pub const BLOOM_BYTES_PER_PIXEL_X1024: u32 =
+    (341 + 340) * 4 * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
 pub const BLOOM_MIP_COUNT: usize = 5;
 
 /// RGB11_G11_B10F — half the bandwidth of RGBA16F, alpha not used

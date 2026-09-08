@@ -85,6 +85,16 @@ const CAUSTIC_COLOR_LAYERS: u32 = 3;
 pub(crate) const CAUSTIC_BYTES_PER_PIXEL: u32 =
     4 * CAUSTIC_COLOR_LAYERS * MAX_FRAMES_IN_FLIGHT as u32;
 
+/// The water half of the same "Glass + Water Caustics" ledger row, per pixel
+/// of the render extent, across all frames in flight (#3992).
+///
+/// One `R32_UINT` accumulator layer (`water_caustic.rs`'s `.array_layers(1)`)
+/// per frame in flight. This lived inside this file's own test module until
+/// #3992, where `screen_scaled_reservation_bytes` could not reach it even in
+/// principle — so the BLAS reservation billed the glass half (24 B/px) of a
+/// row headed "Glass + Water" and published as 32 B/px combined.
+pub(crate) const WATER_BYTES_PER_PIXEL: u32 = 4 * MAX_FRAMES_IN_FLIGHT as u32;
+
 /// Decimal MB (matching `memory-budget.md`) this pipeline's accumulators
 /// occupy at `width × height`.
 fn caustic_megabytes(width: u32, height: u32) -> f64 {
@@ -1428,7 +1438,7 @@ mod tests {
     /// same guard #1814 put on the ReSTIR reservoirs.
     #[test]
     fn caustic_bytes_per_pixel_matches_documented_memory_budget() {
-        const WATER_BYTES_PER_PIXEL: u32 = 4 * super::MAX_FRAMES_IN_FLIGHT as u32;
+        use super::WATER_BYTES_PER_PIXEL;
         assert_eq!(CAUSTIC_BYTES_PER_PIXEL, 24);
         assert_eq!(CAUSTIC_BYTES_PER_PIXEL + WATER_BYTES_PER_PIXEL, 32);
 

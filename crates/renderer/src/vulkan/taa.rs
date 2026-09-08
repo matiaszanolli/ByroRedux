@@ -71,6 +71,11 @@ const TAA_COMP_SPV: &[u8] = include_bytes!("../../shaders/taa.comp.spv");
 
 /// History format. RGBA16F matches the HDR render target so no precision
 /// is lost on reprojection. Alpha is always 1.0 and is never read.
+/// Render-extent VRAM the TAA history holds, per pixel, across all frames in
+/// flight (#3992). One `HISTORY_FORMAT` (RGBA16F, 8 B/px) image per frame in
+/// flight; `memory-budget.md`'s TAA row publishes the same figure.
+pub const TAA_BYTES_PER_PIXEL: u32 = 8 * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
 const HISTORY_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 #[repr(C)]

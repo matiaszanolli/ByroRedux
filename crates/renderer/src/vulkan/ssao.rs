@@ -38,6 +38,10 @@ pub(crate) struct SsaoParams {
 // padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for SsaoParams {}
 
+/// Render-extent VRAM the AO target holds, per pixel, across all frames in
+/// flight (#3992). One `R8_UNORM` image per frame in flight.
+pub const SSAO_BYTES_PER_PIXEL: u32 = super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
 pub struct SsaoPipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
