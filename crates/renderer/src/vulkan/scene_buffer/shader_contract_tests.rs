@@ -1235,6 +1235,342 @@ fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
 /// Normalize an identifier so snake_case and camelCase spellings of the
 /// same field collapse to one key: strip every `_`, lowercase the rest.
 /// `emissive_mult` and `emissiveMult` both → `emissivemult`.
+/// #3982 (REN-2026-09-06-D16-01) — the three name-diverging GLSL↔Rust mirrors
+/// that had no lockstep coverage at all.
+///
+/// `shader_sources_declaring` finds mirrors by literal declaration string
+/// (`"struct GpuInstance"`, …), so a GLSL struct that mirrors a Rust struct
+/// under a *different* name is invisible to it. #3829 was that failure:
+/// `GpuBoundaryInstance` ran 13 days at a 128 B stride against a 160 B
+/// `GpuInstance`, green suite throughout, because it wore its own name. Its
+/// fix guarded that one struct. `fa5c4191`'s commit message even records
+/// seeing `FogClusterEntry` and `CombustionLightMoment` as the same shape —
+/// verified in sync once, then not guarded — and `ClusterEntry`, which has
+/// **three** GLSL copies, was not part of even that check.
+///
+/// `CombustionLightMoment` needs the field-ORDER leg, not just a stride: the
+/// shader writes by name (`atomicAdd(combustionLightMoments[b].weighted_x, …)`)
+/// while `decode_combustion_light_moment` decodes positionally by word index,
+/// so a GLSL-side reorder compiles clean, stays 32 B, and silently swaps a
+/// luma-weighted centroid for a radiant channel.
+#[test]
+fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
+    let volumetrics_comp = include_str!("../../../shaders/volumetrics_inject.comp");
+    let cluster_cull = include_str!("../../../shaders/cluster_cull.comp");
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let volumetrics_rs = include_str!("../volumetrics.rs");
+    let compute_rs = include_str!("../compute.rs");
+
+    for (label, glsl_src, glsl_decl, rust_src, rust_decl) in [
+        // Three GLSL copies against one Rust struct — comparing each to the
+        // same reference also proves the three agree with each other, which is
+        // the multi-copy shape `GpuInstance` and `GpuLight` each already have
+        // a test for.
+        (
+            "ClusterEntry (cluster_cull.comp, the writer)",
+            cluster_cull,
+            "struct ClusterEntry",
+            compute_rs,
+            "struct ClusterEntry",
+        ),
+        (
+            "ClusterEntry (bindings.glsl, the fragment reader)",
+            bindings,
+            "struct ClusterEntry",
+            compute_rs,
+            "struct ClusterEntry",
+        ),
+        (
+            "ClusterEntry (volumetrics_inject.comp, the fog reader)",
+            volumetrics_comp,
+            "struct ClusterEntry",
+            compute_rs,
+            "struct ClusterEntry",
+        ),
+        (
+            "FogClusterEntry",
+            volumetrics_comp,
+            "struct FogClusterEntry",
+            volumetrics_rs,
+            "struct GpuFogClusterEntry",
+        ),
+        (
+            "CombustionLightMoment",
+            volumetrics_comp,
+            "struct CombustionLightMoment",
+            volumetrics_rs,
+            "struct GpuCombustionLightMoment",
+        ),
+    ] {
+        let glsl = parse_glsl_struct_fields_typed(glsl_src, glsl_decl);
+        let rust = parse_rust_struct_fields_typed(rust_src, rust_decl);
+        assert!(
+            !glsl.is_empty() && !rust.is_empty(),
+            "{label}: one side parsed to zero fields — the declaration moved \
+             or was renamed, so this guard is checking nothing (#3982)"
+        );
+        assert_eq!(
+            glsl.len(),
+            rust.len(),
+            "{label}: {} GLSL fields vs {} Rust fields (#3982)",
+            glsl.len(),
+            rust.len()
+        );
+        // Both parsers return `(type, name)`.
+        for (i, ((glsl_ty, glsl_name), (rust_ty, rust_name))) in
+            glsl.iter().zip(rust.iter()).enumerate()
+        {
+            assert_eq!(
+                normalize_ident(glsl_name),
+                normalize_ident(rust_name),
+                "{label}: field {i} is `{glsl_name}` in GLSL but `{rust_name}` in \
+                 Rust — order or naming drifted (#3982)"
+            );
+            assert!(
+                rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
+                "{label}: field `{glsl_name}` is `{glsl_ty}` in GLSL but \
+                 `{rust_ty}` in Rust (#3982)"
+            );
+        }
+    }
+
+    // The stride leg, against the sizes the Rust side asserts for itself.
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            volumetrics_comp,
+            "struct CombustionLightMoment"
+        )),
+        32,
+        "CombustionLightMoment's std430 stride left 32 B — \
+         `combustion_light_moment_abi_is_eight_std430_words` pins the Rust \
+         side at 32 and only the Rust side (#3982)"
+    );
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            volumetrics_comp,
+            "struct FogClusterEntry"
+        )),
+        8,
+        "FogClusterEntry's std430 stride left 8 B — a wrong `count` decode is \
+         what makes a stale cluster live under the #3834 partial-upload \
+         contract (#3982)"
+    );
+}
+
+/// How each GLSL struct relates to the Rust tree. See
+/// [`every_shader_struct_is_classified`].
+enum MirrorClass {
+    /// A Rust counterpart exists and a named test compares the two.
+    Guarded(&'static str),
+    /// A Rust counterpart exists, but no field-level comparison yet. Carries
+    /// the specific blocker, not a shrug.
+    MirroredPendingGuard(&'static str),
+    /// No Rust counterpart — a GLSL-local working type.
+    ShaderLocal,
+}
+
+/// #3982 step 2 — close the *discovery* gap, so a name-diverging mirror
+/// cannot appear unnoticed the way five of them already did.
+///
+/// The hand-written `SOURCES` tables and `shader_sources_declaring` between
+/// them only ever cover structs someone thought to name. This walks every
+/// `struct` declared under `crates/renderer/shaders/` and requires each one to
+/// be classified — which converts "someone remembered" into "someone had to
+/// decide", the only version of this guard that survives the next struct.
+///
+/// The buckets are load-bearing, not labels: a `Guarded` entry must name a
+/// test that still exists, and a `ShaderLocal` entry must really have no Rust
+/// counterpart. That second check is a heuristic — it looks for a Rust
+/// declaration of `<Name>` or `Gpu<Name>`, which is the naming convention this
+/// tree actually uses — so it proves the common case and not every case.
+#[test]
+fn every_shader_struct_is_classified() {
+    use MirrorClass::*;
+    const CLASSIFIED: &[(&str, MirrorClass)] = &[
+        (
+            "GpuInstance",
+            Guarded("gpu_instance_glsl_copies_stay_in_lockstep"),
+        ),
+        (
+            "GpuLight",
+            Guarded("gpu_light_glsl_copies_stay_in_lockstep"),
+        ),
+        (
+            "GpuMaterial",
+            Guarded("gpu_material_glsl_field_order_matches_rust_struct"),
+        ),
+        (
+            "GpuTerrainTile",
+            Guarded("gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep"),
+        ),
+        (
+            "WaterParams",
+            Guarded("gpu_water_params_rust_and_glsl_copies_stay_in_lockstep"),
+        ),
+        (
+            "GpuFogVolume",
+            Guarded("gpu_fog_volume_glsl_field_order_matches_rust_struct"),
+        ),
+        (
+            "GpuBoundaryInstance",
+            Guarded("gpu_boundary_instance_stride_matches_gpu_instance"),
+        ),
+        (
+            "ClusterEntry",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "FogClusterEntry",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "CombustionLightMoment",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        // Found by this very walk, after #3982 was filed — the ground-cover
+        // stratum (#4054-#4058) landed five more name-diverging mirrors. They
+        // are NOT guarded: each Rust side carries explicit `pad*` fields that
+        // the GLSL side leaves to std430's implicit padding, so the
+        // field-name-and-order comparator above reports a length mismatch on
+        // structs that are actually in sync. Guarding them needs a
+        // padding-aware comparison, which is its own piece of work.
+        (
+            "GroundCoverCell",
+            MirroredPendingGuard("GpuGroundCoverCell pads explicitly (pad0, pad1)"),
+        ),
+        (
+            "GroundCoverChunk",
+            MirroredPendingGuard("sibling of GroundCoverCell"),
+        ),
+        (
+            "GroundCoverSpecies",
+            MirroredPendingGuard("sibling of GroundCoverCell"),
+        ),
+        (
+            "BenchCell",
+            MirroredPendingGuard("GpuBenchCell, groundcover_bench.rs"),
+        ),
+        (
+            "BenchChunk",
+            MirroredPendingGuard("GpuBenchChunk, groundcover_bench.rs"),
+        ),
+        // Rust holds a byte stride (`RESERVOIR_BYTES`), not a mirrored struct.
+        (
+            "Reservoir",
+            MirroredPendingGuard("Rust side is a stride constant, not a struct"),
+        ),
+        ("GroundCoverFactors", ShaderLocal),
+        ("GroundCoverBlade", ShaderLocal),
+        ("GcDrawIndirect", ShaderLocal),
+        ("TerrainSample", ShaderLocal),
+        ("LocalMedium", ShaderLocal),
+        ("DisneyDiffuseSplit", ShaderLocal),
+        ("CombustionDifferential", ShaderLocal),
+    ];
+
+    // ---- the walk
+    let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut declared: Vec<String> = Vec::new();
+    let mut stack = vec![shaders.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("shader dir readable") {
+            let path = entry.expect("shader dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("vert" | "frag" | "comp" | "glsl")
+            ) {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in src.lines() {
+                if let Some(rest) = line.strip_prefix("struct ") {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() && !declared.contains(&name) {
+                        declared.push(name);
+                    }
+                }
+            }
+        }
+    }
+    declared.sort();
+
+    let mut listed: Vec<String> = CLASSIFIED.iter().map(|(n, _)| (*n).to_string()).collect();
+    listed.sort();
+    assert_eq!(
+        declared, listed,
+        "the shader tree declares {declared:?} but the classification table \
+         lists {listed:?}. Every GLSL struct must be classified as Guarded, \
+         MirroredPendingGuard, or ShaderLocal — an unclassified one is exactly \
+         how #3829's GpuBoundaryInstance and #3982's five ground-cover mirrors \
+         reached HEAD unnoticed (#3982)"
+    );
+
+    // ---- the buckets have to mean something
+    let renderer_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut rust_sources = String::new();
+    let mut stack = vec![renderer_src];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir readable") {
+            let path = entry.expect("src dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                if let Ok(src) = std::fs::read_to_string(&path) {
+                    rust_sources.push_str(&src);
+                    rust_sources.push('\n');
+                }
+            }
+        }
+    }
+    let declares_rust_struct = |name: &str| {
+        rust_sources.lines().any(|raw| {
+            let code = raw.trim_start();
+            if code.starts_with("//") {
+                return false;
+            }
+            let code = code.strip_prefix("pub ").unwrap_or(code);
+            code.strip_prefix("struct ")
+                .and_then(|rest| rest.strip_prefix(name))
+                .is_some_and(|rest| rest.starts_with([' ', '{', '(', ';', '<']))
+        })
+    };
+
+    for (name, class) in CLASSIFIED {
+        match class {
+            Guarded(test) => assert!(
+                rust_sources.contains(&format!("fn {test}(")),
+                "`{name}` is classified as guarded by `{test}`, but no such test \
+                 exists in the renderer crate — the guard was renamed or deleted \
+                 and the classification now vouches for nothing (#3982)"
+            ),
+            // The bucket that could become a rubber stamp, so it is the one
+            // that has to carry a reason someone can act on.
+            MirroredPendingGuard(blocker) => assert!(
+                !blocker.is_empty(),
+                "`{name}` is parked as a mirror without a guard but names no \
+                 blocker — an empty reason is how this bucket turns into a \
+                 place to put things (#3982)"
+            ),
+            ShaderLocal => assert!(
+                !declares_rust_struct(name) && !declares_rust_struct(&format!("Gpu{name}")),
+                "`{name}` is classified as shader-local, but the renderer crate \
+                 declares a matching Rust struct — it is a mirror now and needs a \
+                 lockstep guard, which is the drift this table exists to catch \
+                 (#3982)"
+            ),
+        }
+    }
+}
+
 fn normalize_ident(s: &str) -> String {
     s.chars()
         .filter(|c| *c != '_')
