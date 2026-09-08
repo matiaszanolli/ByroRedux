@@ -21,7 +21,16 @@ use std::rc::Rc;
 /// Record flag: data is zlib-compressed.
 const FLAG_COMPRESSED: u32 = 0x00040000;
 /// Record flag: this override deletes the inherited authored record.
-const FLAG_DELETED: u32 = 0x0000_0020;
+///
+/// `pub(crate)` (unlike [`FLAG_COMPRESSED`]) because two independent
+/// consumers test this bit and used to declare it twice under two names —
+/// here, and as `RECORD_FLAG_DELETED` in `cell/walkers.rs`. #3543's own
+/// evidence was mis-stated because of exactly that: a
+/// `grep RECORD_FLAG_DELETED` found only the placement walk and concluded
+/// the flag was consulted nowhere else, when this site had been recording
+/// base-record tombstones into `EsmIndex::deleted_record_metadata` all
+/// along. One name, one bit.
+pub(crate) const FLAG_DELETED: u32 = 0x0000_0020;
 
 /// Largest inflation multiple a compressed record may claim over its own
 /// compressed byte count (#3399).

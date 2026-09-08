@@ -1047,3 +1047,117 @@ fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
 }
 
 // ── #936 / NIF-D5-NEW-01 — NiBSplineComp{Float,Point3}Interpolator ──
+
+/// #3524 (SF-2026-08-27b-D7-01) — the six residual
+/// `Starfield - MeshesPatch.ba2` truncations were all `BSWeakReferenceNode`,
+/// all bsver 175, and five of six stopped at exactly `block_size - 10`: a
+/// 10-byte run appears after the last weak-ref entry's `num_materials` in
+/// some files and not in their clean siblings, so `num_water_refs` reads as
+/// garbage and its implied `skip(80)` — 80 = 64 + 12 + 4, one entry's fixed
+/// part — runs past the block end. The whole node then collapsed to
+/// `NiUnknown`, losing the `NiNode` base and every child: on four Cydonia
+/// terrain-object LOD tiles, the flagship walkable cell.
+///
+/// What the 10 bytes MEAN is deliberately not guessed — that needs a
+/// byte-audit against the real corpus. This pins the defensive half: a count
+/// whose payload cannot fit the declared block is declined, the node keeps
+/// its base and children, and the undecoded remainder lands in
+/// `starfield_tail`, the block's own established opaque-capture idiom.
+///
+/// bsver **175** deliberately, not `starfield_header()`'s 172: both the
+/// per-entry `formID` (>= `SF_FORM_ID`) and the #2105 2-byte gap
+/// (>= `SF_WEAK_REF_GAP`) are in play on every measured file, and the
+/// alignment they produce is what puts the count where it lands.
+#[test]
+fn bs_weak_reference_node_survives_a_water_ref_count_that_cannot_fit_the_block() {
+    use crate::blocks::node::BsWeakReferenceNode;
+    let header = starfield_header_at_bsver(175);
+
+    let mut body = build_empty_starfield_weakref_body();
+    // The helper's tail is `[num_weak_refs][unk_int1][num_water_refs]` with
+    // no gap (it is written for bsver 172); drop all 12 and rebuild for 175.
+    body.truncate(body.len() - 4 - 4 - 4);
+    body.extend_from_slice(&1u32.to_le_bytes()); // num_weak_refs = 1
+    body.extend_from_slice(&0u32.to_le_bytes()); // formID (bsver >= SF_FORM_ID)
+    body.extend_from_slice(&[0u8; 12]); // BSResourceID
+    body.extend_from_slice(&0u32.to_le_bytes()); // num_transforms = 0
+    body.extend_from_slice(&0u32.to_le_bytes()); // num_materials = 0
+    body.extend_from_slice(&0u16.to_le_bytes()); // #2105 2-byte gap
+    body.extend_from_slice(&0u32.to_le_bytes()); // unk_int1
+                                                 // `0x001AC0CB` — the constant the audit
+                                                 // measured in the count slot across three
+                                                 // independent Cydonia tiles.
+    let garbage_count: u32 = 0x001A_C0CB;
+    assert_eq!(garbage_count, 1_753_291);
+    body.extend_from_slice(&garbage_count.to_le_bytes());
+    let after_count = body.len();
+    body.extend_from_slice(&[0u8; 8]); // the run's trailing zero bytes
+    let block_size = body.len() as u32;
+
+    assert!(
+        u64::from(garbage_count) * 84 > u64::from(block_size),
+        "the fixture must imply a payload larger than the whole block, or it pins nothing"
+    );
+
+    let mut stream = NifStream::new(&body, &header);
+    let node = BsWeakReferenceNode::parse_with_size(&mut stream, Some(block_size))
+        .expect("an impossible water-ref count must not fail the block");
+    assert_eq!(
+        stream.position(),
+        body.len() as u64,
+        "consumed to block_size — not skipped 147 MB past EOF",
+    );
+    assert_eq!(
+        node.starfield_tail.len(),
+        body.len() - after_count,
+        "the undecoded remainder lands in the opaque tail",
+    );
+
+    // The point of the fix: the dispatcher resolves a real node, not
+    // `NiUnknown`, so the base and its children survive.
+    let mut s2 = NifStream::new(&body, &header);
+    let boxed = crate::blocks::parse_block("BSWeakReferenceNode", &mut s2, Some(block_size))
+        .expect("dispatch must parse");
+    assert_eq!(boxed.block_type_name(), "BSWeakReferenceNode");
+    assert!(
+        boxed
+            .as_any()
+            .downcast_ref::<BsWeakReferenceNode>()
+            .is_some(),
+        "the block must not collapse to NiUnknown (#3524)"
+    );
+}
+
+/// #3524, the `lc174world.1.0.1.nif` sub-mode — the sixth file, which
+/// diverges earlier than the other five. The parser misaligns INSIDE a
+/// `materials\…` null-terminated string in the `UnkMaterialStruct` loop and
+/// reads `0x616D0000` — the ASCII bytes `\0\0ma` — as a material count,
+/// implying a 1.6 GB skip.
+#[test]
+fn bs_weak_reference_node_survives_a_material_count_read_from_ascii() {
+    use crate::blocks::node::BsWeakReferenceNode;
+    let header = starfield_header_at_bsver(175);
+
+    let mut body = build_empty_starfield_weakref_body();
+    body.truncate(body.len() - 4 - 4 - 4);
+    body.extend_from_slice(&1u32.to_le_bytes()); // num_weak_refs = 1
+    body.extend_from_slice(&0u32.to_le_bytes()); // formID
+    body.extend_from_slice(&[0u8; 12]); // BSResourceID
+    body.extend_from_slice(&0u32.to_le_bytes()); // num_transforms = 0
+                                                 // The measured misread, verbatim:
+                                                 // `\0 \0 m a` little-endian.
+    let ascii_count = u32::from_le_bytes([0x00, 0x00, 0x6d, 0x61]);
+    assert_eq!(ascii_count, 1_634_533_376);
+    body.extend_from_slice(&ascii_count.to_le_bytes());
+    body.extend_from_slice(&[0u8; 16]);
+    let block_size = body.len() as u32;
+
+    let mut stream = NifStream::new(&body, &header);
+    BsWeakReferenceNode::parse_with_size(&mut stream, Some(block_size))
+        .expect("an ASCII-derived material count must not fail the block");
+    assert_eq!(
+        stream.position(),
+        body.len() as u64,
+        "consumed to block_size rather than skipping 1.6 GB past EOF",
+    );
+}

@@ -439,8 +439,14 @@ pub struct Material {
     /// 2=WRAP_S_CLAMP_T, 3=WRAP_S_WRAP_T. Authored on Oblivion architecture
     /// trim/signs/banners (#610) via `CLAMP_S_CLAMP_T` so edge texels don't
     /// bleed into the sampler's wrap. Copied verbatim from
-    /// `ImportedMaterial::texture_clamp_mode`, including that struct's own
-    /// `0` (CLAMP_S_CLAMP_T) parser-stub default.
+    /// `ImportedMaterial::texture_clamp_mode`, including its default of
+    /// **3** (WRAP_S_WRAP_T) — the Gamebryo default #610 established, and
+    /// the value `resolve_texture` hardcodes for its clamp-unaware variant.
+    ///
+    /// #3515 — this doc used to teach that the default was `0`
+    /// (CLAMP_S_CLAMP_T), the opposite end of the enum, and the `Default`
+    /// impl agreed with it. Both are corrected; the two tiers below now
+    /// match `MaterialInfo`, which always used `3`.
     ///
     /// #2571 (OBL-D5-01) — added so spawn sites can read this off the
     /// canonical `Material` instead of re-reading the raw `ImportedMaterial`
@@ -703,7 +709,8 @@ impl Default for Material {
             // (crates/nif/src/import/types.rs) exactly: SRC_ALPHA (6) /
             // INV_SRC_ALPHA (7) is the Gamebryo default blend-factor pair;
             // `0` (CLAMP_S_CLAMP_T) is that struct's stub clamp default.
-            texture_clamp_mode: 0,
+            // 3 = WRAP_S_WRAP_T (#610 / #3515) — see the field's doc.
+            texture_clamp_mode: 3,
             parallax_height_in_alpha: false,
             src_blend_mode: 6,
             dst_blend_mode: 7,

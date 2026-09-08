@@ -1806,3 +1806,70 @@ mod intern_texture_path_tests {
         assert!(intern_texture_path(&mut pool, "textures/foo.dds").is_some());
     }
 }
+
+/// #3515 (FO4-2026-08-27-D5-02) — `texture_clamp_mode` must carry the SAME
+/// default at all three material tiers.
+///
+/// `MaterialInfo` (the tier the NIF walker fills) always defaulted to `3`
+/// (WRAP_S_WRAP_T), the Gamebryo default #610 established and the value
+/// `resolve_texture` hardcodes for its clamp-unaware variant. The two tiers
+/// below it defaulted to `0` — CLAMP_S_CLAMP_T, the *opposite* end of the
+/// enum — and `Material`'s own doc taught that `0` was correct.
+///
+/// The divergence was inert only by accident of who consumes the default:
+/// `into_imported_material` overwrites the field verbatim, and the
+/// production `ImportedMesh::from_geometry` consumers that keep
+/// `ImportedMaterial::default()` are the untextured fog volumes (the FO4
+/// precombine path is safe only because `into_imported_mesh` reassigns
+/// `mesh.material` immediately afterwards). The next synthetic-geometry
+/// producer to bind a *tiling* texture — distant object LOD, terrain LOD, a
+/// `_precomb.nif` collision-visual path — would have got CLAMP/CLAMP on an
+/// atlas, reading as one stretched edge texel per axis.
+#[cfg(test)]
+mod texture_clamp_mode_default_tests {
+    use super::MaterialInfo;
+    use crate::import::types::ImportedMaterial;
+    use byroredux_core::ecs::components::material::Material;
+
+    /// 3 = WRAP_S_WRAP_T per nif.xml's `TexClampMode`.
+    const GAMEBRYO_DEFAULT: u8 = 3;
+
+    #[test]
+    fn all_three_material_tiers_default_to_wrap_s_wrap_t() {
+        assert_eq!(
+            MaterialInfo::default().texture_clamp_mode,
+            GAMEBRYO_DEFAULT,
+            "MaterialInfo is the tier the NIF walker fills and has always used 3"
+        );
+        assert_eq!(
+            ImportedMaterial::default().texture_clamp_mode,
+            GAMEBRYO_DEFAULT,
+            "ImportedMaterial defaulted to 0 (CLAMP_S_CLAMP_T) — the opposite end of the \
+             enum — so a synthetic mesh built through ImportedMesh::from_geometry would \
+             clamp a tiling atlas to one edge texel per axis (#3515)"
+        );
+        assert_eq!(
+            Material::default().texture_clamp_mode,
+            GAMEBRYO_DEFAULT,
+            "the canonical tier must agree with the two above it, and with \
+             resolve_texture's own hardcoded 3"
+        );
+    }
+
+    /// The value is load-bearing documentation as well as behaviour: `0` is
+    /// a real, authored mode (Oblivion architecture trim/signs/banners use
+    /// it via #610), so a reader who trusts the wrong default cannot tell an
+    /// authored CLAMP from an unset field.
+    #[test]
+    fn zero_stays_a_meaningful_authored_value_not_a_sentinel() {
+        let authored = Material {
+            texture_clamp_mode: 0,
+            ..Material::default()
+        };
+        assert_ne!(
+            authored.texture_clamp_mode,
+            Material::default().texture_clamp_mode,
+            "CLAMP_S_CLAMP_T must be distinguishable from the unset default"
+        );
+    }
+}

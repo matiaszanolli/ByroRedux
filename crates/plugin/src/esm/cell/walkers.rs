@@ -73,7 +73,11 @@ const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
 /// Record-header `Deleted` flag (bit 5) — consistent TES4→Starfield. A REFR
 /// carrying it is a deletion tombstone (a plugin/DLC removing a base-master
 /// placement), not a thing to render. SKY-D4-01 / #1660.
-const RECORD_FLAG_DELETED: u32 = 0x0000_0020;
+///
+/// #3543 — re-exported from `esm::reader` rather than redeclared. The two
+/// copies made the bit look like it was tested in one place when it was
+/// tested in two, which is how the base-record half went unnoticed.
+use crate::esm::reader::FLAG_DELETED as RECORD_FLAG_DELETED;
 
 /// Warn (at WARN level) when an XCLL sub-record size doesn't match the
 /// canonical size set for its plugin's game era. Doesn't change parse

@@ -869,7 +869,11 @@ impl BsWeakReferenceNode {
     pub fn parse_with_size(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
         let bsver = stream.bsver();
-        let mut me = Self::parse_inner(stream)?;
+        // #3524 — hand the declared block boundary down so the two
+        // count-driven loops can decline a `skip()` that provably overruns
+        // it instead of collapsing the whole block to `NiUnknown`.
+        let block_end = block_size.map(|size| block_start.saturating_add(u64::from(size)));
+        let mut me = Self::parse_inner(stream, block_end)?;
         // Capture the trailing bytes between the parser's stop point and
         // block_size (Starfield only, when a size is known and bytes remain).
         if bsver >= crate::version::bsver::STARFIELD {
@@ -884,11 +888,48 @@ impl BsWeakReferenceNode {
         Ok(me)
     }
 
-    fn parse_inner(stream: &mut NifStream) -> io::Result<Self> {
+    /// `block_end` is the absolute stream offset the declared `block_size`
+    /// ends at, when the dispatcher knows it. Used only to bound the two
+    /// count-driven loops (#3524); `None` reproduces the pre-#3524
+    /// unbounded behaviour for the legacy `parse` entry.
+    fn parse_inner(stream: &mut NifStream, block_end: Option<u64>) -> io::Result<Self> {
         let base = NiNode::parse(stream)?;
+
+        // #3524 (SF-2026-08-27b-D7-01) — bytes left inside this block, or
+        // `u64::MAX` when the caller did not supply a size. A count whose
+        // implied payload exceeds this cannot be the real count: the
+        // remainder is captured opaquely by `starfield_tail` instead, which
+        // keeps the parsed `NiNode` base and its children rather than
+        // dropping the block to `NiUnknown`.
+        //
+        // This is the defensive half of the finding. The six residual
+        // `Starfield - MeshesPatch.ba2` truncations were all this block
+        // type, all bsver 175, and five of six stopped at exactly
+        // `block_size - 10` after reading a garbage `num_water_refs` from a
+        // 10-byte run that appears in some files and not in their clean
+        // siblings. What that run MEANS is deliberately not guessed here —
+        // determining it needs a byte-audit against the real corpus, which
+        // is tracked separately. Being wrong about the count must not cost
+        // the node's children.
+        let budget = |stream: &NifStream| -> u64 {
+            block_end.map_or(u64::MAX, |end| end.saturating_sub(stream.position()))
+        };
 
         // BSWeakReference[] — nifly Nodes.cpp:166
         let num_weak_refs = stream.read_u32_le()?;
+        // Smallest possible entry: BSResourceID(12) + num_transforms(4) +
+        // num_materials(4), plus formID(4) on bsver >= SF_FORM_ID.
+        let min_weak_ref_bytes = if stream.bsver() >= crate::version::bsver::SF_FORM_ID {
+            24
+        } else {
+            20
+        };
+        let num_weak_refs =
+            if u64::from(num_weak_refs).saturating_mul(min_weak_ref_bytes) > budget(stream) {
+                0
+            } else {
+                num_weak_refs
+            };
         for _ in 0..num_weak_refs {
             // formID: present when bsver >= crate::version::bsver::SF_FORM_ID (some Starfield builds).
             if stream.bsver() >= crate::version::bsver::SF_FORM_ID {
@@ -898,9 +939,20 @@ impl BsWeakReferenceNode {
             stream.skip(12)?;
             // Matrix4 transforms: 16 × f32 = 64 bytes each.
             let num_transforms = stream.read_u32_le()?;
-            stream.skip(num_transforms as u64 * 64)?;
+            let transform_bytes = u64::from(num_transforms).saturating_mul(64);
+            if transform_bytes > budget(stream) {
+                break;
+            }
+            stream.skip(transform_bytes)?;
             // UnkMaterialStruct[]: biomeFormID(u32) + dirHash(u32) + fileHash(u32) + null-terminated mat string.
             let num_materials = stream.read_u32_le()?;
+            // Smallest entry is 12 B + a lone NUL. `lc174world.1.0.1.nif`
+            // is the sub-mode this arm catches: it misaligns INSIDE a
+            // `materials\…` string here and then reads `0x616D0000` (the
+            // ASCII bytes `\0\0ma`) as a length.
+            if u64::from(num_materials).saturating_mul(13) > budget(stream) {
+                break;
+            }
             for _ in 0..num_materials {
                 stream.skip(12)?; // 3 × u32
                                   // null-terminated string — read until '\0'
@@ -942,10 +994,25 @@ impl BsWeakReferenceNode {
 
         // BSWaterReferenceStruct[]: Matrix4(64) + BSResourceID(12) + unkInt1(u32) + NiString(u32 length-prefix)
         let num_water_refs = stream.read_u32_le()?;
+        // The five-of-six failure mode: a garbage count here implied
+        // `skip(80)` past the block end (80 = 64 + 12 + 4, the fixed part of
+        // one entry, before its length-prefixed string). Declining is what
+        // keeps the node's children.
+        let num_water_refs = if u64::from(num_water_refs).saturating_mul(84) > budget(stream) {
+            0
+        } else {
+            num_water_refs
+        };
         for _ in 0..num_water_refs {
+            if budget(stream) < 84 {
+                break;
+            }
             stream.skip(64 + 12 + 4)?; // transform + resourceID + unkInt1
             let mat_len = stream.read_u32_le()?;
-            stream.skip(mat_len as u64)?;
+            if u64::from(mat_len) > budget(stream) {
+                break;
+            }
+            stream.skip(u64::from(mat_len))?;
         }
 
         Ok(Self {

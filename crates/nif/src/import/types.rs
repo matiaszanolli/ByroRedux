@@ -671,6 +671,21 @@ pub struct ImportedMaterial {
     pub parallax_max_passes: Option<f32>,
     pub parallax_height_scale: Option<f32>,
     pub vertex_color_mode: u8,
+    /// `NiTexturingProperty`/`BSShaderProperty` texture-address mode, per
+    /// nif.xml's `TexClampMode`: 0=CLAMP_S_CLAMP_T, 1=CLAMP_S_WRAP_T,
+    /// 2=WRAP_S_CLAMP_T, 3=WRAP_S_WRAP_T.
+    ///
+    /// Defaults to **3** (WRAP_S_WRAP_T), the Gamebryo default #610
+    /// established and the value `resolve_texture` hardcodes for its
+    /// clamp-unaware variant. #3515 — this used to default to `0`, the
+    /// OPPOSITE end of the enum, while `MaterialInfo` (the tier the NIF
+    /// walker actually fills) defaulted to `3`. Inert at the time because
+    /// `into_imported_material` overwrites the field verbatim and the only
+    /// production consumers keeping this default are the untextured fog
+    /// volumes — but the next synthetic-geometry producer to build through
+    /// `ImportedMesh::from_geometry` and bind a *tiling* texture would have
+    /// got CLAMP/CLAMP on an atlas, reading as one stretched edge texel per
+    /// axis.
     pub texture_clamp_mode: u8,
     /// Whether `parallax_map`'s height lives in the texture's alpha channel
     /// rather than `.r`. Set only by the Oblivion `APPLY_HILIGHT2` route,
@@ -799,7 +814,9 @@ impl Default for ImportedMaterial {
             parallax_max_passes: None,
             parallax_height_scale: None,
             vertex_color_mode: 2,
-            texture_clamp_mode: 0,
+            // 3 = WRAP_S_WRAP_T — the Gamebryo default (#610 / #3515),
+            // matching `MaterialInfo` and `resolve_texture`'s own fallback.
+            texture_clamp_mode: 3,
             parallax_height_in_alpha: false,
             emissive_color: [0.0; 3],
             emissive_mult: 0.0,

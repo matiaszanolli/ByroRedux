@@ -1248,7 +1248,10 @@ pub struct EsmCellIndex {
 /// dropped every base REFR the DLC didn't re-emit (#1546). Deleted-REFR
 /// tombstones (the 0x20 Deleted flag) are skipped at the REFR walk
 /// (`walkers.rs`, `RECORD_FLAG_DELETED`, resolved #1660) and never appear in
-/// `over` at all — `deleted` (`over`'s own `CellData::deleted_refs`, EX-09/17
+/// `over` at all — this paragraph describes PLACEMENTS only; the parallel
+/// story for base records is `EsmIndex::prune_deleted_records` (#3543),
+/// which is a different mechanism reached through
+/// `EsmIndex::deleted_record_metadata` — `deleted` (`over`'s own `CellData::deleted_refs`, EX-09/17
 /// item 7 / #2370) is the separate signal that removes any matching FormID
 /// `base` still carries, so a DLC that *deletes* a base-master REFR no
 /// longer leaves the base copy resident across the merge (pre-fix, only the

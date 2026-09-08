@@ -2011,9 +2011,16 @@ fn bgsm_merge_forwards_tile_flags_to_texture_clamp_mode() {
         },
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    // #3515 — this precondition is the point of the test: the merged value
+    // below (1) must differ from the unmerged default, so the assertion
+    // cannot pass by accident. The default itself moved 0 -> 3 when
+    // `ImportedMaterial` was brought into line with `MaterialInfo` and
+    // `resolve_texture`'s own hardcoded WRAP_S_WRAP_T; what matters here is
+    // only that it is not the value BGSM authors.
     assert_eq!(
-        mesh.material.texture_clamp_mode, 0,
-        "sanity: ImportedMaterial's own default is CLAMP_S_CLAMP_T"
+        mesh.material.texture_clamp_mode, 3,
+        "sanity: ImportedMaterial's own default is WRAP_S_WRAP_T (the Gamebryo \
+         default, #610 / #3515) — distinct from the CLAMP_S_WRAP_T the BGSM authors"
     );
 
     assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());

@@ -520,6 +520,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         .into_inner();
     index.record_types = record_type_trace.record_types;
     index.deleted_record_metadata = record_type_trace.deleted_records;
+    // #3543 — a base record this plugin marks Deleted (header flag 0x20)
+    // was still parsed into its category map above; drop it now, so neither
+    // this index nor anything it merges into carries the tombstoned
+    // payload. `merge_from` applies the same set to the ACCUMULATED index,
+    // which is what removes an earlier master's live copy.
+    index.prune_deleted_records();
 
     // Resolve LTEX → texture path via TXST indirection.
     // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.

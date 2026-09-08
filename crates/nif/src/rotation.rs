@@ -19,6 +19,37 @@ pub fn is_degenerate_rotation(m: &NiMatrix3) -> bool {
     (det - 1.0).abs() >= 0.1
 }
 
+/// Check whether a matrix is an orthonormal *reflection* — a valid
+/// orthogonal matrix with `det ≈ -1` rather than `+1` (a mirrored subtree,
+/// e.g. `diag(-1, 1, 1)`).
+///
+/// #3532 — this class was silently folded into the scale/shear path.
+/// [`is_non_orthonormal`] returns `false` for a reflection (its columns
+/// ARE orthonormal), but [`is_degenerate_rotation`] returns `true`
+/// (`|det - 1| = 2`), so it took the SVD branch and logged
+/// "baked scale/shear … the singular value information is discarded",
+/// which is factually wrong for it: every singular value is 1 and there is
+/// no scale/shear to discard.
+///
+/// The distinction is load-bearing because SVD does not *repair* a
+/// reflection. `repair_rotation_svd_or_identity`'s `det < 0` column flip
+/// turns `diag(-1, 1, 1)` into `diag(-1, 1, -1)` — a 180° rotation about
+/// Y, i.e. a **different orientation**, not an un-mirrored one. That is a
+/// legitimate policy (a renderer cannot draw a mirrored basis without
+/// flipping winding), but it changes orientation rather than losing
+/// magnitude, and the log must say so.
+#[inline]
+pub fn is_reflection(m: &NiMatrix3) -> bool {
+    if is_non_orthonormal(m) {
+        return false;
+    }
+    let r = &m.rows;
+    let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+    det < 0.0
+}
+
 /// Check if a rotation matrix's columns fail to form an orthonormal set —
 /// i.e. the matrix encodes scale and/or shear beyond pure rotation, even
 /// when its determinant lands inside [`is_degenerate_rotation`]'s "valid
@@ -52,12 +83,48 @@ pub fn is_non_orthonormal(m: &NiMatrix3) -> bool {
 /// Caps how many "baked scale/shear discarded" warnings
 /// [`sanitize_rotation`] logs per process. Real NIF corpora can carry
 /// thousands of nodes; without a cap, one badly-exported model would
-/// flood the log and drown out everything else. #2456 — this is
-/// diagnostic-only instrumentation to measure real corpus incidence
+/// flood the log and drown out everything else.
+///
+/// #2456 asked this instrumentation to measure real corpus incidence
 /// before committing to the larger "decompose into `NiTransform.scale`"
-/// fix; it changes no parsed geometry or transform output.
+/// fix. **#3532 has that answer, and it is "not warranted".** Over 55 949
+/// vanilla NIFs — `Oblivion - Meshes.bsa`, FO3 and FNV
+/// `Fallout - Meshes.bsa`, `Skyrim - Meshes0.bsa` + `Meshes1.bsa` —
+/// yielding **642 589** `NiTransform` rotation matrices:
+///
+/// | branch | hits |
+/// |---|---|
+/// | `is_degenerate_rotation` (SVD) | **1** |
+/// | `is_non_orthonormal` pass-through | **0** |
+///
+/// The `diag(2, 0.5, 1)`-shaped baked-scale case the deferred
+/// decomposition was designed for does not occur in any shipped Bethesda
+/// title. The warning is kept — not as open instrumentation but as a
+/// diagnostic for the non-Bethesda / mod content that is live scope
+/// (#2383) — and it changes no parsed geometry or transform output.
 static SCALE_DISCARD_WARNINGS: AtomicU32 = AtomicU32::new(0);
 const MAX_SCALE_DISCARD_WARNINGS: u32 = 20;
+
+/// #3532 — a reflection is a different defect from baked scale/shear and
+/// gets its own message. Saying "the singular value information is
+/// discarded" here would be false (all three singular values are 1), and it
+/// would hide the part that actually matters: the subtree's ORIENTATION is
+/// being changed, not its magnitude.
+fn warn_reflection_reoriented(m: &NiMatrix3, repaired: &NiMatrix3) {
+    let count = SCALE_DISCARD_WARNINGS.fetch_add(1, Ordering::Relaxed);
+    if count >= MAX_SCALE_DISCARD_WARNINGS {
+        return;
+    }
+    log::warn!(
+        "NiTransform.rotation is a mirrored basis (orthonormal, det = -1) — SVD cannot \
+         un-mirror it, so this subtree is REORIENTED, not rescaled: the repair flips the \
+         third column and yields a different rotation (#3532). No scale/shear information \
+         is involved. Matrix: {m:?} -> {repaired:?}"
+    );
+    if count + 1 == MAX_SCALE_DISCARD_WARNINGS {
+        log::warn!("further rotation-sanitisation warnings suppressed for this process (#2456)");
+    }
+}
 
 fn warn_scaled_rotation_discarded(m: &NiMatrix3, mode: &str) {
     let count = SCALE_DISCARD_WARNINGS.fetch_add(1, Ordering::Relaxed);
@@ -138,14 +205,30 @@ pub fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
 /// it away; the pass-through branch admits `det≈1`-but-non-orthonormal
 /// matrices like `diag(2, 0.5, 1)` untouched, and that information is
 /// lost further downstream when `#333`'s unit-quaternion guard runs).
-/// Neither branch folds the discarded factor into `NiTransform.scale`
-/// yet — that decomposition is deferred pending real-corpus incidence
-/// data. Until then, log a rate-limited warning whenever a matrix with
-/// real (non-zeroed) magnitude trips either case, so that data can be
-/// gathered.
+/// Neither branch folds the discarded factor into `NiTransform.scale`.
+/// #3532 measured the incidence that decision was waiting on — 1 SVD hit
+/// and 0 pass-through hits across 642 589 matrices in 55 949 vanilla
+/// Oblivion / FO3 / FNV / Skyrim NIFs — so the decomposition is **not
+/// warranted for any shipped Bethesda title** and is no longer "pending
+/// data". The rate-limited warning stays as a diagnostic for the
+/// non-Bethesda / mod content that is live scope (#2383).
+///
+/// A third case rides the SVD branch and is NOT scale/shear: an
+/// orthonormal reflection (`det = -1`). It is classified first by
+/// [`is_reflection`] and warned about separately, because SVD reorients
+/// it rather than repairing it — see that function's doc.
 #[inline]
 pub fn sanitize_rotation(m: NiMatrix3) -> NiMatrix3 {
     if is_degenerate_rotation(&m) {
+        // #3532 — classify BEFORE the scale/shear wording. A reflection is
+        // orthonormal with det = -1: it trips `is_degenerate_rotation`
+        // (|det - 1| = 2) but has no scale/shear to discard, and the repair
+        // changes its orientation rather than its magnitude.
+        if is_reflection(&m) {
+            let repaired = repair_rotation_svd_or_identity(&m);
+            warn_reflection_reoriented(&m, &repaired);
+            return repaired;
+        }
         if max_column_length(&m) >= 0.01 {
             warn_scaled_rotation_discarded(&m, "SVD-orthogonalized");
         }
@@ -158,6 +241,91 @@ pub fn sanitize_rotation(m: NiMatrix3) -> NiMatrix3 {
             );
         }
         m
+    }
+}
+
+#[cfg(test)]
+mod reflection_classification_tests {
+    use super::*;
+
+    fn m(rows: [[f32; 3]; 3]) -> NiMatrix3 {
+        NiMatrix3 { rows }
+    }
+
+    /// #3532 — a pure reflection is orthonormal, so the scale/shear
+    /// classifier must NOT claim it, while the determinant classifier does.
+    /// That combination is what silently routed it into a message about
+    /// discarded singular values it does not have.
+    #[test]
+    fn a_pure_reflection_is_orthonormal_but_still_trips_the_determinant_check() {
+        let mirrored = m([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(
+            !is_non_orthonormal(&mirrored),
+            "diag(-1, 1, 1) has unit, mutually perpendicular columns — there is no \
+             scale or shear here to discard"
+        );
+        assert!(
+            is_degenerate_rotation(&mirrored),
+            "|det - 1| = 2, so it takes the SVD branch"
+        );
+        assert!(is_reflection(&mirrored));
+    }
+
+    /// The three classes stay disjoint where it matters: a genuine
+    /// scale/shear matrix must not be claimed by the reflection arm, or it
+    /// would get the wrong message in the other direction.
+    #[test]
+    fn scale_shear_and_ordinary_rotations_are_not_classified_as_reflections() {
+        // det = 1 exactly, but columns are scaled — the case #2456 was
+        // written for, and the one the corpus never produced.
+        let baked_scale = m([[2.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(is_non_orthonormal(&baked_scale));
+        assert!(!is_reflection(&baked_scale));
+
+        let identity = m([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(!is_reflection(&identity));
+        assert!(!is_degenerate_rotation(&identity));
+
+        // 90° about Z — an ordinary rotation, det = +1.
+        let rot_z = m([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(!is_reflection(&rot_z));
+        assert!(!is_degenerate_rotation(&rot_z));
+
+        // A mirrored basis that ALSO carries scale is scale/shear first:
+        // `is_reflection` defers to `is_non_orthonormal` so the more
+        // specific message wins.
+        let mirrored_and_scaled = m([[-2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(is_non_orthonormal(&mirrored_and_scaled));
+        assert!(!is_reflection(&mirrored_and_scaled));
+    }
+
+    /// The reason the classification matters: SVD does not un-mirror a
+    /// reflection. It produces a DIFFERENT ORIENTATION — here a 180°
+    /// rotation about Y — which is a legitimate policy (a renderer cannot
+    /// draw a mirrored basis without flipping winding) but is not what
+    /// "the singular value information is discarded" describes.
+    #[test]
+    fn repairing_a_reflection_reorients_it_rather_than_un_mirroring_it() {
+        let mirrored = m([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let repaired = sanitize_rotation(mirrored);
+
+        let r = &repaired.rows;
+        let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+        assert!(
+            (det - 1.0).abs() < 1e-5,
+            "the repair must hand downstream a proper rotation, det = {det}"
+        );
+        assert!(
+            (r[0][0] + 1.0).abs() < 1e-5 && (r[2][2] + 1.0).abs() < 1e-5,
+            "diag(-1, 1, 1) comes back as diag(-1, 1, -1) — a 180° turn about Y, \
+             NOT an un-mirrored identity. Got {repaired:?}"
+        );
+        assert!(
+            !is_degenerate_rotation(&repaired),
+            "whatever it is, downstream must see a valid rotation (#277)"
+        );
     }
 }
 

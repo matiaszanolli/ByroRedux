@@ -29,6 +29,11 @@ pub type CategoryEntry = (
     &'static str,
     fn(&EsmIndex) -> usize,
     fn(&mut EsmIndex, &mut EsmIndex),
+    // #3543 — drop every record whose FormID is tombstoned (header flag
+    // `0x20`, Deleted). Part of the entry so a new category cannot be added
+    // that silently ignores deletions, the same way the merge op stops one
+    // being omitted from load-order folding (#2907).
+    fn(&mut EsmIndex, &HashSet<u32>),
 );
 
 macro_rules! map_category {
@@ -38,6 +43,27 @@ macro_rules! map_category {
             |index: &EsmIndex| index.$field.len(),
             |target: &mut EsmIndex, source: &mut EsmIndex| {
                 target.$field.extend(std::mem::take(&mut source.$field));
+            },
+            |index: &mut EsmIndex, deleted: &HashSet<u32>| {
+                index.$field.retain(|form_id, _| !deleted.contains(form_id));
+            },
+        )
+    };
+}
+
+/// As [`map_category`], but for a map keyed by something other than the
+/// record's own FormID — the tombstone has to be matched against the
+/// **value**. `magic_effects_by_code` is the only such table.
+macro_rules! map_category_keyed_by_value {
+    ($label:literal, $field:ident) => {
+        (
+            $label,
+            |index: &EsmIndex| index.$field.len(),
+            |target: &mut EsmIndex, source: &mut EsmIndex| {
+                target.$field.extend(std::mem::take(&mut source.$field));
+            },
+            |index: &mut EsmIndex, deleted: &HashSet<u32>| {
+                index.$field.retain(|_, form_id| !deleted.contains(form_id));
             },
         )
     };
@@ -49,6 +75,11 @@ macro_rules! cell_category {
             $label,
             |index: &EsmIndex| index.cells.$field.len(),
             |_target: &mut EsmIndex, _source: &mut EsmIndex| {},
+            // Placements carry their own tombstone machinery: the REFR walk
+            // drops Deleted records before they reach `over`
+            // (`walkers.rs`, #1660), and `CellData::deleted_refs` (#2370)
+            // propagates removals across masters.
+            |_index: &mut EsmIndex, _deleted: &HashSet<u32>| {},
         )
     };
 }
@@ -565,7 +596,7 @@ impl EsmIndex {
             map_category!("magic_effects", magic_effects),
             // #969 / OBL-D3-NEW-05 — Oblivion-only 4-char-code → MGEF
             // FormID secondary map. Empty on non-Oblivion games.
-            map_category!("magic_effects_by_code", magic_effects_by_code),
+            map_category_keyed_by_value!("magic_effects_by_code", magic_effects_by_code),
             map_category!("actor_values", actor_values),
             map_category!("activators", activators),
             map_category!("terminals", terminals),
@@ -662,7 +693,7 @@ impl EsmIndex {
     pub fn total(&self) -> usize {
         Self::categories()
             .iter()
-            .map(|(_, count, _)| count(self))
+            .map(|(_, count, _, _)| count(self))
             .sum()
     }
 
@@ -854,7 +885,7 @@ impl EsmIndex {
     pub fn category_breakdown(&self) -> String {
         let mut out = String::with_capacity(512);
         out.push_str("ESM parsed:");
-        for (i, (label, count, _)) in Self::categories().iter().enumerate() {
+        for (i, (label, count, _, _)) in Self::categories().iter().enumerate() {
             out.push_str(if i == 0 { " " } else { ", " });
             out.push_str(&format!("{} {}", count(self), label));
         }
@@ -877,6 +908,34 @@ impl EsmIndex {
     /// just need to thread it through every map. The exterior-cells
     /// nested map merges per-worldspace so a DLC adding a new
     /// worldspace doesn't stomp the base game's entry. See M46.0 / #561.
+    /// Drop every indexed record whose header carried the Deleted
+    /// tombstone (`0x20`), across all category maps (#3543).
+    ///
+    /// `RECORD_FLAG_DELETED` used to be honoured at exactly one site — the
+    /// REFR/ACHR/ACRE placement walk in `cell/walkers.rs` (#1660). The
+    /// generic header reader records base-record tombstones into
+    /// [`Self::deleted_record_metadata`], but only `record_types` consumed
+    /// them, so a **base** record a later plugin marks Deleted was merged
+    /// under plain last-write-wins and REPLACED the master's live record
+    /// with the DLC's tombstoned copy. Measured on shipped Skyrim SE: nine
+    /// such records across `Update.esm` / `Dawnguard.esm` /
+    /// `Dragonborn.esm` (STAT, NPC_, IDLE, SMQN, SPEL, INFO, EXPL), each
+    /// with a non-empty 20-307 byte payload, so none were stubs the merge
+    /// would harmlessly absorb.
+    ///
+    /// Vanilla scope is small; the mechanism is general, and a mod load
+    /// order with real conflict resolution hits it at far higher volume.
+    pub fn prune_deleted_records(&mut self) {
+        if self.deleted_record_metadata.is_empty() {
+            return;
+        }
+        let deleted = std::mem::take(&mut self.deleted_record_metadata);
+        for (_, _, _, prune) in Self::categories() {
+            prune(self, &deleted);
+        }
+        self.deleted_record_metadata = deleted;
+    }
+
     pub fn merge_from(&mut self, mut other: EsmIndex) {
         // M41.0 Phase 1b — preserve the latest plugin's game variant on the
         // merged index. Multi-plugin loads always share a single game in
@@ -952,6 +1011,16 @@ impl EsmIndex {
         for form_id in &deleted_record_metadata {
             self.record_types.remove(form_id);
         }
+        // #3543 — the tombstone has to reach the record maps too, not just
+        // the type metadata. `other`'s own maps were already pruned when it
+        // was parsed; this removes what an EARLIER master contributed for
+        // the same FormID, so a DLC-deleted base record leaves the merged
+        // index rather than surviving with the master's payload.
+        if !deleted_record_metadata.is_empty() {
+            for (_, _, _, prune) in Self::categories() {
+                prune(self, &deleted_record_metadata);
+            }
+        }
         for form_id in other.record_types.keys() {
             self.deleted_record_metadata.remove(form_id);
         }
@@ -962,7 +1031,7 @@ impl EsmIndex {
         // Every top-level record category is merged by the same table that
         // drives `total()` and `category_breakdown()`. Adding a category can
         // no longer silently omit it from load-order folding (#2907).
-        for (_, _, merge) in Self::categories() {
+        for (_, _, merge, _) in Self::categories() {
             merge(self, &mut other);
         }
         self.classify_fallout_inventory_kinds();
@@ -1364,10 +1433,17 @@ mod tests {
             + INDEX_RS[table_start..]
                 .find("\n    }\n")
                 .expect("categories() is unterminated");
+        // Both map-backed macros count, not just `map_category!` — #3543
+        // added `map_category_keyed_by_value!` for the one table keyed by
+        // something other than the record's own FormID. Missing it here
+        // made this guard report `magic_effects_by_code` as uncounted.
         let counted: Vec<&str> = INDEX_RS[table_start..table_end]
             .lines()
             .map(str::trim)
-            .filter_map(|line| line.strip_prefix("map_category!("))
+            .filter_map(|line| {
+                line.strip_prefix("map_category!(")
+                    .or_else(|| line.strip_prefix("map_category_keyed_by_value!("))
+            })
             .filter_map(|rest| rest.split_once(", "))
             .map(|(_, field)| field.trim_end_matches("),").trim())
             .collect();
@@ -1416,6 +1492,94 @@ mod tests {
         merged.merge_from(readd);
         assert_eq!(merged.record_types.get(&0x1234), Some(b"ARMO"));
         assert!(!merged.deleted_record_metadata.contains(&0x1234));
+    }
+
+    /// #3543 (SK-D4-01) — a DLC that marks a BASE record Deleted (header
+    /// flag 0x20) must remove the master's live record from the merged
+    /// index, not replace it with the DLC's tombstoned copy.
+    ///
+    /// Before this fix `RECORD_FLAG_DELETED` reached exactly one site — the
+    /// REFR/ACHR/ACRE placement walk (#1660). The generic header reader DID
+    /// record base-record tombstones into `deleted_record_metadata`, but
+    /// only `record_types` consumed them, so the payload survived under
+    /// plain last-write-wins. FormIDs here are two of the nine measured on
+    /// the shipped Skyrim SE DLC set: `Dawnguard.esm`'s deleted
+    /// `NPC_ 0007932F` (still spawnable, still resolvable by the equip
+    /// chain) and `Dragonborn.esm`'s deleted `SPEL 0010E38C`. Both carry
+    /// non-empty payloads (220 and 307 bytes), so neither is a zeroed stub
+    /// the merge would harmlessly absorb.
+    #[test]
+    fn a_dlc_deleted_base_record_is_dropped_from_the_merged_index() {
+        const DELETED_NPC: u32 = 0x0007_932F; // Dawnguard.esm
+        const DELETED_SPELL: u32 = 0x0010_E38C; // Dragonborn.esm
+        const SURVIVOR: u32 = 0x0007_9330; // an untouched neighbour
+
+        // Skyrim.esm — both records live.
+        let mut master = EsmIndex::default();
+        master.npcs.insert(DELETED_NPC, NpcRecord::default());
+        master.npcs.insert(SURVIVOR, NpcRecord::default());
+        master.spells.insert(DELETED_SPELL, SpelRecord::default());
+        master.record_types.insert(DELETED_NPC, *b"NPC_");
+        master.record_types.insert(DELETED_SPELL, *b"SPEL");
+
+        // The DLC overrides both and tombstones them. `prune_deleted_records`
+        // runs at the end of the DLC's own parse, so by the time it reaches
+        // `merge_from` its maps no longer carry the tombstoned payload —
+        // this fixture reproduces that post-parse state.
+        let mut dlc = EsmIndex::default();
+        dlc.npcs.insert(DELETED_NPC, NpcRecord::default());
+        dlc.spells.insert(DELETED_SPELL, SpelRecord::default());
+        dlc.deleted_record_metadata.insert(DELETED_NPC);
+        dlc.deleted_record_metadata.insert(DELETED_SPELL);
+        dlc.prune_deleted_records();
+        assert!(
+            !dlc.npcs.contains_key(&DELETED_NPC) && !dlc.spells.contains_key(&DELETED_SPELL),
+            "a plugin's own parse must not leave its tombstoned records indexed"
+        );
+
+        master.merge_from(dlc);
+
+        assert!(
+            !master.npcs.contains_key(&DELETED_NPC),
+            "Dawnguard's deleted NPC_ 0007932F must leave the merged index — keeping it \
+             leaves a spawnable, equip-resolvable actor the DLC removed (#3543)"
+        );
+        assert!(
+            !master.spells.contains_key(&DELETED_SPELL),
+            "Dragonborn's deleted SPEL 0010E38C must leave the merged index"
+        );
+        assert!(
+            master.npcs.contains_key(&SURVIVOR),
+            "the tombstone must remove only its own FormID"
+        );
+        assert!(!master.record_types.contains_key(&DELETED_NPC));
+    }
+
+    /// The other direction, mirroring `record_metadata_merge_honors_delete_
+    /// then_readd`: a later plugin that RE-ADDS a previously tombstoned
+    /// record must resurrect it in the record maps too, not just in
+    /// `record_types`.
+    #[test]
+    fn a_later_plugin_can_readd_a_record_an_earlier_one_deleted() {
+        const FID: u32 = 0x0007_932F;
+
+        let mut merged = EsmIndex::default();
+        merged.npcs.insert(FID, NpcRecord::default());
+
+        let mut deletion = EsmIndex::default();
+        deletion.deleted_record_metadata.insert(FID);
+        merged.merge_from(deletion);
+        assert!(!merged.npcs.contains_key(&FID));
+
+        let mut readd = EsmIndex::default();
+        readd.npcs.insert(FID, NpcRecord::default());
+        readd.record_types.insert(FID, *b"NPC_");
+        merged.merge_from(readd);
+        assert!(
+            merged.npcs.contains_key(&FID),
+            "a re-added record must come back — the tombstone is not permanent"
+        );
+        assert!(!merged.deleted_record_metadata.contains(&FID));
     }
 
     #[test]
