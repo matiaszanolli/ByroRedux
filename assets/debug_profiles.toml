@@ -25,6 +25,14 @@
 #   default_materials_bsas
 #                         BGSM/BGEM materials archives (FO4+/FO76/SF
 #                         only; empty for Skyrim and older).
+#   optional_bsas         Present-only add-on archives (vanilla DLC,
+#                         Creation Club, AE resource pack). Skipped
+#                         silently when absent, appended after the
+#                         required lists so #3637's last-wins
+#                         precedence puts add-on content on top, and
+#                         expanded into --bsa / --textures-bsa /
+#                         --sounds-bsa alike because these are whole-mod
+#                         bundles rather than category archives (#3924).
 #   sample_cells          Curated cell editor IDs for one-click loads.
 #
 # Optional [defaults] table — launch defaults applied when the engine
@@ -133,6 +141,29 @@ default_textures_bsas = [
     "Oblivion - Textures - Compressed.bsa",
 ]
 default_materials_bsas = []
+# Vanilla DLC (#3924, sibling of the Skyrim AE tier below). Present-only: a
+# GOTY install carries all of these, a base install none. They hold 1,580 NIFs
+# — 16.4% of the Oblivion mesh corpus — which the NIF corpus gate has swept
+# since #3712 while the engine could not open them.
+#
+# The small DLC ship as whole-mod bundles (meshes + textures + sound in one
+# archive), which is why every entry is expanded into all three content flags.
+# Shivering Isles is the exception: it follows the vanilla category split, so
+# its textures/sounds/voices are listed here as their own entries rather than
+# being reachable through its Meshes archive. Measured 2026-09-07.
+optional_bsas = [
+    "Knights.bsa",
+    "DLCBattlehornCastle.bsa",
+    "DLCFrostcrag.bsa",
+    "DLCHorseArmor.bsa",
+    "DLCOrrery.bsa",
+    "DLCShiveringIsles - Meshes.bsa",
+    "DLCShiveringIsles - Textures.bsa",
+    "DLCShiveringIsles - Sounds.bsa",
+    "DLCShiveringIsles - Voices.bsa",
+    "DLCThievesDen.bsa",
+    "DLCVileLair.bsa",
+]
 # F6 (2026-05-26) — `AnvilHeinrichOakenHallsBasement` is not a real
 # cell; vanilla ships `AnvilHeinrichOakenHallsHouse` (+ its second-
 # floor sibling). The Basement variant probably came from a
@@ -162,6 +193,24 @@ default_textures_bsas = [
 default_materials_bsas = []
 default_scripts_bsas = ["Skyrim - Misc.bsa"]
 default_sounds_bsas = ["Skyrim - Sounds.bsa", "Skyrim - Voices_en0.bsa"]
+# Anniversary Edition / Creation Club whole-mod archives (#3924). Present-only:
+# each is skipped silently when absent, since which of these an install carries
+# depends on the account and edition. Each entry is expanded into --bsa,
+# --textures-bsa and --sounds-bsa alike, because a cc archive is a mod bundle
+# rather than a category archive (measured 2026-09-07: all five carry meshes\
+# and textures\, three also carry sound\).
+#
+# `MarketplaceTextures.bsa` is deliberately absent despite the name: it holds
+# `interface\` content only (measured 2026-09-07), and the profile has no
+# interface archive category — vanilla `Skyrim - Interface.bsa` is unlisted for
+# the same reason.
+optional_bsas = [
+    "_ResourcePack.bsa",
+    "ccBGSSSE001-Fish.bsa",
+    "ccBGSSSE025-AdvDSGS.bsa",
+    "ccBGSSSE037-Curios.bsa",
+    "ccQDRSSE001-SurvivalMode.bsa",
+]
 # Vanilla MQ101 opening placements span these adjacent persistent-reference
 # grids: player/Cart2 at (5,-24), Cart1 at (5,-23).
 new_game_worldspace = "Tamriel"

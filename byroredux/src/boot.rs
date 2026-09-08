@@ -2275,6 +2275,39 @@ mod boot_request_seam_tests {
     }
 }
 
+/// Expand a profile's present-only [`GameProfileEntry::optional_bsas`] tier
+/// into archive args, skipping every entry that is not on disk (#3924).
+///
+/// Split out of [`expand_game_profile_args`] because that function reads the
+/// real profile registry and the real games root, so the present-only rule —
+/// the whole point of this tier — could not otherwise be exercised without
+/// a particular game installed.
+fn push_optional_archive_args(
+    args: &mut Vec<String>,
+    data_dir: &std::path::Path,
+    optional_bsas: &[String],
+    game_key: &str,
+) {
+    for bsa in optional_bsas {
+        let path = data_dir.join(bsa);
+        if !path.is_file() {
+            eprintln!("--game {game_key}: optional archive {bsa} not present, skipping");
+            continue;
+        }
+        let joined = path.to_string_lossy().into_owned();
+        // All three flags, not `--bsa` alone: a Creation Club archive is a
+        // mod bundle rather than a category archive, so one file carries
+        // that mod's meshes, textures and sounds together. The
+        // already-opened sets in `build_texture_provider` are per pool
+        // (#2584), so naming one path in two of them opens it in both
+        // rather than deduplicating it away.
+        for flag in ["--bsa", "--textures-bsa", "--sounds-bsa"] {
+            args.push(flag.to_string());
+            args.push(joined.clone());
+        }
+    }
+}
+
 fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     let new_game = args.iter().any(|arg| arg == "--new-game");
     // Launch defaults from the `[defaults]` table (profiles.toml,
@@ -2393,6 +2426,27 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         args.push("--materials-ba2".to_string());
         args.push(join_arg(bsa));
     }
+
+    // #3924 — the present-only tier. AE ships `_ResourcePack.bsa` and a
+    // per-account set of `cc*.bsa` Creation Club bundles that no naming rule
+    // can reach: none is a numeric sibling of a listed archive, so
+    // `numeric_sibling_paths` cannot find them, and until this list existed
+    // the runtime had no way to name them at all. The NIF corpus gate has
+    // swept exactly this tier since #3369, which left it measuring content
+    // the engine could not open.
+    //
+    // Appended last so #3637's last-wins precedence puts add-on content on
+    // top of vanilla. Skipped in silence when absent — which of these an
+    // install carries depends on the account and edition, so a miss is the
+    // normal case, unlike a `default_bsas` miss, which is a broken install.
+    //
+    // Expanded into all three content flags rather than `--bsa` alone: a
+    // Creation Club archive is a mod bundle, not a category archive, so one
+    // file carries that mod's meshes, textures and sounds together. The
+    // already-opened sets in `build_texture_provider` are per pool (#2584),
+    // so naming one path in two of them opens it in both rather than
+    // deduplicating it away.
+    push_optional_archive_args(&mut args, &data_dir, &entry.optional_bsas, &game_key);
 
     if new_game {
         let has_location = ["--cell", "--grid", "--wrld"]
@@ -2862,5 +2916,83 @@ mod scripting_system_access_declaration_tests {
     #[test]
     fn legacy_obscript_load_order_system_declares_everything_it_acquires() {
         assert_declares_everything_it_acquires(OBSCRIPT_SRC, "legacy_obscript_load_order_system");
+    }
+}
+
+#[cfg(test)]
+mod optional_archive_tier_tests {
+    use super::push_optional_archive_args;
+
+    /// #3924 — the present-only rule. Which Creation Club archives an
+    /// install carries depends on the account and the edition, so an absent
+    /// entry is the normal case and must not reach the archive layer at all:
+    /// `open_with_numeric_siblings` would `log::warn!` per miss, training
+    /// operators to ignore the one warning that means a broken install.
+    #[test]
+    fn an_absent_optional_archive_contributes_no_args() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("present.bsa"), b"x").unwrap();
+
+        let mut args = Vec::new();
+        push_optional_archive_args(
+            &mut args,
+            dir.path(),
+            &["absent.bsa".to_owned(), "present.bsa".to_owned()],
+            "test",
+        );
+
+        assert!(
+            !args.iter().any(|a| a.contains("absent.bsa")),
+            "an archive that is not on disk must be skipped silently: {args:?}"
+        );
+        assert_eq!(
+            args.iter().filter(|a| a.contains("present.bsa")).count(),
+            3,
+            "a present archive is a mod bundle, so it is expanded into the \
+             mesh, texture and sound pools alike: {args:?}"
+        );
+    }
+
+    /// A directory entry is not an archive. `is_file` rather than `exists`
+    /// is what keeps a stray `cc*.bsa/` folder from being handed to the
+    /// archive opener as a path.
+    #[test]
+    fn a_directory_is_not_mistaken_for_an_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("notanarchive.bsa")).unwrap();
+
+        let mut args = Vec::new();
+        push_optional_archive_args(
+            &mut args,
+            dir.path(),
+            &["notanarchive.bsa".to_owned()],
+            "test",
+        );
+        assert!(args.is_empty(), "{args:?}");
+    }
+
+    /// Each present entry is expanded once per pool, and the three flags
+    /// name the same resolved path — the pools dedupe independently (#2584),
+    /// so one file legitimately lands in all three.
+    #[test]
+    fn every_pool_receives_the_same_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cc.bsa"), b"x").unwrap();
+
+        let mut args = Vec::new();
+        push_optional_archive_args(&mut args, dir.path(), &["cc.bsa".to_owned()], "test");
+
+        let expected = dir.path().join("cc.bsa").to_string_lossy().into_owned();
+        assert_eq!(
+            args,
+            vec![
+                "--bsa".to_owned(),
+                expected.clone(),
+                "--textures-bsa".to_owned(),
+                expected.clone(),
+                "--sounds-bsa".to_owned(),
+                expected,
+            ]
+        );
     }
 }

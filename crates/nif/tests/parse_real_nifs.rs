@@ -1081,3 +1081,70 @@ fn archive_tiers_are_disjoint_and_skyrim_optional_is_populated() {
         );
     }
 }
+
+/// #3924 — the runtime and this gate must sweep the same present-only tier.
+///
+/// Checked for both games that have one. Skyrim SE is the case the issue
+/// named; Oblivion turned out to have the identical gap, and a larger one —
+/// its profile listed `Oblivion - Meshes.bsa` alone while this gate has swept
+/// eight vanilla DLC archives since #3712, 1,580 NIFs / 16.4% of the corpus.
+///
+/// `Game::optional_mesh_archives` above is a test-harness concept: #3369
+/// extended it so the parse-rate gate would stop ignoring the 715 NIFs an
+/// Anniversary Edition install ships in `_ResourcePack.bsa` and the Creation
+/// Club bundles. The engine had no counterpart at all — the `skyrim_se`
+/// profile named none of them, and none is a numeric sibling of a listed
+/// archive, so `numeric_sibling_paths` could not reach them either. The gate
+/// was therefore certifying content the engine could not open, and
+/// `--esm ccBGSSSE001-Fish.esm` — the natural way to reach AE content, and
+/// the case #3369 widened the gate for — was a 404 surface.
+///
+/// `assets/debug_profiles.toml` now carries the runtime half. This asserts
+/// every name in the harness tier is reachable from the profile, in either
+/// its required (`default_bsas`) or its present-only (`optional_bsas`) list
+/// — `Skyrim - Animations.bsa` sits in the former, being on every install.
+///
+/// One-way by design: the profile may name more than this gate sweeps, and
+/// does. A texture- or sound-only add-on archive (Shivering Isles ships its
+/// textures, sounds and voices separately from its meshes) belongs in the
+/// runtime tier and has no business in a *mesh* corpus list.
+///
+/// Read as text rather than parsed: this crate has no TOML dependency and
+/// no reason to grow one for a name check. The section is sliced at the next
+/// `[profiles.` header so a name belonging to a different game cannot
+/// satisfy it.
+#[test]
+fn skyrim_optional_archives_match_the_corpus_gate_tier() {
+    let toml_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/debug_profiles.toml");
+    let toml =
+        std::fs::read_to_string(&toml_path).unwrap_or_else(|e| panic!("read {toml_path:?}: {e}"));
+
+    for (game, header) in [
+        (Game::SkyrimSE, "[profiles.skyrim_se]"),
+        (Game::Oblivion, "[profiles.oblivion]"),
+    ] {
+        let start = toml
+            .find(header)
+            .unwrap_or_else(|| panic!("{toml_path:?} has no {header} block"))
+            + header.len();
+        let section = match toml[start..].find("\n[profiles.") {
+            Some(end) => &toml[start..start + end],
+            None => &toml[start..],
+        };
+
+        let missing: Vec<&str> = game
+            .optional_mesh_archives()
+            .iter()
+            .copied()
+            .filter(|name| !section.contains(&format!("\"{name}\"")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "#3924: {missing:?} are swept by this gate but named nowhere in \
+             {header} — the gate would be measuring parse coverage for content \
+             the engine has no way to open. Add them to that profile's \
+             `optional_bsas` (present-only) or `default_bsas` (every install).",
+        );
+    }
+}

@@ -52,6 +52,31 @@ pub struct GameProfileEntry {
     /// args when `--game <key>` is used. Empty Vec for Skyrim+ and
     /// older. Phase 20.
     pub default_materials_bsas: Vec<String>,
+    /// Whole-mod archives that ship with some *editions* of the game but are
+    /// not on every install — Anniversary Edition's `_ResourcePack.bsa` and
+    /// the per-Creation-Club `cc*.bsa` set. Expanded present-only: an entry
+    /// that is not on disk is skipped silently, because absence is the
+    /// normal case rather than a misconfiguration.
+    ///
+    /// #3924 — separate from [`Self::default_bsas`] for two reasons. Absence
+    /// must not warn (a `default_bsas` miss is a broken install and says so),
+    /// and these are not category archives: unlike the vanilla
+    /// `Skyrim - Meshes0` / `Textures0` split, one `cc*.bsa` carries that
+    /// mod's meshes, textures and sounds together, so each entry is expanded
+    /// into every content flag rather than just `--bsa`. Measured on a stock
+    /// AE install, 2026-09-07: all five carry `meshes\` + `textures\`, and
+    /// three also carry `sound\`.
+    ///
+    /// Appended after the required lists so #3637's last-wins archive
+    /// precedence puts add-on content on top of vanilla, which is the
+    /// override order the game itself uses.
+    ///
+    /// The NIF corpus gate models the same tier as
+    /// `Game::optional_mesh_archives` (`crates/nif/tests/common/mod.rs`);
+    /// `skyrim_optional_archives_match_the_corpus_gate_tier` in
+    /// `crates/nif/tests/parse_real_nifs.rs` keeps the two from drifting, so
+    /// the gate cannot go on measuring content the engine cannot open.
+    pub optional_bsas: Vec<String>,
     /// Optional worldspace/grid boot target used by `--game <key>
     /// --new-game`. Kept in the profile because intro placements differ by
     /// title and edition.

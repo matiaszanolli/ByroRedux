@@ -89,6 +89,10 @@ struct ProfileEntryDe {
     default_sounds_bsas: Vec<String>,
     #[serde(default)]
     default_materials_bsas: Vec<String>,
+    /// Present-only add-on archives (AE resource pack / Creation Club).
+    /// See `GameProfileEntry::optional_bsas` — #3924.
+    #[serde(default)]
+    optional_bsas: Vec<String>,
     #[serde(default)]
     new_game_worldspace: Option<String>,
     #[serde(default)]
@@ -111,6 +115,7 @@ impl From<ProfileEntryDe> for GameProfileEntry {
             default_scripts_bsas: de.default_scripts_bsas,
             default_sounds_bsas: de.default_sounds_bsas,
             default_materials_bsas: de.default_materials_bsas,
+            optional_bsas: de.optional_bsas,
             new_game_worldspace: de.new_game_worldspace,
             new_game_grid: de.new_game_grid,
             new_game_radius: de.new_game_radius,
@@ -405,6 +410,7 @@ sample_cells = ["GSDocMitchellHouse"]
             default_scripts_bsas: p.default_scripts_bsas.clone(),
             default_sounds_bsas: p.default_sounds_bsas.clone(),
             default_materials_bsas: p.default_materials_bsas.clone(),
+            optional_bsas: p.optional_bsas.clone(),
             new_game_worldspace: p.new_game_worldspace.clone(),
             new_game_grid: p.new_game_grid.clone(),
             new_game_radius: p.new_game_radius,
