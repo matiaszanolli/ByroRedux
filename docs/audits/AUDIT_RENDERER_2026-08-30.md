@@ -831,6 +831,25 @@ Dimensions 1–3 are clean of new CRITICAL/HIGH structural defects.
 
 #### REN-2026-08-30-D1-01: `TlasIntegritySnapshot` was built to close the #1228 telemetry gap but has no consumer anywhere in the workspace — the three `missing_blas` cause counters still surface only through the rate-limited `log::warn!`
 
+> **RETRACTED (#3996, 2026-09-08).** This finding is false, and was false on
+> the day it was written. `AccelerationManager::integrity_snapshot()` has had a
+> live consumer since `9c805cd7` (2026-08-14): `integrity_snapshot()` ->
+> `VulkanContext::fill_rt_integrity_stats` -> the `RtIntegrityStats` ECS
+> resource, refreshed every frame from `byroredux/src/app_events.rs` -> the
+> registered `rt.integrity` console command. `RtIntegrityStats::verdict`
+> implements exactly the positive assertion `TlasIntegritySnapshot`'s docstring
+> promised.
+>
+> Cause: `.claude/commands/audit-renderer/SKILL.md`'s Dimension-1 bullet
+> asserted "no registered command reads them", which told the auditor the
+> answer before the grep — and the grep used the *struct* name
+> (`TlasIntegritySnapshot`), which cannot match a call to the *method*
+> (`integrity_snapshot`). The SKILL sentence is corrected under #3996.
+>
+> Do not file this. (The genuinely dead accessors on this surface were a
+> different four, filed and fixed as #3999.)
+
+
 
 - **Severity**: LOW
 - **Dimension**: AS Correctness (observability)

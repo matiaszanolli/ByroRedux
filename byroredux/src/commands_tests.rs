@@ -1058,6 +1058,57 @@ fn rt_integrity_prints_the_shared_machine_line() {
     assert!(text.contains("verdict=PASS"), "{text}");
 }
 
+/// #3996 — the audit skill must not tell an auditor the answer before they
+/// look, and must not tell them a wrong one.
+///
+/// `audit-renderer/SKILL.md`'s Dimension-1 bullet asserted "no registered
+/// command reads them" about the three `missing_blas` cause counters. That
+/// became false with `9c805cd7` (2026-08-14), which wired
+/// `integrity_snapshot()` -> `fill_rt_integrity_stats` -> `RtIntegrityStats`
+/// -> the `rt.integrity` command this file tests. The sentence then
+/// manufactured the same false finding in two consecutive sweeps
+/// (`REN-2026-08-30-D1-01`, `REN-2026-09-05-D1-02`), the second explicitly
+/// recommended for GitHub filing against code whose maintainer would have had
+/// to disprove it.
+///
+/// Prose cannot be compiled, so the pairing needs a gate. This one is
+/// bidirectional on purpose: it fires if the claim comes back while the chain
+/// exists, and it also fires if the chain is deleted while the corrected text
+/// still describes it — either half going stale is the same defect.
+#[test]
+fn the_audit_skill_does_not_claim_the_rt_integrity_chain_is_unread() {
+    let skill = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../.claude/commands/audit-renderer/SKILL.md");
+    let Ok(text) = std::fs::read_to_string(&skill) else {
+        // The skill file is developer tooling, not a shipped artefact; a
+        // checkout without it must not fail the suite.
+        eprintln!("[#3996] {skill:?} not present — skipping");
+        return;
+    };
+
+    // Composed at runtime so this test's own text is not what it matches.
+    let retracted = format!("no registered command {} them", "reads");
+    assert!(
+        !text.contains(retracted.as_str()),
+        "audit-renderer/SKILL.md claims no registered command reads the \
+         missing_blas counters. `rt.integrity` does, every frame, and has \
+         since 9c805cd7 — that sentence produced a false finding in two \
+         consecutive sweeps (#3996)"
+    );
+
+    // The other direction: the corrected text names the chain, so the chain
+    // has to still be there.
+    assert!(
+        text.contains("fill_rt_integrity_stats") && text.contains("rt.integrity"),
+        "SKILL.md no longer names the integrity chain it tells auditors to \
+         verify as a regression guard (#3996)"
+    );
+    assert!(
+        RtIntegrityCommand.name() == "rt.integrity",
+        "the command SKILL.md names was renamed; update the guard text with it"
+    );
+}
+
 #[test]
 fn rt_integrity_without_resource_says_so() {
     let world = World::new();

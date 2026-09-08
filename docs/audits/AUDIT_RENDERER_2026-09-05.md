@@ -420,6 +420,28 @@ None.
 
 #### REN-2026-09-05-D1-02: `TlasIntegritySnapshot` remains a dead accessor with no consumer anywhere in the workspace
 
+> **RETRACTED (#3996, 2026-09-08).** This finding is false, and was false on
+> the day it was written — the consumer predates it by three weeks. It was
+> re-verified from the same stale SKILL sentence rather than from the code, and
+> then explicitly recommended as "the one finding from this run that should
+> actually be filed". `AccelerationManager::integrity_snapshot()` has had a
+> live consumer since `9c805cd7` (2026-08-14): `integrity_snapshot()` ->
+> `VulkanContext::fill_rt_integrity_stats` -> the `RtIntegrityStats` ECS
+> resource, refreshed every frame from `byroredux/src/app_events.rs` -> the
+> registered `rt.integrity` console command. `RtIntegrityStats::verdict`
+> implements exactly the positive assertion `TlasIntegritySnapshot`'s docstring
+> promised.
+>
+> Cause: `.claude/commands/audit-renderer/SKILL.md`'s Dimension-1 bullet
+> asserted "no registered command reads them", which told the auditor the
+> answer before the grep — and the grep used the *struct* name
+> (`TlasIntegritySnapshot`), which cannot match a call to the *method*
+> (`integrity_snapshot`). The SKILL sentence is corrected under #3996.
+>
+> Do not file this. (The genuinely dead accessors on this surface were a
+> different four, filed and fixed as #3999.)
+
+
 - **Severity**: LOW
 - **Dimension**: AS Correctness (observability)
 - **Status**: **EXISTING but UNFILED.** Reported as `REN-2026-08-30-D1-01` in
@@ -463,8 +485,10 @@ Correctness → safety → optimization.
 3. **`REN-2026-09-05-DOC-01`** — regenerate the `volumetrics_inject.comp`
    binding table. Highest-leverage of the doc fixes, because this table's
    incompleteness is causally connected to how long the CRITICAL survived.
-4. **`REN-2026-09-05-D1-02`** — file the issue for the dead
-   `TlasIntegritySnapshot` accessor (two sweeps without one).
+4. ~~**`REN-2026-09-05-D1-02`** — file the issue for the dead
+   `TlasIntegritySnapshot` accessor (two sweeps without one).~~
+   **RETRACTED (#3996)** — the accessor is not dead and was not dead when this
+   was written; see the retraction on the finding itself. Do not file.
 5. **`REN-2026-09-05-D5-01`**, **`REN-2026-09-05-DOC-02`** — one-sentence
    doc/comment corrections, batchable with any nearby work.
 6. **`REN-2026-09-05-D1-01`** — already tracked as #3824; no new action.
