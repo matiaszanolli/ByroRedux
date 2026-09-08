@@ -630,21 +630,34 @@ pub(super) fn dof_effective_view_proj(
     let lens_u = disk_u * dof.aperture;
     let lens_v = disk_v * dof.aperture;
 
-    let pos = Vec3::from_array(camera_pos);
     let right = Vec3::from_array(dof.cam_right);
     let up = Vec3::from_array(dof.cam_up);
     let fwd = Vec3::from_array(dof.cam_forward);
 
-    // Jitter the camera position on the aperture disk (absolute).
-    let jittered_eye = pos + lens_u * right + lens_v * up;
-    // All rays converge at the focal plane (absolute).
-    let focal_pt = pos + dof.focus_dist * fwd;
+    // #4002 — rebase FIRST, then compose. Both offsets below used to be added
+    // to the raw absolute `camera_pos` and only rebased inside the
+    // `look_at_rh` call, which threw the aperture term away before it could
+    // matter: at Markarth's X ~ -176 000 an f32 ULP is 0.015625, so a sub-unit
+    // lens offset is quantised (and below ~0.008 u discarded outright) by that
+    // addition. The subtraction itself was never the lossy step — `render_origin`
+    // is a multiple of 4096 and the difference is < 4096, so it is exactly
+    // representable — which is why doing it first is exact and free.
+    let rel = Vec3::from_array(camera_pos) - render_origin;
 
-    let jittered_view =
-        Mat4::look_at_rh(jittered_eye - render_origin, focal_pt - render_origin, up);
+    // Jitter the camera position on the aperture disk (render-relative).
+    let jittered_eye_rel = rel + lens_u * right + lens_v * up;
+    // All rays converge at the focal plane (render-relative).
+    let focal_pt_rel = rel + dof.focus_dist * fwd;
+
+    let jittered_view = Mat4::look_at_rh(jittered_eye_rel, focal_pt_rel, up);
     let proj = Mat4::from_cols_array(&dof.proj_mat);
     let jvp = (proj * jittered_view).to_cols_array();
-    (jvp, jittered_eye.to_array())
+    // The returned eye stays ABSOLUTE per this function's contract (the
+    // shader's view-dir math wants it). Re-adding `render_origin` re-quantises
+    // it to the absolute grid, exactly as before — that is inherent to
+    // returning an absolute f32 position at exterior magnitude and is not what
+    // this fix addresses. The matrix is.
+    (jvp, (jittered_eye_rel + render_origin).to_array())
 }
 
 /// FSR-vs-DOF interaction gate (#2197, extracted from `draw_frame`).
@@ -2603,6 +2616,66 @@ mod dof_view_proj_tests {
         assert!(
             eye[0] != 0.0 || eye[1] != 0.0,
             "eye should move on the aperture disk"
+        );
+    }
+
+    /// #4002 — the aperture jitter must survive at exterior magnitudes.
+    ///
+    /// The function returns a render-origin-relative matrix, but it used to
+    /// compose `jittered_eye` and `focal_pt` from the raw *absolute*
+    /// `camera_pos` and only rebase inside the `look_at_rh` call. At
+    /// Markarth's X ~ -176 000 an f32 ULP is 0.015625, so a sub-unit lens
+    /// offset was quantised — and below ~0.008 u discarded outright — by that
+    /// addition, before the rebase that was supposed to protect it.
+    ///
+    /// Asserted as position independence rather than "the matrices differ",
+    /// which is the property the rebase actually buys: two cameras with
+    /// identical geometry *relative to their own render origins* must produce
+    /// the same view-projection regardless of where in the worldspace they
+    /// sit. Pre-fix the near case jitters and the far case does not, so they
+    /// disagree; the far case alone would also catch it, but this says why.
+    #[test]
+    fn the_aperture_jitter_is_render_relative_not_absolute() {
+        let pin = pinhole();
+        // A deliberately sub-ULP aperture at the far position: 0.01 u against
+        // an ULP of 0.015625 there.
+        let dof = dof_view(0.01, 20.0);
+
+        // Same offset from the render origin in both cases: (128, 200, 3000).
+        // `render_origin` is always a multiple of 4096, and the difference is
+        // < 4096, so the subtraction is exact on both sides.
+        let near_cam = [128.0f32, 200.0, 3000.0];
+        let near_origin = Vec3::ZERO;
+        let far_cam = [-176_000.0f32, 200.0, 3000.0];
+        let far_origin = Vec3::new(-176_128.0, 0.0, 0.0);
+
+        let mut jitter_seen = false;
+        for fc in 0..32u32 {
+            let (near_vp, _) = dof_effective_view_proj(&dof, fc, near_cam, near_origin, &pin);
+            let (far_vp, _) = dof_effective_view_proj(&dof, fc, far_cam, far_origin, &pin);
+
+            for (i, (n, f)) in near_vp.iter().zip(far_vp.iter()).enumerate() {
+                assert!(
+                    (n - f).abs() <= 1.0e-5 * n.abs().max(1.0),
+                    "frame {fc}, element {i}: the view-projection depends on \
+                     absolute world position ({n} vs {f}) — the aperture \
+                     offset is being quantised by the absolute camera \
+                     position before the render-origin rebase (#4002)"
+                );
+            }
+
+            // Guard against a vacuous pass: if the disk sample never moved the
+            // eye at all, both sides would trivially agree.
+            let (pinhole_like_vp, _) =
+                dof_effective_view_proj(&dof_view(0.0, 20.0), fc, near_cam, near_origin, &pin);
+            if near_vp != pinhole_like_vp {
+                jitter_seen = true;
+            }
+        }
+        assert!(
+            jitter_seen,
+            "no frame produced a jittered matrix, so the comparison above \
+             proved nothing — the aperture is not reaching the view basis"
         );
     }
 
