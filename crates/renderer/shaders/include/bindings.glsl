@@ -31,8 +31,9 @@ struct GpuInstance {
     //   bit 1      — NiAlphaProperty blend bit (#263)
     //   bit 2      — caustic source (#321)
     //   bit 3      — terrain splat (#470); enables the ATXT blend loop
-    //                against `terrainTiles[flags >> 16]`
-    //   bits 16-31 — terrain tile index (only meaningful with bit 3)
+    //                against `terrainTiles[]`
+    //   bits 16-31 — terrain tile index (only meaningful with bit 3),
+    //                unpacked via INSTANCE_TERRAIN_TILE_SHIFT/_MASK
     uint flags;
     uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
     float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
@@ -400,7 +401,9 @@ layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
 // Per-terrain-tile bindless texture indices for LAND splat layers
 // (#470). Fragment shader reads `terrainTiles[tileIdx]` when the
 // `INSTANCE_FLAG_TERRAIN_SPLAT` bit (flags bit 3) is set. The tile
-// index is packed into the top 16 bits of `flags`.
+// index is packed into the top 16 bits of `flags` and must be
+// unpacked with the generated `INSTANCE_TERRAIN_TILE_SHIFT`/`_MASK`
+// macros, never a literal — see #4027.
 struct GpuTerrainTile {
     uint layerDiffuseIndex[8];
     uint layerNormalIndex[8];

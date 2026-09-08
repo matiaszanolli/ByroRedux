@@ -231,6 +231,8 @@
 #define INSTANCE_RENDER_LAYER_MASK 3u
 #define INSTANCE_FLAG_FLAT_SHADING 128u
 #define INSTANCE_FLAG_DIFFUSE_ALPHA 256u
+#define INSTANCE_TERRAIN_TILE_SHIFT 16u
+#define INSTANCE_TERRAIN_TILE_MASK 65535u
 
 // Per-material flag bits (`GpuMaterial.materialFlags`).
 // Authoritative values: vulkan/material.rs `material_flag::*`. #1190.

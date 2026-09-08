@@ -807,6 +807,16 @@ fn main() {
         "#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define INSTANCE_TERRAIN_TILE_SHIFT {INSTANCE_TERRAIN_TILE_SHIFT}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define INSTANCE_TERRAIN_TILE_MASK {INSTANCE_TERRAIN_TILE_MASK}u"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(

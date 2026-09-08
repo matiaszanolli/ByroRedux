@@ -783,8 +783,8 @@ pub const BLOOM_INTENSITY: f32 = 0.15;
 pub const VOLUME_FAR: f32 = 8_960.0;
 
 // Per-instance flag bits on `GpuInstance.flags` (lower 16 bits — the
-// upper 16 bits pack the terrain-tile slot per
-// `INSTANCE_TERRAIN_TILE_SHIFT/MASK`). Authoritative Rust-side values
+// upper 16 bits pack the terrain-tile slot, mirrored below as
+// `INSTANCE_TERRAIN_TILE_SHIFT`/`_MASK`). Authoritative Rust-side values
 // live in `crates/renderer/src/vulkan/scene_buffer/constants.rs`; this
 // shader-side mirror is pinned equal via
 // `instance_flag_bits_match_scene_buffer_consts` so the two layers
@@ -815,6 +815,19 @@ pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 // authored alpha) can't leak transparency into the discard / decalWeight
 // / finalAlpha paths on a pure-blend mesh. See #1653.
 pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
+// Bit offset/mask for the terrain-tile slot packed into bits 16..31 of
+// `GpuInstance.flags` (#470). This was the last packed field in `flags`
+// that GLSL unpacked with hand-written literals — `triangle.frag` read
+// `(inst.flags >> 16) & 0xFFFFu` while the CPU packed it with the named
+// constants, exactly the pattern #2045 removed for the render-layer bits
+// one field earlier. Pinned equal to
+// `scene_buffer::constants::INSTANCE_TERRAIN_TILE_SHIFT`/`_MASK` via
+// `instance_terrain_tile_bits_match_scene_buffer_consts` (#4027), so
+// widening the window (`MAX_TERRAIN_TILES` is capped at 65535 *by this
+// encoding*) can no longer leave the shader indexing `terrainTiles[]`
+// through a stale window.
+pub const INSTANCE_TERRAIN_TILE_SHIFT: u32 = 16;
+pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
 
 // Per-material flag bits on `GpuMaterial.materialFlags`. Authoritative
 // Rust-side values live in `crates/renderer/src/vulkan/material.rs`

@@ -288,7 +288,8 @@ void main() {
     GpuTerrainTile terrainTile;
     vec4 terrainSplat[2] = vec4[2](fragSplat0, fragSplat1);
     if (terrainSplatActive) {
-        uint terrainTileIdx = (inst.flags >> 16) & 0xFFFFu;
+        uint terrainTileIdx =
+            (inst.flags >> INSTANCE_TERRAIN_TILE_SHIFT) & INSTANCE_TERRAIN_TILE_MASK;
         terrainTile = terrainTiles[nonuniformEXT(terrainTileIdx)];
     }
 

@@ -884,6 +884,8 @@ mod tests {
             ("INSTANCE_RENDER_LAYER_MASK", format!("#define INSTANCE_RENDER_LAYER_MASK {INSTANCE_RENDER_LAYER_MASK}u")),
             ("INSTANCE_FLAG_FLAT_SHADING", format!("#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u")),
             ("INSTANCE_FLAG_DIFFUSE_ALPHA", format!("#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u")),
+            ("INSTANCE_TERRAIN_TILE_SHIFT", format!("#define INSTANCE_TERRAIN_TILE_SHIFT {INSTANCE_TERRAIN_TILE_SHIFT}u")),
+            ("INSTANCE_TERRAIN_TILE_MASK", format!("#define INSTANCE_TERRAIN_TILE_MASK {INSTANCE_TERRAIN_TILE_MASK}u")),
             ("MAT_FLAG_VERTEX_COLOR_EMISSIVE", format!("#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u")),
             ("MAT_FLAG_EFFECT_SOFT", format!("#define MAT_FLAG_EFFECT_SOFT {MAT_FLAG_EFFECT_SOFT}u")),
             ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
@@ -1777,6 +1779,62 @@ mod tests {
         };
         assert_eq!(INSTANCE_RENDER_LAYER_SHIFT, SB_RENDER_LAYER_SHIFT);
         assert_eq!(INSTANCE_RENDER_LAYER_MASK, SB_RENDER_LAYER_MASK);
+    }
+
+    /// #4027 — the terrain-tile window was the last packed field in
+    /// `GpuInstance.flags` that GLSL unpacked by hand: the CPU packed it
+    /// with `INSTANCE_TERRAIN_TILE_SHIFT`/`_MASK` in
+    /// `build_and_upload_instances.rs` while `triangle.frag` read a bare
+    /// `>> 16` / `& 0xFFFFu`, so widening the window (bounded at 65535 *by
+    /// this encoding*, `MAX_TERRAIN_TILES` being well under it today) would
+    /// have moved only the Rust half. The shader would then have indexed
+    /// `terrainTiles[]` through a truncated slot — wrong diffuse/normal/
+    /// specular layers on every exterior cell, with no test failure and no
+    /// validation error. Same fix #2045 applied to the render-layer bits.
+    #[test]
+    fn instance_terrain_tile_bits_match_scene_buffer_consts() {
+        use crate::vulkan::scene_buffer::{
+            INSTANCE_TERRAIN_TILE_MASK as SB_TERRAIN_TILE_MASK,
+            INSTANCE_TERRAIN_TILE_SHIFT as SB_TERRAIN_TILE_SHIFT,
+        };
+        assert_eq!(INSTANCE_TERRAIN_TILE_SHIFT, SB_TERRAIN_TILE_SHIFT);
+        assert_eq!(INSTANCE_TERRAIN_TILE_MASK, SB_TERRAIN_TILE_MASK);
+    }
+
+    /// #4027 — the pin above only guarantees the two Rust layers agree; it
+    /// says nothing about which values the shader actually applies. This
+    /// asserts `triangle.frag` unpacks the tile slot through the generated
+    /// macros and has not regressed to the literals, which would silently
+    /// re-open the one-directional gap.
+    #[test]
+    fn triangle_frag_unpacks_terrain_tile_through_the_generated_macros() {
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(
+            src.contains(
+                "(inst.flags >> INSTANCE_TERRAIN_TILE_SHIFT) & INSTANCE_TERRAIN_TILE_MASK"
+            ),
+            "triangle.frag must unpack the terrain-tile slot with the \
+             INSTANCE_TERRAIN_TILE_SHIFT/_MASK #defines from \
+             shader_constants.glsl, not literals (#4027)",
+        );
+        // The literal form the fix removed. Composed at runtime so this
+        // assertion's own source text cannot satisfy the scan it performs.
+        let literal = format!("inst.flags {} 16", ">>");
+        assert!(
+            !src.contains(&literal),
+            "triangle.frag re-hand-wrote the terrain-tile shift — \
+             use INSTANCE_TERRAIN_TILE_SHIFT (#4027)",
+        );
+        // And it must not shadow the macros with locals, the way #2045's
+        // pre-fix render-layer constants did.
+        for name in ["INSTANCE_TERRAIN_TILE_SHIFT", "INSTANCE_TERRAIN_TILE_MASK"] {
+            let needle = format!("const uint {name}");
+            assert!(
+                !src.contains(&needle),
+                "triangle.frag must not redeclare {name} — the #define from \
+                 shader_constants.glsl is the source of truth (#4027)",
+            );
+        }
     }
 
     /// #1190 (TD4-NEW-01) — Same pin, for `MAT_FLAG_*` against
