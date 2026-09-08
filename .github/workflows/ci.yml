@@ -41,6 +41,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/check-issue-traceability.sh --push '${{ github.event.before }}' '${{ github.event.after }}'
+      # #4024 — the R6a-stale-* fold ritual carried "harness still confirmed
+      # byte-stable since <record>" forward verbatim through five updates; it
+      # went false on 2026-08-28 and was repeated twice. The claim is derivable
+      # from `git log <record>..HEAD`, so it gets derived. Lives in THIS job
+      # because it needs the full history this job already fetches — the shader
+      # job that runs the sibling `fsr_bench_report.py --self-test` is a
+      # depth-1 clone and cannot answer the question.
+      - name: Self-test the bench-harness provenance check
+        run: scripts/check-bench-harness-provenance.sh --self-test
 
   source-integrity:
     name: Text-source integrity
