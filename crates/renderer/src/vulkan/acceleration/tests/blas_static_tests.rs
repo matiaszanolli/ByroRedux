@@ -294,9 +294,26 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
         // resident-based break can never be satisfied and would evict every
         // idle candidate on the first pressure event, guaranteeing a rebuild
         // storm on the next frame.
+        // #3994 — anchored to `should_evict_mid_batch(`, not to a bare
+        // `resident_static_blas_bytes()` search. #3979 added a SECOND call
+        // of that accessor (the Phase-1 admission gate), so the bare search
+        // now matches whether or not the trigger still uses it — the exact
+        // "source-scan pin that cannot fail" #3994 was filed about.
+        let trigger = BLAS_STATIC_RS
+            .find("should_evict_mid_batch(")
+            .expect("the mid-batch eviction trigger must still exist");
+        // Bounded by the SECOND argument rather than by the first `)` —
+        // that paren belongs to `resident_static_blas_bytes()` itself.
+        let trigger_args_end = BLAS_STATIC_RS[trigger..]
+            .find("pending_bytes,")
+            .map(|rel| trigger + rel)
+            .expect("the trigger's second argument must still be `pending_bytes`");
         assert!(
-            BLAS_STATIC_RS.contains("self.resident_static_blas_bytes(),"),
-            "the mid-batch eviction trigger must use resident bytes (#3840)"
+            BLAS_STATIC_RS[trigger..trigger_args_end]
+                .contains("self.resident_static_blas_bytes(),"),
+            "the mid-batch eviction trigger's first argument must be the RESIDENT \
+             figure (#3840): no `tick_deferred_destroy` runs during a batch, so \
+             bytes this batch already evicted are still on the GPU"
         );
         let loop_break = BLAS_STATIC_RS
             .find("if !blas_over_budget(\n                self.static_blas_bytes,")

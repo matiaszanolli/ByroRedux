@@ -31,7 +31,7 @@ and the reflection-miss sibling at `triangle.frag:2212`: `sampleDalcCube(R) * (1
 For identically-authored ambient, a Skyrim DALC-authored cell now gets a bounded-path escape / reflection-miss environment term ~π× (≈3.14×) dimmer than an FO3/FNV/Oblivion XCLL cell. That is the same systematic cross-game ambient gap REND-#1452 fixed on the direct-ambient path, re-opened on the indirect path. Visible as darker indirect floors / reflection misses in Skyrim interiors relative to Fallout interiors.
 
 ## Related
-`AUDIT_RENDERER_2026-08-02.md:275-277` (fixed by #2244); the regression guard `bounded_path_converts_dalc_irradiance_to_environment_radiance` (`gpu_instance_layout_tests.rs:1148`) pins the DALC arm only.
+`AUDIT_RENDERER_2026-08-02.md:275-277` (fixed by #2244); the regression guard `bounded_path_converts_dalc_irradiance_to_environment_radiance` (`scene_buffer/shader_contract_tests.rs`) pins the DALC arm only.
 
 ## Suggested Fix
 Pick one convention for the pair and apply it to all three arms of `pathEnvironmentRadiance` (and both arms at `triangle.frag:2212`). Since `ambient`/`sampleDalcCube(N)` are used interchangeably elsewhere, `sceneFlags.yzw` is also irradiance and should take the same `1/PI`; extend the regression test to cover the non-DALC arms.

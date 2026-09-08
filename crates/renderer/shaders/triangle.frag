@@ -1902,15 +1902,18 @@ void main() {
         //   F         = fresnelSchlick(NdotV, 0.04) — dielectric Fresnel
         //   surface   = mix(refrColor, reflColor, F)
         //
-        // Glass has IOR ≈ 1.5 (soda-lime, window glass, drinking glass).
-        // At normal incidence F ≈ 0.04 (96% transmits), at grazing
-        // F → 1.0 (near-mirror). This is what separates the Phase 3
-        // path from Phase 1's "fire `-V` through" — Phase 1 pretended
-        // glass had no IOR and transmission was a straight line.
-        // #1248 — IOR now per-material instead of hardcoded 1.5. The
-        // pre-#1248 constant 1.5 still matches the GpuMaterial::default
-        // so unauthored glass renders identically; authored values
-        // (BGSM v9+, Starfield .mat) take effect.
+        // Dielectric glass sits near IOR 1.4-1.5, so at normal incidence
+        // F ≈ 0.04 (96% transmits) and at grazing F → 1.0 (near-mirror).
+        // That is what separates the Phase 3 path from Phase 1's "fire
+        // `-V` through" — Phase 1 pretended glass had no IOR and
+        // transmission was a straight line.
+        // #1248 — IOR is per-material, not hardcoded. #4012 — this block
+        // used to restate "Glass has IOR ≈ 1.5" eighty lines after the
+        // f0Dielectric comment above had already recorded that canonical
+        // glass carries `mat.ior = 1.45` (GLASS_SURFACE_BEHAVIOR) and
+        // that 1.5 is DEFAULT_DIELECTRIC_IOR, the generic-dielectric
+        // fallback rather than a glass-specific figure. Authored values
+        // (BGSM v9+, Starfield .mat) take effect either way.
         float GLASS_IOR = max(mat.ior, 1e-3);
         float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
 

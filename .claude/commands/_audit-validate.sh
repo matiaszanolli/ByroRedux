@@ -445,10 +445,76 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
     echo "  Set SKIP_SYMBOL_CHECK=1 to silence both advisories."
 fi
 
-if (( stale_count > 0 )); then
+# ---------------------------------------------------------------------------
+# Guard-citation attribution (#4013).
+#
+# The path gate above cannot catch this class: the skills cite a regression
+# guard as `` `test_name` (`some_tests.rs`) ``, and when the test moves to a
+# sibling file the backticked path still RESOLVES — only the symbol->file
+# association is wrong. An auditor working the checklist opens the named
+# file, does not find the guard, and either files a false regression or
+# re-derives the location by hand. Three of the six citations in this shape
+# were wrong when the check was written, all three pointing at
+# `gpu_instance_layout_tests.rs` for tests living in `shader_contract_tests.rs`.
+#
+# Deliberately narrow — an identifier IMMEDIATELY followed by a
+# parenthesised `*tests.rs` path, which is the guard-citation idiom and
+# nothing else. A looser same-sentence rule was tried first and produced
+# 40% false positives (a function named mid-bullet next to an unrelated
+# "Guard tests:" clause at the end of the same line, and a brace-expanded
+# `{a,b}.rs` set that names both correct homes).
+#
+# Fails ONLY on a provable mis-attribution: the identifier is defined
+# somewhere in the tree, and nowhere that matches the cited path. An
+# identifier found nowhere is left to the symbol advisory above — that is
+# "renamed or never existed", a different defect with a different fix, and
+# hard-failing on it would block a skill written ahead of its guard.
+misattributed_count=0
+rs_paths_file=$(mktemp)
+grep -E '\.rs$' "$all_paths_file" > "$rs_paths_file"
+
+for skill in "${skill_files[@]}"; do
+    [[ -f "$skill" ]] || continue
+    while IFS= read -r match; do
+        [[ -n "$match" ]] || continue
+        line_num="${match%%:*}"
+        span="${match#*:}"
+        span="${span#\`}"                 # drop the leading backtick FIRST,
+        ident="${span%%\`*}"              # so this cuts at the CLOSING one
+        cited="${span##*(\`}"
+        cited="${cited%\`)}"
+        [[ -n "$ident" ]] || continue
+
+        # Where is `fn <ident>` actually defined? `xargs -a` rather than
+        # `$(cat ...)` — the repo has thousands of tracked .rs files and the
+        # expanded form is an ARG_MAX hazard.
+        homes=$(xargs -a "$rs_paths_file" grep -lE "fn ${ident}[[:space:]]*\(" 2>/dev/null || true)
+        [[ -n "$homes" ]] || continue   # nowhere: the symbol advisory's job
+
+        if ! grep -qE "(^|/)${cited//./\\.}\$" <<< "$homes"; then
+            if (( misattributed_count == 0 )); then
+                echo
+                echo "MIS-ATTRIBUTED guard citations (the path resolves; the symbol is not in it):"
+            fi
+            echo "  $skill:$line_num"
+            echo "      \`$ident\` cited as living in \`$cited\`"
+            echo "      actually defined in: $(tr '\n' ' ' <<< "$homes")"
+            misattributed_count=$((misattributed_count + 1))
+        fi
+    done < <(grep -noE '`[a-z][a-z0-9_]{11,}`[[:space:]]*\(`[A-Za-z0-9_/.]*tests\.rs`\)' "$skill" 2>/dev/null || true)
+done
+rm -f "$rs_paths_file"
+
+if (( misattributed_count > 0 )); then
     echo
-    echo "FAIL: $stale_count stale path reference(s)."
-    echo "Fix: update the audit skill files, OR delete the stale ref if the target moved."
+    echo "FAIL: $misattributed_count mis-attributed guard citation(s)."
+    echo "Fix: repoint the citation at the file that actually defines the test."
+fi
+
+if (( stale_count > 0 || misattributed_count > 0 )); then
+    echo
+    (( stale_count > 0 )) && echo "FAIL: $stale_count stale path reference(s)."
+    (( stale_count > 0 )) && echo "Fix: update the audit skill files, OR delete the stale ref if the target moved."
     exit 1
 fi
 echo "OK: all path references valid."

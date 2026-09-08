@@ -163,13 +163,25 @@ float dielectricF0FromIor(float eta) {
 // **Split return** (#1252 / REN-D6-2026-05-24-01): the diffuse and
 // sheen lobes have DIFFERENT scaling conventions — diffuse is /PI
 // (Lambertian), sheen is NOT /PI (Disney 2012 spec: layered
-// Fresnel-shaped highlight). The two call sites (fallback-directional
-// and per-light loop) need to compose them with different PI scales
-// because the per-light loop carries a `kD * albedo` (no /PI)
-// legacy convention. The pre-#1252 form returned both in a single
-// `vec3` so the per-light's compensating `* PI` over-amplified the
-// sheen lobe by ~3.14×. Returning a struct makes the compositional
-// shape explicit at every call site.
+// Fresnel-shaped highlight). The struct keeps them separable so the
+// caller can decide what to scale.
+//
+// There is now exactly ONE call site: `shadowableLightRadiance` in
+// `include/lighting.glsl`, which every directional, point and spot
+// source arrives through (#4012 — this paragraph used to name two,
+// and `triangle.frag`'s duplicate synthetic no-light sun/BRDF arm has
+// since been deleted; `disney_sheen_keeps_its_relative_weight_in_
+// canonical_direct_path` in `scene_buffer/shader_contract_tests.rs`
+// actively asserts its absence).
+//
+// That site carries the legacy `kD * albedo` (no /PI) Lambert
+// convention, so it must apply its compensating `* PI` to the SUM —
+// `(dd.diffuse + dd.sheen) * PI` — and that is why the two lobes have
+// to arrive separately rather than pre-summed. The pre-#1252 form
+// returned a single `vec3`, so the same `* PI` over-amplified the
+// already-un-/PI'd sheen lobe by ~3.14×; #2243 was the same asymmetry
+// reappearing as a `* PI` applied to `dd.diffuse` alone. Collapsing
+// the struct would re-arm both.
 //
 // Reference: knightcrawler25/GLSL-PathTracer (MIT)
 // `src/shaders/common/disney.glsl:67-87` — `EvalDisneyDiffuse`.
