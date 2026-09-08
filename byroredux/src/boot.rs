@@ -2812,59 +2812,187 @@ mod ai_storage_registration_tests {
     }
 }
 
-/// #3951 — a declared exclusive's `Access` must not under-report what its
-/// body actually acquires.
+/// #3951 / #4064 — a declared system's `Access` must not under-report what
+/// its body actually acquires.
 ///
-/// `add_exclusive_with_access` declarations do not affect scheduling today
-/// (`scheduler.rs`'s analyzer only walks parallel-stage pairs, and
-/// exclusives run serially), so an under-declaration is not a deadlock
-/// vector. But their stated purpose (#3473) is to be the thing compared
-/// against if either system is ever promoted to a parallel lane — and a
-/// declaration that names four of the thirteen types its body acquires
-/// defeats exactly that, silently, at the moment it would matter most.
+/// Two populations, for two different reasons.
+///
+/// **Parallel systems (`add_to_with_access`) — the load-bearing set.**
+/// `install_runtime_registries`'s three release assertions are the
+/// construction-time deadlock proof for every same-stage parallel batch, and
+/// that proof is only as sound as the declarations the analyzer reads. An
+/// under-declared parallel system yields `known_conflict_count() == 0` while
+/// a real write/write overlap sits in the batch. #4064: the check below used
+/// to cover *only* the two exclusives, i.e. exactly the population where a
+/// declaration changes nothing.
+///
+/// **Exclusive systems (`add_exclusive_with_access`).** These do not affect
+/// scheduling today (the analyzer only walks parallel-stage pairs), so an
+/// under-declaration is not a deadlock vector. But their stated purpose
+/// (#3473) is to be the thing compared against if either is ever promoted to
+/// a parallel lane — and a declaration naming four of the thirteen types its
+/// body acquires defeats exactly that, silently, at the moment it would
+/// matter most.
 ///
 /// Static source check, matching this file's existing `include_str!`
-/// convention: the two systems' bodies live in `byroredux-scripting`, and
-/// running them wants a live `World` with a provider runtime installed.
+/// convention: the bodies live in other crates, and running them wants a live
+/// `World` with a provider runtime installed.
 #[cfg(test)]
-mod scripting_system_access_declaration_tests {
+mod system_access_declaration_tests {
     const BOOT_SRC: &str = include_str!("boot.rs");
     const EXECUTE_SRC: &str =
         include_str!("../../crates/scripting/src/papyrus_provider/execute.rs");
     const OBSCRIPT_SRC: &str = include_str!("../../crates/scripting/src/obscript_runtime.rs");
 
-    /// The `Access::new()` block registered for `system` in `boot.rs`.
-    fn declaration<'a>(system: &str) -> &'a str {
-        // The test module's own text is excluded so its mentions of these
-        // system names cannot be what the scan finds.
-        let setup = BOOT_SRC
-            .split("mod scripting_system_access_declaration_tests")
-            .next()
-            .expect("split always yields a first segment");
-        let start = setup
-            .find(system)
-            .unwrap_or_else(|| panic!("{system} is not registered in boot.rs"));
-        let rest = &setup[start..];
-        let end = rest
-            .find("\n    );")
-            .unwrap_or_else(|| panic!("{system}: could not find the end of its Access block"));
-        &rest[..end]
+    const CHARACTER_SRC: &str = include_str!("systems/character.rs");
+    const CAMERA_SRC: &str = include_str!("systems/camera.rs");
+    const INTERACTION_SRC: &str = include_str!("interaction.rs");
+    const TIMER_SRC: &str = include_str!("../../crates/scripting/src/timer.rs");
+    const ANIMATION_SRC: &str = include_str!("systems/animation.rs");
+    const CORE_SYSTEMS_SRC: &str = include_str!("../../crates/core/src/ecs/systems.rs");
+    const PHYSICS_SYNC_SRC: &str = include_str!("../../crates/physics/src/sync.rs");
+    const AUDIO_SRC: &str = include_str!("systems/audio.rs");
+    const DEBUG_SRC: &str = include_str!("systems/debug.rs");
+    const METRICS_SRC: &str = include_str!("systems/metrics.rs");
+
+    /// The nine `add_to_with_access` registrations, each mapped to the
+    /// function bodies that make up its acquisition surface.
+    ///
+    /// Three of them are dispatchers or factories whose own body acquires
+    /// almost nothing: `player_controller_system` branches on `PlayerMode`
+    /// into `fly_camera_system` / `character_controller_system` (and calls
+    /// `refresh_action_state` first), `make_animation_system` is a factory
+    /// whose closure calls `animation_system_inner`, and
+    /// `physics_sync_system` fans out to same-file phase helpers. Calls are
+    /// followed automatically *within a listed file*; a hop into a different
+    /// file is listed here explicitly rather than followed, because an
+    /// unbounded cross-file follower matches on bare function names and
+    /// walks into unrelated code — that over-approximation was measured
+    /// during the audit and produced pure noise.
+    const PARALLEL_SYSTEMS: &[(&str, &[(&str, &str)])] = &[
+        (
+            "player_controller_system",
+            &[
+                (CHARACTER_SRC, "player_controller_system"),
+                (CAMERA_SRC, "fly_camera_system"),
+                (INTERACTION_SRC, "refresh_action_state"),
+            ],
+        ),
+        ("timer_tick_system", &[(TIMER_SRC, "timer_tick_system")]),
+        (
+            "make_animation_system",
+            &[(ANIMATION_SRC, "animation_system_inner")],
+        ),
+        (
+            "make_transform_propagation_system",
+            &[(CORE_SYSTEMS_SRC, "make_transform_propagation_system")],
+        ),
+        (
+            "physics_sync_system",
+            &[(PHYSICS_SYNC_SRC, "physics_sync_system")],
+        ),
+        (
+            "camera_follow_system",
+            &[(CHARACTER_SRC, "camera_follow_system")],
+        ),
+        ("reverb_zone_system", &[(AUDIO_SRC, "reverb_zone_system")]),
+        ("log_stats_system", &[(DEBUG_SRC, "log_stats_system")]),
+        (
+            "metrics_sample_system",
+            &[(METRICS_SRC, "metrics_sample_system")],
+        ),
+    ];
+
+    /// Production text only. Splitting on a bare `#[cfg(test)]` truncates at
+    /// the first `#[cfg(test)] use` / `#[cfg(test)] fn` instead — which in
+    /// `systems/animation.rs` sits at line 21 and would hide the entire
+    /// file, so the scan would silently find nothing.
+    fn production(src: &str) -> &str {
+        src.split_once("#[cfg(test)]\nmod ")
+            .map_or(src, |(before, _)| before)
     }
 
-    /// Every storage/resource type acquired inside `system`'s body.
-    fn acquired(source: &str, system: &str) -> Vec<String> {
-        let start = source
-            .find(&format!("pub fn {system}("))
-            .unwrap_or_else(|| panic!("{system}: definition not found"));
-        let rest = &source[start..];
-        let end = rest
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("{system}: could not find the end of its body"));
-        let body = &rest[..end];
+    /// `boot.rs` up to this module, so the module's own mentions of a system
+    /// name cannot be what a scan finds.
+    fn boot_setup() -> &'static str {
+        BOOT_SRC
+            .split("mod system_access_declaration_tests")
+            .next()
+            .expect("split always yields a first segment")
+    }
 
+    /// Balanced-paren slice of the `add_*_with_access(` call that registers
+    /// `system`.
+    ///
+    /// #4064 — anchored on the call's *registration target* (the argument
+    /// after `Stage::X`), not on the first textual occurrence of the name.
+    /// The old `setup.find(system)` would happily land on a `use` import or
+    /// a comment: `player_controller_system`'s block names
+    /// `physics_sync_system` in prose, and anchoring on that mention
+    /// compared one system's acquisitions against another's declaration.
+    fn declaration(system: &str) -> String {
+        let setup = boot_setup();
+        // Needle composed at runtime so this function's own source text
+        // cannot satisfy the scan it performs.
+        let open = format!("_with_access{}", "(");
+        let mut cursor = 0usize;
+        while let Some(found) = setup[cursor..].find(&open) {
+            let paren = cursor + found + open.len() - 1;
+            let mut depth = 0usize;
+            let mut end = paren;
+            for (offset, ch) in setup[paren..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = paren + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let block = &setup[paren..=end];
+            let target = block
+                .lines()
+                .skip(1)
+                .map(str::trim)
+                .find(|line| {
+                    !line.is_empty() && !line.starts_with("Stage::") && !line.starts_with("//")
+                })
+                .unwrap_or("")
+                .trim_end_matches(',')
+                .trim_end_matches("()");
+            if target.rsplit("::").next() == Some(system) {
+                return block.to_owned();
+            }
+            cursor = paren + 1;
+        }
+        panic!("{system}: no `add_*_with_access` registration found in boot.rs");
+    }
+
+    /// Body of `name` in `src`, delimited by the closing brace at the
+    /// function's own indentation.
+    fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let start = [format!("fn {name}("), format!("fn {name}<")]
+            .iter()
+            .filter_map(|needle| src.find(needle.as_str()))
+            .min()?;
+        let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
+        let indent = &src[line_start..start];
+        let indent = if indent.trim().is_empty() { indent } else { "" };
+        let terminator = format!("\n{indent}}}");
+        let end = src[start..]
+            .find(&terminator)
+            .map_or(src.len(), |i| start + i + terminator.len());
+        Some(&src[start..end])
+    }
+
+    /// Every storage/resource type acquired inside `body`.
+    fn acquired_in(body: &str, types: &mut Vec<String>) {
         // `.query_mut::<crate::Foo>()` -> `Foo`. Needle composed at runtime.
         let open = format!("{}{}", "::", "<");
-        let mut types: Vec<String> = Vec::new();
         for (index, _) in body.match_indices(open.as_str()) {
             let before = &body[..index];
             let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
@@ -2878,7 +3006,8 @@ mod scripting_system_access_declaration_tests {
                 continue;
             };
             let path = &tail[..close];
-            if path.is_empty() || path.contains(' ') {
+            // `$Comp` is a macro metavariable, not a type.
+            if path.is_empty() || path.contains(' ') || path.starts_with('$') {
                 continue;
             }
             let short = path.rsplit("::").next().unwrap_or(path).to_owned();
@@ -2886,13 +3015,63 @@ mod scripting_system_access_declaration_tests {
                 types.push(short);
             }
         }
+    }
+
+    /// Acquisitions of `entry` plus every function it calls that is defined
+    /// in the same file, to `MAX_DEPTH` hops.
+    fn acquired(src: &str, entry: &str) -> Vec<String> {
+        const MAX_DEPTH: usize = 3;
+        const NOT_CALLS: &[&str] = &[
+            "if", "match", "for", "while", "fn", "return", "assert", "panic",
+        ];
+        let src = production(src);
+        let mut types: Vec<String> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        let mut pending: Vec<(String, usize)> = vec![(entry.to_owned(), 0)];
+        while let Some((name, depth)) = pending.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            let Some(body) = fn_body(src, &name) else {
+                continue;
+            };
+            acquired_in(body, &mut types);
+            if depth == MAX_DEPTH {
+                continue;
+            }
+            for (index, _) in body.match_indices('(') {
+                let head = &body[..index];
+                let callee_start = head
+                    .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .map_or(0, |i| i + 1);
+                let callee = &head[callee_start..];
+                if callee.is_empty()
+                    || !callee.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                    || NOT_CALLS.contains(&callee)
+                    || callee == name
+                {
+                    continue;
+                }
+                if fn_body(src, callee).is_some() {
+                    pending.push((callee.to_owned(), depth + 1));
+                }
+            }
+        }
         types
     }
 
-    fn assert_declares_everything_it_acquires(source: &str, system: &str) {
-        let types = acquired(source, system);
+    fn assert_declares_everything_it_acquires(sources: &[(&str, &str)], system: &str) {
+        let mut types: Vec<String> = Vec::new();
+        for (src, entry) in sources {
+            for ty in acquired(src, entry) {
+                if !types.contains(&ty) {
+                    types.push(ty);
+                }
+            }
+        }
         assert!(
-            types.len() > 3,
+            types.len() > 1,
             "{system}: the acquisition scan found only {types:?} — the \
              extraction broke, not the declaration"
         );
@@ -2900,22 +3079,57 @@ mod scripting_system_access_declaration_tests {
         let missing: Vec<&String> = types.iter().filter(|ty| !declared.contains(*ty)).collect();
         assert!(
             missing.is_empty(),
-            "{system} acquires {missing:?} without declaring them. These \
-             declarations do not gate scheduling today, so this is not a live \
-             deadlock — it is the comparison basis for promoting the system to \
-             a parallel lane, and an under-declaration makes that promotion \
-             look safe when it is not (#3951/#3473)"
+            "{system} acquires {missing:?} without declaring them. For a \
+             parallel system this makes `install_runtime_registries`'s \
+             `known_conflict_count() == 0` unsound — the analyzer cannot see \
+             a conflict on a type nobody declared. For an exclusive it is the \
+             comparison basis for promoting the system to a parallel lane, \
+             and an under-declaration makes that promotion look safe when it \
+             is not (#3951/#3473/#4064)"
+        );
+    }
+
+    #[test]
+    fn every_parallel_system_declares_everything_it_acquires() {
+        for (system, sources) in PARALLEL_SYSTEMS {
+            assert_declares_everything_it_acquires(sources, system);
+        }
+    }
+
+    /// The table above is only a proof for what it lists. A tenth parallel
+    /// registration must not be able to land outside it.
+    #[test]
+    fn the_parallel_system_table_covers_every_parallel_registration() {
+        let setup = boot_setup();
+        // Needle composed at runtime — see `declaration`.
+        let needle = format!("add_to_with_access{}", "(");
+        let registered = setup.matches(needle.as_str()).count();
+        assert_eq!(
+            registered,
+            PARALLEL_SYSTEMS.len(),
+            "boot.rs has {registered} `add_to_with_access` registrations but \
+             PARALLEL_SYSTEMS lists {}. Every parallel system's declaration is \
+             load-bearing for the boot deadlock proof, so a new one must be \
+             added to the table with the function bodies that make up its \
+             acquisition surface (#4064)",
+            PARALLEL_SYSTEMS.len()
         );
     }
 
     #[test]
     fn papyrus_provider_system_declares_everything_it_acquires() {
-        assert_declares_everything_it_acquires(EXECUTE_SRC, "papyrus_provider_system");
+        assert_declares_everything_it_acquires(
+            &[(EXECUTE_SRC, "papyrus_provider_system")],
+            "papyrus_provider_system",
+        );
     }
 
     #[test]
     fn legacy_obscript_load_order_system_declares_everything_it_acquires() {
-        assert_declares_everything_it_acquires(OBSCRIPT_SRC, "legacy_obscript_load_order_system");
+        assert_declares_everything_it_acquires(
+            &[(OBSCRIPT_SRC, "legacy_obscript_load_order_system")],
+            "legacy_obscript_load_order_system",
+        );
     }
 }
 
