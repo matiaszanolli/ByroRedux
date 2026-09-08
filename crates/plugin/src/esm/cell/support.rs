@@ -217,6 +217,16 @@ pub(crate) fn build_static_object_from_subs(
             //   { 4} Float      Radius   (Skyrim `DATA` stores this as u32)
             //   { 8} ByteColors Color    (RGBA; RGB at 8/9/10)
             //   {12} UInt16     Flags    (Skyrim `DATA` stores u32)
+            //        #3987 corroborated this row against the shipped data
+            //        after `light_anim.rs` was found asserting the opposite
+            //        ("no named Flags field; an undifferentiated wbUnknown
+            //        block"): over all 1,575 LIGH records in Starfield.esm the
+            //        u16 here takes 16 distinct sparse values (union 0x17F1)
+            //        while the u16 at +14 is zero in EVERY record — a
+            //        populated 16-bit field with two unused bytes after it,
+            //        which is also why the u16 read below is right and a u32
+            //        read would not be. The bit legend remains unevidenced;
+            //        see `canonical_light_shadow_flags` for what that costs.
             //   {16} Float      Falloff Exponent
             //   {20} Float      FOV (#2439 / NIFAL-D2-01 — same relative
             //                   position as the Skyrim/FO4 DATA arm above)

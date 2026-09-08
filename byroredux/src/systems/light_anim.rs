@@ -52,19 +52,31 @@ const SHARED_LIGHT_ANIMATION_MASK: u32 =
 /// there too — the identical gap Fallout 4 has, so it shares Fallout 4's
 /// arm rather than the Skyrim-shared default.
 ///
-/// `GameKind::Starfield` is its own arm, not folded into the shared
-/// default, because there is no positive evidence to fold it into either
-/// side: SF1Edit's live LIGH definition (`wbDefinitionsSF1.pas`) replaced
-/// the Skyrim/FO4/FO76 `DATA` subrecord with a restructured 76-byte
-/// `DAT2` whose only named fields are a handful of floats — the bytes a
-/// Flags field would occupy are an undifferentiated `wbUnknown` block, and
-/// the `Flicker`/`Pulse`/shadow flag list that would apply to a `DATA`-style
-/// layout survives only as commented-out reference dead code, never live.
-/// Trusting Skyrim's bit meanings for whatever bytes our own `DAT2` reader
-/// (`esm/cell/support.rs`, #1567) currently surfaces as `flags` is a
-/// bigger, unverifiable claim than deciding "no animation" — `0` is not a
-/// gap gate copied by omission here; it's the deliberate, only-defensible
-/// value pending real evidence.
+/// `GameKind::Starfield` is its own arm, on the same strict-by-default
+/// footing as `Fallout4`/`Fallout76` above: its flags word is real, but none
+/// of its bit *meanings* are evidenced.
+///
+/// #3987 corrected the premise this arm used to rest on. It previously read
+/// "the bytes a Flags field would occupy are an undifferentiated `wbUnknown`
+/// block", i.e. there is no field at all. That is contradicted by our own
+/// `DAT2` decoder (`esm/cell/support.rs`, #1567), whose offset table is
+/// introduced as verified against `wbDefinitionsSF1.pas` and whose third row
+/// is `{12} UInt16 Flags`. It is also contradicted by the data: across all
+/// 1,575 LIGH records in `Starfield.esm`, the u16 at `DAT2+12` takes 16
+/// distinct sparse values (union of set bits `0x17F1`) while the u16 at
+/// `+14` is zero in every single record — a populated 16-bit bitfield
+/// followed by two unused bytes, exactly as the decoder's table describes,
+/// and not the u32 Skyrim's `DATA` carries.
+///
+/// What is still absent is the bit *legend*. The observed bit set does not
+/// match Skyrim's either: Skyrim's `0x02`/`0x04`/`0x08` (Can-Be-Carried /
+/// Negative / Flicker) never appear in any Starfield record, while an
+/// unnamed `0x10` does. So Skyrim's `Flicker`/`Pulse` positions cannot be
+/// transferred, and an unnamed bit must not decode into *motion* — a light
+/// that visibly pulses when the record never asked for it is an obvious,
+/// reported artifact. `0` remains the only defensible value here, now for
+/// the accurate reason. Contrast the shadow sibling below, whose opposite
+/// default applies to Starfield precisely because the field is real.
 pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32) -> u32 {
     let source_animation_mask = match game {
         GameKind::Fallout4 | GameKind::Fallout76 => LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
@@ -117,20 +129,41 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 /// default exists to avoid. Left permissive pending that evidence; see
 /// #2517 for the measurement that would settle it.
 ///
-/// `GameKind::Starfield` is excluded from that default for the same
-/// reason `canonical_light_animation_flags` excludes it (#2251): SF1Edit's
-/// live LIGH definition has no named Flags field at all in the
-/// restructured `DAT2` subrecord (the byte range a `DATA`-style layout's
-/// flags would occupy is an undifferentiated `wbUnknown` block there), so
-/// there is no positive evidence to decode any bit meaning from whatever
-/// our `DAT2` reader currently surfaces as `flags` — including shadow
-/// bits. `0`, not a guess at alternate bit positions.
-pub(crate) fn canonical_light_shadow_flags(game: GameKind, source_flags: u32) -> u32 {
-    let source_shadow_mask = match game {
-        GameKind::Starfield => 0,
-        _ => LIGHT_FLAG_SHADOW_MASK,
-    };
-    source_flags & source_shadow_mask
+/// `GameKind::Starfield` used to be excluded from that default, and #3987
+/// removed the exception rather than the policy.
+///
+/// The exclusion rested entirely on one claim (#2251): that SF1Edit's LIGH
+/// definition "has no named Flags field at all" in the restructured `DAT2`,
+/// so there was nothing to be permissive *about*. That claim is false. Our
+/// own `DAT2` decoder reads `{12} UInt16 Flags` from an offset table it
+/// introduces as verified against `wbDefinitionsSF1.pas`, and the shipped
+/// data agrees: over all 1,575 `Starfield.esm` LIGH records the word at
+/// `DAT2+12` is a populated sparse bitfield (16 distinct values, union
+/// `0x17F1`) with the following u16 zero in every record.
+///
+/// That puts Starfield in exactly the position Oblivion / FO3 / FNV are in
+/// two paragraphs above — a real, named flags word whose individual bit
+/// meanings this tree has not independently verified — and those games get
+/// the shared mask, on the stated grounds that narrowing on an *assumption*
+/// "would be exactly the guess the shadow-side default exists to avoid".
+/// Applying the same default to Starfield is consistency, not a new claim.
+///
+/// The behaviour this restores is not marginal. With the zero mask,
+/// `LightSource::from_legacy_world_units` computed
+/// `VisibilityMask::for_legacy_projection(false)` = `ARCHITECTURE` for
+/// **every** placed Starfield light, so props, actors, foliage, glass and
+/// effects cast no shadow from any of them — the whole-game version of the
+/// silent-flatness failure this default was written to prevent.
+///
+/// The animation sibling stays at `0`, and the asymmetry is the documented
+/// one: an unverified bit must not create motion, but it may cast a shadow.
+pub(crate) fn canonical_light_shadow_flags(_game: GameKind, source_flags: u32) -> u32 {
+    // `_game` is retained deliberately. This is a per-game boundary
+    // canonicalizer whose animation sibling still branches, and #2250's whole
+    // shape is that a verified divergence gets an arm here without churning
+    // every call site. Unused today because every game now shares the
+    // permissive mask.
+    source_flags & LIGHT_FLAG_SHADOW_MASK
 }
 
 /// The geometry half of a canonical [`LightSource`] derived from an ESM
@@ -169,12 +202,19 @@ pub(crate) fn translate_light(
     // let every producer implicitly do, by deriving no `kind` signal at
     // all) is wrong.
     //
-    // `GameKind::Starfield` excluded for the same reason
-    // `canonical_light_shadow_flags` excludes it: its DAT2 flags word is
-    // an undifferentiated `wbUnknown` block with no verified bit
-    // positions (see that function's doc) — no positive evidence to
-    // decode `LIGHT_FLAG_SPOT` from whatever our `DAT2` reader currently
-    // surfaces as `flags` either. `Point`, not a guess.
+    // `GameKind::Starfield` stays excluded, and #3987 narrowed the reason
+    // rather than removing it. The old justification — "an undifferentiated
+    // `wbUnknown` block" — was wrong: `DAT2+12` is a real, populated u16
+    // bitfield (see `canonical_light_shadow_flags`'s doc for the measurement).
+    // What is missing is the bit legend, and `LIGHT_FLAG_SPOT` is a bit
+    // position, not a policy. `0x200` IS observed in the shipped data — 160 of
+    // 1,575 records carry it, and Skyrim names that bit Spot Light — but
+    // "the same bit index means the same thing in a restructured subrecord"
+    // is precisely the transfer this arm exists to refuse, and the Starfield
+    // word demonstrably does NOT share Skyrim's layout (Skyrim's 0x02/0x04/
+    // 0x08 never appear; an unnamed 0x10 does). Emitting a cone on a
+    // suggestive bit would be a guess with a visible, wrong-looking result.
+    // `Point` until the legend is evidenced.
     let is_spot = game != GameKind::Starfield && ld.flags & LIGHT_FLAG_SPOT != 0;
     if !is_spot {
         return LightGeometry {
@@ -784,14 +824,22 @@ mod tests {
         }
     }
 
-    /// #2251 — Starfield's restructured `DAT2` LIGH subrecord has no
-    /// verified Flags field at all (SF1Edit's live definition leaves
-    /// those bytes an undifferentiated `wbUnknown` block), so neither
-    /// animation nor shadow bits can be trusted to mean what they mean on
-    /// Skyrim/FO4/FO76 — both canonicalization functions must decode
-    /// exactly zero for Starfield regardless of the raw input.
+    /// #3987 — Starfield's `DAT2` flags word is real; its bit legend is not.
+    /// The two canonicalizers therefore split, along the documented
+    /// strict-animation / permissive-shadow asymmetry.
+    ///
+    /// This test used to be named
+    /// `starfield_has_no_verified_flags_field_for_either_canonicalization`
+    /// and asserted zero on both sides, encoding the premise #2251 rested on:
+    /// that SF1Edit's LIGH definition leaves the flag bytes an
+    /// undifferentiated `wbUnknown` block. That is contradicted by our own
+    /// `DAT2` decoder's verified offset table (`{12} UInt16 Flags`) and by the
+    /// shipped data — 1,575 `Starfield.esm` LIGH records, 16 distinct sparse
+    /// values at `DAT2+12` (union `0x17F1`), the following u16 zero in every
+    /// one. A test that asserts a false premise is worse than no test, because
+    /// it makes the premise look checked.
     #[test]
-    fn starfield_has_no_verified_flags_field_for_either_canonicalization() {
+    fn starfield_flags_are_strict_for_animation_and_permissive_for_shadows() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
         let all_bits_set = LIGHT_FLAG_FLICKER
             | LIGHT_FLAG_FLICKER_SLOW
@@ -801,12 +849,34 @@ mod tests {
         assert_eq!(
             canonical_light_animation_flags(GameKind::Starfield, all_bits_set),
             0,
-            "Starfield has no verified animation-flag layout"
+            "Starfield's flicker/pulse bit positions are still unevidenced, and \
+             the observed bit set does not match Skyrim's (0x02/0x04/0x08 never \
+             appear, an unnamed 0x10 does) — an unverified bit must not decode \
+             into motion"
         );
         assert_eq!(
             canonical_light_shadow_flags(GameKind::Starfield, all_bits_set),
-            0,
-            "Starfield has no verified shadow-flag layout"
+            LIGHT_FLAG_SHADOW_MASK,
+            "Starfield must take the same permissive shadow mask as every other \
+             game: its flags word is real, and dropping a shadow bit leaves the \
+             scene silently flat with nothing to trace it back to. Zeroing it \
+             made every placed Starfield light ARCHITECTURE-only (#3987)"
+        );
+    }
+
+    /// The consequence the zero mask had, pinned at the layer it was felt.
+    /// `VisibilityMask::for_legacy_projection(false)` is `ARCHITECTURE` alone,
+    /// so a Starfield light decoding no shadow bits cast nothing on props,
+    /// actors, foliage, glass or effects.
+    #[test]
+    fn a_starfield_shadow_bit_survives_into_the_projection_mask() {
+        use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
+        let decoded = canonical_light_shadow_flags(GameKind::Starfield, LIGHT_FLAG_SHADOW_MASK);
+        assert_ne!(
+            decoded, 0,
+            "a Starfield LIGH carrying shadow bits must reach \
+             LightSource::from_legacy_world_units with them intact — at zero it \
+             falls to for_legacy_projection(false), i.e. ARCHITECTURE only"
         );
     }
 }
