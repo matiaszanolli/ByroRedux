@@ -188,7 +188,13 @@ Eight colour attachments + depth, all double-buffered (one set per
 | Transparency | `R8_UNORM` | FSR 3.1 transparency & composition mask | `COLOR_ATTACHMENT_OPTIMAL` |
 | Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
-After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.
+After `vkCmdEndRenderPass` all eight **colour** attachments transition to
+`SHADER_READ_ONLY_OPTIMAL`; **depth** transitions to
+`DEPTH_STENCIL_READ_ONLY_OPTIMAL`. That distinction is load-bearing, not
+pedantry: `copy_depth_to_history` names the depth layout as its precondition
+three paragraphs below, and `depth_capture_record_copy` documents the same one
+as its own contract (#3628). This sentence claimed a single layout for every
+attachment until #4005, contradicting both — the code was right.
 
 > **Why Mesh ID carries two representations.** `fragInstanceIndex` follows the
 > per-frame *sorted* draw order, so an actor changing depth bucket used to make

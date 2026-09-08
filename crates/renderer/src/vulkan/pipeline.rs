@@ -871,7 +871,12 @@ pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
 /// textures, set 1 = scene UBO/SSBOs including the instance buffer at
 /// binding 4). No push constants on this shared scene/UI layout —
 /// per-instance data lives in the instance SSBO (water uses its own
-/// 128-byte push-constant layout on a separate pipeline layout). The UI
+/// `WaterPush` push-constant layout on a separate pipeline layout —
+/// **16 bytes**, held there by the `const _: () =
+/// assert!(size_of::<WaterPush>() == 16)` in `water.rs`; #4005 corrected
+/// this from "128-byte", which it stopped being when the per-draw payload
+/// moved into the `GpuWaterParams[]` SSBO and the push block became a
+/// compact `{ uint waterIndex; uvec3 _reserved; }` index). The UI
 /// vertex shader reads only the `textureIndex` field; vertices are
 /// already in NDC clip space so the `model` matrix is ignored.
 ///
@@ -1035,6 +1040,29 @@ pub fn create_ui_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4005 — `create_ui_pipeline`'s doc states `WaterPush`'s size as a
+    /// number, and that number drifted 128 -> 16 when the per-draw payload
+    /// moved into the `GpuWaterParams[]` SSBO and the push block became a
+    /// compact `{ uint waterIndex; uvec3 _reserved; }` index. `water.rs`'s
+    /// own `const _: () = assert!(size_of::<WaterPush>() == 16)` kept the
+    /// struct honest; nothing kept the prose describing it honest.
+    ///
+    /// Keeping the number (rather than deleting it, the other option this
+    /// issue offered) is worth a test: the size is the reason the layout is
+    /// separate at all, so a reader of the UI pipeline benefits from it —
+    /// but only if it is true.
+    #[test]
+    fn the_ui_pipeline_doc_states_water_push_s_real_size() {
+        let size = std::mem::size_of::<super::super::water::WaterPush>();
+        let doc = include_str!("pipeline.rs");
+        let claim = format!("**{size} bytes**");
+        assert!(
+            doc.contains(&claim),
+            "create_ui_pipeline's doc must state WaterPush's real size \
+             ({size} bytes) — it said 128 until #4005, eight times the truth"
+        );
+    }
 
     /// #3821 (REN-WD-D8-01) — `auxiliary_blend_attachment` is now shared
     /// between the ordinary blend pipeline's raw_indirect/albedo coverage

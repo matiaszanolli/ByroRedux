@@ -168,8 +168,22 @@ pub(super) fn create_render_pass(
     //                                       sits well below that to bound the
     //                                       persistent SSBO allocation. Overflow
     //                                       is handled by the warn-once
-    //                                       `log::error!` + clamp in
-    //                                       `draw.rs::draw_frame` + `upload.rs`
+    //                                       `log::error!` in
+    //                                       `context/build_and_upload_instances.rs`
+    //                                       (search `RP-1: visible instance
+    //                                       count`) plus the clamp in
+    //                                       `scene_buffer/upload.rs`.
+    //                                       #4005 — this used to send the
+    //                                       reader to `draw.rs::draw_frame`
+    //                                       for that `log::error!`; the #3282
+    //                                       phase split moved it out, and
+    //                                       `draw.rs`'s surviving `RP-1`
+    //                                       mention is the *indirect-draw*
+    //                                       ceiling in
+    //                                       `should_use_indirect_draws` — a
+    //                                       different overflow on a different
+    //                                       buffer. Same class of stale
+    //                                       pointer #3881 fixed one line up.
     //                                       (#956/#992 removed the prior
     //                                       `debug_assert!` — it leaked the
     //                                       in-flight cmd buffer on unwind).
@@ -1046,6 +1060,106 @@ pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache
             "Pipeline cache saved to {} ({} bytes)",
             path.display(),
             data.len()
+        );
+    }
+}
+
+/// #4005 — the prose on this surface must keep naming code that exists.
+///
+/// Three claims went stale here at once and none was reachable by the
+/// compiler: a pointer to a `log::error!` that a phase split had moved, a
+/// push-constant size that had shrunk 8x, and a doc sentence that
+/// contradicted the render pass it described. #2757's rule ("line numbers
+/// rot, name the symbol") stops line numbers rotting but not file names, and
+/// #3881 had just fixed the sibling pointer one line above the first of
+/// these — so the class recurs and is worth a gate rather than another
+/// careful comment.
+#[cfg(test)]
+mod prose_pointer_tests {
+    /// The mesh-ID attachment comment sends the reader somewhere for the
+    /// warn-once instance-overflow `log::error!`. That has to be where the
+    /// `log::error!` actually is.
+    ///
+    /// Pinned by locating the message text rather than the file name, so a
+    /// future move fails here with the real destination in hand instead of
+    /// silently re-staling the comment. `context/helpers.rs` and
+    /// `acceleration/tlas.rs` both point at it and both were stale; a third
+    /// site would be caught the same way.
+    #[test]
+    fn the_rp1_overflow_error_pointers_name_the_file_that_has_it() {
+        const RP1_MESSAGE: &str = "RP-1: visible instance count";
+
+        let owner = include_str!("build_and_upload_instances.rs");
+        assert!(
+            owner.contains(RP1_MESSAGE),
+            "the RP-1 instance-overflow log::error! moved out of \
+             build_and_upload_instances.rs — every comment pointing readers \
+             at it is now stale; update them to the new home (#4005)"
+        );
+
+        // `draw.rs` keeps an RP-1 mention, but it is the indirect-draw
+        // ceiling policy in `should_use_indirect_draws` — a different
+        // overflow on a different buffer. Sending a reader there for the
+        // instance-overflow error is precisely the bug this fixed, so pin
+        // that the instance message is NOT there.
+        assert!(
+            !include_str!("draw.rs").contains(RP1_MESSAGE),
+            "draw.rs now carries the RP-1 instance-overflow message too — if \
+             it moved back, the pointers corrected by #4005 need moving back \
+             with it"
+        );
+
+        for (label, src) in [
+            ("context/helpers.rs", include_str!("helpers.rs")),
+            (
+                "acceleration/tlas.rs",
+                include_str!("../acceleration/tlas.rs"),
+            ),
+        ] {
+            assert!(
+                src.contains("build_and_upload_instances"),
+                "{label} explains the MAX_INSTANCES ceiling but no longer \
+                 names the file enforcing it (#4005)"
+            );
+        }
+    }
+
+    /// The G-buffer layout doc and the render pass it documents must agree
+    /// on where the depth attachment ends up.
+    ///
+    /// This one is worth a gate beyond the other two: the doc is the source
+    /// the audit skill treats as authoritative for G-buffer layout, it
+    /// contradicted *itself* three paragraphs apart, and two subsystems
+    /// (`copy_depth_to_history`, `depth_capture_record_copy`) name the depth
+    /// layout by hand as a precondition (#3628).
+    #[test]
+    fn the_gbuffer_doc_agrees_with_the_render_pass_depth_final_layout() {
+        let code = include_str!("helpers.rs");
+        assert!(
+            code.contains("final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)"),
+            "create_render_pass no longer gives depth a \
+             DEPTH_STENCIL_READ_ONLY_OPTIMAL final_layout — the doc, \
+             copy_depth_to_history and depth_capture_record_copy all state \
+             that layout by hand and must be updated together (#3628/#4005)"
+        );
+
+        let doc = include_str!("../../../../../docs/engine/shader-pipeline.md");
+        let marker = "After `vkCmdEndRenderPass`";
+        let start = doc
+            .find(marker)
+            .expect("shader-pipeline.md must state where attachments end up after the pass");
+        // The claim is one paragraph; stop at the blank line so a later
+        // correct mention elsewhere in the file cannot satisfy it — that
+        // self-contradiction is what #4005 fixed.
+        let end = doc[start..].find("\n\n").map_or(doc.len(), |o| start + o);
+        let claim = &doc[start..end];
+        assert!(
+            claim.contains("DEPTH_STENCIL_READ_ONLY_OPTIMAL"),
+            "the post-render-pass transition paragraph claims a single \
+             layout for every attachment; depth goes to \
+             DEPTH_STENCIL_READ_ONLY_OPTIMAL, not SHADER_READ_ONLY_OPTIMAL, \
+             and two subsystems depend on that by name (#4005). Paragraph \
+             read: {claim:?}"
         );
     }
 }

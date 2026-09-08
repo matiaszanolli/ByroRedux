@@ -607,7 +607,11 @@ impl AccelerationManager {
             //
             // Unreachable today: `MAX_INSTANCES = 0x40000` (262 144,
             // `scene_buffer/constants.rs`) is the upstream cap, enforced by
-            // the `RP-1` assert at `context/draw.rs::draw_frame`. That's a
+            // the `RP-1` guard in `context/build_and_upload_instances.rs`
+            // (search `RP-1: visible instance count`; #4005 — it lived in
+            // `context/draw.rs::draw_frame` until the #3282 phase split
+            // moved it, and this pointer went stale with the sibling one in
+            // `context/helpers.rs`). That's a
             // ~64× margin below the 24-bit ceiling. The invariant lives in
             // a different file from the truncation site though, so a future
             // `MAX_INSTANCES` bump past 2^24 (large open-world streaming
