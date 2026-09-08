@@ -1093,6 +1093,16 @@ pub struct FrameTimings {
 pub struct DepthCaptureHandle {
     pub requested: Arc<AtomicBool>,
     pub result: Arc<Mutex<Option<byroredux_core::ecs::DepthCapture>>>,
+    /// `Some(format_name)` when this device's selected depth format is one
+    /// `depth_capture_record_copy` refuses to capture (#3570) — i.e.
+    /// anything but `D32_SFLOAT`. `None` when capture is supported.
+    ///
+    /// #4003 — the refusal previously had no path back to the console: the
+    /// result slot stayed empty forever and `depth.stats` re-armed on every
+    /// call. Reported here at handle time (a property of the device, fixed
+    /// for the session) so the console can say so on the first invocation
+    /// rather than after a doomed round trip.
+    pub unsupported_format: Option<String>,
 }
 
 pub struct ScreenshotHandle {
@@ -2179,6 +2189,13 @@ impl VulkanContext {
         DepthCaptureHandle {
             requested: Arc::clone(&self.depth_capture_requested),
             result: Arc::clone(&self.depth_capture_result),
+            // #4003 — mirrors `depth_capture_record_copy`'s #3570 guard.
+            // Kept as a `!=` against the one supported format rather than a
+            // list of rejected ones, so widening the decode is a single
+            // edit in two places that fail loudly together rather than a
+            // denylist that silently stops matching.
+            unsupported_format: (self.depth_format != vk::Format::D32_SFLOAT)
+                .then(|| format!("{:?}", self.depth_format)),
         }
     }
 

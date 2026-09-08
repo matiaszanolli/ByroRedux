@@ -54,6 +54,33 @@ impl ConsoleCommand for DepthStatsCommand {
             );
         };
 
+        // #4003 — the third arm. `depth_capture_record_copy` refuses to
+        // capture unless the device selected `D32_SFLOAT` (#3570: the
+        // staging sizing and the f32-per-sample readback decode both
+        // hardcode that layout, and a confidently-wrong capture is worse
+        // than none). Vulkan mandates `D16_UNORM` depth-attachment support
+        // but not `D32_SFLOAT`, so that refusal is reachable on real
+        // hardware — and it left the result slot empty forever, so the
+        // `None` arm below fired on every invocation and answered "come
+        // back in a frame or two" indefinitely. The only signal was a
+        // `log::warn!` in the renderer's log stream, which a `byro-dbg`
+        // console session does not see.
+        //
+        // Checked before `request()`, not after a round trip: this is a
+        // property of the device, known at init, so there is no reason to
+        // arm a request that can never complete. Mirrors the shape #3630
+        // established for the degenerate-camera case below — say what was
+        // rejected and why, rather than printing something ambiguous.
+        if let Some(format) = bridge.unsupported_reason() {
+            return CommandOutput::line(format!(
+                "depth capture unsupported: device selected {format}, not D32_SFLOAT \
+                 — the readback decodes 4-byte f32 samples and would misread this \
+                 format, so the renderer refuses rather than reporting numbers it \
+                 cannot stand behind (#3570). The analytic half of the #3308 gate \
+                 (`Camera::depth_resolution_at`) is unaffected."
+            ));
+        }
+
         let Some(capture) = bridge.take_result() else {
             // Nothing landed yet: arm one and tell the caller to come back.
             bridge.request();
@@ -198,6 +225,24 @@ mod tests {
                 height: 2,
                 samples,
             }))),
+            unsupported_format: None,
+        });
+        world
+    }
+
+    /// A world whose device selected a depth format the capture path cannot
+    /// decode — the `D16_UNORM` fallback `find_depth_format` reaches when
+    /// `D32_SFLOAT` is unavailable. No result has ever landed, and none ever
+    /// will. #4003.
+    fn world_with_unsupported_depth_format() -> World {
+        let mut world = World::new();
+        let camera_entity = world.spawn();
+        world.insert(camera_entity, Camera::new(1.0, 1.0, 1.0, 100.0));
+        world.insert_resource(ActiveCamera(camera_entity));
+        world.insert_resource(DepthCaptureBridge {
+            requested: Arc::new(AtomicBool::new(false)),
+            result: Arc::new(Mutex::new(None)),
+            unsupported_format: Some("D16_UNORM".to_owned()),
         });
         world
     }
@@ -300,6 +345,77 @@ mod tests {
         assert!(
             output.contains("degenerate camera") && output.contains("analysis rejected"),
             "expected an explicit rejection line, got: {output}"
+        );
+    }
+
+    /// #4003 — on a device whose `find_depth_format` fell through to
+    /// `D16_UNORM`, `depth_capture_record_copy` refuses (#3570) and writes
+    /// nothing, so the result slot stays empty forever. Before this fix the
+    /// command took its "nothing landed yet" branch on every invocation and
+    /// told the operator to come back in a frame or two — indefinitely, with
+    /// the actual reason visible only as a renderer `log::warn!` that a
+    /// `byro-dbg` session never sees.
+    #[test]
+    fn an_uncapturable_depth_format_is_reported_instead_of_re_arming_forever() {
+        let world = world_with_unsupported_depth_format();
+        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+
+        assert!(
+            output.contains("unsupported") && output.contains("D16_UNORM"),
+            "the operator must be told which format was selected and that it \
+             cannot be captured, got: {output}"
+        );
+        assert!(
+            !output.contains("again in a frame or two"),
+            "the doomed 'come back later' answer is the bug — it must not be \
+             what an unsupported device gets: {output}"
+        );
+    }
+
+    /// The same refusal must not arm a request. Arming one is harmless in
+    /// isolation, but it is the thing that makes the loop unbreakable: every
+    /// call re-arms and re-reports "come back", and nothing ever consumes
+    /// the flag. Checking the device *before* `request()` is what fixes it.
+    #[test]
+    fn an_uncapturable_device_is_never_asked_for_a_capture() {
+        let world = world_with_unsupported_depth_format();
+        let _ = DepthStatsCommand.execute(&world, "");
+
+        let bridge = world
+            .try_resource::<DepthCaptureBridge>()
+            .expect("bridge inserted above");
+        assert!(
+            !bridge.requested.load(std::sync::atomic::Ordering::Acquire),
+            "depth.stats armed a capture the renderer will refuse (#4003)"
+        );
+    }
+
+    /// The refusal is device-specific, not a blanket disable: a supported
+    /// device with nothing captured yet must still get the arm-and-return
+    /// behaviour, which is the normal first invocation.
+    #[test]
+    fn a_supported_device_with_no_result_yet_still_arms_and_reports_back() {
+        let mut world = World::new();
+        let camera_entity = world.spawn();
+        world.insert(camera_entity, Camera::new(1.0, 1.0, 1.0, 100.0));
+        world.insert_resource(ActiveCamera(camera_entity));
+        world.insert_resource(DepthCaptureBridge {
+            requested: Arc::new(AtomicBool::new(false)),
+            result: Arc::new(Mutex::new(None)),
+            unsupported_format: None,
+        });
+
+        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            output.contains("again in a frame or two"),
+            "a supported device's first call must arm and say so: {output}"
+        );
+        let bridge = world
+            .try_resource::<DepthCaptureBridge>()
+            .expect("bridge inserted above");
+        assert!(
+            bridge.requested.load(std::sync::atomic::Ordering::Acquire),
+            "a supported device's first call must actually arm the capture"
         );
     }
 

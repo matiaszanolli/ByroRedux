@@ -118,6 +118,12 @@ impl ApplicationHandler for App {
                         // capture type lives in `byroredux_core` precisely so
                         // no translation step sits between the two.
                         result: depth_handle.result,
+                        // #4003 — the device's answer to "can this be
+                        // captured at all", so `depth.stats` can say no
+                        // instead of arming a request the renderer will
+                        // refuse with only a `log::warn!` the console
+                        // never sees.
+                        unsupported_format: depth_handle.unsupported_format,
                     });
 
                 // Create screenshot bridge for debug server access.

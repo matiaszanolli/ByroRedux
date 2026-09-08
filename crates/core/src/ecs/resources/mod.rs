@@ -68,6 +68,29 @@ pub struct DepthCaptureBridge {
     /// The most recent completed capture, or `None` if none has landed since
     /// the last [`take_result`](Self::take_result).
     pub result: std::sync::Arc<std::sync::Mutex<Option<DepthCapture>>>,
+    /// `Some(format_name)` when this device cannot be captured at all, naming
+    /// the depth format it selected instead. `None` when capture is
+    /// supported.
+    ///
+    /// #4003 — the renderer refuses to capture unless `find_depth_format`
+    /// selected `D32_SFLOAT`, because the staging sizing and the
+    /// f32-per-sample readback decode both hardcode that layout and a
+    /// confidently-wrong capture is worse than none (#3570). Vulkan mandates
+    /// `D16_UNORM` depth-attachment support but not `D32_SFLOAT`, so the
+    /// refusal is reachable on real hardware. It had no path back to the
+    /// caller: [`take_result`](Self::take_result) simply stayed `None`
+    /// forever, and `depth.stats` answered every invocation with "armed —
+    /// come back in a frame or two". The only trace was a `log::warn!` in
+    /// the renderer's log stream, which a `byro-dbg` console session does
+    /// not see.
+    ///
+    /// Filled in at init rather than on refusal, which is what lets the
+    /// console report it on the *first* invocation instead of arming a
+    /// request that can never complete. The format is a display name rather
+    /// than a `vk::Format`, since this crate does not depend on `ash` — and
+    /// the renderer owns the "which formats are capturable" rule anyway, so
+    /// the decision belongs on its side of the boundary, not this one's.
+    pub unsupported_format: Option<String>,
 }
 
 /// One captured depth attachment, as raw `D32_SFLOAT` samples.
@@ -97,6 +120,17 @@ impl DepthCaptureBridge {
     /// Take the most recent capture, leaving the slot empty.
     pub fn take_result(&self) -> Option<DepthCapture> {
         self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// The depth format this device selected, when it is one the capture
+    /// path cannot decode. `None` means capture is supported — see
+    /// [`unsupported_format`](Self::unsupported_format).
+    ///
+    /// Callers should consult this **before** [`request`](Self::request):
+    /// arming a request the renderer will refuse produces no result and no
+    /// console-visible reason (#4003).
+    pub fn unsupported_reason(&self) -> Option<&str> {
+        self.unsupported_format.as_deref()
     }
 }
 
