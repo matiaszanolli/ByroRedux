@@ -456,8 +456,33 @@ static BLAS is now built through `build_blas_batched` (the M40 cell-loader
 path), which carries its own pre-batch and mid-batch eviction guards.
 
 BLAS refit count before a forced rebuild: `SKINNED_BLAS_REFIT_THRESHOLD`
-= 600 frames (~10 seconds at 60 FPS). After 600 refits the BLAS is
-rebuilt from scratch to prevent BVH quality decay.
+= 600 frames (~10 seconds at 60 FPS), **plus a stable per-entity offset** of
+`entity_id % SKINNED_BLAS_REFIT_JITTER` with `SKINNED_BLAS_REFIT_JITTER` = 60
+— an effective limit of **600–659**, computed by
+`predicates.rs::skinned_blas_refit_limit`. Past that the BLAS is rebuilt from
+scratch to prevent BVH quality decay.
+
+The offset is deliberate (#3669): without it a continuously animated cohort
+that started together drops and rebuilds in the same frame, turning a smooth
+cost into a spike. It is derived from the entity id rather than randomised, so
+a given entity's rebuild cadence is stable across runs. An operator measuring
+a rebuild at frame 641 is seeing the stagger, not a bug — this paragraph read
+a flat "after 600 refits" until #3995's batch, with no way to tell the two
+apart.
+
+### Per-frame BLAS recovery
+
+`restore_missing_static_blas_for_draws` rebuilds static BLAS that LRU eviction
+reclaimed while their meshes were off-screen, and it is bounded twice
+(#3540):
+
+| Bound | Constant / symbol | Value | What it stops |
+|---|---|---|---|
+| Fit projection | `predicates.rs::plan_static_blas_restore` | — | Declines the pass **entirely** when the visible set cannot fit the budget: restoring anything would only displace something else the same frame needs. This is the one code path that can silently leave RT geometry missing on an over-budget cell. |
+| Per-frame cap | `MAX_STATIC_BLAS_RESTORES_PER_FRAME` | 256 | Bounds how many rebuilds one frame may issue. Without it, Starfield's `citycydoniamainlevel` sat single-threaded on frame 0 for ~10 minutes with RSS oscillating 12 → 20.6 GB. |
+
+Both are in `acceleration/constants.rs` / `acceleration/predicates.rs` and had
+no row here until #3998.
 
 ---
 

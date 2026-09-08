@@ -163,3 +163,61 @@ pub(super) const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
 /// stalling one. Paired with `plan_static_blas_restore`, which is what
 /// decides whether the pass should run at all.
 pub const MAX_STATIC_BLAS_RESTORES_PER_FRAME: usize = 256;
+
+/// #3998 — `docs/engine/memory-budget.md` presents itself as this file's
+/// ledger, so its numbers must be this file's numbers.
+///
+/// Two entries had gone wrong silently. The skinned-refit threshold was
+/// documented as a flat 600 after `931241a7` (#3669) made it a per-entity
+/// 600–659 stagger, and `MAX_STATIC_BLAS_RESTORES_PER_FRAME` had no row at
+/// all. Both commits touched six files apiece and no `docs/` file — which is
+/// the mechanism, not an oversight: nothing connected the two.
+///
+/// These are tuning values an operator reasons about directly (a rebuild
+/// spike, an RT-geometry-missing report), so the doc rotting is the class
+/// `_audit-common.md` singles out as "a wrong number in a GPU layout
+/// contract, not a typo".
+#[cfg(test)]
+mod memory_budget_doc_ledger_tests {
+    use super::*;
+
+    const DOC: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+
+    #[test]
+    fn the_doc_states_this_file_s_acceleration_constants() {
+        for (label, claim) in [
+            (
+                "SKINNED_BLAS_REFIT_THRESHOLD",
+                format!("= {SKINNED_BLAS_REFIT_THRESHOLD} frames"),
+            ),
+            (
+                "SKINNED_BLAS_REFIT_JITTER",
+                format!("`SKINNED_BLAS_REFIT_JITTER` = {SKINNED_BLAS_REFIT_JITTER}"),
+            ),
+            (
+                "MAX_STATIC_BLAS_RESTORES_PER_FRAME",
+                format!("| {MAX_STATIC_BLAS_RESTORES_PER_FRAME} |"),
+            ),
+        ] {
+            assert!(
+                DOC.contains(claim.as_str()),
+                "memory-budget.md no longer states {label} as {claim:?} — the \
+                 doc is the ledger for this file, and an operator measuring \
+                 against a stale number cannot tell an expected value from a \
+                 bug (#3998)"
+            );
+        }
+
+        // The effective range, which is the number that actually matters at
+        // the observation point: a rebuild at frame 641 is the stagger, not a
+        // defect. Spelled from the constants so widening the jitter updates
+        // what the doc must say.
+        let hi = SKINNED_BLAS_REFIT_THRESHOLD + SKINNED_BLAS_REFIT_JITTER - 1;
+        assert!(
+            DOC.contains(&format!("**{SKINNED_BLAS_REFIT_THRESHOLD}–{hi}**")),
+            "memory-budget.md must state the effective refit range \
+             {SKINNED_BLAS_REFIT_THRESHOLD}–{hi}, not the bare threshold — \
+             the stagger is what an operator sees (#3669 / #3998)"
+        );
+    }
+}
