@@ -273,6 +273,17 @@ struct RosterCase {
     /// falls. `None` = the family has no wired `RulesetBuilder` arm yet, in
     /// which case `build_ruleset` itself must return `None`.
     derived_rows: Option<usize>,
+    /// The leveling model this family's ruleset carries, named here so the
+    /// GMST overlay can be exercised against real data even for a family
+    /// whose `RulesetBuilder` arm is not wired yet (#3923).
+    ///
+    /// Not a second source of truth: for every case that *does* build a
+    /// ruleset, the body below asserts the built `leveling` equals this
+    /// entry, so the table cannot drift away from the builders. For Skyrim,
+    /// where `build_ruleset` returns `None` (#3848), it is the only handle
+    /// on the model — and the only reason `fXPLevelUpBase` /
+    /// `fXPLevelUpMult` get any real-data coverage before that lands.
+    leveling: byroredux_core::character::LevelingModel,
     /// Vanilla Oblivion ships **no `AVIF` records at all** — TES4 predates the
     /// record type and hardwires actor-value indices in the engine (verified:
     /// zero `AVIF` byte occurrences in `Oblivion.esm`). Its rosters therefore
@@ -291,6 +302,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         profile: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         attributes: byroredux_core::character::AttributeSet::FALLOUT,
         derived_rows: Some(8),
+        leveling: byroredux_core::character::LevelingModel::FNV,
         authors_actor_values: true,
     },
     RosterCase {
@@ -301,6 +313,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         profile: byroredux_core::character::CharacterRulesProfile::FALLOUT3,
         attributes: byroredux_core::character::AttributeSet::FALLOUT,
         derived_rows: Some(8),
+        leveling: byroredux_core::character::LevelingModel::FO3,
         authors_actor_values: true,
     },
     RosterCase {
@@ -313,6 +326,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         // Health + Action Points + Carry Weight. FO4 authors no `MeleeDamage`
         // AVIF (#3093), so the shared FO3/FNV rows have no FO4 counterpart.
         derived_rows: Some(3),
+        leveling: byroredux_core::character::LevelingModel::FO4,
         authors_actor_values: true,
     },
     RosterCase {
@@ -323,6 +337,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         profile: byroredux_core::character::CharacterRulesProfile::SKYRIM,
         attributes: byroredux_core::character::AttributeSet::SKYRIM,
         derived_rows: None,
+        leveling: byroredux_core::character::LevelingModel::SKYRIM,
         authors_actor_values: true,
     },
     RosterCase {
@@ -333,6 +348,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         profile: byroredux_core::character::CharacterRulesProfile::OBLIVION,
         attributes: byroredux_core::character::AttributeSet::TES_CLASSIC,
         derived_rows: None,
+        leveling: byroredux_core::character::LevelingModel::OBLIVION,
         authors_actor_values: false,
     },
 ];
@@ -357,6 +373,60 @@ fn assert_rosters_resolve(case: &RosterCase) {
         case.label,
         case.master,
         case.profile.name()
+    );
+
+    // #3923 — real-data coverage for the GMST leveling overlay.
+    //
+    // `LevelingModel::with_gmst` is the only consumer of authored GMSTs in
+    // the whole engine, and its only caller is `build_ruleset`, *after* the
+    // `RulesetBuilder` match. Skyrim is the one family whose model reads
+    // any GMST at all, and Skyrim's arm is `RulesetBuilder::None`, so
+    // `build_ruleset` returns before the overlay runs and
+    // `EsmIndex::game_setting_float` has no reachable production consumer.
+    // The load path parses 2,039 `GMST` records out of `Skyrim.esm` on
+    // every load and nothing reads them.
+    //
+    // That leaves the decode side — `GMST` float → `game_setting_float` →
+    // the overlay — fully plumbed and entirely unexercised against real
+    // data, so it would execute for the first time on the same commit that
+    // wires the builder (#3848). This asserts the decode now, independently
+    // of the wiring, so #3848 lands on a proven precondition instead of
+    // discovering a broken one.
+    //
+    // The setting names are not written down here: they are recovered from
+    // `with_gmst` itself by handing it a recording probe, exactly as
+    // `skyrim_gmst_overlay_reads_only_authored_curve_settings` does in the
+    // core crate. A model that starts reading a third setting is covered
+    // the moment it does, with no list to update. Returning `None` from the
+    // probe keeps the model at its sourced constants — this asks what the
+    // overlay *wants*, not what it would produce.
+    //
+    // Resolution, not value, is what is asserted, and vanilla Skyrim is why:
+    // `Skyrim.esm` authors `fXPLevelUpBase = 75.0` and `fXPLevelUpMult =
+    // 25.0`, which are exactly `LevelingModel::SKYRIM`'s sourced constants
+    // (measured 2026-09-07). The overlay is therefore a no-op on vanilla
+    // data, so a decode that silently resolved nothing would produce
+    // byte-identical output to one that worked. Only "did it resolve?"
+    // separates them.
+    let probe = std::cell::RefCell::new(Vec::new());
+    let _ = case.leveling.with_gmst(|name| {
+        probe.borrow_mut().push(name.to_owned());
+        None
+    });
+    let wanted = probe.into_inner();
+    let missing: Vec<&String> = wanted
+        .iter()
+        .filter(|name| index.game_setting_float(name).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "[{}] {} does not resolve the GMST(s) its leveling overlay reads: \
+         {missing:?} (of {wanted:?}) — the overlay would silently keep the \
+         engine fallback constants for every one of them, which is \
+         indistinguishable from the setting being authored at exactly the \
+         fallback value (#3923)",
+        case.label,
+        case.master,
     );
 
     if !case.authors_actor_values {
@@ -415,6 +485,19 @@ fn assert_rosters_resolve(case: &RosterCase) {
                     )
                 })
                 .derived_row_len();
+            // #3923 — where the builder *is* reachable, it settles what this
+            // case's `leveling` entry claims, so the table cannot drift away
+            // from the models the builders actually attach. Skyrim has no
+            // such anchor until #3848 lands, which is exactly why its entry
+            // needed writing down.
+            assert_eq!(
+                ruleset.as_ref().unwrap().leveling,
+                case.leveling,
+                "[{}] the ruleset {} builds carries a different leveling model \
+                 than this case claims",
+                case.label,
+                case.profile.name(),
+            );
             assert_eq!(
                 rows, expected,
                 "[{}] {} derived rows built against the real AVIF set, expected \
@@ -425,8 +508,11 @@ fn assert_rosters_resolve(case: &RosterCase) {
         }
         None => assert!(
             ruleset.is_none(),
-            "[{}] profile {} has no wired RulesetBuilder arm; if one landed, \
-             give this case its expected derived_rows",
+            "[{}] profile {} has no wired RulesetBuilder arm; if one landed \
+             (#3848), give this case its expected derived_rows — and note the \
+             GMST overlay above now runs for real for the first time, so a \
+             `derived_rows` figure measured before that is not the same \
+             number",
             case.label,
             case.profile.name()
         ),
