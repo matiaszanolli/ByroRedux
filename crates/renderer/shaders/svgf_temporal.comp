@@ -297,6 +297,16 @@ void main() {
         // frames) while parked — acceptable for the quality win, and
         // self-limited by the 255 cap.
         //
+        // #3995 — params.w is NOT the raw camera-static flag. The host
+        // (`next_svgf_temporal_alpha`) clears it while a discontinuity
+        // recovery window is open, because the select below would otherwise
+        // discard the elevated params.x/params.y that window exists to
+        // install: a parked camera is precisely what drives histAge to its
+        // 255 ceiling, so alpha 0.5 became ~1/256. Do not re-derive this
+        // flag from the view-proj comparison here; the raw value still feeds
+        // the caustic-history gate and GpuCamera's knee lane, which want the
+        // camera fact rather than this one.
+        //
         // (Firefly outlier rejection was hoisted ahead of this branch —
         //  #1481 — so it also clamps the no-history disocclusion path.)
         float invN = 1.0 / (histAge + 1.0);

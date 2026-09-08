@@ -176,19 +176,66 @@ pub const SVGF_ALPHA_STEADY_STATE: f32 = 0.2;
 /// for `svgf_recovery_frames` upcoming frames.
 pub const SVGF_ALPHA_RECOVERY: f32 = 0.5;
 
+/// One frame's SVGF temporal decision: the α floors the shader applies, and
+/// whether the camera-static progressive-accumulation drop is permitted.
+///
+/// #3995 — the α and the flag live in one struct because they must agree.
+/// They used to be produced independently — the α here, the flag from
+/// `assemble_camera_and_lights`'s view-proj comparison — and the shader
+/// resolved the disagreement by discarding the α outright.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SvgfTemporalDecision {
+    /// `params.x` — the colour blend's α floor.
+    pub alpha_color: f32,
+    /// `params.y` — the moments blend's α floor.
+    pub alpha_moments: f32,
+    /// `params.w` — when `true`, the shader drops the α floor and converges
+    /// via the pure `1/(histAge + 1)` running average.
+    pub progressive_accumulation: bool,
+    /// Recovery frames remaining after this one.
+    pub next_recovery_frames: u32,
+}
+
 /// Pure-fn state machine for the SVGF temporal-α recovery window.
-/// Returns `(alpha_color, alpha_moments, next_recovery_frames)`.
 /// Extracted from the dispatch site so it can be unit-tested without
 /// a Vulkan device. See #674 / DEN-4.
-pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
-    if recovery_frames > 0 {
-        (
-            SVGF_ALPHA_RECOVERY,
-            SVGF_ALPHA_RECOVERY,
-            recovery_frames - 1,
-        )
-    } else {
-        (SVGF_ALPHA_STEADY_STATE, SVGF_ALPHA_STEADY_STATE, 0)
+///
+/// #3995 — this also decides `progressive_accumulation`, because a live
+/// recovery window has to win over the camera-static drop.
+///
+/// The shader's floor select is `floorC = params.w > 0.5 ? 0.0 : params.x`,
+/// so a `true` flag discards the α this function returns and falls back to
+/// `1/(histAge + 1)`. A parked camera is exactly what drives `histAge` to its
+/// 255 ceiling — zero motion means every pixel passes the mesh-ID and
+/// normal-cone tests every frame — so the recovery α of 0.5 was being
+/// replaced by ~1/256, a 128x weaker response, and the window then decremented
+/// to zero having done nothing. `signal_temporal_discontinuity` has no other
+/// route into SVGF: it does not touch `frames_since_creation`, so the
+/// `params.z` hard-reset path is not an alternative.
+///
+/// That cancellation applied to precisely the case the signal exists for —
+/// geometry unchanged, lighting changed, camera parked: a live save load onto
+/// the same cell, a scripted light or imagespace change, a debug reload, a
+/// resize or upscaler switch, and #3605's TAA/FSR dispatch-failure recovery.
+///
+/// Progressive accumulation is only suppressed *while the window is open*;
+/// the frame the window closes, the parked-camera Monte-Carlo convergence
+/// resumes untouched.
+pub fn next_svgf_temporal_alpha(recovery_frames: u32, camera_static: bool) -> SvgfTemporalDecision {
+    let recovering = recovery_frames > 0;
+    SvgfTemporalDecision {
+        alpha_color: if recovering {
+            SVGF_ALPHA_RECOVERY
+        } else {
+            SVGF_ALPHA_STEADY_STATE
+        },
+        alpha_moments: if recovering {
+            SVGF_ALPHA_RECOVERY
+        } else {
+            SVGF_ALPHA_STEADY_STATE
+        },
+        progressive_accumulation: camera_static && !recovering,
+        next_recovery_frames: recovery_frames.saturating_sub(1),
     }
 }
 
@@ -1767,10 +1814,10 @@ mod tests {
     /// stays at 0; subsequent calls keep the floor.
     #[test]
     fn steady_state_alpha_is_schied_floor() {
-        let (a_color, a_moments, next) = next_svgf_temporal_alpha(0);
-        assert!((a_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
-        assert!((a_moments - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
-        assert_eq!(next, 0);
+        let d = next_svgf_temporal_alpha(0, false);
+        assert!((d.alpha_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert!((d.alpha_moments - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(d.next_recovery_frames, 0);
     }
 
     /// In the recovery window, both α values bump to 0.5 and the
@@ -1778,10 +1825,10 @@ mod tests {
     /// expires naturally.
     #[test]
     fn recovery_window_uses_elevated_alpha_and_decrements() {
-        let (a_color, a_moments, next) = next_svgf_temporal_alpha(5);
-        assert!((a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
-        assert!((a_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
-        assert_eq!(next, 4);
+        let d = next_svgf_temporal_alpha(5, false);
+        assert!((d.alpha_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert!((d.alpha_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert_eq!(d.next_recovery_frames, 4);
     }
 
     /// Recovery → steady-state transition: when the counter reaches
@@ -1791,13 +1838,88 @@ mod tests {
     /// elevated weighting one frame too long (or one frame too short).
     #[test]
     fn last_recovery_frame_uses_elevated_alpha_then_reverts() {
-        let (a_color, _, next) = next_svgf_temporal_alpha(1);
-        assert!((a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
-        assert_eq!(next, 0);
+        let d = next_svgf_temporal_alpha(1, false);
+        assert!((d.alpha_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert_eq!(d.next_recovery_frames, 0);
 
-        let (a_color2, _, next2) = next_svgf_temporal_alpha(next);
-        assert!((a_color2 - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
-        assert_eq!(next2, 0, "counter must NOT underflow past 0");
+        let d2 = next_svgf_temporal_alpha(d.next_recovery_frames, false);
+        assert!((d2.alpha_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(
+            d2.next_recovery_frames, 0,
+            "counter must NOT underflow past 0"
+        );
+    }
+
+    /// #3995 — a live recovery window must win over the camera-static
+    /// progressive-accumulation drop.
+    ///
+    /// The four α tests above all pass `camera_static = false`, and every one
+    /// of them passed while the shader was throwing the returned α away: the
+    /// floor select is `params.w > 0.5 ? 0.0 : params.x`, so a parked camera
+    /// discarded the recovery α entirely and fell back to
+    /// `1/(histAge + 1)`. A parked camera is exactly what drives `histAge` to
+    /// its 255 ceiling, so 0.5 became ~1/256 — 128x weaker — and the window
+    /// decremented to zero having had no effect.
+    ///
+    /// Testing the interaction rather than either half is the point: neither
+    /// value was individually wrong.
+    #[test]
+    fn a_live_recovery_window_outranks_the_camera_static_drop() {
+        // Parked camera, window open: the α must survive, which means the
+        // progressive-accumulation flag must be off.
+        let d = next_svgf_temporal_alpha(5, true);
+        assert!((d.alpha_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert!((d.alpha_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+        assert!(
+            !d.progressive_accumulation,
+            "a parked camera must not drop the α floor while a recovery \
+             window is open — the shader would replace α=0.5 with \
+             1/(histAge+1), and a parked camera is what pins histAge at its \
+             255 ceiling (#3995)"
+        );
+
+        // The suppression is scoped to the window, not a blanket disable:
+        // the frame it closes, parked-camera Monte-Carlo convergence resumes.
+        let closed = next_svgf_temporal_alpha(0, true);
+        assert!(
+            closed.progressive_accumulation,
+            "with no recovery window open, a parked camera must still get \
+             progressive accumulation — that convergence is the feature, and \
+             #3995 narrows it rather than removing it"
+        );
+        assert!((closed.alpha_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+
+        // A moving camera never gets it, window or no window.
+        assert!(!next_svgf_temporal_alpha(0, false).progressive_accumulation);
+        assert!(!next_svgf_temporal_alpha(5, false).progressive_accumulation);
+    }
+
+    /// #3995 — walked across a whole window, so the flag flips exactly once
+    /// and exactly when the α reverts. An off-by-one here would either leave
+    /// the drop suppressed forever (losing parked-camera convergence) or
+    /// re-enable it one frame early, while the last recovery frame still
+    /// needs its α.
+    #[test]
+    fn the_progressive_drop_returns_on_the_same_frame_the_alpha_does() {
+        let mut counter = 4u32;
+        loop {
+            let d = next_svgf_temporal_alpha(counter, true);
+            let recovering = counter > 0;
+            assert_eq!(
+                d.progressive_accumulation, !recovering,
+                "counter = {counter}: the progressive drop and the elevated α \
+                 must be exact complements (#3995)"
+            );
+            assert_eq!(
+                (d.alpha_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6,
+                recovering,
+                "counter = {counter}: α and the flag disagree"
+            );
+            if counter == 0 {
+                break;
+            }
+            counter = d.next_recovery_frames;
+        }
     }
 
     /// Regression for #648 / RP-2: after `recreate_on_resize` zeroes
@@ -1848,23 +1970,24 @@ mod tests {
         const N: u32 = 8;
         let mut counter = N;
         for frame in 0..N {
-            let (a_color, a_moments, next) = next_svgf_temporal_alpha(counter);
+            let d = next_svgf_temporal_alpha(counter, false);
             assert!(
-                (a_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6,
-                "frame {frame} of {N}-frame recovery: expected α={SVGF_ALPHA_RECOVERY}, got {a_color}",
+                (d.alpha_color - SVGF_ALPHA_RECOVERY).abs() < 1e-6,
+                "frame {frame} of {N}-frame recovery: expected α={SVGF_ALPHA_RECOVERY}, got {}",
+                d.alpha_color,
             );
-            assert!((a_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
+            assert!((d.alpha_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
             assert_eq!(
-                next,
+                d.next_recovery_frames,
                 N - 1 - frame,
                 "counter must decrement by 1 per dispatch"
             );
-            counter = next;
+            counter = d.next_recovery_frames;
         }
         // Frame N+1 — recovery exhausted, back to steady-state.
-        let (a_color, _, next) = next_svgf_temporal_alpha(counter);
-        assert!((a_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
-        assert_eq!(next, 0);
+        let d = next_svgf_temporal_alpha(counter, false);
+        assert!((d.alpha_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
+        assert_eq!(d.next_recovery_frames, 0);
     }
 
     /// REG-07 (#1639 / #1481, hoist #48906670): the SVGF temporal pass clamps

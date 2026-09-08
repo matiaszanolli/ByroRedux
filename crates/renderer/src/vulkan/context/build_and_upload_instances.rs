@@ -884,17 +884,25 @@ impl VulkanContext {
         // produced by the render pass below.
         if !self.svgf_failed {
             if let Some(ref mut svgf) = self.svgf {
-                let (alpha_color, alpha_moments, next_frames) =
-                    crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
-                self.svgf_recovery_frames = next_frames;
+                // #3995 — `camera_static` is passed in so the recovery window
+                // can veto the progressive-accumulation drop. It is NOT
+                // overridden globally: the same flag also gates
+                // `caustic_history_valid` above and `GpuCamera`'s w lane that
+                // `triangle.frag` reads for its knee, and neither of those has
+                // anything to do with an SVGF discontinuity.
+                let decision = crate::vulkan::svgf::next_svgf_temporal_alpha(
+                    self.svgf_recovery_frames,
+                    camera_static,
+                );
+                self.svgf_recovery_frames = decision.next_recovery_frames;
                 // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
                 if let Err(e) = unsafe {
                     svgf.upload_params(
                         &self.device,
                         frame,
-                        alpha_color,
-                        alpha_moments,
-                        camera_static,
+                        decision.alpha_color,
+                        decision.alpha_moments,
+                        decision.progressive_accumulation,
                     )
                 } {
                     log::warn!("svgf upload_params failed: {e}");
