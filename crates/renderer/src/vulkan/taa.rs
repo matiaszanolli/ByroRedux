@@ -708,16 +708,21 @@ impl TaaPipeline {
     ///
     /// [`Self::upload_params`] must have been called this frame BEFORE the
     /// pre-render-pass bulk barrier so the UBO write is covered by that
-    /// barrier's HOST→COMPUTE execution dependency.
+    /// barrier's HOST→COMPUTE execution dependency. That call is the
+    /// fallible half of the pair and the one the permanent-failure latch
+    /// hangs off; see `VulkanContext::latch_taa_failure` (#3981).
+    ///
+    /// Infallible by construction: every statement is an `ash` command
+    /// recording call, which returns `()`. This used to be declared
+    /// `-> Result<()>` with an unconditional `Ok(())`, which made
+    /// `record_taa_pass`'s `if let Err(…)` arm look alive to three
+    /// successive audits while `taa_failed` could never be set (#3981).
+    /// If a fallible step is ever added here, restore the `Result` **and**
+    /// route it into `latch_taa_failure` rather than a bare `warn!`.
     ///
     /// # Safety
     /// `cmd` must be a recording command buffer. `frame < MAX_FRAMES_IN_FLIGHT`.
-    pub unsafe fn dispatch(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) -> Result<()> {
+    pub unsafe fn dispatch(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // Order this frame's write after any lingering sample of the same
         // slot (layout stays GENERAL). The in-flight fence already
         // guarantees the previous GPU work on this slot has completed.
@@ -793,7 +798,6 @@ impl TaaPipeline {
         // `queue_submit` returns success; record-time failures before
         // this point leave the flag false.
         self.dispatched_this_frame = true;
-        Ok(())
     }
 
     /// Mark the previous frame's dispatch as having reached

@@ -911,7 +911,18 @@ impl VulkanContext {
                         decision.progressive_accumulation,
                     )
                 } {
-                    log::warn!("svgf upload_params failed: {e}");
+                    // #3981 — latch, don't just warn. `record_svgf_pass`'s
+                    // `!self.svgf_failed` gate then skips this frame's
+                    // dispatch rather than denoising against a param UBO
+                    // holding a previous frame's alpha (or nothing at all on
+                    // a slot's first use). `SvgfPipeline::dispatch` records
+                    // `ash` commands only and cannot fail, so this upload is
+                    // the pass's one real failure point.
+                    log::error!(
+                        "SVGF parameter upload failed — pass disabled for the \
+                         rest of the session: {e}"
+                    );
+                    self.svgf_failed = true;
                 }
             }
         }
@@ -921,10 +932,16 @@ impl VulkanContext {
         // the HOST→COMPUTE dependency is covered by the bulk barrier's
         // dst_stage = COMPUTE_SHADER, so no per-dispatch barrier is needed.
         if !self.taa_failed {
-            if let Some(ref mut taa) = self.taa {
-                if let Err(e) = taa.upload_params(&self.device, frame) {
-                    log::warn!("TAA upload_params failed: {e}");
-                }
+            // The `taa` borrow ends at the `upload_params` call, which is
+            // what lets the error arm take `&mut self` for the latch.
+            let upload = self
+                .taa
+                .as_mut()
+                .map(|taa| taa.upload_params(&self.device, frame));
+            if let Some(Err(e)) = upload {
+                // #3981 — the one reachable TAA failure. Everything the
+                // failure has to do lives in `latch_taa_failure`.
+                self.latch_taa_failure(&e);
             }
         }
 

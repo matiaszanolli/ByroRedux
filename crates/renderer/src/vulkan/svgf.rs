@@ -1287,13 +1287,21 @@ impl SvgfPipeline {
     /// valid and live, `cmd` is in the recording state, the device is not
     /// lost, and the history images and bound buffers are not in use by
     /// another in-flight command buffer.
+    ///
+    /// Infallible by construction: every statement is an `ash` command
+    /// recording call. [`Self::upload_params`] is the fallible half of the
+    /// pair, and the one `svgf_failed` now latches off (#3981) — this used
+    /// to be declared `-> Result<()>` with an unconditional `Ok(())`, so
+    /// `record_svgf_pass`'s error arm was unreachable and the latch could
+    /// never be set. If a fallible step is ever added here, restore the
+    /// `Result` and latch on it.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
         dbg_flags: u32,
-    ) -> Result<()> {
+    ) {
         // Barrier: the previous use of this frame's OUT slots (writes in
         // the previous use of this frame-in-flight index, at least two
         // frames ago) finished long before — the both-slots
@@ -1446,7 +1454,6 @@ impl SvgfPipeline {
         // a record-time error before this point leaves the flag false
         // and the counter doesn't advance.
         self.dispatched_this_frame[frame] = true;
-        Ok(())
     }
 
     /// Mark the previous frame's dispatch as having reached
@@ -2143,10 +2150,19 @@ mod unsubmitted_dispatch_tests {
 
     /// And the call site: no `?` may appear between the SVGF dispatch and the
     /// end of `record_post_passes`.
+    ///
+    /// Scoped to production code. Before #3981 this scanned to end-of-file,
+    /// so any *test* in `post_passes.rs` that so much as quoted `?;` in an
+    /// assertion message read as error propagation in the pass it guards —
+    /// which is what a test that scans for a needle it also has to name will
+    /// eventually do.
     #[test]
     fn record_post_passes_has_no_error_propagation_after_the_svgf_latch() {
         const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
-        let after_svgf = POST_PASSES_RS
+        let production = POST_PASSES_RS
+            .split_once("#[cfg(test)]")
+            .map_or(POST_PASSES_RS, |(before, _)| before);
+        let after_svgf = production
             .split_once("self.svgf")
             .expect("record_post_passes no longer dispatches SVGF")
             .1;

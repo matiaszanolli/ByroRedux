@@ -1901,8 +1901,12 @@ pub struct VulkanContext {
     /// without caustic contribution, same as pre-#1255 behaviour).
     pub water_caustic_accum: Option<super::water_caustic::WaterCausticAccum>,
     /// Permanent-failure latch for the TAA compute pass. Set on the
-    /// first `taa.dispatch` error in a session. When set: the TAA
-    /// dispatch is skipped on every subsequent frame and composite's
+    /// first `taa.upload_params` error in a session, through
+    /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records
+    /// `ash` commands only and cannot fail, so the param-UBO write is
+    /// the pass's one real failure point. When set: the TAA
+    /// dispatch is skipped on every subsequent frame (and on the
+    /// failing frame itself, since the upload runs first) and composite's
     /// binding 0 is rebound to the raw HDR views (via
     /// `CompositePipeline::fall_back_to_raw_hdr`, deferred through
     /// [`Self::composite_needs_raw_hdr_rebind`]), so the picture
@@ -1939,8 +1943,9 @@ pub struct VulkanContext {
     /// unreachable. Fixed ahead of that issue precisely so making the arm
     /// live does not silently open the descriptor hazard.
     pub composite_needs_raw_hdr_rebind: bool,
-    /// Same latch for SVGF — silences warn spam after the first
-    /// permanent failure, escalates to `error!` once. Composite keeps
+    /// Same latch for SVGF, and set from the same place — the first
+    /// `svgf.upload_params` error, `SvgfPipeline::dispatch` being
+    /// infallible for the same reason (#3981). Composite keeps
     /// sampling the stale indirect on subsequent frames (rebinding
     /// to raw-indirect is more invasive and deferred until a real
     /// lost-device repro). See #479 SIBLING.

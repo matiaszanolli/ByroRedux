@@ -592,6 +592,13 @@ impl BloomPipeline {
     /// at construction (#2037 / GPU-D5-01) — no per-frame upload needed
     /// before this call.
     ///
+    /// Infallible by construction: every statement is an `ash` command
+    /// recording call. Declared `-> Result<()>` with an unconditional
+    /// `Ok(())` until #3981, which made `record_bloom_pass`'s `Err` arm dead
+    /// code. Unlike TAA and SVGF this pass has no per-frame fallible half to
+    /// latch instead — #2037 moved the param upload to construction — so the
+    /// dead arm simply goes.
+    ///
     /// # Safety
     ///
     /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
@@ -604,7 +611,7 @@ impl BloomPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         input_view: vk::ImageView,
-    ) -> Result<()> {
+    ) {
         // Rewrite binding 0 of the very first down set to point at
         // this frame's scene HDR. All other down sets (1..N) point
         // at our own internally-owned mip views, written once at
@@ -724,8 +731,6 @@ impl BloomPipeline {
                 &[post],
             );
         }
-
-        Ok(())
     }
 
     /// View into the bloom result for this frame. #2796 / REN-D16-01 —

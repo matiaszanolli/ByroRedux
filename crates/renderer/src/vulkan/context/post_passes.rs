@@ -335,15 +335,14 @@ impl VulkanContext {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_start(&self.device, cmd, frame);
                     }
-                    let svgf_result = svgf.dispatch(&self.device, cmd, frame, svgf_dbg_flags);
+                    // Infallible (#3981) — the fallible half of the pair is
+                    // `svgf.upload_params`, which `build_and_upload_instances`
+                    // runs before this and which now latches `svgf_failed` on
+                    // error. This used to be wrapped in an `if let Err(…)` arm
+                    // that no producer could ever populate.
+                    svgf.dispatch(&self.device, cmd, frame, svgf_dbg_flags);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_end(&self.device, cmd, frame);
-                    }
-                    if let Err(e) = svgf_result {
-                        log::error!(
-                            "SVGF dispatch failed — pass disabled for the rest of the session: {e}"
-                        );
-                        self.svgf_failed = true;
                     }
                 }
             }
@@ -831,43 +830,64 @@ impl VulkanContext {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_taa_start(&self.device, cmd, frame);
                     }
-                    if let Err(e) = taa.dispatch(&self.device, cmd, frame) {
-                        log::error!(
-                            "TAA dispatch failed — falling back to raw HDR for the rest of the session: {e}"
-                        );
-                        self.taa_failed = true;
-                        // #4006 — schedule the raw-HDR fallback; do not
-                        // perform it here. The rebind it triggers rewrites
-                        // composite's descriptor set for EVERY frame slot,
-                        // and this runs mid-recording, when the other slot's
-                        // command buffer may still be pending — an
-                        // UpdateDescriptorSets-None-03047 violation, with no
-                        // UPDATE_AFTER_BIND / UPDATE_UNUSED_WHILE_PENDING
-                        // exemption on composite's layout.
-                        // `sync_and_acquire_frame` performs it after the
-                        // all-slots fence wait (#3442) instead. (The scanner
-                        // below asserts this function names no such call, so
-                        // the symbol is deliberately not spelled here.)
-                        self.composite_needs_raw_hdr_rebind = true;
-                        // #3605 (REN-2026-08-30-D13-02) — this frame's geometry
-                        // pass already rendered with the Halton jitter offset
-                        // (chosen at the top of draw_frame, before this dispatch
-                        // failed), and the raw-HDR fallback above blits that
-                        // image through with nothing to resolve it. Mirrors the
-                        // FSR sibling at #2519: flush temporal history so the
-                        // NEXT frame does not reproject against a half-pixel-
-                        // shifted image — later frames are chosen unjittered by
-                        // the `!taa_failed` gate (#1932), so one frame covers it.
-                        self.signal_temporal_discontinuity(
-                            super::super::frame_upscaler::TAA_DISPATCH_FAILURE_RECOVERY_FRAMES,
-                        );
-                    }
+                    // Infallible (#3981) — see `latch_taa_failure` for where
+                    // the reachable TAA failure is handled.
+                    taa.dispatch(&self.device, cmd, frame);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_taa_end(&self.device, cmd, frame);
                     }
                 }
             }
         }
+    }
+
+    /// The TAA permanent-failure path — every action a failure must take,
+    /// in one place, so they cannot drift apart.
+    ///
+    /// Called from `build_and_upload_instances` when `taa.upload_params`
+    /// fails. That is the *only* reachable TAA failure: `upload_params`
+    /// writes the host-visible param UBO through `write_mapped` (the same
+    /// fallible mapped-slice class #2504 hardened for `upload_indirect_draws`),
+    /// while `TaaPipeline::dispatch` only records `ash` commands and cannot
+    /// fail at all. Before #3981 the reverse was assumed: the three actions
+    /// below lived in a `dispatch`-error arm no producer could populate, and
+    /// the upload failure — the one that actually happens — was a bare
+    /// `warn!` with no latch, leaving the dispatch to resolve a jittered
+    /// frame against whatever the UBO held from a previous frame, or nothing
+    /// at all on a slot's first use.
+    ///
+    /// Ordering note: `build_and_upload_instances` runs before
+    /// `record_post_passes`, so `record_taa_pass`'s `!self.taa_failed` gate
+    /// picks this up in the SAME frame and skips the resolve entirely; the
+    /// `#1932` un-jitter gate in `assemble_camera_and_lights` picks it up on
+    /// the next.
+    pub(super) fn latch_taa_failure(&mut self, error: &anyhow::Error) {
+        log::error!(
+            "TAA parameter upload failed — falling back to raw HDR for the rest \
+             of the session: {error}"
+        );
+        self.taa_failed = true;
+        // #4006 — schedule the raw-HDR fallback; do not perform it here. The
+        // rebind it triggers rewrites composite's descriptor set for EVERY
+        // frame slot, and the other slot's command buffer may still be
+        // pending — an UpdateDescriptorSets-None-03047 violation, with no
+        // UPDATE_AFTER_BIND / UPDATE_UNUSED_WHILE_PENDING exemption on
+        // composite's layout. `sync_and_acquire_frame` performs it after the
+        // all-slots fence wait (#3442) instead. (The scanner below asserts
+        // this function names no such call, so the symbol is deliberately not
+        // spelled here.)
+        self.composite_needs_raw_hdr_rebind = true;
+        // #3605 (REN-2026-08-30-D13-02) — this frame's geometry pass already
+        // rendered with the Halton jitter offset (chosen at the top of
+        // `draw_frame`, before the upload failed), and the raw-HDR fallback
+        // above blits that image through with nothing to resolve it. Mirrors
+        // the FSR sibling at #2519: flush temporal history so the NEXT frame
+        // does not reproject against a half-pixel-shifted image — later
+        // frames are chosen unjittered by the `!taa_failed` gate (#1932), so
+        // one frame covers it.
+        self.signal_temporal_discontinuity(
+            super::super::frame_upscaler::TAA_DISPATCH_FAILURE_RECOVERY_FRAMES,
+        );
     }
 
     /// SSAO compute pass (#2258 / TD1-080, extracted from
@@ -1003,13 +1023,11 @@ impl VulkanContext {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_bloom_start(&self.device, cmd, frame);
                     }
-                    let bloom_result = bloom.dispatch(&self.device, cmd, frame, scene_view);
-                    match bloom_result {
-                        Ok(()) => {
-                            bloom.apply_to_scene(&self.device, cmd, frame, scene_image, scene_view);
-                        }
-                        Err(e) => log::warn!("Bloom dispatch failed: {e}"),
-                    }
+                    // Infallible (#3981) — bloom's params are uploaded once
+                    // at construction (#2037), so unlike TAA/SVGF there is no
+                    // per-frame fallible step here at all.
+                    bloom.dispatch(&self.device, cmd, frame, scene_view);
+                    bloom.apply_to_scene(&self.device, cmd, frame, scene_image, scene_view);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_bloom_end(&self.device, cmd, frame);
                     }
@@ -1354,45 +1372,177 @@ mod tests {
         );
     }
 
-    /// #3605 (REN-2026-08-30-D13-02) — a TAA dispatch failure must signal a
-    /// temporal discontinuity the same way the FSR sibling does at #2519:
-    /// the failing frame's geometry pass already rendered with the Halton
-    /// jitter offset before the failure is discovered here, and without
-    /// this call SVGF/volumetrics would reproject the NEXT frame against
-    /// that jittered-but-unresolved image with no history flush to protect
-    /// it. `record_taa_pass` needs a live `VulkanContext`, so — matching
-    /// this file's own `record_volumetrics_pass_routes_skip_clears_
-    /// through_the_shared_latch` convention just above — pin the wiring
-    /// with a static source-scan instead of a live test.
+    /// #3605 (REN-2026-08-30-D13-02) — a TAA failure must signal a temporal
+    /// discontinuity the same way the FSR sibling does at #2519: the failing
+    /// frame's geometry pass already rendered with the Halton jitter offset
+    /// before the failure is discovered, and without this call
+    /// SVGF/volumetrics would reproject the NEXT frame against that
+    /// jittered-but-unresolved image with no history flush to protect it.
+    /// The path needs a live `VulkanContext`, so — matching this file's own
+    /// `record_volumetrics_pass_routes_skip_clears_through_the_shared_latch`
+    /// convention just above — pin the wiring with a static source-scan
+    /// instead of a live test.
+    ///
+    /// #3981 — this used to scope on `record_taa_pass`, which was where the
+    /// three failure actions lived, on a `dispatch`-error arm that no
+    /// producer could populate. The scan passed on unreachable text, which is
+    /// exactly the false confidence that let the finding survive. It now
+    /// scopes on `latch_taa_failure` **and** asserts a live caller, so
+    /// "the code exists" and "the code runs" are both checked.
     #[test]
-    fn record_taa_pass_signals_temporal_discontinuity_on_dispatch_failure() {
+    fn a_taa_failure_signals_a_temporal_discontinuity() {
         let full_src = include_str!("post_passes.rs");
         let test_mod_start = full_src
             .find("#[cfg(test)]")
             .expect("this file has at least one #[cfg(test)] module");
         let src = &full_src[..test_mod_start];
-
-        let fn_start = src
-            .find("fn record_taa_pass(")
-            .expect("record_taa_pass must still exist");
-        let fn_end = src[fn_start..]
-            .find("\n    fn record_ssao_pass(")
-            .map(|rel| fn_start + rel)
-            .expect("record_ssao_pass must still follow record_taa_pass");
-        let body = &src[fn_start..fn_end];
+        let body = taa_failure_body(src);
 
         assert!(
             body.contains("self.taa_failed = true;"),
-            "record_taa_pass must still latch taa_failed on dispatch failure — \
-             the needle this test scopes its check around has moved or been renamed"
+            "latch_taa_failure must still latch taa_failed — the needle this \
+             test scopes its check around has moved or been renamed"
         );
         assert!(
             body.contains("self.signal_temporal_discontinuity(")
                 && body.contains("TAA_DISPATCH_FAILURE_RECOVERY_FRAMES"),
-            "a TAA dispatch failure must call signal_temporal_discontinuity, mirroring the \
+            "a TAA failure must call signal_temporal_discontinuity, mirroring the \
              FSR dispatch-failure path (#2519) — its own doc names this exact hazard on the \
              TAA side but nothing closed it before #3605"
         );
+
+        // The half #3981 is actually about: reachability. A latch nothing
+        // calls is the state this whole finding described.
+        let caller = include_str!("build_and_upload_instances.rs");
+        assert!(
+            caller.contains("self.latch_taa_failure(&e);"),
+            "build_and_upload_instances must route the taa.upload_params error \
+             into latch_taa_failure — it is the only reachable TAA failure, and \
+             before #3981 it was a bare warn! that latched nothing while the \
+             dispatch went on to resolve a jittered frame against stale params"
+        );
+    }
+
+    /// #3981 SIBLING — SVGF has the same shape and took the same fix.
+    /// `SvgfPipeline::dispatch` is infallible, so the latch hangs off
+    /// `upload_params`; without it a failed param write left the denoiser
+    /// running against a previous frame's alpha (or an uninitialised slot on
+    /// first use) with `svgf_failed` reading false.
+    #[test]
+    fn an_svgf_parameter_upload_failure_latches_the_pass() {
+        let caller = include_str!("build_and_upload_instances.rs");
+        let start = caller
+            .find("svgf.upload_params(")
+            .expect("build_and_upload_instances must still upload SVGF params");
+        let arm = &caller[start..start + 1400.min(caller.len() - start)];
+        assert!(
+            arm.contains("self.svgf_failed = true;"),
+            "the svgf.upload_params error arm must latch svgf_failed — a bare \
+             warn! leaves record_svgf_pass denoising against stale parameters \
+             (#3981)"
+        );
+    }
+
+    /// #3981 — the shape that caused the finding, pinned across every pass.
+    ///
+    /// `TaaPipeline::dispatch`, `SvgfPipeline::dispatch` and
+    /// `BloomPipeline::dispatch` each advertised `-> Result<()>` while their
+    /// bodies contained no `?`, no `return Err`, no `bail!`, no `.context(`,
+    /// no `map_err` — every statement an infallible `ash` recording call —
+    /// and ended in an unconditional `Ok(())`. Their callers' `Err` arms were
+    /// therefore dead, and three successive audits read the recovery those
+    /// arms contained as live.
+    ///
+    /// This does not forbid a fallible dispatch. It requires that one which
+    /// *says* it can fail actually can, which is the property that makes an
+    /// error arm worth reading. It walks `vulkan/*.rs` rather than naming the
+    /// three known files, because a hard-coded list would have to be extended
+    /// by whoever adds the next pipeline — the same "someone remembered"
+    /// failure the mirror guards at #3564 removed.
+    #[test]
+    fn a_pass_dispatch_advertising_a_result_must_be_able_to_produce_one() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan");
+        // Composed at runtime, not written as literals: this file is itself
+        // scanned by `svgf.rs`'s
+        // `record_post_passes_has_no_error_propagation_after_the_svgf_latch`,
+        // and a bare `"?;"` here would read as error propagation in the
+        // production code that scanner is actually about.
+        let error_forms = [
+            format!("{}{}", "?", ";"),
+            format!("return {}", "Err"),
+            format!("{}!", "bail"),
+            format!(".{}(", "context"),
+            format!("map_{}", "err"),
+        ];
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("src/vulkan must be readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("utf-8 file name")
+                .to_string();
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(sig_start) = src.find("pub unsafe fn dispatch(") else {
+                continue;
+            };
+            let body_start = sig_start
+                + src[sig_start..]
+                    .find('{')
+                    .expect("a dispatch signature is followed by its body");
+            if !src[sig_start..body_start].contains("-> Result") {
+                checked += 1;
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut end = body_start;
+            for (i, c) in src[body_start..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = body_start + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let body = &src[body_start..end];
+            assert!(
+                error_forms.iter().any(|n| body.contains(n.as_str())),
+                "{name}'s dispatch is declared `-> Result<()>` but its body cannot \
+                 produce an error, so every caller's `Err` arm is dead code that \
+                 reads as a live recovery tier — the #3981 trap. Either drop the \
+                 Result or make the failure real."
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 5,
+            "only {checked} pass dispatches found under src/vulkan — the walk \
+             stopped finding them, so this guard is no longer covering anything"
+        );
+    }
+
+    /// The body of the one function that owns the TAA failure policy.
+    /// Shared by the scanners below so a rename lands as one failure rather
+    /// than three.
+    fn taa_failure_body(src: &str) -> &str {
+        let start = src
+            .find("fn latch_taa_failure(")
+            .expect("latch_taa_failure must still exist (#3981)");
+        let end = src[start..]
+            .find("\n    /// SSAO compute pass")
+            .map(|rel| start + rel)
+            .expect("record_ssao_pass's doc must still follow latch_taa_failure");
+        &src[start..end]
     }
 
     /// #4006 (REN-2026-09-06-D12-03) — the TAA permanent-failure fallback
@@ -1412,8 +1562,10 @@ mod tests {
     /// neither exemption applies.
     ///
     /// A live test would need a Vulkan device and a driver failure to
-    /// provoke; the arm is also unreachable today (#3981), so nothing here
-    /// is observable from `cargo test` at all. The invariant is a *call
+    /// provoke, so nothing here is observable from `cargo test`. (Until
+    /// #3981 the path was not merely untestable but unreachable — the
+    /// actions lived on a `dispatch`-error arm no producer could populate.)
+    /// The invariant is a *call
     /// site*, though, which a source scan can hold exactly — same shape as
     /// the sibling scanners in this module and `depth_capture.rs`'s
     /// `capture_ordering_tests`.
@@ -1425,19 +1577,13 @@ mod tests {
             .expect("this file has at least one #[cfg(test)] module");
         let src = &full_src[..test_mod_start];
 
-        let fn_start = src
-            .find("fn record_taa_pass(")
-            .expect("record_taa_pass must still exist");
-        let fn_end = src[fn_start..]
-            .find("\n    fn record_ssao_pass(")
-            .map(|rel| fn_start + rel)
-            .expect("record_ssao_pass must still follow record_taa_pass");
-        let body = &src[fn_start..fn_end];
+        let body = taa_failure_body(src);
 
         assert!(
             !body.contains("fall_back_to_raw_hdr"),
-            "record_taa_pass runs inside command-buffer recording, so it must \
-             NOT call fall_back_to_raw_hdr — that rewrites composite's \
+            "the TAA failure path runs during frame build, before and during \
+             command-buffer recording, so it must NOT call \
+             fall_back_to_raw_hdr — that rewrites composite's \
              descriptor set for every frame slot, including one whose command \
              buffer may still be pending (VUID-vkUpdateDescriptorSets-None-\
              03047, no update-after-bind exemption on composite's layout). \
