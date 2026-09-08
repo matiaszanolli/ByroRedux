@@ -20,6 +20,8 @@ scheduler hiccup on a shared desktop skews a 3-run mean badly, and the
 existing ROADMAP numbers were gathered the same way.
 """
 
+import os
+import subprocess
 import sys
 from collections import defaultdict
 
@@ -109,11 +111,59 @@ def median(values):
     return values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2
 
 
+def report_commit():
+    """This tool's own commit, for the report header.
+
+    #2835 stamped `harness=`/`engine=` into the TSV because "nothing in a
+    committed table said which harness produced it" — but the TSV is not the
+    artefact people quote; this tool's table is. And this tool is not a pure
+    formatter: `0e91fc5e` changed `render_sum` so brackets named in
+    `gpu_inactive` are excluded from the render-resolution sum instead of
+    summed as measured zeros, so the same TSV yields different "render rec."
+    figures before and after that commit. Both halves of the harness pair
+    therefore have to be stamped (#4025).
+
+    A dirty worktree is reported as such: the last commit touching this file is
+    not the code that just ran if the file has uncommitted edits.
+    """
+    script = os.path.realpath(__file__)
+    cwd = os.path.dirname(script)
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    try:
+        commit = git("log", "-1", "--format=%h", "--", script)
+        if not commit:
+            return "unknown"
+        return f"{commit}-dirty" if git("status", "--porcelain", "--", script) else commit
+    except (OSError, subprocess.SubprocessError):
+        # No git, no repo, or no history for this path — say so rather than
+        # printing a hash that might not describe the running code.
+        return "unknown"
+
+
 def main(path):
     with open(path) as handle:
-        # `#`-prefixed provenance lines (harness commit, capture date) are
-        # metadata, not data — skip them wherever they appear.
-        lines = [line for line in handle if line.strip() and not line.startswith("#")]
+        raw = handle.readlines()
+
+    # `#`-prefixed provenance lines (harness commit, capture date) are metadata,
+    # not data — they must stay out of the parser. They must NOT stay out of the
+    # report: this table gets pasted into ROADMAP.md and audit reports, and
+    # dropping the stamp is what let a stale harness-stability claim survive two
+    # session folds unchallenged (#4024/#4025).
+    provenance = [line.rstrip("\n") for line in raw if line.startswith("#")]
+    lines = [line for line in raw if line.strip() and not line.startswith("#")]
+
+    for line in provenance:
+        print(line)
+    if not provenance:
+        print(
+            f"# provenance: none recorded in {path} — pre-#2835 archive, "
+            "harness and engine commit unknown"
+        )
+    print(f"# report={report_commit()}")
 
     if not lines:
         print("no rows — every run failed to produce a bench line")
@@ -402,6 +452,26 @@ def self_test():
             )
         if "gpu_inactive" not in label and footnoted:
             failures.append(f"{label}: reported an inactive bracket it has no column for")
+        # #4025 — the harness stamps `# harness=… engine=…` into the TSV so a
+        # pasted table can be traced back to the code that produced it. This
+        # tool used to drop that line and emit nothing of its own, which is how
+        # a stale harness-stability claim survived two ROADMAP folds (#4024).
+        stamped = "# harness=" in content
+        if stamped and "harness=deadbeef" not in output:
+            failures.append(
+                f"{label}: dropped the TSV's provenance header instead of "
+                "echoing it into the report"
+            )
+        if not stamped and "provenance: none recorded" not in output:
+            failures.append(
+                f"{label}: an unstamped TSV must say so — silence reads as "
+                "'traced' to whoever pastes the table"
+            )
+        if "# report=" not in output:
+            failures.append(
+                f"{label}: no reporter stamp — render_sum arithmetic changed in "
+                "0e91fc5e, so the reporter's own commit is part of the provenance"
+            )
 
     for failure in failures:
         print(f"FAIL {failure}")
