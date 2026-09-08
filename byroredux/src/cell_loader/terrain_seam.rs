@@ -45,6 +45,40 @@
 //! into the hard-fail criterion if it turns out to produce a visible
 //! lighting seam.
 //!
+//! # Answer (#3306): the first real crack IS vanilla Bethesda content
+//!
+//! The live FO4 Commonwealth run that motivated the correction above also
+//! reported `pairs_dirty=1` on cells (3,0)/(4,0), and #3306 left open
+//! whether that was vanilla data or a mod override — the two outcomes
+//! called for opposite responses. It is **vanilla**.
+//!
+//! Scanning every plugin in the reproducing Data directory (87 total, 79
+//! third-party) for Commonwealth-worldspace (`0x0000003C`) cells at those
+//! grids: only `Fallout4.esm` ships a LAND record for either
+//! (`0x0000E01D` = (3,0), `0x0000E01C` = (4,0)). Four plugins override the
+//! CELL records — `bostonfpsfixaio.esp`, `unofficial fallout 4 patch.esp`,
+//! `ss2_xpac_chapter2.esm`, `youandwhatarmy2.esm` — and none carry LAND.
+//! Decoding vanilla VHGT directly reproduces the reported deltas exactly:
+//! rows 5/6/7 of the shared column differ by 8, 16 and 16 units, and the
+//! other 30 vertices are bit-identical.
+//!
+//! So `check_seam` is behaving correctly and Bethesda's own authoring has
+//! a localized 3-vertex crack here. Two consequences:
+//!
+//! 1. The live gate's hard-fail criterion will trip on stock FO4 content
+//!    at this seam. That is a *true positive*, not a checker bug — but it
+//!    means a `verdict=FAIL` on the boundary route is not by itself
+//!    evidence of a regression. `vanilla_fo4_commonwealth_seam_tests`
+//!    pins the exact expected vertices so a future run can tell "the known
+//!    vanilla crack" from "something new".
+//! 2. No tolerance is introduced. One measured pair is not a corpus, and
+//!    calibrating a height-delta threshold off it would be exactly the
+//!    guessed threshold the module docstring above rules out.
+//!
+//! Whether it is *visible* in a rendered frame is still unconfirmed — that
+//! needs a screenshot centred on the seam, which the `boundary` route does
+//! not currently park on.
+//!
 //! # Correction (2026-08-23): the retention design decision this doc used
 //! to flag never needed making
 //!
@@ -157,6 +191,141 @@ pub(crate) fn check_seam(
     SeamReport {
         height_mismatches,
         normal_bytes_differ,
+    }
+}
+
+/// #3306 (FO4-2026-08-26-01) — the first REAL crack this checker has been
+/// run against, promoted from a live-run observation to a fixture.
+///
+/// `docs/smoke-tests/m-exteriors.sh fo4 boundary` reported
+/// `pairs_dirty=1 height_mismatch_vertices=3` on FO4 Commonwealth cells
+/// (3,0) / (4,0). The issue left open whether that was vanilla content or a
+/// mod override; it is **vanilla**. Scanning all 87 plugins in the
+/// reproducing Data directory for Commonwealth (worldspace `0x0000003C`)
+/// cells at those grids: only `Fallout4.esm` ships a LAND record for either
+/// (cells `0x0000E01D` = (3,0) and `0x0000E01C` = (4,0)). Four plugins
+/// override the CELL records — `bostonfpsfixaio.esp`,
+/// `unofficial fallout 4 patch.esp`, `ss2_xpac_chapter2.esm`,
+/// `youandwhatarmy2.esm` — and none of them touch LAND.
+///
+/// The columns below are decoded straight out of vanilla `Fallout4.esm`'s
+/// VHGT by `parse_land_record`'s own algorithm, and reproduce the reported
+/// deltas exactly: rows 5/6/7 differ by 8, 16 and 16 world units, every
+/// other row agrees to the bit. So Bethesda's own authoring has a 3-vertex
+/// height crack here, and `check_seam`'s "any difference is worth
+/// reporting" contract is correct to surface it.
+///
+/// What this fixture is for: the live gate previously had only synthetic
+/// fixtures, so nothing pinned that it reports real content faithfully.
+/// It deliberately does NOT encode a tolerance — calibrating one off a
+/// single measured pair would be the guessed threshold this module's own
+/// doc rules out.
+#[cfg(test)]
+mod vanilla_fo4_commonwealth_seam_tests {
+    use super::*;
+
+    /// The shared edge, decoded from vanilla `Fallout4.esm`: `.0` is cell
+    /// (3,0) `0x0000E01D`'s east column (32), `.1` is cell (4,0)
+    /// `0x0000E01C`'s west column (0), at the same row.
+    ///
+    /// Paired rather than two parallel arrays so the "same physical row of
+    /// vertices" relationship is structural — the two halves cannot drift
+    /// out of correspondence under a reformat.
+    const SHARED_EDGE: [(f32, f32); GRID] = [
+        (752.0, 752.0),
+        (752.0, 752.0),
+        (744.0, 744.0),
+        (728.0, 728.0),
+        (720.0, 720.0),
+        (720.0, 712.0),
+        (728.0, 712.0),
+        (712.0, 696.0),
+        (664.0, 664.0),
+        (648.0, 648.0),
+        (640.0, 640.0),
+        (616.0, 616.0),
+        (608.0, 608.0),
+        (584.0, 584.0),
+        (576.0, 576.0),
+        (576.0, 576.0),
+        (568.0, 568.0),
+        (560.0, 560.0),
+        (544.0, 544.0),
+        (544.0, 544.0),
+        (544.0, 544.0),
+        (544.0, 544.0),
+        (536.0, 536.0),
+        (528.0, 528.0),
+        (544.0, 544.0),
+        (560.0, 560.0),
+        (584.0, 584.0),
+        (600.0, 600.0),
+        (544.0, 544.0),
+        (520.0, 520.0),
+        (488.0, 488.0),
+        (416.0, 416.0),
+        (224.0, 224.0),
+    ];
+
+    /// `east`: fill column 32 (a cell's east edge). Otherwise column 0.
+    fn land_with_edge(east: bool) -> LandscapeData {
+        let mut land = LandscapeData {
+            heights: vec![0.0; GRID * GRID],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        for (row, (a, b)) in SHARED_EDGE.iter().enumerate() {
+            let col = if east { GRID - 1 } else { 0 };
+            land.heights[row * GRID + col] = if east { *a } else { *b };
+        }
+        land
+    }
+
+    #[test]
+    fn vanilla_commonwealth_3_0_to_4_0_reports_the_three_measured_vertices() {
+        let a = land_with_edge(true);
+        let b = land_with_edge(false);
+        let report = check_seam(&a, &b, SeamDirection::EastWest);
+
+        let measured: Vec<(usize, f32, f32)> = report
+            .height_mismatches
+            .iter()
+            .map(|m| (m.index, m.height_a, m.height_b))
+            .collect();
+        assert_eq!(
+            measured,
+            vec![(5, 720.0, 712.0), (6, 728.0, 712.0), (7, 712.0, 696.0)],
+            "the live FO4 boundary run measured exactly these three vertices; a change \
+             here means either the decode or the edge-index convention moved (#3306)"
+        );
+
+        // The deltas are coarse integers, not float noise — which is why
+        // this is a real authoring crack and not a rounding artifact.
+        for m in &report.height_mismatches {
+            let delta = (m.height_b - m.height_a).abs();
+            assert!(
+                delta >= 8.0 && (delta % 8.0) == 0.0,
+                "delta {delta} at row {} should be a whole multiple of the 8-unit VHGT \
+                 quantum, confirming a genuine authored difference",
+                m.index
+            );
+        }
+    }
+
+    /// The other 30 shared vertices agree exactly. Without this the test
+    /// above would still pass if the decode produced garbage everywhere.
+    #[test]
+    fn every_other_shared_vertex_on_that_seam_agrees_exactly() {
+        let differing: Vec<usize> = (0..GRID)
+            .filter(|&i| SHARED_EDGE[i].0 != SHARED_EDGE[i].1)
+            .collect();
+        assert_eq!(
+            differing,
+            vec![5, 6, 7],
+            "30 of 33 shared edge vertices are bit-identical — the crack is a \
+             localized 3-vertex authoring defect, not a systematic offset"
+        );
     }
 }
 

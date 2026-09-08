@@ -443,6 +443,70 @@ fn shadow_mask_bucket_selection_is_pinned() {
     }
 }
 
+/// #3305 (REN-2026-08-26-01) — the branch ORDER inside
+/// `shadow_mask_for_instance` is load-bearing, and the issue investigating
+/// missing creature shadows ruled out the mask system partly on the strength
+/// of "`shadow_mask_for_instance()` maps `RenderLayer::Actor` →
+/// `VISIBILITY_LAYER_DYNAMIC_ACTOR`". That mapping is **conditional**:
+/// `alpha_blend` and the two effect material kinds are tested BEFORE
+/// `render_layer`, so an actor draw carrying any of them lands in
+/// `VISIBILITY_LAYER_EFFECT` — which is deliberately NOT part of
+/// `VISIBILITY_MASK_ALL_OPAQUE`, the mask the sun's shadow ray culls
+/// against. Such a draw casts no ground-contact shadow, which is exactly
+/// the reported symptom.
+///
+/// This does not prove it is the cause — whether a given FO4 creature's
+/// draws actually carry `alpha_blend` needs the live scene, and an actor
+/// composed of an opaque body plus a blended fur sub-mesh would still cast
+/// a body shadow. It removes the mask system from the "ruled out" column,
+/// which is where the investigation had put it.
+///
+/// The behaviour itself is deliberate (#2224 / #2227: blended proxies must
+/// not become structural occluders) and is NOT changed here. This pins the
+/// precedence so the interaction stays visible to the next reader.
+#[test]
+fn an_alpha_blended_actor_lands_outside_the_opaque_shadow_mask() {
+    use crate::shader_constants::{VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT};
+    use crate::vulkan::scene_buffer::{MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION};
+    use byroredux_core::ecs::components::RenderLayer;
+    use byroredux_core::lighting::VisibilityMask;
+
+    // The premise the #3305 investigation relied on — true only for an
+    // opaque, non-effect actor draw.
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0.0),
+        VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+    );
+    assert!(
+        VisibilityMask::ALL_OPAQUE.bits() & VISIBILITY_LAYER_DYNAMIC_ACTOR as u8 != 0,
+        "an opaque actor is inside the sun's shadow-ray cull mask"
+    );
+
+    // Same actor, alpha-blended: `render_layer` is never consulted.
+    let blended_actor = shadow_mask_for_instance(0, RenderLayer::Actor, true, 0.0);
+    assert_eq!(
+        blended_actor,
+        VISIBILITY_LAYER_EFFECT as u8,
+        "alpha_blend is tested ahead of render_layer, so a blended actor is an          effect proxy, not a dynamic actor"
+    );
+    assert_eq!(
+        VisibilityMask::ALL_OPAQUE.bits() & blended_actor,
+        0,
+        "#3305: an alpha-blended actor is invisible to every shadow ray culling on          ALL_OPAQUE — including the exterior sun's — so it casts no ground-contact          shadow. The mask system was listed as 'ruled out' on the assumption that          RenderLayer::Actor always selects DYNAMIC_ACTOR; it does not."
+    );
+
+    // The two effect material kinds take the same precedence, so an actor
+    // wearing one is equally invisible to opaque shadow rays.
+    for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
+        assert_eq!(
+            VisibilityMask::ALL_OPAQUE.bits()
+                & shadow_mask_for_instance(kind, RenderLayer::Actor, false, 0.0),
+            0,
+            "actor draw with material kind {kind} also bypasses render_layer",
+        );
+    }
+}
+
 // ── AS↔SSBO compaction-count contract (#2913 / REN-D1-01) ──────
 //
 // `build_instance_map` is the documented single source of truth for
