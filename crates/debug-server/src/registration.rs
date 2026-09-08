@@ -177,6 +177,74 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // the seat system has placed in furniture.
     register_component::<SandboxBehavior>(registry, "SandboxBehavior", vec![]);
     register_component::<Seated>(registry, "Seated", vec!["furniture"]);
+    // #4063 — the other six M42 procedure runtimes. Sandbox landed with
+    // M42 and got a registration above; M42.3-M42.8 each added a
+    // Behavior/State pair and none extended this file, so `byro-dbg` could
+    // inspect a *seated* NPC and nothing else. These six are the ones with
+    // live per-tick state — Wander/Patrol's oscillation phase, Travel's
+    // frozen destination, Follow/Escort's re-resolved target, Guard's
+    // anchor and leash — which is exactly what an operator needs when an
+    // actor misbehaves, and exactly what the env-var gates
+    // (BYRO_WANDER / BYRO_TRAVEL / BYRO_FOLLOW / BYRO_ESCORT / BYRO_GUARD /
+    // BYRO_PATROL) exist to be debugged through. Kept in roster order so
+    // this list reads against `clear_ambient_behavior`'s teardown, which is
+    // the other place the same seven-procedure set is enumerated.
+    register_component::<WanderBehavior>(
+        registry,
+        "WanderBehavior",
+        vec!["wander_radius", "form_id"],
+    );
+    register_component::<WanderState>(
+        registry,
+        "WanderState",
+        vec!["home", "target", "phase", "pick_count"],
+    );
+    register_component::<TravelBehavior>(
+        registry,
+        "TravelBehavior",
+        vec!["radius", "target_form_id", "form_id"],
+    );
+    register_component::<TravelState>(registry, "TravelState", vec!["destination"]);
+    register_component::<Traveled>(registry, "Traveled", vec![]);
+    register_component::<FollowBehavior>(
+        registry,
+        "FollowBehavior",
+        vec!["target_form_id", "follow_distance"],
+    );
+    register_component::<FollowState>(registry, "FollowState", vec!["target_entity"]);
+    register_component::<EscortBehavior>(
+        registry,
+        "EscortBehavior",
+        vec![
+            "target_form_id",
+            "destination_form_id",
+            "destination_radius",
+            "collect_distance",
+            "form_id",
+        ],
+    );
+    register_component::<EscortState>(
+        registry,
+        "EscortState",
+        vec!["target_entity", "destination"],
+    );
+    register_component::<Escorted>(registry, "Escorted", vec![]);
+    register_component::<GuardBehavior>(
+        registry,
+        "GuardBehavior",
+        vec!["anchor_form_id", "radius", "form_id"],
+    );
+    register_component::<GuardState>(registry, "GuardState", vec!["anchor"]);
+    register_component::<PatrolBehavior>(
+        registry,
+        "PatrolBehavior",
+        vec!["patrol_radius", "form_id"],
+    );
+    register_component::<PatrolState>(
+        registry,
+        "PatrolState",
+        vec!["home", "target", "phase", "pick_count"],
+    );
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
     // Post-#517 split: five target-specific color components replaced
@@ -218,4 +286,74 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // and `docs/smoke-tests/m41-equip.sh`.
     register_component::<Inventory>(registry, "Inventory", vec!["items"]);
     register_component::<EquipmentSlots>(registry, "EquipmentSlots", vec!["occupants"]);
+}
+
+/// #4063 — the roster pin.
+///
+/// The AI-procedure components are enumerated in three places: the
+/// `AmbientBehavior` match that attaches one at spawn, the
+/// `clear_ambient_behavior` teardown that removes them all, and this
+/// registry. The first two are complete; this one silently lagged six
+/// procedures behind for five milestones because nothing tied it to the
+/// others. Rather than pin a count (which moves with every component
+/// added), derive the roster from the source of truth — the `impl
+/// Component for <X>Behavior` declarations — so an eighth procedure fails
+/// this test instead of landing half-wired.
+#[cfg(test)]
+mod roster_tests {
+    /// Every `*Behavior` AI-procedure component declared in
+    /// `crates/core/src/ecs/components/` must be registered above.
+    ///
+    /// Scans only the production half of this file: `register_component`
+    /// calls written inside a test would otherwise satisfy the scan
+    /// themselves, and the needle is composed at runtime for the same
+    /// reason — spelling it literally here would make this module its own
+    /// evidence.
+    #[test]
+    fn every_ai_procedure_behavior_component_is_registered() {
+        let registrations = include_str!("registration.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module")
+            .0;
+
+        let components_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src/ecs/components");
+        let mut behaviors: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(components_dir).expect("components dir is readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("readable component file");
+            for line in src.lines() {
+                let Some(rest) = line.strip_prefix("impl Component for ") else {
+                    continue;
+                };
+                let name = rest.trim_end_matches(" {");
+                if name.ends_with("Behavior") {
+                    behaviors.push(name.to_owned());
+                }
+            }
+        }
+        behaviors.sort();
+
+        assert!(
+            behaviors.len() >= 7,
+            "the scan found only {behaviors:?} — the extraction broke, not the registry"
+        );
+
+        let missing: Vec<&String> = behaviors
+            .iter()
+            .filter(|name| {
+                let needle = format!("{}{}{}>", "register_component", "::<", name);
+                !registrations.contains(&needle)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{missing:?} are AI-procedure components with no debug registration — \
+             `byro-dbg` cannot inspect an actor running them (#4063). Add a \
+             `register_component` call beside the others, and register the \
+             matching `*State` marker too."
+        );
+    }
 }
