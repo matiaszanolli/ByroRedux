@@ -8,7 +8,6 @@
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::descriptors::memory_barrier;
-use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::SKINNED_BLAS_FLAGS;
 use super::predicates::{
     align_scratch_address, scratch_alignment_padding, scratch_needs_growth,
@@ -16,6 +15,7 @@ use super::predicates::{
 };
 use super::types::{BlasEntry, SkinnedBlasGeometry};
 use super::AccelerationManager;
+use crate::deferred_destroy::DEFAULT_COUNTDOWN;
 use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
@@ -741,7 +741,7 @@ impl AccelerationManager {
     }
 
     /// Drop a per-skinned-entity BLAS. Routes through `pending_destroy_blas`
-    /// with a `MAX_FRAMES_IN_FLIGHT`-frame countdown so the acceleration
+    /// with a [`DEFAULT_COUNTDOWN`]-frame countdown so the acceleration
     /// structure is never destroyed while a command buffer still references
     /// it. Mirrors `drop_blas`; `tick_deferred_destroy` and `destroy`
     /// both drain the queue.
@@ -764,7 +764,7 @@ impl AccelerationManager {
     ///
     /// Routed through [`Self::drop_skinned_blas`] rather than a bare `remove`,
     /// so the acceleration structure and its buffer go onto
-    /// `pending_destroy_blas` with the usual `MAX_FRAMES_IN_FLIGHT` countdown.
+    /// `pending_destroy_blas` with the usual [`DEFAULT_COUNTDOWN`] countdown.
     /// The discarded command buffer cannot be executing, but an *earlier*
     /// frame's may still be, and the countdown is what already covers that.
     /// Next frame re-takes the first-sight path and builds them properly.
@@ -783,8 +783,15 @@ impl AccelerationManager {
             // counterpart in `build_skinned_blas_batched_on_cmd`), so
             // only the total counter decrements here.
             self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
-            self.pending_destroy_blas
-                .push(entry, MAX_FRAMES_IN_FLIGHT as u32);
+            // #4001 — `DEFAULT_COUNTDOWN`, not `MAX_FRAMES_IN_FLIGHT as u32`.
+            // The two are identical by construction today (the constant is
+            // defined as exactly that cast), so this is not a behaviour fix.
+            // It is the single place a `MAX_FRAMES_IN_FLIGHT` bump is meant
+            // to propagate through, and this was the one push site of four
+            // that reached around it — leaving a reader auditing the
+            // deferred-destroy contract to re-derive the equivalence here
+            // and nowhere else.
+            self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
         }
     }

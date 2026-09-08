@@ -185,6 +185,41 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
     const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
     const BLAS_SKINNED_RS: &str = include_str!("../blas_skinned.rs");
 
+    /// #4001 — every deferred-destroy push in the acceleration module must
+    /// spell the countdown as `DEFAULT_COUNTDOWN`.
+    ///
+    /// `DeferredDestroyQueue::push`'s doc says production callers pass it, and
+    /// the constant exists so a `MAX_FRAMES_IN_FLIGHT` bump propagates through
+    /// one place. `drop_skinned_blas` passed `MAX_FRAMES_IN_FLIGHT as u32`
+    /// directly — identical by construction, and therefore invisible to every
+    /// behavioural test, which is exactly why it needs a structural one.
+    #[test]
+    fn no_deferred_destroy_push_reaches_around_the_shared_countdown() {
+        for (label, src) in [
+            ("blas_static.rs", BLAS_STATIC_RS),
+            ("blas_skinned.rs", BLAS_SKINNED_RS),
+        ] {
+            let flat = src.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                !flat.contains(".push(entry, MAX_FRAMES_IN_FLIGHT"),
+                "{label} pushes onto a deferred-destroy queue with a raw \
+                 MAX_FRAMES_IN_FLIGHT cast — use DEFAULT_COUNTDOWN, the single \
+                 place that bump is meant to propagate through (#4001)"
+            );
+        }
+        // And the skinned site still pushes at all — an assertion that only
+        // forbids the wrong spelling would pass on a deleted push.
+        assert!(
+            BLAS_SKINNED_RS
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);"),
+            "drop_skinned_blas must still defer its BLAS destroy — an earlier \
+             frame's command buffer may still reference it (#1782)"
+        );
+    }
+
     #[test]
     fn every_static_deferred_push_credits_the_resident_counter() {
         // Both static push sites (`drop_blas`, `evict_unused_blas`) deduct
