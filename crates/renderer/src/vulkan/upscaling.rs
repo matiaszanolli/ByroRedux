@@ -354,9 +354,27 @@ impl FsrTemporalState {
     }
 
     /// Consume one successfully submitted FSR dispatch.
-    pub fn mark_dispatch_completed(&mut self) {
+    ///
+    /// `delivered_reset` is the `reset` flag the frame that just submitted
+    /// actually handed FSR — i.e. the value [`Self::reset_pending`]
+    /// returned when `assemble_camera_and_lights` read it, plus
+    /// `draw_frame`'s camera-cut override. Only a reset FSR was actually
+    /// told about is cleared.
+    ///
+    /// #4007 — this used to clear `reset_pending` unconditionally, which
+    /// made [`Self::signal_reset`] phase-dependent: a reset raised AFTER
+    /// the read (both `record_post_passes` callers of
+    /// `signal_temporal_discontinuity` are in that position) was wiped by
+    /// this call before the next frame could see it. Today no live caller
+    /// hits that — `#2519` signals only when the dispatch failed, so this
+    /// is not reached, and `#3605` fires only in `UpscalerMode::Taa`,
+    /// where `fsr_temporal` is `None` — but that is an accident of which
+    /// states can coexist, not a property anything enforces.
+    pub fn mark_dispatch_completed(&mut self, delivered_reset: bool) {
         self.index = (self.index + 1) % self.samples.len();
-        self.reset_pending = false;
+        if delivered_reset {
+            self.reset_pending = false;
+        }
     }
 }
 
@@ -622,8 +640,10 @@ mod tests {
             .all(|component| component.abs() <= 1.0));
         assert_ne!(first.pixel, [0.0, 0.0]);
 
-        for _ in 0..state.phase_count() {
-            state.mark_dispatch_completed();
+        for phase in 0..state.phase_count() {
+            // The first submitted frame is the one that carries the
+            // constructor's pending reset to FSR.
+            state.mark_dispatch_completed(phase == 0);
         }
         assert_eq!(state.current(), first);
         assert!(!state.reset_pending());
@@ -632,6 +652,42 @@ mod tests {
         assert_eq!(state.current(), first);
         assert_eq!(state.sequence_index(), 0);
         assert!(state.reset_pending());
+    }
+
+    /// #4007 (REN-2026-09-06-D13-01) — `signal_reset` raised AFTER the
+    /// frame read `reset_pending` must survive that frame's completed
+    /// dispatch. `assemble_camera_and_lights` reads the flag near the top
+    /// of `draw_frame`; both `record_post_passes` callers of
+    /// `signal_temporal_discontinuity` run hundreds of lines later, and an
+    /// unconditional clear here silently swallowed their reset.
+    #[test]
+    fn a_reset_raised_after_the_frame_read_it_survives_that_frames_dispatch() {
+        let mut state = FsrTemporalState::new(extents(UpscalerMode::Fsr3(FsrQuality::Quality)))
+            .expect("quality preset builds a jitter sequence");
+
+        // Frame 1: delivers the constructor's pending reset, then submits.
+        let delivered = state.reset_pending();
+        assert!(delivered);
+        state.mark_dispatch_completed(delivered);
+        assert!(!state.reset_pending(), "a delivered reset is consumed");
+
+        // Frame 2: reads `false`, dispatches, and only THEN discovers a
+        // discontinuity — the `record_post_passes` phase.
+        let delivered = state.reset_pending();
+        assert!(!delivered);
+        state.signal_reset();
+        state.mark_dispatch_completed(delivered);
+        assert!(
+            state.reset_pending(),
+            "a reset raised after the read must reach the next frame — clearing it \
+             here is what made signal_temporal_discontinuity phase-dependent"
+        );
+
+        // Frame 3 delivers it.
+        let delivered = state.reset_pending();
+        assert!(delivered);
+        state.mark_dispatch_completed(delivered);
+        assert!(!state.reset_pending());
     }
 
     #[test]

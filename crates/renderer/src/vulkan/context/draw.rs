@@ -1765,6 +1765,13 @@ impl VulkanContext {
             frame_time_delta_ms,
         )?;
         let vp = &effective_vp;
+        // #4007 — the `reset` flag this frame actually hands FSR, captured
+        // before `fsr_frame` is consumed by `record_post_passes`. It is
+        // already final here: `assemble_camera_and_lights` applies the
+        // camera-cut override before returning. Only a reset FSR was told
+        // about may be cleared at the tail of this function; one raised
+        // later in the frame must survive to the next one.
+        let fsr_reset_delivered = fsr_frame.is_some_and(|params| params.reset);
 
         self.dispatch_skin_and_cluster(
             cmd,
@@ -2159,7 +2166,7 @@ impl VulkanContext {
             self.fsr_temporal
                 .as_mut()
                 .expect("submitted FSR dispatch requires temporal state")
-                .mark_dispatch_completed();
+                .mark_dispatch_completed(fsr_reset_delivered);
         }
         // Object-transform history follows successful GPU submission, not
         // command recording or presentation. This mirrors TAA/SVGF history:

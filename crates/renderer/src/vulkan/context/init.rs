@@ -1634,6 +1634,7 @@ impl VulkanContext {
             gpu_instances_scratch: Vec::new(),
             frame_lights_scratch: Vec::new(),
             previous_rigid_models: FxHashMap::default(),
+            suppress_rigid_history_next_build: false,
             prev_caustic_scene_key: 0,
             current_rigid_models_scratch: FxHashMap::default(),
             previous_models_scratch: Vec::new(),

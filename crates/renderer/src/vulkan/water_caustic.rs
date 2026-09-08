@@ -5,8 +5,10 @@
 //! [`super::caustic::CausticPipeline`]) handles glass / MultiLayerParallax
 //! refractors via a post-render-pass compute splat. That image
 //! cannot be shared with `water.frag` because the caustic pipeline's
-//! pre-clear barrier at `caustic.rs:720-735` runs AFTER the main
-//! render pass ends — any in-render-pass writes from `water.frag`
+//! pre-clear barrier — the moving-camera arm of
+//! [`super::caustic::CausticPipeline::dispatch`], and the skip-streak
+//! [`super::caustic::CausticPipeline::clear_for_skip`] — runs AFTER the
+//! main render pass ends; any in-render-pass writes from `water.frag`
 //! would be wiped before `caustic_splat.comp` accumulates.
 //!
 //! This module owns a dedicated sibling image with the inverse pass

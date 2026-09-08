@@ -33,28 +33,17 @@ layout(set = 0, binding = 6) uniform TaaParams {
 layout(set = 0, binding = 7) uniform sampler2D uCurrNormal;
 layout(set = 0, binding = 8) uniform sampler2D uPrevNormal;
 
-// #3607 (REN-2026-08-30-D13-04) — renamed from the old snake_case spelling
-// to match the sibling copies' naming (this one used to be the odd one
-// out, invisible to a `grep octDecode` and absent from their maintenance
-// comments).
-// Octahedral decode — inverse of `octEncode` in `include/math_common.glsl`
-// (the encoder every `outNormal` write in triangle.frag goes through).
-// Must stay bit-identical to the `octDecode` copies in `svgf_atrous.comp`,
-// `svgf_temporal.comp`, and `caustic_splat.comp` — this one feeds the
+// Octahedral decode — the exact inverse of the `octEncode` that wrote the
+// RG16_SNORM normal attachment this pass samples. It feeds the
 // surface-consistency disocclusion test below
 // (`taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces`), so a
-// divergence here is a silent, per-pixel difference in a history-rejection
-// predicate, invisible to every existing test since all of them are
-// source-scan pins.
-vec3 octDecode(vec2 e) {
-    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
-    if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * vec2(
-            n.x >= 0.0 ? 1.0 : -1.0,
-            n.y >= 0.0 ? 1.0 : -1.0);
-    }
-    return normalize(n);
-}
+// divergence from the encoder is a silent, per-pixel difference in a
+// history-rejection predicate.
+//
+// #3607 renamed this file's private copy into the sibling copies' spelling
+// so it matched them; #4008 deleted all five copies in favour of the one
+// definition below, which is what actually makes a divergence impossible.
+#include "include/oct_codec.glsl"
 
 // YCoCg helps variance clamping reject chroma outliers without killing
 // high-frequency luma detail. Space is cheap per-pixel, well worth it.

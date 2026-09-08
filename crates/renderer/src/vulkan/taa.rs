@@ -1054,31 +1054,97 @@ mod tests {
         );
     }
 
-    /// #3607 (REN-2026-08-30-D13-04) — `taa.comp`'s octahedral decoder used
-    /// to be spelled `oct_decode` (snake_case, unlike every sibling copy in
-    /// `svgf_atrous.comp` / `svgf_temporal.comp` / `caustic_splat.comp`) and
-    /// was absent from their maintenance-comment enumerations, so neither a
-    /// `grep octDecode` nor the comment would lead a maintainer here. Renamed
-    /// to match; this pins the rename against the surface-consistency
-    /// disocclusion test it feeds
-    /// (`taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces` above).
+    /// #4008 (REN-2026-09-06-D13-02) — the octahedral decoder has exactly
+    /// ONE definition, in `include/oct_codec.glsl`.
+    ///
+    /// #3607 fixed the discoverability half of the old five-copy
+    /// duplication (every copy renamed to `octDecode`, every maintenance
+    /// comment enumerating its siblings) but not the drift half: both
+    /// guards were name/count pins, so a one-line edit to some of the
+    /// copies passed the whole suite while leaving TAA rejecting history
+    /// on a different predicate than SVGF, and both disagreeing with the
+    /// `octEncode` producer that wrote the attachment. Encoder and decoder
+    /// must be exact inverses, so this pins the structural property — one
+    /// definition, everyone else includes it — rather than trying to
+    /// compare bodies that no longer exist.
+    ///
+    /// The consumer list is asserted non-empty rather than counted: a new
+    /// pass that needs the codec should add an `#include`, not fail a test.
     #[test]
-    fn taa_comp_octahedral_decoder_is_named_octdecode() {
-        let src = include_str!("../../shaders/taa.comp");
+    fn octahedral_codec_has_a_single_definition_every_consumer_includes() {
+        const HEADER: &str = "include/oct_codec.glsl";
+        let codec = include_str!("../../shaders/include/oct_codec.glsl");
+        for decl in ["vec3 octDecode(vec2 e) {", "vec2 octEncode(vec3 n) {"] {
+            assert_eq!(
+                codec.matches(decl).count(),
+                1,
+                "{HEADER} must define `{decl}` exactly once — it is the codec's only home"
+            );
+        }
+
+        // Every file that used to carry a copy. `includes` is false only
+        // for `caustic_splat.comp`, whose copy was never called by
+        // anything in the file — dead code, and therefore the copy most
+        // exposed to silent drift. It was deleted outright rather than
+        // replaced by an include it does not need.
+        let formerly_duplicated: &[(&str, &str, bool)] = &[
+            ("taa.comp", include_str!("../../shaders/taa.comp"), true),
+            (
+                "svgf_temporal.comp",
+                include_str!("../../shaders/svgf_temporal.comp"),
+                true,
+            ),
+            (
+                "svgf_atrous.comp",
+                include_str!("../../shaders/svgf_atrous.comp"),
+                true,
+            ),
+            (
+                "include/math_common.glsl",
+                include_str!("../../shaders/include/math_common.glsl"),
+                true,
+            ),
+            (
+                "caustic_splat.comp",
+                include_str!("../../shaders/caustic_splat.comp"),
+                false,
+            ),
+        ];
+        for (name, src, includes) in formerly_duplicated {
+            // Line-anchored: a `//` comment mentioning the directive (as
+            // caustic_splat.comp's do-not-paste-a-copy-back note does) is
+            // prose, not a dependency.
+            let has_include = src.lines().any(|line| {
+                let line = line.trim_start();
+                line.starts_with("#include") && line.contains("oct_codec.glsl")
+            });
+            assert_eq!(
+                has_include, *includes,
+                "{name}: expected include-the-codec = {includes}; a consumer must \
+                 pull {HEADER} and a non-consumer must not gain a spurious include"
+            );
+            for decl in ["vec3 octDecode(vec2 e)", "vec2 octEncode(vec3 n)"] {
+                assert!(
+                    !src.contains(decl),
+                    "{name} reintroduced a local `{decl}` — that is the exact \
+                     five-copy duplication #4008 removed, and no name/count pin \
+                     can catch it drifting from the encoder afterwards"
+                );
+            }
+            assert!(
+                !src.contains("oct_decode"),
+                "{name} must not resurrect the snake_case spelling #3607 removed"
+            );
+        }
+
+        // The two live TAA call sites the decoder exists for.
+        let taa = include_str!("../../shaders/taa.comp");
         assert!(
-            src.contains("vec3 octDecode(vec2 e)"),
-            "taa.comp's octahedral decoder must be named octDecode, matching its \
-             siblings in svgf_atrous.comp / svgf_temporal.comp / caustic_splat.comp"
-        );
-        assert!(
-            !src.contains("oct_decode"),
-            "the old snake_case name must not come back — it was invisible to a \
-             `grep octDecode` and to the sibling copies' maintenance comments"
-        );
-        assert_eq!(
-            src.matches("octDecode(").count(),
-            3,
-            "expected exactly one definition plus two call sites (currNormal, prevNormal)"
+            taa.contains("octDecode(texelFetch(uCurrNormal, pix, 0).rg)")
+                && taa.contains("octDecode(texelFetch(uPrevNormal, prevPix, 0).rg)"),
+            "taa.comp must still decode both the current and the reprojected \
+             normal — the surface-consistency reject is what the shared codec \
+             is load-bearing for"
         );
     }
 

@@ -129,6 +129,12 @@ impl VulkanContext {
         //     from the compare above and they need their own key.
         // Skinned actors are covered by `pose_dirty`, and the light rig is
         // folded into the key after the loop.
+        // #4007 — a discontinuity signalled from anywhere (including after
+        // this build, from `record_post_passes`) suppresses rigid history
+        // for exactly one build, then re-arms. Consumed here rather than
+        // read-and-left-set so it cannot silently zero motion vectors for
+        // the rest of the session.
+        let suppress_rigid_history = std::mem::take(&mut self.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
         let mut caustic_scene_key = crate::vulkan::caustic::caustic_key_seed();
 
@@ -149,7 +155,7 @@ impl VulkanContext {
             let current_model = rebase_model_matrix(m, render_origin);
             let uses_rigid_history =
                 uses_rigid_motion_history(draw_cmd.bone_offset, draw_cmd.alpha_blend);
-            let previous_source = if uses_rigid_history && !camera_cut {
+            let previous_source = if uses_rigid_history && !camera_cut && !suppress_rigid_history {
                 self.previous_rigid_models
                     .get(&draw_cmd.entity_id)
                     .unwrap_or(m)
@@ -1222,5 +1228,82 @@ mod rt_visible_flag_assembly_tests {
                  #3978, not reverted"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rigid_history_suppression_tests {
+    /// #4007 (REN-2026-09-06-D13-01) — `signal_temporal_discontinuity`'s
+    /// rigid-history limb must be order-independent.
+    ///
+    /// Its documented contract is that "the first frame after a
+    /// discontinuity must not encode object motion against transforms from
+    /// the retired scene/camera history", but the `previous_rigid_models
+    /// .clear()` that implemented it only held for callers running BEFORE
+    /// this function. `draw_frame` ends with `mem::swap(&mut self
+    /// .previous_rigid_models, &mut current_rigid_models)`, so a clear
+    /// performed later in the same frame — `record_taa_pass` (#3605) and
+    /// `record_upscale_pass` (#2519) both signal from inside
+    /// `record_post_passes` — was discarded before the next frame's
+    /// lookup ever read it. `#3605` established that call site as a normal
+    /// place to signal from, so the next caller to signal a *real* scene
+    /// discontinuity from there would have got a partial reset with no
+    /// diagnostic.
+    ///
+    /// The latch survives the swap and is consumed by the next build.
+    /// `build_and_upload_instances` needs a live `VulkanContext`, so this
+    /// is a source scan, matching the two sibling modules above.
+    #[test]
+    fn rigid_history_lookup_is_gated_on_the_one_shot_suppression_latch() {
+        // Scoped to the PRODUCTION portion of the file — an unscoped
+        // search would match this test's own `.contains(..)` arguments and
+        // pass with the gate deleted (the hazard `batches_scratch_reserve_
+        // tests` documents; verified the same way here).
+        let full_src = include_str!("build_and_upload_instances.rs");
+        let module_start = full_src
+            .find("mod rigid_history_suppression_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+
+        assert!(
+            src.contains(
+                "let suppress_rigid_history = \
+                 std::mem::take(&mut self.suppress_rigid_history_next_build);"
+            ),
+            "the latch must be CONSUMED (mem::take), not merely read — leaving it set \
+             would zero rigid motion vectors for the rest of the session rather than \
+             for the one build after the discontinuity"
+        );
+        assert!(
+            src.contains("if uses_rigid_history && !camera_cut && !suppress_rigid_history {"),
+            "the previous-transform lookup must be gated on the latch alongside \
+             camera_cut — without it a discontinuity signalled from record_post_passes \
+             is undone by draw_frame's end-of-frame swap before it takes effect (#4007)"
+        );
+    }
+
+    /// The producer half: the gate above is inert unless
+    /// `signal_temporal_discontinuity` still raises the latch, and unless
+    /// `draw_frame` still tells `mark_dispatch_completed` what the frame
+    /// actually delivered rather than clearing every pending FSR reset.
+    #[test]
+    fn both_in_frame_limbs_stay_wired_to_their_order_independent_form() {
+        let ctx = include_str!("mod.rs");
+        assert!(
+            ctx.contains("self.suppress_rigid_history_next_build = true;"),
+            "signal_temporal_discontinuity must raise the latch alongside              previous_rigid_models.clear() — the clear alone is undone by              draw_frame's end-of-frame swap for any caller inside the frame"
+        );
+
+        let draw = include_str!("draw.rs");
+        assert!(
+            draw.contains(
+                "let fsr_reset_delivered = fsr_frame.is_some_and(|params| params.reset);"
+            ),
+            "draw_frame must capture the reset flag it actually handed FSR"
+        );
+        assert!(
+            draw.contains(".mark_dispatch_completed(fsr_reset_delivered);"),
+            "a completed dispatch may only clear the reset THIS frame delivered —              clearing unconditionally swallows a reset raised later in the frame,              which is exactly where both record_post_passes callers signal from"
+        );
     }
 }

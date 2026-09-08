@@ -2236,14 +2236,19 @@ mod unsubmitted_dispatch_tests {
 /// on this class in #1040 and the audit protocol mandates symbols over
 /// line numbers; the renderer shaders never got the sweep.
 ///
-/// Scoped to the Dim-8 sources deliberately: #2773 / #2757 / #2510 /
-/// #2755 track the same rot in other subsystems and are still open, so a
+/// Still scoped rather than crate-wide: #2773 / #2757 / #2510 / #2755
+/// track the same rot in other subsystems and are still open, so a
 /// crate-wide assertion would fail on their sites rather than on a
-/// regression of this one. Widen the list as those close.
+/// regression of this one. Widen the list as those close — #4010's
+/// sibling #4009 did exactly that for the caustic / water / volumetrics
+/// sources, which had accumulated seven more of these (one of them
+/// citing the caustic pre-clear barrier and landing in
+/// `write_descriptor_sets`, another citing the RT gate and landing in a
+/// `morph_slot_backs_mesh` unit test).
 #[cfg(test)]
 mod denoiser_anchor_rot_tests {
-    /// `(label, source)` for every file #2922 swept.
-    const DIM8_SOURCES: &[(&str, &str)] = &[
+    /// `(label, source)` for every file #2922 and #4009 swept.
+    const SWEPT_SOURCES: &[(&str, &str)] = &[
         (
             "shaders/svgf_temporal.comp",
             include_str!("../../shaders/svgf_temporal.comp"),
@@ -2260,6 +2265,36 @@ mod denoiser_anchor_rot_tests {
         (
             "vulkan/context/post_passes.rs",
             include_str!("context/post_passes.rs"),
+        ),
+        // #4009 (REN-2026-09-06-D14-01) — the caustic / water /
+        // volumetrics sources, swept for the same class.
+        ("vulkan/caustic.rs", include_str!("caustic.rs")),
+        ("vulkan/water_caustic.rs", include_str!("water_caustic.rs")),
+        ("vulkan/volumetrics.rs", include_str!("volumetrics.rs")),
+        ("vulkan/water.rs", include_str!("water.rs")),
+        (
+            "vulkan/context/resize.rs",
+            include_str!("context/resize.rs"),
+        ),
+        (
+            "shaders/caustic_splat.comp",
+            include_str!("../../shaders/caustic_splat.comp"),
+        ),
+        (
+            "shaders/water.frag",
+            include_str!("../../shaders/water.frag"),
+        ),
+        (
+            "shaders/water.vert",
+            include_str!("../../shaders/water.vert"),
+        ),
+        (
+            "shaders/volumetrics_inject.comp",
+            include_str!("../../shaders/volumetrics_inject.comp"),
+        ),
+        (
+            "shaders/volumetrics_integrate.comp",
+            include_str!("../../shaders/volumetrics_integrate.comp"),
         ),
     ];
 
@@ -2289,8 +2324,8 @@ mod denoiser_anchor_rot_tests {
     }
 
     #[test]
-    fn dim8_sources_carry_no_bare_line_number_anchors() {
-        for (label, src) in DIM8_SOURCES {
+    fn swept_sources_carry_no_bare_line_number_anchors() {
+        for (label, src) in SWEPT_SOURCES {
             assert!(
                 find_line_anchor(src).is_none(),
                 "{label} regained a bare `file:NN` anchor: {}\n\
@@ -2334,6 +2369,47 @@ mod denoiser_anchor_rot_tests {
                 "post_passes bloom view rebind",
                 "rebind_hdr_views",
                 include_str!("context/post_passes.rs"),
+            ),
+            // #4009 — the caustic / water / volumetrics half of the sweep.
+            (
+                "water_caustic pass-ordering rationale",
+                "CausticPipeline::clear_for_skip",
+                include_str!("water_caustic.rs"),
+            ),
+            (
+                "caustic_splat RT gate",
+                "patch_camera_rt_flag",
+                include_str!("../../shaders/caustic_splat.comp"),
+            ),
+            (
+                "caustic_splat instance-flag lockstep pins",
+                "instance_flag_bits_match_scene_buffer_consts",
+                include_str!("../../shaders/caustic_splat.comp"),
+            ),
+            (
+                "volumetrics TLAS write mirror",
+                "CausticPipeline::write_tlas",
+                include_str!("volumetrics.rs"),
+            ),
+            (
+                "resize bloom-init parity",
+                "`VulkanContext::new`'s `bloom_views`",
+                include_str!("context/resize.rs"),
+            ),
+            (
+                "resize frame-counter consumers",
+                "`taa_jitter`",
+                include_str!("context/resize.rs"),
+            ),
+            (
+                "resize recovery-budget source",
+                "streaming_helpers.rs",
+                include_str!("context/resize.rs"),
+            ),
+            (
+                "water.frag caustic normal rationale",
+                "refract(-V, refractionNormal, eta)",
+                include_str!("../../shaders/water.frag"),
             ),
         ] {
             assert!(

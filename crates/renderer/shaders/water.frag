@@ -1208,7 +1208,11 @@ void main() {
     //
     // Constraints per REN-D13-NEW-04 (audit 2026-05-09):
     //   • Single eta — no per-channel chromatic split (no
-    //     wavelength dispersion). η = 1.0/1.33 (air → water).
+    //     wavelength dispersion). η = 1.0/ior (air → water), reading the
+    //     SAME authored `WaterMaterial::ior` the primary refraction ray
+    //     uses (#4010). It was hardcoded to the 1.33 clean-water default
+    //     here, so any authored or tuned index made the caustic focus
+    //     disagree with the refraction seen through the same surface.
     //   • Single bounce — no reflection-then-refraction chains.
     //
     // Magnitude pinning: the fixed-point scale matches
@@ -1244,10 +1248,10 @@ void main() {
             // fragment of a flat water plane, so refracting through it
             // produces a rigid, structureless translation of the water
             // plane's screen footprint instead of a focused caustic — the
-            // same Nperturbed already used by the primary refraction ray
-            // above (line ~547) is required to focus light into a caustic
-            // pattern.
-            vec3 refractDir = refract(-sunDir, causticNormal, 1.0 / 1.33);
+            // same Nperturbed already fed to the primary refraction
+            // `refract(-V, refractionNormal, eta)` above is required to
+            // focus light into a caustic pattern.
+            vec3 refractDir = refract(-sunDir, causticNormal, 1.0 / max(ior, 1.0));
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //

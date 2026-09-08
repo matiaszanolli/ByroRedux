@@ -1316,9 +1316,9 @@ impl VolumetricsPipeline {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
             // 2: scene TLAS (Phase 2c). Updated each frame via
-            // `write_tlas` from draw.rs before dispatch — same flow
-            // as `caustic.write_tlas` (caustic.rs:627). Used by the
-            // injection shader's shadow visibility ray query.
+            // `write_tlas` from `draw_frame` before dispatch — same flow
+            // as `CausticPipeline::write_tlas`. Used by the injection
+            // shader's shadow visibility ray query.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
@@ -2799,9 +2799,9 @@ impl VolumetricsPipeline {
     }
 
     /// Update the injection descriptor set's binding 2 (TLAS) for
-    /// `frame`. Mirrors `CausticPipeline::write_tlas` (caustic.rs:627)
+    /// `frame`. Mirrors [`super::caustic::CausticPipeline::write_tlas`]
     /// — the TLAS is rebuilt each frame, so this MUST be called every
-    /// frame from `draw.rs` before `dispatch`. If the caller has no
+    /// frame from `draw_frame` before `dispatch`. If the caller has no
     /// TLAS available for this frame (RT unsupported, scene not yet
     /// built), they should skip both `write_tlas` AND `dispatch`;
     /// composite will reuse the prior frame's integrated volume.

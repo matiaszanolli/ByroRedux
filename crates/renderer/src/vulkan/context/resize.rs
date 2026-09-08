@@ -772,7 +772,8 @@ impl VulkanContext {
         // /sampler/pool aren't extent-dependent but get rebuilt anyway
         // — this is the simpler path; recreate is rare. Failing closed:
         // composite needs SOME bloom view for binding 7, so a recreate
-        // failure is fatal (matches init behaviour at mod.rs:1422-1426).
+        // failure is fatal (matches `VulkanContext::new`'s `bloom_views`
+        // arm in `context/init.rs`, which bails for the same reason).
         if let Some(ref mut old_bloom) = self.bloom {
             let allocator = self
                 .allocator
@@ -1214,8 +1215,9 @@ impl VulkanContext {
         self.current_frame = 0;
 
         // #913 / REN-D7-NEW-07 — reset the per-frame counter that
-        // feeds the Halton TAA jitter sequence (`draw.rs:334`) and
-        // the camera UBO (`:398`) so the first post-resize frame's
+        // feeds the Halton TAA jitter sequence (`taa_jitter`, called from
+        // `assemble_camera_and_lights`) and the camera UBO
+        // (`GpuCamera::frame_counter`) so the first post-resize frame's
         // jitter aligns with the freshly-recreated TAA history image
         // (which TAA's force-history-reset gate below will treat as
         // pure current pixel). Without this reset the Halton index
@@ -1263,8 +1265,9 @@ impl VulkanContext {
         // accumulations rather than reprojections against the
         // freshly-recreated (effectively undefined) history images.
         // 8 frames matches the cell-streaming discontinuity budget
-        // (`SVGF_TAA_STREAMING_RECOVERY_FRAMES` at `byroredux/src/
-        // main.rs:56`) — at 60 FPS that's ~130 ms of recovery, in
+        // (`SVGF_TAA_STREAMING_RECOVERY_FRAMES`, declared in
+        // `byroredux/src/streaming_helpers.rs`) — at 60 FPS that's
+        // ~130 ms of recovery, in
         // the same band as TAA's own first-frame reset gate. The
         // robust half of the #913 fix; option 2 from the audit body.
         const RESIZE_RECOVERY_FRAMES: u32 = 8;

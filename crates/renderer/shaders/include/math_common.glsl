@@ -29,26 +29,12 @@ vec3 sampleDalcCube(vec3 N) {
 
 const float PI = 3.14159265359;
 
-// ── Octahedral normal encoding (Cigolle et al. 2014) ────────────────
-// Encodes a unit normal into 2 components for RG16_SNORM storage.
-// Saves 50% G-buffer bandwidth vs RGBA16_SNORM. See #275.
-vec2 octEncode(vec3 n) {
-    n /= (abs(n.x) + abs(n.y) + abs(n.z));
-    if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
-                                          n.y >= 0.0 ? 1.0 : -1.0);
-    }
-    return n.xy;
-}
-
-vec3 octDecode(vec2 e) {
-    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
-    if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
-                                          n.y >= 0.0 ? 1.0 : -1.0);
-    }
-    return normalize(n);
-}
+// ── Octahedral normal codec (Cigolle et al. 2014) ───────────────────
+// `octEncode` / `octDecode` moved to their own STANDALONE header under
+// #4008 so the four compute consumers can share this exact pair instead
+// of carrying copies. This header is not standalone (see the file
+// docstring), so it could never be the shared definition itself.
+#include "oct_codec.glsl"
 
 // ── Noise for stochastic shadow rays ────────────────────────────────
 

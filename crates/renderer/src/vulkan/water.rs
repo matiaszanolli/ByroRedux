@@ -1290,6 +1290,37 @@ mod tests {
         );
     }
 
+    /// #4010 (REN-2026-09-06-D15-01) — the caustic refraction ray must
+    /// refract at the SAME index as the primary refraction ray of the same
+    /// surface. `WaterMaterial::ior` reaches the shader as `push.timing.w`
+    /// and exists precisely to be authored away from the 1.33 clean-water
+    /// default; the caustic block used to hardcode `1.0 / 1.33`, so any
+    /// authored or tuned index sent the caustic pattern to a different
+    /// place on the lake bed than the geometry seen through the surface.
+    /// The glass-side sibling (`caustic_splat.comp`) already reads its
+    /// per-draw `instances[instIdx].ior` — this is the same doctrine
+    /// `86976f56` / #3912 swept the glass defaults for.
+    #[test]
+    fn water_caustic_refraction_uses_the_authored_ior_not_the_1_33_default() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("float ior  = push.timing.w;"),
+            "the authored WaterMaterial::ior must still reach main() as push.timing.w — \
+             the caustic assertion below is only meaningful while it does"
+        );
+        assert!(
+            src.contains("refract(-sunDir, causticNormal, 1.0 / max(ior, 1.0))"),
+            "water.frag's caustic refraction must use the authored `ior`, matching the \
+             primary refraction ray's `1.0 / max(ior, 1.0)` eta"
+        );
+        assert!(
+            !src.contains("1.0 / 1.33"),
+            "the hardcoded clean-water index must not come back: it silently diverges \
+             from the primary refraction the moment a WATR record or a tuning pass \
+             authors WaterMaterial::ior"
+        );
+    }
+
     /// #3822 (REN-WD-D15-01) — the refraction half of water's alpha must
     /// stop competing with an RT refraction it already resolved. `refrHit`
     /// is hoisted out of the refraction `if` block and feeds a third,

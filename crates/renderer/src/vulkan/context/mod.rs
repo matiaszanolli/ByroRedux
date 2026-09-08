@@ -1395,6 +1395,25 @@ pub struct VulkanContext {
     /// maps are `mem::take`n, cleared, and swapped in `draw.rs`, so no
     /// per-frame heap churn — hashing was the only remaining cost.
     previous_rigid_models: FxHashMap<u32, [f32; 16]>,
+    /// #4007 — one-shot "the next instance build must not reuse rigid
+    /// transform history" latch, set by
+    /// [`Self::signal_temporal_discontinuity`] alongside the
+    /// `previous_rigid_models.clear()` it makes order-independent.
+    ///
+    /// The clear alone only works for callers that run BEFORE
+    /// `build_and_upload_instances` (streaming / save / debug-load /
+    /// app-step / resize, and the `camera_cut` site in
+    /// `assemble_camera_and_lights`). `draw_frame` ends with
+    /// `mem::swap(&mut self.previous_rigid_models, &mut current_rigid_models)`,
+    /// so a clear performed later in the same frame — `record_taa_pass`
+    /// and `record_upscale_pass` both signal from inside
+    /// `record_post_passes` — is discarded before the next frame's
+    /// `uses_rigid_motion_history` lookup ever reads it. This latch
+    /// survives that swap and is consumed by the next build, so the
+    /// documented contract ("the first frame after a discontinuity must
+    /// not encode object motion against transforms from the retired
+    /// scene/camera history") holds from either phase.
+    suppress_rigid_history_next_build: bool,
     /// Previous frame's caustic scene key — the light rig plus every
     /// caustic-source instance's placement, folded to a `u64` (#2468 /
     /// REN-D14-2026-08-07-01). The caustic accumulator's parked-camera
@@ -2256,8 +2275,12 @@ impl VulkanContext {
             volumetrics.signal_history_reset();
         }
         // The first frame after a discontinuity must not encode object motion
-        // against transforms from the retired scene/camera history.
+        // against transforms from the retired scene/camera history. The
+        // `clear()` drops the data; the latch makes the suppression survive
+        // `draw_frame`'s end-of-frame swap, so this holds whether the caller
+        // runs before `build_and_upload_instances` or after it (#4007).
         self.previous_rigid_models.clear();
+        self.suppress_rigid_history_next_build = true;
     }
 
     /// Snapshot every persistent CPU-side scratch `Vec` owned by the
