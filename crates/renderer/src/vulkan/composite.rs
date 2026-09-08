@@ -163,6 +163,24 @@ unsafe impl crate::vulkan::buffer::NoUninit for CompositeParams {}
 /// for all real-world scene brightness, supports alpha for glass blending.
 pub const HDR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
+/// Render-extent VRAM this pipeline holds, per pixel, across all frames in
+/// flight (#3993).
+///
+/// `CompositePipeline` owns **two** independent screen-sized image families —
+/// `hdr_images` and `scene_images` — each `MAX_FRAMES_IN_FLIGHT` deep, each
+/// created at `extents.render`, both `HDR_FORMAT` (8 B/px) and both
+/// unconditional. Four images in total.
+///
+/// Published as a constant for the same reason `SVGF_BYTES_PER_PIXEL` and
+/// `FROXEL_BYTES_PER_SLOT` are: `memory-budget.md` is pinned against it and
+/// `screen_scaled_reservation_bytes` reads it, so adding a third family moves
+/// both the ledger and the BLAS reservation instead of silently drifting from
+/// them. Before #3993 neither counted these images at all — the G-buffer
+/// roll-up row's "not counting the separate HDR colour" clause pointed at a
+/// row that did not exist.
+pub const COMPOSITE_BYTES_PER_PIXEL: u32 = 2 /* hdr_images + scene_images */ * 8 /* R16G16B16A16_SFLOAT */
+        * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
 /// Owns the HDR intermediates + composite pipeline + composite render pass.
 pub struct CompositePipeline {
     /// HDR color images (one per frame-in-flight slot).
@@ -1695,6 +1713,88 @@ mod composite_params_layout_tests {
     //! until someone notices visually. Offsets follow std140 layout,
     //! which for an all-vec4/mat4 block is just the sum of the field
     //! sizes in declaration order.
+
+    /// #3993 — `memory-budget.md` is the page every other subsystem's
+    /// budgeting is derived from, and until now it counted neither of this
+    /// pipeline's two screen-sized image families nor the depth pair. The
+    /// G-buffer roll-up row even carried an exclusion clause pointing at a
+    /// section that did not exist.
+    ///
+    /// Pins the ledger against the live constant so a third image family, or a
+    /// format change, fails here instead of drifting off the page. Both halves
+    /// are checked: the published colour constant and the section's 40 B/px
+    /// total, which also covers the depth pair the constant does not.
+    #[test]
+    fn composite_bytes_per_pixel_matches_the_memory_budget_ledger() {
+        const DOC: &str = include_str!("../../../../docs/engine/memory-budget.md");
+
+        // Two families x 8 B/px x 2 frames in flight.
+        assert_eq!(
+            COMPOSITE_BYTES_PER_PIXEL, 32,
+            "COMPOSITE_BYTES_PER_PIXEL no longer describes two HDR_FORMAT \
+             families across MAX_FRAMES_IN_FLIGHT — update the ledger section \
+             with it (#3993)"
+        );
+        assert_eq!(
+            HDR_FORMAT,
+            vk::Format::R16G16B16A16_SFLOAT,
+            "the ledger's 8 B/px rows assume RGBA16F (#3993)"
+        );
+
+        let section = DOC
+            .split_once("### Composite HDR intermediates + depth")
+            .expect(
+                "memory-budget.md must carry the composite/depth section — it is \
+                 the row the G-buffer exclusion clause points at (#3993)",
+            )
+            .1;
+        let section = section.split("\n### ").next().expect("section body");
+        assert!(
+            section.contains("| **Total** | | | | **40** |"),
+            "the composite/depth section must still total 40 B/px — 32 for the \
+             two HDR families plus 8 for depth + depth-history (#3993)"
+        );
+        for row in [
+            "`hdr_images`",
+            "`scene_images`",
+            "`depth_image`",
+            "`depth_history_image`",
+        ] {
+            assert!(
+                section.contains(row),
+                "the composite/depth ledger lost its {row} row (#3993)"
+            );
+        }
+
+        // The exclusion clause that used to point nowhere.
+        assert!(
+            !DOC.contains("**not** counting the separate HDR colour"),
+            "the G-buffer row still disclaims the HDR/depth attachments as \
+             uncounted, but they have their own row now (#3993)"
+        );
+    }
+
+    /// #3993 sibling — `ClusterCullPipeline`'s light-index buffers are fixed
+    /// size rather than resolution-scaled, which is why they were missed. The
+    /// arithmetic is pinned against the live constants, not the prose.
+    #[test]
+    fn cluster_light_index_ledger_matches_the_live_constants() {
+        use crate::shader_constants::{MAX_LIGHTS_PER_CLUSTER, TOTAL_CLUSTERS};
+        const DOC: &str = include_str!("../../../../docs/engine/memory-budget.md");
+
+        let per_fif = TOTAL_CLUSTERS as u64 * MAX_LIGHTS_PER_CLUSTER as u64 * 4;
+        let total_mb = (per_fif * super::super::sync::MAX_FRAMES_IN_FLIGHT as u64) as f64 / 1.0e6;
+        assert!(
+            (total_mb - 14.2).abs() < 0.2,
+            "cluster light-index buffers are now {total_mb:.1} MB total, but \
+             memory-budget.md still says ~14 MB (#3993)"
+        );
+        assert!(
+            DOC.contains("### Cluster light-index buffers"),
+            "memory-budget.md must still ledger the cluster light-index \
+             buffers (#3993)"
+        );
+    }
 
     use super::*;
     use std::mem::{offset_of, size_of};

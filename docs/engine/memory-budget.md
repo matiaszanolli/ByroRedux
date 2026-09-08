@@ -244,6 +244,52 @@ figure below shrinks under any FSR preset.
 | 2560×1440 | ~9.8 MB | ~19.6 MB |
 | 3840×2160 | ~22.1 MB | ~44.1 MB |
 
+### Composite HDR intermediates + depth (#3993)
+
+[`composite.rs`](../../crates/renderer/src/vulkan/composite.rs) and
+[`context/helpers.rs`](../../crates/renderer/src/vulkan/context/helpers.rs)'s
+`create_depth_resources`. Unconditional render-extent VRAM that had **no row
+anywhere on this page** until #3993 — the G-buffer roll-up row's "not counting
+the separate HDR colour, depth, or depth-history attachments" clause pointed at
+a section that did not exist.
+
+`CompositePipeline` owns two independent screen-sized image families, not one:
+
+| Resource | Format | B/px | Count | Total B/px |
+|---|---|---:|---:|---:|
+| `hdr_images` (main HDR attachment) | `R16G16B16A16_SFLOAT` | 8 | 2 FIF | 16 |
+| `scene_images` (the image FSR or the native bridge consumes) | `R16G16B16A16_SFLOAT` | 8 | 2 FIF | 16 |
+| `depth_image` | `D32_SFLOAT` | 4 | 1 | 4 |
+| `depth_history_image` | `D32_SFLOAT` | 4 | 1 | 4 |
+| **Total** | | | | **40** |
+
+The two colour families must stay distinct — `scene_images` arrived with the FSR
+tail precisely so the reconstruction input is not the same image the main pass
+writes — so this is 4 images, not 2. Depth is single-buffered at both slots;
+`find_depth_format` selects `D32_SFLOAT` and `depth_capture_record_copy` has
+refused anything else since #3570.
+
+| Resolution | Total (40 B/px) |
+|---|---|
+| 1920×1080 | ~83.0 MB |
+| 2560×1440 | ~147.5 MB |
+| 3840×2160 | ~331.8 MB |
+
+That is more than the SVGF row, which has a whole subsection, and more than the
+TAA, Bloom and SSAO rows combined. The 32 B/px colour half is published as
+`COMPOSITE_BYTES_PER_PIXEL` in `composite.rs` and pinned against this section by
+`composite_bytes_per_pixel_matches_the_memory_budget_ledger`, so a third image
+family fails a test rather than drifting off this page.
+
+### Cluster light-index buffers (#3993)
+
+[`compute.rs`](../../crates/renderer/src/vulkan/compute.rs)'s
+`ClusterCullPipeline`. Fixed-size, **not** resolution-scaled, and likewise
+unledgered before #3993: `TOTAL_CLUSTERS` (16×9×24 = 3,456) ×
+`MAX_LIGHTS_PER_CLUSTER` (512) × 4 B ≈ **7.1 MB per frame-in-flight**, ~14.2 MB
+total. Small enough not to move the roll-up materially; recorded so a future
+cluster-grid or per-cluster-light-budget change has a baseline to move from.
+
 ### FSR 3.1 Upscaler (default, `5c7acfe2`)
 
 [`frame_upscaler.rs`](../../crates/renderer/src/vulkan/frame_upscaler.rs),
@@ -713,7 +759,9 @@ authoritative rather than re-derived.
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; **not** counting the separate HDR colour, depth, or depth-history attachments) | ~91 MB (1080p) | ~365 MB (4K) |
+| G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; the separate HDR colour, depth and depth-history attachments are counted in their own row below, not here) | ~91 MB (1080p) | ~365 MB (4K) |
+| Composite HDR pair + depth / depth-history (40 B/px, #3993) | ~83 MB (1080p) | ~332 MB (4K) |
+| Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
 | Scene SSBOs | ~223 MB | ~223 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
@@ -730,7 +778,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.81 GB** | **~3.72 GB at native 4K**, inside the < 4 GB target but with less margin than previously recorded — see the per-preset table in the Volumetrics section |
+| **Estimated total** | **~1.91 GB** | **~4.07 GB at native 4K** — #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
