@@ -272,7 +272,19 @@ pub struct AccelerationManager {
     /// `mode = UPDATE` is legal each frame. Insert / remove bumps
     /// `blas_map_generation` so the TLAS-side cache invalidation
     /// tracks skinned BLAS alongside the static `blas_entries`.
-    pub(super) skinned_blas: std::collections::HashMap<EntityId, BlasEntry>,
+    ///
+    /// #4000 — `FxHashMap`, not `std::collections::HashMap`. This is on the
+    /// per-frame skinned path: `build_tlas_instances` does one `get_mut` per
+    /// skinned draw command, and the refit path adds `has_skinned_blas` +
+    /// `skinned_blas_entry` + `should_rebuild_skinned_blas` per dirty entity,
+    /// over a `u32` keyspace. `PERF-D6-01` tabulated seven such fields and
+    /// #3061 converted six — all six living in `context/mod.rs`, whose guard
+    /// tests read that file's own source text and so could not see this one.
+    /// The cost is small in absolute terms (SipHash-1-3 over a u32, times the
+    /// live skinned-entity count, ~120 on the FO4 baseline); what it cost in
+    /// practice is that the path *reads* as Fx-hashed end-to-end, and the
+    /// guards say so, while one collection on it was not.
+    pub(super) skinned_blas: rustc_hash::FxHashMap<EntityId, BlasEntry>,
     /// #3991 — entities whose skinned BLAS was *inserted* by this frame's
     /// recording, held until `queue_submit` succeeds.
     ///
@@ -369,7 +381,7 @@ impl AccelerationManager {
             pending_destroy_static_bytes: 0,
             pending_destroy_scratch: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
-            skinned_blas: std::collections::HashMap::new(),
+            skinned_blas: rustc_hash::FxHashMap::default(),
             provisional_skinned_blas: Vec::new(),
             scratch_align,
         })

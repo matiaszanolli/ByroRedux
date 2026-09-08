@@ -352,3 +352,36 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
         );
     }
 }
+
+/// #4000 / PERF-D6-01 residual — the acceleration module carries its own
+/// hot-path-hashing pin.
+///
+/// `_audit-common.md`'s rule is that the per-frame render/skinning path is
+/// `FxHashMap`/`FxHashSet` end-to-end **across the crate boundary**.
+/// `context/mod.rs` holds that line with eight pinned fields — but its guards
+/// read that file's own source text, so `skinned_blas`, the one member of
+/// `PERF-D6-01`'s seven-field table living outside it, survived #3061's sweep
+/// untouched and unnoticed. A guard that can only see one file is why the
+/// finding recurred; this is the acceleration module's own.
+#[cfg(test)]
+mod hot_path_hashing_tests {
+    const ACCELERATION_MOD_RS: &str = include_str!("../mod.rs");
+
+    /// `skinned_blas` is probed once per skinned draw command in
+    /// `build_tlas_instances` and three more times per dirty entity on the
+    /// refit path, over a `u32` keyspace.
+    #[test]
+    fn skinned_blas_stays_fx_hashed() {
+        assert!(
+            ACCELERATION_MOD_RS
+                .contains("skinned_blas: rustc_hash::FxHashMap<EntityId, BlasEntry>"),
+            "skinned_blas must stay `FxHashMap` (#4000) — it is on the \
+             per-frame skinned path, which the guard tests in \
+             `context/mod.rs` claim is Fx-hashed end-to-end"
+        );
+        assert!(
+            !ACCELERATION_MOD_RS.contains("skinned_blas: std::collections::HashMap"),
+            "skinned_blas reverted to std's SipHash-1-3 (#4000)"
+        );
+    }
+}
