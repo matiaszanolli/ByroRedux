@@ -69,10 +69,23 @@ question needing RenderDoc/driver verification, not a "just recompile" fix.
 ## Per-Frame Submission Order
 
 All passes record into a single command buffer and are submitted to one
-graphics+compute queue. Pass ordering is inside
-[`vulkan/context/draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs).
+graphics+compute queue. Pass ordering is `draw_frame` in
+[`vulkan/context/draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs),
+but since the #3282 split most phases — and, of the barriers below, 4b and 5b —
+are recorded in its sibling files (`sync_and_acquire_frame.rs`,
+`dispatch_skin_and_cluster.rs`, `build_and_upload_instances.rs`,
+`geometry_pass.rs`, `post_passes.rs`). Each row names the function that records
+it where that is not `draw_frame` itself.
 
 ```
+1a flush_pending_morph  ─  host write of the morph-weight buffer through its
+   _weights                 persistent mapping. Runs immediately BEFORE step 1,
+   [host, no cmds]          in `sync_and_acquire_frame` — after the fence wait
+                           that covers BOTH slots, which is what makes the
+                           write safe (`sync.rs`'s #870 block lists it as item
+                           5 on that wait's dependency list). Its visibility to
+                           the shaders comes from step 5b's bulk barrier, not
+                           from a barrier of its own.
 1  collect_image_health  ─  CPU readback (#2740 / REN-D4-04): harvest this
    [host, no cmds]          frame-in-flight slot's image-health counters
                            from its PRIOR use (MAX_FRAMES_IN_FLIGHT == 2
@@ -85,14 +98,47 @@ graphics+compute queue. Pass ordering is inside
 2  skin_palette.comp    ─┐ compute
 3  skin_vertices.comp   ─┘ skinned BLAS input ready
 4  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
+4b [Barrier]            ─  ACCELERATION_STRUCTURE_BUILD_KHR /
+                           ACCELERATION_STRUCTURE_WRITE_KHR → FRAGMENT_SHADER |
+                           COMPUTE_SHADER / ACCELERATION_STRUCTURE_READ_KHR.
+                           The frame's ONLY AS build → shader-read edge, and
+                           `/audit-severity`'s HIGH-floor barrier. Publishes
+                           step 4 in full: the TLAS build AND every
+                           skinned-BLAS refit (`record_skinned_blas_refit`,
+                           which runs just above it). Emitted on both arms —
+                           a failed TLAS build deliberately keeps the previous
+                           AS alive (#2673), so volumetrics still ray-queries
+                           from COMPUTE against skinned BLAS whose refit writes
+                           would otherwise never be made visible (#415 / #2931).
 5  cluster_cull.comp     ─  per-froxel light lists (cluster grid +
                            light-index list); consumed by both the
                            triangle.frag fragment shader AND
                            volumetrics_inject (same per-frame buffers,
                            #977eb95a)
+5b [Barrier]            ─  HOST / HOST_WRITE → VERTEX_SHADER |
+                           FRAGMENT_SHADER | COMPUTE_SHADER | DRAW_INDIRECT /
+                           SHADER_READ | SHADER_WRITE | UNIFORM_READ |
+                           INDIRECT_COMMAND_READ, at the tail of
+                           `build_and_upload_instances`. The single publication
+                           point for every host write this frame: the instance
+                           SSBO plus the composite, SVGF, TAA and water param
+                           UBOs, which are uploaded ABOVE it specifically so
+                           they fold onto this one dependency (#909, #961,
+                           #1397). That fold is why the later passes — step 17
+                           composite most visibly — carry no HOST barrier of
+                           their own despite consuming host-written UBOs.
+                           Required by spec even for HOST_COHERENT memory.
 6  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
+6b [Barrier]            ─  FRAGMENT_SHADER / SHADER_WRITE → HOST / HOST_READ,
+                           publishing the bounded selected-ray probe record
+                           `triangle.frag` wrote during step 6. The matching
+                           CPU read happens two frames later, at this slot's
+                           next fence wait, and invalidates first. Masks are
+                           source-pinned by `selected_ray_probe_is_bounded_
+                           and_captures_the_detailed_shadow_query`
+                           (`scene_buffer/shader_contract_tests.rs`).
 7  copy_depth_to_history ─  [TRANSFER] snapshot this frame's opaque depth into
                            the sampleable depth-history image, for next
                            frame's soft-particle fade. Two depth-image layout

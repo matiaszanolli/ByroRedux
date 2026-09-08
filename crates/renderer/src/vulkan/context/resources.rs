@@ -1009,6 +1009,14 @@ mod tests {
             .expect("resources.rs must have a `mod tests` block")];
         let mod_src = include_str!("mod.rs");
         let draw_src = include_str!("draw.rs");
+        // #4034 — the #3282 split moved the `collect_image_health` call site
+        // (and the corrected comment attached to it) out of `draw.rs` and into
+        // `sync_and_acquire_frame.rs`. `draw.rs` no longer contains the string
+        // `collect_image_health` at all, so scanning it alone left the live
+        // comment unguarded. Both files are scanned: the new one because that
+        // is where the comment lives today, the old one because keeping it
+        // costs nothing and catches the comment migrating back.
+        let sync_src = include_str!("sync_and_acquire_frame.rs");
 
         // Build the two retired-claim needles from parts so this file's own
         // source doesn't contain them as a literal (defeating the point of
@@ -1023,7 +1031,11 @@ mod tests {
         for (label, src) in [
             ("resources.rs (collect_image_health doc)", resources_src),
             ("mod.rs (image_health_buffers field doc)", mod_src),
-            ("draw.rs (collect_image_health call site)", draw_src),
+            ("draw.rs (former collect_image_health call site)", draw_src),
+            (
+                "sync_and_acquire_frame.rs (collect_image_health call site)",
+                sync_src,
+            ),
         ] {
             assert!(
                 !src.contains(&idle_claim),
@@ -1050,6 +1062,17 @@ mod tests {
             mod_src.contains("HOST_COHERENT") || mod_src.contains("collect_image_health"),
             "image_health_buffers field doc must point to the corrected \
              explanation (#2740)"
+        );
+        // #4034 — the negative scan above only catches the retired claim being
+        // re-added. Pin the positive half at the live call site too, so simply
+        // deleting the correction (leaving no claim at all) also fails.
+        assert!(
+            sync_src.contains("collect_image_health")
+                && sync_src.contains("device-side access scope"),
+            "the live collect_image_health call site in sync_and_acquire_frame.rs \
+             must keep the #2740 correction explaining that the fence wait proves \
+             submission completed (device-side access scope only) and is not on \
+             its own proof of host visibility"
         );
     }
 

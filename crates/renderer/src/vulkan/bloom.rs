@@ -1304,19 +1304,54 @@ mod construction_invariant_upload_tests {
         );
     }
 
-    /// `draw_frame`'s per-frame UBO section (composite/SVGF/TAA) must
-    /// NOT call `bloom.upload_params` — the whole point of #2037 is that
-    /// bloom's param UBOs are written once at construction, not every
-    /// frame like its siblings.
+    /// The per-frame UBO section (composite/SVGF/TAA/water) must NOT call
+    /// `bloom.upload_params` — the whole point of #2037 is that bloom's param
+    /// UBOs are written once at construction, not every frame like its
+    /// siblings.
+    ///
+    /// #4034/#4035 — that section lives in `build_and_upload_instances.rs`,
+    /// not `draw.rs`: the #3282 split moved it, taking the four sibling
+    /// `upload_params` calls (and the comment marking bloom's deliberate
+    /// absence) with it. A re-added `bloom.upload_params` would land there,
+    /// where the original scan could not see it — and would additionally be a
+    /// per-frame host write folded onto that file's bulk `HOST_WRITE` barrier,
+    /// i.e. exactly the redundant rewrite #2037 removed. Both files are
+    /// scanned so the pin survives the section moving again.
     #[test]
     fn draw_frame_does_not_re_upload_bloom_params_every_frame() {
-        let src = include_str!("context/draw.rs");
-        assert!(
-            !src.contains("bloom.upload_params"),
-            "draw_frame must not call bloom.upload_params per-frame — bloom's \
-             param UBOs are construction-invariant and written once in \
-             BloomPipeline::new_inner (#2037 / GPU-D5-01). A per-frame call here \
-             would silently reintroduce the redundant rewrite."
-        );
+        for (label, src) in [
+            (
+                "build_and_upload_instances.rs (the per-frame UBO section)",
+                include_str!("context/build_and_upload_instances.rs"),
+            ),
+            ("draw.rs (its former home)", include_str!("context/draw.rs")),
+        ] {
+            assert!(
+                !src.contains("bloom.upload_params"),
+                "{label} must not call bloom.upload_params per-frame — bloom's \
+                 param UBOs are construction-invariant and written once in \
+                 BloomPipeline::new_inner (#2037 / GPU-D5-01). A per-frame call \
+                 here would silently reintroduce the redundant rewrite."
+            );
+        }
+
+        // The scan is only meaningful while it is pointed at the file that
+        // actually holds the section. If the four siblings move again, this
+        // fails loudly instead of going quietly vacuous the way the draw.rs
+        // pin did (#4035).
+        let section = include_str!("context/build_and_upload_instances.rs");
+        for sibling in [
+            "composite.upload_params",
+            "svgf.upload_params",
+            "taa.upload_params",
+            "water.upload_params",
+        ] {
+            assert!(
+                section.contains(sibling),
+                "build_and_upload_instances.rs no longer contains `{sibling}` — \
+                 the per-frame UBO section has moved again, so the bloom scan \
+                 above is now pointed at the wrong file (#4035)"
+            );
+        }
     }
 }

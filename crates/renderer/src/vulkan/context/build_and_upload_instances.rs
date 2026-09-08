@@ -1308,7 +1308,9 @@ mod rigid_history_suppression_tests {
         let ctx = include_str!("mod.rs");
         assert!(
             ctx.contains("self.suppress_rigid_history_next_build = true;"),
-            "signal_temporal_discontinuity must raise the latch alongside              previous_rigid_models.clear() — the clear alone is undone by              draw_frame's end-of-frame swap for any caller inside the frame"
+            "signal_temporal_discontinuity must raise the latch alongside \
+             previous_rigid_models.clear() — the clear alone is undone by \
+             draw_frame's end-of-frame swap for any caller inside the frame"
         );
 
         let draw = include_str!("draw.rs");
