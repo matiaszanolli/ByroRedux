@@ -1235,6 +1235,61 @@ fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
 /// Normalize an identifier so snake_case and camelCase spellings of the
 /// same field collapse to one key: strip every `_`, lowercase the rest.
 /// `emissive_mult` and `emissiveMult` both → `emissivemult`.
+/// #3983 (REN-2026-09-06-D17-01) — the specular-AA filter takes screen-space
+/// derivatives, so it must be evaluated in the widest control flow its inputs
+/// allow, never inside the per-light loop.
+///
+/// `shadowableLightRadiance` used to call `specularAaRoughness(N, roughness)`
+/// itself, and all five of its call sites in `triangle.frag` sit behind
+/// per-invocation-divergent predicates: the cluster loop's
+/// `contribution < 0.001` continue, the ReSTIR temporal and spatial reuse
+/// gates, the selected-light block, and the legacy-WRS ray-query test.
+/// GLSL/SPIR-V leave `dFdx`/`dFdy` undefined there — the class #3622 fixed in
+/// `parallaxDisplaceUV`. Both inputs are branch-invariant, so the call was
+/// also pure waste: a 16-light cluster ran the derivative chain sixteen times
+/// for sixteen identical values, forcing the quad into lockstep at each one.
+///
+/// Two legs, because either alone rots: the filter must be gone from the
+/// per-light function, AND `triangle.frag` must actually compute it at
+/// function scope. A hoist that left the call behind would pass the first.
+#[test]
+fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    let body = glsl_fn_body(lighting, "vec3 shadowableLightRadiance(");
+    // Composed at runtime so this test's own source cannot satisfy the scan.
+    let filter = format!("specularAa{}", "Roughness(");
+    assert!(
+        !body.contains(filter.as_str()),
+        "shadowableLightRadiance evaluates the specular-AA filter itself, so \
+         its dFdx/dFdy run inside per-invocation-divergent control flow at \
+         every call site — hoist it to uniform flow in triangle.frag and pass \
+         the result in (#3983)"
+    );
+    // The signature, not the body: `glsl_fn_body` starts after the brace.
+    assert!(
+        lighting.contains("float roughness, float aaRoughness,"),
+        "shadowableLightRadiance must take the filtered roughness as a \
+         parameter alongside the raw one — disneyDiffuseSplit deliberately \
+         uses the unfiltered value, so they cannot be collapsed (#3983)"
+    );
+
+    // The hoisted call must sit at function scope in main (4-space indent),
+    // not nested inside a branch that would reintroduce the divergence.
+    let hoisted = frag
+        .lines()
+        .find(|l| l.contains(filter.as_str()) && !l.trim_start().starts_with("//"))
+        .expect("triangle.frag must compute the specular-AA roughness (#3983)");
+    let indent = hoisted.len() - hoisted.trim_start().len();
+    assert!(
+        indent <= 8,
+        "the hoisted specularAaRoughness call is indented {indent} spaces, so \
+         it sits inside nested control flow — the whole point of #3983 is that \
+         it runs where every lane of the quad reaches it"
+    );
+}
+
 /// #3982 (REN-2026-09-06-D16-01) — the three name-diverging GLSL↔Rust mirrors
 /// that had no lockstep coverage at all.
 ///

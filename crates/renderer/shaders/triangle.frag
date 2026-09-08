@@ -2633,6 +2633,28 @@ void main() {
         gGcCanopyHeight = terrainTile.canopyHeight;
     }
 
+    // #3983 — specular-AA roughness, computed ONCE here in uniform control
+    // flow. `specularAaRoughness` takes `dFdx(N)`/`dFdy(N)`, and every
+    // `shadowableLightRadiance` call site below sits behind a
+    // per-invocation-divergent predicate (the cluster loop's contribution
+    // gate, the ReSTIR temporal/spatial reuse gates, the selected-light
+    // block, and the legacy-WRS ray-query test), where GLSL/SPIR-V leave
+    // derivatives undefined — the class #3622 fixed in `parallaxDisplaceUV`.
+    //
+    // This is the earliest point it CAN be hoisted to, not the earliest one
+    // might want: `roughness` is final at the weather-snow mix and `N` at the
+    // glass branch's `N = glassViewNormal`, both above. Both are far below
+    // every alpha-test `discard` and all 18 early `return`s in this function,
+    // so hoisting does NOT remove the separate helper-lane exposure a quad
+    // that lost a lane to `OpKill` (or to a completed invocation) has. That
+    // one cannot be fixed by moving this call — the inputs do not exist yet
+    // up there — and would need `demote` rather than `discard`. What the
+    // hoist does close is the divergence among lanes that all reach the
+    // lighting section, which is every call site listed above.
+    float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
+        ? roughness
+        : specularAaRoughness(N, roughness);
+
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
     uint selectedLightDebug = 0xFFFFFFFFu;
     vec3 selectedVisibilityDebug = vec3(-1.0);
@@ -3047,7 +3069,7 @@ void main() {
             vec3 unshadowedRadiance = lightColor * atten;
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
-                roughness, metalness,
+                roughness, aaRoughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
             bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
 
@@ -3280,7 +3302,8 @@ void main() {
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
                         rpLightIndex, N, V, NdotV, F0, albedo,
-                        lightingMask, backLightingMap, roughness, metalness,
+                        lightingMask, backLightingMap, roughness, aaRoughness,
+                        metalness,
                         specStrength, specColor, mat, fragTangent,
                         fragWorldPos, dbgFlags);
                     float rpPHat = max(dot(rpRad,
@@ -3401,7 +3424,8 @@ void main() {
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
                             rnLightIndex, N, V, NdotV, F0, albedo,
-                            lightingMask, backLightingMap, roughness, metalness,
+                            lightingMask, backLightingMap, roughness, aaRoughness,
+                            metalness,
                             specStrength, specColor, mat, fragTangent,
                             fragWorldPos, dbgFlags);
                         float rnPHat = max(dot(rnRad,
@@ -3536,7 +3560,7 @@ void main() {
                 } // end shadow-ray trace (shadowFade > 0.01)
                 vec3 rad = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
-                    roughness, metalness,
+                    roughness, aaRoughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 // This frame's unbiased ReSTIR estimate of the pixel's direct
                 // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
@@ -3722,7 +3746,7 @@ void main() {
                 // against pass 1 instead of reading a cached vec3.
                 vec3 shadowable = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
-                    roughness, metalness,
+                    roughness, aaRoughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 Lo = max(
                     Lo - shadowable * W * (vec3(1.0) - transmission) * shadowFade,

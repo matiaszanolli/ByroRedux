@@ -174,7 +174,7 @@ float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, vec3 lightingMask, vec3 backLightingMap,
-    float roughness, float metalness,
+    float roughness, float aaRoughness, float metalness,
     float specStrength, vec3 specColor,
     GpuMaterial mat, vec4 fragTangent, vec3 fragWorldPos, uint dbgFlags)
 {
@@ -223,9 +223,17 @@ vec3 shadowableLightRadiance(
     float NdotH = max(dot(N, H), 0.0);
     float HdotV = max(dot(H, V), 0.0);
 
-    float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
-        ? roughness
-        : specularAaRoughness(N, roughness);
+    // `aaRoughness` arrives precomputed (#3983). It used to be derived here
+    // from `dFdx(N)`/`dFdy(N)`, but every call site reaches this function
+    // through per-invocation-divergent control flow — past the cluster loop's
+    // `contribution < 0.001` continue, the ReSTIR temporal and spatial reuse
+    // gates, the selected-light block, and the legacy-WRS ray-query test —
+    // and GLSL/SPIR-V leave derivative results undefined in non-uniform
+    // control flow. Same class #3622 fixed in `parallaxDisplaceUV`. Both
+    // inputs are also branch-invariant, so a 16-light cluster was running the
+    // dFdx+dFdy+clamp+two-sqrt chain sixteen times for sixteen identical
+    // values. `roughness` stays a separate parameter: `disneyDiffuseSplit`
+    // below deliberately uses the unfiltered value.
     float D;
     bool anisoUsable = false;
     if (mat.anisotropic > 0.0
