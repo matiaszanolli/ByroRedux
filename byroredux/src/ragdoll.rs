@@ -664,7 +664,16 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                 // Copy the parent global out first (BFS guarantees the parent
                 // is already final: a body from the writeback loop, or a
                 // non-body re-derived earlier in this walk).
-                let Some(parent_global) = gtq.get_mut(parent.0).map(|g| *g) else {
+                //
+                // #4062 SIBLING — a READ, so `get` not `get_mut`.
+                // `PackedStorage::get_mut` calls `mark_dirty` unconditionally
+                // and `GlobalTransform` is `TRACK_CHANGES`, so reading the
+                // parent through it pushed one spurious entry per bone into
+                // the dirty set on every frame a ragdoll is active. That set
+                // has exactly one drainer (`bounds.rs`), which re-folds a
+                // `WorldBound` and climbs to a fold root for each entry — so
+                // the cost lands on the frames already doing the most work.
+                let Some(parent_global) = gtq.get(parent.0).copied() else {
                     continue;
                 };
                 let local = transform_q

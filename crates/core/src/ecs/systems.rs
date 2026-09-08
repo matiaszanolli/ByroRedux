@@ -65,13 +65,6 @@ fn enqueue_unique_children(
 pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut roots: Vec<EntityId> = Vec::new();
     let mut queue: VecDeque<EntityId> = VecDeque::new();
-    // (Transform::len(), Parent::len(), World::next_entity_id()) — keys
-    // the cached `roots` set. Any spawn / despawn / Parent insert-or-
-    // remove changes one of these three values, so equality means the
-    // root set hasn't moved since last frame. `next_entity_id` covers
-    // the despawn-then-spawn-in-same-frame edge case where the two
-    // `len()`s happen to net out unchanged. See #825.
-    let mut last_roots_key: Option<(usize, usize, EntityId)> = None;
     // Full change-detection state: the roots key plus the `Parent` /
     // `Children` structural generations. When this is unchanged AND no
     // `Transform` was mutated this frame, every `GlobalTransform` is
@@ -120,10 +113,8 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             .as_ref()
             .map(|q| q.iter().map(|(_, children)| children.0.len()).sum())
             .unwrap_or(0);
-        let mut traversal_guard = HierarchyTraversalGuard::new(
-            world.next_entity_id() as usize,
-            child_reference_count,
-        );
+        let mut traversal_guard =
+            HierarchyTraversalGuard::new(world.next_entity_id() as usize, child_reference_count);
         let mut duplicate_reported = false;
 
         // Change-detection drain: which entities' local Transform was
@@ -166,11 +157,8 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         // / reparent / cell load), detected by any change to the roots key
         // OR the Parent/Children structural generations. When false, only
         // some local Transforms moved and the cheap incremental path applies.
-        // `topology_changed` (roots-key only) further gates the root rescan.
         let structural_changed = last_state != Some(state);
-        let topology_changed = last_roots_key != Some(roots_key);
         last_state = Some(state);
-        last_roots_key = Some(roots_key);
 
         // Phase 1: find root entities (have Transform but no Parent).
         // Steady-state interior cells touch ~6 k Transforms with ~30
@@ -191,16 +179,37 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         //   subtree instead of all 110 k entities. This is the win.
         queue.clear();
         if structural_changed {
-            if topology_changed {
-                roots.clear();
-                for (entity, _) in tq.iter() {
-                    let is_root = parent_q
-                        .as_ref()
-                        .map(|pq| pq.get(entity).is_none())
-                        .unwrap_or(true);
-                    if is_root {
-                        roots.push(entity);
-                    }
+            // #4061 — rebuild on ANY structural change, not on a roots-key
+            // (count) change alone. The old gate was
+            // `last_roots_key != Some(roots_key)` over
+            // `(Transform::len(), Parent::len(), next_entity_id())`, all
+            // three of which are invariant under a `Parent` removal paired
+            // with a `Parent` insertion in the same frame with no spawn —
+            // while the root set genuinely moves: the detached entity is a
+            // new root absent from the stale list and unreachable from any
+            // parent, so nothing recomposes it, and the newly attached
+            // entity is still IN the list, so Phase 1b overwrites its
+            // global with its bare local and `expanded.insert(root)` then
+            // makes `enqueue_unique_children` refuse to walk it from its
+            // real parent. Both stay wrong forever, because the next frame
+            // takes the fast path.
+            //
+            // The `structural_gen` counters exist for exactly this class of
+            // count-invariant hierarchy edit (see `last_state`'s comment
+            // above) and were wired only to the fast-path decision, never
+            // to this one. `structural_changed` subsumes the old key, so
+            // this is strictly more conservative: the frames it newly
+            // rescans on are reparent-overwrites and first-`Children`
+            // inserts, which are hierarchy edits already paying for a full
+            // BFS in the same branch.
+            roots.clear();
+            for (entity, _) in tq.iter() {
+                let is_root = parent_q
+                    .as_ref()
+                    .map(|pq| pq.get(entity).is_none())
+                    .unwrap_or(true);
+                if is_root {
+                    roots.push(entity);
                 }
             }
             // Phase 1b: every root's global = its local.
@@ -296,7 +305,9 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                 // — order doesn't matter". It re-fixed `e` but not `e`'s
                 // children; see the climb's comment above.
                 let e_global = match parent_q.as_ref().and_then(|pq| pq.get(e)) {
-                    Some(parent) => match gq.get_mut(parent.0).map(|g| *g) {
+                    // #4062 — a read, not a write; see the BFS drain's
+                    // note on `get_mut`'s unconditional `mark_dirty`.
+                    Some(parent) => match gq.get(parent.0).copied() {
                         Some(pg) => GlobalTransform::compose(
                             &pg,
                             local.translation,
@@ -364,11 +375,22 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             let parent_id = parent.0;
 
             // Read the parent's GlobalTransform through the held write
-            // query. `get_mut` returns `&mut GlobalTransform`, and the
-            // deref copies it out, ending the borrow before the child
-            // write below begins. Transform is `Copy`, so there's no
-            // aliasing.
-            let Some(parent_global) = gq.get_mut(parent_id).map(|g| *g) else {
+            // query. `QueryWrite::get` takes `&self` and routes through
+            // `storage()`, so the shared borrow ends at the `copied()` and
+            // the child write below is free to take `&mut self`.
+            //
+            // #4062 — this is a READ, so it must not be `get_mut`.
+            // `PackedStorage::get_mut` calls `mark_dirty` unconditionally
+            // and `GlobalTransform` is `TRACK_CHANGES`, so the old
+            // `get_mut(parent_id).map(|g| *g)` pushed this entity's parent
+            // into the dirty set on every BFS step, on top of the
+            // legitimate mark for the child actually written below. On a
+            // 40-entity tree that was 119 dirty entries for 40 unique
+            // entities. `bounds.rs` is the sole drainer and paid for it
+            // twice: a larger `sort_unstable + dedup`, then a Pass-1
+            // `WorldBound` recompute plus a Pass-2 root climb for parents
+            // whose global had not moved.
+            let Some(parent_global) = gq.get(parent_id).copied() else {
                 continue;
             };
 
@@ -1025,5 +1047,153 @@ mod tests {
                 "leaf_first={leaf_first}: the fast-path frame must not resurrect a stale value"
             );
         }
+    }
+
+    /// #4061 — a `Parent` removal paired with a `Parent` insertion in the
+    /// same frame leaves `(Transform::len(), Parent::len(),
+    /// next_entity_id())` bit-identical while genuinely moving the root
+    /// set. The pre-fix roots cache was keyed on exactly that triple, so it
+    /// was never rebuilt: the detached entity became a root absent from the
+    /// stale list (nothing recomposes it — it has no parent to be reached
+    /// from), and the newly attached entity stayed IN the list, so Phase 1b
+    /// overwrote its global with its bare local and `expanded.insert(root)`
+    /// then made `enqueue_unique_children` refuse to walk it from its real
+    /// parent. Both stayed wrong forever, since the next frame takes the
+    /// fast path.
+    ///
+    /// Confirmed to fail with the rebuild re-gated on the old count key:
+    /// `X=6.0 (want 99.0)  Y=7.0 (want 12.0)`.
+    #[test]
+    fn a_parent_remove_and_insert_that_nets_out_still_rebuilds_the_root_set() {
+        let mut world = World::new();
+        world.register::<Children>();
+        // R is a root with child X; Y is free-standing.
+        let r = spawn_with_transform(&mut world, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let x = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+        let y = spawn_with_transform(&mut world, Vec3::new(7.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(x, Parent(r));
+        world.insert(r, Children(vec![x]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+        {
+            let gq = world.query::<GlobalTransform>().unwrap();
+            assert_eq!(gq.get(x).unwrap().translation.x, 6.0, "baseline: X rides R");
+            assert_eq!(
+                gq.get(y).unwrap().translation.x,
+                7.0,
+                "baseline: Y is its own root"
+            );
+        }
+
+        // The swap. `Parent::len()` nets out, `Transform::len()` is
+        // untouched, and nothing spawns — so every component of the old
+        // roots key is unchanged, while `Parent`'s structural generation
+        // bumps twice.
+        world.remove::<Parent>(x);
+        world.insert(y, Parent(r));
+        world.insert(r, Children(vec![y]));
+        world.get_mut::<Transform>(x).unwrap().translation.x = 99.0;
+
+        sys(&world, 0.016);
+        {
+            let gq = world.query::<GlobalTransform>().unwrap();
+            assert_eq!(
+                gq.get(x).unwrap().translation.x,
+                99.0,
+                "the detached entity is a root now — its global is its own local"
+            );
+            assert_eq!(
+                gq.get(y).unwrap().translation.x,
+                12.0,
+                "the newly attached entity must compose under R, not be re-seeded as a root"
+            );
+        }
+
+        // Neither recovered on its own pre-fix: the following frame has
+        // nothing dirty and an unchanged state key, so it returns from the
+        // fast path without touching anything.
+        sys(&world, 0.016);
+        let gq = world.query::<GlobalTransform>().unwrap();
+        assert_eq!(gq.get(x).unwrap().translation.x, 99.0);
+        assert_eq!(gq.get(y).unwrap().translation.x, 12.0);
+    }
+
+    /// #4062 — the walk reads each parent's `GlobalTransform` to compose its
+    /// children. `PackedStorage::get_mut` calls `mark_dirty`
+    /// unconditionally and `GlobalTransform` is `TRACK_CHANGES`, so doing
+    /// those reads through `get_mut` pushed the parent into the dirty set on
+    /// every step, on top of the legitimate mark for the child actually
+    /// written. `bounds.rs` is the sole drainer and re-folds whatever it
+    /// finds there, so the inflation bought nothing.
+    ///
+    /// There are two such reads and they need different fixtures, because
+    /// on a well-formed hierarchy a parent the BFS reads has always been
+    /// written itself — so the deduped *set* cannot tell them apart, only
+    /// the entry *count* can:
+    ///
+    /// * the BFS drain's read is caught by the count on a structural frame;
+    /// * the incremental seed pass's read is caught by the set, since there
+    ///   the parent is clean and must not appear at all.
+    #[test]
+    fn a_read_only_parent_lookup_does_not_dirty_the_parent() {
+        const DEPTH: usize = 8;
+        let mut world = World::new();
+        world.register::<Children>();
+        let mut ids = Vec::new();
+        for i in 0..DEPTH {
+            let e = spawn_with_transform(&mut world, Vec3::X, Quat::IDENTITY, 1.0);
+            if i > 0 {
+                world.insert(e, Parent(ids[i - 1]));
+                world.insert(ids[i - 1], Children(vec![e]));
+            }
+            ids.push(e);
+        }
+        // Drop the marks the inserts themselves made, so the next drain
+        // measures only what the walk did.
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+
+        // ── Structural frame: Phase 1b writes the root, the BFS writes the
+        // other DEPTH-1 and reads each one's parent. One mark per write is
+        // correct; pre-fix the parent reads added DEPTH-1 more.
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+        let structural_marks = world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        assert_eq!(
+            structural_marks.len(),
+            DEPTH,
+            "one dirty entry per GlobalTransform actually written; the BFS's \
+             parent lookup is a read and must not add {} more (got {:?})",
+            DEPTH - 1,
+            structural_marks
+        );
+
+        // ── Incremental frame: move only the leaf. Its global is the one
+        // write; its parent is read to compose it and must not appear.
+        let leaf = *ids.last().unwrap();
+        world.get_mut::<Transform>(leaf).unwrap().translation.x = 5.0;
+        sys(&world, 0.016);
+        let mut dirty = world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        dirty.sort_unstable();
+        dirty.dedup();
+        assert_eq!(
+            dirty,
+            vec![leaf],
+            "only the entity whose GlobalTransform was written may enter the \
+             dirty set; its parent was read to compose it and every other \
+             entity was not touched at all"
+        );
     }
 }
