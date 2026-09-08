@@ -67,6 +67,26 @@ impl VulkanContext {
         }
         t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
 
+        // #4006 — the deferred half of the TAA permanent-failure fallback.
+        // `record_taa_pass` latches the request instead of rebinding
+        // composite's descriptors mid-recording, because
+        // `fall_back_to_raw_hdr` rewrites composite's descriptor set for
+        // EVERY frame slot and the other slot's command buffer may still be
+        // pending at that point (VUID-vkUpdateDescriptorSets-None-03047;
+        // composite's set layout carries neither UPDATE_AFTER_BIND_BIT nor
+        // UPDATE_UNUSED_WHILE_PENDING_BIT, so no exemption applies).
+        //
+        // Here is the earliest safe point: the wait above covers the whole
+        // `in_flight` array, not just this slot, so every prior submission
+        // has retired — the same premise the deferred-destroy tick and the
+        // skin/morph unload victim lists already rely on.
+        if self.composite_needs_raw_hdr_rebind {
+            self.composite_needs_raw_hdr_rebind = false;
+            if let Some(ref mut composite) = self.composite {
+                composite.fall_back_to_raw_hdr(&self.device);
+            }
+        }
+
         self.flush_pending_morph_weights()?;
 
         // EX-05 / #2736 — harvest this slot's image-health counters from the

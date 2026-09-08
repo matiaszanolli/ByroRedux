@@ -1884,12 +1884,42 @@ pub struct VulkanContext {
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.dispatch` error in a session. When set: the TAA
     /// dispatch is skipped on every subsequent frame and composite's
-    /// binding 0 has been rebound to the raw HDR views (via
-    /// `CompositePipeline::fall_back_to_raw_hdr`), so the picture
+    /// binding 0 is rebound to the raw HDR views (via
+    /// `CompositePipeline::fall_back_to_raw_hdr`, deferred through
+    /// [`Self::composite_needs_raw_hdr_rebind`]), so the picture
     /// keeps updating without temporal AA instead of freezing on
     /// whatever TAA last wrote. Reset in `recreate_swapchain` since
     /// all pass resources are rebuilt there. See #479.
     pub taa_failed: bool,
+    /// Deferred half of that fallback: `record_taa_pass` sets this instead
+    /// of rebinding composite's descriptors on the spot, and
+    /// `sync_and_acquire_frame` performs the rebind at the top of the next
+    /// frame.
+    ///
+    /// #4006 — `fall_back_to_raw_hdr` delegates to `rebind_hdr_views`, which
+    /// calls `update_descriptor_sets` for **every** `MAX_FRAMES_IN_FLIGHT`
+    /// slot. `record_taa_pass` runs inside this frame's command-buffer
+    /// recording, at which point the *other* slot's command buffer — which
+    /// bound `composite.descriptor_sets[1 - frame]` in its own
+    /// `CompositePipeline::dispatch` — may still be pending. Updating a
+    /// descriptor set used by pending work violates
+    /// VUID-vkUpdateDescriptorSets-None-03047, and composite's set layout is
+    /// created with a plain `DescriptorSetLayoutCreateInfo` — no
+    /// `UPDATE_AFTER_BIND_BIT`, no `UPDATE_UNUSED_WHILE_PENDING_BIT` — so
+    /// neither exemption applies.
+    ///
+    /// Deferring is sound because `sync_and_acquire_frame` waits the *whole*
+    /// `in_flight` array (#3442), not just this slot, so both slots have
+    /// retired by the time the rebind runs. That is the same premise the
+    /// deferred-destroy tick and the two skin/morph unload victim lists
+    /// already cite, so this rides an established invariant rather than
+    /// introducing one. A `device_wait_idle` would also work — this fires at
+    /// most once per session — but costs a stall for no benefit.
+    ///
+    /// Dead today: per #3981 the `taa.dispatch` error arm that sets it is
+    /// unreachable. Fixed ahead of that issue precisely so making the arm
+    /// live does not silently open the descriptor hazard.
+    pub composite_needs_raw_hdr_rebind: bool,
     /// Same latch for SVGF — silences warn spam after the first
     /// permanent failure, escalates to `error!` once. Composite keeps
     /// sampling the stale indirect on subsequent frames (rebinding

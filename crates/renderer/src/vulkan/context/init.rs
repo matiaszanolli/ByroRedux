@@ -1582,6 +1582,7 @@ impl VulkanContext {
             water,
             water_caustic_accum,
             taa_failed: false,
+            composite_needs_raw_hdr_rebind: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
             caustic_failed: false,

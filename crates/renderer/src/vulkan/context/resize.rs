@@ -1149,6 +1149,12 @@ impl VulkanContext {
         // just been recreated so any previous lost-device state is no
         // longer authoritative. See #479.
         self.taa_failed = false;
+        // #4006 — and the deferred rebind that latch schedules. Every pass
+        // has just been recreated and `build_taa_pipeline` re-pointed
+        // composite at the fresh TAA output views; letting a pending
+        // raw-HDR rebind survive would undo that on the next frame and drop
+        // a working TAA back to the fallback with nothing to explain it.
+        self.composite_needs_raw_hdr_rebind = false;
         self.svgf_failed = false;
         self.caustic_failed = false;
         // #2507 — fresh slot images post-resize; a stale latch would skip
@@ -1462,6 +1468,10 @@ impl VulkanContext {
         }
         self.taa = Some(taa);
         self.taa_failed = false;
+        // #4006 — composite was just re-pointed at the new TAA output views
+        // above; a pending raw-HDR rebind from the old pipeline's failure
+        // would silently undo that on the next frame.
+        self.composite_needs_raw_hdr_rebind = false;
     }
 }
 
