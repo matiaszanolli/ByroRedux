@@ -482,7 +482,7 @@ impl VulkanContext {
                                 self.scene_buffers.write_ao_texture(
                                     &self.device,
                                     f,
-                                    p.view,
+                                    p.gpu.view,
                                     p.sampler,
                                 );
                             }
@@ -740,7 +740,7 @@ impl VulkanContext {
                 None => self
                     .placeholder_caustic_sink
                     .as_ref()
-                    .map(|p| vec![p.view; MAX_FRAMES_IN_FLIGHT]),
+                    .map(|p| vec![p.gpu.view; MAX_FRAMES_IN_FLIGHT]),
             };
             match views {
                 Some(views) => w.update_water_caustic_descriptors(&self.device, &views),
@@ -942,7 +942,7 @@ impl VulkanContext {
                 .map(|i| a.sampled_view(i))
                 .collect(),
             None => match self.placeholder_caustic_sink.as_ref() {
-                Some(p) => vec![p.view; MAX_FRAMES_IN_FLIGHT],
+                Some(p) => vec![p.gpu.view; MAX_FRAMES_IN_FLIGHT],
                 None => {
                     return Err(anyhow::anyhow!(
                         "Water-caustic accumulator and its sampled placeholder are both absent during resize"

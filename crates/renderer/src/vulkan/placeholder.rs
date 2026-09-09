@@ -31,10 +31,9 @@
 
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
 
 use super::allocator::SharedAllocator;
+use super::image::{GpuImage, GpuImageDesc};
 
 /// Where a placeholder image ends up after its one-time clear, and the
 /// stage/access its first real use will read or write it from. Bundled so
@@ -51,12 +50,13 @@ struct FinalState {
 /// Destroy explicitly via [`destroy`](Self::destroy) — like the crate's
 /// other GPU wrappers, dropping without it leaks.
 pub struct PlaceholderImage {
-    pub image: vk::Image,
-    pub view: vk::ImageView,
+    /// #3860 — the image/view/allocation triple. The sampler stays a separate
+    /// field: `GpuImage` deliberately does not own samplers, which have their
+    /// own lifetime and are shared across images at several sites.
+    pub gpu: GpuImage,
     /// `vk::Sampler::null()` for storage-only placeholders, which are
     /// bound as `STORAGE_IMAGE` and take no sampler.
     pub sampler: vk::Sampler,
-    allocation: Option<Allocation>,
 }
 
 impl PlaceholderImage {
@@ -85,7 +85,7 @@ impl PlaceholderImage {
             device,
             queue,
             pool,
-            p.image,
+            p.gpu.image,
             vk::ClearColorValue {
                 float32: [1.0, 0.0, 0.0, 0.0],
             },
@@ -146,7 +146,7 @@ impl PlaceholderImage {
             device,
             queue,
             pool,
-            p.image,
+            p.gpu.image,
             vk::ClearColorValue { uint32: [0; 4] },
             FinalState {
                 layout: vk::ImageLayout::GENERAL,
@@ -164,6 +164,8 @@ impl PlaceholderImage {
 
     /// Allocate the 1×1 image + view. Leaves it in `UNDEFINED`; callers
     /// run [`clear_and_transition`](Self::clear_and_transition) next.
+    /// #3860 — was ~85 lines of create → allocate → bind → view with its own
+    /// three-arm cleanup; `GpuImage::create` owns that chain now.
     fn create(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -171,94 +173,13 @@ impl PlaceholderImage {
         usage: vk::ImageUsageFlags,
         name: &'static str,
     ) -> Result<Self> {
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
-                width: 1,
-                height: 1,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        // SAFETY: `info` is fully populated above with a valid 1×1 extent,
-        // format and usage; `device` is live and outlives the call.
-        let image = unsafe { device.create_image(&info, None) }
-            .with_context(|| format!("{name}: create_image"))?;
-
-        // From here every early return must destroy `image` by hand —
-        // `Self` does not own it until we return `Ok`.
-        // SAFETY: `image` was created immediately above by this device and
-        // is destroyed exactly once on each unwind path below.
-        let destroy_image = || unsafe { device.destroy_image(image, None) };
-
-        // SAFETY: pure query against the image just created by `device`.
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-        let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
-            &AllocationCreateDesc {
-                name,
-                requirements,
-                location: MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            },
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                destroy_image();
-                return Err(e).with_context(|| format!("{name}: allocate"));
-            }
-        };
-
-        let bind = unsafe {
-            // SAFETY: `image` is unbound and `allocation` came from the
-            // allocator satisfying this image's own memory requirements, so
-            // the offset/size/alignment are valid for it.
-            device.bind_image_memory(image, allocation.memory(), allocation.offset())
-        };
-        if let Err(e) = bind {
-            destroy_image();
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .ok();
-            return Err(anyhow::anyhow!(e)).with_context(|| format!("{name}: bind_image_memory"));
-        }
-
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format)
-            .subresource_range(super::descriptors::color_subresource_single_mip());
-        // SAFETY: `image` is bound to backing memory above; `view_info`
-        // names that image with a matching format and a 1-mip/1-layer
-        // COLOR range, which the image was created with.
-        let view = match unsafe { device.create_image_view(&view_info, None) } {
-            Ok(v) => v,
-            Err(e) => {
-                destroy_image();
-                allocator
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(allocation)
-                    .ok();
-                return Err(anyhow::anyhow!(e))
-                    .with_context(|| format!("{name}: create_image_view"));
-            }
-        };
-
         Ok(Self {
-            image,
-            view,
+            gpu: GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(name, 1, 1, format, usage),
+            )?,
             sampler: vk::Sampler::null(),
-            allocation: Some(allocation),
         })
     }
 
@@ -341,34 +262,22 @@ impl PlaceholderImage {
     /// `VulkanContext::drop` after `device_wait_idle`.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // Reverse creation order: view, then sampler, then image, then the
-        // backing allocation — a view outliving its image would be a
-        // dangling parent reference.
+        // backing allocation — a view outliving its image would be a dangling
+        // parent reference. #3860 — `GpuImage::destroy` covers view → image →
+        // slab in that order and is idempotent, so the sampler is the only
+        // handle this function still nulls by hand.
         //
         // SAFETY: the caller guarantees (see this fn's `# Safety`) that the
-        // device is idle with respect to these handles. Each was created by
-        // this `device` and is nulled as it is destroyed, so a second call
-        // (or the field's own later teardown) is a no-op — `vkDestroy*` on
-        // `VK_NULL_HANDLE` is always valid per the Vulkan spec.
+        // device is idle with respect to these handles. The sampler was
+        // created by this `device` and is nulled as it is destroyed, so a
+        // second call is a no-op — `vkDestroy*` on `VK_NULL_HANDLE` is always
+        // valid per the Vulkan spec.
         unsafe {
-            if self.view != vk::ImageView::null() {
-                device.destroy_image_view(self.view, None);
-                self.view = vk::ImageView::null();
-            }
             if self.sampler != vk::Sampler::null() {
                 device.destroy_sampler(self.sampler, None);
                 self.sampler = vk::Sampler::null();
             }
-            if self.image != vk::Image::null() {
-                device.destroy_image(self.image, None);
-                self.image = vk::Image::null();
-            }
         }
-        if let Some(alloc) = self.allocation.take() {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(alloc)
-                .ok();
-        }
+        self.gpu.destroy(device, allocator);
     }
 }

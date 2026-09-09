@@ -882,7 +882,7 @@ impl VulkanContext {
                 // so the slots have no reason to stay distinct.
                 None => placeholder_caustic_sink
                     .as_ref()
-                    .map(|p| vec![p.view; super::sync::MAX_FRAMES_IN_FLIGHT]),
+                    .map(|p| vec![p.gpu.view; super::sync::MAX_FRAMES_IN_FLIGHT]),
             };
             let views = views.expect(
                 "water/caustic coupling must disable water when both storage sinks are absent",
@@ -927,7 +927,7 @@ impl VulkanContext {
                 log::warn!("SSAO pipeline creation failed: {e} — no ambient occlusion");
                 if let Some(p) = placeholder_ao.as_ref() {
                     for f in 0..MAX_FRAMES_IN_FLIGHT {
-                        scene_buffers.write_ao_texture(&device, f, p.view, p.sampler);
+                        scene_buffers.write_ao_texture(&device, f, p.gpu.view, p.sampler);
                     }
                 }
                 None
@@ -1285,7 +1285,7 @@ impl VulkanContext {
                 .map(|i| a.sampled_view(i))
                 .collect(),
             None => match placeholder_caustic_sink.as_ref() {
-                Some(p) => vec![p.view; super::sync::MAX_FRAMES_IN_FLIGHT],
+                Some(p) => vec![p.gpu.view; super::sync::MAX_FRAMES_IN_FLIGHT],
                 None => {
                     return Err(anyhow::anyhow!(
                         "Water-caustic accumulator and its sampled placeholder are both absent"

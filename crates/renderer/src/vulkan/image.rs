@@ -441,7 +441,6 @@ mod tests {
             "frame_upscaler.rs",
             "gbuffer.rs",
             "groundcover_bench.rs",
-            "placeholder.rs",
             "volumetrics/init.rs",
         ];
 
