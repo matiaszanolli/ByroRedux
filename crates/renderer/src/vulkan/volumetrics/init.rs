@@ -820,6 +820,10 @@ impl VolumetricsPipeline {
         Ok(partial)
     }
 
+    /// #3860 — was ~85 lines of create → allocate → bind → view with its own
+    /// three-arm cleanup. The only 3D site in the renderer, which is why
+    /// `GpuImageDesc` carries an `image_type`/`view_type` pair rather than
+    /// assuming 2D.
     fn create_volume(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -828,94 +832,11 @@ impl VolumetricsPipeline {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
     ) -> Result<FroxelSlot> {
-        let img_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_3D)
-            .format(format)
-            .extent(extent)
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `device` is live; `img_info` outlives the call; the returned
-        // image is owned by the FroxelSlot and destroyed on error / in destroy().
-        let image = unsafe {
-            device
-                .create_image(&img_info, None)
-                .with_context(|| format!("create {name}"))?
-        };
-
-        // SAFETY (get_image_memory_requirements below): `image` was just created
-        // above by us and is still live; `device` outlives the call.
-        let alloc = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                // SAFETY: pure query — `device` is the live logical device and
-                // `image` was just created by it above; the call only reads the
-                // memory requirements into a caller-owned struct.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .with_context(|| format!("allocate {name}"))
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // SAFETY: `image` was created above by us and not yet destroyed;
-                // `device` is live on this allocation-failure cleanup path.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        // SAFETY: `image` was just created and `alloc` was just allocated; both
-        // are live, the offset/memory come from the same allocation; `device` is live.
-        if let Err(e) = unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .with_context(|| format!("bind {name}"))
-        } {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: `image` was created above by us and not yet destroyed;
-            // `device` is live on this bind-failure cleanup path.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-
-        // SAFETY: `device` is live; `image` was created+bound above and is still
-        // live; the view is owned by the FroxelSlot and destroyed on error / in destroy().
-        let view = match unsafe {
-            device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_3D)
-                        .format(format)
-                        .subresource_range(descriptors::color_subresource_single_mip()),
-                    None,
-                )
-                .with_context(|| format!("view {name}"))
-        } {
-            Ok(v) => v,
-            Err(e) => {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: `image` was created above by us and not yet destroyed;
-                // `device` is live on this view-creation-failure cleanup path.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        Ok(FroxelSlot {
-            image,
-            view,
-            allocation: Some(alloc),
-        })
+        GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_3d(name, extent, format, usage),
+        )
     }
 
     /// One-time UNDEFINED → GENERAL transition for every writable froxel

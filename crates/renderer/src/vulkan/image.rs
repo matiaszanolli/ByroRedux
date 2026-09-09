@@ -484,7 +484,7 @@ mod tests {
         // countable from the source and cannot be quietly abandoned half-done.
         // The second assertion fails on a stale entry, so the list cannot rot
         // into a blanket exemption. When it empties, delete it and that check.
-        const PENDING: &[&str] = &["context/helpers.rs", "volumetrics/init.rs"];
+        const PENDING: &[&str] = &["context/helpers.rs"];
 
         let mut offenders = Vec::new();
         let mut pending_still_rolling = Vec::new();

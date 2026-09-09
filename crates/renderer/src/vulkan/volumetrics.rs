@@ -46,7 +46,6 @@ pub use crate::shader_constants::{
 };
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 mod init;
 mod noise;
@@ -856,11 +855,11 @@ fn combustion_light_is_inside_authored_source(
     })
 }
 
-struct FroxelSlot {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
+/// #3860 — a froxel volume is an owned 3D image plus its view, so it is a
+/// [`GpuImage`]. The struct this replaced held `image` / `view` /
+/// `allocation` under those same names, so every read site is unchanged.
+type FroxelSlot = super::image::GpuImage;
+use super::image::{GpuImage, GpuImageDesc};
 
 pub struct VolumetricsPipeline {
     // ── Injection pass ───────────────────────────────────────────────
@@ -1805,11 +1804,9 @@ impl VolumetricsPipeline {
             .chain(self.base_noise_volume.take())
             .chain(self.detail_noise_volume.take())
         {
-            device.destroy_image_view(slot.view, None);
-            device.destroy_image(slot.image, None);
-            if let Some(a) = slot.allocation {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            // #3860 — view, image and slab in one call, in that order.
+            let mut slot = slot;
+            slot.destroy(device, allocator);
         }
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
