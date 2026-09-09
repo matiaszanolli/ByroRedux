@@ -479,847 +479,30 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             .as_ref()
     };
 
-    // Phase 1: Spawn node entities (NiNode hierarchy).
-    // node_index → EntityId mapping.
-    // Also build a name → EntityId map so Phase 3 can resolve skinning
-    // bone names to the entities they should drive. Skeleton nodes are
-    // the only entities with unique names in a typical NIF, so collisions
-    // (multiple nodes sharing a name) are rare; on collision we keep the
-    // first spawn (root-most in depth-first order).
-    let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
-    let mut node_by_name: std::collections::HashMap<std::sync::Arc<str>, EntityId> =
-        std::collections::HashMap::with_capacity(imported.nodes.len());
-    let mut node_rest_poses: Vec<GlobalTransform> = Vec::with_capacity(imported.nodes.len());
-    let mut rest_pose_by_name: std::collections::HashMap<std::sync::Arc<str>, GlobalTransform> =
-        std::collections::HashMap::with_capacity(imported.nodes.len());
-    for node in &imported.nodes {
-        let quat = Quat::from_xyzw(
-            node.rotation[0],
-            node.rotation[1],
-            node.rotation[2],
-            node.rotation[3],
-        );
-        let translation = Vec3::new(
-            node.translation[0],
-            node.translation[1],
-            node.translation[2],
-        );
-        let local_rest = GlobalTransform {
-            translation,
-            rotation: quat,
-            scale: node.scale,
-        };
-        let rest_pose = node
-            .parent_node
-            .and_then(|parent| node_rest_poses.get(parent))
-            .map(|parent| GlobalTransform::compose(parent, translation, quat, node.scale))
-            .unwrap_or(local_rest);
+    // Phases 1 + 2 — the node hierarchy and its parent links (#3858).
+    let (node_entities, node_by_name, rest_pose_by_name) =
+        spawn_nif_nodes(world, &imported, is_spt);
 
-        let entity = world.spawn();
-        world.insert(entity, Transform::new(translation, quat, node.scale));
-        world.insert(entity, GlobalTransform::IDENTITY);
-
-        if let Some(ref name) = node.name {
-            let mut pool = world.resource_mut::<StringPool>();
-            let sym = pool.intern(name);
-            drop(pool);
-            world.insert(entity, Name(sym));
-            node_by_name.entry(name.clone()).or_insert(entity);
-            rest_pose_by_name.entry(name.clone()).or_insert(rest_pose);
-        }
-
-        // Attach collision data if present.
-        if let Some((ref shape, ref body)) = node.collision {
-            log::info!(
-                "Collision attached to '{}': {:?} motion={:?} mass={:.1}",
-                node.name.as_deref().unwrap_or("?"),
-                std::mem::discriminant(shape),
-                body.motion_type,
-                body.mass,
-            );
-            world.insert(entity, shape.clone());
-            world.insert(entity, body.clone());
-        }
-
-        // Attach Billboard component for NiBillboardNode-derived entities.
-        // See #225 — nif import normalizes pre/post 10.1.0.0 mode layouts
-        // into a single u16 before we map it to BillboardMode.
-        if let Some(raw) = node.billboard_mode {
-            world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
-            if is_spt {
-                world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
-            }
-        }
-
-        // Attach raw NiAVObject flags so gameplay systems can branch on
-        // DISABLE_SORTING, SELECTIVE_UPDATE, IS_NODE, DISPLAY_OBJECT,
-        // etc. without re-reading the source NIF. APP_CULLED (bit 0) is
-        // already consumed by the import-time visibility filter in
-        // `walk.rs`, so every spawned node arrives with that bit clear.
-        // We still emit the component unconditionally (not gated on
-        // `flags != 0`) so a future toggle-visible system can just flip
-        // the bit on the existing component. See #222.
-        if node.flags != 0 {
-            world.insert(entity, SceneFlags::from_nif(node.flags));
-        }
-
-        node_entities.push(entity);
-        node_rest_poses.push(rest_pose);
-    }
-
-    // Phase 2: Set up Parent/Children relationships for nodes.
-    for (node_idx, node) in imported.nodes.iter().enumerate() {
-        if let Some(parent_idx) = node.parent_node {
-            let child_entity = node_entities[node_idx];
-            let parent_entity = node_entities[parent_idx];
-            world.insert(child_entity, Parent(parent_entity));
-            add_child(world, parent_entity, child_entity);
-        }
-    }
-
-    // Phase 2.5: Particle emitters. The NIF importer surfaces every
-    // NiParticleSystem / NiParticles / NiBSPArrayController as an
-    // [`ImportedParticleEmitter`] tagged with its host node index, but
-    // it doesn't carry per-emitter values — `NiPSysBlock` discards
-    // every parsed field. We pick a heuristic ParticleEmitter preset
-    // (torch_flame / smoke / magic_sparkles / generic flame fallback)
-    // by scanning the host node's name. Zero-offset emitters attach
-    // directly to the host entity so the simulation sources its
-    // world-space spawn origin from the host's GlobalTransform; emitters
-    // with an authored local offset get a child entity carrying that
-    // offset (#1333). See #401 / audit OBL-D6-2.
-    for emitter in &imported.particle_emitters {
-        let Some(host_idx) = emitter.parent_node else {
-            continue;
-        };
-        let Some(&host_entity) = node_entities.get(host_idx) else {
-            continue;
-        };
-        let host_name = imported.nodes[host_idx]
-            .name
-            .as_deref()
-            .map(|s| s.to_ascii_lowercase())
-            .unwrap_or_default();
-        let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
-        // NIFAL particles slice (#1513) — overlay every authored emitter
-        // override (colour curve #707, NiPSysEmitter base params, birth
-        // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300,
-        // BGEM effect payload #2610/#3589) onto the heuristic preset
-        // through the single shared boundary. The cell-loader spawn path
-        // calls the same helper, so the two load paths can't diverge.
-        crate::systems::apply_emitter_overlays(
-            &mut preset,
-            &emitter.color_curve,
-            &emitter.emitter_params,
-            emitter.emitter_rate,
-            &emitter.force_fields,
-            &emitter.texture_path,
-            emitter.src_blend,
-            emitter.dst_blend,
-            emitter.max_particles,
-            emitter.effect_shader.as_ref(),
-        );
-        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
-        // palette bits above index, the same way the mesh path resolves
-        // `MaterialTextureHandles::greyscale_lut`. Gated on `Some`, not a
-        // bare `resolve_texture` call: an emitter that authored no LUT must
-        // keep reading bindless slot 0 (the shader's "no LUT" sentinel), not
-        // `resolve_texture`'s neutral-fallback handle for an absent path.
-        // Mirrored in `cell_loader::spawn::spawn_particle_emitters`.
-        preset.greyscale_lut_index = emitter
-            .greyscale_lut_map
-            .as_deref()
-            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
-            .unwrap_or(0);
-
-        let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
-        let texture_handle = if fog_volume.is_none() {
-            let handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
-            if handle == ctx.texture_registry.fallback()
-                || handle == ctx.texture_registry.neutral_fallback()
-            {
-                log::debug!(
-                    "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
-                    emitter.original_type,
-                    preset.texture_path,
-                );
-                continue;
-            }
-            Some(handle)
-        } else {
-            // The fog primitive is texture-independent. Its density was seeded
-            // from authored alpha and it is modulated procedurally in froxel
-            // space, so an absent sprite must not suppress the replacement.
-            None
-        };
-
-        // #1333: when the particle block authored a non-zero local offset
-        // (relative to the host node), spawn a dedicated child entity
-        // carrying that local Transform so scene-graph propagation lands
-        // the emitter at host-world × block-local. The common vanilla case
-        // is identity (offset baked into the host node) — keep it on a
-        // zero-cost path by attaching the emitter straight to the host.
-        let identity_local = emitter.local_translation == [0.0, 0.0, 0.0]
-            && emitter.local_rotation == [0.0, 0.0, 0.0, 1.0]
-            && emitter.local_scale == 1.0;
-        let target_entity = if identity_local {
-            host_entity
-        } else {
-            let child = world.spawn();
-            let translation = Vec3::new(
-                emitter.local_translation[0],
-                emitter.local_translation[1],
-                emitter.local_translation[2],
-            );
-            let rotation = Quat::from_xyzw(
-                emitter.local_rotation[0],
-                emitter.local_rotation[1],
-                emitter.local_rotation[2],
-                emitter.local_rotation[3],
-            );
-            world.insert(
-                child,
-                Transform::new(translation, rotation, emitter.local_scale),
-            );
-            world.insert(child, GlobalTransform::IDENTITY);
-            world.insert(child, Parent(host_entity));
-            add_child(world, host_entity, child);
-            child
-        };
-        if let Some(fog_volume) = fog_volume {
-            let now_seconds = { world.resource::<byroredux_core::ecs::TotalTime>().0 };
-            let combustion_state =
-                crate::fog::combustion_state_from_particle(fog_volume, &preset, now_seconds);
-            world.insert(target_entity, fog_volume);
-            if let Some(state) = combustion_state {
-                world.insert(target_entity, state);
-            }
-        } else {
-            world.insert(
-                target_entity,
-                TextureHandle(texture_handle.expect("non-fog particle resolved a texture")),
-            );
-            world.insert(target_entity, preset);
-        }
-    }
-
+    // Phase 2.5 — particle emitters (#3858).
+    spawn_nif_particle_emitters(world, ctx, &imported, tex_provider, &node_entities);
     // Phase 3: Spawn mesh entities with parent links.
     let mut count = 0;
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     for mesh in &imported.meshes {
-        // M41.0 Phase 1b.x temp gate — vanilla FNV / FO3 actor body NIFs
-        // ship 4 dismemberment-cap sub-meshes alongside the visible body
-        // (`bodycaps`, `limbcaps`, `meatneck01`, `meathead01`). The
-        // legacy engine hides them via `BSDismemberSkinInstance.partitions
-        // [i].part_flag` until a body part is actually dismembered; we
-        // don't honour that flag yet, so they render as inside-the-body
-        // bloody geometry that looks like dark ribbons / spikes spilling
-        // from the actor. Skipping by name keeps NPCs visually coherent
-        // until the partition-flag visibility pipeline lands as its own
-        // followup. Match-arm naming is conservative — these are exact
-        // vanilla mesh-name conventions and won't false-positive on
-        // anything else.
-        let mesh_name = mesh.name.as_deref().unwrap_or("");
-        if matches!(
-            mesh_name,
-            "bodycaps" | "limbcaps" | "meatneck01" | "meathead01"
-        ) {
-            log::debug!(
-                "Phase 1b.x: skipping dismemberment cap '{}' until BSDismemberSkinInstance \
-                 partition flags are wired",
-                mesh_name,
-            );
-            continue;
-        }
-
-        // #3402 — a mesh with no triangles has nothing to draw, and
-        // `create_index_buffer` computes `size = size_of_val(data)` = 0,
-        // which `gpu_allocator` rejects outright
-        // (`InvalidAllocationCreateDesc`). The `?` propagated out of
-        // `MeshRegistry::upload` *after* the vertex buffer had already been
-        // created, so each one cost a `warn!`, an allocated-then-dropped
-        // `GpuBuffer`, and a mesh slot — 23 of them per
-        // `WhiterunDragonsreach` load.
-        //
-        // The audit that found this read the zero as a decode failure in
-        // the SSE skinned path. It is not: re-parsing the exact shapes it
-        // names shows every one arriving from the importer *with*
-        // triangles — `MaleUnderwear_1` 417v/1548i, `FootMale_Big`
-        // 218v/948i, `HandFemale3rd` 872v/4344i, `FemaleUnderwear`
-        // 676v/2064i, `HandMaleBig3rd` 850v/4212i — matching its own
-        // vertex histogram one for one. The indices are emptied
-        // downstream by `ImportedMesh::hide_skin_partitions`, the
-        // armor-displacement hook, when the actor's outfit covers *every*
-        // partition of a skin mesh. That is the correct outcome (#3357
-        // made more naked-skin ARMAs resolve, which is why the count went
-        // 9 -> 23); it just has no business reaching the allocator.
-        if mesh.indices.is_empty() {
-            log::debug!(
-                "NIF mesh '{}' has {} vertices and no triangles — every partition is                  covered by equipped gear, or the shape is index-less. Nothing to draw;                  skipping upload (#3402).",
-                mesh_name,
-                mesh.positions.len(),
-            );
-            continue;
-        }
-
-        let num_verts = mesh.positions.len();
-        // Skinned vertices use the per-vertex bone indices + weights that
-        // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid
-        // vertices pass zero weights and the shader's rigid-path routes
-        // them through `pc.model` instead of the bone palette.
-        let skin_vertex_data = mesh
-            .skin
-            .as_ref()
-            .filter(|s| !s.vertex_bone_indices.is_empty() && !s.vertex_bone_weights.is_empty());
-        let vertices: Vec<Vertex> = (0..num_verts)
-            .map(|i| {
-                let position = mesh.positions[i];
-                // Preserve the complete imported colour. Vertex alpha is
-                // load-bearing for hair tips and additive effect-volume
-                // boundary fades.
-                let color = if i < mesh.colors.len() {
-                    mesh.colors[i]
-                } else {
-                    [1.0, 1.0, 1.0, 1.0]
-                };
-                let normal = if i < mesh.normals.len() {
-                    mesh.normals[i]
-                } else {
-                    [0.0, 1.0, 0.0]
-                };
-                let uv = if i < mesh.uvs.len() {
-                    mesh.uvs[i]
-                } else {
-                    [0.0, 0.0]
-                };
-                // #783 / M-NORMALS — pull the per-vertex tangent (xyz +
-                // bitangent sign) from the imported mesh when authored.
-                // Empty `mesh.tangents` falls through to the zero-vec
-                // default, which the fragment shader's perturbNormal
-                // detects and routes to its screen-space derivative
-                // fallback path. This preserves rendering correctness
-                // for both Bethesda-with-tangents and synthetic-without
-                // content paths.
-                let tangent = if i < mesh.tangents.len() {
-                    mesh.tangents[i]
-                } else {
-                    [0.0, 0.0, 0.0, 0.0]
-                };
-                if let Some(skin) = skin_vertex_data {
-                    // Guard against parallel-vector truncation — if the
-                    // sparse skin upload filled fewer vertices than the
-                    // mesh has positions, bind the remainder to bone 0
-                    // rather than panicking on index.
-                    //
-                    // #2467 SIBLING — the tail used to fall back to
-                    // `Vertex::new_rgba`, i.e. all-zero weights. That is the
-                    // rigid marker, but the mesh is *skinned*: it goes
-                    // through `skin_vertices.comp` and its output feeds a
-                    // BLAS instanced into the TLAS with IDENTITY because it
-                    // holds absolute world-space vertices. A zero-weight
-                    // vertex there lands at raw NIF-local coordinates and
-                    // stretches the entity's BLAS AABB to the world origin.
-                    // Bone 0 at full weight is the same fallback the
-                    // importer applies (`bind_unweighted_to_bone_zero`), so
-                    // the truncated tail stays inside the actor.
-                    let (idx, w) = if i < skin.vertex_bone_indices.len()
-                        && i < skin.vertex_bone_weights.len()
-                    {
-                        (skin.vertex_bone_indices[i], skin.vertex_bone_weights[i])
-                    } else {
-                        ([0u16; 4], [1.0f32, 0.0, 0.0, 0.0])
-                    };
-                    let mut v = Vertex::new_skinned_rgba(
-                        position,
-                        color,
-                        normal,
-                        uv,
-                        [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
-                        w,
-                    );
-                    v.tangent = tangent;
-                    return v;
-                }
-                let mut v = Vertex::new_rgba(position, color, normal, uv);
-                v.tangent = tangent;
-                v
-            })
-            .collect();
-
-        let alloc = ctx.allocator.as_ref().unwrap();
-        let upload_ctx = GpuUploadCtx {
-            device: &ctx.device,
-            allocator: alloc,
-            queue: &ctx.graphics_queue,
-            command_pool: ctx.transfer_pool,
-        };
-        // Effect surfaces remain ray-visible for reflection/refraction and GI.
-        // Their dedicated TLAS visibility layer keeps them out of opaque
-        // shadow traversal without erasing authored glass contents.
-        let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.material.is_decal;
-        // upload_scene_mesh registers the vertices/indices into the global
-        // geometry SSBO that RT ray queries sample for reflection UVs.
-        // See #371.
-        let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-            upload_ctx,
-            &vertices,
-            &mesh.indices,
-            for_rt,
-            None,
-        ) {
-            Ok(h) => h,
-            Err(e) => {
-                // #3406 — `{:#}` prints anyhow's full source chain. With
-                // `{}` this reported only the outermost context ("Failed to
-                // allocate buffer_staging staging memory") and swallowed the
-                // `InvalidAllocationCreateDesc` underneath that names the real
-                // cause, which is why #3402 needed an instrumented build.
-                log::warn!(
-                    "Failed to upload NIF mesh '{}': {:#}",
-                    mesh.name.as_deref().unwrap_or("?"),
-                    e
-                );
-                continue;
-            }
-        };
-
-        // Collect BLAS specs for ray-visible surfaces.
-        if for_rt {
-            blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
-        }
-
-        // Mesh paths are interned `FixedString` handles (#609). Resolve
-        // each populated slot to an owned `String` once for the
-        // downstream `Material` component + texture-resolve calls. The
-        // pool read lock is short-lived; the resolved Strings outlive it.
-        let (mut owned_textures, owned_material_path) = {
-            let pool_read = world.resource::<StringPool>();
-            let resolve_owned =
-                |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
-                    sym.and_then(|s| pool_read.resolve(s))
-                        .map(|s| s.to_string())
-                };
-            (
-                mesh.material.textures.map_ref(|path| resolve_owned(*path)),
-                resolve_owned(mesh.material.material_path),
-            )
-        };
-        let mut texture_sources =
-            mesh.material
-                .textures
-                .zip_map_ref(&mesh.material.texture_sources, |path, source| {
-                    if path.is_some() {
-                        (*source).into()
-                    } else {
-                        MaterialTextureSource::Absent
-                    }
-                });
-
-        // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
-        // convention, not an explicit NIF slot. When the mesh authored no
-        // normal/bump slot, derive the sibling from the diffuse path
-        // (#1303 / OBL-D4-NEW-01).
-        //
-        // #3551 SIBLING — gated on the sibling existing, exactly as
-        // `cell_loader::spawn::mesh_instance::resolve_mesh_paths` is. This
-        // is the loose-NIF half of the same derive and had the same
-        // ungated shape.
-        if owned_textures.normal.is_none() {
-            owned_textures.normal = owned_textures
-                .base_color
-                .as_deref()
-                .and_then(|base| derive_present_normal_map_path(tex_provider, base));
-            if owned_textures.normal.is_some() {
-                texture_sources.normal = MaterialTextureSource::DerivedNormal;
-            }
-        }
-
-        // #3596 — the loose-NIF half of the `APPLY_HILIGHT2` binding. Same
-        // reasoning as `cell_loader::spawn::mesh_instance`: the importer
-        // records the rule, the derived `_n.dds` only exists here, so bind it
-        // into the height slot. `parallax_height_in_alpha` is only ever set
-        // with no authored height map, so nothing is displaced.
-        if owned_textures.height.is_none() && mesh.material.parallax_height_in_alpha {
-            owned_textures.height = owned_textures.normal.clone();
-            if owned_textures.height.is_some() {
-                texture_sources.height = texture_sources.normal;
-            }
-        }
-
-        // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
-        // replaces only the SkinTint head diffuse. A FaceGeom NIF also
-        // contains mouth, brows, eyes, hairline, and hair meshes with their
-        // own authored textures; overriding those is what produced the
-        // close-range layered face "mush". Applied after normal-map
-        // derivation so a missing normal slot still derives its `_n.dds`
-        // sibling from the head's authored diffuse, not the tint DDS.
-        // Flows into both the bound `TextureHandle` and the canonical
-        // `Material.texture_path` below.
-        let authored_base_color = owned_textures.base_color.clone();
-        owned_textures.base_color = select_facegen_diffuse(
-            authored_base_color.clone(),
+        if spawn_nif_mesh(
+            world,
+            ctx,
+            mesh,
+            tex_provider,
             diffuse_override,
-            mesh.material.material_kind,
-        );
-        if owned_textures.base_color != authored_base_color {
-            texture_sources.base_color = MaterialTextureSource::RuntimeOverride;
+            external_skeleton,
+            is_spt,
+            &node_entities,
+            &node_by_name,
+            &mut blas_specs,
+        ) {
+            count += 1;
         }
-
-        // Canonical material translation — same single boundary the
-        // cell-loader path uses, so loose-NIF materials are resolved
-        // identically. No REFR overlay on the loose path → no extra
-        // material flags. See `material_translate.rs`.
-        //
-        // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
-        // resolve just below (now that `owned_textures` is finalized), so
-        // every `texture_clamp_mode`/`src_blend_mode`/`dst_blend_mode` read
-        // for the rest of this loop iteration goes through this one
-        // canonical `Material` instead of re-reading the raw
-        // `mesh.material` tier at each use site. `world.insert` further
-        // down moves `material`, so pull copies of the small Copy fields
-        // this loop iteration still needs afterward.
-        let material = crate::material_translate::translate_material(
-            &mesh.material,
-            mesh.name.as_deref(),
-            crate::material_translate::ResolvedPaths {
-                textures: owned_textures.clone(),
-                material_path: owned_material_path.clone(),
-            },
-            0,
-        );
-        let material_kind = material.material_kind;
-        let mesh_water = material.is_water_shader;
-        let canonical_clamp_mode = material.texture_clamp_mode;
-        let canonical_src_blend_mode = material.src_blend_mode;
-        let canonical_dst_blend_mode = material.dst_blend_mode;
-        // #3073 (NIFAL-D1) — read the already-resolved canonical values
-        // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)`
-        // from the raw `mesh.material` tier at the `MaterialTextureHandles`
-        // insert below.
-        let canonical_parallax_height_scale = material.parallax_height_scale;
-        let canonical_parallax_max_passes = material.parallax_max_passes;
-
-        let tex_handle = resolve_texture_with_clamp(
-            ctx,
-            tex_provider,
-            owned_textures.base_color.as_deref(),
-            canonical_clamp_mode,
-        );
-
-        let quat = Quat::from_xyzw(
-            mesh.rotation[0],
-            mesh.rotation[1],
-            mesh.rotation[2],
-            mesh.rotation[3],
-        );
-        let translation = Vec3::new(
-            mesh.translation[0],
-            mesh.translation[1],
-            mesh.translation[2],
-        );
-
-        let entity = world.spawn();
-        world.insert(entity, Transform::new(translation, quat, mesh.scale));
-        world.insert(entity, GlobalTransform::IDENTITY);
-        world.insert(entity, MeshHandle(mesh_handle));
-        world.insert(entity, TextureHandle(tex_handle));
-
-        // Attach bounding data (#217): LocalBound captures the mesh-local
-        // sphere; WorldBound is a placeholder filled in by the bound
-        // propagation system once GlobalTransform has been computed.
-        world.insert(
-            entity,
-            LocalBound::new(
-                Vec3::new(
-                    mesh.local_bound_center[0],
-                    mesh.local_bound_center[1],
-                    mesh.local_bound_center[2],
-                ),
-                mesh.local_bound_radius,
-            ),
-        );
-        world.insert(entity, WorldBound::ZERO);
-        // #2490 — the blend/decal/facing markers derive from the raw
-        // `ImportedMaterial` at the same single boundary the `Material`
-        // literal does, so this path cannot diverge from the REFR path.
-        crate::material_translate::attach_blend_and_facing_markers(
-            world,
-            entity,
-            &mesh.material,
-            canonical_src_blend_mode,
-            canonical_dst_blend_mode,
-        );
-        // #renderlayer — loose-NIF path has no REFR base record, so
-        // the base layer defaults to Architecture (zero bias). The
-        // per-mesh escalation still applies regardless of how the mesh
-        // was spawned: `is_decal` → `RenderLayer::Decal`, `alpha_test`
-        // (cutout fringes) → `RenderLayer::Clutter`. (#2446 — this said
-        // `alpha_test_func` and `Decal` for both; see
-        // `render_layer_with_decal_escalation`'s doc for why the func
-        // value, which defaults to `6`, cannot be the gate.)
-        // NPC body / head / armor meshes
-        // overwrite this with Actor in `npc_spawn::tag_descendants_as_actor`
-        // after the spawn returns. Pre-#renderlayer this site also
-        // inserted a `Decal` marker — retired in favour of
-        // `RenderLayer::Decal`.
-        {
-            use byroredux_core::ecs::components::{
-                escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
-            };
-            // Loose-NIF spawn: no REFR, so no ref_scale to apply —
-            // the mesh's local bound is its world bound. Same small-
-            // STAT → Clutter rule as cell_loader so loose-loaded
-            // desk papers don't z-fight against the desk loaded
-            // alongside them.
-            let layer = escalate_small_static_to_clutter(
-                RenderLayer::Architecture,
-                mesh.local_bound_radius,
-            );
-            let layer = render_layer_with_decal_escalation(
-                layer,
-                mesh.material.is_decal,
-                mesh.material.alpha_test,
-            );
-            world.insert(entity, layer);
-        }
-        // Carry `NiAVObject.flags` across — gameplay systems branch on
-        // DISABLE_SORTING / SELECTIVE_UPDATE / DISPLAY_OBJECT bits
-        // without touching the NIF source. APP_CULLED shapes never
-        // reach this point (filtered import-side in walk.rs). See #222.
-        if mesh.flags != 0 {
-            world.insert(entity, SceneFlags::from_nif(mesh.flags));
-        }
-        // #2527 / NIF-D4-2026-08-07-01 — mirror of
-        // `cell_loader/spawn.rs`'s per-mesh billboard attach (#2206).
-        // The `NiBillboardNode`'s own container entity (spawned above,
-        // ~line 469) is typically an empty node, a separate ECS entity
-        // from the actual geometry linked via Parent/Children —
-        // `make_billboard_system` writes `GlobalTransform.rotation`
-        // directly on that container, which `make_transform_propagation_
-        // system` never re-walks into (it reseeds from the
-        // `Transform`-dirty set, not the billboard write), so the
-        // rotation never reached the child mesh. Attach directly to the
-        // mesh entity instead of relying on parent→child propagation.
-        if let Some(raw) = mesh.billboard_mode {
-            world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
-            if is_spt {
-                world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
-            }
-        }
-        // `material` was computed earlier in this loop iteration, ahead of
-        // the texture-clamp resolve.
-        world.insert(entity, material);
-        // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
-        if let Some(ref tp) = owned_textures.base_color {
-            if texture_path_is_fx_mesh(tp, material_kind) {
-                world.insert(entity, IsFxMesh);
-            }
-        }
-
-        // Resolve all secondary roles with the same authored sampler addressing
-        // mode as base colour. This is the exact helper used by placed cell
-        // meshes, eliminating the old loose-NIF/material-slot divergence.
-        let texture_handles = resolve_material_texture_handles_with_clamp(
-            ctx,
-            tex_provider,
-            &owned_textures,
-            tex_handle,
-            canonical_clamp_mode,
-        );
-        let normal_has_alpha = texture_handles.normal != 0
-            && ctx
-                .texture_registry
-                .handle_has_alpha(texture_handles.normal);
-        world.insert(
-            entity,
-            MaterialTextureHandles {
-                textures: texture_handles,
-                normal_has_alpha,
-                parallax_height_scale: canonical_parallax_height_scale,
-                parallax_max_passes: canonical_parallax_max_passes,
-            },
-        );
-        if mesh_water {
-            crate::material_translate::attach_mesh_water(
-                world,
-                entity,
-                texture_handles.normal,
-                texture_handles.flow,
-                crate::material_translate::MeshWaterSource {
-                    name: mesh.name.as_deref(),
-                    positions: &mesh.positions,
-                    position: translation,
-                    rotation: quat,
-                    scale: mesh.scale,
-                    local_bound_center: Vec3::new(
-                        mesh.local_bound_center[0],
-                        mesh.local_bound_center[1],
-                        mesh.local_bound_center[2],
-                    ),
-                    local_bound_radius: mesh.local_bound_radius,
-                },
-            );
-        }
-        world.insert(
-            entity,
-            MaterialTextureDebugInfo {
-                paths: owned_textures,
-                sources: texture_sources,
-                clamp_mode: canonical_clamp_mode,
-            },
-        );
-        // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-        // ONCE into the canonical Material now that MaterialTextureHandles is
-        // attached (mirrors the cell-loader spawn
-        // path), instead of recomputing it per draw in the render path.
-        // #2606 — pass the "a real BGSM authored the PBR scalars" signal so
-        // the legacy fallback cannot clobber them.
-        crate::material_translate::resolve_normal_alpha_spec_roughness(
-            world,
-            entity,
-            mesh.material.bgsm_pbr_scalars_authored,
-        );
-        // #2826 (REN-D19-02) — same pattern, for whether the model-space
-        // normal map's blue channel carries authored Z.
-        crate::material_translate::resolve_msn_z_source(world, entity);
-        // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
-        // pinned at the near-mirror clamp floor whose authored gloss map did
-        // not resolve. Must run AFTER MaterialTextureHandles is attached:
-        // the whole point is to use the shader's resolved-handle predicate
-        // rather than the merge boundary's authored-path one.
-        crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
-            world,
-            entity,
-            mesh.material.bgsm_pbr_scalars_authored,
-        );
-
-        if let Some(ref name) = mesh.name {
-            let mut pool = world.resource_mut::<StringPool>();
-            let sym = pool.intern(name);
-            drop(pool);
-            world.insert(entity, Name(sym));
-        }
-
-        // Attach skinning binding if present. Resolves each bone name to
-        // the entity spawned for that node in Phase 1. Missing bones are
-        // kept as `None`; the palette system substitutes identity for them.
-        if let Some(ref skin) = mesh.skin {
-            if skin.bones.len() > MAX_BONES_PER_MESH {
-                log::warn!(
-                    "Skinned mesh '{}' has {} bones (> MAX_BONES_PER_MESH={}); skipping skinning",
-                    mesh.name.as_deref().unwrap_or("?"),
-                    skin.bones.len(),
-                    MAX_BONES_PER_MESH
-                );
-            } else {
-                let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
-                let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
-                let mut unresolved = 0_usize;
-                let mut unresolved_names: Vec<&str> = Vec::new();
-                for bone in &skin.bones {
-                    // M41.0 Phase 1b: prefer the external skeleton
-                    // map (set when the spawn function is assembling
-                    // skeleton + body + head) so body/head NIF
-                    // skinning resolves to the shared skeleton's
-                    // entities, not the body/head's own orphaned
-                    // local node copies.
-                    // #2458 — exact match first (fast path, the common
-                    // case), falling back to a case-insensitive scan so a
-                    // case-only divergence between this mesh's skin bone
-                    // list and the skeleton's node names doesn't silently
-                    // unresolve the bone. See `name_lookup` module doc.
-                    let resolved = external_skeleton
-                        .and_then(|m| crate::name_lookup::get_case_insensitive(m, &bone.name))
-                        .or_else(|| {
-                            crate::name_lookup::get_case_insensitive(&node_by_name, &bone.name)
-                        })
-                        .copied();
-                    match resolved {
-                        Some(e) => bones.push(Some(e)),
-                        None => {
-                            bones.push(None);
-                            unresolved += 1;
-                            if unresolved_names.len() < 8 {
-                                unresolved_names.push(&bone.name);
-                            }
-                        }
-                    }
-                    binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
-                }
-                // M41.0 Phase 1b.x — global_skin_transform investigation
-                // resolved (#771 / LC-D3-NEW-01). Per nifly Skin.hpp:49-51,
-                // NiSkinData::bones[i].boneTransform IS skin→bone
-                // (compose-ready, includes the global offset). The
-                // top-level skinTransform is therefore informational
-                // only at runtime; `compute_palette_into` does NOT
-                // multiply it. The first attempt at right-multiply
-                // double-applied the global offset, which is why it
-                // looked visually worse. Captured here for diagnostic
-                // visibility (Doc Mitchell ships a non-identity cyclic
-                // permutation; FO4+ BSSkin paths ship identity — the
-                // asymmetry is informative).
-                let global_skin_transform = Mat4::from_cols_array_2d(&skin.global_skin_transform);
-                let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
-                    // #2458 — same case-insensitive fallback as the
-                    // per-bone resolution above.
-                    external_skeleton
-                        .and_then(|m| crate::name_lookup::get_case_insensitive(m, n))
-                        .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, n))
-                        .copied()
-                });
-                world.insert(
-                    entity,
-                    SkinnedMesh::new_with_global(root_entity, bones, binds, global_skin_transform),
-                );
-                if unresolved > 0 {
-                    // M41.0 Phase 1b.x followup — unresolved bones land
-                    // as `None` in `SkinnedMesh.bones`, and
-                    // `compute_palette_into` substitutes
-                    // `Mat4::IDENTITY` for those slots. Vertices weighted
-                    // to such a slot end up at `vertex_local` (near NIF
-                    // skin-space origin) while neighbours weighted to
-                    // resolved bones land at world coords, producing
-                    // triangle ribbons stretched from origin to the
-                    // actor's placement. Logging the names so we can see
-                    // which sub-skeleton convention is mismatched
-                    // between the source NIF and the external skeleton
-                    // map.
-                    log::warn!(
-                        "Skinned mesh '{}': {} bones ({} UNRESOLVED — names: {:?}), root={:?}",
-                        mesh.name.as_deref().unwrap_or("?"),
-                        skin.bones.len(),
-                        unresolved,
-                        unresolved_names,
-                        skin.skeleton_root,
-                    );
-                } else {
-                    log::info!(
-                        "Skinned mesh '{}': {} bones (0 unresolved), root={:?}",
-                        mesh.name.as_deref().unwrap_or("?"),
-                        skin.bones.len(),
-                        skin.skeleton_root,
-                    );
-                }
-            }
-        }
-
-        // Set up parent relationship.
-        if let Some(parent_idx) = mesh.parent_node {
-            let parent_entity = node_entities[parent_idx];
-            world.insert(entity, Parent(parent_entity));
-            add_child(world, parent_entity, entity);
-        }
-
-        log::info!(
-            "Loaded NIF mesh '{}': {} verts, {} tris, tex={:?}",
-            mesh.name.as_deref().unwrap_or("unnamed"),
-            num_verts,
-            mesh.indices.len() / 3,
-            mesh.material.textures.base_color,
-        );
-        count += 1;
     }
 
     // Batched BLAS build: single GPU submission for all NIF meshes.
@@ -1620,5 +803,914 @@ mod tests {
             loose_asset_path(&args).map(String::as_str),
             Some("meshes/probe.nif")
         );
+    }
+}
+
+/// Spawn one `ImportedMesh` from a loaded NIF: GPU upload, texture-role
+/// resolution, canonical material translation, bounds, skinning binding and
+/// the parent link (#3858).
+///
+/// Returns whether the mesh produced an entity — `false` for the three skip
+/// paths that were `continue` when this was the body of `Phase 3`'s loop
+/// (the dismemberment-cap gate, the empty-geometry gate, and a failed GPU
+/// upload), so the caller's `count` still means "meshes actually spawned".
+///
+/// Extracted in place rather than moved to a new file: three tests in this
+/// crate read `nif_loader.rs` as text (#2530's light-spawn pair and
+/// `material_translate.rs`'s marker-boundary check), and a file-level split
+/// would have silently narrowed all three.
+#[allow(clippy::too_many_arguments)]
+fn spawn_nif_mesh(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    tex_provider: &TextureProvider,
+    diffuse_override: Option<&str>,
+    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    is_spt: bool,
+    node_entities: &[EntityId],
+    node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    blas_specs: &mut Vec<(u32, u32, u32)>,
+) -> bool {
+    // M41.0 Phase 1b.x temp gate — vanilla FNV / FO3 actor body NIFs
+    // ship 4 dismemberment-cap sub-meshes alongside the visible body
+    // (`bodycaps`, `limbcaps`, `meatneck01`, `meathead01`). The
+    // legacy engine hides them via `BSDismemberSkinInstance.partitions
+    // [i].part_flag` until a body part is actually dismembered; we
+    // don't honour that flag yet, so they render as inside-the-body
+    // bloody geometry that looks like dark ribbons / spikes spilling
+    // from the actor. Skipping by name keeps NPCs visually coherent
+    // until the partition-flag visibility pipeline lands as its own
+    // followup. Match-arm naming is conservative — these are exact
+    // vanilla mesh-name conventions and won't false-positive on
+    // anything else.
+    let mesh_name = mesh.name.as_deref().unwrap_or("");
+    if matches!(
+        mesh_name,
+        "bodycaps" | "limbcaps" | "meatneck01" | "meathead01"
+    ) {
+        log::debug!(
+            "Phase 1b.x: skipping dismemberment cap '{}' until BSDismemberSkinInstance \
+             partition flags are wired",
+            mesh_name,
+        );
+        return false;
+    }
+
+    // #3402 — a mesh with no triangles has nothing to draw, and
+    // `create_index_buffer` computes `size = size_of_val(data)` = 0,
+    // which `gpu_allocator` rejects outright
+    // (`InvalidAllocationCreateDesc`). The `?` propagated out of
+    // `MeshRegistry::upload` *after* the vertex buffer had already been
+    // created, so each one cost a `warn!`, an allocated-then-dropped
+    // `GpuBuffer`, and a mesh slot — 23 of them per
+    // `WhiterunDragonsreach` load.
+    //
+    // The audit that found this read the zero as a decode failure in
+    // the SSE skinned path. It is not: re-parsing the exact shapes it
+    // names shows every one arriving from the importer *with*
+    // triangles — `MaleUnderwear_1` 417v/1548i, `FootMale_Big`
+    // 218v/948i, `HandFemale3rd` 872v/4344i, `FemaleUnderwear`
+    // 676v/2064i, `HandMaleBig3rd` 850v/4212i — matching its own
+    // vertex histogram one for one. The indices are emptied
+    // downstream by `ImportedMesh::hide_skin_partitions`, the
+    // armor-displacement hook, when the actor's outfit covers *every*
+    // partition of a skin mesh. That is the correct outcome (#3357
+    // made more naked-skin ARMAs resolve, which is why the count went
+    // 9 -> 23); it just has no business reaching the allocator.
+    if mesh.indices.is_empty() {
+        log::debug!(
+            "NIF mesh '{}' has {} vertices and no triangles — every partition is                  covered by equipped gear, or the shape is index-less. Nothing to draw;                  skipping upload (#3402).",
+            mesh_name,
+            mesh.positions.len(),
+        );
+        return false;
+    }
+
+    let num_verts = mesh.positions.len();
+    // Skinned vertices use the per-vertex bone indices + weights that
+    // #151 / #177 extracted from NiSkinData / BSTriShape. Rigid
+    // vertices pass zero weights and the shader's rigid-path routes
+    // them through `pc.model` instead of the bone palette.
+    let skin_vertex_data = mesh
+        .skin
+        .as_ref()
+        .filter(|s| !s.vertex_bone_indices.is_empty() && !s.vertex_bone_weights.is_empty());
+    let vertices: Vec<Vertex> = (0..num_verts)
+        .map(|i| {
+            let position = mesh.positions[i];
+            // Preserve the complete imported colour. Vertex alpha is
+            // load-bearing for hair tips and additive effect-volume
+            // boundary fades.
+            let color = if i < mesh.colors.len() {
+                mesh.colors[i]
+            } else {
+                [1.0, 1.0, 1.0, 1.0]
+            };
+            let normal = if i < mesh.normals.len() {
+                mesh.normals[i]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            let uv = if i < mesh.uvs.len() {
+                mesh.uvs[i]
+            } else {
+                [0.0, 0.0]
+            };
+            // #783 / M-NORMALS — pull the per-vertex tangent (xyz +
+            // bitangent sign) from the imported mesh when authored.
+            // Empty `mesh.tangents` falls through to the zero-vec
+            // default, which the fragment shader's perturbNormal
+            // detects and routes to its screen-space derivative
+            // fallback path. This preserves rendering correctness
+            // for both Bethesda-with-tangents and synthetic-without
+            // content paths.
+            let tangent = if i < mesh.tangents.len() {
+                mesh.tangents[i]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            };
+            if let Some(skin) = skin_vertex_data {
+                // Guard against parallel-vector truncation — if the
+                // sparse skin upload filled fewer vertices than the
+                // mesh has positions, bind the remainder to bone 0
+                // rather than panicking on index.
+                //
+                // #2467 SIBLING — the tail used to fall back to
+                // `Vertex::new_rgba`, i.e. all-zero weights. That is the
+                // rigid marker, but the mesh is *skinned*: it goes
+                // through `skin_vertices.comp` and its output feeds a
+                // BLAS instanced into the TLAS with IDENTITY because it
+                // holds absolute world-space vertices. A zero-weight
+                // vertex there lands at raw NIF-local coordinates and
+                // stretches the entity's BLAS AABB to the world origin.
+                // Bone 0 at full weight is the same fallback the
+                // importer applies (`bind_unweighted_to_bone_zero`), so
+                // the truncated tail stays inside the actor.
+                let (idx, w) =
+                    if i < skin.vertex_bone_indices.len() && i < skin.vertex_bone_weights.len() {
+                        (skin.vertex_bone_indices[i], skin.vertex_bone_weights[i])
+                    } else {
+                        ([0u16; 4], [1.0f32, 0.0, 0.0, 0.0])
+                    };
+                let mut v = Vertex::new_skinned_rgba(
+                    position,
+                    color,
+                    normal,
+                    uv,
+                    [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
+                    w,
+                );
+                v.tangent = tangent;
+                return v;
+            }
+            let mut v = Vertex::new_rgba(position, color, normal, uv);
+            v.tangent = tangent;
+            v
+        })
+        .collect();
+
+    let alloc = ctx.allocator.as_ref().unwrap();
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator: alloc,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    // Effect surfaces remain ray-visible for reflection/refraction and GI.
+    // Their dedicated TLAS visibility layer keeps them out of opaque
+    // shadow traversal without erasing authored glass contents.
+    let for_rt = ctx.device_caps.ray_query_supported
+        && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+        && !mesh.material.is_decal;
+    // upload_scene_mesh registers the vertices/indices into the global
+    // geometry SSBO that RT ray queries sample for reflection UVs.
+    // See #371.
+    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
+        upload_ctx,
+        &vertices,
+        &mesh.indices,
+        for_rt,
+        None,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            // #3406 — `{:#}` prints anyhow's full source chain. With
+            // `{}` this reported only the outermost context ("Failed to
+            // allocate buffer_staging staging memory") and swallowed the
+            // `InvalidAllocationCreateDesc` underneath that names the real
+            // cause, which is why #3402 needed an instrumented build.
+            log::warn!(
+                "Failed to upload NIF mesh '{}': {:#}",
+                mesh.name.as_deref().unwrap_or("?"),
+                e
+            );
+            return false;
+        }
+    };
+
+    // Collect BLAS specs for ray-visible surfaces.
+    if for_rt {
+        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
+    }
+
+    // Mesh paths are interned `FixedString` handles (#609). Resolve
+    // each populated slot to an owned `String` once for the
+    // downstream `Material` component + texture-resolve calls. The
+    // pool read lock is short-lived; the resolved Strings outlive it.
+    let (mut owned_textures, owned_material_path) = {
+        let pool_read = world.resource::<StringPool>();
+        let resolve_owned = |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
+            sym.and_then(|s| pool_read.resolve(s))
+                .map(|s| s.to_string())
+        };
+        (
+            mesh.material.textures.map_ref(|path| resolve_owned(*path)),
+            resolve_owned(mesh.material.material_path),
+        )
+    };
+    let mut texture_sources =
+        mesh.material
+            .textures
+            .zip_map_ref(&mesh.material.texture_sources, |path, source| {
+                if path.is_some() {
+                    (*source).into()
+                } else {
+                    MaterialTextureSource::Absent
+                }
+            });
+
+    // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
+    // convention, not an explicit NIF slot. When the mesh authored no
+    // normal/bump slot, derive the sibling from the diffuse path
+    // (#1303 / OBL-D4-NEW-01).
+    //
+    // #3551 SIBLING — gated on the sibling existing, exactly as
+    // `cell_loader::spawn::mesh_instance::resolve_mesh_paths` is. This
+    // is the loose-NIF half of the same derive and had the same
+    // ungated shape.
+    if owned_textures.normal.is_none() {
+        owned_textures.normal = owned_textures
+            .base_color
+            .as_deref()
+            .and_then(|base| derive_present_normal_map_path(tex_provider, base));
+        if owned_textures.normal.is_some() {
+            texture_sources.normal = MaterialTextureSource::DerivedNormal;
+        }
+    }
+
+    // #3596 — the loose-NIF half of the `APPLY_HILIGHT2` binding. Same
+    // reasoning as `cell_loader::spawn::mesh_instance`: the importer
+    // records the rule, the derived `_n.dds` only exists here, so bind it
+    // into the height slot. `parallax_height_in_alpha` is only ever set
+    // with no authored height map, so nothing is displaced.
+    if owned_textures.height.is_none() && mesh.material.parallax_height_in_alpha {
+        owned_textures.height = owned_textures.normal.clone();
+        if owned_textures.height.is_some() {
+            texture_sources.height = texture_sources.normal;
+        }
+    }
+
+    // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
+    // replaces only the SkinTint head diffuse. A FaceGeom NIF also
+    // contains mouth, brows, eyes, hairline, and hair meshes with their
+    // own authored textures; overriding those is what produced the
+    // close-range layered face "mush". Applied after normal-map
+    // derivation so a missing normal slot still derives its `_n.dds`
+    // sibling from the head's authored diffuse, not the tint DDS.
+    // Flows into both the bound `TextureHandle` and the canonical
+    // `Material.texture_path` below.
+    let authored_base_color = owned_textures.base_color.clone();
+    owned_textures.base_color = select_facegen_diffuse(
+        authored_base_color.clone(),
+        diffuse_override,
+        mesh.material.material_kind,
+    );
+    if owned_textures.base_color != authored_base_color {
+        texture_sources.base_color = MaterialTextureSource::RuntimeOverride;
+    }
+
+    // Canonical material translation — same single boundary the
+    // cell-loader path uses, so loose-NIF materials are resolved
+    // identically. No REFR overlay on the loose path → no extra
+    // material flags. See `material_translate.rs`.
+    //
+    // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
+    // resolve just below (now that `owned_textures` is finalized), so
+    // every `texture_clamp_mode`/`src_blend_mode`/`dst_blend_mode` read
+    // for the rest of this loop iteration goes through this one
+    // canonical `Material` instead of re-reading the raw
+    // `mesh.material` tier at each use site. `world.insert` further
+    // down moves `material`, so pull copies of the small Copy fields
+    // this loop iteration still needs afterward.
+    let material = crate::material_translate::translate_material(
+        &mesh.material,
+        mesh.name.as_deref(),
+        crate::material_translate::ResolvedPaths {
+            textures: owned_textures.clone(),
+            material_path: owned_material_path.clone(),
+        },
+        0,
+    );
+    let material_kind = material.material_kind;
+    let mesh_water = material.is_water_shader;
+    let canonical_clamp_mode = material.texture_clamp_mode;
+    let canonical_src_blend_mode = material.src_blend_mode;
+    let canonical_dst_blend_mode = material.dst_blend_mode;
+    // #3073 (NIFAL-D1) — read the already-resolved canonical values
+    // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)`
+    // from the raw `mesh.material` tier at the `MaterialTextureHandles`
+    // insert below.
+    let canonical_parallax_height_scale = material.parallax_height_scale;
+    let canonical_parallax_max_passes = material.parallax_max_passes;
+
+    let tex_handle = resolve_texture_with_clamp(
+        ctx,
+        tex_provider,
+        owned_textures.base_color.as_deref(),
+        canonical_clamp_mode,
+    );
+
+    let quat = Quat::from_xyzw(
+        mesh.rotation[0],
+        mesh.rotation[1],
+        mesh.rotation[2],
+        mesh.rotation[3],
+    );
+    let translation = Vec3::new(
+        mesh.translation[0],
+        mesh.translation[1],
+        mesh.translation[2],
+    );
+
+    let entity = world.spawn();
+    world.insert(entity, Transform::new(translation, quat, mesh.scale));
+    world.insert(entity, GlobalTransform::IDENTITY);
+    world.insert(entity, MeshHandle(mesh_handle));
+    world.insert(entity, TextureHandle(tex_handle));
+
+    // Attach bounding data (#217): LocalBound captures the mesh-local
+    // sphere; WorldBound is a placeholder filled in by the bound
+    // propagation system once GlobalTransform has been computed.
+    world.insert(
+        entity,
+        LocalBound::new(
+            Vec3::new(
+                mesh.local_bound_center[0],
+                mesh.local_bound_center[1],
+                mesh.local_bound_center[2],
+            ),
+            mesh.local_bound_radius,
+        ),
+    );
+    world.insert(entity, WorldBound::ZERO);
+    // #2490 — the blend/decal/facing markers derive from the raw
+    // `ImportedMaterial` at the same single boundary the `Material`
+    // literal does, so this path cannot diverge from the REFR path.
+    crate::material_translate::attach_blend_and_facing_markers(
+        world,
+        entity,
+        &mesh.material,
+        canonical_src_blend_mode,
+        canonical_dst_blend_mode,
+    );
+    // #renderlayer — loose-NIF path has no REFR base record, so
+    // the base layer defaults to Architecture (zero bias). The
+    // per-mesh escalation still applies regardless of how the mesh
+    // was spawned: `is_decal` → `RenderLayer::Decal`, `alpha_test`
+    // (cutout fringes) → `RenderLayer::Clutter`. (#2446 — this said
+    // `alpha_test_func` and `Decal` for both; see
+    // `render_layer_with_decal_escalation`'s doc for why the func
+    // value, which defaults to `6`, cannot be the gate.)
+    // NPC body / head / armor meshes
+    // overwrite this with Actor in `npc_spawn::tag_descendants_as_actor`
+    // after the spawn returns. Pre-#renderlayer this site also
+    // inserted a `Decal` marker — retired in favour of
+    // `RenderLayer::Decal`.
+    {
+        use byroredux_core::ecs::components::{
+            escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
+        };
+        // Loose-NIF spawn: no REFR, so no ref_scale to apply —
+        // the mesh's local bound is its world bound. Same small-
+        // STAT → Clutter rule as cell_loader so loose-loaded
+        // desk papers don't z-fight against the desk loaded
+        // alongside them.
+        let layer =
+            escalate_small_static_to_clutter(RenderLayer::Architecture, mesh.local_bound_radius);
+        let layer = render_layer_with_decal_escalation(
+            layer,
+            mesh.material.is_decal,
+            mesh.material.alpha_test,
+        );
+        world.insert(entity, layer);
+    }
+    // Carry `NiAVObject.flags` across — gameplay systems branch on
+    // DISABLE_SORTING / SELECTIVE_UPDATE / DISPLAY_OBJECT bits
+    // without touching the NIF source. APP_CULLED shapes never
+    // reach this point (filtered import-side in walk.rs). See #222.
+    if mesh.flags != 0 {
+        world.insert(entity, SceneFlags::from_nif(mesh.flags));
+    }
+    // #2527 / NIF-D4-2026-08-07-01 — mirror of
+    // `cell_loader/spawn.rs`'s per-mesh billboard attach (#2206).
+    // The `NiBillboardNode`'s own container entity (spawned above,
+    // ~line 469) is typically an empty node, a separate ECS entity
+    // from the actual geometry linked via Parent/Children —
+    // `make_billboard_system` writes `GlobalTransform.rotation`
+    // directly on that container, which `make_transform_propagation_
+    // system` never re-walks into (it reseeds from the
+    // `Transform`-dirty set, not the billboard write), so the
+    // rotation never reached the child mesh. Attach directly to the
+    // mesh entity instead of relying on parent→child propagation.
+    if let Some(raw) = mesh.billboard_mode {
+        world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
+        if is_spt {
+            world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
+        }
+    }
+    // `material` was computed earlier in this loop iteration, ahead of
+    // the texture-clamp resolve.
+    world.insert(entity, material);
+    // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
+    if let Some(ref tp) = owned_textures.base_color {
+        if texture_path_is_fx_mesh(tp, material_kind) {
+            world.insert(entity, IsFxMesh);
+        }
+    }
+
+    // Resolve all secondary roles with the same authored sampler addressing
+    // mode as base colour. This is the exact helper used by placed cell
+    // meshes, eliminating the old loose-NIF/material-slot divergence.
+    let texture_handles = resolve_material_texture_handles_with_clamp(
+        ctx,
+        tex_provider,
+        &owned_textures,
+        tex_handle,
+        canonical_clamp_mode,
+    );
+    let normal_has_alpha = texture_handles.normal != 0
+        && ctx
+            .texture_registry
+            .handle_has_alpha(texture_handles.normal);
+    world.insert(
+        entity,
+        MaterialTextureHandles {
+            textures: texture_handles,
+            normal_has_alpha,
+            parallax_height_scale: canonical_parallax_height_scale,
+            parallax_max_passes: canonical_parallax_max_passes,
+        },
+    );
+    if mesh_water {
+        crate::material_translate::attach_mesh_water(
+            world,
+            entity,
+            texture_handles.normal,
+            texture_handles.flow,
+            crate::material_translate::MeshWaterSource {
+                name: mesh.name.as_deref(),
+                positions: &mesh.positions,
+                position: translation,
+                rotation: quat,
+                scale: mesh.scale,
+                local_bound_center: Vec3::new(
+                    mesh.local_bound_center[0],
+                    mesh.local_bound_center[1],
+                    mesh.local_bound_center[2],
+                ),
+                local_bound_radius: mesh.local_bound_radius,
+            },
+        );
+    }
+    world.insert(
+        entity,
+        MaterialTextureDebugInfo {
+            paths: owned_textures,
+            sources: texture_sources,
+            clamp_mode: canonical_clamp_mode,
+        },
+    );
+    // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
+    // ONCE into the canonical Material now that MaterialTextureHandles is
+    // attached (mirrors the cell-loader spawn
+    // path), instead of recomputing it per draw in the render path.
+    // #2606 — pass the "a real BGSM authored the PBR scalars" signal so
+    // the legacy fallback cannot clobber them.
+    crate::material_translate::resolve_normal_alpha_spec_roughness(
+        world,
+        entity,
+        mesh.material.bgsm_pbr_scalars_authored,
+    );
+    // #2826 (REN-D19-02) — same pattern, for whether the model-space
+    // normal map's blue channel carries authored Z.
+    crate::material_translate::resolve_msn_z_source(world, entity);
+    // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
+    // pinned at the near-mirror clamp floor whose authored gloss map did
+    // not resolve. Must run AFTER MaterialTextureHandles is attached:
+    // the whole point is to use the shader's resolved-handle predicate
+    // rather than the merge boundary's authored-path one.
+    crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
+        world,
+        entity,
+        mesh.material.bgsm_pbr_scalars_authored,
+    );
+
+    if let Some(ref name) = mesh.name {
+        let mut pool = world.resource_mut::<StringPool>();
+        let sym = pool.intern(name);
+        drop(pool);
+        world.insert(entity, Name(sym));
+    }
+
+    // Skinning binding, if the NIF authored one (#3858).
+    attach_nif_skin_binding(world, entity, mesh, external_skeleton, node_by_name);
+    // Set up parent relationship.
+    if let Some(parent_idx) = mesh.parent_node {
+        let parent_entity = node_entities[parent_idx];
+        world.insert(entity, Parent(parent_entity));
+        add_child(world, parent_entity, entity);
+    }
+
+    log::info!(
+        "Loaded NIF mesh '{}': {} verts, {} tris, tex={:?}",
+        mesh.name.as_deref().unwrap_or("unnamed"),
+        num_verts,
+        mesh.indices.len() / 3,
+        mesh.material.textures.base_color,
+    );
+
+    true
+}
+
+/// Phases 1 and 2 of [`load_nif_bytes_with_skeleton`] (#3858): spawn one
+/// entity per `NiNode` and wire the `Parent`/`Children` links between them.
+///
+/// Returns the `node_index -> EntityId` vector, the `name -> EntityId` map
+/// Phase 3 resolves skinning bone names through, and the per-node rest poses.
+/// Skeleton nodes are the only reliably-unique names in a typical NIF, so on
+/// a collision the first (root-most, depth-first) spawn wins.
+#[allow(clippy::too_many_arguments)]
+fn spawn_nif_nodes(
+    world: &mut World,
+    imported: &byroredux_nif::import::ImportedScene,
+    is_spt: bool,
+) -> (
+    Vec<EntityId>,
+    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    std::collections::HashMap<std::sync::Arc<str>, GlobalTransform>,
+) {
+    // Phase 1: Spawn node entities (NiNode hierarchy).
+    // node_index → EntityId mapping.
+    // Also build a name → EntityId map so Phase 3 can resolve skinning
+    // bone names to the entities they should drive. Skeleton nodes are
+    // the only entities with unique names in a typical NIF, so collisions
+    // (multiple nodes sharing a name) are rare; on collision we keep the
+    // first spawn (root-most in depth-first order).
+    let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
+    let mut node_by_name: std::collections::HashMap<std::sync::Arc<str>, EntityId> =
+        std::collections::HashMap::with_capacity(imported.nodes.len());
+    let mut node_rest_poses: Vec<GlobalTransform> = Vec::with_capacity(imported.nodes.len());
+    let mut rest_pose_by_name: std::collections::HashMap<std::sync::Arc<str>, GlobalTransform> =
+        std::collections::HashMap::with_capacity(imported.nodes.len());
+    for node in &imported.nodes {
+        let quat = Quat::from_xyzw(
+            node.rotation[0],
+            node.rotation[1],
+            node.rotation[2],
+            node.rotation[3],
+        );
+        let translation = Vec3::new(
+            node.translation[0],
+            node.translation[1],
+            node.translation[2],
+        );
+        let local_rest = GlobalTransform {
+            translation,
+            rotation: quat,
+            scale: node.scale,
+        };
+        let rest_pose = node
+            .parent_node
+            .and_then(|parent| node_rest_poses.get(parent))
+            .map(|parent| GlobalTransform::compose(parent, translation, quat, node.scale))
+            .unwrap_or(local_rest);
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(translation, quat, node.scale));
+        world.insert(entity, GlobalTransform::IDENTITY);
+
+        if let Some(ref name) = node.name {
+            let mut pool = world.resource_mut::<StringPool>();
+            let sym = pool.intern(name);
+            drop(pool);
+            world.insert(entity, Name(sym));
+            node_by_name.entry(name.clone()).or_insert(entity);
+            rest_pose_by_name.entry(name.clone()).or_insert(rest_pose);
+        }
+
+        // Attach collision data if present.
+        if let Some((ref shape, ref body)) = node.collision {
+            log::info!(
+                "Collision attached to '{}': {:?} motion={:?} mass={:.1}",
+                node.name.as_deref().unwrap_or("?"),
+                std::mem::discriminant(shape),
+                body.motion_type,
+                body.mass,
+            );
+            world.insert(entity, shape.clone());
+            world.insert(entity, body.clone());
+        }
+
+        // Attach Billboard component for NiBillboardNode-derived entities.
+        // See #225 — nif import normalizes pre/post 10.1.0.0 mode layouts
+        // into a single u16 before we map it to BillboardMode.
+        if let Some(raw) = node.billboard_mode {
+            world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
+            if is_spt {
+                world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
+            }
+        }
+
+        // Attach raw NiAVObject flags so gameplay systems can branch on
+        // DISABLE_SORTING, SELECTIVE_UPDATE, IS_NODE, DISPLAY_OBJECT,
+        // etc. without re-reading the source NIF. APP_CULLED (bit 0) is
+        // already consumed by the import-time visibility filter in
+        // `walk.rs`, so every spawned node arrives with that bit clear.
+        // We still emit the component unconditionally (not gated on
+        // `flags != 0`) so a future toggle-visible system can just flip
+        // the bit on the existing component. See #222.
+        if node.flags != 0 {
+            world.insert(entity, SceneFlags::from_nif(node.flags));
+        }
+
+        node_entities.push(entity);
+        node_rest_poses.push(rest_pose);
+    }
+
+    // Phase 2: Set up Parent/Children relationships for nodes.
+    for (node_idx, node) in imported.nodes.iter().enumerate() {
+        if let Some(parent_idx) = node.parent_node {
+            let child_entity = node_entities[node_idx];
+            let parent_entity = node_entities[parent_idx];
+            world.insert(child_entity, Parent(parent_entity));
+            add_child(world, parent_entity, child_entity);
+        }
+    }
+
+    (node_entities, node_by_name, rest_pose_by_name)
+}
+
+/// Phase 2.5 of [`load_nif_bytes_with_skeleton`] (#3858): spawn the particle
+/// emitters the importer tagged with a host node index.
+#[allow(clippy::too_many_arguments)]
+fn spawn_nif_particle_emitters(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    imported: &byroredux_nif::import::ImportedScene,
+    tex_provider: &TextureProvider,
+    node_entities: &[EntityId],
+) {
+    // Phase 2.5: Particle emitters. The NIF importer surfaces every
+    // NiParticleSystem / NiParticles / NiBSPArrayController as an
+    // [`ImportedParticleEmitter`] tagged with its host node index, but
+    // it doesn't carry per-emitter values — `NiPSysBlock` discards
+    // every parsed field. We pick a heuristic ParticleEmitter preset
+    // (torch_flame / smoke / magic_sparkles / generic flame fallback)
+    // by scanning the host node's name. Zero-offset emitters attach
+    // directly to the host entity so the simulation sources its
+    // world-space spawn origin from the host's GlobalTransform; emitters
+    // with an authored local offset get a child entity carrying that
+    // offset (#1333). See #401 / audit OBL-D6-2.
+    for emitter in &imported.particle_emitters {
+        let Some(host_idx) = emitter.parent_node else {
+            continue;
+        };
+        let Some(&host_entity) = node_entities.get(host_idx) else {
+            continue;
+        };
+        let host_name = imported.nodes[host_idx]
+            .name
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
+        // NIFAL particles slice (#1513) — overlay every authored emitter
+        // override (colour curve #707, NiPSysEmitter base params, birth
+        // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300,
+        // BGEM effect payload #2610/#3589) onto the heuristic preset
+        // through the single shared boundary. The cell-loader spawn path
+        // calls the same helper, so the two load paths can't diverge.
+        crate::systems::apply_emitter_overlays(
+            &mut preset,
+            &emitter.color_curve,
+            &emitter.emitter_params,
+            emitter.emitter_rate,
+            &emitter.force_fields,
+            &emitter.texture_path,
+            emitter.src_blend,
+            emitter.dst_blend,
+            emitter.max_particles,
+            emitter.effect_shader.as_ref(),
+        );
+        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
+        // palette bits above index, the same way the mesh path resolves
+        // `MaterialTextureHandles::greyscale_lut`. Gated on `Some`, not a
+        // bare `resolve_texture` call: an emitter that authored no LUT must
+        // keep reading bindless slot 0 (the shader's "no LUT" sentinel), not
+        // `resolve_texture`'s neutral-fallback handle for an absent path.
+        // Mirrored in `cell_loader::spawn::spawn_particle_emitters`.
+        preset.greyscale_lut_index = emitter
+            .greyscale_lut_map
+            .as_deref()
+            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
+            .unwrap_or(0);
+
+        let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
+        let texture_handle = if fog_volume.is_none() {
+            let handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
+            if handle == ctx.texture_registry.fallback()
+                || handle == ctx.texture_registry.neutral_fallback()
+            {
+                log::debug!(
+                    "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
+                    emitter.original_type,
+                    preset.texture_path,
+                );
+                continue;
+            }
+            Some(handle)
+        } else {
+            // The fog primitive is texture-independent. Its density was seeded
+            // from authored alpha and it is modulated procedurally in froxel
+            // space, so an absent sprite must not suppress the replacement.
+            None
+        };
+
+        // #1333: when the particle block authored a non-zero local offset
+        // (relative to the host node), spawn a dedicated child entity
+        // carrying that local Transform so scene-graph propagation lands
+        // the emitter at host-world × block-local. The common vanilla case
+        // is identity (offset baked into the host node) — keep it on a
+        // zero-cost path by attaching the emitter straight to the host.
+        let identity_local = emitter.local_translation == [0.0, 0.0, 0.0]
+            && emitter.local_rotation == [0.0, 0.0, 0.0, 1.0]
+            && emitter.local_scale == 1.0;
+        let target_entity = if identity_local {
+            host_entity
+        } else {
+            let child = world.spawn();
+            let translation = Vec3::new(
+                emitter.local_translation[0],
+                emitter.local_translation[1],
+                emitter.local_translation[2],
+            );
+            let rotation = Quat::from_xyzw(
+                emitter.local_rotation[0],
+                emitter.local_rotation[1],
+                emitter.local_rotation[2],
+                emitter.local_rotation[3],
+            );
+            world.insert(
+                child,
+                Transform::new(translation, rotation, emitter.local_scale),
+            );
+            world.insert(child, GlobalTransform::IDENTITY);
+            world.insert(child, Parent(host_entity));
+            add_child(world, host_entity, child);
+            child
+        };
+        if let Some(fog_volume) = fog_volume {
+            let now_seconds = { world.resource::<byroredux_core::ecs::TotalTime>().0 };
+            let combustion_state =
+                crate::fog::combustion_state_from_particle(fog_volume, &preset, now_seconds);
+            world.insert(target_entity, fog_volume);
+            if let Some(state) = combustion_state {
+                world.insert(target_entity, state);
+            }
+        } else {
+            world.insert(
+                target_entity,
+                TextureHandle(texture_handle.expect("non-fog particle resolved a texture")),
+            );
+            world.insert(target_entity, preset);
+        }
+    }
+}
+
+/// Bind a spawned mesh entity to its skeleton, if the NIF authored one
+/// (#3858, extracted from `spawn_nif_mesh`).
+///
+/// Each bone name resolves to the entity Phase 1 spawned for that node —
+/// preferring an `external_skeleton` entry when the caller supplied one (an
+/// NPC part loaded against an already-spawned body), falling back to this
+/// NIF's own `node_by_name`. Unresolved bones stay `None`; the palette system
+/// substitutes identity for them rather than dropping the mesh.
+fn attach_nif_skin_binding(
+    world: &mut World,
+    entity: EntityId,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+) {
+    // Attach skinning binding if present. Resolves each bone name to
+    // the entity spawned for that node in Phase 1. Missing bones are
+    // kept as `None`; the palette system substitutes identity for them.
+    if let Some(ref skin) = mesh.skin {
+        if skin.bones.len() > MAX_BONES_PER_MESH {
+            log::warn!(
+                "Skinned mesh '{}' has {} bones (> MAX_BONES_PER_MESH={}); skipping skinning",
+                mesh.name.as_deref().unwrap_or("?"),
+                skin.bones.len(),
+                MAX_BONES_PER_MESH
+            );
+        } else {
+            let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
+            let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
+            let mut unresolved = 0_usize;
+            let mut unresolved_names: Vec<&str> = Vec::new();
+            for bone in &skin.bones {
+                // M41.0 Phase 1b: prefer the external skeleton
+                // map (set when the spawn function is assembling
+                // skeleton + body + head) so body/head NIF
+                // skinning resolves to the shared skeleton's
+                // entities, not the body/head's own orphaned
+                // local node copies.
+                // #2458 — exact match first (fast path, the common
+                // case), falling back to a case-insensitive scan so a
+                // case-only divergence between this mesh's skin bone
+                // list and the skeleton's node names doesn't silently
+                // unresolve the bone. See `name_lookup` module doc.
+                let resolved = external_skeleton
+                    .and_then(|m| crate::name_lookup::get_case_insensitive(m, &bone.name))
+                    .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, &bone.name))
+                    .copied();
+                match resolved {
+                    Some(e) => bones.push(Some(e)),
+                    None => {
+                        bones.push(None);
+                        unresolved += 1;
+                        if unresolved_names.len() < 8 {
+                            unresolved_names.push(&bone.name);
+                        }
+                    }
+                }
+                binds.push(Mat4::from_cols_array_2d(&bone.bind_inverse));
+            }
+            // M41.0 Phase 1b.x — global_skin_transform investigation
+            // resolved (#771 / LC-D3-NEW-01). Per nifly Skin.hpp:49-51,
+            // NiSkinData::bones[i].boneTransform IS skin→bone
+            // (compose-ready, includes the global offset). The
+            // top-level skinTransform is therefore informational
+            // only at runtime; `compute_palette_into` does NOT
+            // multiply it. The first attempt at right-multiply
+            // double-applied the global offset, which is why it
+            // looked visually worse. Captured here for diagnostic
+            // visibility (Doc Mitchell ships a non-identity cyclic
+            // permutation; FO4+ BSSkin paths ship identity — the
+            // asymmetry is informative).
+            let global_skin_transform = Mat4::from_cols_array_2d(&skin.global_skin_transform);
+            let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
+                // #2458 — same case-insensitive fallback as the
+                // per-bone resolution above.
+                external_skeleton
+                    .and_then(|m| crate::name_lookup::get_case_insensitive(m, n))
+                    .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, n))
+                    .copied()
+            });
+            world.insert(
+                entity,
+                SkinnedMesh::new_with_global(root_entity, bones, binds, global_skin_transform),
+            );
+            if unresolved > 0 {
+                // M41.0 Phase 1b.x followup — unresolved bones land
+                // as `None` in `SkinnedMesh.bones`, and
+                // `compute_palette_into` substitutes
+                // `Mat4::IDENTITY` for those slots. Vertices weighted
+                // to such a slot end up at `vertex_local` (near NIF
+                // skin-space origin) while neighbours weighted to
+                // resolved bones land at world coords, producing
+                // triangle ribbons stretched from origin to the
+                // actor's placement. Logging the names so we can see
+                // which sub-skeleton convention is mismatched
+                // between the source NIF and the external skeleton
+                // map.
+                log::warn!(
+                    "Skinned mesh '{}': {} bones ({} UNRESOLVED — names: {:?}), root={:?}",
+                    mesh.name.as_deref().unwrap_or("?"),
+                    skin.bones.len(),
+                    unresolved,
+                    unresolved_names,
+                    skin.skeleton_root,
+                );
+            } else {
+                log::info!(
+                    "Skinned mesh '{}': {} bones (0 unresolved), root={:?}",
+                    mesh.name.as_deref().unwrap_or("?"),
+                    skin.bones.len(),
+                    skin.skeleton_root,
+                );
+            }
+        }
     }
 }

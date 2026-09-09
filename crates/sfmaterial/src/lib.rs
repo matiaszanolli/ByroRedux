@@ -44,10 +44,13 @@
 //! # Scope (Stage B per audit #762)
 //!
 //! This crate parses the binary CDB into a generic `Value` tree. The
-//! consumer side lives in `byroredux/src/asset_provider/material.rs` —
-//! `discover_starfield_cdbs` finds the databases, `merge_external_material`
-//! is the entry point, and `apply_cdb_pbr_fallback` is the Starfield arm.
-//! That is a separate concern from the format parsing here.
+//! consumer side lives in `byroredux/src/asset_provider/material/` —
+//! `discover_starfield_cdbs` finds the databases and
+//! `apply_cdb_pbr_fallback` is the Starfield arm, both in
+//! `byroredux/src/asset_provider/material/cdb.rs`; the entry point
+//! `merge_external_material` is in
+//! `byroredux/src/asset_provider/material/merge.rs`. That is a separate
+//! concern from the format parsing here.
 //!
 //! #3932 — this used to point at the pre-Session-34 `asset_provider` *file*,
 //! which that refactor turned into the directory above, and to describe the
