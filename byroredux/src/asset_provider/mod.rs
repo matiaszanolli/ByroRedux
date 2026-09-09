@@ -3,7 +3,7 @@
 mod animation;
 mod archive;
 mod audio;
-mod material;
+pub(crate) mod material;
 mod script;
 mod texture;
 

@@ -2070,15 +2070,14 @@ fn bgem_merge_forwards_tile_flags_to_texture_clamp_mode() {
 #[test]
 fn distance_field_alpha_texture_deferral_is_documented_at_both_sites() {
     let bgsm_rs = include_str!("../../../../crates/bgsm/src/bgsm.rs");
-    let material_rs = include_str!("../material.rs");
+    let material_rs = crate::asset_provider::material::SOURCES;
 
     assert!(
         bgsm_rs.contains("#2642") && bgsm_rs.contains("distance_field_alpha_texture"),
         "bgsm.rs's field declaration must carry the #2642 deferral marker"
     );
     assert!(
-        material_rs.contains("#2642")
-            && material_rs.contains("distance_field_alpha_texture"),
+        material_rs.contains("#2642") && material_rs.contains("distance_field_alpha_texture"),
         "material.rs's merge site must carry the #2642 deferral marker too, \
          not just the field declaration"
     );
@@ -2341,7 +2340,7 @@ fn peek_magic_memoises_an_uncached_path_so_the_second_reference_is_free() {
 /// cannot reach.
 #[test]
 fn push_archive_drops_the_magic_memo() {
-    let src = include_str!("../material.rs");
+    let src = crate::asset_provider::material::SOURCES;
     let start = src
         .find("fn push_archive(&mut self, archive: Archive) {")
         .expect("push_archive must still exist");

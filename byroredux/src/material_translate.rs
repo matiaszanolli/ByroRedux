@@ -2930,7 +2930,7 @@ mod unresolved_gloss_neutral_tests {
     /// render differently depending on which site caught it.
     #[test]
     fn both_halves_of_the_rule_share_one_neutral() {
-        let boundary = include_str!("asset_provider/material.rs");
+        let boundary = crate::asset_provider::material::SOURCES;
         assert!(
             boundary.contains("material.roughness_override = Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS);"),
             "the merge boundary's #3639 arm must use the shared constant, not a \
