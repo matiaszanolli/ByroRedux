@@ -355,6 +355,69 @@ impl GroundProbe {
     }
 }
 
+/// Decompose a forward vector into the `(yaw, pitch)` pair that
+/// `fly_camera_system` would need to produce it (#2383).
+///
+/// That system composes `Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)`
+/// and looks down local `-Z`, which expands to
+///
+/// ```text
+/// forward = (-cos(pitch)·sin(yaw),  sin(pitch),  -cos(pitch)·cos(yaw))
+/// ```
+///
+/// so `pitch = asin(y)` and `yaw = atan2(-x, -z)`. Inverting the engine's own
+/// convention — rather than picking any rotation that happens to face the
+/// right way — is the whole point: a shortest-arc quaternion also faces the
+/// right way and still snaps on the first mouse event, because it carries
+/// roll the driving system cannot represent.
+///
+/// Looking exactly along ±Y is the degenerate case: `cos(pitch)` is zero, both
+/// `atan2` arguments vanish, and yaw is genuinely arbitrary — every yaw yields
+/// the same view. `atan2(0.0, 0.0)` is defined as `0.0`, so this returns a
+/// finite, straight-up/down pose rather than a NaN.
+fn yaw_pitch_from_forward(forward: Vec3) -> (f32, f32) {
+    let pitch = forward.y.clamp(-1.0, 1.0).asin();
+    let yaw = (-forward.x).atan2(-forward.z);
+    (yaw, pitch)
+}
+
+/// Drain the queued DDS uploads left by a loose-NIF / mesh / tree load
+/// (#2383).
+///
+/// Mirrors `flush_pending_cell_textures_inner`'s body rather than calling it:
+/// that one lives on the cell-loader path and carries a `force` / threshold
+/// policy for mid-load batching across an edge crossing. A loose load has
+/// exactly one batch and no streaming budget to respect, so the policy would
+/// be noise — what is shared is the six-argument `flush_pending_uploads`
+/// contract, and if that changes both sites fail to compile together.
+///
+/// Silent no-op when nothing is queued, so the archive-backed and
+/// already-cached cases cost one integer read.
+fn flush_pending_loose_textures(ctx: &mut VulkanContext) {
+    let pending = ctx.texture_registry.pending_dds_upload_count();
+    if pending == 0 {
+        return;
+    }
+    let Some(allocator) = ctx.allocator.clone() else {
+        log::warn!("Loose texture upload skipped: no allocator ({pending} pending)");
+        return;
+    };
+    let started = std::time::Instant::now();
+    match ctx.texture_registry.flush_pending_uploads(
+        &ctx.device,
+        &allocator,
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+        &ctx.transfer_fence,
+    ) {
+        Ok(n) => log::info!(
+            "  Loose texture upload batch: {n}/{pending} DDS textures uploaded in {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0,
+        ),
+        Err(e) => log::warn!("Loose texture upload batch failed ({pending} pending): {e}"),
+    }
+}
+
 /// Probe for walkable ground beneath `cam_pos`.
 ///
 /// Split from the spawn itself so the *decision* (may Character mode start?)
@@ -941,7 +1004,36 @@ pub(crate) fn setup_scene(
         let (nif_count, loaded_root) = load_nif_from_args(world, ctx);
         has_nif_content = nif_count > 0;
         nif_root = loaded_root;
-        if studio_mode && has_nif_content {
+        // #2383(1) — the third loading path had no upload flush.
+        //
+        // `resolve_texture` reserves a bindless slot pointing at the
+        // checkerboard placeholder and QUEUES the real decode+upload for a
+        // later batch (#881 / CELL-PERF-03). The interior cell load
+        // (`load_references`) and exterior streaming (`streaming_helpers`)
+        // both drain that queue; the loose-NIF path never did, so on
+        // `cargo run -- mesh.nif` every texture stayed on the placeholder
+        // forever with no error anywhere — opaque meshes rendered near-black
+        // and alpha-tested ones discarded every fragment against the
+        // placeholder's alpha and vanished. Reported from outside the
+        // project against exactly the invocation README/CLAUDE.md document.
+        flush_pending_loose_textures(ctx);
+        // #2383(5) — compute the loaded content's bounds for BOTH consumers,
+        // not just Studio.
+        //
+        // `cam_center` was only ever assigned on the ESM/cell and harness
+        // paths, so a loose load kept its `Vec3::ZERO` default and the spawn
+        // camera aimed at literal world origin. That is not a cosmetic
+        // default: the `has_nif_content` arm below places the camera at
+        // `cam_center + (0, 100, 200)`, an offset that only means anything if
+        // `cam_center` IS the content — so the framing logic already assumed
+        // the value this path never supplied. A model authored away from the
+        // origin, or tall relative to it, ended up framed arbitrarily.
+        //
+        // The bounds walk was already here, gated behind `studio_mode`. It is
+        // hoisted rather than duplicated; the two propagation systems it needs
+        // are the same ones the scheduler runs every frame, so running them
+        // once at setup is idempotent.
+        if has_nif_content {
             let last_asset_entity = world.next_entity_id();
             let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
             propagate(world, 0.0);
@@ -976,17 +1068,29 @@ pub(crate) fn setup_scene(
                 min: [-1.0; 3],
                 max: [1.0; 3],
             });
-            let fit = CornellFit::around(bounds);
-            let (camera, target) = crate::cornell::setup_studio_room(world, ctx, fit);
-            harness_cam = Some((camera, target));
-            cam_center = target;
-            crate::studio_host::install_session(
-                world,
-                AssetSource {
-                    label: studio_source_label(&args),
-                },
-                objects,
-            );
+            if studio_mode {
+                let fit = CornellFit::around(bounds);
+                let (camera, target) = crate::cornell::setup_studio_room(world, ctx, fit);
+                harness_cam = Some((camera, target));
+                cam_center = target;
+                crate::studio_host::install_session(
+                    world,
+                    AssetSource {
+                        label: studio_source_label(&args),
+                    },
+                    objects,
+                );
+            } else {
+                // Plain loose load: aim at the midpoint of what was actually
+                // loaded. Studio takes its centre from `setup_studio_room`
+                // instead, which places the model inside a fitted room and
+                // returns that room's look-at target.
+                cam_center = Vec3::new(
+                    0.5 * (bounds.min[0] + bounds.max[0]),
+                    0.5 * (bounds.min[1] + bounds.max[1]),
+                    0.5 * (bounds.min[2] + bounds.max[2]),
+                );
+            }
         }
     }
 
@@ -1192,7 +1296,26 @@ pub(crate) fn setup_scene(
         }
         None => (cam_target - cam_pos).normalize(),
     };
-    let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
+    // #2383(4) — build the spawn orientation the way every LATER frame
+    // builds it, and seed the input state to match.
+    //
+    // `Quat::from_rotation_arc(-Z, forward)` is the shortest arc between two
+    // vectors with no up-vector constraint, so it bakes in real roll whenever
+    // `forward` is steep. `fly_camera_system` then drives every subsequent
+    // frame from the `yaw`/`pitch` scalars alone, with no roll term — so the
+    // first mouse movement snapped the camera from the rolled spawn pose to
+    // the yaw/pitch-only convention. That read as "the camera spins when you
+    // touch the mouse", worst when spawning steeply up or down.
+    //
+    // Seeding `yaw`/`pitch` is the half that makes it stick: composing the
+    // same quaternion but leaving the scalars at their `0` default would
+    // still snap on the first frame, just to a different wrong pose.
+    let (cam_yaw, cam_pitch) = yaw_pitch_from_forward(forward);
+    let cam_rotation = Quat::from_rotation_y(cam_yaw) * Quat::from_rotation_x(cam_pitch);
+    if let Some(mut input) = world.try_resource_mut::<InputState>() {
+        input.yaw = cam_yaw;
+        input.pitch = cam_pitch;
+    }
     world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
     world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
     // #3308 — BU-scale content (a loaded worldspace/interior cell, a loose
@@ -1702,5 +1825,87 @@ mod studio_cli_tests {
         ]
         .map(str::to_owned);
         assert_eq!(studio_source_label(&args), "meshes/probe.nif");
+    }
+}
+
+#[cfg(test)]
+mod spawn_orientation_tests {
+    use super::yaw_pitch_from_forward;
+    use byroredux_core::math::{Quat, Vec3};
+
+    /// Recompose the way `fly_camera_system` does, so the test asserts the
+    /// round trip against the real convention rather than a restatement of
+    /// `yaw_pitch_from_forward`'s own algebra.
+    fn forward_from_yaw_pitch(yaw: f32, pitch: f32) -> Vec3 {
+        Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * -Vec3::Z
+    }
+
+    /// #2383(4) — the spawn pose must be reachable by the yaw/pitch pair the
+    /// driving system uses, or the first mouse event snaps to a different one.
+    #[test]
+    fn every_look_direction_round_trips_through_the_fly_camera_convention() {
+        // Includes the steep cases the report singles out as worst, and the
+        // axis-aligned ones a shortest-arc rotation happens to get right.
+        let directions = [
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(0.3, 0.9, -0.2),
+            Vec3::new(-0.4, -0.85, 0.35),
+            Vec3::new(0.7, 0.1, 0.7),
+            Vec3::new(-0.2, -0.05, -0.98),
+        ];
+        for dir in directions {
+            let forward = dir.normalize();
+            let (yaw, pitch) = yaw_pitch_from_forward(forward);
+            let round_tripped = forward_from_yaw_pitch(yaw, pitch);
+            assert!(
+                (round_tripped - forward).length() < 1e-5,
+                "forward {forward:?} -> (yaw {yaw}, pitch {pitch}) -> \
+                 {round_tripped:?} does not reproduce the input"
+            );
+        }
+    }
+
+    /// The defect itself: a shortest-arc rotation faces the right way but is
+    /// not expressible as yaw/pitch, so it carries roll the driving system
+    /// cannot hold. This is what made the camera visibly snap on first input.
+    #[test]
+    fn shortest_arc_carries_roll_that_the_yaw_pitch_form_does_not() {
+        // Steep, off-axis — the case the report calls out as most visible.
+        let forward = Vec3::new(0.25, 0.94, -0.23).normalize();
+
+        let arc = Quat::from_rotation_arc(-Vec3::Z, forward);
+        let (yaw, pitch) = yaw_pitch_from_forward(forward);
+        let composed = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+
+        // Both genuinely look the same way — the bug was never a wrong aim.
+        for (label, rotation) in [("shortest-arc", arc), ("yaw/pitch", composed)] {
+            let aimed = rotation * -Vec3::Z;
+            assert!(
+                (aimed - forward).length() < 1e-5,
+                "{label} rotation should still face `forward`"
+            );
+        }
+
+        // They differ, and the difference is roll about the view axis: the
+        // right vectors are not parallel even though the forwards match.
+        let arc_right = arc * Vec3::X;
+        let composed_right = composed * Vec3::X;
+        let roll = arc_right.dot(composed_right).clamp(-1.0, 1.0).acos();
+        assert!(
+            roll > 0.1,
+            "expected the shortest-arc spawn pose to carry roll relative to \
+             the yaw/pitch form (got {roll} rad) — without that difference \
+             this fix would have nothing to correct"
+        );
+
+        // And the yaw/pitch form has none: its right vector stays level.
+        assert!(
+            composed_right.y.abs() < 1e-5,
+            "the yaw/pitch pose must keep the horizon level (right.y = {})",
+            composed_right.y
+        );
     }
 }

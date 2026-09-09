@@ -331,15 +331,6 @@ impl NiPSysColorModifier {
     }
 }
 
-/// Back-compat shim — earlier dispatch returned a `NiPSysBlock` for
-/// every modifier subtype. Kept so the few internal call sites that
-/// only need byte-correct stream advancement still compile, but new
-/// code should call [`NiPSysColorModifier::parse`] directly.
-pub fn parse_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _modifier = NiPSysColorModifier::parse(stream)?;
-    Ok(NiPSysBlock::marker("NiPSysColorModifier".to_string()))
-}
-
 /// NiPSysDragModifier: base + parent(ptr) + drag_axis(vec3) + percentage(f32) + range(f32) + range_falloff(f32)
 pub fn parse_drag_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
@@ -588,14 +579,6 @@ impl BSPSysSimpleColorModifier {
             colors,
         })
     }
-}
-
-/// Back-compat shim — older dispatch returned an opaque `NiPSysBlock`.
-/// Kept for byte-correct stream advancement at call sites that don't need
-/// the colours; new code should call [`BSPSysSimpleColorModifier::parse`].
-pub fn parse_simple_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _modifier = BSPSysSimpleColorModifier::parse(stream)?;
-    Ok(NiPSysBlock::marker("BSPSysSimpleColorModifier".to_string()))
 }
 
 /// BSPSysStripUpdateModifier (FO3+): base + update_delta_time(f32)

@@ -767,12 +767,26 @@ pub fn create_logical_device(
     device_features.shader_int16 = supported_features2.features.shader_int16;
 
     // Feature chain (pNext): Vulkan 1.2 features.
-    // - buffer_device_address: required for RT acceleration structures.
+    // - buffer_device_address: required for RT acceleration structures AND by
+    //   `triangle.vert`'s `PhysicalStorageBufferAddresses` capability, which
+    //   has no ray query in it at all.
     // - descriptor_indexing features: required for bindless texture arrays.
     //   These are Vulkan 1.2 core (no extension needed), universally available
     //   on desktop GPUs that support Vulkan 1.2+.
+    //
+    // #2383(2) — enabled unconditionally, one of the "now-unreachable
+    // `ray_query_supported == false` branches" the suitability rejection above
+    // says it left for a follow-up. Once `is_device_suitable` returns `None`
+    // for an RT-less device, `caps.ray_query_supported` is `true` at every
+    // call that reaches here, so the gate selected `true` and merely read as
+    // though an RT-less device were supported. It was reported from outside
+    // the project as a bug for exactly that reason, against a fork that had
+    // removed the RT requirement — where the same line really does disable a
+    // Vulkan 1.2 core feature the main pass needs. Same treatment as
+    // `shader_int64(true)` above, and for the same reason: suitability owns
+    // the decision, so this reads as the unconditional requirement it is.
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default()
-        .buffer_device_address(caps.ray_query_supported)
+        .buffer_device_address(true)
         .shader_sampled_image_array_non_uniform_indexing(true)
         .runtime_descriptor_array(true)
         .descriptor_binding_partially_bound(true)
@@ -972,10 +986,11 @@ mod caps_tests {
     ///
     /// `RayQueryKHR` requires `VkPhysicalDeviceRayQueryFeaturesKHR::rayQuery`
     /// and `PhysicalStorageBufferAddresses` requires
-    /// `VkPhysicalDeviceVulkan12Features::bufferDeviceAddress`; both are
-    /// withheld by `create_logical_device` when `ray_query_supported` is
-    /// false, so creating these modules there violates
-    /// VUID-VkShaderModuleCreateInfo-pCode-08740.
+    /// `VkPhysicalDeviceVulkan12Features::bufferDeviceAddress`, so creating
+    /// these modules on a device without them violates
+    /// VUID-VkShaderModuleCreateInfo-pCode-08740. Both are now requested
+    /// unconditionally (#2383) — the rejection below, not a per-feature gate,
+    /// is what keeps that legal.
     ///
     /// #1561 gated `WaterPipeline` on the flag and stopped there. This
     /// catches the same defect for any module that joins the ungated set:
@@ -1045,6 +1060,22 @@ mod caps_tests {
             normalized.contains("if!ray_query_supported{returnOk(None);}"),
             "is_device_suitable must reject a device lacking the RT extensions"
         );
+
+        // (c) #2383 — and given that rejection, the two core features every
+        // committed module needs are requested unconditionally rather than
+        // re-derived from the RT flag. Re-coupling either to
+        // `ray_query_supported` would be inert here (the rejection makes it
+        // always true) while silently breaking any build that relaxes the
+        // rejection — which is how this was reported.
+        for feature in [".buffer_device_address(true)", ".shader_int64(true)"] {
+            let needle: String = feature.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                normalized.contains(&needle),
+                "create_logical_device must request `{feature}` unconditionally \
+                 — the RT rejection above is what makes that correct, not a \
+                 per-feature ray-query gate (#2383)"
+            );
+        }
     }
 
     /// #1636 / #1478 — the GPU-timer gate must require BOTH `timestamp` and
