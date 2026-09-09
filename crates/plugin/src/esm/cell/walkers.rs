@@ -240,9 +240,19 @@ fn parse_cell_group_inner(
                 // M×u32 absorbed-refr formids). XPRI holds a smaller
                 // additional list of refr formids absorbed by the
                 // precombines. Both lists feed `absorbed_refs` which
-                // the cell loader uses to skip individual REFR placement
-                // for the geometry baked into the `_oc.nif` files
+                // the cell loader uses to decide individual REFR placement
+                // against the geometry baked into the `_oc.nif` files
                 // referenced by `precombined_mesh_hashes`.
+                //
+                // #2699 — "absorbed" is the ESM's word, and it is NOT a
+                // promise that every listed REFR's geometry is in the bake.
+                // The loader only erases STAT/SCOL entries; the other 21 769
+                // across 232 vanilla FO4 interiors are retained whole,
+                // because dropping them costs gameplay identity and it is
+                // not established that their meshes are baked. Do not read
+                // this comment as settling that — see
+                // `precombine_can_replace_record` in
+                // `byroredux/src/cell_loader/references/mod.rs`.
                 //
                 // Empirically decoded against vanilla
                 // `DmndDugoutInn01` (form 0x00001E5D, 39 hashes / 962
@@ -709,7 +719,8 @@ fn parse_refr_group_inner(
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_refr_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_refr_group")
             else {
                 continue;
             };

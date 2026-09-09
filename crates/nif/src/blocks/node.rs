@@ -840,6 +840,12 @@ pub struct BsWeakReferenceNode {
 }
 
 impl NiObject for BsWeakReferenceNode {
+    // #2625 — report the captured tail so an under-read stays visible to
+    // `opaque_tail_histogram`; capturing it zeroes the drift signal.
+    fn opaque_tail_len(&self) -> Option<usize> {
+        Some(self.starfield_tail.len())
+    }
+
     fn block_type_name(&self) -> &'static str {
         "BSWeakReferenceNode"
     }
@@ -1053,6 +1059,12 @@ pub struct BsFaceGenNiNode {
 }
 
 impl NiObject for BsFaceGenNiNode {
+    // #2625 — report the captured tail so an under-read stays visible to
+    // `opaque_tail_histogram`; capturing it zeroes the drift signal.
+    fn opaque_tail_len(&self) -> Option<usize> {
+        Some(self.starfield_tail.len())
+    }
+
     fn block_type_name(&self) -> &'static str {
         "BSFaceGenNiNode"
     }

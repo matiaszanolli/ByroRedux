@@ -98,6 +98,28 @@ pub trait NiObject: Debug + Send + Sync {
     fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
         None
     }
+
+    /// Length of the opaque trailing bytes this block CAPTURED rather than
+    /// parsed — the Starfield `starfield_tail` pattern. `None` means the block
+    /// has no such capture at all.
+    ///
+    /// #2625 — this exists because capturing a tail destroys the signal that
+    /// would otherwise report it. The tail read consumes `block_size -
+    /// consumed` *inside* the block parser, so by the time `parse_nif` compares
+    /// consumed against `block_size` the two agree exactly and drift is zero.
+    /// A Starfield shader under-read therefore never reached
+    /// `drift_histogram`: measured, shader-block drift was `{}` while tail
+    /// lengths were simultaneously bimodal `{38: 1868, 42: 11}` — precisely the
+    /// anomaly a drift histogram exists to raise, and the reason SF-D6-01 went
+    /// undetected by telemetry that was nominally watching for it.
+    ///
+    /// Reporting the length keeps the capture (it is deliberate — the bytes are
+    /// preserved rather than skipped) while restoring the observability it
+    /// removed. `Some(0)` is meaningful and distinct from `None`: the block has
+    /// a tail slot and consumed the whole declared size without leftovers.
+    fn opaque_tail_len(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Implements the trivial 2-method `NiObject` boilerplate for block types

@@ -2165,3 +2165,114 @@ fn is_editor_marker(name: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod light_dispatch_coverage_tests {
+    //! #2532 (NIFAL-D9-04) — the Lights half of the canonical-tier
+    //! completeness guard, mirroring `import::collision`'s
+    //! `dispatch_coverage_tests`.
+    //!
+    //! `LightKind` resolution is the same shape as `resolve_shape_inner`: a
+    //! `downcast_ref::<…>` chain over block types the parser dispatches. It
+    //! has the same failure mode too — a light block that is parse-dispatched
+    //! in `blocks/mod.rs` but has no arm here parses for byte correctness and
+    //! is then silently dropped, with no warning and no missing-block
+    //! diagnostic. One of the six translate-boundary bugs a prior sweep cited
+    //! as evidence this guard was needed was in Lights, and it was found by
+    //! manual code tracing, not by a test.
+    //!
+    //! Structural rather than value-based, deliberately: the property that
+    //! actually rots is "every dispatched kind reaches the boundary", and a
+    //! per-field value harness would not catch a whole type going missing.
+    use std::collections::HashSet;
+
+    /// Every `Ni…Light` struct produced by a dispatch arm whose match key is a
+    /// quoted `"Ni…Light"`. Mirrors `constructed_shape` in the collision
+    /// sibling; kept as its own copy rather than shared because the two scan
+    /// different files for different identifier shapes, and a shared helper
+    /// parameterised on both would be longer than either.
+    fn dispatched_light_structs() -> HashSet<String> {
+        let src = include_str!("../../blocks/mod.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = HashSet::new();
+        for (i, line) in lines.iter().enumerate() {
+            let is_light_arm = line.contains("=>")
+                && line
+                    .split('"')
+                    .any(|tok| tok.starts_with("Ni") && tok.ends_with("Light"));
+            if !is_light_arm {
+                continue;
+            }
+            for candidate in &lines[i..=(i + 2).min(lines.len() - 1)] {
+                let Some(after) = candidate.split("Box::new(").nth(1) else {
+                    continue;
+                };
+                // Light arms are module-qualified (`light::NiPointLight::parse`)
+                // where the collision sibling's shapes are not, so take the LAST
+                // path segment before `::parse` rather than the first
+                // identifier. Reading only the first would yield `light` and
+                // silently produce an empty set — the anti-vacuity assertions
+                // below exist because that is exactly what happened first.
+                let Some(path) = after.split("::parse").next() else {
+                    continue;
+                };
+                let ident: String = path
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(path)
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if ident.starts_with("Ni") && ident.ends_with("Light") {
+                    out.insert(ident);
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Every `Ni…Light` struct with a `downcast_ref::<…>` arm in this module.
+    fn resolved_light_structs() -> HashSet<String> {
+        let src = include_str!("mod.rs");
+        src.split("downcast_ref::<")
+            .skip(1)
+            .filter_map(|part| {
+                let ident: String = part
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                (ident.starts_with("Ni") && ident.ends_with("Light")).then_some(ident)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_dispatched_light_reaches_the_lightkind_boundary() {
+        let dispatched = dispatched_light_structs();
+        let resolved = resolved_light_structs();
+
+        // Anti-vacuity, same reasoning as the collision sibling: a reformat
+        // that empties either set must fail loudly rather than pass silently.
+        assert!(
+            dispatched.contains("NiPointLight") && dispatched.contains("NiSpotLight"),
+            "dispatch extractor regressed; found {dispatched:?}"
+        );
+        assert!(
+            dispatched.len() >= 4,
+            "expected >=4 dispatched Ni*Light structs, found {}: {dispatched:?}",
+            dispatched.len()
+        );
+        assert!(
+            resolved.contains("NiPointLight"),
+            "resolve extractor regressed; found {resolved:?}"
+        );
+
+        let missing: Vec<_> = dispatched.difference(&resolved).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "these Ni*Light blocks are parse-dispatched but never reach a \
+             LightKind arm — the authored light is silently dropped: {missing:?}"
+        );
+    }
+}

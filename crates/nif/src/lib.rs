@@ -223,6 +223,9 @@ struct DispatchedBlocks {
     recovered_by_guess: usize,
     drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
     stubbed_drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+    /// #2625 — opaque trailing bytes captured per block type. Keyed by length,
+    /// not signed drift: these blocks have zero drift by construction.
+    opaque_tail_histogram: std::collections::HashMap<String, std::collections::HashMap<usize, u32>>,
 }
 
 /// Phase 1 (#1672) — parse and validate the NIF header. Rejects big-endian
@@ -337,6 +340,13 @@ fn dispatch_blocks(
         String,
         std::collections::HashMap<i64, u32>,
     > = std::collections::HashMap::new();
+    // #2625 — third histogram, because the tail capture is a blind spot in the
+    // other two rather than a variant of them: a block that reads
+    // `block_size - consumed` into a tail has zero drift by construction.
+    let mut opaque_tail_histogram: std::collections::HashMap<
+        String,
+        std::collections::HashMap<usize, u32>,
+    > = std::collections::HashMap::new();
 
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
@@ -358,19 +368,23 @@ fn dispatch_blocks(
         }
     }
 
-    // Record one drift event into the per-type histogram. Uses the same
-    // get/insert split as `bump_counter` to skip `to_string()` on the
-    // common already-seen-this-type path.
-    fn bump_drift(
-        map: &mut std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+    // Record one event into a per-type histogram. Uses the same get/insert
+    // split as `bump_counter` to skip `to_string()` on the common
+    // already-seen-this-type path.
+    //
+    // #2625 — generic over the bucket key so the signed-drift histograms and
+    // the unsigned opaque-tail-length histogram share one implementation
+    // rather than carrying a near-identical copy each.
+    fn bump_hist<K: std::hash::Hash + Eq>(
+        map: &mut std::collections::HashMap<String, std::collections::HashMap<K, u32>>,
         key: &str,
-        drift: i64,
+        bucket: K,
     ) {
         if let Some(inner) = map.get_mut(key) {
-            *inner.entry(drift).or_insert(0) += 1;
+            *inner.entry(bucket).or_insert(0) += 1;
         } else {
             let mut inner = std::collections::HashMap::new();
-            inner.insert(drift, 1u32);
+            inner.insert(bucket, 1u32);
             map.insert(key.to_string(), inner);
         }
     }
@@ -495,7 +509,7 @@ fn dispatch_blocks(
                             // stub under-reads without contaminating the
                             // real drift signal. See NIF-D3-NEW-06.
                             let drift = size as i64 - consumed as i64;
-                            bump_drift(&mut stubbed_drift_histogram, type_name, drift);
+                            bump_hist(&mut stubbed_drift_histogram, type_name, drift);
                         } else {
                             // #565: downgraded from `warn!` — the
                             // per-NIF summary at the end of this
@@ -517,10 +531,17 @@ fn dispatch_blocks(
                                 drift,
                             );
                             bump_counter(&mut drifted_by_type, type_name);
-                            bump_drift(&mut drift_histogram, type_name, drift);
+                            bump_hist(&mut drift_histogram, type_name, drift);
                         }
                         stream.set_position(start_pos + size as u64);
                     }
+                }
+                // #2625 — record the opaque tail BEFORE the block is moved into
+                // `blocks`. Only types that actually capture a tail override
+                // `opaque_tail_len`; everything else returns `None` and costs a
+                // devirtualised call returning a constant.
+                if let Some(tail_len) = block.opaque_tail_len() {
+                    bump_hist(&mut opaque_tail_histogram, type_name, tail_len);
                 }
                 // Cache consumed size for Oblivion recovery (#324).
                 if no_block_sizes {
@@ -805,6 +826,7 @@ fn dispatch_blocks(
         recovered_by_guess,
         drift_histogram,
         stubbed_drift_histogram,
+        opaque_tail_histogram,
     })
 }
 
@@ -824,6 +846,7 @@ fn finalize_scene(
         recovered_by_guess,
         drift_histogram,
         stubbed_drift_histogram,
+        opaque_tail_histogram,
     } = dispatched;
 
     // Phase 3: Identify root. Root is typically the first NiNode (or
@@ -874,6 +897,14 @@ fn finalize_scene(
         .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
         .collect();
 
+    let scene_opaque_tail_histogram: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<usize, u32>,
+    > = opaque_tail_histogram
+        .into_iter()
+        .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
+        .collect();
+
     let mut scene = NifScene {
         blocks,
         root_index,
@@ -884,6 +915,7 @@ fn finalize_scene(
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
         stubbed_drift_histogram: scene_stubbed_drift_histogram,
+        opaque_tail_histogram: scene_opaque_tail_histogram,
         havok_scale: havok_scale_for(header),
         bsver: header.user_version_2,
     };

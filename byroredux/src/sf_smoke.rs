@@ -39,6 +39,40 @@ use std::path::Path;
 /// Caller wires this from `main()` when `--sf-smoke <CELL>` is set;
 /// `--esm <PATH>` provides the ESM path. The function never returns
 /// `Ok(())` with a usable engine state — it's terminal: print, exit.
+/// Which non-`statics` index map holds `form_id`, if any (#2637).
+///
+/// `sf_smoke` resolves REFR base forms against `statics`, which is correct for
+/// anything that renders. Several record types are parsed and indexed but
+/// deliberately live elsewhere because they carry no mesh — the Starfield-era
+/// audio family in particular. A REFR pointing at one of them is fully
+/// understood, not a parser gap, and reporting it as a gap is what overstated
+/// the unresolved figure ~5x.
+///
+/// Returns the FourCC of the owning map so the report can name the bucket.
+/// Ordered most-populous-first on the measured Cydonia cell; the maps are
+/// disjoint by FormID so order affects only lookup cost, not the answer.
+fn nonstatic_base_type(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    form_id: u32,
+) -> Option<&'static str> {
+    // #2636 indexed SECH/AOPF; ALOC/ASPC predate it. All four are
+    // `MinimalEsmRecord` maps keyed by FormID, so the map that matches IS the
+    // record type — no type tag needs storing alongside.
+    if index.sound_echoes.contains_key(&form_id) {
+        return Some("SECH");
+    }
+    if index.audio_occlusion_primitives.contains_key(&form_id) {
+        return Some("AOPF");
+    }
+    if index.acoustic_spaces.contains_key(&form_id) {
+        return Some("ASPC");
+    }
+    if index.audio_locations.contains_key(&form_id) {
+        return Some("ALOC");
+    }
+    None
+}
+
 pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
     let bytes = std::fs::read(esm_path)
         .with_context(|| format!("failed to read ESM at {}", esm_path.display()))?;
@@ -80,11 +114,18 @@ pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
         ));
     };
 
-    print_cell_report(cell, &index.cells);
+    print_cell_report(cell, &index.cells, &index);
     Ok(())
 }
 
-fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell::EsmCellIndex) {
+fn print_cell_report(
+    cell: &CellData,
+    cells_index: &byroredux_plugin::esm::cell::EsmCellIndex,
+    // #2637 — the full index, for base forms that are known but deliberately
+    // outside `statics`. `EsmCellIndex` is the render-facing view and does not
+    // carry the audio-family maps, so attributing those needs the parent.
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
     let total = cell.references.len();
     println!(
         "─── cell {} ───────────────────────────────────────────────",
@@ -126,6 +167,17 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
     let mut resolved_by_type: HashMap<String, usize> = HashMap::new();
     let mut unresolved_high_byte: HashMap<u8, usize> = HashMap::new();
     let mut unresolved_sample: Vec<u32> = Vec::new();
+    // #2637 — REFRs whose base form IS indexed, just not in `statics`.
+    //
+    // These were being reported as "parser gap — schema diverged or record
+    // type missing", which is false for every one of them: the record parsed,
+    // it is in the index, and it has no mesh by design. Counting them as gaps
+    // overstated the headline unresolved figure ~5x on
+    // `citycydoniamainlevel`, and — the part that actually matters — buried a
+    // real regression signal inside a bucket already dominated by two
+    // understood causes. #2636 indexed `SECH`/`AOPF` for exactly this reason;
+    // this is the consumer side it was missing.
+    let mut nonstatic_by_type: HashMap<&'static str, usize> = HashMap::new();
     let mut absorbed_by_type: HashMap<String, usize> = HashMap::new();
     let mut absorbed_total = 0usize;
     let mut resolved = 0usize;
@@ -141,6 +193,9 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
                 absorbed_total += 1;
             }
             resolved += 1;
+        } else if let Some(label) = nonstatic_base_type(index, r.base_form_id) {
+            // Known base form, deliberately not a `statics` member (#2637).
+            *nonstatic_by_type.entry(label).or_default() += 1;
         } else {
             // The high byte of a FormID is the master file slot (load
             // order index); for a single-ESM smoke any slot != 0 means
@@ -183,13 +238,51 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
         }
     }
 
+    // #2637 — print the by-design buckets BEFORE the unresolved section, so a
+    // reader meets the understood causes before the residual rather than
+    // after it. Previously all three landed in one undifferentiated pile
+    // labelled "parser gap".
+    if !nonstatic_by_type.is_empty() {
+        let attributed: usize = nonstatic_by_type.values().sum();
+        println!("─── known base forms outside `statics` (by design) ─────────");
+        println!(
+            "attributed : {} REFRs — parsed and indexed, no mesh to render",
+            attributed
+        );
+        let mut by_type: Vec<(&'static str, usize)> = nonstatic_by_type.into_iter().collect();
+        by_type.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        for (ty, count) in by_type {
+            println!("  {:>4}  {:>5}", ty, count);
+        }
+    }
+
+    if !index.skipped_unconsumed_groups.is_empty() {
+        println!("─── GRUPs skipped by design (no consumer yet) ──────────────");
+        for label in &index.skipped_unconsumed_groups {
+            println!(
+                "  {}  — every base form in this GRUP is unresolvable by \
+                 construction, not by parser failure",
+                String::from_utf8_lossy(label)
+            );
+        }
+    }
+
     if !unresolved_high_byte.is_empty() {
-        println!("─── unresolved by FormID master slot ──────────────────────");
+        println!("─── unattributed by FormID master slot ─────────────────────");
         let mut by_slot: Vec<(u8, usize)> = unresolved_high_byte.into_iter().collect();
         by_slot.sort_by_key(|&(slot, _)| slot);
         for (slot, count) in by_slot {
             let hint = match slot {
-                0x00 => "this ESM (parser gap — schema diverged or record type missing)",
+                // #2637 — no longer asserts a parser gap. Everything this
+                // tool can attribute has been subtracted above, but the
+                // residual still mixes real gaps with skipped-GRUP members,
+                // and this line cannot tell them apart. Claiming otherwise is
+                // what let a real regression hide behind two understood
+                // causes — the exact failure this report exists to catch.
+                0x00 => {
+                    "this ESM — unattributed: real parser gap, or a member \
+                         of a skipped GRUP listed above"
+                }
                 0xFD => "Medium Master (ESH) slot — load order index 0xFD",
                 0xFE => "Light Master (ESL) slot",
                 0xFF => "runtime / dynamic FormID",
@@ -223,5 +316,97 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
         println!("that the dispatch route mostly drops base forms. Milestone B will");
         println!("need a `crates/plugin/src/legacy/starfield.rs` from-scratch parser,");
         println!("not a delta on FO4.");
+    }
+}
+
+#[cfg(test)]
+mod unresolved_attribution_tests {
+    use super::nonstatic_base_type;
+    use byroredux_plugin::esm::records::EsmIndex;
+
+    fn minimal(form_id: u32) -> byroredux_plugin::esm::records::MinimalEsmRecord {
+        byroredux_plugin::esm::records::MinimalEsmRecord {
+            form_id,
+            ..Default::default()
+        }
+    }
+
+    /// #2637 (SF-D4-06) — a REFR whose base form is indexed outside `statics`
+    /// must be attributed to its own record type, not counted as a parser gap.
+    ///
+    /// The measured decomposition on `citycydoniamainlevel`: of 2,461
+    /// "unresolved" REFRs, ~140 (0.5%) were a real #1576 gap, 1,846 (6.6%)
+    /// intentionally-unconsumed PDCL, and ~369 (1.3%) audio markers that parse
+    /// fine and simply have no mesh. Reporting all three as "parser gap —
+    /// schema diverged or record type missing" overstated the real figure ~5x
+    /// and, worse, gave a genuine regression somewhere to hide.
+    #[test]
+    fn indexed_non_static_base_forms_are_attributed_to_their_record_type() {
+        let mut index = EsmIndex::default();
+        index.sound_echoes.insert(0x0000_1001, minimal(0x0000_1001));
+        index
+            .audio_occlusion_primitives
+            .insert(0x0000_1002, minimal(0x0000_1002));
+        index
+            .acoustic_spaces
+            .insert(0x0000_1003, minimal(0x0000_1003));
+        index
+            .audio_locations
+            .insert(0x0000_1004, minimal(0x0000_1004));
+
+        for (form_id, expected) in [
+            (0x0000_1001u32, "SECH"),
+            (0x0000_1002, "AOPF"),
+            (0x0000_1003, "ASPC"),
+            (0x0000_1004, "ALOC"),
+        ] {
+            assert_eq!(
+                nonstatic_base_type(&index, form_id),
+                Some(expected),
+                "form {form_id:#010X} is indexed and must be attributed to {expected}"
+            );
+        }
+    }
+
+    /// The residual must stay residual: a form in no map at all is still
+    /// unattributed, which is the bucket a real parser gap has to land in for
+    /// the report to remain useful.
+    #[test]
+    fn a_genuinely_unknown_base_form_stays_unattributed() {
+        let mut index = EsmIndex::default();
+        index.sound_echoes.insert(0x0000_2001, minimal(0x0000_2001));
+
+        assert_eq!(
+            nonstatic_base_type(&index, 0x0000_DEAD),
+            None,
+            "an unindexed form must not be attributed to any by-design bucket \
+             — that would hide the real gaps this report exists to surface"
+        );
+    }
+
+    /// The report must no longer assert a parser gap for the whole slot-0x00
+    /// bucket, and must print the by-design sections that explain most of it.
+    #[test]
+    fn the_report_separates_by_design_buckets_from_the_residual() {
+        const SRC: &str = include_str!("sf_smoke.rs");
+        let production = &SRC[..SRC
+            .find("mod unresolved_attribution_tests")
+            .expect("this test module must keep its name")];
+
+        assert!(
+            !production.contains("parser gap — schema diverged or record type missing"),
+            "the slot-0x00 hint still asserts a parser gap for every \
+             unattributed form, which is false for the majority of them (#2637)"
+        );
+        for section in [
+            "known base forms outside `statics` (by design)",
+            "GRUPs skipped by design (no consumer yet)",
+        ] {
+            assert!(
+                production.contains(section),
+                "the report no longer prints the `{section}` section, so its \
+                 contents fall back into the undifferentiated bucket (#2637)"
+            );
+        }
     }
 }

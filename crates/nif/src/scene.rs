@@ -121,6 +121,32 @@ pub struct NifScene {
     /// non-actor / non-skeleton meshes). See NIF-D3-NEW-06 (audit
     /// 2026-05-12).
     pub stubbed_drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
+    /// Per-block-type histogram of OPAQUE TRAILING BYTES captured rather than
+    /// parsed: `opaque_tail_histogram[type][len]` = how many blocks of `type`
+    /// captured a tail of exactly `len` bytes (#2625).
+    ///
+    /// This is the third histogram because the tail capture is a blind spot in
+    /// the other two, not a variant of them. A block that reads
+    /// `block_size - consumed` into a `starfield_tail` makes consumed equal
+    /// block_size by construction, so its drift is always exactly zero and
+    /// `drift_histogram` records nothing — no matter how much of the block the
+    /// parser actually failed to understand.
+    ///
+    /// The measurement that motivated this: across four Starfield archives,
+    /// shader-block drift was `{}` (empty) while tail lengths were bimodal
+    /// `{38: 1868, 42: 11}`. Eleven blocks disagreeing with 1868 others by four
+    /// bytes is exactly the shape a drift histogram exists to surface, and it
+    /// was invisible. A multi-modal distribution here is the signal; a single
+    /// mode means the parser is consistently reaching the same stopping point.
+    ///
+    /// One-directional, and deliberately so: an over-read (parser consumed MORE
+    /// than declared) still reaches `drift_histogram`, because
+    /// `saturating_sub` yields zero remaining and the tail comes back empty.
+    /// Under-read is the failure mode these parsers actually exhibit.
+    ///
+    /// Empty for every non-Starfield file — only blocks overriding
+    /// [`crate::blocks::NiObject::opaque_tail_len`] contribute.
+    pub opaque_tail_histogram: BTreeMap<String, BTreeMap<usize, u32>>,
     /// Havok-to-engine unit scale for this NIF. Computed from the
     /// header version triplet at parse time via `havok_scale_for_variant`
     /// in `lib.rs`; consumed by `import::collision::extract_collision`
@@ -162,6 +188,7 @@ impl Default for NifScene {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             // Default to the TES4/FO3/FNV scale — tests + test fixtures
             // that build `NifScene::default()` (no header) get the
             // pre-#1230 behaviour, so any test that didn't care about
@@ -409,6 +436,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };
@@ -432,6 +460,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };
@@ -452,6 +481,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };
@@ -480,6 +510,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };
@@ -506,6 +537,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };
@@ -528,6 +560,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
         };

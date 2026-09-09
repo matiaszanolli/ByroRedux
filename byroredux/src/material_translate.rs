@@ -2214,10 +2214,26 @@ mod tests {
 /// imports OTHER workspace crates, e.g. `byroredux_nif`/`byroredux_core`,
 /// never `byroredux` itself).
 ///
-/// Scope: material only, matching the boundary that actually exists today
-/// (per `docs/engine/nifal.md`'s rollout order — collision/animation have
-/// no `translate_*` boundary yet to test). Extend this module alongside
-/// each new canonical boundary as NIFAL's rollout reaches it.
+/// Scope: material only, and the reason is a crate boundary, not an absence
+/// of other boundaries. This module previously claimed "collision/animation
+/// have no `translate_*` boundary yet to test", which contradicted
+/// `docs/engine/nifal.md`'s own "converged"/"audited" verdicts for both
+/// (#2532). What those categories lack is not a boundary but a *reachable*
+/// one: `resolve_shape_inner` and `LightKind` resolution both live in
+/// `crates/nif`, below this crate in the dependency graph, so their guards
+/// cannot live here and this harness cannot be extended to cover them.
+///
+/// They are guarded in their own crate instead, and structurally rather than
+/// by kitchen-sink value comparison — for these two the property that rots is
+/// "every dispatched type still reaches the boundary", which a per-field value
+/// harness would not catch:
+/// - Collision: `import::collision`'s `dispatch_coverage_tests`
+///   (`every_dispatched_bhk_shape_has_resolve_arm`, from #1360/#1361).
+/// - Lights: `import::walk`'s `light_dispatch_coverage_tests` (#2532).
+///
+/// Animation (`convert_nif_clip` / `convert_hkx_clip`) remains unguarded and
+/// is the next extension. Extend this module alongside each new canonical
+/// boundary that is actually callable from `byroredux`.
 ///
 /// Every assertion reads `Material` (canonical), never `ImportedMaterial`
 /// fill rates — the #2214 complaint about the raw-tier harness.

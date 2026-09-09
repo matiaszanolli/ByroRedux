@@ -1,7 +1,10 @@
 //! FO4+ PreCombined Mesh loader (#1188).
 //!
 //! Bethesda's CK / GECK bakes individual architecture STAT placements
-//! (walls, floors, ceilings, ductwork, etc.) into a single
+//! (walls, floors, ceilings, ductwork, etc.) — and, per XPRI, at least some
+//! non-STAT placements whose exact membership is unsettled (#2699; see
+//! `precombine_can_replace_record` for the measurement and what it did not
+//! resolve) — into a single
 //! `meshes\precombined\<cell_formid:08x>_<hash:08x>_oc.nif` file per
 //! cell-tile. Those individual REFRs are then **absorbed** — the cell
 //! record's REFR list still carries them, but with the XPRI sub-record

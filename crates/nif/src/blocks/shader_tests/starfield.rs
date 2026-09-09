@@ -365,3 +365,103 @@ fn parse_bs_effect_starfield_tail_empty_without_size_or_drift() {
         "consumed == block_size → empty tail",
     );
 }
+
+/// #2625 (SF-D6-04) — the tail capture must REPORT its length, because
+/// capturing it destroys the drift signal that would otherwise report it.
+///
+/// `read_starfield_tail` consumes `block_size - consumed` inside the block
+/// parser, so `parse_nif`'s later `consumed != block_size` comparison always
+/// finds them equal and `drift_histogram` records nothing — no matter how much
+/// of the block the parser failed to understand. Measured on four Starfield
+/// archives: shader-block drift `{}` (empty) while tail lengths were bimodal
+/// `{38: 1868, 42: 11}`. Eleven blocks disagreeing with 1868 others by four
+/// bytes is exactly what a drift histogram exists to surface, and it was
+/// invisible — which is why SF-D6-01 went undetected by telemetry nominally
+/// watching for it.
+#[test]
+fn captured_starfield_tail_is_reported_through_the_ni_object_surface() {
+    use crate::blocks::NiObject;
+
+    let header = make_starfield_header(""); // empty name → full-body path
+    let body = build_starfield_bs_lighting_minimal();
+    let tail: Vec<u8> = (0u8..38).collect();
+    let mut data = body.clone();
+    data.extend_from_slice(&tail);
+    let block_size = data.len() as u32;
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse_with_size(&mut stream, Some(block_size))
+        .expect("Starfield full body + tail must parse");
+
+    // The drift this block contributes is zero BY CONSTRUCTION — that is the
+    // blind spot, restated as an assertion so the premise stays true.
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "the tail read consumes exactly to block_size, so signed drift is 0 \
+         and `drift_histogram` cannot see this block (#2625)"
+    );
+
+    // The length is what survives that, and it must reach `parse_nif` through
+    // the trait rather than a downcast to a hardcoded list of types.
+    let reported = (&prop as &dyn NiObject).opaque_tail_len();
+    assert_eq!(
+        reported,
+        Some(tail.len()),
+        "BSLightingShaderProperty must report its captured tail length so \
+         `opaque_tail_histogram` can bucket it (#2625)"
+    );
+
+    // A block that consumes exactly to its boundary reports `Some(0)`, not
+    // `None`: it HAS a tail slot and left nothing over. The distinction is the
+    // difference between "no anomaly" and "this type is not instrumented".
+    let mut exact = NifStream::new(&body, &header);
+    let exact_prop = BSLightingShaderProperty::parse_with_size(&mut exact, Some(body.len() as u32))
+        .expect("body with no trailing bytes must parse");
+    assert_eq!(
+        (&exact_prop as &dyn NiObject).opaque_tail_len(),
+        Some(0),
+        "an empty tail is `Some(0)` — `None` means the type has no capture at all"
+    );
+}
+
+/// The reporting is only useful if `parse_nif` actually calls it and if every
+/// tail-capturing type overrides it. Both are source-pinned, because the
+/// alternative — a hardcoded list of types in `lib.rs` — is precisely the
+/// shape that goes stale when a fifth tail-capturing block is added.
+#[test]
+fn every_tail_capturing_block_reports_it_and_parse_nif_records_it() {
+    // (a) `parse_nif` must consult the trait and bucket the result.
+    const LIB_RS: &str = include_str!("../../lib.rs");
+    for needle in [
+        "block.opaque_tail_len()",
+        "bump_hist(&mut opaque_tail_histogram, type_name, tail_len)",
+    ] {
+        assert!(
+            LIB_RS.contains(needle),
+            "parse_nif no longer records opaque tails (`{needle}` missing) — \
+             the histogram is populated nowhere and reads as empty rather than \
+             as absent (#2625)"
+        );
+    }
+
+    // (b) Every struct declaring a `starfield_tail` field must override
+    // `opaque_tail_len`. A new tail-capturing block that skips the override
+    // silently reintroduces the blind spot for its own type.
+    for (label, src) in [
+        ("blocks/shader.rs", include_str!("../shader.rs")),
+        ("blocks/node.rs", include_str!("../node.rs")),
+    ] {
+        let declarations = src.matches("starfield_tail: Vec<u8>,").count();
+        let overrides = src
+            .matches("fn opaque_tail_len(&self) -> Option<usize>")
+            .count();
+        assert_eq!(
+            overrides, declarations,
+            "{label} declares {declarations} `starfield_tail` field(s) but has \
+             {overrides} `opaque_tail_len` override(s) — every capturing type \
+             must report, or its under-reads stay invisible to both histograms \
+             (#2625)"
+        );
+    }
+}

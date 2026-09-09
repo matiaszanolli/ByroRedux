@@ -165,10 +165,41 @@ pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
 /// Only render-only static geometry is safe to erase from the ECS. FURN,
 /// CONT, ACTI, TERM, and MSTT records carry interaction, inventory, scripts,
 /// furniture markers, or runtime motion that the flattened CSG cannot
-/// preserve. XPRI can list those records (Switchboard has 141 of them), so
-/// treating every XPRI entry as disposable drops both their visuals and their
-/// gameplay identity. SCOL is also render-only once expanded into its baked
-/// static geometry.
+/// preserve, so dropping the REFR costs their gameplay identity. SCOL is also
+/// render-only once expanded into its baked static geometry.
+///
+/// # The unsettled half (#2699)
+///
+/// This gate keeps the entity. It does **not** suppress the entity's mesh, and
+/// whether it should is an open question this comment must not pretend to
+/// answer — an earlier revision claimed dropping the REFR "drops both their
+/// visuals and their gameplay identity", which contradicted
+/// `esm/cell/walkers.rs`'s XPRI note and this crate's own
+/// `cell_loader/precombined.rs` header. Both cannot be right, and nothing here
+/// established which is.
+///
+/// Measured on vanilla `Fallout4.esm` (2026-09-08), so the scale is not in
+/// doubt even though the contract is:
+/// - `Switchboard`: 174 absorbed REFRs, **141** non-STAT/SCOL — the figure the
+///   previous comment quoted, confirmed.
+/// - **232** interior cells carry at least one non-STAT/SCOL absorbed REFR,
+///   **21 769** in total. `InstituteConcourse` alone has 571, `Vault75` 477,
+///   `MedTekResearch01` 378. If these are duplicated geometry, it is a
+///   whole-game issue, not one cell's.
+///
+/// What was tried and did NOT settle it: comparing each absorbed REFR's base
+/// mesh name against the `CLONE <mesh>` node names inside the cell's 60
+/// `_oc.nif` bakes. Zero of the 141 non-STAT meshes appear there — but zero of
+/// the 5 absorbed STAT meshes do either, and those are the ones the bake is
+/// known to contain. The control fails, so the comparison is inconclusive in
+/// both directions rather than evidence of absence. Settling it needs
+/// per-object identity the `.csg`/`_oc.nif` pair does not carry, or a visual
+/// A/B of one cell.
+///
+/// Until then the renderable is deliberately left in place: spawning a
+/// duplicate mesh is a visible artefact, while suppressing one that is not
+/// actually baked silently deletes authored furniture from 232 cells, and
+/// `cargo test` cannot see either outcome.
 fn precombine_can_replace_record(record_type: Option<byroredux_plugin::RecordType>) -> bool {
     matches!(
         record_type,

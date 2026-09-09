@@ -1985,9 +1985,36 @@ impl_ni_object!(
     BSSkyShaderProperty,
     BSWaterShaderProperty,
     BSShaderTextureSet,
-    BSLightingShaderProperty,
-    BSEffectShaderProperty,
 );
+
+// #2625 — the two Starfield tail-carrying shader properties are hand-written
+// rather than listed above, because `impl_ni_object!` emits only the trivial
+// two-method form and these must also report `opaque_tail_len`. Capturing the
+// tail is what hides an under-read from `drift_histogram`; reporting its length
+// is what puts the signal back.
+impl NiObject for BSLightingShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSLightingShaderProperty"
+    }
+    fn as_any(&self) -> &dyn ::std::any::Any {
+        self
+    }
+    fn opaque_tail_len(&self) -> Option<usize> {
+        Some(self.starfield_tail.len())
+    }
+}
+
+impl NiObject for BSEffectShaderProperty {
+    fn block_type_name(&self) -> &'static str {
+        "BSEffectShaderProperty"
+    }
+    fn as_any(&self) -> &dyn ::std::any::Any {
+        self
+    }
+    fn opaque_tail_len(&self) -> Option<usize> {
+        Some(self.starfield_tail.len())
+    }
+}
 
 #[cfg(test)]
 #[path = "shader_tests/mod.rs"]
