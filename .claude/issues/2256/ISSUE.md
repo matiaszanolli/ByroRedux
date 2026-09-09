@@ -1,8 +1,8 @@
-# TD1-078: volumetrics.rs crossed 2000 LOC — Session 62 fog/shadow-policy feature push, plus a 556-LOC constructor
+# #2256: TD1-078: volumetrics.rs crossed 2000 LOC — Session 62 fog/shadow-policy feature push, plus a 556-LOC constructor
 
-Severity: low
-Source audit: docs/audits/AUDIT_TECH_DEBT_2026-08-02.md
-GitHub: https://github.com/matiaszanolli/ByroRedux/issues/2256
+Labels: bug, renderer, low, vulkan, tech-debt
+
+---
 
 **Dimension**: 1 (File/Function/Module Complexity)
 **Location**: `crates/renderer/src/vulkan/volumetrics.rs` (2075 LOC); `VolumetricsPipeline::new_inner` (~556 LOC, line 522)
@@ -22,3 +22,4 @@ GitHub: https://github.com/matiaszanolli/ByroRedux/issues/2256
 - [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
 - [ ] **SIBLING**: Same pattern checked in related files
 - [ ] **TESTS**: A regression test pins this specific fix, if applicable
+
