@@ -20,7 +20,8 @@ use rustc_hash::FxHashMap;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::components::{DoorTeleport, InputState, Locked, DEFAULT_LOOK_SENSITIVITY};
+use crate::components::{DoorTeleport, InputState, DEFAULT_LOOK_SENSITIVITY};
+use byroredux_core::ecs::components::Locked;
 
 pub(crate) const MOUSE_SENSITIVITY_SETTING_ID: &str = "controls.mouse_sensitivity";
 pub(crate) const INVERT_LOOK_Y_SETTING_ID: &str = "controls.invert_y";

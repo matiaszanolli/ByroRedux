@@ -1976,6 +1976,186 @@ fn dispatch_enable_clears_a_previously_disabled_reference() {
     );
 }
 
+/// #3159 — the removal half. `Locked` had one insert (the cell loader's
+/// XLOC stamp) and one read (the interaction gate) and nothing anywhere
+/// that cleared it, so an authored lock was a one-way door for the whole
+/// session and every quest depending on a scripted unlock was unfinishable.
+#[test]
+fn dispatch_set_locked_clears_and_restores_an_authored_lock() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_core::ecs::components::Locked;
+
+    const DOOR_FORM: u32 = 0x0009_0B11;
+    let mut world = fixture();
+    let door = spawn_with_form_id(&mut world, DOOR_FORM);
+    world.register::<Locked>();
+    world.insert(
+        door,
+        Locked {
+            lock_level: 75,
+            key_form_id: Some(0x1234),
+        },
+    );
+
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QF_LOCK".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "MyDoor".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: DOOR_FORM,
+                    alias: -1,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let door_ref = || crate::translate::compose::ObjectRef::Property("::MyDoor_var".into());
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(Q, vmad.clone());
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetLocked {
+                target: door_ref(),
+                locked: false,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert!(
+        world.get::<Locked>(door).is_none(),
+        "Lock(false) must remove the component — its presence IS the locked \
+         state, and the interaction gate reads exactly that"
+    );
+
+    // ...and the inverse direction works, so this is a toggle rather than a
+    // one-way door in the other direction.
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            20,
+            vec![Effect::SetLocked {
+                target: door_ref(),
+                locked: true,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    emit_advance(&world, Q, 20);
+    quest_fragment_dispatch_system(&world);
+
+    let relocked = world.get::<Locked>(door).expect("Lock(true) must re-lock");
+    assert_eq!(
+        relocked.lock_level, 0,
+        "a script-created lock has no authored XLOC to recover a difficulty \
+         from, so it records the least-restrictive shape rather than \
+         inventing one"
+    );
+    assert_eq!(relocked.key_form_id, None);
+}
+
+/// #3159 — `SetLockLevel` sets difficulty and must never change lock state,
+/// in either direction. Conflating it with `Lock` would make a fragment
+/// that merely re-tunes a lock silently lock or unlock a door.
+#[test]
+fn dispatch_set_lock_level_changes_difficulty_without_touching_lock_state() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_core::ecs::components::Locked;
+
+    const DOOR_FORM: u32 = 0x0009_0B12;
+    const OPEN_FORM: u32 = 0x0009_0B13;
+    let mut world = fixture();
+    let locked_door = spawn_with_form_id(&mut world, DOOR_FORM);
+    let unlocked_door = spawn_with_form_id(&mut world, OPEN_FORM);
+    world.register::<Locked>();
+    world.insert(
+        locked_door,
+        Locked {
+            lock_level: 25,
+            key_form_id: Some(0xABCD),
+        },
+    );
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_LOCK".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "MyDoor".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: DOOR_FORM,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "OpenDoor".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: OPEN_FORM,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetLockLevel {
+                    target: crate::translate::compose::ObjectRef::Property("::MyDoor_var".into()),
+                    level: 100,
+                },
+                Effect::SetLockLevel {
+                    target: crate::translate::compose::ObjectRef::Property("::OpenDoor_var".into()),
+                    level: 100,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let still_locked = world
+        .get::<Locked>(locked_door)
+        .expect("SetLockLevel must not unlock");
+    assert_eq!(still_locked.lock_level, 100, "difficulty must be updated");
+    assert_eq!(
+        still_locked.key_form_id,
+        Some(0xABCD),
+        "the authored key must survive a difficulty change"
+    );
+
+    assert!(
+        world.get::<Locked>(unlocked_door).is_none(),
+        "SetLockLevel on an unlocked object must stay a no-op — the absence \
+         of the component IS the unlocked state, so creating one here would \
+         lock a door the script never asked to lock"
+    );
+}
+
 #[test]
 fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
     use byroredux_plugin::esm::records::script_instance::{

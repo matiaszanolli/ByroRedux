@@ -671,6 +671,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // shared sparse components. Register them before any scene/cell exists so
     // condition evaluation safely sees the default alive/unowned state.
     world.register::<byroredux_core::ecs::components::Dead>();
+    // #3159 — `Locked` must exist as a storage even when a session's cells
+    // authored no XLOC, or the first scripted `Lock(..)` finds no storage to
+    // write into and silently no-ops. The cell loader's insert is
+    // conditional; this registration is not.
+    world.register::<byroredux_core::ecs::components::Locked>();
     world.register::<byroredux_core::ecs::components::CellFormId>();
     // WATAL Phase 2 — pre-register `WaterContact` so the buoyancy phase's
     // `query_mut::<WaterContact>().insert(..)` succeeds the first time a
@@ -1009,7 +1014,7 @@ fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::WorldBound>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<crate::components::DoorTeleport>()
-            .reads::<crate::components::Locked>()
+            .reads::<byroredux_core::ecs::components::Locked>()
             .reads::<byroredux_scripting::TwoStateActivator>()
             .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()

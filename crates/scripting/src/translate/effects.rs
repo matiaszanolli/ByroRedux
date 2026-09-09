@@ -202,6 +202,27 @@ pub enum Effect {
     /// `<target>.SetOpen(open)` — synchronizes the canonical two-state
     /// activator and its `::isOpen_var` CTDA-visible VM variable.
     SetOpen { target: ObjectRef, open: bool },
+    /// `<target>.Lock(abLock)` — sets or clears the authored lock on a door
+    /// or container.
+    ///
+    /// Papyrus defaults `abLock` to `true`, so a bare `Lock()` locks.
+    /// `Lock(false)` is the unlock that #3159 was filed for: before this
+    /// primitive existed nothing in the engine could remove a `Locked`
+    /// component, and a fragment containing the call declined *wholesale* —
+    /// taking its sibling `SetStage` / `SetObjectiveCompleted` with it.
+    SetLocked { target: ObjectRef, locked: bool },
+    /// `<target>.SetLockLevel(aiLockLevel)` — sets lock *difficulty*.
+    ///
+    /// Deliberately a separate effect from [`Self::SetLocked`], not a second
+    /// spelling of it: in Papyrus `SetLockLevel` does **not** lock or unlock
+    /// anything, it only changes how hard an already-locked object is to
+    /// pick. Folding the two together would make a fragment that merely
+    /// re-tunes a lock silently lock or unlock a door.
+    ///
+    /// Applying it to an unlocked object is a no-op, matching the component
+    /// model: `Locked`'s absence *is* the unlocked state, so there is no
+    /// record to carry a difficulty on.
+    SetLockLevel { target: ObjectRef, level: u8 },
     /// `Game.GetPlayer().SetRestrained(restrained)`.
     SetPlayerRestrained { restrained: bool },
     /// Selectively enable/disable the domains named by the two Papyrus
@@ -618,6 +639,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_stop_scene,
     prim_activate,
     prim_set_open,
+    prim_lock,
+    prim_set_lock_level,
     prim_set_player_restrained,
     prim_disable_player_controls,
     prim_enable_player_controls,
@@ -1074,6 +1097,44 @@ fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::SetOpen {
         target: receiver_object(object, scope)?,
         open,
+    })
+}
+
+/// `<object>.Lock()` / `.Lock(true)` / `.Lock(false)` (#3159).
+///
+/// Same conservative shape as [`prim_set_open`]: a literal-only bool through
+/// `bool_arg`, declining on any extra argument, so a computed or
+/// variable-driven lock state is left to decline rather than guessed at.
+/// Papyrus's own default for `abLock` is `true`.
+fn prim_lock(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Lock")?;
+    if args.len() > 1 {
+        return None;
+    }
+    let locked = bool_arg(args, 0)?.unwrap_or(true);
+    Some(Effect::SetLocked {
+        target: receiver_object(object, scope)?,
+        locked,
+    })
+}
+
+/// `<object>.SetLockLevel(<literal>)` (#3159).
+///
+/// Requires exactly one argument — unlike `Lock`, Papyrus gives
+/// `SetLockLevel` no default, so a bare call is malformed rather than
+/// meaningful and declines. The level is an authored lock difficulty that
+/// the wire format carries as a single byte, so a literal outside `0..=255`
+/// is not a level this engine can represent and declines too, rather than
+/// truncating into a different difficulty.
+fn prim_set_lock_level(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetLockLevel")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let level = u8::try_from(int_arg(args, 0)?).ok()?;
+    Some(Effect::SetLockLevel {
+        target: receiver_object(object, scope)?,
+        level,
     })
 }
 
@@ -2273,6 +2334,136 @@ mod tests {
                 scene: ObjectRef::Property("IntroScene".into()),
             }])
         );
+    }
+
+    // ---- #3159: Lock / SetLockLevel ----
+
+    /// The motivating shape. Before this primitive existed the whole
+    /// fragment declined on `Lock(false)` — `lower_fragment`'s
+    /// `_ => return None` arm is all-or-nothing — so the objective and the
+    /// stage advance were discarded along with the unlock, and the failure
+    /// presented to the player as "the quest stalled" rather than "the door
+    /// is locked".
+    #[test]
+    fn an_unlock_no_longer_takes_its_sibling_effects_down_with_it() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(false)\n\
+             Self.SetObjectiveCompleted(10, true)\n\
+             Self.SetStage(20)\n EndFunction\n",
+        );
+        let lowered = lower_fragment(&body).expect("the fragment must lower");
+        assert_eq!(
+            lowered.len(),
+            3,
+            "all three effects must survive, not just the two that were \
+             already modeled: {lowered:?}"
+        );
+        assert_eq!(
+            lowered[0],
+            Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: false,
+            }
+        );
+    }
+
+    /// Papyrus defaults `abLock` to `true`, so a bare `Lock()` locks.
+    #[test]
+    fn a_bare_lock_call_defaults_to_locking() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: true,
+            }])
+        );
+    }
+
+    /// #2289 — the decline half. A non-literal lock state and an extra
+    /// argument must both decline rather than be guessed at, matching
+    /// `prim_set_open`'s conservative shape.
+    #[test]
+    fn lock_declines_on_a_non_literal_or_over_long_argument() {
+        let computed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Bool Property ShouldLock Auto\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(ShouldLock)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&computed),
+            None,
+            "a variable-driven lock state must decline, not be assumed"
+        );
+
+        let extra = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(true, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&extra),
+            None,
+            "an unmodeled second argument must decline"
+        );
+    }
+
+    /// `SetLockLevel` is a *separate* effect, never a spelling of
+    /// `SetLocked`: in Papyrus it sets difficulty and does not lock or
+    /// unlock anything. Folding the two together would make a fragment that
+    /// merely re-tunes a lock silently lock a door.
+    #[test]
+    fn set_lock_level_lowers_to_its_own_effect_not_to_a_lock() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.SetLockLevel(75)\n EndFunction\n",
+        );
+        let lowered = lower_fragment(&body).expect("must lower");
+        assert_eq!(
+            lowered,
+            vec![Effect::SetLockLevel {
+                target: ObjectRef::Property("MyDoor".into()),
+                level: 75,
+            }]
+        );
+        assert!(
+            !matches!(lowered[0], Effect::SetLocked { .. }),
+            "SetLockLevel must never lower to a lock state change"
+        );
+    }
+
+    /// The wire format carries lock level as one byte, so a literal outside
+    /// `0..=255` is not a difficulty this engine can represent — decline
+    /// rather than truncate into a *different* difficulty. A bare call
+    /// declines too: unlike `Lock`, Papyrus gives `SetLockLevel` no default,
+    /// so there is nothing to assume.
+    #[test]
+    fn set_lock_level_declines_on_an_unrepresentable_or_missing_level() {
+        for source in [
+            "MyDoor.SetLockLevel(256)",
+            "MyDoor.SetLockLevel(-1)",
+            "MyDoor.SetLockLevel()",
+            "MyDoor.SetLockLevel(50, 1)",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_7()\n\
+                 {source}\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                None,
+                "`{source}` must decline rather than truncate or assume"
+            );
+        }
     }
 
     #[test]

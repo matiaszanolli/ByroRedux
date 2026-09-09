@@ -6,7 +6,7 @@
 //! `placement_root` parent. Driven by `load_references`; called once
 //! per placement at cell load time.
 
-use byroredux_core::ecs::components::FormIdComponent;
+use byroredux_core::ecs::components::{FormIdComponent, Locked};
 use byroredux_core::ecs::{
     BSXFlags, Billboard, BillboardMode, GlobalTransform, LightSource, LocalBound, MeshHandle,
     SceneFlags, TextureHandle, Transform, World, WorldBound,
@@ -25,7 +25,7 @@ use crate::asset_provider::{
     MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, Locked, MaterialTextureDebugInfo,
+    texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, MaterialTextureDebugInfo,
     MaterialTextureHandles, MaterialTextureSource,
 };
 

@@ -437,8 +437,16 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // either side of the split gives 149 shapes both times, and the two
     // sorted lists are identical once the path prefix and the visibility
     // keyword are normalized away. No saved data shape changed, so no bump.
-    const BASELINE_MAJOR: u16 = 21;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3388_b6ee_7133_b9ca;
+    // #3159 — v22. `Effect` gained `SetLocked` / `SetLockLevel`, and `Effect`
+    // is genuinely saved: `FragmentExecutionQueue`'s suspended-continuation
+    // tail is a `Vec<Effect>`. Verified rather than assumed, per the #3852
+    // note above — dumping `normalized_serialized_shapes()` either side of
+    // the change gives 149 shapes both times with exactly one differing
+    // line, the `Effect` enum itself. So this is a real saved-shape change
+    // (a variant insertion, which shifts later discriminants), not a
+    // file-scoping artefact, and the bump is required rather than blanket.
+    const BASELINE_MAJOR: u16 = 22;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x146a_8fc6_b82a_86f6;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

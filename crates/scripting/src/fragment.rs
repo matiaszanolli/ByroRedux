@@ -37,7 +37,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use byroredux_core::ecs::components::{
-    EquipmentSlots, GlobalTransform, Inventory, InventoryIndex, ItemStack, Transform,
+    EquipmentSlots, GlobalTransform, Inventory, InventoryIndex, ItemStack, Locked, Transform,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -799,7 +799,8 @@ fn copied_transform(world: &World, entity: EntityId) -> Option<Transform> {
 ///     `Inventory`, `Transform` (read and write), `GlobalTransform`,
 ///     `ActorControlState`, `EvaluatePackageRequest`, `HorseTetherState`,
 ///     `MotionTypeChangeRequest` (×2), `SceneStartRequest`,
-///     `SceneStopRequest`
+///     `SceneStopRequest`, `Locked` (write ×2, the `SetLocked` /
+///     `SetLockLevel` pair — #3159)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -1114,6 +1115,64 @@ fn apply_effect(
                     "fragment SetOpen skipped: '{}' is not a recognized two-state activator",
                     target.property_name()
                 );
+            }
+            None
+        }
+        Effect::SetLocked { target, locked } => {
+            // #3159 — the removal half that did not exist. `Locked` had one
+            // insert (the cell loader's XLOC stamp) and one read (the
+            // interaction gate) and nothing that cleared it, so an authored
+            // lock was a one-way door for the session and any fragment
+            // containing `Lock(false)` declined wholesale — discarding its
+            // sibling stage/objective effects too.
+            let target_entity =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            // Through `query_mut`, not `World::insert`/`remove`: this system
+            // holds `&World`, so structural mutation is unavailable, but
+            // inserting into and removing from an *existing* storage is not
+            // structural. `boot.rs` pre-registers `Locked` so the storage is
+            // there even in a session whose cells authored no XLOC at all —
+            // otherwise the very first scripted lock would silently no-op.
+            let Some(mut locks) = world.query_mut::<Locked>() else {
+                log::debug!("fragment Lock skipped: Locked storage never registered");
+                return None;
+            };
+            if *locked {
+                // Re-locking something the cell loader never stamped: there is
+                // no authored `XLOC` to recover a level or key from, so the
+                // lock is recorded at its least-restrictive shape rather than
+                // inventing a difficulty. A re-lock of a previously-locked
+                // object keeps whatever it already carried.
+                if locks.get(target_entity).is_none() {
+                    locks.insert(
+                        target_entity,
+                        Locked {
+                            lock_level: 0,
+                            key_form_id: None,
+                        },
+                    );
+                }
+            } else {
+                locks.remove(target_entity);
+            }
+            None
+        }
+        Effect::SetLockLevel { target, level } => {
+            // Difficulty only — never locks or unlocks (see the effect's
+            // doc). An unlocked object has no `Locked` component to carry a
+            // level, so this is a no-op there rather than an implicit lock.
+            let target_entity =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            if let Some(mut locks) = world.query_mut::<Locked>() {
+                if let Some(state) = locks.get_mut(target_entity) {
+                    state.lock_level = *level;
+                } else {
+                    log::debug!(
+                        "fragment SetLockLevel skipped: '{}' is not locked, so there is \
+                         no lock record to set a difficulty on",
+                        target.property_name()
+                    );
+                }
             }
             None
         }
@@ -1501,6 +1560,8 @@ fn apply_quest_scoped_effect(
         | Effect::StopScene { .. }
         | Effect::Activate { .. }
         | Effect::SetOpen { .. }
+        | Effect::SetLocked { .. }
+        | Effect::SetLockLevel { .. }
         | Effect::SetPlayerRestrained { .. }
         | Effect::SetPlayerControls { .. }
         | Effect::SetPlayerAiDriven { .. }

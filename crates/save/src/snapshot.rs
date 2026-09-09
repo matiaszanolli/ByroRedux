@@ -154,7 +154,17 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// correct value for every pre-v21 snapshot (every prior build's
 /// `resolve_pbr` treated the field as unconditionally absent), but the
 /// bump is taken anyway per this doc's blanket rule.
-pub const FORMAT_MAJOR: u16 = 21;
+/// Version 22 (#3159, SCR-D5-2026-08-20-01) adds two variants to the
+/// `Effect` enum — `SetLocked` and `SetLockLevel` — which reaches a
+/// snapshot through the registered `FragmentExecutionQueue` resource
+/// (suspended `Utility.Wait` / `WaitForActors3DLoaded` fragment
+/// continuations hold a `Vec<Effect>` tail). Unlike every field addition
+/// above, this is an *enum* change: serde's index-based representation
+/// means the new variants shift the discriminant of every later one, so a
+/// pre-v22 snapshot's queued tail would deserialize as the wrong effect
+/// rather than merely miss a field. Rejection is not a blanket-rule
+/// courtesy here, it is required.
+pub const FORMAT_MAJOR: u16 = 22;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

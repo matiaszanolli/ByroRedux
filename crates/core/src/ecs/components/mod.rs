@@ -16,6 +16,7 @@ pub mod fog_volume;
 pub mod follow;
 pub mod form_id;
 pub mod furniture;
+pub mod lock;
 pub mod global_transform;
 pub mod groundcover;
 pub mod guard;
@@ -64,6 +65,7 @@ pub use fog_volume::{CombustionState, FogBounds, FogProfile, FogShape, FogSource
 pub use follow::{FollowBehavior, FollowState};
 pub use form_id::FormIdComponent;
 pub use furniture::{Furniture, FurnitureMarker, FurnitureMarkerKind};
+pub use lock::Locked;
 pub use global_transform::GlobalTransform;
 pub use guard::{GuardBehavior, GuardState};
 pub use hierarchy::{Children, Parent};
